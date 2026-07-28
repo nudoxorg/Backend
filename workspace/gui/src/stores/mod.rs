@@ -21,10 +21,12 @@
 //! | `project`  | §12.2      | Open projects and active-project tracking       |
 //! | `registry` | §12.5      | Corpus-generation sync status                   |
 //! | `job`      | §12.6      | Background job lifecycle and pipeline stages    |
+//! | `package`  | §L10       | Which packages are loaded, loading, or failed   |
 
 pub mod events;
 pub mod job;
 pub mod nav;
+pub mod package;
 pub mod project;
 pub mod registry;
 pub mod search;
@@ -52,3 +54,6 @@ pub type SearchStore = search::SearchStore<Engine>;
 
 /// [`symbol::SymbolStore`] over the real engine.
 pub type SymbolStore = symbol::SymbolStore<Engine>;
+
+/// [`package::PackageStore`] over the real engine.
+pub type PackageStore = package::PackageStore<Engine>;

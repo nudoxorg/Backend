@@ -22,7 +22,7 @@ use nudox_ir::{
 };
 use ra_ap_syntax::ast::{self, HasGenericArgs, HasName, HasTypeBounds};
 
-use super::{ctx::{LowerCtx, PathKey}, ty};
+use super::{ctx::{LowerCtx, PathKey}, item::id_of, ty};
 
 // ── Public entry ──────────────────────────────────────────────────────────────
 
@@ -165,7 +165,7 @@ fn path_type_to_type(
     use ra_ap_hir::PathResolution;
     if let Some(res) = ty::resolve_path_opt(ctx, &path)
         && let PathResolution::Def(def) = res
-        && let Some(key) = ctx.canonical(def)
+        && let Some(key) = id_of(ctx, def)
         && let Some(raw_ref) = ref_for(&key)
     {
         // Generic args on the trait ref; only type args kept.

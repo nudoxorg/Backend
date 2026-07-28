@@ -31,6 +31,7 @@
 //! EngineHandle::search(q, gen)          -> (StreamHandle, Receiver<SearchEvent>)
 //! EngineHandle::open_symbol(key, gen)   -> (StreamHandle, Receiver<DocEvent>)
 //! EngineHandle::open_package(id, gen)   -> (StreamHandle, Receiver<PackageEvent>)  // stub
+//! EngineHandle::packages()              -> Receiver<PackageLoadEvent>
 //! EngineHandle::resolve_project(root)   -> (StreamHandle, Receiver<ProjectEvent>)  // stub
 //! EngineHandle::sync()                  -> Receiver<SyncEvent>                     // stub
 //! EngineHandle::jobs()                  -> Receiver<JobEvent>                      // stub
@@ -57,22 +58,150 @@ pub use wire::{
     QueryRow, RenderSection, SearchEvent, SearchSectionId, SectionId, SharedStr, SymbolHead,
     SymbolKey,
 };
+// `PackageLoadEvent`, `PackageSpec`, and `ProducerLanguage` are defined below
+// and are `pub`; they are visible to `lindsey` as `nudox_engine::PackageLoadEvent`
+// etc. without any additional re-export.
 
 // ---------------------------------------------------------------------------
-// Stub methods on EngineHandle for §7.1 completeness
+// Types crossing the engine↔GUI seam for package loading
 //
-// These are declared here rather than in `runtime.rs` so that the runtime
-// module stays focused on the actual runtime machinery.  Each stub method is
-// tagged with the milestone that will implement it.
+// These are declared here (not in `runtime.rs`) so the runtime module stays
+// focused on runtime machinery.  Types that `lindsey` must name without
+// depending on `nudox-store` or `nudox-ir` live here.
 // ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
 
-/// Placeholder package event — emitted by the `open_package` stub.
+// ---------------------------------------------------------------------------
+// ProducerLanguage
+// ---------------------------------------------------------------------------
+
+/// The source language for a package passed to [`Engine::start_with_producer`].
+///
+/// This is the engine's own re-export of the language concept so that
+/// `lindsey` can specify a language without importing `nudox-ir`.  It mirrors
+/// `nudox_ir::body::Language` but is defined here at the seam (§L0) to keep
+/// the dependency law intact.
+///
+/// Only `Rust` is currently effective: `ProducerRegistry::with_rust_pilot`
+/// registers only the Rust producer.  Passing any other variant causes a
+/// `PackageLoadEvent::LoadFailed { error: "toolchain missing … " }` for that
+/// package; the rest of the corpus is unaffected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ProducerLanguage {
+    /// The Rust language, produced via `ra_ap_*` in-process.
+    Rust,
+}
+
+// ---------------------------------------------------------------------------
+// PackageSpec
+// ---------------------------------------------------------------------------
+
+/// A caller-supplied description of one on-disk package to load.
+///
+/// Passed to [`Engine::start_with_producer`].  Contains only `std`-owned types
+/// so that `lindsey` (which must not name `nudox-store` or `nudox-ir`, §L0)
+/// can construct one without crossing the dependency boundary.
+///
+/// The engine converts this to a `nudox_store::source::producer::PackageDescriptor`
+/// internally — the translation is a single `match` in `start_with_producer`
+/// and is invisible to the caller.
+///
+/// # Example (from `lindsey`)
+///
+/// ```rust,ignore
+/// Engine::start_with_producer(config, vec![
+///     PackageSpec {
+///         root: PathBuf::from("/path/to/my-crate"),
+///         name: "my-crate".to_owned(),
+///         version: "0.1.0".to_owned(),
+///         language: ProducerLanguage::Rust,
+///     },
+/// ])
+/// ```
+#[derive(Clone, Debug)]
+pub struct PackageSpec {
+    /// Absolute path to the package root (the directory containing the language
+    /// manifest: `Cargo.toml`, `go.mod`, `*.csproj`, …).
+    pub root: PathBuf,
+    /// Package name as it appears in the ecosystem registry.
+    pub name: String,
+    /// Version string (e.g. `"1.2.3"`) — stored for diagnostics, not parsed.
+    pub version: String,
+    /// The source language.  Determines which producer is used.
+    pub language: ProducerLanguage,
+}
+
+// ---------------------------------------------------------------------------
+// PackageLoadEvent
+// ---------------------------------------------------------------------------
+
+/// An event emitted by [`EngineHandle::packages`] describing the outcome of
+/// loading one package.
+///
+/// `#[non_exhaustive]` so that new variants (e.g. a `Reloaded` event when
+/// hot-reload lands in M5) can be added without breaking existing `match`
+/// arms in `lindsey`.
+///
+/// All payload strings are [`SharedStr`] — `triomphe::Arc<str>` under the
+/// hood — so the drain loop in the GUI never allocates: it clones Arc handles,
+/// not heap buffers (GUI-PLAN §2.2.5).
+///
+/// The type is intentionally **not** a re-export of any store or IR type.
+/// `nudox_store::package::PackageView` and `nudox_ir::change::PackageLineageId`
+/// must not cross the §L0 boundary; this event carries only the fields the
+/// GUI actually needs to render its status bar and package list.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum PackageLoadEvent {
+    /// A package was fully produced and inserted into the corpus.
+    ///
+    /// Emitted once per package, after `Corpus::insert` returns.  After this
+    /// event the package is searchable via `EngineHandle::search`.
+    Loaded {
+        /// The package's registry name (e.g. `"serde"`, `"react"`).
+        name: SharedStr,
+        /// The ecosystem this package belongs to (`"cargo"`, `"npm"`, …).
+        ecosystem: SharedStr,
+        /// The version string, if it was available at discovery time.
+        version: Option<String>,
+        /// The number of public API symbols in the produced IR.  Useful for
+        /// the status bar's "N symbols" count.  This is the symbol count at
+        /// the time of insertion; it does not change after that.
+        symbol_count: u64,
+    },
+
+    /// A package failed to load; the remaining packages are unaffected.
+    ///
+    /// Corresponds to `LoadEvent::Failed` in `nudox-store`.  The error is
+    /// flattened to a `SharedStr` at the boundary so `lindsey` never needs to
+    /// match on `SourceError` variants.
+    LoadFailed {
+        /// Name of the package that failed (may be partial if the oracle
+        /// crashed early).
+        name: SharedStr,
+        /// The ecosystem the package belongs to.
+        ecosystem: SharedStr,
+        /// Human-readable error message suitable for a status-bar tooltip or
+        /// an error banner.
+        error: SharedStr,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// PackageEvent (open-package-page stream — distinct from PackageLoadEvent)
+// ---------------------------------------------------------------------------
+
+/// Events emitted by [`EngineHandle::open_package`] for the API-surface view
+/// of one loaded package.
+///
+/// **Stub (M4).** Only `Done` is emitted today.  Future variants will carry
+/// symbol-summary sections analogous to `DocEvent::Section`.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum PackageEvent {
-    /// Stub — no packages are streamed yet (M4 work).
+    /// Terminal — the API-surface stream for this package is complete.
     Done { generation: Gen },
 }
 

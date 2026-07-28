@@ -118,6 +118,19 @@ pub struct GenerationChanged {
 }
 
 // ---------------------------------------------------------------------------
+// PackageStore → status bar
+// ---------------------------------------------------------------------------
+
+/// The set of loaded packages changed.
+///
+/// Deliberately payload-free, for the same reason as [`GenerationChanged`]:
+/// `PackageStore` is the single source of truth, so the subscriber re-reads
+/// `summary_label()` rather than being handed a string that could already be
+/// stale by the time it renders.
+#[derive(Clone, Debug)]
+pub struct PackagesChanged;
+
+// ---------------------------------------------------------------------------
 // JobStore → ShellStore
 // ---------------------------------------------------------------------------
 

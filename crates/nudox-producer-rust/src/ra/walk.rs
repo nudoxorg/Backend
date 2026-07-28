@@ -91,15 +91,21 @@ pub(crate) fn lower_crate(
 
         // Lower each item defined in this module.
         for child_def in module.declarations(ctx.db) {
-            // Skip private items when requested.
-            if !ctx.document_private && !ctx.include(child_def) {
-                continue;
-            }
-
             // Skip enum variants at module level (lowered inside enum).
             if matches!(child_def, ModuleDef::EnumVariant(_)) {
                 continue;
             }
+
+            // Always declare every item — including private ones — so that
+            // public signatures that reference private types do not produce
+            // dangling `refer` slots.  Visibility is recorded in `Symbol.visibility`
+            // so downstream consumers can apply their own filtering policy.
+            // Skipping private *declarations* while allowing public *references*
+            // is precisely the bug class we are fixing (Group C).
+            //
+            // The `document_private` flag now only governs whether the re-export
+            // walk in `lower_module` emits non-public re-exports.  Declaration
+            // of items defined in this module is unconditional.
 
             let parent_id = ctx.ra_id(ModuleDef::Module(*module));
             let _ = catch_non_cancelled(

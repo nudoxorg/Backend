@@ -11,6 +11,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use tokio::runtime::Runtime;
+use tokio::sync::broadcast;
 use tokio::task::LocalSet;
 use tracing::info;
 
@@ -18,6 +19,8 @@ use nudox_store::{
     corpus::Corpus,
     source::{IrSource, LoadEvent, LoadRequest},
 };
+
+use crate::{PackageLoadEvent, PackageSpec, ProducerLanguage};
 
 // ---------------------------------------------------------------------------
 // EngineConfig
@@ -67,6 +70,19 @@ pub(crate) struct EngineInner {
     pub(crate) schema: &'static trustfall::Schema,
     /// The host-supplied highlighter, if any (see `crate::highlight`).
     pub(crate) highlighter: crate::highlight::SharedHighlighter,
+    /// Live broadcast channel for package load events.
+    ///
+    /// The seeding task publishes here on every `LoadEvent::Ready` and
+    /// `LoadEvent::Failed`.  `EngineHandle::packages()` subscribes and
+    /// fuses the live stream with a snapshot of already-loaded packages to
+    /// give every caller an exactly-once view regardless of when they arrive.
+    ///
+    /// Capacity 64: in the normal case a workspace has fewer than 64 packages,
+    /// so a fast subscriber never lags; a slow subscriber (backpressured by
+    /// the GUI render loop) may lag but `RecvError::Lagged` is handled
+    /// explicitly in `EngineHandle::packages()` rather than being allowed to
+    /// kill the stream.
+    pub(crate) pkg_tx: broadcast::Sender<PackageLoadEvent>,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,15 +122,28 @@ impl Engine {
 
         let corpus = Corpus::new();
         let schema = nudox_graph::schema();
+
+        // Capacity 64: broadcast channel for package load notifications.  See
+        // `EngineInner::pkg_tx` for the capacity rationale.
+        let (pkg_tx, _initial_rx) = broadcast::channel::<PackageLoadEvent>(64);
+        // `_initial_rx` is immediately dropped; real subscribers are created
+        // inside `EngineHandle::packages()` before they read the snapshot.
+
         let inner = Arc::new(EngineInner {
             corpus: corpus.clone(),
             schema,
             highlighter: config.highlighter.clone(),
+            pkg_tx: pkg_tx.clone(),
         });
 
         // Seed the corpus from the source on the runtime's thread pool.
         // We do this eagerly on start so that searches issued immediately
         // after `start` return (possibly empty) rather than blocking.
+        //
+        // Every `LoadEvent::Ready` and `LoadEvent::Failed` is also broadcast
+        // on `pkg_tx` so that `EngineHandle::packages()` subscribers receive
+        // live notifications.  `send` returns `Err` only when there are no
+        // receivers (which is fine at startup — we just drop the notification).
         let seed_corpus = corpus.clone();
         runtime.spawn(async move {
             use futures::StreamExt as _;
@@ -122,13 +151,33 @@ impl Engine {
             while let Some(event) = stream.next().await {
                 match event {
                     Ok(LoadEvent::Ready { package }) => {
+                        // Count symbols before moving the package into the corpus.
+                        let symbol_count = package.view().table().len() as u64;
+                        let name = package.lineage().name.as_str().to_owned();
+                        let ecosystem = package.lineage().ecosystem.as_str().to_owned();
+                        let version: Option<String> = None; // not carried in PackageView
                         seed_corpus.insert(package).await;
+
+                        let event = PackageLoadEvent::Loaded {
+                            name: name.into(),
+                            ecosystem: ecosystem.into(),
+                            version,
+                            symbol_count,
+                        };
+                        // Ignore `Err`: no subscribers yet is fine.
+                        let _ = pkg_tx.send(event);
                     }
                     Ok(LoadEvent::Failed { lineage, error }) => {
                         tracing::warn!(
                             package = %lineage,
                             "package load failed: {error}",
                         );
+                        let event = PackageLoadEvent::LoadFailed {
+                            name: lineage.name.as_str().to_owned().into(),
+                            ecosystem: lineage.ecosystem.as_str().to_owned().into(),
+                            error: error.to_string().into(),
+                        };
+                        let _ = pkg_tx.send(event);
                     }
                     Ok(_) => {} // Discovered / Progress — informational only
                     Err(e) => {
@@ -377,6 +426,142 @@ impl EngineHandle {
         };
         (token, cancel)
     }
+
+    /// Subscribe to package load notifications, receiving both already-loaded
+    /// packages and future arrivals in exactly-once order.
+    ///
+    /// # Why this is not a simple broadcast subscriber
+    ///
+    /// `Engine::start` begins seeding the corpus immediately, before any
+    /// caller can subscribe.  A subscriber that only forwards *future* events
+    /// would miss packages that finished loading before `packages()` was
+    /// called — a status bar that shows "no packages" forever when the corpus
+    /// is already fully loaded.  Conversely, a snapshot-only approach misses
+    /// live arrivals that land between the snapshot and the return.
+    ///
+    /// The correct ordering — subscribe-then-snapshot — guarantees exactly-once
+    /// delivery:
+    ///
+    /// 1. Subscribe to the live broadcast **first** so that no events are
+    ///    missed from this point forward (including any that arrive while the
+    ///    snapshot is being taken in step 2).
+    /// 2. Take an async snapshot of the already-loaded packages from `Corpus`.
+    /// 3. Emit snapshot entries into the caller's receiver, then drain the
+    ///    live channel, **deduplicating** by package name so anything that
+    ///    arrived after subscription but before (or during) the snapshot is
+    ///    emitted exactly once.
+    ///
+    /// "Subscribe before snapshot" is the key invariant.  The reverse order
+    /// can drop events: if a package finishes loading between the snapshot and
+    /// the subscribe, it appears in neither.
+    ///
+    /// # Channel capacity
+    ///
+    /// The returned receiver is a bounded `flume` channel with capacity **32**
+    /// (Appendix C: Package = 32, backpressure).  The spawned reconciler task
+    /// applies backpressure on the flume sender; it does not block the engine's
+    /// runtime.
+    ///
+    /// # Lag handling
+    ///
+    /// The broadcast receiver may fall behind if the seeding task produces
+    /// packages faster than the reconciler consumes them.  `RecvError::Lagged`
+    /// is handled by logging at `warn` level and continuing — a lagging status
+    /// bar must not kill the stream.
+    pub fn packages(&self) -> flume::Receiver<PackageLoadEvent> {
+        // Capacity 32 per Appendix C.
+        let (tx, rx) = flume::bounded::<PackageLoadEvent>(32);
+
+        // Step 1 — subscribe to the live broadcast BEFORE snapshotting.
+        // This is load-bearing: any package that finishes between subscribe
+        // and snapshot will appear in BOTH the live channel and the snapshot;
+        // the dedup loop in step 3 collapses it to one emission.
+        let live_rx = self.inner.pkg_tx.subscribe();
+        let corpus = self.inner.corpus.clone();
+
+        self.spawn(async move {
+            // Step 2 — snapshot of all packages already in the corpus at this
+            // moment.  Because we subscribed first, any package that lands
+            // between subscribe and now is already queued in `live_rx`.
+            let snapshot: Vec<Arc<nudox_store::package::PackageView>> =
+                corpus.packages().await;
+
+            // Build a set of names we emitted from the snapshot so we can
+            // deduplicate against the live channel in step 3.
+            let mut emitted: std::collections::HashSet<String> =
+                std::collections::HashSet::with_capacity(snapshot.len());
+
+            for pkg in snapshot {
+                let symbol_count = pkg.view().table().len() as u64;
+                let name = pkg.lineage().name.as_str().to_owned();
+                let ecosystem = pkg.lineage().ecosystem.as_str().to_owned();
+                emitted.insert(name.clone());
+                let event = PackageLoadEvent::Loaded {
+                    name: name.into(),
+                    ecosystem: ecosystem.into(),
+                    version: None,
+                    symbol_count,
+                };
+                // Backpressure: if the GUI is slow, we block here rather than
+                // dropping events.  This is the correct trade-off: the status
+                // bar should show a correct picture even if it is delayed.
+                if tx.send_async(event).await.is_err() {
+                    return; // receiver dropped; nothing to do
+                }
+            }
+
+            // Step 3 — drain the live broadcast channel, skipping any package
+            // whose name is already in `emitted` (exact-once guarantee).
+            //
+            // We drain with `try_recv` first to consume anything that queued
+            // between subscribe and snapshot without blocking; after that we
+            // switch to `recv` so future arrivals are forwarded as they happen.
+            let mut live_rx = live_rx;
+            loop {
+                let ev = live_rx.recv().await;
+                match ev {
+                    Ok(event) => {
+                        // Deduplicate: if this package was already emitted from
+                        // the snapshot, skip it.  We key on `name` because that
+                        // is the identity the GUI shows.
+                        let should_skip = match &event {
+                            PackageLoadEvent::Loaded { name, .. } => {
+                                !emitted.insert(name.to_string())
+                            }
+                            PackageLoadEvent::LoadFailed { name, .. } => {
+                                !emitted.insert(format!("__fail__{name}"))
+                            }
+                        };
+                        if should_skip {
+                            continue;
+                        }
+                        if tx.send_async(event).await.is_err() {
+                            return; // receiver dropped
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // The broadcast ring-buffer overflowed; we missed `n`
+                        // messages.  The status bar will show a stale count but
+                        // must NOT crash.  A re-snapshot here would be correct
+                        // but expensive; log and continue — the corpus state is
+                        // authoritative and can be queried directly.
+                        tracing::warn!(
+                            missed = n,
+                            "package-load broadcast lagged; status bar may undercount"
+                        );
+                        // continue receiving from where we are
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        // The seeding task finished and dropped its sender.
+                        // All packages that will ever load have been emitted.
+                        break;
+                    }
+                }
+            }
+        });
+
+        rx
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -403,5 +588,58 @@ impl Engine {
             config,
             nudox_store::source::fixtures::FixtureSource::rich(),
         )
+    }
+
+    /// Start an engine that produces IR for real on-disk packages.
+    ///
+    /// # Why [`PackageSpec`] and not [`nudox_store::source::producer::PackageDescriptor`]
+    ///
+    /// Same layering law as `start_with_fixtures`: `lindsey` must never name
+    /// `nudox-store` or any type that lives below the engine seam (§L0).
+    /// `PackageSpec` is an engine-owned plain struct — only `std` types, nothing
+    /// from the IR or store layers — so `lindsey` can construct one without
+    /// crossing the boundary.  The engine converts it to `PackageDescriptor`
+    /// internally, keeping the translation entirely inside this crate.
+    ///
+    /// # Language selection
+    ///
+    /// Only Rust is registered in the pilot registry
+    /// (`ProducerRegistry::with_rust_pilot`).  The `language` field of
+    /// `PackageSpec` is expressed as [`ProducerLanguage`] (re-exported from this
+    /// crate) so the caller can name it without depending on `nudox-ir`.
+    /// Passing `ProducerLanguage::Rust` is the only currently-effective choice;
+    /// other languages will surface a `LoadEvent::Failed` (toolchain missing)
+    /// until their producers are registered.
+    ///
+    /// # Production path
+    ///
+    /// This constructor is **not** gated on any feature flag.  `start_with_fixtures`
+    /// is feature-gated (`fixtures`) because fixtures are optional test
+    /// infrastructure; `start_with_producer` is the production path and must
+    /// always be available.
+    pub fn start_with_producer(config: EngineConfig, packages: Vec<PackageSpec>) -> EngineHandle {
+        use nudox_store::source::producer::{PackageDescriptor, ProducerRegistry, ProducerSource};
+
+        let registry = Arc::new(ProducerRegistry::with_rust_pilot());
+        let descriptors: Vec<PackageDescriptor> = packages
+            .into_iter()
+            .map(|spec| {
+                // Convert the engine-owned `PackageSpec` into the store-owned
+                // `PackageDescriptor`.  The conversion is trivial because
+                // `PackageDescriptor::cargo` already handles the common case of
+                // a Cargo/Rust package; for other ecosystems we would add more
+                // arms here without touching the caller.
+                match spec.language {
+                    ProducerLanguage::Rust => PackageDescriptor::cargo(
+                        spec.root,
+                        spec.name,
+                        spec.version,
+                    ),
+                }
+            })
+            .collect();
+
+        let source = ProducerSource::new(registry, descriptors);
+        Self::start(config, source)
     }
 }

@@ -19,14 +19,16 @@ use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
 use gpui_component_assets::Assets;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
+use lindsey::app::corpus::{self, CorpusChoice};
 use lindsey::app::keymaps;
 use lindsey::highlight::TreeSitterHighlighter;
 use lindsey::motion::tokens::MotionTokens;
-use lindsey::stores::{SearchStore, SymbolStore};
+use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
 use lindsey::theme::ext::NudoxThemeExt;
 use lindsey::workspace::shell::Shell;
 
 use nudox_engine::runtime::{Engine, EngineConfig};
+use nudox_engine::{PackageSpec, ProducerLanguage};
 
 fn main() {
     tracing_subscriber::registry()
@@ -48,7 +50,43 @@ fn main() {
         highlighter: Some(Arc::new(TreeSitterHighlighter)),
         ..EngineConfig::default()
     };
-    let engine = Engine::start_with_fixtures(config);
+
+    // Which corpus? `app::corpus` resolves this from the environment and fails
+    // loudly on anything ambiguous — see its module docs for why a silent
+    // fallback to fixtures is the worst possible behaviour here.
+    let choice = match corpus::from_env() {
+        Ok(choice) => choice,
+        Err(err) => {
+            eprintln!("lindsey: {err}");
+            std::process::exit(2);
+        }
+    };
+
+    // `requested` seeds the status bar so the first frame can say
+    // "loading axum…" rather than "no packages" for the thirty seconds
+    // rust-analyzer needs. The engine has no "started" event, so this is the
+    // only place that knowledge exists.
+    let (engine, requested) = match choice {
+        CorpusChoice::Fixtures => {
+            tracing::info!("corpus: built-in fixtures");
+            (Engine::start_with_fixtures(config), Vec::new())
+        }
+        CorpusChoice::Package(pkg) => {
+            tracing::info!(
+                package = %pkg.name,
+                root = %pkg.root.display(),
+                "corpus: live producer",
+            );
+            let requested = vec![pkg.name.clone()];
+            let spec = PackageSpec {
+                root: pkg.root,
+                name: pkg.name,
+                version: pkg.version,
+                language: ProducerLanguage::Rust,
+            };
+            (Engine::start_with_producer(config, vec![spec]), requested)
+        }
+    };
     tracing::info!("engine started");
 
     // This gpui rev splits the platform out of the core crate: `Application`
@@ -83,6 +121,8 @@ fn main() {
             // documents outlive any particular overlay or pane that shows them.
             let search = cx.new(|_| SearchStore::new(engine.clone()));
             let symbols = cx.new(|_| SymbolStore::new(engine.clone()));
+            let packages =
+                cx.new(|cx| PackageStore::new(engine.clone(), &requested, cx));
 
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             cx.open_window(
@@ -91,7 +131,15 @@ fn main() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    cx.new(|cx| Shell::new(search.clone(), symbols.clone(), window, cx))
+                    cx.new(|cx| {
+                        Shell::new(
+                            search.clone(),
+                            symbols.clone(),
+                            packages.clone(),
+                            window,
+                            cx,
+                        )
+                    })
                 },
             )
             .expect("failed to open window");

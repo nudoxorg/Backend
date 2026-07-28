@@ -66,7 +66,8 @@ use crate::app::actions::{OpenOmniSearch, ToggleBottomDock, ToggleLeftDock};
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
 use crate::stores::symbol::TabId as DocTabId;
-use crate::stores::{SearchStore, SymbolStore};
+use crate::stores::events::PackagesChanged;
+use crate::stores::{PackageStore, SearchStore, SymbolStore};
 use crate::theme::ext::ThemeExtAccessor as _;
 use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
 use crate::views::symbol_page::SymbolPage;
@@ -332,6 +333,10 @@ pub struct Shell {
     search: Entity<SearchStore>,
     /// Open symbol documents. One entry per open tab; `open()` dedups by key.
     symbols: Entity<SymbolStore>,
+    /// Which packages are loaded, loading, or failed. Held (not just
+    /// subscribed to) because dropping it would cancel its drain task and the
+    /// status bar would freeze at whatever it last showed (LD-18).
+    packages: Entity<PackageStore>,
 
     // ── Overlays (§13.5) ─────────────────────────────────────────────────────
     /// Which overlays are open, innermost last.
@@ -400,6 +405,7 @@ impl Shell {
     pub fn new(
         search: Entity<SearchStore>,
         symbols: Entity<SymbolStore>,
+        packages: Entity<PackageStore>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -491,7 +497,19 @@ impl Shell {
         });
 
         // ── Status bar ────────────────────────────────────────────────────────
-        let status_bar = cx.new(|cx| StatusBar::new(cx));
+        //
+        // Seeded from the package store rather than left at its cold-start
+        // default: `PackageStore` already knows what `main` requested, so the
+        // very first frame can say "loading axum…". Waiting for the first
+        // `PackagesChanged` would show "no packages" for as long as the
+        // producer takes — which on a real crate is half a minute of the app
+        // looking broken.
+        let initial_packages = packages.read(cx).summary_label();
+        let status_bar = cx.new(|cx| {
+            let mut bar = StatusBar::new(cx);
+            bar.set_packages(initial_packages, cx);
+            bar
+        });
 
         // ── Subscribe to layout changes ───────────────────────────────────────
         let mut subs = Vec::new();
@@ -519,6 +537,20 @@ impl Shell {
             },
         ));
 
+        // ── Corpus contents → status bar ─────────────────────────────────────
+        //
+        // The event carries no payload (see `events::PackagesChanged`), so the
+        // label is re-read from the store rather than passed along — the store
+        // stays the single source of truth and the string cannot arrive stale.
+        subs.push(
+            cx.subscribe(&packages, |shell, store, _: &PackagesChanged, cx| {
+                let label = store.read(cx).summary_label();
+                shell
+                    .status_bar
+                    .update(cx, |bar, cx| bar.set_packages(label, cx));
+            }),
+        );
+
         // Focus the pane so the very first keystroke has somewhere to land.
         // Actions dispatch from the focused element upward; with nothing
         // focused, `cmd-K` on a fresh window would do nothing at all.
@@ -532,6 +564,7 @@ impl Shell {
 
             search,
             symbols,
+            packages,
 
             overlays: OverlayStack::new(),
             omni: None,

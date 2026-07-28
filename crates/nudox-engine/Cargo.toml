@@ -41,6 +41,14 @@ trustfall = { workspace = true }
 
 [dev-dependencies]
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+# The packages_subscription integration tests exercise `Engine::start_with_fixtures`
+# which lives behind the `fixtures` feature.  `cargo test` will skip this file
+# unless --features fixtures is passed; the zero_jump tests have no such gate.
+[[test]]
+name = "packages_subscription"
+required-features = ["fixtures"]
 
 [lints]
 workspace = true

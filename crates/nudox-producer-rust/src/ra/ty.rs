@@ -84,6 +84,7 @@ use nudox_ir::{
 };
 
 use super::ctx::{LowerCtx, PathKey};
+use super::item::id_of;
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -223,7 +224,7 @@ pub(crate) fn lower_hir_type_fallback(
             .map(|arg| lower_hir_type_fallback(ctx, &arg, ref_for))
             .collect();
 
-        if let Some(key) = ctx.canonical(def)
+        if let Some(key) = id_of(ctx, def)
             && let Some(raw_ref) = ref_for(&key)
         {
             let base = Type::Nominal(raw_ref);
@@ -281,7 +282,7 @@ fn lower_path_type(
             tr.path().map(|p| {
                 if let Some(res) = resolve_path_opt(ctx, &p)
                     && let PathResolution::Def(def) = res
-                    && let Some(key) = ctx.canonical(def)
+                    && let Some(key) = id_of(ctx, def)
                     && let Some(raw_ref) = ref_for(&key)
                 {
                     let type_args = last_segment_type_args(ctx, &p, ref_for);
@@ -345,7 +346,7 @@ fn lower_path_type(
                 return Type::Any;
             }
             PathResolution::Def(def) => {
-                if let Some(key) = ctx.canonical(def)
+                if let Some(key) = id_of(ctx, def)
                     && let Some(raw_ref) = ref_for(&key)
                 {
                     let base = Type::Nominal(raw_ref);
@@ -643,7 +644,7 @@ fn path_type_to_type(
     };
     if let Some(res) = resolve_path_opt(ctx, &path)
         && let PathResolution::Def(def) = res
-        && let Some(key) = ctx.canonical(def)
+        && let Some(key) = id_of(ctx, def)
         && let Some(raw_ref) = ref_for(&key)
     {
         let type_args = last_segment_type_args(ctx, &path, ref_for);

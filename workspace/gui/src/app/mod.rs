@@ -1,4 +1,5 @@
-//! Application-level wiring: actions and the keymap registry (GUI-PLAN §13.6).
+//! Application-level wiring: actions, the keymap registry (GUI-PLAN §13.6), and
+//! corpus selection (GUI-LOCAL-PLAN §L10).
 //!
 //! # Why these live together
 //!
@@ -17,4 +18,5 @@
 //! eventually reaches.
 
 pub mod actions;
+pub mod corpus;
 pub mod keymaps;
