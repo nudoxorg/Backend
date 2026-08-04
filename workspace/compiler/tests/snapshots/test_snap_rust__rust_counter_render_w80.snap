@@ -1,0 +1,8 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 449
+expression: rendered
+---
+pub struct Counter {
+    value: i32,
+}

@@ -1,0 +1,5 @@
+extra_srcs = [
+    "src/any/install_drivers_note.md",
+    "src/lib.md",
+    "src/macros/test.md",
+]

@@ -1,0 +1,8 @@
+cargo_env = true
+
+# Translate cargo:rustc-link-lib / rustc-link-search from the buildscript into
+# -l/-L flags. Without this, libzstd.a is built into OUT_DIR but never linked
+# into dependents (undefined ZSTD_* symbols).
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

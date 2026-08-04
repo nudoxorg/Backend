@@ -1,0 +1,32 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+assertion_line: 526
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class Animal:
+    name: str
+
+# ---
+
+def sound(self, self: Self) -> str: ...
+
+# ---
+
+@dataclass
+class Cat:
+    indoor: bool
+
+# ---
+
+@dataclass
+class Dog:
+    breed: str
+
+# ---
+
+def sound(self, self: Self) -> str: ...

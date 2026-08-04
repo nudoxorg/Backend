@@ -1,0 +1,131 @@
+---
+source: workspace/compiler/tests/snap_go.rs
+assertion_line: 199
+expression: rendered
+---
+// example.com/basics
+// Package basics exercises exported vs unexported identifiers, struct fields, named types, type aliases, slices, maps, channels, and pointers.
+// <unrendered module>
+
+// example.com/basics::Celsius
+// Celsius is a named (defined) type over float64 (becomes a newtype RecordType).
+type Celsius struct {
+    Field0 float64
+}
+
+// example.com/basics::Chan
+// Chan is a named type over a channel.
+type Chan struct {
+    Field0 chan string
+}
+
+// example.com/basics::Config
+// Config is an exported struct that embeds Server.
+type Config struct {
+    Server example.com/basics.Server
+    Name string
+}
+
+// example.com/basics::Config.Close
+// Promoted from embedded `example.com/basics.Server`.
+func Close() error
+
+// example.com/basics::Config.Status
+// Promoted from embedded `example.com/basics.Server`.
+func Status() string
+
+// example.com/basics::Count
+// Count is an exported package-level variable.
+// <unrendered variable>
+
+// example.com/basics::Direction
+// Direction is an iota-based enum (Go convention: defined type + iota consts).
+// 
+// Underlying: `int`
+type Direction interface {
+    isDirection()
+}
+
+type DirectionNorth struct {
+    Field0 any
+}
+func (DirectionNorth) isDirection() {}
+
+type DirectionEast struct {
+    Field0 any
+}
+func (DirectionEast) isDirection() {}
+
+type DirectionSouth struct {
+    Field0 any
+}
+func (DirectionSouth) isDirection() {}
+
+type DirectionWest struct {
+    Field0 any
+}
+func (DirectionWest) isDirection() {}
+
+// example.com/basics::MaxRetries
+// MaxRetries is an exported constant.
+// 
+// Value: `3`
+// <unrendered constant>
+
+// example.com/basics::Process
+// Process is a top-level exported function: multiple params, multiple returns.
+// 
+// It accepts a name and a count and returns the processed string and an error.
+func Process(name string, count int) (string, error)
+
+// example.com/basics::Ptr
+// Ptr is a named type over a pointer.
+type Ptr struct {
+    Field0 *example.com/basics.Server
+}
+
+// example.com/basics::Server
+// Server is an exported struct with mixed exported/unexported fields and struct tags.
+type Server struct {
+    Addr string
+    Port int
+    Timeout Duration
+}
+
+// example.com/basics::Server.Close
+// Close shuts down the server with a pointer receiver.
+func Close() error
+
+// example.com/basics::Server.Status
+// Status returns the current status string with a value receiver.
+func Status() string
+
+// example.com/basics::StringMap
+// StringMap is a named type over a map.
+type StringMap struct {
+    Field0 map[string]string
+}
+
+// example.com/basics::StringSlice
+// StringSlice is a named type over a slice.
+type StringSlice struct {
+    Field0 []string
+}
+
+// example.com/basics::Temperature
+// Temperature is a true type alias.
+type Temperature example.com/basics.Celsius
+
+// example.com/basics::Variadic
+// Variadic accepts a variadic argument.
+func Variadic(prefix string, items []string) []string
+
+// example.com/basics::defaultTimeout
+// defaultTimeout is an unexported constant.
+// 
+// Value: `30`
+// <unrendered constant>
+
+// example.com/basics::namedReturn
+// namedReturn demonstrates named return values (unexported, for coverage).
+func namedReturn(n int) (string, error)

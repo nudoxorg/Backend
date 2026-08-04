@@ -1,0 +1,172 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 570
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A generic container holding a single non-`null` value of
+/// type `T`.
+/// 
+/// Type parameters:
+/// - `T` — The type of the contained value.
+/// 
+/// Declared: `sealed class`
+/// 
+/// Declared: `internal`
+internal class Box<T> {
+    private T Value { get; set; }
+}
+
+// ---
+
+/// Returns the contained value.
+/// 
+/// Declared: `public`
+public T Get();
+
+// ---
+
+/// Replaces the contained value.
+/// 
+/// Declared: `public`
+public void Set(T value);
+
+// ---
+
+/// Wraps each element of `source` in its own
+/// `Box`.
+/// 
+/// Type parameters:
+/// - `E` — The element type.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static <
+    E
+> List<
+    E
+> WrapAll(IEnumerable<E> source);
+
+// ---
+
+/// Utility methods that exercise every form of generic constraint, including
+/// C# 13 `allows ref struct`.
+/// 
+/// Declared: `static class`
+/// 
+/// Declared: `internal`
+internal class GenericConstraints {}
+
+// ---
+
+/// Boxes an unmanaged value type into a `Box`.
+/// 
+/// Type parameters:
+/// - `T` — An unmanaged type.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static <
+    T
+> T BoxUnmanaged(T value);
+
+// ---
+
+/// Creates a new instance of `T` using its
+/// parameterless constructor.
+/// 
+/// Type parameters:
+/// - `T` — Must be a non-abstract class with a public default ctor.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static <T> T Create();
+
+// ---
+
+/// Converts each element of `source` using a
+/// user-supplied `selector`.
+/// 
+/// The `allows ref struct` constraint (C# 13) lets `TIn`
+/// be any type including `ref struct`s such as "/>.
+/// 
+/// Type parameters:
+/// - `TIn` — Input element type; may be a `ref struct`.
+/// - `TOut` — Output element type.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static <
+    TIn,
+    TOut
+> List<
+    TOut
+> MapSpan(
+    ReadOnlySpan source,
+    Func selector,
+);
+
+// ---
+
+/// Returns the larger of `x` and `y`
+/// using the `INumber` abstraction (generic math).
+/// 
+/// Type parameters:
+/// - `T` — Any numeric type.
+/// 
+/// Declared: `static`
+/// 
+/// Declared: `public`
+public static <T> T Max(T x, T y);
+
+// ---
+
+/// A consumer interface with a contravariant type parameter.
+/// 
+/// Type parameters:
+/// - `TIn` — Contravariant input type.
+/// 
+/// Declared: `interface`
+/// 
+/// Declared: `internal`
+internal interface IConsumer<TIn> {
+    void Consume(TIn value);
+}
+
+// ---
+
+/// Demonstrates covariant (`out`) and contravariant (`in`) generic
+/// interfaces in one place.
+/// 
+/// Type parameters:
+/// - `TOut` — Covariant output type.
+/// 
+/// Declared: `interface`
+/// 
+/// Declared: `internal`
+internal interface IProducer<TOut> {
+    TOut Produce();
+}
+
+// ---
+
+/// A pair of values where the first is always ≤ the second.
+/// Exercises the `where T : IComparable<T>` bound.
+/// 
+/// Type parameters:
+/// - `T` — The element type; must implement "/>.
+/// 
+/// Declared: `sealed class`
+/// 
+/// Declared: `internal`
+internal class SortedPair<T> {
+    public T First { get; set; }
+    public T Second { get; set; }
+}

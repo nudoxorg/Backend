@@ -1,0 +1,316 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 332
+expression: stubs
+---
+{
+    "calculator": EntryStub {
+        kind: "module",
+        name: "calculator",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::<impl BlanketView for T>": EntryStub {
+        kind: "trait_impl",
+        name: "<impl BlanketView for T>",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::<impl Marker for Counter>": EntryStub {
+        kind: "trait_impl",
+        name: "<impl Marker for Counter>",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::BlanketView": EntryStub {
+        kind: "trait_def",
+        name: "BlanketView",
+        visibility: "pub",
+        sealed: Some(
+            Some(
+                false,
+            ),
+        ),
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::BlanketView::View": EntryStub {
+        kind: "type_alias",
+        name: "View",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::BlanketView::view": EntryStub {
+        kind: "function",
+        name: "view",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::Counter": EntryStub {
+        kind: "record",
+        name: "Counter",
+        visibility: "pub",
+        sealed: None,
+        method_count: Some(
+            4,
+        ),
+        protocols: Some(
+            [
+                "calculator::BlanketView",
+                "ext::helper::Marker",
+            ],
+        ),
+        deprecation: None,
+    },
+    "calculator::Counter::increment": EntryStub {
+        kind: "function",
+        name: "increment",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::Counter::new": EntryStub {
+        kind: "function",
+        name: "new",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::Counter::value": EntryStub {
+        kind: "function",
+        name: "value",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::Counter::view": EntryStub {
+        kind: "function",
+        name: "view",
+        visibility: "priv",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::OpenTrait": EntryStub {
+        kind: "trait_def",
+        name: "OpenTrait",
+        visibility: "pub",
+        sealed: Some(
+            Some(
+                false,
+            ),
+        ),
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::OpenTrait::kind": EntryStub {
+        kind: "function",
+        name: "kind",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::SealedTrait": EntryStub {
+        kind: "trait_def",
+        name: "SealedTrait",
+        visibility: "pub",
+        sealed: Some(
+            Some(
+                true,
+            ),
+        ),
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::SealedTrait::describe": EntryStub {
+        kind: "function",
+        name: "describe",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::add": EntryStub {
+        kind: "function",
+        name: "add",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::internals": EntryStub {
+        kind: "module",
+        name: "internals",
+        visibility: "priv",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::internals::HiddenCounter": EntryStub {
+        kind: "record",
+        name: "HiddenCounter",
+        visibility: "pub(crate)",
+        sealed: None,
+        method_count: Some(
+            3,
+        ),
+        protocols: Some(
+            [
+                "calculator::BlanketView",
+            ],
+        ),
+        deprecation: None,
+    },
+    "calculator::internals::HiddenCounter::new": EntryStub {
+        kind: "function",
+        name: "new",
+        visibility: "pub(crate)",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::internals::HiddenCounter::value": EntryStub {
+        kind: "function",
+        name: "value",
+        visibility: "pub(crate)",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::internals::HiddenCounter::view": EntryStub {
+        kind: "function",
+        name: "view",
+        visibility: "priv",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                None,
+                None,
+            ),
+        ),
+    },
+    "calculator::legacy_add": EntryStub {
+        kind: "function",
+        name: "legacy_add",
+        visibility: "pub",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: Some(
+            (
+                Some(
+                    "0.1.0",
+                ),
+                Some(
+                    "use add instead",
+                ),
+            ),
+        ),
+    },
+    "calculator::sealed_marker": EntryStub {
+        kind: "module",
+        name: "sealed_marker",
+        visibility: "priv",
+        sealed: None,
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+    "calculator::sealed_marker::Sealed": EntryStub {
+        kind: "trait_def",
+        name: "Sealed",
+        visibility: "pub",
+        sealed: Some(
+            Some(
+                false,
+            ),
+        ),
+        method_count: None,
+        protocols: None,
+        deprecation: None,
+    },
+}

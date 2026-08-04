@@ -1,0 +1,101 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 242
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::ENTRY",
+                        ),
+                        Local(
+                            "mod::fromTypesField",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::ENTRY": Constant(
+        Symbol {
+            name: "ENTRY",
+            path: Local(
+                "mod::ENTRY",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A constant exported from the resolved entry point.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
+        },
+    ),
+    "mod::fromTypesField": Function(
+        Symbol {
+            name: "fromTypesField",
+            path: Local(
+                "mod::fromTypesField",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A function exported from the resolved entry point.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

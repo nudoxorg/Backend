@@ -1,0 +1,7 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+expression: rendered
+---
+pub trait BlanketView {
+    fn view(&self) -> &View;
+}

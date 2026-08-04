@@ -1,0 +1,23 @@
+# Phase 0 THROWAWAY toolchain proof for the vendored OXC crate set.
+# See OXC-PLAN.md §4 Phase 0. This target only proves the oxc 0.139.0 +
+# oxc_resolver 11.23.0 crates build and link together under Buck2; it does not
+# touch the deno_doc TypeScript producer. Delete once Phase 1+ has real targets
+# exercising these crates.
+#
+# Build/run:
+#   nix develop -c buck2 test //build/third-party/oxc-smoke:oxc_smoke
+
+native.rust_test(
+    name = "oxc_smoke",
+    srcs = ["oxc_smoke.rs"],
+    crate_root = "oxc_smoke.rs",
+    edition = "2024",
+    deps = [
+        "//build/third-party:oxc_allocator",
+        "//build/third-party:oxc_parser",
+        "//build/third-party:oxc_semantic",
+        "//build/third-party:oxc_span",
+        "//build/third-party:oxc_isolated_declarations",
+        "//build/third-party:oxc_resolver",
+    ],
+)

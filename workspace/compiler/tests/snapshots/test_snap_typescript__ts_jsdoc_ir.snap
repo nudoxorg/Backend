@@ -1,0 +1,398 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 297
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::Coordinate",
+                        ),
+                        Local(
+                            "mod::Location",
+                        ),
+                        Local(
+                            "mod::haversine",
+                        ),
+                        Local(
+                            "mod::formatCoord",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::Coordinate": TraitDef(
+        Symbol {
+            name: "Coordinate",
+            path: Local(
+                "mod::Coordinate",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A geographic coordinate pair.\nLatitude must be in [-90, 90] and longitude in [-180, 180].",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "lat",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [
+                                        "readonly",
+                                    ],
+                                    is_mutable: false,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Degrees of latitude — positive is north.",
+                                ),
+                            },
+                        ),
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "lng",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [
+                                        "readonly",
+                                    ],
+                                    is_mutable: false,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Degrees of longitude — positive is east.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: None,
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::Location": TraitDef(
+        Symbol {
+            name: "Location",
+            path: Local(
+                "mod::Location",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A named geographic location.\nBundles a human-readable label with its coordinates.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: None,
+                super_traits: None,
+                associated_types: None,
+                properties: Some(
+                    [
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "name",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Human-readable name of the place.",
+                                ),
+                            },
+                        ),
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "coords",
+                                ),
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Coordinate",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: false,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Geographic position.",
+                                ),
+                            },
+                        ),
+                        Known(
+                            KnownField {
+                                key: Ident(
+                                    "description",
+                                ),
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                default_value: None,
+                                attributes: FieldAttributes {
+                                    decorators: [],
+                                    is_mutable: true,
+                                    is_optional: true,
+                                    is_static: false,
+                                },
+                                visibility: None,
+                                documentation: Some(
+                                    "Optional description of the location.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                required_methods: None,
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "mod::formatCoord": Function(
+        Symbol {
+            name: "formatCoord",
+            path: Local(
+                "mod::formatCoord",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Format a coordinate as a human-readable string.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "coord",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Coordinate",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "precision",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: Some(
+                    {
+                        "in.coord": 2612474381617295561,
+                    },
+                ),
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::haversine": Function(
+        Symbol {
+            name: "haversine",
+            path: Local(
+                "mod::haversine",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Calculate the Haversine distance between two coordinates (in kilometres).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "from",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Coordinate",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "to",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Coordinate",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: Some(
+                    {
+                        "in.from": 2612474381617295561,
+                        "in.to": 2612474381617295561,
+                    },
+                ),
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

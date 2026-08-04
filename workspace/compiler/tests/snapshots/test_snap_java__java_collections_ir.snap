@@ -1,0 +1,622 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Registry",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::Registry": RecordType(
+        Symbol {
+            name: "Registry",
+            path: Local(
+                "com.example::Registry",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A generic in-memory registry mapping string keys to typed values.\n\nExercises the collection-type mappings: `List<T>`, `Map<K,V>`,\n `Set<T>`, and `Optional<T>`.\n\nType parameters:\n- `V` — the value type stored in this registry",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Registry",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "V",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "store",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "java.util.Map",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    Primitive(
+                                                        String,
+                                                    ),
+                                                ),
+                                                Type(
+                                                    GenericParam(
+                                                        GenericParam {
+                                                            name: "V",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "final",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "The underlying key-to-value store.",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "tags",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "java.util.Map",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    Primitive(
+                                                        String,
+                                                    ),
+                                                ),
+                                                Type(
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "java.util.Set",
+                                                            generic_args: Some(
+                                                                [
+                                                                    Type(
+                                                                        Primitive(
+                                                                            String,
+                                                                        ),
+                                                                    ),
+                                                                ],
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "final",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Tags applied to each key.",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: None,
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Registry.register",
+                        ),
+                        Local(
+                            "com.example::Registry.lookup",
+                        ),
+                        Local(
+                            "com.example::Registry.allValues",
+                        ),
+                        Local(
+                            "com.example::Registry.keys",
+                        ),
+                        Local(
+                            "com.example::Registry.tagsFor",
+                        ),
+                        Local(
+                            "com.example::Registry.registerAll",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.allValues": Function(
+        Symbol {
+            name: "allValues",
+            path: Local(
+                "com.example::Registry.allValues",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns all registered values as a list.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "java.util.List",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "V",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "an unordered list of all values",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.keys": Function(
+        Symbol {
+            name: "keys",
+            path: Local(
+                "com.example::Registry.keys",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns all keys in the registry.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "java.util.Set",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        Primitive(
+                                                            String,
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the set of all registered keys",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.lookup": Function(
+        Symbol {
+            name: "lookup",
+            path: Local(
+                "com.example::Registry.lookup",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the value for `key`, or empty if absent.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "key",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the lookup key",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "java.util.Optional",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "V",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "an Optional wrapping the value, or empty",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.register": Function(
+        Symbol {
+            name: "register",
+            path: Local(
+                "com.example::Registry.register",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Registers a value under the given key.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "key",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the lookup key",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "V",
+                                            kind: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the value to register",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.registerAll": Function(
+        Symbol {
+            name: "registerAll",
+            path: Local(
+                "com.example::Registry.registerAll",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Applies multiple registrations at once.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "entries",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "java.util.Map",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        Primitive(
+                                                            String,
+                                                        ),
+                                                    ),
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "V",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "a map of key-value pairs to register",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Registry.tagsFor": Function(
+        Symbol {
+            name: "tagsFor",
+            path: Local(
+                "com.example::Registry.tagsFor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the full tag-to-value mapping for `key`.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "key",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the lookup key",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "java.util.Map",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        Primitive(
+                                                            String,
+                                                        ),
+                                                    ),
+                                                    Type(
+                                                        Primitive(
+                                                            String,
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "a map of tag names to tag values, possibly empty",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

@@ -1,0 +1,2 @@
+features = ["serde"]
+extra_srcs = ["README.md"]

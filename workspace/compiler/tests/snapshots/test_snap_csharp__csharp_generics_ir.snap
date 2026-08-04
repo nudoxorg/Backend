@@ -1,0 +1,1443 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 262
+expression: sorted
+---
+{
+    "CSharpFixtures.Generics": Module(
+        Symbol {
+            name: "CSharpFixtures.Generics",
+            path: Local(
+                "CSharpFixtures.Generics",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Generics::Box`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::GenericConstraints",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::IConsumer`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::IProducer`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::SortedPair`1",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::Box`1": RecordType(
+        Symbol {
+            name: "Box",
+            path: Local(
+                "CSharpFixtures.Generics::Box`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Generics.Box`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A generic container holding a single non-`null` value of\ntype `T`.\n\nType parameters:\n- `T` — The type of the contained value.\n\nDeclared: `sealed class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Box",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:notnull",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "_value",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "T",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "accessibility:private",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Declared: `private`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "value",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "T",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The value to wrap.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Generics::Box`1.Get",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::Box`1.Set",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::Box`1.WrapAll",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::Box`1.Get": Function(
+        Symbol {
+            name: "Get",
+            path: Local(
+                "CSharpFixtures.Generics::Box`1.Get",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.Box`1.Get",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns the contained value.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The wrapped value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::Box`1.Set": Function(
+        Symbol {
+            name: "Set",
+            path: Local(
+                "CSharpFixtures.Generics::Box`1.Set",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.Box`1.Set(`0)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Replaces the contained value.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The new value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::Box`1.WrapAll": Function(
+        Symbol {
+            name: "WrapAll",
+            path: Local(
+                "CSharpFixtures.Generics::Box`1.WrapAll",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.Box`1.WrapAll``1(System.Collections.Generic.IEnumerable{``0})",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Wraps each element of `source` in its own\n`Box`.\n\nType parameters:\n- `E` — The element type.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.Generics.Box`1": Local(
+                        "CSharpFixtures.Generics::Box`1",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "source",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "System.Collections.Generic.IEnumerable",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: GenericParam(
+                                                                            GenericParam {
+                                                                                name: "E",
+                                                                                kind: None,
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The source sequence.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "System.Collections.Generic.List",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: TypeReference(
+                                                                            TypeReference {
+                                                                                identifier: "CSharpFixtures.Generics.Box",
+                                                                                generic_args: Some(
+                                                                                    [
+                                                                                        Type(
+                                                                                            TypeOperator(
+                                                                                                TypeOperator {
+                                                                                                    operator: "!",
+                                                                                                    type: GenericParam(
+                                                                                                        GenericParam {
+                                                                                                            name: "E",
+                                                                                                            kind: None,
+                                                                                                        },
+                                                                                                    ),
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A list of `Box` instances.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "E",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "E",
+                                trait_ref: TraitRef {
+                                    name: "csharp:notnull",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::GenericConstraints": RecordType(
+        Symbol {
+            name: "GenericConstraints",
+            path: Local(
+                "CSharpFixtures.Generics::GenericConstraints",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Generics.GenericConstraints",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Utility methods that exercise every form of generic constraint, including\nC# 13 `allows ref struct`.\n\nDeclared: `static class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "GenericConstraints",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Generics::GenericConstraints.Max",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::GenericConstraints.MapSpan",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::GenericConstraints.Create",
+                        ),
+                        Local(
+                            "CSharpFixtures.Generics::GenericConstraints.BoxUnmanaged",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::GenericConstraints.BoxUnmanaged": Function(
+        Symbol {
+            name: "BoxUnmanaged",
+            path: Local(
+                "CSharpFixtures.Generics::GenericConstraints.BoxUnmanaged",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.GenericConstraints.BoxUnmanaged``1(``0)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Boxes an unmanaged value type into a `Box`.\n\nType parameters:\n- `T` — An unmanaged type.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.Generics.Box`1": Local(
+                        "CSharpFixtures.Generics::Box`1",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The value to box.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "CSharpFixtures.Generics.Box",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: GenericParam(
+                                                                            GenericParam {
+                                                                                name: "T",
+                                                                                kind: None,
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A `Box` wrapping the value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:struct",
+                                    args: [],
+                                },
+                            },
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:unmanaged",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::GenericConstraints.Create": Function(
+        Symbol {
+            name: "Create",
+            path: Local(
+                "CSharpFixtures.Generics::GenericConstraints.Create",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.GenericConstraints.Create``1",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Creates a new instance of `T` using its\nparameterless constructor.\n\nType parameters:\n- `T` — Must be a non-abstract class with a public default ctor.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A freshly constructed `T`.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:class",
+                                    args: [],
+                                },
+                            },
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "csharp:new()",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::GenericConstraints.MapSpan": Function(
+        Symbol {
+            name: "MapSpan",
+            path: Local(
+                "CSharpFixtures.Generics::GenericConstraints.MapSpan",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.GenericConstraints.MapSpan``2(ReadOnlySpan{``0},Func{``0,``1})",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Converts each element of `source` using a\nuser-supplied `selector`.\n\nThe `allows ref struct` constraint (C# 13) lets `TIn`\nbe any type including `ref struct`s such as \"/>.\n\nType parameters:\n- `TIn` — Input element type; may be a `ref struct`.\n- `TOut` — Output element type.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "source",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "ReadOnlySpan",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The input span.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "selector",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Func",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The mapping function.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "System.Collections.Generic.List",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: GenericParam(
+                                                                            GenericParam {
+                                                                                name: "TOut",
+                                                                                kind: None,
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A list of mapped values.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TIn",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TOut",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "TIn",
+                                trait_ref: TraitRef {
+                                    name: "csharp:allows ref struct",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::GenericConstraints.Max": Function(
+        Symbol {
+            name: "Max",
+            path: Local(
+                "CSharpFixtures.Generics::GenericConstraints.Max",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Generics.GenericConstraints.Max``1(``0,``0)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns the larger of `x` and `y`\nusing the `INumber` abstraction (generic math).\n\nType parameters:\n- `T` — Any numeric type.\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:System.Numerics.INumber`1": Local(
+                        "T:System.Numerics.INumber`1",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "First operand.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "y",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Second operand.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: GenericParam(
+                                                GenericParam {
+                                                    name: "T",
+                                                    kind: None,
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The larger value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "System.Numerics.INumber",
+                                    args: [
+                                        TypeExpr {
+                                            name: "T",
+                                            args: [],
+                                        },
+                                    ],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::IConsumer`1": TraitDef(
+        Symbol {
+            name: "IConsumer",
+            path: Local(
+                "CSharpFixtures.Generics::IConsumer`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Generics.IConsumer`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A consumer interface with a contravariant type parameter.\n\nType parameters:\n- `TIn` — Contravariant input type.\n\nDeclared: `interface`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TIn",
+                                    ),
+                                    kind: Type,
+                                    variance: Contravariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "Consume",
+                            parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "value",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "TIn",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The value to consume.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            return_type: None,
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Consumes `value`.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::IProducer`1": TraitDef(
+        Symbol {
+            name: "IProducer",
+            path: Local(
+                "CSharpFixtures.Generics::IProducer`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Generics.IProducer`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Demonstrates covariant (`out`) and contravariant (`in`) generic\ninterfaces in one place.\n\nType parameters:\n- `TOut` — Covariant output type.\n\nDeclared: `interface`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TraitDef {
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "TOut",
+                                    ),
+                                    kind: Type,
+                                    variance: Covariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                super_traits: None,
+                associated_types: None,
+                properties: None,
+                required_methods: Some(
+                    [
+                        TraitMethod {
+                            name: "Produce",
+                            parameters: None,
+                            return_type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "TOut",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            generics: None,
+                            attributes: None,
+                            documentation: Some(
+                                "Produces a value.\n\nReturns: The produced value.\n\nDeclared: `abstract`",
+                            ),
+                            receiver: Some(
+                                SharedRef,
+                            ),
+                            has_default_implementation: false,
+                        },
+                    ],
+                ),
+                provided_methods: None,
+                required_constants: None,
+                attributes: None,
+                object_safe: None,
+                sealed: None,
+                cfg: None,
+                members: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Generics::SortedPair`1": RecordType(
+        Symbol {
+            name: "SortedPair",
+            path: Local(
+                "CSharpFixtures.Generics::SortedPair`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Generics.SortedPair`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A pair of values where the first is always ≤ the second.\nExercises the `where T : IComparable<T>` bound.\n\nType parameters:\n- `T` — The element type; must implement \"/>.\n\nDeclared: `sealed class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "SortedPair",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [
+                            TraitBound {
+                                param: "T",
+                                trait_ref: TraitRef {
+                                    name: "IComparable",
+                                    args: [],
+                                },
+                            },
+                        ],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "First",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "T",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The smaller of the two values.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Second",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "T",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The larger of the two values.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "a",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "T",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "One element.",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "b",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "T",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The other element.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

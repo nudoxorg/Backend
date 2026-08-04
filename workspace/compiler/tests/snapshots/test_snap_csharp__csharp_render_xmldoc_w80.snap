@@ -1,0 +1,110 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 672
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A child class that uses `<inheritdoc/>` to inherit documentation
+/// from its parent.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class XmlDocChild : XmlDocShowcase {}
+
+// ---
+
+/// Declared: `public`
+public double Divide(int numerator, int denominator);
+
+// ---
+
+/// Formats a greeting for the given `name`.
+/// Demonstrates `<c>`, `<see langword>`, and
+/// `<paramref>`.
+/// 
+/// Declared: `public`
+public string SayHello(string? name);
+
+// ---
+
+/// A showcase class exercising every standard XML documentation tag.
+/// 
+/// This class is intentionally simple: its purpose is to exercise the XML doc
+/// parser in `xmldoc.rs`, not to model real logic.
+/// 
+/// See also: `XmlDocShowcase` for the generic variant.
+/// 
+/// - Tag `summary` — this block.
+/// - 
+/// 
+/// - Tag `remarks` — you are reading it.
+/// - 
+/// 
+/// - Tag `para` — each paragraph above.
+/// - 
+/// 
+/// - Tag `list` — this very list.
+/// -
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class XmlDocShowcase {
+    public int MaxRetries { get; set; }
+}
+
+// ---
+
+/// Divides `numerator` by `denominator`.
+/// 
+/// Example:
+/// Basic usage:
+/// 
+/// ```
+/// var result = showcase.Divide(10, 2); // 5.0
+/// 
+/// ```
+/// 
+/// Declared: `public`
+public double Divide(int numerator, int denominator);
+
+// ---
+
+/// Flattens a nested list of lists into a single sequence.
+/// 
+/// Equivalent to calling (IEnumerable, Func>)"/>
+/// with the identity projection.
+/// 
+/// Type parameters:
+/// - `T` — The element type of the inner lists.
+/// 
+/// Declared: `public`
+public <T> IEnumerable<T> Flatten(IEnumerable<IEnumerable<T>> nested);
+
+// ---
+
+/// Formats a greeting for the given `name`.
+/// Demonstrates `<c>`, `<see langword>`, and
+/// `<paramref>`.
+/// 
+/// Declared: `public`
+public string Greet(string? name);
+
+// ---
+
+/// Generic variant of `XmlDocShowcase`.
+/// Exercises `<typeparam>` and `<see cref>` with arity.
+/// 
+/// Type parameters:
+/// - `T` — The payload type held by this instance.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class XmlDocShowcase<T> {
+    public T Value { get; set; }
+}

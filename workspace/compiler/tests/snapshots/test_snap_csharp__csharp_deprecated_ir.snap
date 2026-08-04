@@ -1,0 +1,563 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 399
+expression: sorted
+---
+{
+    "CSharpFixtures.Deprecated": Module(
+        Symbol {
+            name: "CSharpFixtures.Deprecated",
+            path: Local(
+                "CSharpFixtures.Deprecated",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Deprecated::LegacyApi",
+                        ),
+                        Local(
+                            "CSharpFixtures.Deprecated::MixedDeprecation",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::LegacyApi": RecordType(
+        Symbol {
+            name: "LegacyApi",
+            path: Local(
+                "CSharpFixtures.Deprecated::LegacyApi",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Deprecated.LegacyApi",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A legacy API surface — the entire class is obsolete.\n\nUse `ModernApi` instead. This class will be removed in a future major\nversion.\n\nDeclared: `class`\n\nDeclared: `internal`\n\nAttributes: `[Obsolete]`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "LegacyApi",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "OldMaxItems",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: Some(
+                                Int(
+                                    100,
+                                ),
+                            ),
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "[Obsolete]",
+                                    "const",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: true,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "A deprecated constant — no longer meaningful.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Deprecated::LegacyApi.OldProcess",
+                        ),
+                        Local(
+                            "CSharpFixtures.Deprecated::LegacyApi.NewProcess",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::LegacyApi.NewProcess": Function(
+        Symbol {
+            name: "NewProcess",
+            path: Local(
+                "CSharpFixtures.Deprecated::LegacyApi.NewProcess",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Deprecated.LegacyApi.NewProcess(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "A replacement method — not deprecated.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The input string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The processed string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::LegacyApi.OldProcess": Function(
+        Symbol {
+            name: "OldProcess",
+            path: Local(
+                "CSharpFixtures.Deprecated::LegacyApi.OldProcess",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Deprecated.LegacyApi.OldProcess(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "A hard-error deprecation: calling this method is a compile error.\n\nAttributes: [Obsolete]\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "input",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The input string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The processed string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::MixedDeprecation": RecordType(
+        Symbol {
+            name: "MixedDeprecation",
+            path: Local(
+                "CSharpFixtures.Deprecated::MixedDeprecation",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Deprecated.MixedDeprecation",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A class whose individual members carry mixed deprecation states.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "MixedDeprecation",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "LegacyField",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "[Obsolete]",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "An actively deprecated field.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "ModernField",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The recommended modern counterpart.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Deprecated::MixedDeprecation.Double",
+                        ),
+                        Local(
+                            "CSharpFixtures.Deprecated::MixedDeprecation.Double2",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::MixedDeprecation.Double": Function(
+        Symbol {
+            name: "Double",
+            path: Local(
+                "CSharpFixtures.Deprecated::MixedDeprecation.Double",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Deprecated.MixedDeprecation.Double(System.Int32)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Deprecated method with a diagnostic ID and URL.\n\nAttributes: [Obsolete]\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Input value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Doubled value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Deprecated::MixedDeprecation.Double2": Function(
+        Symbol {
+            name: "Double2",
+            path: Local(
+                "CSharpFixtures.Deprecated::MixedDeprecation.Double2",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Deprecated.MixedDeprecation.Double2(System.Int32)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "The non-deprecated replacement.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Input value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Doubled value.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

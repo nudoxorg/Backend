@@ -1,0 +1,361 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 242
+expression: sorted
+---
+{
+    "CSharpFixtures.Delegates": Module(
+        Symbol {
+            name: "CSharpFixtures.Delegates",
+            path: Local(
+                "CSharpFixtures.Delegates",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Delegates::BinaryPredicate`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Delegates::CompletionCallback",
+                        ),
+                        Local(
+                            "CSharpFixtures.Delegates::RefAction`1",
+                        ),
+                        Local(
+                            "CSharpFixtures.Delegates::Transformer`2",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Delegates::BinaryPredicate`1": TypeAlias(
+        Symbol {
+            name: "BinaryPredicate",
+            path: Local(
+                "CSharpFixtures.Delegates::BinaryPredicate`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Delegates.BinaryPredicate`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A predicate delegate with two parameters.\n\nType parameters:\n- `T` — The element type.\n\nA `delegate` type.\n\nDeclared: `delegate`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "left",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: GenericParam(
+                                                        GenericParam {
+                                                            name: "T",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "The first operand.",
+                                        ),
+                                    },
+                                ),
+                                Literal(
+                                    LiteralParameter {
+                                        name: "right",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: GenericParam(
+                                                        GenericParam {
+                                                            name: "T",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "The second operand.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: Primitive(
+                                                        Bool,
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "`true` if the two values satisfy the predicate.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Delegates::CompletionCallback": TypeAlias(
+        Symbol {
+            name: "CompletionCallback",
+            path: Local(
+                "CSharpFixtures.Delegates::CompletionCallback",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Delegates.CompletionCallback",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A delegate representing a callback that receives a status code and an\noptional message after an asynchronous operation completes.\n\nA `delegate` type.\n\nDeclared: `delegate`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "statusCode",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: Primitive(
+                                                        Int(
+                                                            W32,
+                                                        ),
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "The HTTP-style status code.",
+                                        ),
+                                    },
+                                ),
+                                Literal(
+                                    LiteralParameter {
+                                        name: "message",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "?",
+                                                    type: Primitive(
+                                                        String,
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "An optional diagnostic message; may be `null`.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: None,
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Delegates::RefAction`1": TypeAlias(
+        Symbol {
+            name: "RefAction",
+            path: Local(
+                "CSharpFixtures.Delegates::RefAction`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Delegates.RefAction`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A ref-modifying delegate: receives a value by `ref` and may mutate it.\n\nType parameters:\n- `T` — The value type.\n\nA `delegate` type.\n\nDeclared: `delegate`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "value",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: GenericParam(
+                                                        GenericParam {
+                                                            name: "T",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: Some(
+                                            [
+                                                Inout,
+                                            ],
+                                        ),
+                                        default_value: None,
+                                        description: Some(
+                                            "The value to mutate.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: None,
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Delegates::Transformer`2": TypeAlias(
+        Symbol {
+            name: "Transformer",
+            path: Local(
+                "CSharpFixtures.Delegates::Transformer`2",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Delegates.Transformer`2",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A delegate that transforms a value of type `TIn` into\na value of type `TOut`.\n\nType parameters:\n- `TIn` — The input type.\n- `TOut` — The output type.\n\nA `delegate` type.\n\nDeclared: `delegate`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypeAliasBody {
+                generics: None,
+                target: FunctionPointer(
+                    FunctionPointer {
+                        inputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "input",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: GenericParam(
+                                                        GenericParam {
+                                                            name: "TIn",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "The value to transform.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        outputs: Some(
+                            [
+                                Literal(
+                                    LiteralParameter {
+                                        name: "",
+                                        type: Some(
+                                            TypeOperator(
+                                                TypeOperator {
+                                                    operator: "!",
+                                                    type: GenericParam(
+                                                        GenericParam {
+                                                            name: "TOut",
+                                                            kind: None,
+                                                        },
+                                                    ),
+                                                },
+                                            ),
+                                        ),
+                                        attributes: None,
+                                        default_value: None,
+                                        description: Some(
+                                            "The transformed value.",
+                                        ),
+                                    },
+                                ),
+                            ],
+                        ),
+                        attributes: None,
+                    },
+                ),
+            },
+        },
+    ),
+}

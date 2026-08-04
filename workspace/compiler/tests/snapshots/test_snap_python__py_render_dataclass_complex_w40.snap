@@ -1,0 +1,22 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+expression: rendered
+---
+// <unrendered module>
+
+# ---
+
+@dataclass
+class Container:
+    items: list[int]
+    mapping: dict[str, int]
+    maybe: str | NoneType
+    union_none: str | NoneType
+
+# ---
+
+// <unrendered constant>
+
+# ---
+
+// <unrendered constant>

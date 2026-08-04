@@ -1,0 +1,90 @@
+prelude = native
+
+# ── The Nudox C# oracle publish directory ────────────────────────────────────
+#
+# Buck2's prelude has no dotnet rule (CSHARP-PLAN §1.3), and `dotnet publish`
+# wants a NuGet restore. The plan:
+#
+#   1. `oracle.csproj` pins deps with `packages.lock.json`
+#      (RestorePackagesWithLockFile=true).
+#   2. Nix materializes the locked NuGet deps into an offline folder feed,
+#      surfaced to Buck as the root config `csharp.nuget_packages`.
+#   3. This genrule runs `dotnet publish` framework-dependent with
+#      `--locked-mode`, NUGET_PACKAGES pointed at that feed, and HOME /
+#      DOTNET_CLI_HOME pointed into the genrule scratch dir (dotnet needs a
+#      writable HOME — same class of fix as the GOCACHE sandbox issue).
+#
+# Output ($OUT) is the publish directory (oracle.dll + deps + runtimeconfig).
+# The resource key "csharp-oracle" (wired in //workspace/compiler:BUCK) resolves
+# it at runtime, exactly like "java-oracle.jar".
+#
+# `read_root_config("csharp", "dotnet", "dotnet")` and
+# `read_root_config("csharp", "nuget_packages", "")` come from the
+# NIX-GENERATED .buckconfig fragment (the same devshell hook that writes
+# java.java_home). Outside the devshell they fall back to a bare `dotnet` on
+# PATH and an empty feed (which forces an online restore — dev-only).
+
+_dotnet = read_root_config("csharp", "dotnet", "dotnet")
+_nuget_packages = read_root_config("csharp", "nuget_packages", "")
+
+prelude.genrule(
+    name = "oracle",
+    srcs = glob(
+        [
+            "*.cs",
+            "oracle.csproj",
+            "packages.lock.json",
+        ],
+    ),
+    out = "publish",
+    # A writable scratch HOME/DOTNET_CLI_HOME + an offline NUGET_PACKAGES feed is
+    # the whole trick. `--no-self-contained` keeps the output framework-dependent
+    # (run as `dotnet oracle.dll`); ReadyToRun trims cold-start.
+    bash = """
+      set -euo pipefail
+      export HOME="$TMP/home"
+      export DOTNET_CLI_HOME="$TMP/home"
+      export DOTNET_CLI_TELEMETRY_OPTOUT=1
+      export DOTNET_NOLOGO=1
+      export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
+      OUT_ABS=`pwd`/$OUT
+      mkdir -p "$HOME" "$TMP/src"
+      # Copy sources into scratch (genrule srcs are read-only and dotnet writes
+      # obj/ next to the project file).
+      # shellcheck disable=SC2206
+      srcs=($SRCS)
+      cp "${{srcs[@]}}" "$TMP/src/"
+      cd "$TMP/src"
+      NUGET_FEED="{nuget_packages}"
+      if [ -n "$NUGET_FEED" ]; then
+        export NUGET_PACKAGES="$NUGET_FEED"
+        LOCKED="--locked-mode"
+      else
+        # Dev fallback: no materialized feed → allow an online restore.
+        LOCKED=""
+      fi
+      "{dotnet}" publish oracle.csproj \
+        -c Release \
+        --no-self-contained \
+        /p:PublishReadyToRun=true \
+        $LOCKED \
+        -o "$OUT_ABS"
+    """.format(dotnet = _dotnet, nuget_packages = _nuget_packages),
+    visibility = ["//workspace/compiler/..."],
+)
+
+# ── Fallback (if the genrule fights Buck) ────────────────────────────────────
+#
+# Build the publish dir entirely in Nix and alias it into Buck with
+# `export_file`, keeping the resource key identical so the Rust side never
+# knows which path produced it:
+#
+#   load("@nix//:flake.bzl", "flake")
+#   prelude.export_file(
+#       name = "oracle",           # SAME name → same buck_resource("csharp-oracle")
+#       src = flake.package("csharp-oracle"),
+#       visibility = ["//workspace/compiler/..."],
+#   )
+#
+# Only one target named "oracle" may exist; swap the genrule above for this
+# export_file if the in-Buck restore proves unreliable.

@@ -1,0 +1,705 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 340
+expression: sorted
+---
+{
+    "CSharpFixtures.Extensions": Module(
+        Symbol {
+            name: "CSharpFixtures.Extensions",
+            path: Local(
+                "CSharpFixtures.Extensions",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0",
+                        ),
+                        Local(
+                            "CSharpFixtures.Extensions::StringExtensions",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0": RecordType(
+        Symbol {
+            name: "",
+            path: Local(
+                "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Extensions.<G>$34505F560D9EACF86A87F3ED1F85E448.<M>$C44F42B152EC2B20CBC3F02095BB37C0",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "C# 14 extension block: additional methods for `String`.\nUnlike classic extension methods, these are declared inside an\n`extension(string)` block rather than as static methods on a helper\nclass.\n\nExtension block for `System.String`.\n\nDeclared: `sealed class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:System.String": Local(
+                        "T:System.String",
+                    ),
+                },
+            ),
+            inner: Record {
+                name: Some(
+                    "",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.CountOccurrences",
+                        ),
+                        Local(
+                            "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.Repeat",
+                        ),
+                        Local(
+                            "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.TypeLabel",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.CountOccurrences": Function(
+        Symbol {
+            name: "CountOccurrences",
+            path: Local(
+                "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.CountOccurrences",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.<G>$34505F560D9EACF86A87F3ED1F85E448.CountOccurrences(System.Char)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Counts the number of occurrences of `ch` in the\nextended string.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "ch",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Char,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The character to count.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The occurrence count (≥ 0).",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.Repeat": Function(
+        Symbol {
+            name: "Repeat",
+            path: Local(
+                "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.Repeat",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.<G>$34505F560D9EACF86A87F3ED1F85E448.Repeat(System.Int32,System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Repeats the extended string `times` times, joined by\n`separator`.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "times",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "How many copies to produce (must be ≥ 1).",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "separator",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Var(
+                                        "",
+                                    ),
+                                ),
+                                description: Some(
+                                    "The separator to interleave (default empty).",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The repeated string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.TypeLabel": Function(
+        Symbol {
+            name: "TypeLabel",
+            path: Local(
+                "CSharpFixtures.Extensions::<M>$C44F42B152EC2B20CBC3F02095BB37C0.TypeLabel",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.<G>$34505F560D9EACF86A87F3ED1F85E448.TypeLabel",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns a static label for the extension receiver type.\nExercises a static extension member (C# 14).\n\nDeclared: `static`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The literal string `\"string\"`.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::StringExtensions": RecordType(
+        Symbol {
+            name: "StringExtensions",
+            path: Local(
+                "CSharpFixtures.Extensions::StringExtensions",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Extensions.StringExtensions",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Classic (pre-C# 14) extension methods for `String`.\nThese live in a static class and the receiver is the first parameter.\n\nDeclared: `static class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:System.String": Local(
+                        "T:System.String",
+                    ),
+                },
+            ),
+            inner: Record {
+                name: Some(
+                    "StringExtensions",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Extensions::StringExtensions.Truncate",
+                        ),
+                        Local(
+                            "CSharpFixtures.Extensions::StringExtensions.IsBlank",
+                        ),
+                        Local(
+                            "CSharpFixtures.Extensions::StringExtensions.ToTitleCase",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::StringExtensions.IsBlank": Function(
+        Symbol {
+            name: "IsBlank",
+            path: Local(
+                "CSharpFixtures.Extensions::StringExtensions.IsBlank",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.StringExtensions.IsBlank(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Returns `true` if `value` is\n`null`, empty, or consists only of white-space characters.\n\nDeclared: `static extension`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "?",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "(extension) The string to test.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Bool,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "`true` when blank; `false` otherwise.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::StringExtensions.ToTitleCase": Function(
+        Symbol {
+            name: "ToTitleCase",
+            path: Local(
+                "CSharpFixtures.Extensions::StringExtensions.ToTitleCase",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.StringExtensions.ToTitleCase(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Converts the string to title case (first letter of each word\ncapitalised, rest lowercased).\n\nDeclared: `static extension`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "(extension) The input string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The title-cased string.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Extensions::StringExtensions.Truncate": Function(
+        Symbol {
+            name: "Truncate",
+            path: Local(
+                "CSharpFixtures.Extensions::StringExtensions.Truncate",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Extensions.StringExtensions.Truncate(System.String,System.Int32,System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Truncates `value` to at most\n`maxLength` characters, appending an ellipsis when\ntruncation occurs.\n\nDeclared: `static extension`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "(extension) The string to truncate.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "maxLength",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "Maximum character count (must be ≥ 3).",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "ellipsis",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Var(
+                                        "…",
+                                    ),
+                                ),
+                                description: Some(
+                                    "The suffix to append on truncation (default `\"…\"`).",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The truncated string, or the original if short enough.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "throws",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "ArgumentOutOfRangeException",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: Some(
+                                    "Thrown when `maxLength` is less than 3.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

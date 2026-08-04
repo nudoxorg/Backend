@@ -1,0 +1,8 @@
+extra_srcs = [
+    "README.md",
+    "src/Snafu.md",
+    "src/report.md",
+    "src/guide.md",
+    "src/guide/*.md",
+    "src/guide/**/*.md",
+]

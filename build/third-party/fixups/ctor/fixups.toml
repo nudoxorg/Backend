@@ -1,0 +1,8 @@
+extra_srcs = [
+    "docs/BUILD.md",
+    "docs/GENERATED.md",
+    "docs/LIFE_BEFORE_MAIN.md",
+    "docs/PREAMBLE.md",
+]
+
+cargo_env = true

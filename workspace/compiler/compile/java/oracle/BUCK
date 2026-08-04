@@ -1,0 +1,11 @@
+prelude = native
+
+prelude.java_library(
+    name = "extractor",
+    srcs = glob(["**/*.java"]),
+    # This oracle uses Java 14/16 syntax (pattern matching in instanceof, switch
+    # rules, multiple case labels). The javacd_toolchain defaults source/target
+    # to 8; set 17 here (the floor across our JDKs: 17+ system, 21 Nix devshell).
+    java_version = "17",
+    visibility = ["//workspace/compiler/..."],
+)

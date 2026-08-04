@@ -1,0 +1,6 @@
+extra_srcs = [
+    "docs/rustdoc_include/borsh_crate_top_level.md",
+    "docs/rustdoc_include/borsh_deserialize.md",
+    "docs/rustdoc_include/borsh_schema.md",
+    "docs/rustdoc_include/borsh_serialize.md",
+]

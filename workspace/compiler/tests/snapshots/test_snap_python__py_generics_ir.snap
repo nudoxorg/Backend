@@ -1,0 +1,340 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+assertion_line: 351
+expression: sorted
+---
+{
+    "snap_generics.py": Module(
+        Symbol {
+            name: "snap_generics",
+            path: Local(
+                "snap_generics.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "snap_generics::Box",
+                        ),
+                        Local(
+                            "snap_generics::Generic",
+                        ),
+                        Local(
+                            "snap_generics::Pair",
+                        ),
+                        Local(
+                            "snap_generics::identity",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "snap_generics::Box": RecordType(
+        Symbol {
+            name: "Box",
+            path: Local(
+                "snap_generics::Box",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A generic container.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Box",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "value",
+                            ),
+                            type: Some(
+                                GenericParam(
+                                    GenericParam {
+                                        name: "T",
+                                        kind: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_generics::Generic": Constant(
+        Symbol {
+            name: "Generic",
+            path: Local(
+                "snap_generics::Generic",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "typing.Type",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        Any,
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: Some(
+                    Var(
+                        "type[Generic]",
+                    ),
+                ),
+                mutable: Some(
+                    false,
+                ),
+            },
+        },
+    ),
+    "snap_generics::Pair": RecordType(
+        Symbol {
+            name: "Pair",
+            path: Local(
+                "snap_generics::Pair",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Pair",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "K",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "V",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "first",
+                            ),
+                            type: Some(
+                                GenericParam(
+                                    GenericParam {
+                                        name: "K",
+                                        kind: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "second",
+                            ),
+                            type: Some(
+                                GenericParam(
+                                    GenericParam {
+                                        name: "V",
+                                        kind: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_generics::identity": Function(
+        Symbol {
+            name: "identity",
+            path: Local(
+                "snap_generics::identity",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "x",
+                                type: Some(
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "T",
+                                            kind: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "T",
+                                            kind: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

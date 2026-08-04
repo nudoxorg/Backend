@@ -1,0 +1,138 @@
+[package]
+name = "index"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "ingest"
+path = "ingest/main.rs"
+
+[features]
+# A test-only in-memory implementation of the engine facade, backed by rusqlite,
+# so the catalog's unit/property tests run without the (still-building)
+# rusqdoltlite engine (INDEX-PLAN ID-20). NEVER a product mode: its versioning
+# calls are honest fakes (a recorded commit log), documented as test-only.
+# rusqlite is already a hard dependency (scratch store), so this feature only
+# flips on the extra facade module.
+test-engine = []
+# The real DoltLite-backed facade implementation. OFF by default because
+# rusqdoltlite is being built by another workstream and does not compile yet
+# (INDEX-PLAN ID-20). Turn on once WS1 lands rusqdoltlite. The rest of the crate
+# — schema, MetaStore, scratch, migrations — compiles and is tested against the
+# in-memory facade without this feature.
+dolt-engine = ["dep:rusqdoltlite"]
+default = ["test-engine"]
+
+[dependencies]
+heart = { path = "../heart" }
+# ── ecosystem spec (folded in as `index::ecosystem`) ─────────────────────────
+# The per-language name/version/upstream/manifest grammar (ECOSYSTEM-PLAN). Used
+# only by `index` (+ `driver`, which composes `index`); `Language` itself lives
+# in `heart`, so the index-free planes never link this. These three parsers are
+# what the spec crate pulled in beyond index's existing serde/strum/semver/pep440.
+toml = "0.8"
+quick-xml = "0.37"
+ron = "0.12"
+grit-lib = { git = "https://github.com/gitbutlerapp/grit", rev = "dfb079967b9cbc99e533c21e65f674bb3f5e8b07", features = ["http-ureq"] }
+sha2 = "0.10"
+rusqdoltlite = { path = "../vendor/rusqdoltlite", optional = true }
+
+# The ephemeral scratch store (jobs/wanted/sessions/claims) is plain rusqlite,
+# delete-anytime semantics, never on remotes (INDEX-PLAN ID-2). Also backs the
+# test-engine facade. `bundled` so tests need no system SQLite.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# SeaORM is the typed schema + query surface for the versioned catalog
+# (entities, ActiveEnum, Schema-driven migrations, statement builders).
+# No sqlx driver: statements execute through the CatalogEngine facade so the
+# same code path works for rusqdoltlite (product) and the rusqlite test engine.
+sea-orm = { version = "1.1", default-features = false, features = ["macros", "with-uuid", "with-json"] }
+# sea-query 0.32 (the query/DDL builder re-exported by sea-orm) is used directly
+# by `migrations::ddl` for the schema-v4 CREATE statements.
+sea-query = { version = "0.32", default-features = false, features = ["backend-sqlite"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
+blake3 = "1.8"
+smol_str = { version = "0.2", features = ["serde"] }
+thiserror = "1.0"
+tracing = "0.1"
+
+# ── object-pack: NDPK container engine (folded in as `index::pack`) ────────────
+# Deterministic binary codec for header/TOC; fixed-level zstd frames; zero-copy
+# range gets; mmap-backed reader.
+postcard = { version = "1.1", features = ["alloc"] }
+zstd = "0.13"
+bytes = "1"
+memmap2 = "0.9"
+# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b): the
+# bespoke bao outboard math + iroh endpoint/framing that `index::pack` carried
+# moved here. `index::pack::{outboard, transport}` now wrap `transport::{bao,
+# endpoint, frame}`. iroh-blobs + bao-tree + range-collections are gone from
+# this crate's direct deps.
+transport = { path = "../transport" }
+# iroh is still used directly by `index::pack::transport` + the object-pack
+# tests (Endpoint / SecretKey / MemoryLookup vocabulary).
+iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
+tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+
+# ── Server-fold + registry-salvage (§8/§9a): the data/storage/coordination plane ─
+# The graph + vector survivor registry; index MAY dep registry (registry is
+# index-free, so no cycle — CONSOLIDATION §8). Needed for the bakery ledger's
+# vector-shard types and any vector payload the folded code builds.
+registry = { path = "../registry", features = ["local", "remote"] }
+# The IR plane the graph reverse-index (usages projection) is built over.
+ir = { package = "nudox-ir", path = "../../crates/nudox-ir" }
+
+# Async / concurrency for the folded coordination/poll/save workers.
+futures = { version = "0.3", features = ["std", "async-await", "alloc"] }
+futures-util = { version = "0.3" }
+async-stream = { version = "0.3" }
+tokio-stream = { version = "0.1" }
+async-trait = "0.1"
+
+# Object store — the content-addressed CAS backing (salvaged `store.rs`/`blob`).
+object_store = { version = "0.11" }
+# Vector store client (bakery ledger + any qdrant edge access folded in).
+qdrant-client = "1.18"
+# Full-text search replica (salvaged `runtime/text` + `search/tantivy`).
+tantivy = "0.22"
+# HTTP client for upstream crates/nuget pollers + version resolve.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Newtypes / vocab used across the folded surface.
+nonempty = { version = "0.11", features = ["serialize"] }
+secrecy  = { version = "0.10", features = ["serde"] }
+url      = { version = "2.5", features = ["serde"] }
+semver   = "1.0"
+uv-pep440 = { version = "0.0.59", features = ["serde", "version-ranges"] }
+arc-swap = "1.9"
+strum    = { version = "0.26", features = ["derive"] }
+chrono   = { version = "0.4", features = ["serde"] }
+data-encoding = "2.11"
+moka     = { version = "0.12", features = ["future", "sync"] }
+anyhow   = "1.0"
+
+# Archive handling for untrusted-source ingest extraction.
+flate2            = "1.1"
+tar               = "0.4"
+async-compression = "0.4"
+# Tree-sitter blob parsing (metadata/facet extraction over source blobs).
+arborium-tree-sitter = "2.18"
+# Metadata heuristics: keyword casing + synonym-table CSV parsing.
+heck = "0.5"
+csv  = "1.3"
+
+[dev-dependencies]
+# The property/adversarial tests run against the in-memory facade.
+rusqlite = { version = "0.32", features = ["bundled"] }
+tempfile = "3"
+proptest = "1"

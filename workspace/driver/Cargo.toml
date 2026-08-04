@@ -1,0 +1,154 @@
+[package]
+name = "driver"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "driver"
+path = "lib.rs"
+
+[[bin]]
+name = "driver"
+path = "main.rs"
+
+[features]
+default = []
+
+[dependencies]
+# ── First-party workspace crates (the three layers this crate composes) ───────
+# `driver` is the ONLY place index + registry are composed (§8 re-layering):
+#   heart    = vocab + page + client (wire DTOs + authz vocab) + sync
+#   index    = data / storage / coordination plane (catalog, outbox, queue,
+#              blob/cas, search, metadata, compiled, upstream followers, bakery,
+#              runtime text index, health)
+#   registry = graph (Trustfall) + vector (the folded-in vector plane)
+heart    = { path = "../heart", features = ["telemetry"] }
+# The per-ecosystem spec is now `index::ecosystem` (folded into the catalog
+# crate); driver composes `index`, so it reaches the grammar through there.
+# The real `registry` (graph + vector) and the `vector` plane are re-projected
+# through this crate's `mod registry` / `mod vector` facades (§8 shim), so the
+# extern crate is aliased out of the prelude to `xregistry` — bare `registry::…`
+# / `vector::…` in the moved modules then resolve to the crate-local facades.
+xregistry = { package = "registry", path = "../registry", features = ["local", "remote"] }
+index    = { path = "../index", features = ["dolt-engine"] }
+# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c).
+# `driver::sync` (the federation sync orchestrator, §8e) fans a verified content
+# item across the federation topology over `heart::sync` + this transport.
+transport = { path = "../transport" }
+# The one cage abstraction (SMOLVM-PLAN §3): the ephemeral SmolvmCage the
+# compile phase forks-from-golden and runs the producer inside. The compiler
+# daemon is gone; IR is produced by a microVM per job, driven from here.
+sandbox   = { path = "../compiler/sandbox" }
+# Guest→host IR stream decoder (SMOLVM-PLAN §6.2): `StreamReceiver` parses the
+# postcard-framed producer output from the cage stdout into `WireEntry` batches.
+# Driver is the first layer to link ir-vcs (libpijul lives here, not in
+# index/registry which stay libpijul-free).
+ir-vcs    = { path = "../ir-vcs" }
+# IR data-model types (OwnedEntryPayload, SymbolWire, …) used by the stream
+# decoder in ingest_ir_bytes. Aliased as `ir` — points to nudox-ir which is
+# the new canonical IR data model (workspace/ir is the legacy layer being
+# migrated away from; ir-vcs already uses nudox-ir via the same alias).
+ir        = { package = "nudox-ir", path = "../../crates/nudox-ir" }
+
+# ── Async / concurrency ───────────────────────────────────────────────────────
+tokio        = { version = "1.52",  features = ["full"] }
+futures      = { version = "0.3",   features = ["std", "async-await", "alloc"] }
+futures-util = { version = "0.3" }
+async-stream = { version = "0.3" }
+tokio-stream = { version = "0.1" }
+tokio-util   = { version = "0.6" }
+
+# ── HTTP server (axum) ────────────────────────────────────────────────────────
+axum       = { version = "0.7", features = ["macros"] }
+tower      = { version = "0.4", features = ["util", "retry", "timeout"] }
+tower-http = { version = "0.6", features = ["trace"] }
+http       = "1"
+http-body-util = { version = "0.1" }
+hyper      = { version = "0.14" }
+
+# ── HTTP client (reqwest) ─────────────────────────────────────────────────────
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# ── Embeddings (unified cloud + compatible OpenAI wire) ───────────────────────
+# Replaces the hand-rolled OpenAI `/v1/embeddings` client in
+# `search::semantic::embedder`. Cloud providers + OpenAI-compatible local
+# servers (ollama, vllm, TEI) through one interface; backoff/timeout/batch
+# chunking come free. `local` (candle MiniLM) is not enabled — durable
+# vectors stay on the branded model endpoint / ONNX path.
+embedrs = { version = "0.4", features = ["tracing"] }
+
+# ── Object store ──────────────────────────────────────────────────────────────
+object_store = { version = "0.11" }
+
+# ── Vector store ──────────────────────────────────────────────────────────────
+qdrant-client = "1.18"
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+postcard   = { version = "1.1", features = ["alloc"] }
+toml       = "0.6"
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+figment = "0.10"
+
+# ── Type safety / newtypes ────────────────────────────────────────────────────
+bytes    = "1.12"
+smol_str = { version = "0.2", features = ["serde"] }
+nonempty = { version = "0.11", features = ["serialize"] }
+secrecy  = { version = "0.10", features = ["serde"] }
+url      = { version = "2.5",  features = ["serde"] }
+uuid     = { version = "1.23", features = ["v4", "v5", "serde"] }
+semver   = "1.0"
+uv-pep440 = { version = "0.0.59", features = ["serde", "version-ranges"] }
+arc-swap  = "1.9"
+
+# ── Error handling ────────────────────────────────────────────────────────────
+thiserror   = "1.0"
+anyhow      = "1.0"
+async-trait = "0.1"
+
+# ── Observability ─────────────────────────────────────────────────────────────
+tracing  = "0.1"
+metrics  = "0.24"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
+
+# ── Enum utilities ────────────────────────────────────────────────────────────
+strum = { version = "0.26", features = ["derive"] }
+
+# ── Date / time ───────────────────────────────────────────────────────────────
+chrono = { version = "0.4", features = ["serde"] }
+
+# ── Content hashing + encoding ────────────────────────────────────────────────
+blake3        = "1.8"
+data-encoding = "2.11"
+
+# ── Archive handling ──────────────────────────────────────────────────────────
+flate2            = "1.1"
+tar               = "0.4"
+zstd              = "0.13"
+zip               = { version = "2", default-features = false, features = ["deflate"] }
+async-compression = "0.4"
+
+# ── Tree-sitter (blob parsing) ────────────────────────────────────────────────
+arborium-tree-sitter = "2.18"
+
+# ── Parallel computation ──────────────────────────────────────────────────────
+par-core     = { version = "2.0", features = ["rayon"] }
+generativity = "1.2"
+
+# ── System ────────────────────────────────────────────────────────────────────
+rustix   = { version = "0.38", features = ["use-libc"] }
+which    = "4.4"
+tempfile = "3.27"
+moka     = { version = "0.12", features = ["future", "sync"] }
+mimalloc = { version = "0.1", default-features = false }
+
+[dev-dependencies]
+tokio      = { version = "1.52", features = ["full"] }
+serde_json = "1.0"
+tempfile   = "3.27"

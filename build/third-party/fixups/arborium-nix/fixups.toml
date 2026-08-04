@@ -1,0 +1,15 @@
+# Grammar C sources compiled by build.rs into a static lib that the language
+# crate links. Without buildscript + grammar/**, arborium::get_language works
+# at compile time but every call fails at runtime (undefined C symbols) / the
+# crate never exposes a working LanguageFn.
+extra_srcs = [
+    "README.md",
+    "queries/highlights.scm",
+    "queries/injections.scm",
+    "queries/locals.scm",
+    "grammar/**",
+]
+
+[buildscript.run]
+rustc_link_lib = true
+rustc_link_search = true

@@ -1,0 +1,6 @@
+features = ["cargo", "derive", "env", "string", "unicode", "wrap_help"]
+# include_str! paths in src/lib.rs and _tutorial.rs (also listed in package include)
+extra_srcs = [
+    "README.md",
+    "examples/**",
+]

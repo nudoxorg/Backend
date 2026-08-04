@@ -1,0 +1,286 @@
+---
+source: workspace/compiler/tests/snap_nix.rs
+assertion_line: 186
+expression: rendered
+---
+// <unrendered module>
+
+/**
+  The canonical nixpkgs `lib.attrsets` namespace re-exports `mapAttrs`
+  as an inherit alias so both `mapAttrs` and `attrsets.mapAttrs` resolve.
+*/
+// <unrendered module>
+
+/**
+  Map a function over every value of an attribute set, returning a new
+  attribute set with the same keys.
+*/
+# Type :: String -> a -> b -> AttrSet a -> AttrSet b
+mapAttrs = f: set: null;
+
+/**
+  Nix built-in functions (the `builtins` set).
+*/
+// <unrendered module>
+
+# Type :: Null
+abort = null;
+
+# Type :: Null
+add = null;
+
+# Type :: Null
+all = null;
+
+# Type :: Null
+any = null;
+
+# Type :: Null
+appendContext = null;
+
+# Type :: Null
+attrNames = null;
+
+# Type :: Null
+attrValues = null;
+
+# Type :: Null
+baseNameOf = null;
+
+# Type :: Null
+bitAnd = null;
+
+# Type :: Null
+bitOr = null;
+
+# Type :: Null
+bitXor = null;
+
+# Type :: Null
+catAttrs = null;
+
+# Type :: Null
+ceil = null;
+
+# Type :: Null
+compareVersions = null;
+
+# Type :: Null
+concatLists = null;
+
+# Type :: Null
+concatMap = null;
+
+# Type :: Null
+concatStringsSep = null;
+
+# Type :: Null
+deepSeq = null;
+
+# Type :: Null
+dirOf = null;
+
+# Type :: Null
+div = null;
+
+# Type :: Null
+elem = null;
+
+# Type :: Null
+elemAt = null;
+
+# Type :: Null
+filter = null;
+
+# Type :: Null
+floor = null;
+
+# Type :: Null
+foldl' = null;
+
+# Type :: Null
+fromJSON = null;
+
+# Type :: Null
+fromTOML = null;
+
+# Type :: Null
+functionArgs = null;
+
+# Type :: Null
+genList = null;
+
+# Type :: Null
+genericClosure = null;
+
+# Type :: Null
+getAttr = null;
+
+# Type :: Null
+getContext = null;
+
+# Type :: Null
+groupBy = null;
+
+# Type :: Null
+hasAttr = null;
+
+# Type :: Null
+hasContext = null;
+
+# Type :: Null
+hashString = null;
+
+# Type :: Null
+head = null;
+
+# Type :: Null
+intersectAttrs = null;
+
+# Type :: Null
+isAttrs = null;
+
+# Type :: Null
+isBool = null;
+
+# Type :: Null
+isFloat = null;
+
+# Type :: Null
+isFunction = null;
+
+# Type :: Null
+isInt = null;
+
+# Type :: Null
+isList = null;
+
+# Type :: Null
+isNull = null;
+
+# Type :: Null
+isPath = null;
+
+# Type :: Null
+isString = null;
+
+# Type :: Null
+length = null;
+
+# Type :: Null
+lessThan = null;
+
+# Type :: Null
+listToAttrs = null;
+
+# Type :: Null
+map = null;
+
+# Type :: Null
+mapAttrs = null;
+
+# Type :: Null
+match = null;
+
+# Type :: Null
+mul = null;
+
+# Type :: Null
+parseDrvName = null;
+
+# Type :: Null
+partition = null;
+
+# Type :: Null
+removeAttrs = null;
+
+# Type :: Null
+replaceStrings = null;
+
+# Type :: Null
+seq = null;
+
+# Type :: Null
+sort = null;
+
+# Type :: Null
+split = null;
+
+# Type :: Null
+splitVersion = null;
+
+# Type :: Null
+stringLength = null;
+
+# Type :: Null
+sub = null;
+
+# Type :: Null
+substring = null;
+
+# Type :: Null
+tail = null;
+
+# Type :: Null
+throw = null;
+
+# Type :: Null
+toJSON = null;
+
+# Type :: Null
+toPath = null;
+
+# Type :: Null
+toString = null;
+
+# Type :: Null
+toXML = null;
+
+# Type :: Null
+trace = null;
+
+# Type :: Null
+tryEval = null;
+
+# Type :: Null
+typeOf = null;
+
+# Type :: Null
+zipAttrsWith = null;
+
+/**
+  Concatenate a list of strings, inserting a separator between each
+      element.
+  
+  ## Examples
+  
+  ```nix
+  concatStringsSep "-" [ "a" "b" "c" ]
+        => "a-b-c"
+  ```
+*/
+# Type :: String -> [String] -> String
+concatStringsSep = sep: strings: null;
+
+/**
+  Build a wrapper derivation around an existing program.
+*/
+# Type :: String -> String -> Derivation
+makeWrapper = {name, version ? null, ..., ...}: null;
+
+// <unrendered constant>
+
+// <unrendered constant>
+
+// <unrendered constant>
+
+/**
+  Map a function over every value of an attribute set, returning a new
+  attribute set with the same keys.
+*/
+# Type :: String -> a -> b -> AttrSet a -> AttrSet b
+mapAttrs = f: set: null;
+
+// <unrendered constant>
+
+// <unrendered constant>

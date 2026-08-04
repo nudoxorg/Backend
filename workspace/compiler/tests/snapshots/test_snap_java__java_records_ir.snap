@@ -1,0 +1,1152 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+assertion_line: 215
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::NamedPoint",
+                        ),
+                        Local(
+                            "com.example::Point",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::NamedPoint": RecordType(
+        Symbol {
+            name: "NamedPoint",
+            path: Local(
+                "com.example::NamedPoint",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A named, labeled 2D point — a record with a generic label type.\n\nType parameters:\n- `L` — the label type\n\nDeclared: `final record`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "NamedPoint",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "L",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "label",
+                            ),
+                            type: Some(
+                                GenericParam(
+                                    GenericParam {
+                                        name: "L",
+                                        kind: None,
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "the human-readable label",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "x",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Float(
+                                        W64,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "the x-coordinate",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "y",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Float(
+                                        W64,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "the y-coordinate",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "label",
+                                            type: Some(
+                                                GenericParam(
+                                                    GenericParam {
+                                                        name: "L",
+                                                        kind: None,
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "x",
+                                            type: Some(
+                                                Primitive(
+                                                    Float(
+                                                        W64,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "y",
+                                            type: Some(
+                                                Primitive(
+                                                    Float(
+                                                        W64,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::NamedPoint.translate",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.toString",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.hashCode",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.equals",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.label",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.x",
+                        ),
+                        Local(
+                            "com.example::NamedPoint.y",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.equals": Function(
+        Symbol {
+            name: "equals",
+            path: Local(
+                "com.example::NamedPoint.equals",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "o",
+                                type: Some(
+                                    Any,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.hashCode": Function(
+        Symbol {
+            name: "hashCode",
+            path: Local(
+                "com.example::NamedPoint.hashCode",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.label": Function(
+        Symbol {
+            name: "label",
+            path: Local(
+                "com.example::NamedPoint.label",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    GenericParam(
+                                        GenericParam {
+                                            name: "L",
+                                            kind: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.toString": Function(
+        Symbol {
+            name: "toString",
+            path: Local(
+                "com.example::NamedPoint.toString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.translate": Function(
+        Symbol {
+            name: "translate",
+            path: Local(
+                "com.example::NamedPoint.translate",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns a new point translated by the given deltas.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "dx",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "x translation",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "dy",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "y translation",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.NamedPoint",
+                                            generic_args: Some(
+                                                [
+                                                    Type(
+                                                        GenericParam(
+                                                            GenericParam {
+                                                                name: "L",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    ),
+                                                ],
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the translated point",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.x": Function(
+        Symbol {
+            name: "x",
+            path: Local(
+                "com.example::NamedPoint.x",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::NamedPoint.y": Function(
+        Symbol {
+            name: "y",
+            path: Local(
+                "com.example::NamedPoint.y",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point": RecordType(
+        Symbol {
+            name: "Point",
+            path: Local(
+                "com.example::Point",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "An immutable 2D point (Java 16+ record).\n\nDeclared: `final record`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Point",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "x",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Float(
+                                        W64,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "the x-coordinate",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "y",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    Float(
+                                        W64,
+                                    ),
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "the y-coordinate",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "x",
+                                            type: Some(
+                                                Primitive(
+                                                    Float(
+                                                        W64,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "y",
+                                            type: Some(
+                                                Primitive(
+                                                    Float(
+                                                        W64,
+                                                    ),
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: None,
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Point.distanceTo",
+                        ),
+                        Local(
+                            "com.example::Point.origin",
+                        ),
+                        Local(
+                            "com.example::Point.toString",
+                        ),
+                        Local(
+                            "com.example::Point.hashCode",
+                        ),
+                        Local(
+                            "com.example::Point.equals",
+                        ),
+                        Local(
+                            "com.example::Point.x",
+                        ),
+                        Local(
+                            "com.example::Point.y",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.distanceTo": Function(
+        Symbol {
+            name: "distanceTo",
+            path: Local(
+                "com.example::Point.distanceTo",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the Euclidean distance from this point to another.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "other",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.Point",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the other point",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the distance",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.equals": Function(
+        Symbol {
+            name: "equals",
+            path: Local(
+                "com.example::Point.equals",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "o",
+                                type: Some(
+                                    Any,
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.hashCode": Function(
+        Symbol {
+            name: "hashCode",
+            path: Local(
+                "com.example::Point.hashCode",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Int(
+                                            W32,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.origin": Function(
+        Symbol {
+            name: "origin",
+            path: Local(
+                "com.example::Point.origin",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the origin (0, 0).\n\nDeclared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.Point",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the origin Point",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.toString": Function(
+        Symbol {
+            name: "toString",
+            path: Local(
+                "com.example::Point.toString",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `final`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.x": Function(
+        Symbol {
+            name: "x",
+            path: Local(
+                "com.example::Point.x",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Point.y": Function(
+        Symbol {
+            name: "y",
+            path: Local(
+                "com.example::Point.y",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Float(
+                                            W64,
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

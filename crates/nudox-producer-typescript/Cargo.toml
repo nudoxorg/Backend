@@ -1,0 +1,75 @@
+[package]
+name = "nudox-producer-typescript"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Enable the tsz in-process TypeScript checker oracle (tier 2).
+# Off by default so the common build stays lean (tsz pulls in wasm-bindgen stubs
+# and a large rayon pool init). Enable with: --features tsz
+tsz = [
+    "dep:tsz-core",
+    "dep:tsz-binder",
+    "dep:tsz-solver",
+    "dep:tsz-checker",
+    "dep:rustc-hash",
+]
+
+[dependencies]
+nudox-ir = { path = "../nudox-ir" }
+nudox-producer = { path = "../nudox-producer" }
+
+# OXC 0.139.0 — lockstep-pinned with `=` (git tags track applications not lib
+# versions; the commit SHA for 0.139.0 is 69b2dfc1810e6ad9d5508ae9a20bc773ba5aa18d).
+# Features mirror what git-fragment.bzl documents:
+#   oxc_allocator: default (no `bitset` — that feature is internal to oxc_semantic)
+#   oxc_ast:       default (no `serialize` — we don't need serde on AST nodes)
+#   oxc_parser:    default (`regular_expression` is the only non-default feature
+#                  and it is included by default in 0.139.0)
+#   oxc_semantic:  default + `jsdoc` (pulls oxc_jsdoc for JSDoc tag parsing)
+#   oxc_span:      default
+#   oxc_syntax:    default (we don't need `to_js_string`)
+#
+# UNCERTAINTY: The OXC crates are sourced from git in the Buck2 build (not
+# crates.io). The Cargo workspace build must pull them from crates.io.
+# All listed versions are 0.139.0 as confirmed in git-fragment.bzl.
+# If crates.io does not have 0.139.0 for all sub-crates, this will fail to
+# resolve. The resolver may need to be pointed at the git source or a registry
+# patch. The reviewer should verify crates.io availability.
+oxc_allocator = { version = "=0.139.0" }
+oxc_ast = { version = "=0.139.0" }
+oxc_parser = { version = "=0.139.0" }
+oxc_jsdoc = { version = "=0.139.0" }
+oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }
+oxc_span = { version = "=0.139.0" }
+oxc_syntax = { version = "=0.139.0" }
+oxc_resolver = { version = "=11.23.0" }
+
+serde_json = { workspace = true }
+tracing = "0.1"
+
+# ── tsz oracle tier (optional, feature-gated) ──────────────────────────────────
+# tsz 0.1.x is NOT on crates.io at the needed commit; pin to the exact git SHA
+# documented in build/third-party/git-fragment.bzl (TSZ_REV).
+# wasm-bindgen is an unconditional dep in tsz-scanner/tsz-parser/tsz-core; on
+# native targets it compiles to no-op stubs — expected, not a blocker.
+tsz-core    = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-core",    optional = true }
+tsz-binder  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-binder",  optional = true }
+tsz-solver  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-solver",  optional = true }
+tsz-checker = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-checker", optional = true }
+rustc-hash  = { version = "2.1", optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Tests parse literal TypeScript source strings in-process.
+oxc_allocator = { version = "=0.139.0" }
+oxc_parser = { version = "=0.139.0" }
+oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }
+oxc_span = { version = "=0.139.0" }
+# Used by the tsz-gated integration test that writes a real .ts file to disk.
+tempfile = "3"
+# Needed for nudox_ir::kinds::ty::MappedModifier in test assertions.
+nudox-ir = { path = "../nudox-ir" }

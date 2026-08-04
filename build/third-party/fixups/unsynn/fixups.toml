@@ -1,0 +1,6 @@
+extra_srcs = [
+    "CHANGELOG.md",
+    "COOKBOOK.md",
+    "README.md",
+    "ROADMAP.md",
+]

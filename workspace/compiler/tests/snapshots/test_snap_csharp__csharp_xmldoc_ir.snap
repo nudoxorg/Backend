@@ -1,0 +1,876 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 379
+expression: sorted
+---
+{
+    "CSharpFixtures.XmlDoc": Module(
+        Symbol {
+            name: "CSharpFixtures.XmlDoc",
+            path: Local(
+                "CSharpFixtures.XmlDoc",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocChild",
+                        ),
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocShowcase",
+                        ),
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocShowcase`1",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocChild": RecordType(
+        Symbol {
+            name: "XmlDocChild",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocChild",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.XmlDoc.XmlDocChild",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A child class that uses `<inheritdoc/>` to inherit documentation\nfrom its parent.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "XmlDocChild",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: Some(
+                    [
+                        TypeOperator(
+                            TypeOperator {
+                                operator: "~",
+                                type: TypeReference(
+                                    TypeReference {
+                                        identifier: "CSharpFixtures.XmlDoc.XmlDocShowcase",
+                                        generic_args: None,
+                                    },
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocChild.Divide",
+                        ),
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocChild.SayHello",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocChild.Divide": Function(
+        Symbol {
+            name: "Divide",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocChild.Divide",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.XmlDoc.XmlDocChild.Divide(System.Int32,System.Int32)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Declared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "numerator",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "denominator",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Float(
+                                                    W64,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocChild.SayHello": Function(
+        Symbol {
+            name: "SayHello",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocChild.SayHello",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.XmlDoc.XmlDocChild.SayHello(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Formats a greeting for the given `name`.\nDemonstrates `<c>`, `<see langword>`, and\n`<paramref>`.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "?",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The recipient's name. Pass `null` to get a generic\ngreeting.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A non-`null` greeting string. The word `Hello`\nis always included.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocShowcase": RecordType(
+        Symbol {
+            name: "XmlDocShowcase",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocShowcase",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.XmlDoc.XmlDocShowcase",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A showcase class exercising every standard XML documentation tag.\n\nThis class is intentionally simple: its purpose is to exercise the XML doc\nparser in `xmldoc.rs`, not to model real logic.\n\nSee also: `XmlDocShowcase` for the generic variant.\n\n- Tag `summary` — this block.\n- \n\n- Tag `remarks` — you are reading it.\n- \n\n- Tag `para` — each paragraph above.\n- \n\n- Tag `list` — this very list.\n-\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.XmlDoc.XmlDocShowcase`1": Local(
+                        "CSharpFixtures.XmlDoc::XmlDocShowcase`1",
+                    ),
+                },
+            ),
+            inner: Record {
+                name: Some(
+                    "XmlDocShowcase",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "MaxRetries",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The maximum number of retries.\n\nValue: A non-negative integer; default is `3`.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocShowcase.Divide",
+                        ),
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocShowcase.Greet",
+                        ),
+                        Local(
+                            "CSharpFixtures.XmlDoc::XmlDocShowcase.Flatten",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocShowcase.Divide": Function(
+        Symbol {
+            name: "Divide",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocShowcase.Divide",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.XmlDoc.XmlDocShowcase.Divide(System.Int32,System.Int32)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Divides `numerator` by `denominator`.\n\nExample:\nBasic usage:\n\n```\nvar result = showcase.Divide(10, 2); // 5.0\n\n```\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:System.Double": Local(
+                        "T:System.Double",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "numerator",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The dividend.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "denominator",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Int(
+                                                    W32,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The divisor; must not be zero.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                Float(
+                                                    W64,
+                                                ),
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The quotient as a `Double`.",
+                                ),
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "throws",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "DivideByZeroException",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: None,
+                                description: Some(
+                                    "Thrown when `denominator` is `0`.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocShowcase.Flatten": Function(
+        Symbol {
+            name: "Flatten",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocShowcase.Flatten",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.XmlDoc.XmlDocShowcase.Flatten``1(System.Collections.Generic.IEnumerable{System.Collections.Generic.IEnumerable{``0}})",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Flattens a nested list of lists into a single sequence.\n\nEquivalent to calling (IEnumerable, Func>)\"/>\nwith the identity projection.\n\nType parameters:\n- `T` — The element type of the inner lists.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:System.Collections.Generic.IEnumerable`1": Local(
+                        "T:System.Collections.Generic.IEnumerable`1",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "nested",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "System.Collections.Generic.IEnumerable",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: TypeReference(
+                                                                            TypeReference {
+                                                                                identifier: "System.Collections.Generic.IEnumerable",
+                                                                                generic_args: Some(
+                                                                                    [
+                                                                                        Type(
+                                                                                            TypeOperator(
+                                                                                                TypeOperator {
+                                                                                                    operator: "!",
+                                                                                                    type: GenericParam(
+                                                                                                        GenericParam {
+                                                                                                            name: "T",
+                                                                                                            kind: None,
+                                                                                                        },
+                                                                                                    ),
+                                                                                                },
+                                                                                            ),
+                                                                                        ),
+                                                                                    ],
+                                                                                ),
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The list of lists to flatten.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: TypeReference(
+                                                TypeReference {
+                                                    identifier: "System.Collections.Generic.IEnumerable",
+                                                    generic_args: Some(
+                                                        [
+                                                            Type(
+                                                                TypeOperator(
+                                                                    TypeOperator {
+                                                                        operator: "!",
+                                                                        type: GenericParam(
+                                                                            GenericParam {
+                                                                                name: "T",
+                                                                                kind: None,
+                                                                            },
+                                                                        ),
+                                                                    },
+                                                                ),
+                                                            ),
+                                                        ],
+                                                    ),
+                                                },
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "An `IEnumerable` yielding every element in order.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocShowcase.Greet": Function(
+        Symbol {
+            name: "Greet",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocShowcase.Greet",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.XmlDoc.XmlDocShowcase.Greet(System.String)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Formats a greeting for the given `name`.\nDemonstrates `<c>`, `<see langword>`, and\n`<paramref>`.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "?",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The recipient's name. Pass `null` to get a generic\ngreeting.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeOperator(
+                                        TypeOperator {
+                                            operator: "!",
+                                            type: Primitive(
+                                                String,
+                                            ),
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "A non-`null` greeting string. The word `Hello`\nis always included.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.XmlDoc::XmlDocShowcase`1": RecordType(
+        Symbol {
+            name: "XmlDocShowcase",
+            path: Local(
+                "CSharpFixtures.XmlDoc::XmlDocShowcase`1",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.XmlDoc.XmlDocShowcase`1",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Generic variant of `XmlDocShowcase`.\nExercises `<typeparam>` and `<see cref>` with arity.\n\nType parameters:\n- `T` — The payload type held by this instance.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "T:CSharpFixtures.XmlDoc.XmlDocShowcase": Local(
+                        "CSharpFixtures.XmlDoc::XmlDocShowcase",
+                    ),
+                },
+            ),
+            inner: Record {
+                name: Some(
+                    "XmlDocShowcase",
+                ),
+                generics: Some(
+                    Generics {
+                        params: [
+                            Type(
+                                TypeParam {
+                                    name: Some(
+                                        "T",
+                                    ),
+                                    kind: Type,
+                                    variance: Invariant,
+                                    default_type: None,
+                                    params: None,
+                                    origin: Free,
+                                },
+                            ),
+                        ],
+                        constraints: [],
+                    },
+                ),
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Value",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: GenericParam(
+                                            GenericParam {
+                                                name: "T",
+                                                kind: None,
+                                            },
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The wrapped value.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "value",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: GenericParam(
+                                                            GenericParam {
+                                                                name: "T",
+                                                                kind: None,
+                                                            },
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The value to wrap.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

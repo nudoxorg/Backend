@@ -1,0 +1,2 @@
+# include_str! of markdown docs under src/docs/**
+extra_srcs = ["src/docs/**"]

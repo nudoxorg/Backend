@@ -1,0 +1,85 @@
+[package]
+name = "nudox-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# L3 of GUI-LOCAL-PLAN §L0: the streaming facade. Owns the runtimes (LR-9),
+# the wire protocol (§L2) and the chunker (LR-3/LR-4). This is the ONLY crate
+# `lindsey` talks to, and it is deliberately gpui-free so the whole protocol
+# is testable without a window.
+
+[features]
+default = []
+fixtures = ["nudox-store/fixtures"]
+
+[dependencies]
+nudox-ir = { path = "../nudox-ir" }
+nudox-store = { path = "../nudox-store" }
+nudox-graph = { path = "../nudox-graph" }
+
+flume = { workspace = true }
+futures = { workspace = true }
+pulldown-cmark = { workspace = true }
+rustc-hash = { workspace = true }
+# `schemars` + `serde` are what let the wire types *be* the MCP schema (LR-2):
+# `nudox-mcp` derives its tool schemas from these types rather than mirroring
+# them by hand, so the protocol has exactly one definition.
+schemars = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros"] }
+# No `sync` feature: `tokio_util::sync::CancellationToken` is unconditional in
+# 0.7 (the feature list is codec/compat/io/net/rt/time/tracing), so asking for
+# one that does not exist fails resolution outright.
+tokio-util = { version = "0.7", default-features = false }
+tracing = { workspace = true }
+triomphe = { workspace = true }
+trustfall = { workspace = true }
+
+
+
+[dev-dependencies]
+nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+nudox-producer = { path = "../nudox-producer" }
+nudox-producer-rust = { path = "../nudox-producer-rust" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+
+# The packages_subscription integration tests exercise `Engine::start_with_fixtures`
+# which lives behind the `fixtures` feature.  `cargo test` will skip this file
+# unless --features fixtures is passed; the zero_jump tests have no such gate.
+[[test]]
+name = "packages_subscription"
+required-features = ["fixtures"]
+
+# Adversarial integration tests added 2026-07-27.
+# search_adversarial requires the fixture corpus.
+[[test]]
+name = "search_adversarial"
+required-features = ["fixtures"]
+
+# hyperlink_flows and multi_package_flows and versions_adversarial use
+# hand-built StaticSource packages (no fixture feature required).
+[[test]]
+name = "hyperlink_flows"
+
+[[test]]
+name = "multi_package_flows"
+
+[[test]]
+name = "versions_adversarial"
+
+[[test]]
+name = "protocol_adversarial"
+required-features = ["fixtures"]
+
+# Implementations and References emission tests — no fixture feature required.
+[[test]]
+name = "impls_refs_flows"
+
+# End-to-end hyperlink test against real producer output (.real-crates fixture).
+[[test]]
+name = "real_producer_links"
+
+[lints]
+workspace = true

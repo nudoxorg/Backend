@@ -1,0 +1,32 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 379
+expression: rendered
+---
+// odd_duck::Behavior
+pub trait Behavior {
+    fn describe(&self) -> &''static str;
+}
+
+// odd_duck::Behavior::describe
+pub fn describe(&self) -> &''static str;
+
+// odd_duck::Mode
+pub enum Mode {
+    Fast,
+    Careful,
+}
+
+// odd_duck::Mode::describe
+fn describe(&self) -> &''static str;
+
+// odd_duck::Widget
+pub struct Widget<T> {
+    inner: T,
+}
+
+// odd_duck::Widget::echo
+pub fn echo(&self) -> T;
+
+// odd_duck::Widget::new
+pub fn new(inner: T) -> Self;

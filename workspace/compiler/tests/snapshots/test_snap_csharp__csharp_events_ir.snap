@@ -1,0 +1,614 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 301
+expression: sorted
+---
+{
+    "CSharpFixtures.Events": Module(
+        Symbol {
+            name: "CSharpFixtures.Events",
+            path: Local(
+                "CSharpFixtures.Events",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Events::ExplicitEventHost",
+                        ),
+                        Local(
+                            "CSharpFixtures.Events::StatusChangedEventArgs",
+                        ),
+                        Local(
+                            "CSharpFixtures.Events::StatusService",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Events::ExplicitEventHost": RecordType(
+        Symbol {
+            name: "ExplicitEventHost",
+            path: Local(
+                "CSharpFixtures.Events::ExplicitEventHost",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Events.ExplicitEventHost",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Demonstrates an explicit-implementation event (add/remove backed by a\nprivate field with a custom accessor pair).\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "ExplicitEventHost",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "_valueChanged",
+                            ),
+                            type: Some(
+                                TypeReference(
+                                    TypeReference {
+                                        identifier: "System.Nullable",
+                                        generic_args: Some(
+                                            [
+                                                Type(
+                                                    TypeReference(
+                                                        TypeReference {
+                                                            identifier: "EventHandler",
+                                                            generic_args: None,
+                                                        },
+                                                    ),
+                                                ),
+                                            ],
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "accessibility:private",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Declared: `private`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: Some(
+                    [
+                        TypeReference(
+                            TypeReference {
+                                identifier: "IObservable",
+                                generic_args: None,
+                            },
+                        ),
+                    ],
+                ),
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Events::ExplicitEventHost.ValueChanged",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Events::ExplicitEventHost.ValueChanged": Event(
+        Symbol {
+            name: "ValueChanged",
+            path: Local(
+                "CSharpFixtures.Events::ExplicitEventHost.ValueChanged",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "E:CSharpFixtures.Events.ExplicitEventHost.ValueChanged",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Explicit backing for a custom-locked event.\n\nDeclared: `event`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "EventHandler",
+                            generic_args: None,
+                        },
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    true,
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Events::StatusChangedEventArgs": RecordType(
+        Symbol {
+            name: "StatusChangedEventArgs",
+            path: Local(
+                "CSharpFixtures.Events::StatusChangedEventArgs",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Events.StatusChangedEventArgs",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "Event arguments carrying a status code and a message.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "StatusChangedEventArgs",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "StatusCode",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The new status code.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Message",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "?",
+                                        type: Primitive(
+                                            String,
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "An optional diagnostic message.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: Some(
+                    [
+                        Function {
+                            input_parameters: Some(
+                                [
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "statusCode",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "!",
+                                                        type: Primitive(
+                                                            Int(
+                                                                W32,
+                                                            ),
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: None,
+                                            default_value: None,
+                                            description: Some(
+                                                "The status code.",
+                                            ),
+                                        },
+                                    ),
+                                    Literal(
+                                        LiteralParameter {
+                                            name: "message",
+                                            type: Some(
+                                                TypeOperator(
+                                                    TypeOperator {
+                                                        operator: "?",
+                                                        type: Primitive(
+                                                            String,
+                                                        ),
+                                                    },
+                                                ),
+                                            ),
+                                            attributes: Some(
+                                                [
+                                                    Optional,
+                                                ],
+                                            ),
+                                            default_value: Some(
+                                                Var(
+                                                    "null",
+                                                ),
+                                            ),
+                                            description: Some(
+                                                "An optional message.",
+                                            ),
+                                        },
+                                    ),
+                                ],
+                            ),
+                            output_parameters: None,
+                            type_links: None,
+                            attributes: None,
+                            generics: None,
+                            receiver: None,
+                            overloads: None,
+                            implemented: true,
+                            members: None,
+                            implemented_protocols: None,
+                        },
+                    ],
+                ),
+                methods: None,
+                index_signatures: None,
+                super_types: Some(
+                    [
+                        TypeReference(
+                            TypeReference {
+                                identifier: "EventArgs",
+                                generic_args: None,
+                            },
+                        ),
+                    ],
+                ),
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Events::StatusService": RecordType(
+        Symbol {
+            name: "StatusService",
+            path: Local(
+                "CSharpFixtures.Events::StatusService",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "T:CSharpFixtures.Events.StatusService",
+                    ],
+                },
+            ),
+            visibility: Internal,
+            documentation: Some(
+                "A service that emits lifecycle events as its status changes.\n\nDeclared: `class`\n\nDeclared: `internal`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "StatusService",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "_status",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "accessibility:private",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: Some(
+                                "Declared: `private`",
+                            ),
+                        },
+                    ),
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "Status",
+                            ),
+                            type: Some(
+                                TypeOperator(
+                                    TypeOperator {
+                                        operator: "!",
+                                        type: Primitive(
+                                            Int(
+                                                W32,
+                                            ),
+                                        ),
+                                    },
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [
+                                    "get;set",
+                                    "accessibility:public",
+                                ],
+                                is_mutable: true,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Public,
+                            ),
+                            documentation: Some(
+                                "The current status code.\nSetting this property raises `StatusChanged`.\n\nDeclared: `public`",
+                            ),
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "CSharpFixtures.Events::StatusService.ReportError",
+                        ),
+                        Local(
+                            "CSharpFixtures.Events::StatusService.StatusChanged",
+                        ),
+                        Local(
+                            "CSharpFixtures.Events::StatusService.ErrorOccurred",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Events::StatusService.ErrorOccurred": Event(
+        Symbol {
+            name: "ErrorOccurred",
+            path: Local(
+                "CSharpFixtures.Events::StatusService.ErrorOccurred",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "E:CSharpFixtures.Events.StatusService.ErrorOccurred",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Raised when the service encounters a fatal error.\n\nDeclared: `event`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "System.Nullable",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "Action",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    true,
+                ),
+            },
+        },
+    ),
+    "CSharpFixtures.Events::StatusService.ReportError": Function(
+        Symbol {
+            name: "ReportError",
+            path: Local(
+                "CSharpFixtures.Events::StatusService.ReportError",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "M:CSharpFixtures.Events.StatusService.ReportError(Exception)",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Reports a fatal error, raising `ErrorOccurred`.\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: Some(
+                {
+                    "E:CSharpFixtures.Events.StatusService.ErrorOccurred": Local(
+                        "E:CSharpFixtures.Events.StatusService.ErrorOccurred",
+                    ),
+                },
+            ),
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "ex",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "Exception",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "The exception to report.",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "CSharpFixtures.Events::StatusService.StatusChanged": Event(
+        Symbol {
+            name: "StatusChanged",
+            path: Local(
+                "CSharpFixtures.Events::StatusService.StatusChanged",
+            ),
+            aliases: Some(
+                {
+                    [
+                        "E:CSharpFixtures.Events.StatusService.StatusChanged",
+                    ],
+                },
+            ),
+            visibility: Public,
+            documentation: Some(
+                "Raised each time the service status changes.\n\nDeclared: `event`\n\nDeclared: `public`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    TypeReference(
+                        TypeReference {
+                            identifier: "System.Nullable",
+                            generic_args: Some(
+                                [
+                                    Type(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "EventHandler",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        },
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    true,
+                ),
+            },
+        },
+    ),
+}

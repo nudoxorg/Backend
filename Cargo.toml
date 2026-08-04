@@ -1,0 +1,128 @@
+# Root virtual manifest for the Backend Cargo workspace.
+#
+# Dual-built crates (heart, ir, registry) keep their BUCK files so the Buck2
+# compiler build can compile them from the same source. compiler is Buck2-only
+# and is NOT a member here.
+#
+# After the streamlining, the small utility crates were consolidated:
+# caching/cas/telemetry/version folded into `heart` (content-addressed storage
+# and the stampede cache now live in `heart::cache`); runtime/protocol folded
+# into `registry` (the single serving crate); sandbox was dropped.
+[workspace]
+resolver = "3"
+members = [
+    # The per-ecosystem spec (ECOSYSTEM-PLAN) is now folded into the catalog
+    # crate as `index::ecosystem` — it is used only by `index` (+ `driver`,
+    # which composes `index`). `Language` itself lives in `heart` (the light
+    # shared vocabulary), keeping the index-free planes (`ir`, `registry`) off
+    # the catalog link path.
+    "workspace/heart",
+    # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
+    # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
+    # (versioned SQLite); it is a path dep of `index`, not a workspace member.
+    # index is the catalog crate (schema v4, MetaStore, outbox, migrations);
+    # the feed/git-monitor process plane now lives in `index::ingest` (the
+    # `ingest` binary is built from the index crate).
+    "workspace/index",
+    # ObjectPack (INDEX-PLAN §6): the NDPK container family is now folded into
+    # the storage layer as `index::pack` (§8: object-pack is part of index).
+    # Legacy `ir` crate (old JSON schema) deleted — dead (superseded by nudox-ir).
+    "workspace/registry",
+    # `driver` is the composition/serving crate (§8): the ONLY place `index` +
+    # `registry` + `heart::client` are composed into an axum binary. It is the
+    # dissolved `server` crate, rewired onto the re-layered planes.
+    "workspace/driver",
+    # ── Sealed-compute plane (SMOLVM-PLAN) ───────────────────────────────────
+    # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
+    # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
+    "workspace/compiler/sandbox",
+    # ir-sync folded into nudox-ir::sync (heart::sync trait impls)
+    # ── IR-native VCS plane ──────────────────────────────────────────────────
+    # The IR data model is split into a light, libpijul-FREE `ir` (the model
+    # everyone reads — entry/symbol/kind/wire/change/view/vocab/…) and a heavy
+    # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
+    # transfer). `registry` reads only the light `ir` and no longer transitively
+    # links libpijul.
+    "workspace/ir-vcs",
+    # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
+    # The ONE abstracted iroh/iroh-blobs + bao provide-fetch. heart stays
+    # iroh-free (only the `heart::sync` seam); the concrete transport lives
+    # here and every `ContentIo` implementor (ir-vcs::sync, index::pack, …)
+    # wires its provide/fetch over this crate. No per-plane bespoke bao/iroh.
+    "workspace/transport",
+    # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
+    "crates/nudox-ir",
+    # ── Producer plane: shared contract + one crate per language ─────────────
+    "crates/nudox-producer",
+    "crates/nudox-producer-go",
+    "crates/nudox-producer-csharp",
+    "crates/nudox-producer-rust",
+    "crates/nudox-producer-typescript",
+    "crates/nudox-producer-clang",
+    "crates/nudox-producer-java",
+    "crates/nudox-producer-python",
+    # ── Local-first GUI planes (GUI-LOCAL-PLAN §L0) ──────────────────────────
+    # store → graph → engine → mcp. `lindsey` (workspace/gui) is deliberately
+    # NOT a member: it keeps its own lockfile so gpui stays out of the backend
+    # graph, and reaches these four by path. Dependency law, one direction only:
+    # lindsey → engine → {graph, store} → ir; mcp → {engine, graph}; and none of
+    # the four may link gpui.
+    "crates/nudox-store",
+    "crates/nudox-graph",
+    "crates/nudox-engine",
+    "crates/nudox-mcp",
+]
+
+# Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
+# requirement in the workspace resolves to the vendored fork (build metadata
+# `+nudox.N` is ignored in semver comparison). Fork diff = src/diff/diff.rs +
+# src/nudox_f1/ + Cargo.toml; regenerable patch at workspace/vendor/libpijul-fork.patch.
+[patch.crates-io]
+libpijul = { path = "workspace/vendor/libpijul" }
+# qdrant-edge 0.7.2 verbatim except `#![recursion_limit = "256"]` in lib.rs:
+# objc2 (pulled by iroh/netdev on macOS) adds a recursive blanket impl that
+# overflows the default trait-solver limit inside qdrant-edge's anonymize.rs.
+qdrant-edge = { path = "workspace/vendor/qdrant-edge" }
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.lints.rust]
+unused_imports = "warn"
+dead_code = "warn"
+
+[workspace.dependencies]
+bon = "3.9"
+clang = "1.0"
+elsa = "1.11"
+indexmap = "2"
+itertools = "0.15"
+ouroboros = "0.18"
+papaya = "0.2"
+rustc-hash = "2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+triomphe = "0.1"
+vfs = "0.13"
+# ── Local-first GUI planes (GUI-LOCAL-PLAN) ──────────────────────────────────
+# The trustfall fork is pinned by rev, not branch: LD-10 pin discipline applies
+# to it exactly as it does to gpui. We need two things upstream 0.8.1 lacks — a
+# real `Adapter::Error` channel (LR-6) and the `AsyncAdapter` stream engine,
+# whose result stream is `!Send` and therefore drives the engine's LocalSet.
+trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997", features = ["async"] }
+futures = "0.3"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
+flume = "0.11"
+schemars = "1"
+tracing = "0.1"
+
+[workspace.lints.clippy]
+result_large_err = "allow"
+too_many_arguments = "allow"
+
+[profile.release]
+lto = "thin"

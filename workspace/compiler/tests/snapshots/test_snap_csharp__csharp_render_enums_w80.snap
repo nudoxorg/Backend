@@ -1,0 +1,76 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 541
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// The four cardinal compass directions.
+/// 
+/// Underlying type: `System.Byte`.
+/// 
+/// Declared: `enum`
+/// 
+/// Declared: `internal`
+internal enum Direction {
+    North,
+    East,
+    South,
+    West,
+}
+
+// ---
+
+/// Extension helpers for `Direction`.
+/// 
+/// Declared: `static class`
+/// 
+/// Declared: `internal`
+internal class DirectionExtensions {}
+
+// ---
+
+/// Returns the direction exactly opposite to `d`.
+/// 
+/// Declared: `static extension`
+/// 
+/// Declared: `public`
+public static Direction Opposite(Direction d);
+
+// ---
+
+/// Bit-flag permissions for a file-system entry.
+/// 
+/// The `FlagsAttribute` marks this as a combinable flags enum.
+/// Individual bits should always be powers of two (or zero for `None`).
+/// 
+/// Declared: `enum`
+/// 
+/// Declared: `internal`
+/// 
+/// Attributes: `[Flags]`
+internal enum FilePermissions {
+    None,
+    Read,
+    Write,
+    Execute,
+    ReadWrite,
+    All,
+}
+
+// ---
+
+/// The current lifecycle status of an asynchronous job.
+/// 
+/// Declared: `enum`
+/// 
+/// Declared: `internal`
+internal enum JobStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}

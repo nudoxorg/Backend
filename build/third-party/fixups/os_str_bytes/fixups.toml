@@ -1,0 +1,5 @@
+extra_srcs = [
+    "src/iter.rs",
+    "src/pattern.rs",
+    "src/raw_str.rs",
+]

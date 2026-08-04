@@ -1,0 +1,485 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+assertion_line: 179
+expression: sorted
+---
+{
+    "com.example": Module(
+        Symbol {
+            name: "com.example",
+            path: Local(
+                "com.example",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Direction",
+                        ),
+                        Local(
+                            "com.example::Status",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "com.example::Direction": SumType(
+        Symbol {
+            name: "Direction",
+            path: Local(
+                "com.example::Direction",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Cardinal compass directions.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "NORTH",
+                        data: None,
+                        documentation: Some(
+                            "True north.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "SOUTH",
+                        data: None,
+                        documentation: Some(
+                            "Due south.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "EAST",
+                        data: None,
+                        documentation: Some(
+                            "Due east.",
+                        ),
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "WEST",
+                        data: None,
+                        documentation: Some(
+                            "Due west.",
+                        ),
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Direction.values",
+                        ),
+                        Local(
+                            "com.example::Direction.valueOf",
+                        ),
+                        Local(
+                            "com.example::Direction.opposite",
+                        ),
+                    ],
+                ),
+                underlying: None,
+            },
+        },
+    ),
+    "com.example::Direction.opposite": Function(
+        Symbol {
+            name: "opposite",
+            path: Local(
+                "com.example::Direction.opposite",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns the opposite direction.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.Direction",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: Some(
+                                    "the direction directly opposite to this one",
+                                ),
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Direction.valueOf": Function(
+        Symbol {
+            name: "valueOf",
+            path: Local(
+                "com.example::Direction.valueOf",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.Direction",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Direction.values": Function(
+        Symbol {
+            name: "values",
+            path: Local(
+                "com.example::Direction.values",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Slice(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "com.example.Direction",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Status": SumType(
+        Symbol {
+            name: "Status",
+            path: Local(
+                "com.example::Status",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Lifecycle status for an entity.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: SumType {
+                variants: [
+                    SumVariant {
+                        name: "PENDING",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "ACTIVE",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "INACTIVE",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                    SumVariant {
+                        name: "DELETED",
+                        data: None,
+                        documentation: None,
+                        discriminant: None,
+                    },
+                ],
+                generics: None,
+                methods: None,
+                implemented_protocols: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "com.example::Status.values",
+                        ),
+                        Local(
+                            "com.example::Status.valueOf",
+                        ),
+                        Local(
+                            "com.example::Status.isTerminal",
+                        ),
+                    ],
+                ),
+                underlying: None,
+            },
+        },
+    ),
+    "com.example::Status.isTerminal": Function(
+        Symbol {
+            name: "isTerminal",
+            path: Local(
+                "com.example::Status.isTerminal",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Returns `true` if this status is terminal (cannot advance).",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        Bool,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    SharedRef,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Status.valueOf": Function(
+        Symbol {
+            name: "valueOf",
+            path: Local(
+                "com.example::Status.valueOf",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "com.example.Status",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "com.example::Status.values": Function(
+        Symbol {
+            name: "values",
+            path: Local(
+                "com.example::Status.values",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Declared: `static`",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: None,
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Slice(
+                                        TypeReference(
+                                            TypeReference {
+                                                identifier: "com.example.Status",
+                                                generic_args: None,
+                                            },
+                                        ),
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

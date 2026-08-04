@@ -1,0 +1,8 @@
+---
+source: workspace/compiler/tests/snap_rust.rs
+assertion_line: 389
+expression: rendered
+---
+pub struct Widget<T> {
+    inner: T,
+}

@@ -1,0 +1,414 @@
+---
+source: workspace/compiler/tests/snap_typescript.rs
+assertion_line: 149
+expression: sorted
+---
+{
+    "mod": Module(
+        Symbol {
+            name: "mod",
+            path: Local(
+                "mod",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "mod::DEFAULT_GREETING",
+                        ),
+                        Local(
+                            "mod::SECRET_GREETING",
+                        ),
+                        Local(
+                            "mod::greet",
+                        ),
+                        Local(
+                            "mod::Greeter",
+                        ),
+                        Local(
+                            "mod::WhisperGreeter",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "mod::DEFAULT_GREETING": Constant(
+        Symbol {
+            name: "DEFAULT_GREETING",
+            path: Local(
+                "mod::DEFAULT_GREETING",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "The default greeting used when none is supplied.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
+        },
+    ),
+    "mod::Greeter": RecordType(
+        Symbol {
+            name: "Greeter",
+            path: Local(
+                "mod::Greeter",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "A greeter that can be reused across calls.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "Greeter",
+                ),
+                generics: None,
+                fields: [
+                    Known(
+                        KnownField {
+                            key: Ident(
+                                "prefix",
+                            ),
+                            type: Some(
+                                Primitive(
+                                    String,
+                                ),
+                            ),
+                            default_value: None,
+                            attributes: FieldAttributes {
+                                decorators: [],
+                                is_mutable: false,
+                                is_optional: false,
+                                is_static: false,
+                            },
+                            visibility: Some(
+                                Private,
+                            ),
+                            documentation: None,
+                        },
+                    ),
+                ],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "Greeter::constructor",
+                        ),
+                        Local(
+                            "Greeter::greet",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Greeter::constructor": Function(
+        Symbol {
+            name: "constructor",
+            path: Local(
+                "mod::Greeter::constructor",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "prefix",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Var(
+                                        "DEFAULT_GREETING",
+                                    ),
+                                ),
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: None,
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: Some(
+                    Static,
+                ),
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::Greeter::greet": Function(
+        Symbol {
+            name: "greet",
+            path: Local(
+                "mod::Greeter::greet",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::SECRET_GREETING": Constant(
+        Symbol {
+            name: "SECRET_GREETING",
+            path: Local(
+                "mod::SECRET_GREETING",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "A private greeting that must never leak into the public surface.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: TypedBinding {
+                ty: Some(
+                    Primitive(
+                        String,
+                    ),
+                ),
+                value: None,
+                mutable: Some(
+                    false,
+                ),
+            },
+        },
+    ),
+    "mod::WhisperGreeter": RecordType(
+        Symbol {
+            name: "WhisperGreeter",
+            path: Local(
+                "mod::WhisperGreeter",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: Some(
+                "A private greeter that stays internal.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Record {
+                name: Some(
+                    "WhisperGreeter",
+                ),
+                generics: None,
+                fields: [],
+                call_signatures: None,
+                constructors: None,
+                methods: None,
+                index_signatures: None,
+                super_types: None,
+                members: Some(
+                    [
+                        Local(
+                            "WhisperGreeter::whisper",
+                        ),
+                    ],
+                ),
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::WhisperGreeter::whisper": Function(
+        Symbol {
+            name: "whisper",
+            path: Local(
+                "mod::WhisperGreeter::whisper",
+            ),
+            aliases: None,
+            visibility: Private,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "mod::greet": Function(
+        Symbol {
+            name: "greet",
+            path: Local(
+                "mod::greet",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: Some(
+                "Greets a subject by name.",
+            ),
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    Primitive(
+                                        String,
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

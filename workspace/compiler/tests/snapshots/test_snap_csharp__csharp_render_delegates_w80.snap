@@ -1,0 +1,62 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 554
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A predicate delegate with two parameters.
+/// 
+/// Type parameters:
+/// - `T` — The element type.
+/// 
+/// A `delegate` type.
+/// 
+/// Declared: `delegate`
+/// 
+/// Declared: `internal`
+using BinaryPredicate = Func<T, T, bool>;
+
+// ---
+
+/// A delegate representing a callback that receives a status code and an
+/// optional message after an asynchronous operation completes.
+/// 
+/// A `delegate` type.
+/// 
+/// Declared: `delegate`
+/// 
+/// Declared: `internal`
+using CompletionCallback = Action<int, string?>;
+
+// ---
+
+/// A ref-modifying delegate: receives a value by `ref` and may mutate it.
+/// 
+/// Type parameters:
+/// - `T` — The value type.
+/// 
+/// A `delegate` type.
+/// 
+/// Declared: `delegate`
+/// 
+/// Declared: `internal`
+using RefAction = Action<T>;
+
+// ---
+
+/// A delegate that transforms a value of type `TIn` into
+/// a value of type `TOut`.
+/// 
+/// Type parameters:
+/// - `TIn` — The input type.
+/// - `TOut` — The output type.
+/// 
+/// A `delegate` type.
+/// 
+/// Declared: `delegate`
+/// 
+/// Declared: `internal`
+using Transformer = Func<TIn, TOut>;

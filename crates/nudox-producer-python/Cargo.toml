@@ -1,0 +1,58 @@
+[package]
+name = "nudox-producer-python"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# ── Pyrefly gate ──────────────────────────────────────────────────────────────
+#
+# `pyrefly` is NOT on crates.io (only a 0.0.1 placeholder exists). The real
+# library lives at github.com/facebook/pyrefly at the exact rev recorded in
+# build/third-party/git-fragment.bzl:
+#
+#   PYREFLY_REV = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"  (version 1.1.1)
+#
+# Three blockers prevent declaring the git dep here:
+#
+#   1. `pyrefly_bundled` has a build.rs that downloads and compresses a Python
+#      typeshed at build time over the network (using sha2 / tar / zstd). A
+#      plain `cargo check` in an offline or sandboxed environment will fail
+#      before any Rust source is compiled.
+#
+#   2. `pyrefly` itself depends on ~30 crates not all present in this workspace
+#      (capnp, arc-swap, dupe, enum-iterator, fuzzy-matcher, fxhash, …); adding
+#      them all just to satisfy a feature gate would bloat the lock file.
+#
+#   3. The pyrefly API used by the old workspace/compiler/compile/python/ code
+#      relies on internal crate boundaries (pyrefly::state::state::State,
+#      pyrefly::alt::answers::Answers, pyrefly::binding::bindings::Bindings, …)
+#      that may not be stable across minor revisions.
+#
+# The `pyrefly` feature therefore defaults to OFF. The lowering layer (types,
+# docstring, emit) compiles and is fully tested without it. Only the
+# oracle-driving code (context.rs, traversal.rs) is gated.
+#
+# To enable: add the git dep below and activate the feature.
+#
+#   [dependencies.pyrefly]
+#   git = "https://github.com/facebook/pyrefly"
+#   rev = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
+#
+# (plus all transitive sub-crates: pyrefly_types, pyrefly_python,
+# pyrefly_build, pyrefly_util, pyrefly_config, pyrefly_graph, pyrefly_bundled,
+# pyrefly_derive)
+
+[features]
+default = []
+# Enable the live pyrefly oracle. Requires the git dep above and network access
+# during build (pyrefly_bundled downloads a typeshed).
+pyrefly = []
+
+[lints]
+workspace = true
+
+[dependencies]
+nudox-ir      = { path = "../nudox-ir" }
+nudox-producer = { path = "../nudox-producer" }
+
+[dev-dependencies]

@@ -1,0 +1,86 @@
+[package]
+name = "registry"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+# ── Vector-plane features (folded-in `vector` crate) ──────────────────────────
+# `core` (always-on) is the pure shared vector vocabulary. The impl planes are
+# gated: `remote` (qdrant-client + Voyage/rerank) is ON BY DEFAULT since the
+# serving spine always talks to a remote qdrant; `local` (qdrant-edge embedded
+# store) and `embed`/`onnx` (fastembed/ort runtime) are opt-in.
+[features]
+default = ["remote"]
+local  = ["dep:qdrant-edge", "dep:fs2"]
+embed  = ["dep:sha2"]
+remote = []
+# onnx sub-feature pulls the heavy ONNX runtime stack (fastembed + tokenizers).
+onnx   = ["embed", "dep:fastembed", "dep:tokenizers"]
+
+[dependencies]
+# ── First-party workspace crates ──────────────────────────────────────────────
+# registry = graph + vector ONLY. It deps `heart` (vocab) and the light,
+# libpijul-FREE `ir` (the IR data model the graph is projected over) — it does
+# NOT transitively link libpijul/iroh (that heavy plane is `ir-vcs`). It does
+# NOT dep `index`/doltlite (§8: index is a separate storage layer the client
+# composes).
+heart    = { path = "../heart" }
+ir       = { package = "nudox-ir", path = "../../crates/nudox-ir" }
+# Graph query layer — pinned to the exact patch so the schema API is stable.
+trustfall = "=0.8.1"
+
+# ── Async / concurrency ───────────────────────────────────────────────────────
+tokio   = { version = "1.52", features = ["full"] }
+futures = { version = "0.3",  features = ["std", "async-await", "alloc"] }
+
+# ── Vector: remote store + rerank (qdrant-client + Voyage over reqwest) ────────
+qdrant-client = "1.18"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# ── Vector: embedding cache ───────────────────────────────────────────────────
+moka    = { version = "0.12", features = ["future", "sync"] }
+secrecy = { version = "0.10", features = ["serde"] }
+
+# ── Serialization ─────────────────────────────────────────────────────────────
+serde      = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# ── Type safety / newtypes ────────────────────────────────────────────────────
+smol_str = { version = "0.2", features = ["serde"] }
+uuid     = { version = "1.23", features = ["v4", "v5", "serde"] }
+
+# ── Async traits (VectorStore / Embedder) ─────────────────────────────────────
+async-trait = "0.1"
+
+# ── Error handling / observability ────────────────────────────────────────────
+thiserror = "1.0"
+tracing   = "0.1"
+
+# ── Content hashing ───────────────────────────────────────────────────────────
+blake3 = "1.8"
+
+# ── Vector: shard-pack archive (local plane) ──────────────────────────────────
+tar  = "0.4"
+zstd = "0.13"
+
+# ── Vector: optional impl-plane deps (gated by features) ──────────────────────
+# local plane (qdrant-edge embedded store)
+qdrant-edge = { version = "=0.7.2", optional = true }
+fs2         = { version = "0.4", optional = true }
+# embed plane (content hashing for the runtime) + onnx runtime
+sha2        = { version = "0.10", optional = true }
+fastembed   = { version = "5.17.3", optional = true }
+tokenizers  = { version = "0.22.2", optional = true }
+
+[dev-dependencies]
+tokio      = { version = "1.52", features = ["full"] }
+tempfile   = "3.27"
+serde_json = "1.0"
+smol_str   = "0.2"
+futures    = { version = "0.3", features = ["std"] }

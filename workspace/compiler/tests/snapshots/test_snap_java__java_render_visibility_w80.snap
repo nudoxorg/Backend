@@ -1,0 +1,45 @@
+---
+source: workspace/compiler/tests/snap_java.rs
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/**
+ * Exercises all four Java visibility modifiers.
+ */
+public class Visibility {
+    public int publicField;
+    protected int protectedField;
+    int packageField;
+    private int privateField;
+}
+
+// ---
+
+/**
+ * Package-private method.
+ */
+void packageMethod();
+
+// ---
+
+/**
+ * Private method.
+ */
+private void privateMethod();
+
+// ---
+
+/**
+ * Protected method.
+ */
+protected void protectedMethod();
+
+// ---
+
+/**
+ * Public method.
+ */
+public void publicMethod();

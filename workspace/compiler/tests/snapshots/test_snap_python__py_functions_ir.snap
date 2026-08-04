@@ -1,0 +1,288 @@
+---
+source: workspace/compiler/tests/snap_python.rs
+assertion_line: 269
+expression: sorted
+---
+{
+    "snap_functions.py": Module(
+        Symbol {
+            name: "snap_functions",
+            path: Local(
+                "snap_functions.py",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Module {
+                members: Some(
+                    [
+                        Local(
+                            "snap_functions::add",
+                        ),
+                        Local(
+                            "snap_functions::greet",
+                        ),
+                        Local(
+                            "snap_functions::maybe",
+                        ),
+                    ],
+                ),
+            },
+        },
+    ),
+    "snap_functions::add": Function(
+        Symbol {
+            name: "add",
+            path: Local(
+                "snap_functions::add",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "a",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "b",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_functions::greet": Function(
+        Symbol {
+            name: "greet",
+            path: Local(
+                "snap_functions::greet",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "name",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "count",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Var(
+                                        "1",
+                                    ),
+                                ),
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+    "snap_functions::maybe": Function(
+        Symbol {
+            name: "maybe",
+            path: Local(
+                "snap_functions::maybe",
+            ),
+            aliases: None,
+            visibility: Public,
+            documentation: None,
+            deprecation: None,
+            doc_links: None,
+            inner: Function {
+                input_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "value",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.int",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                        Literal(
+                            LiteralParameter {
+                                name: "fallback",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: Some(
+                                    [
+                                        Optional,
+                                    ],
+                                ),
+                                default_value: Some(
+                                    Str(
+                                        "none",
+                                    ),
+                                ),
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                output_parameters: Some(
+                    [
+                        Literal(
+                            LiteralParameter {
+                                name: "",
+                                type: Some(
+                                    TypeReference(
+                                        TypeReference {
+                                            identifier: "builtins.str",
+                                            generic_args: None,
+                                        },
+                                    ),
+                                ),
+                                attributes: None,
+                                default_value: None,
+                                description: None,
+                            },
+                        ),
+                    ],
+                ),
+                type_links: None,
+                attributes: None,
+                generics: None,
+                receiver: None,
+                overloads: None,
+                implemented: true,
+                members: None,
+                implemented_protocols: None,
+            },
+        },
+    ),
+}

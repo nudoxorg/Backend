@@ -1,0 +1,25 @@
+[package]
+name = "sandbox"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+smolvm = { git = "https://github.com/smol-machines/smolvm", rev = "56bb13b99dfe65a58df158bf241077a5024d3a64" }
+heart     = { path = "../../heart" }
+thiserror = "1.0"
+tracing   = "0.1"
+which     = "4.4"
+serde     = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile  = "3.27"
+
+[target.'cfg(unix)'.dependencies]
+rlimit = "0.10"
+libc   = "0.2"

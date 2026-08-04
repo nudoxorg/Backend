@@ -1,0 +1,47 @@
+---
+source: workspace/compiler/tests/snap_csharp.rs
+assertion_line: 593
+expression: rendered
+---
+// <unrendered module>
+
+// ---
+
+/// A keyed collection that exposes an indexer.
+/// 
+/// Type parameters:
+/// - `TValue` — The value type.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class KeyedStore<TValue> {
+    private Dictionary Store { get; set; }
+    public int Count { get; set; }
+    public TValue This[] { get; set; }
+}
+
+// ---
+
+/// A product in an inventory system.
+/// Exercises a wide range of C# property forms: auto-properties with
+/// asymmetric accessors, `init`-only setters, `required` members,
+/// and a computed property.
+/// 
+/// Declared: `class`
+/// 
+/// Declared: `internal`
+internal class Product {
+    public string Sku { get; set; }
+    public string Name { get; set; }
+    public int Stock { get; set; }
+    public Decimal Price { get; set; }
+    public bool IsAvailable { get; set; }
+}
+
+// ---
+
+/// Updates the display name.
+/// 
+/// Declared: `public`
+public void Rename(string newName);
