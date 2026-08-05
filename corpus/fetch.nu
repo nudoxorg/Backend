@@ -65,9 +65,9 @@ def main [--output-dir: path = ".real-crates"] {
                     }
                 }
 
-                # Extract to temp
+                # Extract to temp (tar.gz format, despite .crate extension)
                 cd $temp_dir
-                unzip -q $archive_path
+                tar -xzf $archive_path
 
                 # Move extracted directory to output
                 if ($"($name)-($version)" | path exists) {

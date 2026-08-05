@@ -189,8 +189,8 @@
               mkdir -p "$out"
               cd "$out"
 
-              # Unpack the crate archive
-              ${nixPackages.unzip}/bin/unzip -q "${crateArchive}"
+              # Unpack the crate archive (tar.gz format, despite .crate extension)
+              ${nixPackages.gnutar}/bin/tar -xzf "${crateArchive}"
 
               # Append empty [workspace] table to Cargo.toml if it exists
               crate_dir="${name}-${version}"
