@@ -62,6 +62,10 @@
 # Integration checks (Nix glue + Nushell scripts/modules).
 !/tests/**/*.nix
 !/tests/**/*.nu
+# Reproducible corpus manifest and fallback script (declarative package sources).
+!/corpus/
+!/corpus/**/*.toml
+!/corpus/**/*.nu
 
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
@@ -182,3 +186,9 @@
 !/fuzz/Cargo.toml
 !/fuzz/fuzz_targets/**/*.rs
 .real-crates/
+# Captured frames from `cargo test --test screenshots` (workspace/gui). They are
+# evidence, not source: regenerable in one command, and byte-unstable across
+# machines because glyph rasterisation depends on the host font stack — so
+# committing them would churn on every run while proving nothing a re-run
+# cannot. The regeneration command lives in GUI-PROOF.md.
+.shots/

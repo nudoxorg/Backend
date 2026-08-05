@@ -1,0 +1,132 @@
+# Corpus manifest — reproducible package corpus for nudox
+# Each entry specifies packages by ecosystem, name, and version with content hash.
+# Multiple versions of the same package are grouped together.
+
+[[packages]]
+ecosystem = "crates.io"
+name = "bytes"
+versions = [
+  { version = "1.11.0", hash = "1cww1ybcvisyj8pbzl4m36bni2jaz0narhczp1348gqbvkxh8lmk" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "hashbrown"
+versions = [
+  { version = "0.17.1", hash = "0jmqz7i4yl6cm7rbn0i2ffkfrmwi6xkmzkaldr2v8bcsx2v0jngd" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "indexmap"
+versions = [
+  { version = "2.13.0", hash = "05qh5c4h2hrnyypphxpwflk45syqbzvqsvvyxg43mp576w2ff53p" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "itoa"
+versions = [
+  { version = "1.0.18", hash = "10jnd1vpfkb8kj38rlkn2a6k02afvj3qmw054dfpzagrpl6achlg" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "lazy_static"
+versions = [
+  { version = "1.4.0", hash = "0in6ikhw8mgl33wjv6q6xfrb5b9jr16q8ygjy803fay4zcisvaz2" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "libc"
+versions = [
+  { version = "0.2.161", hash = "1lc5s3zd0491x9zxrv2kvclai1my1spz950pkkyry4vwh318k54f" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "log"
+versions = [
+  { version = "0.4.17", hash = "0biqlaaw1lsr8bpnmbcc0fvgjj34yy79ghqzyi0ali7vgil2xcdb" },
+  { version = "0.4.33", hash = "1bd9dmk22pxgnf0h0slba6rz99zb0a0b2mdhpk8p92bp26ycbvhc" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "memchr"
+versions = [
+  { version = "2.7.6", hash = "0wy29kf6pb4fbhfksjbs05jy2f32r2f3r1ga6qkmpz31k79h0azm" },
+  { version = "2.8.0", hash = "0y9zzxcqxvdqg6wyag7vc3h0blhdn7hkq164bxyx2vph8zs5ijpq" },
+  { version = "2.8.3", hash = "161xa63ipfanf8v3nb82xd5hqgydv55nzw59wyngqbz6alfaz2yg" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "nom"
+versions = [
+  { version = "5.1.3", hash = "0jyxc4d3pih60pp8hvzpg5ajh16s273cpnsdpzp04qv7g8w9m588" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "once_cell"
+versions = [
+  { version = "1.20.2", hash = "0xb7rw1aqr7pa4z3b00y7786gyf8awx2gca3md73afy76dzgwq8j" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "parking_lot"
+versions = [
+  { version = "0.12.1", hash = "13r2xk7mnxfc5g0g6dkdxqdqad99j7s7z8zhzz4npw5r0g0v4hip" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "regex"
+versions = [
+  { version = "1.10.3", hash = "05cvihqy0wgnh9i8a9y2n803n5azg2h0b7nlqy6rsvxhy00vwbdn" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "serde"
+versions = [
+  { version = "1.0.196", hash = "0civrvhbwwk442xhlkfdkkdn478by486qxmackq6k3501zk2c047" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "serde_json"
+versions = [
+  { version = "1.0.113", hash = "0ycaiff7ar4qx5sy9kvi1kv9rnnfl15kcfmhxiiwknn3n5q1p039" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "syn"
+versions = [
+  { version = "1.0.109", hash = "0ds2if4600bd59wsv7jjgfkayfzy3hnazs394kz6zdkmna8l3dkj" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "thiserror"
+versions = [
+  { version = "1.0.40", hash = "1b7bdhriasdsr99y39d50jz995xaz9sw3hsbb6z9kp6q9cqrm34p" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "tracing"
+versions = [
+  { version = "0.1.40", hash = "1vv48dac9zgj9650pg2b4d0j3w6f3x9gbggf43scq5hrlysklln3" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "unicode-width"
+versions = [
+  { version = "0.1.11", hash = "11ds4ydhg8g7l06rlmh712q41qsrd0j0h00n1jm74kww3kqk65z5" },
+]

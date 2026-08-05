@@ -169,6 +169,64 @@
           inherit nixos;
         };
 
+      # Build the reproducible corpus from manifest.toml
+      buildCorpus =
+        nixPackages:
+        let
+          manifestFile = builtins.readFile ./corpus/manifest.toml;
+          manifest = builtins.fromTOML manifestFile;
+
+          # Group packages by name (to handle multiple versions)
+          buildPackage =
+            pkgEntry:
+            let
+              inherit (pkgEntry) name ecosystem versions;
+            in
+            map (
+              versionEntry:
+              let
+                inherit (versionEntry) version hash;
+                crateArchive = nixPackages.fetchurl {
+                  url = "https://static.crates.io/crates/${name}/${name}-${version}.crate";
+                  sha256 = hash;
+                };
+              in
+              nixPackages.runCommand "${name}-${version}-prepared" { } ''
+                mkdir -p "$out"
+                cd "$out"
+
+                # Unpack the crate archive
+                ${nixPackages.unzip}/bin/unzip -q "${crateArchive}"
+
+                # Find the extracted directory (should be ${name}-${version})
+                crate_dir="${name}-${version}"
+
+                # Append empty [workspace] table to Cargo.toml if it exists
+                if [ -f "$crate_dir/Cargo.toml" ]; then
+                  echo "" >> "$crate_dir/Cargo.toml"
+                  echo "[workspace]" >> "$crate_dir/Cargo.toml"
+                fi
+              ''
+            ) versions;
+
+          # Flatten the list of derivations
+          allPreparedPackages = nixPackages.lib.flatten (
+            map buildPackage manifest.packages
+          );
+
+          # Assemble all prepared packages into one directory
+          assembliedCorpus = nixPackages.runCommand "real-crates" { } ''
+            mkdir -p "$out"
+            ${nixPackages.lib.concatStringsSep "\n" (
+              map (
+                derivation:
+                "cp -r ${derivation}/*-*/ $out/ 2>/dev/null || true"
+              ) allPreparedPackages
+            )}
+          '';
+        in
+        assembliedCorpus;
+
     in
     {
       # Workspace package recipes + toolchain re-exports.
@@ -182,7 +240,7 @@
           helpers = helpersFor nixPackages fenixPackages;
           inherit (helpers) envStorePath;
         in
-        import ./workspace {
+        (import ./workspace {
           pkgs = nixPackages;
           inherit fenixPackages nixos;
           buildImage = nix2container.packages.${systemArchitecture}.nix2container.buildImage;
@@ -195,6 +253,9 @@
           goOraclePath = envStorePath "NUDOX_GO_ORACLE_PATH";
           javaOraclePath = envStorePath "NUDOX_JAVA_ORACLE_PATH";
           csharpOraclePath = envStorePath "NUDOX_CSHARP_ORACLE_PATH";
+        })
+        // {
+          corpus = buildCorpus nixPackages;
         }
       );
 
