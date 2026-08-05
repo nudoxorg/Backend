@@ -13,13 +13,11 @@
 //! - Client: bad tip hex and bad stamp hex fail verification.
 
 #[allow(unused_imports)]
-use driver::{registry};
+use driver::registry;
 mod common;
 
 use axum::http::StatusCode;
-use driver::http::dto::{
-    CompiledLookupRequest, JobKeyHex, COMPILED_LOOKUP_MAX_KEYS,
-};
+use driver::http::dto::{COMPILED_LOOKUP_MAX_KEYS, CompiledLookupRequest, JobKeyHex};
 use driver::http::router::router;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,7 +39,11 @@ fn parse_key(s: &str) -> serde_json::Result<JobKeyHex> {
 #[test]
 fn job_key_hex_valid_roundtrip() {
     let key = parse_key(&valid_hex_key()).expect("valid 64-char lowercase hex deserializes");
-    assert_eq!(key.as_str(), valid_hex_key(), "roundtrip preserves the hex string");
+    assert_eq!(
+        key.as_str(),
+        valid_hex_key(),
+        "roundtrip preserves the hex string"
+    );
     let raw = key.clone().into_bytes();
     assert_eq!(raw, [0xaa_u8; 32], "0xaa repeated 32 times matches 'a'*64");
     let serialized = serde_json::to_value(&key).expect("JobKeyHex serializes");
@@ -55,12 +57,18 @@ fn job_key_hex_rejects_odd_length() {
 
 #[test]
 fn job_key_hex_rejects_63_chars() {
-    assert!(parse_key(&"a".repeat(63)).is_err(), "63 chars (not 64) must be rejected");
+    assert!(
+        parse_key(&"a".repeat(63)).is_err(),
+        "63 chars (not 64) must be rejected"
+    );
 }
 
 #[test]
 fn job_key_hex_rejects_65_chars() {
-    assert!(parse_key(&"a".repeat(65)).is_err(), "65 chars (not 64) must be rejected");
+    assert!(
+        parse_key(&"a".repeat(65)).is_err(),
+        "65 chars (not 64) must be rejected"
+    );
 }
 
 #[test]
@@ -72,25 +80,35 @@ fn job_key_hex_rejects_uppercase() {
 #[test]
 fn job_key_hex_rejects_mixed_case() {
     let mixed = format!("{}{}", "a".repeat(32), "A".repeat(32));
-    assert!(parse_key(&mixed).is_err(), "mixed-case hex must be rejected");
+    assert!(
+        parse_key(&mixed).is_err(),
+        "mixed-case hex must be rejected"
+    );
 }
 
 #[test]
 fn job_key_hex_rejects_non_hex() {
     let bad = format!("{}{}", "z".repeat(32), "a".repeat(32));
-    assert!(parse_key(&bad).is_err(), "non-hex character must be rejected");
+    assert!(
+        parse_key(&bad).is_err(),
+        "non-hex character must be rejected"
+    );
 }
 
 // ── CompiledLookupRequest list-level validation ───────────────────────────────
 
 #[test]
 fn request_empty_list_is_invalid() {
-    let req: CompiledLookupRequest =
-        serde_json::from_value(serde_json::json!({ "job_keys": [] }))
-            .expect("empty list deserializes without error");
-    let err = req.validate().expect_err("empty job_keys must be rejected by validate()");
+    let req: CompiledLookupRequest = serde_json::from_value(serde_json::json!({ "job_keys": [] }))
+        .expect("empty list deserializes without error");
+    let err = req
+        .validate()
+        .expect_err("empty job_keys must be rejected by validate()");
     let msg = err.to_string();
-    assert!(msg.contains("job_keys"), "error must mention the missing field; got: {msg}");
+    assert!(
+        msg.contains("job_keys"),
+        "error must mention the missing field; got: {msg}"
+    );
 }
 
 #[test]
@@ -101,19 +119,26 @@ fn request_over_1024_keys_is_invalid() {
     let req: CompiledLookupRequest =
         serde_json::from_value(serde_json::json!({ "job_keys": keys }))
             .expect(">1024 keys deserialize; validation happens in validate()");
-    let err = req.validate().expect_err("1025 keys must be rejected by validate()");
+    let err = req
+        .validate()
+        .expect_err("1025 keys must be rejected by validate()");
     let msg = err.to_string();
-    assert!(msg.contains("1025"), "error must state the actual count; got: {msg}");
+    assert!(
+        msg.contains("1025"),
+        "error must state the actual count; got: {msg}"
+    );
 }
 
 #[test]
 fn request_exactly_1024_keys_is_valid() {
-    let keys: Vec<String> =
-        (0..COMPILED_LOOKUP_MAX_KEYS).map(|i| format!("{:064x}", i as u64)).collect();
+    let keys: Vec<String> = (0..COMPILED_LOOKUP_MAX_KEYS)
+        .map(|i| format!("{:064x}", i as u64))
+        .collect();
     let req: CompiledLookupRequest =
         serde_json::from_value(serde_json::json!({ "job_keys": keys }))
             .expect("1024 keys deserialize");
-    req.validate().expect("exactly 1024 keys is within the limit");
+    req.validate()
+        .expect("exactly 1024 keys is within the limit");
 }
 
 #[test]
@@ -133,7 +158,10 @@ fn miss_entry_exact_json_shape() {
     let json = serde_json::to_value(&entry).expect("miss entry serializes");
     assert_eq!(json["job_key"], serde_json::Value::String(valid_hex_key()));
     assert_eq!(json["hit"], serde_json::Value::Bool(false));
-    assert!(json.get("generation_stamp").is_none(), "miss must not carry generation_stamp");
+    assert!(
+        json.get("generation_stamp").is_none(),
+        "miss must not carry generation_stamp"
+    );
     assert!(json.get("channel").is_none(), "miss must not carry channel");
     assert!(json.get("tip").is_none(), "miss must not carry tip");
 }
@@ -153,23 +181,27 @@ fn lookup_request(job_keys: &[&str]) -> axum::http::Request<axum::body::Body> {
 /// All genuinely-unknown keys return miss entries.
 #[tokio::test]
 async fn all_unknown_keys_return_miss() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_all_miss").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_all_miss").await else {
         return;
     };
     let keys = ["a".repeat(64), "b".repeat(64)];
     let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-    let (status, response) =
-        common::call(router(server), lookup_request(&keys_ref)).await;
+    let (status, response) = common::call(router(server), lookup_request(&keys_ref)).await;
 
-    assert_eq!(status, StatusCode::OK, "handler must return 200 for valid keys: {response}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "handler must return 200 for valid keys: {response}"
+    );
     let results = response["results"].as_array().expect("results is an array");
     assert_eq!(results.len(), 2, "one result per input key");
     for (result, key) in results.iter().zip(keys.iter()) {
         assert_eq!(result["hit"], false, "unrecorded keys miss");
         assert_eq!(result["job_key"].as_str().unwrap(), key.as_str());
-        assert!(result.get("generation_stamp").is_none(), "miss has no generation_stamp");
+        assert!(
+            result.get("generation_stamp").is_none(),
+            "miss has no generation_stamp"
+        );
         assert!(result.get("channel").is_none(), "miss has no channel");
         assert!(result.get("tip").is_none(), "miss has no tip");
     }
@@ -178,19 +210,20 @@ async fn all_unknown_keys_return_miss() {
 /// Results preserve input order.
 #[tokio::test]
 async fn results_preserve_input_order() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_ordering").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_ordering").await else {
         return;
     };
     let keys: Vec<String> = (0..8_u64).map(|i| format!("{:064x}", i)).collect();
     let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
-    let (status, response) =
-        common::call(router(server), lookup_request(&keys_ref)).await;
+    let (status, response) = common::call(router(server), lookup_request(&keys_ref)).await;
 
     assert_eq!(status, StatusCode::OK);
     let results = response["results"].as_array().expect("results is an array");
-    assert_eq!(results.len(), keys.len(), "result count must match key count");
+    assert_eq!(
+        results.len(),
+        keys.len(),
+        "result count must match key count"
+    );
     for (result, key) in results.iter().zip(keys.iter()) {
         assert_eq!(
             result["job_key"].as_str().unwrap(),
@@ -203,14 +236,15 @@ async fn results_preserve_input_order() {
 /// Duplicate keys each produce an independent entry.
 #[tokio::test]
 async fn duplicate_keys_produce_independent_entries() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_dedup").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_dedup").await else {
         return;
     };
     let key = "a".repeat(64);
-    let (status, response) =
-        common::call(router(server), lookup_request(&[key.as_str(), key.as_str()])).await;
+    let (status, response) = common::call(
+        router(server),
+        lookup_request(&[key.as_str(), key.as_str()]),
+    )
+    .await;
 
     assert_eq!(status, StatusCode::OK);
     let results = response["results"].as_array().expect("results is an array");
@@ -220,22 +254,21 @@ async fn duplicate_keys_produce_independent_entries() {
 /// Empty `job_keys` list → 400.
 #[tokio::test]
 async fn empty_keys_returns_400() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_empty_keys").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_empty_keys").await else {
         return;
     };
-    let (status, _response) =
-        common::call(router(server), lookup_request(&[])).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "empty job_keys must return 400");
+    let (status, _response) = common::call(router(server), lookup_request(&[])).await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "empty job_keys must return 400"
+    );
 }
 
 /// A body larger than 256 KiB is rejected with 413.
 #[tokio::test]
 async fn oversized_body_is_rejected() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_oversize").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_oversize").await else {
         return;
     };
     let keys: Vec<String> = (0..4097_u64).map(|i| format!("{:064x}", i)).collect();
@@ -263,15 +296,17 @@ async fn seeded_record_returns_vcs_hit() {
     use heart::content::ContentHash;
     use registry::compiled::{ChangeId, ChannelName, CompiledRecord, ObjectCompiledStore};
 
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_seeded_hit").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_seeded_hit").await else {
         return;
     };
 
     let package = common::package_id("compiled-lookup-seeded-fixture");
-    let job_key =
-        heart::JobKey::derive(b"producer-1.0.0", b"rustc-1.85.0", b"seeded-hit", b"lockfile");
+    let job_key = heart::JobKey::derive(
+        b"producer-1.0.0",
+        b"rustc-1.85.0",
+        b"seeded-hit",
+        b"lockfile",
+    );
 
     let channel = ChannelName::new("main").expect("valid channel");
     let tip_hex = "ab".repeat(32); // 64 chars
@@ -331,14 +366,11 @@ async fn seeded_record_returns_vcs_hit() {
 /// Invalid hex in a key → 422.
 #[tokio::test]
 async fn bad_hex_key_returns_422() {
-    let Some((server, _data)) =
-        common::assembled_server("compiled_lookup_bad_hex").await
-    else {
+    let Some((server, _data)) = common::assembled_server("compiled_lookup_bad_hex").await else {
         return;
     };
     let bad_key = "g".repeat(64);
-    let (status, _) =
-        common::call(router(server), lookup_request(&[bad_key.as_str()])).await;
+    let (status, _) = common::call(router(server), lookup_request(&[bad_key.as_str()])).await;
     assert!(
         status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
         "invalid hex must return 400 or 422; got {status}"
@@ -384,12 +416,10 @@ fn verify_entry_miss_passes() {
         tip: None,
         generation_stamp: None,
     };
-    assert!(
-        matches!(
-            registry::compiled::client::verify_entry(key, &entry).expect("miss verifies"),
-            registry::compiled::LookupResult::Miss
-        )
-    );
+    assert!(matches!(
+        registry::compiled::client::verify_entry(key, &entry).expect("miss verifies"),
+        registry::compiled::LookupResult::Miss
+    ));
 }
 
 #[test]
@@ -397,10 +427,13 @@ fn verify_entry_bad_tip_hex_rejected() {
     let key = valid_job_key();
     let mut entry = honest_wire_entry(key);
     entry.tip = Some("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ".to_owned());
-    let err = registry::compiled::client::verify_entry(key, &entry)
-        .expect_err("bad tip hex must fail");
+    let err =
+        registry::compiled::client::verify_entry(key, &entry).expect_err("bad tip hex must fail");
     assert!(
-        matches!(err, registry::compiled::client::VerificationFailure::BadTipHex),
+        matches!(
+            err,
+            registry::compiled::client::VerificationFailure::BadTipHex
+        ),
         "got: {err}"
     );
 }
@@ -410,10 +443,13 @@ fn verify_entry_short_tip_hex_rejected() {
     let key = valid_job_key();
     let mut entry = honest_wire_entry(key);
     entry.tip = Some("ab".repeat(16)); // 32 chars, not 64
-    let err = registry::compiled::client::verify_entry(key, &entry)
-        .expect_err("short tip hex must fail");
+    let err =
+        registry::compiled::client::verify_entry(key, &entry).expect_err("short tip hex must fail");
     assert!(
-        matches!(err, registry::compiled::client::VerificationFailure::BadTipHex),
+        matches!(
+            err,
+            registry::compiled::client::VerificationFailure::BadTipHex
+        ),
         "got: {err}"
     );
 }
@@ -424,10 +460,13 @@ fn verify_entry_bad_stamp_hex_rejected() {
     let mut entry = honest_wire_entry(key);
     entry.generation_stamp =
         Some("ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ".to_owned());
-    let err = registry::compiled::client::verify_entry(key, &entry)
-        .expect_err("bad stamp hex must fail");
+    let err =
+        registry::compiled::client::verify_entry(key, &entry).expect_err("bad stamp hex must fail");
     assert!(
-        matches!(err, registry::compiled::client::VerificationFailure::BadStampHex),
+        matches!(
+            err,
+            registry::compiled::client::VerificationFailure::BadStampHex
+        ),
         "got: {err}"
     );
 }
@@ -440,7 +479,10 @@ fn verify_entry_wrong_key_echo_rejected() {
     let err = registry::compiled::client::verify_entry(key, &entry)
         .expect_err("wrong key echo must fail");
     assert!(
-        matches!(err, registry::compiled::client::VerificationFailure::KeyEcho { .. }),
+        matches!(
+            err,
+            registry::compiled::client::VerificationFailure::KeyEcho { .. }
+        ),
         "got: {err}"
     );
 }
@@ -450,10 +492,13 @@ fn verify_entry_empty_channel_rejected() {
     let key = valid_job_key();
     let mut entry = honest_wire_entry(key);
     entry.channel = Some(String::new());
-    let err = registry::compiled::client::verify_entry(key, &entry)
-        .expect_err("empty channel must fail");
+    let err =
+        registry::compiled::client::verify_entry(key, &entry).expect_err("empty channel must fail");
     assert!(
-        matches!(err, registry::compiled::client::VerificationFailure::EmptyChannel),
+        matches!(
+            err,
+            registry::compiled::client::VerificationFailure::EmptyChannel
+        ),
         "got: {err}"
     );
 }
@@ -463,8 +508,8 @@ fn verify_entry_missing_tip_rejected() {
     let key = valid_job_key();
     let mut entry = honest_wire_entry(key);
     entry.tip = None;
-    let err = registry::compiled::client::verify_entry(key, &entry)
-        .expect_err("missing tip must fail");
+    let err =
+        registry::compiled::client::verify_entry(key, &entry).expect_err("missing tip must fail");
     assert!(
         matches!(
             err,

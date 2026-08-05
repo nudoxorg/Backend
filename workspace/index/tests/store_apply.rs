@@ -7,9 +7,7 @@ use common::{gen_stamp, migrated_writer, stem_id, version_id};
 
 use heart::query::{AsOf, UnixMilliseconds};
 use index::enums::{IrStatus, ListingStatus, SinkKind};
-use index::protocol::{
-    CatalogOp, FacetWire, PackageStemWire, VersionCoordinates,
-};
+use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
 use index::store::{Catalog, CatalogCursor, MetaError, MetaStore};
 
 /// Build a valid UpsertPackage op for a stem seed.
@@ -57,7 +55,10 @@ fn apply_ops_persists_package_and_fans_out_outbox() {
     // Only the version upsert fans out to the text sink.
     assert_eq!(report.outbox_rows, 1);
 
-    let fetched = writer.get_package(stem_id(1)).expect("read").expect("present");
+    let fetched = writer
+        .get_package(stem_id(1))
+        .expect("read")
+        .expect("present");
     assert_eq!(fetched.name_canonical, "pkg1");
 
     let claimed = writer.outbox_claim(SinkKind::Text, 10).expect("claim");
@@ -90,7 +91,10 @@ fn apply_ops_is_atomic_a_failing_op_leaves_no_rows() {
     );
     // And no outbox rows leaked.
     let claimed = writer.outbox_claim(SinkKind::Text, 10).expect("claim");
-    assert!(claimed.is_empty(), "a failing batch must leave no outbox rows");
+    assert!(
+        claimed.is_empty(),
+        "a failing batch must leave no outbox rows"
+    );
 }
 
 #[test]
@@ -146,7 +150,10 @@ fn outbox_claim_is_monotonic_and_watermark_cannot_regress() {
     let first = writer.outbox_claim(SinkKind::Text, 10).expect("claim");
     assert_eq!(first.len(), 2);
     let seqs: Vec<i64> = first.iter().map(|row| row.seq).collect();
-    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "seq strictly increases");
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "seq strictly increases"
+    );
 
     // Advance the watermark past the first row.
     writer
@@ -178,12 +185,8 @@ fn changed_since_cursor_is_stable_under_interleaved_writes() {
     let cursor = page_one.next;
 
     // Interleave more writes after taking the cursor.
-    writer
-        .apply_ops(&[upsert_version(1, 2)])
-        .expect("second");
-    writer
-        .apply_ops(&[upsert_version(1, 3)])
-        .expect("third");
+    writer.apply_ops(&[upsert_version(1, 2)]).expect("second");
+    writer.apply_ops(&[upsert_version(1, 3)]).expect("third");
 
     // Resuming from the cursor sees exactly the new rows, none repeated.
     let page_two = writer.changed_since(cursor).expect("page two");

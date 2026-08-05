@@ -14,6 +14,7 @@
 //! [`ObjectPackReader::get_member_range`] decompresses only the chunks that
 //! overlap the requested byte range, keeping peak memory low for snippet reads.
 
+use std::io;
 use std::ops::Range;
 use std::path::Path;
 
@@ -25,7 +26,7 @@ use heart::object_pack::{ChunkEntry, MemberKey, MemberRecord, ObjectPackId};
 
 use crate::pack::error::{PackError, PackResult};
 use crate::pack::format::{
-    derive_object_pack_id, PackHeader, TableOfContents, HEADER_LENGTH_BYTES,
+    HEADER_LENGTH_BYTES, PackHeader, TableOfContents, derive_object_pack_id,
 };
 
 // ---------------------------------------------------------------------------
@@ -157,13 +158,14 @@ impl ObjectPackReader {
         }
 
         // The offset + length must not overflow or exceed the slice.
-        let toc_end = toc_offset.checked_add(toc_length).ok_or_else(|| {
-            PackError::BadStructure {
-                detail: format!(
-                    "toc_offset {toc_offset} + toc_length {toc_length} overflows usize"
-                ),
-            }
-        })?;
+        let toc_end =
+            toc_offset
+                .checked_add(toc_length)
+                .ok_or_else(|| PackError::BadStructure {
+                    detail: format!(
+                        "toc_offset {toc_offset} + toc_length {toc_length} overflows usize"
+                    ),
+                })?;
 
         if toc_end > slice.len() {
             return Err(PackError::Truncated {
@@ -198,7 +200,12 @@ impl ObjectPackReader {
         // this point.
         let id = derive_object_pack_id(&toc.policy, toc_bytes);
 
-        Ok(Self { backing, header, toc, id })
+        Ok(Self {
+            backing,
+            header,
+            toc,
+            id,
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -246,24 +253,22 @@ impl ObjectPackReader {
     ///
     /// Bounds-checks the compressed frame region before any I/O and verifies
     /// that the decompressed length matches the TOC expectation.
-    fn decompress_chunk(
-        &self,
-        chunk: &ChunkEntry,
-    ) -> PackResult<Vec<u8>> {
+    fn decompress_chunk(&self, chunk: &ChunkEntry) -> PackResult<Vec<u8>> {
         let slice = self.backing.as_slice();
 
         let frame_offset = chunk.frame_offset.get() as usize;
         let compressed_length = chunk.compressed_length.get() as usize;
 
         // Overflow-safe end bound.
-        let frame_end = frame_offset.checked_add(compressed_length).ok_or_else(|| {
-            PackError::BadStructure {
-                detail: format!(
-                    "chunk frame_offset {frame_offset} + compressed_length \
+        let frame_end =
+            frame_offset
+                .checked_add(compressed_length)
+                .ok_or_else(|| PackError::BadStructure {
+                    detail: format!(
+                        "chunk frame_offset {frame_offset} + compressed_length \
                      {compressed_length} overflows usize"
-                ),
-            }
-        })?;
+                    ),
+                })?;
 
         if frame_end > slice.len() {
             return Err(PackError::Truncated {
@@ -276,19 +281,22 @@ impl ObjectPackReader {
         let frame_bytes = &slice[frame_offset..frame_end];
         let expected_uncompressed = chunk.uncompressed_length.get() as usize;
 
-        let decompressed = zstd::bulk::decompress(frame_bytes, expected_uncompressed)
-            .map_err(|error| PackError::FrameDecode {
-                detail: format!("zstd error at offset {frame_offset}: {error}"),
+        let decompressed =
+            zstd::bulk::decompress(frame_bytes, expected_uncompressed).map_err(|error| {
+                PackError::FrameDecode(std::io::Error::other(format_args!(
+                    "zstd error at offset {frame_offset}: {error}"
+                )))
             })?;
 
         if decompressed.len() != expected_uncompressed {
-            return Err(PackError::FrameDecode {
-                detail: format!(
+            return Err(PackError::FrameDecode(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format_args!(
                     "chunk length mismatch: expected {expected_uncompressed} \
                      uncompressed bytes, got {}",
                     decompressed.len()
                 ),
-            });
+            )));
         }
 
         Ok(decompressed)
@@ -339,11 +347,7 @@ impl ObjectPackReader {
     /// - [`PackError::MemberNotFound`] — key absent.
     /// - [`PackError::RangeOutOfBounds`] — `start > end` or `end > member length`.
     /// - [`PackError::Truncated`] / [`PackError::FrameDecode`] — corrupt frame.
-    pub fn get_member_range(
-        &self,
-        key: &MemberKey,
-        byte_range: Range<u64>,
-    ) -> PackResult<Bytes> {
+    pub fn get_member_range(&self, key: &MemberKey, byte_range: Range<u64>) -> PackResult<Bytes> {
         let record = self
             .toc
             .find(key)
@@ -385,9 +389,7 @@ impl ObjectPackReader {
             let chunk_end = covered
                 .checked_add(chunk_uncompressed_length)
                 .ok_or_else(|| PackError::BadStructure {
-                    detail: format!(
-                        "chunk uncompressed offset overflow at covered={covered}"
-                    ),
+                    detail: format!("chunk uncompressed offset overflow at covered={covered}"),
                 })?;
 
             // Check whether this chunk overlaps [requested_start, requested_end).
@@ -522,14 +524,18 @@ mod tests {
             let key = MemberKey::Source {
                 path: RelativePath(SmolStr::new(*path)),
             };
-            builder.add_member(key, Bytes::copy_from_slice(content)).unwrap();
+            builder
+                .add_member(key, Bytes::copy_from_slice(content))
+                .unwrap();
         }
         let (sealed, _id) = builder.seal_to_bytes().unwrap();
         sealed
     }
 
     fn key(path: &str) -> MemberKey {
-        MemberKey::Source { path: RelativePath(SmolStr::new(path)) }
+        MemberKey::Source {
+            path: RelativePath(SmolStr::new(path)),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -581,7 +587,10 @@ mod tests {
         // Build a member large enough to span two 128 KiB chunks.
         let chunk_size = heart::object_pack::SOURCE_CHUNK_SIZE_BYTES as usize;
         // Total: 1.5 chunks — the boundary is at chunk_size.
-        let content: Vec<u8> = (0u8..=255).cycle().take(chunk_size + chunk_size / 2).collect();
+        let content: Vec<u8> = (0u8..=255)
+            .cycle()
+            .take(chunk_size + chunk_size / 2)
+            .collect();
         let packed = build_pack(&[("large.bin", &content)]);
         let reader = ObjectPackReader::open_bytes(packed).unwrap();
 
@@ -591,7 +600,10 @@ mod tests {
         let got = reader
             .get_member_range(&key("large.bin"), range_start..range_end)
             .unwrap();
-        assert_eq!(got.as_ref(), &content[range_start as usize..range_end as usize]);
+        assert_eq!(
+            got.as_ref(),
+            &content[range_start as usize..range_end as usize]
+        );
     }
 
     #[test]
@@ -604,7 +616,9 @@ mod tests {
         // Exactly the second chunk.
         let start = chunk_size as u64;
         let end = (chunk_size * 2) as u64;
-        let got = reader.get_member_range(&key("exact.bin"), start..end).unwrap();
+        let got = reader
+            .get_member_range(&key("exact.bin"), start..end)
+            .unwrap();
         assert_eq!(got.as_ref(), &content[chunk_size..chunk_size * 2]);
     }
 
@@ -616,7 +630,12 @@ mod tests {
         assert!(got.is_empty());
         reader.verify_member(&key("empty.txt")).unwrap();
         // A range get over an empty member only admits the empty range.
-        assert!(reader.get_member_range(&key("empty.txt"), 0..0).unwrap().is_empty());
+        assert!(
+            reader
+                .get_member_range(&key("empty.txt"), 0..0)
+                .unwrap()
+                .is_empty()
+        );
         assert!(reader.get_member_range(&key("empty.txt"), 0..1).is_err());
     }
 
@@ -667,7 +686,14 @@ mod tests {
 
         let err = reader.get_member_range(&key("x.txt"), 8..3).unwrap_err();
         assert!(
-            matches!(err, PackError::RangeOutOfBounds { start: 8, end: 3, .. }),
+            matches!(
+                err,
+                PackError::RangeOutOfBounds {
+                    start: 8,
+                    end: 3,
+                    ..
+                }
+            ),
             "expected RangeOutOfBounds, got {err:?}"
         );
     }

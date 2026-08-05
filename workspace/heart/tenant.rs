@@ -13,23 +13,23 @@
 /// `"enterprise"`), matching the postgres `CHECK` domain. `VariantNames::VARIANTS`
 /// is used to derive that domain from one source.
 #[derive(
-	Debug,
-	Clone,
-	Copy,
-	PartialEq,
-	Eq,
-	Hash,
-	strum::Display,
-	strum::EnumString,
-	strum::IntoStaticStr,
-	strum::VariantNames,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum OwnerKind {
-	/// A single-developer account.
-	Individual,
-	/// An organisation or team account.
-	Enterprise,
+    /// A single-developer account.
+    Individual,
+    /// An organisation or team account.
+    Enterprise,
 }
 
 /// The visibility of a package — stored as the lowercase SQL token.
@@ -38,23 +38,23 @@ pub enum OwnerKind {
 /// `"private"`, `"public"`), matching the postgres `CHECK` domain.
 /// `VariantNames::VARIANTS` is used to derive that domain from one source.
 #[derive(
-	Debug,
-	Clone,
-	Copy,
-	PartialEq,
-	Eq,
-	Hash,
-	strum::Display,
-	strum::EnumString,
-	strum::IntoStaticStr,
-	strum::VariantNames,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    strum::Display,
+    strum::EnumString,
+    strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 #[strum(serialize_all = "lowercase")]
 pub enum Visibility {
-	/// Visible only to the owning tenant.
-	Personal,
-	/// Visible to explicitly invited members of the owning tenant.
-	Private,
-	/// Publicly discoverable.
-	Public,
+    /// Visible only to the owning tenant.
+    Personal,
+    /// Visible to explicitly invited members of the owning tenant.
+    Private,
+    /// Publicly discoverable.
+    Public,
 }

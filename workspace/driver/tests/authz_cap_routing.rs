@@ -27,7 +27,9 @@ use driver::error::{ForbiddenReason, ServerError};
 /// status-code projection is correct for the now-reachable variant.
 #[test]
 fn forbidden_reason_action_denied_maps_to_403() {
-    let err = ServerError::Forbidden(ForbiddenReason::ActionDenied { action: "test.action" });
+    let err = ServerError::Forbidden(ForbiddenReason::ActionDenied {
+        action: "test.action",
+    });
     assert_eq!(
         err.status(),
         StatusCode::FORBIDDEN,
@@ -38,10 +40,18 @@ fn forbidden_reason_action_denied_maps_to_403() {
 /// The display string of a `ForbiddenReason` names the denied action.
 #[test]
 fn forbidden_reason_display_names_the_action() {
-    let reason = ForbiddenReason::ActionDenied { action: "admin.verify" };
+    let reason = ForbiddenReason::ActionDenied {
+        action: "admin.verify",
+    };
     let msg = reason.to_string();
-    assert!(msg.contains("admin.verify"), "error message must include the denied action name");
-    assert!(msg.contains("not permitted"), "error message must state the action was not permitted");
+    assert!(
+        msg.contains("admin.verify"),
+        "error message must include the denied action name"
+    );
+    assert!(
+        msg.contains("not permitted"),
+        "error message must state the action was not permitted"
+    );
 }
 
 // ── (b) Admin endpoint routing ───────────────────────────────────────────────
@@ -119,8 +129,7 @@ async fn admin_rebuild_endpoint_routes_through_admin_principal() {
 /// than hanging or panicking.
 #[tokio::test]
 async fn search_handler_mints_read_cap() {
-    let Some((server, _data)) =
-        common::assembled_server("search_handler_mints_read_cap").await
+    let Some((server, _data)) = common::assembled_server("search_handler_mints_read_cap").await
     else {
         return;
     };

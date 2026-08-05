@@ -12,13 +12,11 @@ use common::migrated_writer;
 use heart::Language;
 use index::engine::{CatalogEngine, Value};
 use index::enums::{EdgeKind, EdgeSource};
-use index::ids::{version_id, PackageStemId};
-use index::protocol::{
-    CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates,
-};
-use index::resolution::{resolve_unresolved_edges, ResolutionReport};
+use index::ids::{PackageStemId, version_id};
+use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
+use index::resolution::{ResolutionReport, resolve_unresolved_edges};
 use index::seed_models::{system_model_seed_ops, system_stem_id};
-use index::store::{writer::CatalogWriter, MetaStore};
+use index::store::{MetaStore, writer::CatalogWriter};
 
 /// A deterministic version id from a seed.
 fn version(seed: u8) -> heart::PackageId {
@@ -143,7 +141,9 @@ fn threads_edge_resolves_to_system_pthread() {
             confidence: index::enums::AliasConfidence::Curated,
         }])
         .expect("seed zlib alias");
-    writer.apply_ops(&system_model_seed_ops()).expect("seed system models");
+    writer
+        .apply_ops(&system_model_seed_ops())
+        .expect("seed system models");
     ingest_consumer(&writer);
 
     let report = resolve_unresolved_edges(writer.engine(), Language::Cpp).expect("resolve");
@@ -151,7 +151,12 @@ fn threads_edge_resolves_to_system_pthread() {
     assert_eq!(report.resolved, 2, "ZLIB + Threads resolve");
     assert_eq!(report.unresolved, 1, "ObscureLib stays Absent-tier");
 
-    let threads = resolved_stem_for(writer.engine(), version(1), "Threads", EdgeKind::FindPackage);
+    let threads = resolved_stem_for(
+        writer.engine(),
+        version(1),
+        "Threads",
+        EdgeKind::FindPackage,
+    );
     assert_eq!(
         threads,
         Some(system_stem_id("pthread")),
@@ -159,24 +164,36 @@ fn threads_edge_resolves_to_system_pthread() {
     );
     let zlib = resolved_stem_for(writer.engine(), version(1), "ZLIB", EdgeKind::FindPackage);
     assert_eq!(zlib, Some(stem(200)), "ZLIB binds to its curated stem");
-    let obscure =
-        resolved_stem_for(writer.engine(), version(1), "ObscureLib", EdgeKind::FindPackage);
+    let obscure = resolved_stem_for(
+        writer.engine(),
+        version(1),
+        "ObscureLib",
+        EdgeKind::FindPackage,
+    );
     assert_eq!(obscure, None, "unmatched token is never invented");
 }
 
 #[test]
 fn resolution_is_idempotent_and_never_overwrites() {
     let writer = migrated_writer();
-    writer.apply_ops(&system_model_seed_ops()).expect("seed system models");
+    writer
+        .apply_ops(&system_model_seed_ops())
+        .expect("seed system models");
     ingest_consumer(&writer);
 
     let first = resolve_unresolved_edges(writer.engine(), Language::Cpp).expect("first run");
-    assert_eq!(first.resolved, 1, "only Threads resolves (no zlib alias this time)");
+    assert_eq!(
+        first.resolved, 1,
+        "only Threads resolves (no zlib alias this time)"
+    );
     let resolved_after_first = count_resolved(writer.engine());
 
     // Rerun: nothing new to resolve, and no existing binding is disturbed.
     let second = resolve_unresolved_edges(writer.engine(), Language::Cpp).expect("second run");
-    assert_eq!(second.resolved, 0, "a rerun resolves nothing new (idempotent)");
+    assert_eq!(
+        second.resolved, 0,
+        "a rerun resolves nothing new (idempotent)"
+    );
     assert_eq!(
         count_resolved(writer.engine()),
         resolved_after_first,
@@ -185,7 +202,12 @@ fn resolution_is_idempotent_and_never_overwrites() {
 
     // The Threads binding is exactly what the first run produced (not re-derived
     // to something else).
-    let threads = resolved_stem_for(writer.engine(), version(1), "Threads", EdgeKind::FindPackage);
+    let threads = resolved_stem_for(
+        writer.engine(),
+        version(1),
+        "Threads",
+        EdgeKind::FindPackage,
+    );
     assert_eq!(threads, Some(system_stem_id("pthread")));
 }
 
@@ -195,5 +217,9 @@ fn empty_ecosystem_scope_resolves_nothing() {
     ingest_consumer(&writer);
     // Rust scope: the cpp edges are untouched, so nothing resolves and no error.
     let report = resolve_unresolved_edges(writer.engine(), Language::Rust).expect("rust scope");
-    assert_eq!(report, ResolutionReport::default(), "no rust edges to resolve");
+    assert_eq!(
+        report,
+        ResolutionReport::default(),
+        "no rust edges to resolve"
+    );
 }

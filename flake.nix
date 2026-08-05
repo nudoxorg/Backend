@@ -392,6 +392,8 @@
             "test"
             "test-with"
             "test-all"
+            "full-check"
+            "recheck"
             "update"
             "buck-build"
             "buck-test"

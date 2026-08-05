@@ -21,8 +21,8 @@ use crate::error::{BadRequestReason, ServerError, ServerResult};
 use crate::registry::GlobalPackage;
 use crate::registry::search::SearchKey;
 use crate::registry::search::usages::{Usage, UsageQueryBackend};
-use crate::search::query::{LiteralQuery, Query as ExecutionQuery};
 use crate::search::registry::RegistrySearchSurface;
+use crate::search::{LiteralQuery, Query as ExecutionQuery};
 
 impl<M: EmbeddingModel> Server<M> {
     /// Search the registry for packages matching one wire [`WireQuery`].

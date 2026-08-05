@@ -38,9 +38,15 @@ pub enum MemberKey {
     /// One file of a source tree.
     Source { path: RelativePath },
     /// A warm-boot VM checkpoint, valid only for its exact image + producer.
-    Golden { image_digest: ImageDigest, producer_version: u32 },
+    Golden {
+        image_digest: ImageDigest,
+        producer_version: u32,
+    },
     /// An intermediate compile stage, keyed by job.
-    Stage { job_key_hex: SmolStr, stage: SmolStr },
+    Stage {
+        job_key_hex: SmolStr,
+        stage: SmolStr,
+    },
     /// Small named metadata (provenance notes, blob-hash sidecars, …).
     Meta { name: SmolStr },
 }
@@ -49,25 +55,25 @@ pub enum MemberKey {
 ///
 /// A newtype (never a bare `u64` in the public API, per the workspace style
 /// law) so an offset can never be confused with a length or a byte-range bound.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PackOffset(pub u64);
 
 impl PackOffset {
     /// The raw offset as a `u64` for seeking / slicing.
-    pub const fn get(self) -> u64 { self.0 }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// A count of bytes (compressed or uncompressed) — distinct from an offset.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ByteLength(pub u64);
 
 impl ByteLength {
     /// The raw length as a `u64`.
-    pub const fn get(self) -> u64 { self.0 }
+    pub const fn get(self) -> u64 {
+        self.0
+    }
 }
 
 /// The uncompressed chunk size at which large [`MemberKey::Source`] members are

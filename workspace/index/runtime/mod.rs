@@ -12,5 +12,7 @@ pub mod error;
 /// Keyset-pagination helper for score-ranked backends (kept over `heart::page`
 /// because the text/vector call sites resume on a `(Score, SymbolId)` key).
 pub(crate) mod pagination;
+/// Per-session exploration-graph semilattice (moved from `driver::session`).
+pub mod session;
 /// The replica-local tantivy text index + its catalog-outbox poller.
 pub mod text;

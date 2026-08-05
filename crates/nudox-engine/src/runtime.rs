@@ -26,8 +26,7 @@ use nudox_store::{
 };
 
 use crate::{
-    PackageHistorySpec, PackageLoadEvent, PackageSpec, ProducerLanguage,
-    versions::VersionRegistry,
+    PackageHistorySpec, PackageLoadEvent, PackageSpec, ProducerLanguage, versions::VersionRegistry,
 };
 
 // ---------------------------------------------------------------------------
@@ -110,6 +109,7 @@ pub(crate) struct EngineInner {
 
 /// The engine itself — constructed once, consumed by [`Engine::start`].
 pub struct Engine {
+    #[allow(dead_code)]
     config: EngineConfig,
 }
 
@@ -136,7 +136,9 @@ impl Engine {
             builder.worker_threads(n);
         }
         let runtime = Arc::new(RuntimeGuard::new(
-            builder.build().expect("Tokio runtime creation must succeed"),
+            builder
+                .build()
+                .expect("Tokio runtime creation must succeed"),
         ));
 
         let corpus = Corpus::new();
@@ -221,11 +223,9 @@ impl Engine {
                         // several generations of one package the corpus ended
                         // up holding whichever finished producing last rather
                         // than the newest.
-                        if let Some(resident) = seed_versions.record(
-                            &lineage,
-                            version.clone(),
-                            Arc::clone(&package),
-                        ) {
+                        if let Some(resident) =
+                            seed_versions.record(&lineage, version.clone(), Arc::clone(&package))
+                        {
                             seed_corpus.insert(resident).await;
                         }
 
@@ -264,7 +264,10 @@ impl Engine {
                     }
                 }
             }
-            info!("corpus seeding complete; {} package(s) loaded", seed_corpus.len().await);
+            info!(
+                "corpus seeding complete; {} package(s) loaded",
+                seed_corpus.len().await
+            );
         });
 
         EngineHandle { inner, runtime }
@@ -383,7 +386,10 @@ impl StreamHandle {
     /// anything that stands in for the engine (a test double, an alternative
     /// search backend) has to be able to produce one.
     pub fn new(generation: crate::wire::Gen, canceller: impl Fn() + Send + 'static) -> Self {
-        Self { generation, canceller: Box::new(canceller) }
+        Self {
+            generation,
+            canceller: Box::new(canceller),
+        }
     }
 
     /// Cancel the stream explicitly.  Also called implicitly on `Drop`.
@@ -505,7 +511,10 @@ impl EngineHandle {
     ///
     /// Returns `(token, cancel_fn)`. Pass `token` into the async task and
     /// call `cancel_fn` from the `StreamHandle`.
-    pub(crate) fn make_cancel() -> (tokio_util::sync::CancellationToken, impl Fn() + Send + 'static) {
+    pub(crate) fn make_cancel() -> (
+        tokio_util::sync::CancellationToken,
+        impl Fn() + Send + 'static,
+    ) {
         let token = tokio_util::sync::CancellationToken::new();
         let cancel = {
             let t = token.clone();
@@ -586,8 +595,7 @@ impl EngineHandle {
             // Step 2 — snapshot of all packages already in the corpus at this
             // moment.  Because we subscribed first, any package that lands
             // between subscribe and now is already queued in `live_rx`.
-            let snapshot: Vec<Arc<nudox_store::package::PackageView>> =
-                corpus.packages().await;
+            let snapshot: Vec<Arc<nudox_store::package::PackageView>> = corpus.packages().await;
 
             // Build a set of names we emitted from the snapshot so we can
             // deduplicate against the live channel in step 3.
@@ -735,10 +743,7 @@ impl Engine {
     /// above it.
     #[cfg(feature = "fixtures")]
     pub fn start_with_fixtures(config: EngineConfig) -> EngineHandle {
-        Self::start(
-            config,
-            nudox_store::source::fixtures::FixtureSource::rich(),
-        )
+        Self::start(config, nudox_store::source::fixtures::FixtureSource::rich())
     }
 
     /// Start an engine that produces IR for real on-disk packages.
@@ -815,7 +820,7 @@ impl Engine {
     /// between generations — the IR-native VCS in `workspace/ir-vcs` is where
     /// that belongs, and wiring it in is not a `nudox-engine` change.
     pub fn start_with_versions(
-        config: EngineConfig,
+        #[allow(dead_code)] config: EngineConfig,
         packages: Vec<PackageHistorySpec>,
     ) -> EngineHandle {
         use nudox_store::source::producer::{PackageDescriptor, ProducerRegistry, ProducerSource};
@@ -899,10 +904,7 @@ mod tests {
         ])
         .await;
 
-        assert_eq!(
-            &*engine.versions(&lid).current().unwrap().version,
-            "0.9.0"
-        );
+        assert_eq!(&*engine.versions(&lid).current().unwrap().version, "0.9.0");
         // And the corpus agrees: it holds the 3-symbol generation, not the
         // 1-symbol one that arrived last.
         let resident = engine.corpus().package(&lid).await.unwrap();
@@ -919,7 +921,17 @@ mod tests {
         .await;
 
         // Sanity: the newest is current to begin with.
-        assert_eq!(engine.corpus().package(&lid).await.unwrap().view().table().len(), 2);
+        assert_eq!(
+            engine
+                .corpus()
+                .package(&lid)
+                .await
+                .unwrap()
+                .view()
+                .table()
+                .len(),
+            2
+        );
 
         let rx = engine.select_version(lid.clone(), "0.7.9", Gen(7));
         let ev = rx.recv_async().await.expect("exactly one event is sent");
@@ -936,11 +948,18 @@ mod tests {
         }
 
         // Every version-free path now answers from 0.7.9.
-        assert_eq!(engine.corpus().package(&lid).await.unwrap().view().table().len(), 1);
         assert_eq!(
-            &*engine.versions(&lid).current().unwrap().version,
-            "0.7.9"
+            engine
+                .corpus()
+                .package(&lid)
+                .await
+                .unwrap()
+                .view()
+                .table()
+                .len(),
+            1
         );
+        assert_eq!(&*engine.versions(&lid).current().unwrap().version, "0.7.9");
     }
 
     #[tokio::test]
@@ -951,10 +970,7 @@ mod tests {
         let rx = engine.select_version(lid.clone(), "9.9.9", Gen(2));
         let ev = rx.recv_async().await.expect("exactly one event is sent");
         assert!(matches!(ev, VersionEvent::NotLoaded { .. }), "got {ev:?}");
-        assert_eq!(
-            &*engine.versions(&lid).current().unwrap().version,
-            "0.7.9"
-        );
+        assert_eq!(&*engine.versions(&lid).current().unwrap().version, "0.7.9");
     }
 
     #[tokio::test]

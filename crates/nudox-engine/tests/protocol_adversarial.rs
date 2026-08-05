@@ -22,7 +22,10 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, wire::{DocEvent, Gen, SectionId, SymbolKey}};
+use nudox_engine::{
+    Engine, EngineConfig,
+    wire::{DocEvent, Gen, SectionId, SymbolKey},
+};
 use nudox_store::source::fixtures::rich_lineage;
 
 // ---------------------------------------------------------------------------
@@ -55,16 +58,23 @@ async fn wait_for_corpus(engine: &nudox_engine::EngineHandle) {
 }
 
 /// Drain all events for the given key to completion (Done or Failed).
-async fn drain(engine: &nudox_engine::EngineHandle, key: SymbolKey, generation: Gen) -> Vec<DocEvent> {
+async fn drain(
+    engine: &nudox_engine::EngineHandle,
+    key: SymbolKey,
+    generation: Gen,
+) -> Vec<DocEvent> {
     let (handle, rx) = engine.open_symbol(key, generation);
     let mut events = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         while let Ok(ev) = rx.recv_async().await {
             let done = matches!(ev, DocEvent::Done | DocEvent::Failed(_));
             events.push(ev);
-            if done { break; }
+            if done {
+                break;
+            }
         }
-    }).await;
+    })
+    .await;
     drop(handle);
     events
 }
@@ -104,10 +114,7 @@ async fn head_is_always_the_first_event() {
     let keys = all_keys_static();
     for (i, key) in keys.iter().enumerate() {
         let events = drain(&engine, key.clone(), Gen(i as u64)).await;
-        assert!(
-            !events.is_empty(),
-            "symbol {key:?} produced zero events"
-        );
+        assert!(!events.is_empty(), "symbol {key:?} produced zero events");
         assert!(
             matches!(events[0], DocEvent::Head(_)),
             "first event for symbol {key:?} must be Head; got {:?}",
@@ -130,8 +137,12 @@ async fn timeline_after_head_before_first_section_for_all_fixtures() {
         let events = drain(&engine, key.clone(), Gen(100 + i as u64)).await;
 
         let head_idx = events.iter().position(|e| matches!(e, DocEvent::Head(_)));
-        let timeline_idx = events.iter().position(|e| matches!(e, DocEvent::Timeline(_)));
-        let first_section_idx = events.iter().position(|e| matches!(e, DocEvent::Section(_)));
+        let timeline_idx = events
+            .iter()
+            .position(|e| matches!(e, DocEvent::Timeline(_)));
+        let first_section_idx = events
+            .iter()
+            .position(|e| matches!(e, DocEvent::Section(_)));
 
         let head_idx = match head_idx {
             Some(i) => i,
@@ -319,13 +330,11 @@ async fn opening_nonexistent_symbol_fails_cleanly() {
     let fake_intro = nudox_ir::change::IntroId::from_raw([0xFFu8; 32]);
     let bad_key = nudox_ir::change::StableRef::new(lineage, fake_intro);
 
-    let result = tokio::time::timeout(
-        Duration::from_millis(500),
-        async {
-            let (_h, rx) = engine.open_symbol(bad_key, Gen(600));
-            rx.recv_async().await
-        }
-    ).await;
+    let result = tokio::time::timeout(Duration::from_millis(500), async {
+        let (_h, rx) = engine.open_symbol(bad_key, Gen(600));
+        rx.recv_async().await
+    })
+    .await;
 
     let ev = result
         .expect("opening a nonexistent symbol must not hang")
@@ -351,20 +360,21 @@ async fn opening_symbol_in_unloaded_package_fails_cleanly() {
     let ghost_intro = nudox_ir::change::IntroId::from_raw([0xAAu8; 32]);
     let ghost_key = nudox_ir::change::StableRef::new(ghost_lineage, ghost_intro);
 
-    let result = tokio::time::timeout(
-        Duration::from_millis(500),
-        async {
-            let (_h, rx) = engine.open_symbol(ghost_key, Gen(601));
-            rx.recv_async().await
-        }
-    ).await;
+    let result = tokio::time::timeout(Duration::from_millis(500), async {
+        let (_h, rx) = engine.open_symbol(ghost_key, Gen(601));
+        rx.recv_async().await
+    })
+    .await;
 
     let ev = result
         .expect("opening symbol in unloaded package must not hang")
         .expect("must receive exactly one event");
 
     assert!(
-        matches!(ev, DocEvent::Failed(nudox_engine::wire::EngineError::PackageNotLoaded { .. })),
+        matches!(
+            ev,
+            DocEvent::Failed(nudox_engine::wire::EngineError::PackageNotLoaded { .. })
+        ),
         "unloaded package must produce Failed(PackageNotLoaded); got {ev:?}"
     );
 }
@@ -388,14 +398,16 @@ async fn cancelling_mid_stream_does_not_hang() {
         for _ in 0..2 {
             let _ = rx.recv_async().await;
         }
-    }).await;
+    })
+    .await;
 
     drop(handle); // cancel
 
     // The receiver should drain quickly after cancel.
     let result = tokio::time::timeout(Duration::from_millis(500), async move {
         while rx.recv_async().await.is_ok() {}
-    }).await;
+    })
+    .await;
 
     assert!(
         result.is_ok(),
@@ -428,10 +440,13 @@ async fn sections_arrive_in_section_plan_order() {
         let planned_order: Vec<SectionId> = head.section_plan.iter().map(|p| p.id).collect();
 
         // Collect the order in which Section events actually arrived.
-        let emitted_order: Vec<SectionId> = events.iter().filter_map(|e| match e {
-            DocEvent::Section(s) => Some(s.section_id()),
-            _ => None,
-        }).collect();
+        let emitted_order: Vec<SectionId> = events
+            .iter()
+            .filter_map(|e| match e {
+                DocEvent::Section(s) => Some(s.section_id()),
+                _ => None,
+            })
+            .collect();
 
         // Check that emitted_order is a subsequence of planned_order in the same relative order.
         // (We do a full equality check since all planned sections should be emitted.)

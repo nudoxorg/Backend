@@ -19,24 +19,19 @@ use serde::Deserialize;
 // ---------------------------------------------------------------------------
 
 /// Source text of the `find_symbol_by_key` query.
-pub const FIND_SYMBOL_BY_KEY: &str =
-    include_str!("find_symbol_by_key.trustfall");
+pub const FIND_SYMBOL_BY_KEY: &str = include_str!("find_symbol_by_key.trustfall");
 
 /// Source text of the `list_package_functions` query.
-pub const LIST_PACKAGE_FUNCTIONS: &str =
-    include_str!("list_package_functions.trustfall");
+pub const LIST_PACKAGE_FUNCTIONS: &str = include_str!("list_package_functions.trustfall");
 
 /// Source text of the `find_usages` query.
-pub const FIND_USAGES: &str =
-    include_str!("find_usages.trustfall");
+pub const FIND_USAGES: &str = include_str!("find_usages.trustfall");
 
 /// Source text of the `find_implementors` query.
-pub const FIND_IMPLEMENTORS: &str =
-    include_str!("find_implementors.trustfall");
+pub const FIND_IMPLEMENTORS: &str = include_str!("find_implementors.trustfall");
 
 /// Source text of the `symbols_mentioning_type` query.
-pub const SYMBOLS_MENTIONING_TYPE: &str =
-    include_str!("symbols_mentioning_type.trustfall");
+pub const SYMBOLS_MENTIONING_TYPE: &str = include_str!("symbols_mentioning_type.trustfall");
 
 // ---------------------------------------------------------------------------
 // Result row structs

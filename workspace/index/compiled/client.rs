@@ -65,19 +65,19 @@ struct WireResponse {
 #[derive(Debug, thiserror::Error)]
 pub enum VerificationFailure {
     /// The response echoed a different job key than the one requested.
-    #[error("echoed job_key {echoed:?} does not match the requested key")]
+    #[error("echoed job_key does not match the requested key")]
     KeyEcho { echoed: String },
 
     /// A hit entry was missing one of its mandatory fields.
-    #[error("hit entry is missing required field {field:?}")]
+    #[error("hit entry is missing a required field")]
     MissingField { field: &'static str },
 
     /// The `tip` field was not 64 lowercase hex chars.
-    #[error("tip is not a valid 64-char lowercase hex change id")]
+    #[error("tip is not a valid change id")]
     BadTipHex,
 
     /// The `generation_stamp` field was not 64 lowercase hex chars.
-    #[error("generation_stamp is not a valid 64-char lowercase hex digest")]
+    #[error("generation_stamp is not a valid hex digest")]
     BadStampHex,
 
     /// The `channel` field was empty.
@@ -93,15 +93,15 @@ pub enum ClientError {
     Http(#[from] reqwest::Error),
 
     /// The server answered with a non-success status.
-    #[error("compiled lookup returned status {status}")]
+    #[error("compiled lookup returned unexpected status")]
     UnexpectedStatus { status: reqwest::StatusCode },
 
     /// The server returned a different number of results than keys requested.
-    #[error("compiled lookup returned {got} results for {expected} keys")]
+    #[error("compiled lookup response shape mismatch")]
     ResponseShape { expected: usize, got: usize },
 
     /// A hit failed shape validation.
-    #[error("verification failed for job key {job_key}")]
+    #[error("verification failed")]
     VerificationFailed {
         job_key: JobKey,
         #[source]
@@ -128,7 +128,10 @@ pub struct CompiledClient {
 
 impl CompiledClient {
     pub fn new(base_url: url::Url) -> Self {
-        Self { base_url, http: reqwest::Client::new() }
+        Self {
+            base_url,
+            http: reqwest::Client::new(),
+        }
     }
 
     pub fn with_http(base_url: url::Url, http: reqwest::Client) -> Self {
@@ -192,7 +195,9 @@ pub fn verify_entry(
     entry: &WireEntry,
 ) -> Result<LookupResult, VerificationFailure> {
     if entry.job_key != job_key.hex() {
-        return Err(VerificationFailure::KeyEcho { echoed: entry.job_key.clone() });
+        return Err(VerificationFailure::KeyEcho {
+            echoed: entry.job_key.clone(),
+        });
     }
     if !entry.hit {
         return Ok(LookupResult::Miss);
@@ -214,8 +219,8 @@ pub fn verify_entry(
 
     let tip = ChangeId::new(tip_str.clone()).map_err(|_| VerificationFailure::BadTipHex)?;
 
-    let generation_stamp = decode_hash(stamp_str, "generation_stamp")
-        .map_err(|_| VerificationFailure::BadStampHex)?;
+    let generation_stamp =
+        decode_hash(stamp_str, "generation_stamp").map_err(|_| VerificationFailure::BadStampHex)?;
 
     let package_str = require(entry.package.as_ref(), "package")?;
     let package_uuid = uuid::Uuid::parse_str(package_str)
@@ -231,14 +236,13 @@ pub fn verify_entry(
 }
 
 /// Decode a 64-char lower-hex digest field into a [`heart::content::ContentHash`].
-fn decode_hash(
-    hex: &str,
-    _field: &'static str,
-) -> Result<heart::content::ContentHash, ()> {
+fn decode_hash(hex: &str, _field: &'static str) -> Result<heart::content::ContentHash, ()> {
     if hex.len() != 64 {
         return Err(());
     }
     let mut raw = [0u8; 32];
-    data_encoding::HEXLOWER.decode_mut(hex.as_bytes(), &mut raw).map_err(|_| ())?;
+    data_encoding::HEXLOWER
+        .decode_mut(hex.as_bytes(), &mut raw)
+        .map_err(|_| ())?;
     Ok(heart::content::ContentHash::from_bytes(raw))
 }

@@ -75,7 +75,11 @@ impl NameIndex {
 
         // Dedup: only add if this intro is not already present under this key.
         if !entries.iter().any(|e| e.intro == intro) {
-            entries.push(NameEntry { key, display, intro });
+            entries.push(NameEntry {
+                key,
+                display,
+                intro,
+            });
         }
     }
 
@@ -84,10 +88,7 @@ impl NameIndex {
     /// The input is assumed to already be lowercased; callers must fold before
     /// calling this method.
     pub fn get_exact(&self, name_lower: &str) -> &[NameEntry] {
-        self.inner
-            .get(name_lower)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.inner.get(name_lower).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// Iterate all entries whose lowercased name starts with `prefix_lower`.
@@ -96,10 +97,7 @@ impl NameIndex {
     /// flattened: each yielded `&NameEntry` is one symbol, not one key.
     ///
     /// The `prefix_lower` input must already be lowercased.
-    pub fn prefix<'a>(
-        &'a self,
-        prefix_lower: &'a str,
-    ) -> impl Iterator<Item = &'a NameEntry> + 'a {
+    pub fn prefix<'a>(&'a self, prefix_lower: &'a str) -> impl Iterator<Item = &'a NameEntry> + 'a {
         // BTreeMap::range gives us everything from `prefix_lower` onwards in
         // O(log n) to find the start, then O(k) to iterate the matching keys.
         // We stop as soon as the key no longer starts with our prefix.

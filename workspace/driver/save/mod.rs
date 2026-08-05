@@ -8,105 +8,155 @@
 //! trusting it blindly.
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 pub mod blobs;
 
-use heart::{ContentHash, PackageId, ResolutionState};
 use crate::registry::RegistryError;
 use crate::registry::blob::BlobManifest;
+use heart::{ContentHash, PackageId, ResolutionState};
 
-use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::AdminCap;
 use crate::error::{BadRequestReason, ServerResult};
+use registry::vector::EmbeddingModel;
 
 /// Which derived store to rebuild — the shared [`heart::DerivedStore`], the same
 /// type the registry outbox fans out to (no duplicate enum).
 pub use heart::DerivedStore;
 
 impl<M: EmbeddingModel> Server<M> {
-	/// Rebuild a derived store for a package from its blob, at a known snapshot
-	/// (the recorded [`ContentHash`] from `ResolutionState::Stored`).
-	///
-	/// The rebuild *is* a fan-out re-enqueue: the blob is the root of truth and
-	/// every derived store is a poller, so re-emitting means appending the
-	/// sink's outbox intent for the current generation and letting the poller
-	/// re-materialize. The append dedupes on `(package, generation, sink)`, so
-	/// the whole operation is idempotent by construction.
-	///
-	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
-	#[tracing::instrument(skip(self, _cap), fields(%package, %store))]
-	pub async fn rebuild(
-		&self,
-		_cap: &AdminCap,
-		package: PackageId,
-		store: DerivedStore,
-		snapshot: ContentHash,
-	) -> ServerResult<()> {
-		let stores = self.base();
+    /// Read one source file from the current package manifest.
+    ///
+    /// The manifest is the allow-list: callers cannot turn this into an arbitrary
+    /// CAS read by guessing a hash or a filesystem path. `Store::get_section`
+    /// verifies the returned bytes against the content hash before they leave the
+    /// server.
+    pub async fn source_file(
+        &self,
+        package: PackageId,
+        path: &str,
+    ) -> ServerResult<(String, bytes::Bytes)> {
+        let manifest = self.current_manifest(package).await?;
+        let entry = manifest
+            .files
+            .iter()
+            .find(|entry| entry.path.as_str() == path)
+            .ok_or(crate::error::ServerError::NotFound)?;
+        let bytes = self
+            .base()
+            .blobs
+            .get_section(entry.hash)
+            .await
+            .map_err(RegistryError::from)?;
+        Ok((entry.hash.to_string(), bytes))
+    }
 
-		// The manifest the blobs currently point at must *be* the requested
-		// snapshot — rebuilding a derived store from a different generation than
-		// the caller named would silently mix generations.
-		let manifest = self.current_manifest(package).await?;
-		let current = ContentHash::of_bytes(&manifest.identity_bytes());
-		if current != snapshot {
-			return Err(BadRequestReason::SnapshotMismatch { package }.into());
-		}
+    /// Rebuild a derived store for a package from its blob, at a known snapshot
+    /// (the recorded [`ContentHash`] from `ResolutionState::Stored`).
+    ///
+    /// The rebuild *is* a fan-out re-enqueue: the blob is the root of truth and
+    /// every derived store is a poller, so re-emitting means appending the
+    /// sink's outbox intent for the current generation and letting the poller
+    /// re-materialize. The append dedupes on `(package, generation, sink)`, so
+    /// the whole operation is idempotent by construction.
+    ///
+    /// The caller must hold an [`AdminCap`] proving authorization has occurred.
+    #[tracing::instrument(skip(self, _cap), fields(%package, %store))]
+    pub async fn rebuild(
+        &self,
+        _cap: &AdminCap,
+        package: PackageId,
+        store: DerivedStore,
+        snapshot: ContentHash,
+    ) -> ServerResult<()> {
+        let stores = self.base();
 
-		stores
-			.outbox
-			.append(package, snapshot, &[store])
-			.await
-			.map_err(RegistryError::from)?;
-		tracing::info!("rebuild intent re-emitted");
-		Ok(())
-	}
+        // The manifest the blobs currently point at must *be* the requested
+        // snapshot — rebuilding a derived store from a different generation than
+        // the caller named would silently mix generations.
+        let manifest = self.current_manifest(package).await?;
+        let current = ContentHash::of_bytes(&manifest.identity_bytes());
+        if current != snapshot {
+            return Err(BadRequestReason::SnapshotMismatch { package }.into());
+        }
 
-	/// Verify determinism: re-derive a package's content hash from its blob and
-	/// confirm it matches the recorded snapshot. A mismatch means non-reproducible
-	/// output — an alert-worthy invariant break.
-	///
-	/// The caller must hold an [`AdminCap`] proving authorization has occurred.
-	#[tracing::instrument(skip(self, _cap), fields(%package))]
-	pub async fn verify_reproducible(&self, _cap: &AdminCap, package: PackageId) -> ServerResult<bool> {
-		let stores = self.base();
+        stores
+            .outbox
+            .append(package, snapshot, &[store])
+            .await
+            .map_err(RegistryError::from)?;
+        tracing::info!("rebuild intent re-emitted");
+        Ok(())
+    }
 
-		let record = stores.global_store.get(package).await.map_err(RegistryError::from)?;
-		let ResolutionState::Stored { hash: recorded } = record.state else {
-			return Err(BadRequestReason::NoRecordedSnapshot { package }.into());
-		};
+    /// Verify determinism: re-derive a package's content hash from its blob and
+    /// confirm it matches the recorded snapshot. A mismatch means non-reproducible
+    /// output — an alert-worthy invariant break.
+    ///
+    /// The caller must hold an [`AdminCap`] proving authorization has occurred.
+    #[tracing::instrument(skip(self, _cap), fields(%package))]
+    pub async fn verify_reproducible(
+        &self,
+        _cap: &AdminCap,
+        package: PackageId,
+    ) -> ServerResult<bool> {
+        let stores = self.base();
 
-		// Re-read every section through the integrity-verifying store path (each
-		// read re-hashes the bytes against its key), then re-derive the snapshot
-		// fold. Together that is a full recomputation from the stored bytes.
-		let manifest = self.current_manifest(package).await?;
-		for entry in manifest.files.iter() {
-			stores.blobs.get_section(entry.hash).await.map_err(RegistryError::from)?;
-		}
-		stores.blobs.get_section(manifest.ir_ref).await.map_err(RegistryError::from)?;
-		stores.blobs.get_section(manifest.references_ref).await.map_err(RegistryError::from)?;
+        let record = stores
+            .global_store
+            .get(package)
+            .await
+            .map_err(RegistryError::from)?;
+        let ResolutionState::Stored { hash: recorded } = record.state else {
+            return Err(BadRequestReason::NoRecordedSnapshot { package }.into());
+        };
 
-		let recomputed = ContentHash::of_bytes(&manifest.identity_bytes());
-		let reproducible = recomputed == recorded;
-		if !reproducible {
-			tracing::error!(
-				?recorded,
-				?recomputed,
-				"snapshot hash mismatch: non-reproducible derivation"
-			);
-		}
-		Ok(reproducible)
-	}
+        // Re-read every section through the integrity-verifying store path (each
+        // read re-hashes the bytes against its key), then re-derive the snapshot
+        // fold. Together that is a full recomputation from the stored bytes.
+        let manifest = self.current_manifest(package).await?;
+        for entry in manifest.files.iter() {
+            stores
+                .blobs
+                .get_section(entry.hash)
+                .await
+                .map_err(RegistryError::from)?;
+        }
+        stores
+            .blobs
+            .get_section(manifest.ir_ref)
+            .await
+            .map_err(RegistryError::from)?;
+        stores
+            .blobs
+            .get_section(manifest.references_ref)
+            .await
+            .map_err(RegistryError::from)?;
 
-	/// The manifest the blob store currently points at for a package.
-	async fn current_manifest(&self, package: PackageId) -> ServerResult<BlobManifest> {
-		let stores = self.base();
-		let record = stores.global_store.get(package).await.map_err(RegistryError::from)?;
-		Ok(stores
-			.blobs
-			.get_manifest(&record.package.coordinates)
-			.await
-			.map_err(RegistryError::from)?)
-	}
+        let recomputed = ContentHash::of_bytes(&manifest.identity_bytes());
+        let reproducible = recomputed == recorded;
+        if !reproducible {
+            tracing::error!(
+                ?recorded,
+                ?recomputed,
+                "snapshot hash mismatch: non-reproducible derivation"
+            );
+        }
+        Ok(reproducible)
+    }
+
+    /// The manifest the blob store currently points at for a package.
+    async fn current_manifest(&self, package: PackageId) -> ServerResult<BlobManifest> {
+        let stores = self.base();
+        let record = stores
+            .global_store
+            .get(package)
+            .await
+            .map_err(RegistryError::from)?;
+        Ok(stores
+            .blobs
+            .get_manifest(&record.package.coordinates)
+            .await
+            .map_err(RegistryError::from)?)
+    }
 }

@@ -51,10 +51,7 @@ fn source_location(entry: &Entry) -> (Option<SharedStr>, Option<[u32; 2]>) {
         u32::try_from(span.end).unwrap_or(u32::MAX),
     ];
 
-    (
-        Some(SharedStr::from(path_str.as_ref())),
-        Some(wire_span),
-    )
+    (Some(SharedStr::from(path_str.as_ref())), Some(wire_span))
 }
 
 /// Build the `SymbolHead` for `entry` at `intro`.
@@ -193,8 +190,17 @@ mod tests {
 
         for (intro, entry) in pkg.view().entries() {
             let h = head(intro, entry, pkg.view(), &pkg);
-            assert_eq!(h.key.intro, intro, "head key.intro must equal the intro for '{}'", entry.sym().name);
-            assert_eq!(&h.key.package, pkg.lineage(), "head key.package must equal the lineage");
+            assert_eq!(
+                h.key.intro,
+                intro,
+                "head key.intro must equal the intro for '{}'",
+                entry.sym().name
+            );
+            assert_eq!(
+                &h.key.package,
+                pkg.lineage(),
+                "head key.package must equal the lineage"
+            );
         }
     }
 
@@ -205,7 +211,11 @@ mod tests {
 
         for (intro, entry) in pkg.view().entries() {
             let h = head(intro, entry, pkg.view(), &pkg);
-            assert!(!h.signature.is_empty(), "signature must not be empty for '{}'", entry.sym().name);
+            assert!(
+                !h.signature.is_empty(),
+                "signature must not be empty for '{}'",
+                entry.sym().name
+            );
         }
     }
 
@@ -215,7 +225,10 @@ mod tests {
         let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
 
         // The root entry (the one with no parent) should have an empty breadcrumb.
-        let root = pkg.view().entries().find(|(id, _)| pkg.view().parent_of(*id).is_none());
+        let root = pkg
+            .view()
+            .entries()
+            .find(|(id, _)| pkg.view().parent_of(*id).is_none());
         if let Some((intro, entry)) = root {
             let h = head(intro, entry, pkg.view(), &pkg);
             assert!(h.breadcrumb.is_empty(), "root must have empty breadcrumb");
@@ -228,10 +241,17 @@ mod tests {
         let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
 
         // A child entry (one that has a parent) must have a non-empty breadcrumb.
-        let child = pkg.view().entries().find(|(id, _)| pkg.view().parent_of(*id).is_some());
+        let child = pkg
+            .view()
+            .entries()
+            .find(|(id, _)| pkg.view().parent_of(*id).is_some());
         if let Some((intro, entry)) = child {
             let h = head(intro, entry, pkg.view(), &pkg);
-            assert!(!h.breadcrumb.is_empty(), "child must have non-empty breadcrumb for '{}'", entry.sym().name);
+            assert!(
+                !h.breadcrumb.is_empty(),
+                "child must have non-empty breadcrumb for '{}'",
+                entry.sym().name
+            );
         }
     }
 
@@ -252,7 +272,12 @@ mod tests {
                 entry.sym().name
             );
             for (p, s) in h.section_plan.iter().zip(sects.iter()) {
-                assert_eq!(p.id, s.section_id(), "plan/section id mismatch for '{}'", entry.sym().name);
+                assert_eq!(
+                    p.id,
+                    s.section_id(),
+                    "plan/section id mismatch for '{}'",
+                    entry.sym().name
+                );
             }
         }
     }

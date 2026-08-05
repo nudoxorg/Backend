@@ -52,11 +52,15 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window, actions, div, px,
+    FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window, div, px,
     prelude::FluentBuilder as _,
 };
 
 use crate::motion::spring::{Motion, Spring};
+use crate::app::actions::{
+    ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
+    ActivateTab7, ActivateTab8, ActivateTab9, CloseTab,
+};
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use crate::workspace::item::WorkspaceItem;
 use gpui::prelude::*;
@@ -209,28 +213,6 @@ pub(crate) fn active_ix_after_close(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Actions
-// ─────────────────────────────────────────────────────────────────────────────
-
-actions!(
-    pane,
-    [
-        /// Close the active tab.
-        CloseActiveTab,
-        /// Activate the tab at position 1–9.
-        ActivateTab1,
-        ActivateTab2,
-        ActivateTab3,
-        ActivateTab4,
-        ActivateTab5,
-        ActivateTab6,
-        ActivateTab7,
-        ActivateTab8,
-        ActivateTab9,
-    ]
-);
-
-// ─────────────────────────────────────────────────────────────────────────────
 // DragState
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -359,6 +341,27 @@ impl Pane {
         if let Some(ix) = self.slots.iter().position(|s| s.id == id) {
             self.activate_ix(ix, window, cx);
         }
+    }
+
+    fn activate_action(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self.active_id();
+        self.activate_ix(ix, window, cx);
+        if self.active_id() != previous {
+            cx.emit(PaneEvent::ActiveTabChanged {
+                id: self.active_id(),
+            });
+            cx.notify();
+        }
+    }
+
+    fn close_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.active_id() else { return };
+        self.close_tab(id, window, cx);
+        cx.emit(PaneEvent::TabClosed { id });
+        cx.emit(PaneEvent::ActiveTabChanged {
+            id: self.active_id(),
+        });
+        cx.notify();
     }
 
     /// The currently active content view, if any tab is open.
@@ -656,11 +659,42 @@ impl Render for Pane {
         // ── Full pane layout ───────────────────────────────────────────────────
         div()
             .id("pane")
+            .key_context("Pane")
             .flex()
             .flex_col()
             .size_full()
             .overflow_hidden()
             .track_focus(&self.focus)
+            .on_action(cx.listener(|pane, _: &CloseTab, window, cx| {
+                pane.close_active(window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab1, window, cx| {
+                pane.activate_action(0, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab2, window, cx| {
+                pane.activate_action(1, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab3, window, cx| {
+                pane.activate_action(2, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab4, window, cx| {
+                pane.activate_action(3, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab5, window, cx| {
+                pane.activate_action(4, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab6, window, cx| {
+                pane.activate_action(5, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab7, window, cx| {
+                pane.activate_action(6, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab8, window, cx| {
+                pane.activate_action(7, window, cx);
+            }))
+            .on_action(cx.listener(|pane, _: &ActivateTab9, window, cx| {
+                pane.activate_action(8, window, cx);
+            }))
             // Tab strip with the sliding underline.
             .child(
                 div()

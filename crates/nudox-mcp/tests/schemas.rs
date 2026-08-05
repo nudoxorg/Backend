@@ -29,7 +29,9 @@ use serde::Serialize;
 /// through.
 fn assert_schema_is_meaningful(schema: &schemars::Schema, what: &str) {
     let value = serde_json::to_value(schema).expect("a derived schema must serialise");
-    let object = value.as_object().unwrap_or_else(|| panic!("{what}: schema must be an object"));
+    let object = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{what}: schema must be an object"));
     assert!(
         object.contains_key("type")
             || object.contains_key("oneOf")
@@ -44,8 +46,7 @@ fn assert_schema_is_meaningful(schema: &schemars::Schema, what: &str) {
 /// `Deserialize` is not available for wire types containing `SigToken`, so we
 /// do a one-way serialise check here rather than a full round-trip.
 fn assert_serialises<T: Serialize>(value: &T, what: &str) {
-    let json =
-        serde_json::to_string(value).unwrap_or_else(|e| panic!("{what}: serialise: {e}"));
+    let json = serde_json::to_string(value).unwrap_or_else(|e| panic!("{what}: serialise: {e}"));
     assert!(!json.is_empty(), "{what}: serialised to empty string");
 }
 
@@ -58,8 +59,8 @@ where
     T: Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
 {
     let json = serde_json::to_string(value).unwrap_or_else(|e| panic!("{what}: serialise: {e}"));
-    let back: T = serde_json::from_str(&json)
-        .unwrap_or_else(|e| panic!("{what}: deserialise: {e} ({json})"));
+    let back: T =
+        serde_json::from_str(&json).unwrap_or_else(|e| panic!("{what}: deserialise: {e} ({json})"));
     assert_eq!(value, &back, "{what}: round trip changed the value");
 }
 
@@ -91,8 +92,8 @@ fn every_tool_result_type_has_a_derived_schema() {
 fn argument_schemas_document_their_fields() {
     // A description on every field is what an LLM client reads to decide how to
     // call the tool; an undocumented argument is a silently unusable one.
-    let schema = serde_json::to_value(schema_for!(SearchSymbolsArgs))
-        .expect("schema must serialise");
+    let schema =
+        serde_json::to_value(schema_for!(SearchSymbolsArgs)).expect("schema must serialise");
     let properties = schema
         .get("properties")
         .and_then(|p| p.as_object())
@@ -113,8 +114,8 @@ fn argument_schemas_document_their_fields() {
 fn optional_arguments_are_actually_optional() {
     // `query` is the only required field; everything else must be omissible,
     // or a caller that just wants a name search is forced to invent values.
-    let schema = serde_json::to_value(schema_for!(SearchSymbolsArgs))
-        .expect("schema must serialise");
+    let schema =
+        serde_json::to_value(schema_for!(SearchSymbolsArgs)).expect("schema must serialise");
     let required: Vec<&str> = schema
         .get("required")
         .and_then(|r| r.as_array())
@@ -122,8 +123,8 @@ fn optional_arguments_are_actually_optional() {
         .unwrap_or_default();
     assert_eq!(required, vec!["query"], "only `query` may be required");
 
-    let parsed: SearchSymbolsArgs = serde_json::from_str(r#"{"query":"Deserializer"}"#)
-        .expect("a bare query must deserialise");
+    let parsed: SearchSymbolsArgs =
+        serde_json::from_str(r#"{"query":"Deserializer"}"#).expect("a bare query must deserialise");
     assert_eq!(parsed.kinds, None);
     assert_eq!(parsed.packages, None);
     assert_eq!(parsed.limit, None);
@@ -171,7 +172,9 @@ fn sample_head() -> Box<SymbolHead> {
         kind: KindTag::Known(KindDiscriminant::from_u16(3).expect("Function discriminant")),
         visibility: Visibility::Public,
         provenance: Provenance::TrustedLocal,
-        deprecation: Some(nudox_engine::wire::SharedStr::from("use `from_str` instead")),
+        deprecation: Some(nudox_engine::wire::SharedStr::from(
+            "use `from_str` instead",
+        )),
         section_plan: vec![SectionPlan {
             id: SectionId(1),
             kind: SectionKind::Prose,
@@ -189,7 +192,9 @@ fn search_result_serialises() {
             display_name: nudox_engine::wire::SharedStr::from("serde::de::Deserializer"),
             sig_preview: sample_sig(),
             kind: KindTag::Known(KindDiscriminant::from_u16(5).expect("Trait discriminant")),
-            provenance: Provenance::SyncedLocal { generation: GenerationId(7) },
+            provenance: Provenance::SyncedLocal {
+                generation: GenerationId(7),
+            },
             score: 0.875,
         }],
         truncated: true,
@@ -201,9 +206,15 @@ fn search_result_serialises() {
         "hit key must be ecosystem:name#introhex string: {json}"
     );
     // Provenance must have a kind discriminant.
-    assert!(json.contains("synced_local"), "provenance kind must appear: {json}");
+    assert!(
+        json.contains("synced_local"),
+        "provenance kind must appear: {json}"
+    );
     // truncated flag must be present.
-    assert!(json.contains("\"truncated\":true"), "truncated must serialise: {json}");
+    assert!(
+        json.contains("\"truncated\":true"),
+        "truncated must serialise: {json}"
+    );
 }
 
 #[test]
@@ -217,7 +228,10 @@ fn symbol_doc_serialises() {
     let value = SymbolDoc {
         head: sample_head(),
         sections: vec![
-            RenderSection::Prose { id: SectionId(1), blocks: blocks.clone() },
+            RenderSection::Prose {
+                id: SectionId(1),
+                blocks: blocks.clone(),
+            },
             RenderSection::CodeBlock {
                 id: SectionId(2),
                 lang: LangId(nudox_engine::wire::SharedStr::from("rust")),
@@ -251,11 +265,26 @@ fn symbol_doc_serialises() {
 
     let json = serde_json::to_string(&value).expect("SymbolDoc must serialise");
     // Section kind discriminant must appear.
-    assert!(json.contains("\"kind\":\"prose\""), "prose section must be tagged: {json}");
-    assert!(json.contains("\"kind\":\"code_block\""), "code_block section must be tagged: {json}");
-    assert!(json.contains("\"kind\":\"members\""), "members section must be tagged: {json}");
-    assert!(json.contains("\"kind\":\"callout\""), "callout section must be tagged: {json}");
-    assert!(json.contains("\"kind\":\"unknown\""), "unknown section must be tagged: {json}");
+    assert!(
+        json.contains("\"kind\":\"prose\""),
+        "prose section must be tagged: {json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"code_block\""),
+        "code_block section must be tagged: {json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"members\""),
+        "members section must be tagged: {json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"callout\""),
+        "callout section must be tagged: {json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"unknown\""),
+        "unknown section must be tagged: {json}"
+    );
 }
 
 #[test]
@@ -297,7 +326,9 @@ fn query_result_round_trips() {
 
 #[test]
 fn schema_result_round_trips() {
-    let value = SchemaResult { schema: nudox_mcp::SCHEMA_SDL.to_owned() };
+    let value = SchemaResult {
+        schema: nudox_mcp::SCHEMA_SDL.to_owned(),
+    };
     assert_round_trips(&value, "SchemaResult");
 }
 
@@ -312,16 +343,28 @@ fn tool_arguments_round_trip() {
         },
         "SearchSymbolsArgs",
     );
-    assert_round_trips(&GetSymbolArgs { key: sample_key_dto() }, "GetSymbolArgs");
     assert_round_trips(
-        &FindUsagesArgs { key: sample_key_dto(), limit: None },
+        &GetSymbolArgs {
+            key: sample_key_dto(),
+        },
+        "GetSymbolArgs",
+    );
+    assert_round_trips(
+        &FindUsagesArgs {
+            key: sample_key_dto(),
+            limit: None,
+        },
         "FindUsagesArgs",
     );
     assert_round_trips(&ListPackagesArgs {}, "ListPackagesArgs");
     assert_round_trips(
         &GraphQueryArgs {
             query: "query { Packages { lineage @output } }".into(),
-            args: Some([("key".to_owned(), sample_key_dto().0)].into_iter().collect()),
+            args: Some(
+                [("key".to_owned(), sample_key_dto().0)]
+                    .into_iter()
+                    .collect(),
+            ),
             limit: Some(10),
         },
         "GraphQueryArgs",
@@ -334,7 +377,10 @@ fn symbol_keys_are_plain_strings_on_the_wire() {
     // LR-1: the key is one value, spelled one way. If this ever serialised as
     // an object, keys would stop being copy-pasteable between tools.
     let json = serde_json::to_string(&sample_key_dto()).expect("key must serialise");
-    assert!(json.starts_with('"'), "SymbolKey must be a JSON string, got {json}");
+    assert!(
+        json.starts_with('"'),
+        "SymbolKey must be a JSON string, got {json}"
+    );
     assert!(json.contains("cargo:serde#"));
 }
 
@@ -382,15 +428,24 @@ fn kind_tag_unknown_serialises_with_raw() {
         json.contains("\"kind\":\"unknown\""),
         "KindTag::Unknown must have kind discriminant: {json}"
     );
-    assert!(json.contains("\"raw\":999"), "KindTag::Unknown must carry raw value: {json}");
+    assert!(
+        json.contains("\"raw\":999"),
+        "KindTag::Unknown must carry raw value: {json}"
+    );
 }
 
 #[test]
 fn sig_token_kw_serialises_with_kind() {
     let token = SigToken::Kw("fn");
     let json = serde_json::to_string(&token).expect("SigToken must serialise");
-    assert!(json.contains("\"kind\":\"kw\""), "SigToken::Kw must have kind: {json}");
-    assert!(json.contains("\"text\":\"fn\""), "SigToken::Kw must have text: {json}");
+    assert!(
+        json.contains("\"kind\":\"kw\""),
+        "SigToken::Kw must have kind: {json}"
+    );
+    assert!(
+        json.contains("\"text\":\"fn\""),
+        "SigToken::Kw must have text: {json}"
+    );
 }
 
 #[test]

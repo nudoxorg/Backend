@@ -32,6 +32,9 @@
 //! Fully-qualified descriptive names, typed errors (`thiserror`), no `unwrap`
 //! outside tests, small files, strong typing (INDEX-PLAN house style).
 
+/// The untrusted-archive extraction plane (moved from `driver::ingest`).
+/// Sanitizes hostile archive inputs into content-addressed blobs.
+pub mod archive;
 pub mod advisory;
 pub mod driver;
 pub mod enumerate;

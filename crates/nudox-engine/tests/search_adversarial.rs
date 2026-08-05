@@ -17,8 +17,8 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, SearchQuery};
 use nudox_engine::wire::{Gen, SearchEvent};
+use nudox_engine::{Engine, EngineConfig, SearchQuery};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -415,7 +415,9 @@ async fn search_before_corpus_ready_does_not_error() {
     let events = result.expect("search before corpus ready must terminate within 2 s");
 
     assert!(
-        !events.iter().any(|e| matches!(e, SearchEvent::Failed { .. })),
+        !events
+            .iter()
+            .any(|e| matches!(e, SearchEvent::Failed { .. })),
         "search issued before corpus finishes loading must not produce Failed; got: {:?}",
         events
     );

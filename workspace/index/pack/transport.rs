@@ -36,17 +36,18 @@
 //!
 //! [`ObjectPackId`]: heart::object_pack::ObjectPackId
 
+use std::io;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::transport::endpoint::bind_endpoint;
+use crate::transport::frame::{recv_framed, send_framed};
 use bytes::Bytes;
 use heart::deployment::TrustedRemote;
 use heart::object_pack::{MemberKey, ObjectPackId};
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;
 use serde::{Deserialize, Serialize};
-use transport::endpoint::bind_endpoint;
-use transport::frame::{recv_framed, send_framed};
 
 use heart::sync::ContentIo as _;
 
@@ -202,7 +203,11 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
         let endpoint =
             bind_endpoint(vec![OBJECT_PACK_ALPN.to_vec()], secret_key, address_lookup).await?;
 
-        Ok(Self { endpoint, store, enrolled })
+        Ok(Self {
+            endpoint,
+            store,
+            enrolled,
+        })
     }
 
     /// The provider's iroh endpoint (tests share its address).
@@ -222,26 +227,27 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
     /// on the allow-list — in which case a `Refused` is also sent so the peer
     /// learns why).
     pub async fn accept_one(&self) -> Result<(), PackError> {
-        let incoming = self
-            .endpoint
-            .accept()
-            .await
-            .ok_or_else(|| PackError::Transport { detail: "endpoint closed".to_owned() })?;
+        let incoming = self.endpoint.accept().await.ok_or_else(|| {
+            PackError::Transport(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "endpoint closed",
+            ))
+        })?;
 
         let accepting = incoming
             .accept()
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         let connection = accepting
             .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         let remote_endpoint_id = connection.remote_id();
 
         let (mut send, mut recv) = connection
             .accept_bi()
             .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         // Enrollment gate (ID-18): reject and inform non-enrolled peers.
         if !self.is_enrolled(&remote_endpoint_id) {
@@ -261,7 +267,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
 
         send_framed(&mut send, &response).await?;
         send.finish()
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
         connection.closed().await;
         Ok(())
     }
@@ -270,7 +276,9 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
     fn serve(&self, request: &PackRequest) -> PackResponse {
         match self.serve_inner(request) {
             Ok(response) => response,
-            Err(error) => PackResponse::Refused { reason: error.to_string() },
+            Err(error) => PackResponse::Refused {
+                reason: error.to_string(),
+            },
         }
     }
 
@@ -283,16 +291,26 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
                 if !io.has(id).unwrap_or(false) {
                     return Err(PackError::MemberNotFound {
                         // No dedicated "pack not found"; reuse a typed miss.
-                        key: MemberKey::Meta { name: "<whole-pack>".into() },
+                        key: MemberKey::Meta {
+                            name: "<whole-pack>".into(),
+                        },
                     });
                 }
                 let pack_bytes = io
                     .read(id)
-                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
+                    .map_err(|e| PackError::Transport(io::Error::other(e)))?;
                 let outboards = self.store.read_all_outboards(id)?;
-                Ok(PackResponse::WholePack { pack_bytes, outboards })
+                Ok(PackResponse::WholePack {
+                    pack_bytes,
+                    outboards,
+                })
             }
-            PackRequest::MemberRange { id, key, start, end } => {
+            PackRequest::MemberRange {
+                id,
+                key,
+                start,
+                end,
+            } => {
                 match self.store.outboard(id, key)? {
                     Some(outboard) => {
                         // Verified range streaming via Bao.
@@ -308,7 +326,10 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
                         // No outboard (sub-threshold member): whole-member fetch.
                         let member = self.store.get_member(id, key)?;
                         let content = heart::content::ContentHash::of_bytes(&member);
-                        Ok(PackResponse::WholeMember { content, bytes: member.to_vec() })
+                        Ok(PackResponse::WholeMember {
+                            content,
+                            bytes: member.to_vec(),
+                        })
                     }
                 }
             }
@@ -374,33 +395,40 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
             self.request(provider, &PackRequest::WholePack { id: *id }),
         )
         .await
-        .map_err(|_| PackError::Transport { detail: "fetch timed out".to_owned() })??;
+        .map_err(|_| {
+            PackError::Transport(io::Error::new(io::ErrorKind::TimedOut, "fetch timed out"))
+        })??;
 
         match response {
-            PackResponse::WholePack { pack_bytes, outboards } => {
+            PackResponse::WholePack {
+                pack_bytes,
+                outboards,
+            } => {
                 // Route through the heart::sync seam (verify → write), then
                 // re-install with outboards so the sidecar is durable.
                 let io = ObjectPackContentIo::new(Arc::clone(&self.store));
 
                 // Step 1: content-address verify (re-derives ObjectPackId from TOC).
                 io.verify(id, &pack_bytes)
-                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
+                    .map_err(|e| PackError::Transport(io::Error::other(e)))?;
 
                 // Step 2: write through the seam (atomic install, no outboards yet).
                 io.write(id, &pack_bytes)
-                    .map_err(|e| PackError::Transport { detail: e.to_string() })?;
+                    .map_err(|e| PackError::Transport(io::Error::other(e)))?;
 
                 // Step 3: re-install with outboards to write the sidecar (the
                 // store's install_pack is idempotent on the pack file itself;
                 // only the sidecar changes vs. the previous call).
                 self.store.install_pack(id, &pack_bytes, &outboards)
             }
-            PackResponse::Refused { reason } => {
-                Err(PackError::Transport { detail: format!("provider refused: {reason}") })
-            }
-            _ => Err(PackError::Transport {
-                detail: "provider returned an unexpected response to WholePack".to_owned(),
-            }),
+            PackResponse::Refused { reason } => Err(PackError::Transport(io::Error::new(
+                io::ErrorKind::Other,
+                format_args!("provider refused: {reason}"),
+            ))),
+            _ => Err(PackError::Transport(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "provider returned an unexpected response to WholePack",
+            ))),
         }
     }
 
@@ -423,12 +451,16 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
         };
         let response = tokio::time::timeout(OBJECT_PACK_TIMEOUT, self.request(provider, &request))
             .await
-            .map_err(|_| PackError::Transport { detail: "fetch timed out".to_owned() })??;
+            .map_err(|_| {
+                PackError::Transport(io::Error::new(io::ErrorKind::TimedOut, "fetch timed out"))
+            })??;
 
         match response {
-            PackResponse::VerifiedRange { root_hash, uncompressed_length, encoded } => {
-                verify_bao_range(&root_hash, uncompressed_length, &encoded, start, end)
-            }
+            PackResponse::VerifiedRange {
+                root_hash,
+                uncompressed_length,
+                encoded,
+            } => verify_bao_range(&root_hash, uncompressed_length, &encoded, start, end),
             PackResponse::WholeMember { content, bytes } => {
                 let actual = heart::content::ContentHash::of_bytes(&bytes);
                 if actual != content {
@@ -443,12 +475,14 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
                 }
                 Ok(Bytes::copy_from_slice(&bytes[start as usize..end as usize]))
             }
-            PackResponse::Refused { reason } => {
-                Err(PackError::Transport { detail: format!("provider refused: {reason}") })
-            }
-            _ => Err(PackError::Transport {
-                detail: "provider returned an unexpected response to MemberRange".to_owned(),
-            }),
+            PackResponse::Refused { reason } => Err(PackError::Transport(io::Error::new(
+                io::ErrorKind::Other,
+                format_args!("provider refused: {reason}"),
+            ))),
+            _ => Err(PackError::Transport(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "provider returned an unexpected response to MemberRange",
+            ))),
         }
     }
 
@@ -462,16 +496,16 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
             .endpoint
             .connect(provider, OBJECT_PACK_ALPN)
             .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         let (mut send, mut recv) = connection
             .open_bi()
             .await
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         send_framed(&mut send, request).await?;
         send.finish()
-            .map_err(|error| PackError::Transport { detail: error.to_string() })?;
+            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
 
         let response: PackResponse = recv_framed(&mut recv, FRAME_CAP_BYTES).await?;
         connection.close(0u32.into(), b"done");

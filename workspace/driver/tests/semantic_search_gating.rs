@@ -8,14 +8,14 @@
 //! specs pin the planner: the one place a gate may be minted.
 
 #[allow(unused_imports)]
-use driver::{registry};
+use driver::registry;
 mod common;
 
 use std::time::Duration;
 
 use driver::search::SearchPlanner;
 use driver::search::planner::Plan;
-use driver::search::query::{AbstractQuery, Filter, Query, Search};
+use heart::client::query::{AbstractQuery, ExecutionQuery as Query, Filter, Search};
 
 /// A plain search request uses the precise surface, not qdrant.
 ///
@@ -106,7 +106,10 @@ async fn text_search_does_not_implicitly_escalate_to_semantic() {
     // queries fall back to precise — the only sanctioned crossing.
     let one_shot = SearchPlanner::with_quota(1, Duration::from_secs(60));
     let abstract_request = natural_language_search("streaming parser");
-    assert!(matches!(one_shot.plan(&abstract_request), Plan::Semantic(_)));
+    assert!(matches!(
+        one_shot.plan(&abstract_request),
+        Plan::Semantic(_)
+    ));
     assert!(
         matches!(one_shot.plan(&abstract_request), Plan::Precise),
         "an exhausted budget degrades abstract queries to the precise surface"

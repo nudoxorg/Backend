@@ -88,10 +88,7 @@ impl SymbolKeyDto {
             .ok_or_else(|| malformed("intro segment must be exactly 64 hex characters"))?;
 
         Ok(SymbolKey::new(
-            PackageLineageId::new(
-                EcosystemId::new(ecosystem),
-                PackageName::new(name),
-            ),
+            PackageLineageId::new(EcosystemId::new(ecosystem), PackageName::new(name)),
             intro,
         ))
     }
@@ -174,7 +171,10 @@ mod tests {
             );
         }
         let short = format!("cargo:serde#{}", "a".repeat(63));
-        assert!(SymbolKeyDto(short).to_wire().is_err(), "truncated intro must not resolve");
+        assert!(
+            SymbolKeyDto(short).to_wire().is_err(),
+            "truncated intro must not resolve"
+        );
     }
 
     #[test]

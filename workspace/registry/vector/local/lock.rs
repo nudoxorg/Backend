@@ -14,8 +14,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt as _;
 use crate::vector::core::StoreError;
+use fs2::FileExt as _;
 
 use super::{backend_error, locked_error};
 
@@ -28,47 +28,47 @@ pub const LOCK_FILE: &str = ".nudox.lock";
 /// never wedges the project. Dropping the guard unlocks explicitly.
 #[derive(Debug)]
 pub struct ShardLock {
-	file: File,
-	path: PathBuf,
+    file: File,
+    path: PathBuf,
 }
 
 impl ShardLock {
-	/// Take the exclusive lock, creating the shard directory and lock file
-	/// as needed. A held lock elsewhere → [`StoreError::Io`] with
-	/// [`ErrorKind::WouldBlock`] (via [`super::locked_error`]).
-	pub fn acquire(shard_dir: &Path) -> Result<Self, StoreError> {
-		fs::create_dir_all(shard_dir).map_err(backend_error)?;
-		let path = shard_dir.join(LOCK_FILE);
-		let file = OpenOptions::new()
-			.create(true)
-			.truncate(false)
-			.write(true)
-			.open(&path)
-			.map_err(backend_error)?;
+    /// Take the exclusive lock, creating the shard directory and lock file
+    /// as needed. A held lock elsewhere → [`StoreError::Io`] with
+    /// [`ErrorKind::WouldBlock`] (via [`super::locked_error`]).
+    pub fn acquire(shard_dir: &Path) -> Result<Self, StoreError> {
+        fs::create_dir_all(shard_dir).map_err(backend_error)?;
+        let path = shard_dir.join(LOCK_FILE);
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(backend_error)?;
 
-		match file.try_lock_exclusive() {
-			Ok(()) => Ok(Self { file, path }),
-			Err(err) if err.kind() == ErrorKind::WouldBlock => Err(locked_error(format!(
-				"project shard at {} is already open in another nudox window or process; \
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Self { file, path }),
+            Err(err) if err.kind() == ErrorKind::WouldBlock => Err(locked_error(format!(
+                "project shard at {} is already open in another nudox window or process; \
 				 close it (or wait for it to exit) before opening this project for writing",
-				shard_dir.display(),
-			))),
-			Err(err) => Err(backend_error(format!(
-				"failed to lock {}: {err}",
-				path.display(),
-			))),
-		}
-	}
+                shard_dir.display(),
+            ))),
+            Err(err) => Err(backend_error(format!(
+                "failed to lock {}: {err}",
+                path.display(),
+            ))),
+        }
+    }
 
-	/// The lock-file path (diagnostics).
-	pub fn path(&self) -> &Path {
-		&self.path
-	}
+    /// The lock-file path (diagnostics).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl Drop for ShardLock {
-	fn drop(&mut self) {
-		// Best effort; the OS also releases the lock when the fd closes.
-		let _ = fs2::FileExt::unlock(&self.file);
-	}
+    fn drop(&mut self) {
+        // Best effort; the OS also releases the lock when the fd closes.
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
 }

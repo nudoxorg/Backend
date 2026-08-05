@@ -73,6 +73,10 @@
 # Documentation
 !/**/*.md
 
+# Trustfall schema and query sources
+!/**/*.graphql
+!/**/*.trustfall
+
 # Go / Java oracle producer sources. Unlike the Rust producer (compiled from
 # committed .rs), the Go and Java oracles ship as source compiled by Buck2's
 # go_binary / java_library. They must be tracked or fresh checkouts / git
@@ -172,4 +176,9 @@
 
 # Allow nested gitignores
 !/**/.gitignore
+
+# cargo-fuzz manifests and targets; generated corpora/artifacts stay ignored by
+# fuzz/.gitignore.
+!/fuzz/Cargo.toml
+!/fuzz/fuzz_targets/**/*.rs
 .real-crates/

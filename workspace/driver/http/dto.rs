@@ -15,10 +15,10 @@ use crate::{registry, vector};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use arc_swap::ArcSwap;
-use index::ecosystem::PackageNameExt as _;
-use heart::{Language, PackageVersion, RegistryOrigin};
 use crate::registry::package::{Coordinates as PackageCoordinates, PackageName};
+use arc_swap::ArcSwap;
+use heart::{Language, PackageVersion, RegistryOrigin};
+use index::ecosystem::PackageNameExt as _;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use url::Url;
@@ -28,42 +28,46 @@ use crate::error::{BadRequestReason, ServerError};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddPackageDto {
-	pub ecosystem: Language,
-	pub name: String,
-	pub version: String,
-	#[serde(default)]
-	pub origin: Option<String>,
+    pub ecosystem: Language,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub origin: Option<String>,
 }
 
 impl AddPackageDto {
-	pub fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
-		let name = PackageName::new(self.ecosystem, self.name.as_str())
-			.map_err(BadRequestReason::from)?;
-		let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
-			.map_err(BadRequestReason::from)?;
-		let origin = match self.origin.as_deref() {
-			None => required_or_default_origin(self.ecosystem)?,
-			Some(custom) => resolve_custom_origin(custom)?,
-		};
-		Ok(PackageCoordinates { origin, name, version })
-	}
+    pub fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
+        let name =
+            PackageName::new(self.ecosystem, self.name.as_str()).map_err(BadRequestReason::from)?;
+        let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
+            .map_err(BadRequestReason::from)?;
+        let origin = match self.origin.as_deref() {
+            None => required_or_default_origin(self.ecosystem)?,
+            Some(custom) => resolve_custom_origin(custom)?,
+        };
+        Ok(PackageCoordinates {
+            origin,
+            name,
+            version,
+        })
+    }
 }
 
 /// The canonical default origin per ecosystem. Every ecosystem now has one —
 /// Go resolves via proxy.golang.org and Java via Maven Central (M5); an
 /// explicit `origin` still overrides for self-hosted registries.
 fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, ServerError> {
-	match ecosystem {
-		Language::Rust => Ok(RegistryOrigin::CratesIo),
-		Language::Typescript => Ok(RegistryOrigin::NpmPublic),
-		Language::Python => Ok(RegistryOrigin::PyPi),
-		Language::Nix => Ok(RegistryOrigin::FlakeHub),
-		Language::CSharp => Ok(RegistryOrigin::NuGet),
-		Language::Go => Ok(RegistryOrigin::GoProxy),
-		Language::Java => Ok(RegistryOrigin::MavenCentral),
-		// `cpp` is registry-less: the git repository is the package (RL-1).
-		Language::Cpp => Ok(RegistryOrigin::Git),
-	}
+    match ecosystem {
+        Language::Rust => Ok(RegistryOrigin::CratesIo),
+        Language::Typescript => Ok(RegistryOrigin::NpmPublic),
+        Language::Python => Ok(RegistryOrigin::PyPi),
+        Language::Nix => Ok(RegistryOrigin::FlakeHub),
+        Language::CSharp => Ok(RegistryOrigin::NuGet),
+        Language::Go => Ok(RegistryOrigin::GoProxy),
+        Language::Java => Ok(RegistryOrigin::MavenCentral),
+        // `cpp` is registry-less: the git repository is the package (RL-1).
+        Language::Cpp => Ok(RegistryOrigin::Git),
+    }
 }
 
 /// The process-wide lookup table behind the `origin` field of an add-package
@@ -71,25 +75,33 @@ fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, Ser
 /// the table is installed once at assembly rather than threaded through every
 /// DTO conversion.
 static CUSTOM_REGISTRIES: LazyLock<ArcSwap<HashMap<SmolStr, Url>>> =
-	LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
+    LazyLock::new(|| ArcSwap::from_pointee(HashMap::new()));
 
 /// Install (replacing wholesale) the operator-configured custom registries as
 /// the origin lookup table. Called once per assembly from [`crate::Server`].
 pub fn register_custom_registries(registries: &[CustomRegistry]) {
-	let table: HashMap<SmolStr, Url> = registries
-		.iter()
-		.map(|registry| (registry.name.clone(), registry.url.clone()))
-		.collect();
-	tracing::debug!(registries = table.len(), "custom registries registered");
-	CUSTOM_REGISTRIES.store(Arc::new(table));
+    let table: HashMap<SmolStr, Url> = registries
+        .iter()
+        .map(|registry| (registry.name.clone(), registry.url.clone()))
+        .collect();
+    tracing::debug!(registries = table.len(), "custom registries registered");
+    CUSTOM_REGISTRIES.store(Arc::new(table));
 }
 
 fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
-	CUSTOM_REGISTRIES
-		.load()
-		.get(name)
-		.map(|url| RegistryOrigin::Custom { name: SmolStr::new(name), url: url.clone() })
-		.ok_or_else(|| BadRequestReason::UnknownCustomRegistry { name: name.to_owned() }.into())
+    CUSTOM_REGISTRIES
+        .load()
+        .get(name)
+        .map(|url| RegistryOrigin::Custom {
+            name: SmolStr::new(name),
+            url: url.clone(),
+        })
+        .ok_or_else(|| {
+            BadRequestReason::UnknownCustomRegistry {
+                name: name.to_owned(),
+            }
+            .into()
+        })
 }
 
 // ── Compiled-lookup DTOs ─────────────────────────────────────────────────────
@@ -245,8 +257,8 @@ pub struct CompiledLookupResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthDto {
-	pub ready: bool,
-	pub degraded: Vec<heart::BackendKind>,
+    pub ready: bool,
+    pub degraded: Vec<heart::BackendKind>,
 }
 
 // ── Dep-shard DTOs (09-vector §20.3) ─────────────────────────────────────────
@@ -257,72 +269,77 @@ pub struct HealthDto {
 /// status. `artifact_id`/`ram_estimate` are absent until `status == "ready"`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepshardManifestDto {
-	/// The package uuid.
-	pub package: String,
-	/// The package's canonical version.
-	pub version: String,
-	/// The embedding model id the shard was baked under.
-	pub model_id: String,
-	/// The embed-text recipe revision.
-	pub recipe_id: String,
-	/// The quantization profile token (`qp1`).
-	pub quant_profile: String,
-	/// The qdrant-edge on-disk format version.
-	pub edge_format_version: u32,
-	/// Lower-hex blake3 of the edgepack key — the artifact's identity.
-	pub edgepack_key_digest: String,
-	/// Lower-hex blake3 of the packed artifact bytes (the CAS key), once ready.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub artifact_id: Option<String>,
-	/// The client-side admission estimate in bytes (§20.4), once ready.
-	#[serde(skip_serializing_if = "Option::is_none")]
-	pub ram_estimate: Option<i64>,
-	/// `pending` | `ready` | `failed`.
-	pub status: String,
+    /// The package uuid.
+    pub package: String,
+    /// The package's canonical version.
+    pub version: String,
+    /// The embedding model id the shard was baked under.
+    pub model_id: String,
+    /// The embed-text recipe revision.
+    pub recipe_id: String,
+    /// The quantization profile token (`qp1`).
+    pub quant_profile: String,
+    /// The qdrant-edge on-disk format version.
+    pub edge_format_version: u32,
+    /// Lower-hex blake3 of the edgepack key — the artifact's identity.
+    pub edgepack_key_digest: String,
+    /// Lower-hex blake3 of the packed artifact bytes (the CAS key), once ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_id: Option<String>,
+    /// The client-side admission estimate in bytes (§20.4), once ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ram_estimate: Option<i64>,
+    /// `pending` | `ready` | `failed`.
+    pub status: String,
 }
 
 impl DepshardManifestDto {
-	/// Assemble from the computed key and the (possibly absent) ledger row.
-	/// No row, or a row still `claimed`, presents as `pending` — the bakery
-	/// poller will (or already did) pick the package up.
-	pub fn from_parts(
-		key: &vector::shard::EdgepackKey,
-		row: Option<&crate::bakery::EdgepackRow>,
-	) -> Self {
-		use crate::bakery::EdgepackStatus;
-		let status = match row.map(|row| row.status) {
-			Some(EdgepackStatus::Ready) => "ready",
-			Some(EdgepackStatus::Failed) => "failed",
-			Some(EdgepackStatus::Claimed) | None => "pending",
-		};
-		Self {
-			package: key.package.to_string(),
-			version: key.version.to_string(),
-			model_id: key.model_id.to_string(),
-			recipe_id: key.recipe_id.to_string(),
-			quant_profile: quant_profile_token(&key.quant_profile),
-			edge_format_version: key.edge_format_version,
-			edgepack_key_digest: key.digest().hex(),
-			artifact_id: row.and_then(|row| row.artifact).map(|hash| hash.hex()),
-			ram_estimate: row.and_then(|row| row.ram_estimate),
-			status: status.to_owned(),
-		}
-	}
+    /// Assemble from the computed key and the (possibly absent) ledger row.
+    /// No row, or a row still `claimed`, presents as `pending` — the bakery
+    /// poller will (or already did) pick the package up.
+    pub fn from_parts(
+        key: &vector::shard::EdgepackKey,
+        row: Option<&crate::bakery::EdgepackRow>,
+    ) -> Self {
+        use crate::bakery::EdgepackStatus;
+        let status = match row.map(|row| row.status) {
+            Some(EdgepackStatus::Ready) => "ready",
+            Some(EdgepackStatus::Failed) => "failed",
+            Some(EdgepackStatus::Claimed) | None => "pending",
+        };
+        Self {
+            package: key.package.to_string(),
+            version: key.version.to_string(),
+            model_id: key.model_id.to_string(),
+            recipe_id: key.recipe_id.to_string(),
+            quant_profile: quant_profile_token(&key.quant_profile),
+            edge_format_version: key.edge_format_version,
+            edgepack_key_digest: key.digest().hex(),
+            artifact_id: row.and_then(|row| row.artifact).map(|hash| hash.hex()),
+            ram_estimate: row.and_then(|row| row.ram_estimate),
+            status: status.to_owned(),
+        }
+    }
 
-	/// Whether the artifact is servable.
-	pub fn is_ready(&self) -> bool { self.status == "ready" }
+    /// Whether the artifact is servable.
+    pub fn is_ready(&self) -> bool {
+        self.status == "ready"
+    }
 }
 
 /// The stable wire token for a quantization profile (mirrors the bakery
 /// fingerprint encoding; clients treat it as opaque).
 fn quant_profile_token(profile: &vector::quant::QuantProfile) -> String {
-	use vector::quant::QuantProfile;
-	match profile {
-		QuantProfile::None => "none".to_owned(),
-		QuantProfile::ScalarInt8 { quantile, always_ram } => {
-			format!("scalar-int8/q{quantile}/ram{}", u8::from(*always_ram))
-		}
-	}
+    use vector::quant::QuantProfile;
+    match profile {
+        QuantProfile::None => "none".to_owned(),
+        QuantProfile::ScalarInt8 {
+            quantile,
+            always_ram,
+        } => {
+            format!("scalar-int8/q{quantile}/ram{}", u8::from(*always_ram))
+        }
+    }
 }
 
 // ── Rerank DTOs (09-vector §20.8) ────────────────────────────────────────────
@@ -334,124 +351,142 @@ pub const RERANK_MAX_DOCUMENTS: usize = 256;
 /// The request body for `POST /v1/rerank`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerankRequestDto {
-	/// The query the documents are scored against.
-	pub query: String,
-	/// The candidate documents.
-	pub documents: Vec<crate::rerank::RerankDocument>,
-	/// How many results to return (descending relevance).
-	pub top_k: std::num::NonZeroU32,
+    /// The query the documents are scored against.
+    pub query: String,
+    /// The candidate documents.
+    pub documents: Vec<crate::rerank::RerankDocument>,
+    /// How many results to return (descending relevance).
+    pub top_k: std::num::NonZeroU32,
 }
 
 impl RerankRequestDto {
-	/// Structural validation, surfaced as typed 400s.
-	pub fn validate(&self) -> Result<(), ServerError> {
-		if self.query.trim().is_empty() {
-			return Err(BadRequestReason::MissingField { field: "query" }.into());
-		}
-		if self.documents.is_empty() {
-			return Err(BadRequestReason::MissingField { field: "documents" }.into());
-		}
-		if self.documents.len() > RERANK_MAX_DOCUMENTS {
-			return Err(BadRequestReason::MalformedQuery(crate::error::QueryError::Malformed {
-				detail: format!(
-					"too many rerank documents: {} (maximum {RERANK_MAX_DOCUMENTS})",
-					self.documents.len()
-				),
-				query: String::new(),
-			})
-			.into());
-		}
-		Ok(())
-	}
+    /// Structural validation, surfaced as typed 400s.
+    pub fn validate(&self) -> Result<(), ServerError> {
+        if self.query.trim().is_empty() {
+            return Err(BadRequestReason::MissingField { field: "query" }.into());
+        }
+        if self.documents.is_empty() {
+            return Err(BadRequestReason::MissingField { field: "documents" }.into());
+        }
+        if self.documents.len() > RERANK_MAX_DOCUMENTS {
+            return Err(
+                BadRequestReason::MalformedQuery(crate::error::QueryError::Malformed {
+                    detail: format!(
+                        "too many rerank documents: {} (maximum {RERANK_MAX_DOCUMENTS})",
+                        self.documents.len()
+                    ),
+                    query: String::new(),
+                })
+                .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// The response body for `POST /v1/rerank`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RerankResponseDto {
-	/// Scores in descending relevance order, at most `top_k` of them.
-	pub scores: Vec<crate::rerank::RerankScore>,
+    /// Scores in descending relevance order, at most `top_k` of them.
+    pub scores: Vec<crate::rerank::RerankScore>,
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
-	/// The manifest wire shape: every edgepack-key field present, hex digests,
-	/// and the optional fields elided until ready.
-	#[test]
-	fn depshard_manifest_serde_shape() {
-		let key = vector::shard::EdgepackKey {
-			package: heart::PackageId::from_uuid(uuid::Uuid::from_u128(3)),
-			version: smol_str::SmolStr::new("0.4.2"),
-			model_id: vector::ModelId::new("jinaai/jina-embeddings-v2-base-code"),
-			recipe_id: smol_str::SmolStr::new(crate::bakery::RECIPE_ID),
-			quant_profile: vector::quant::QP1,
-			edge_format_version: vector::shard::EDGE_FORMAT_VERSION,
-		};
+    /// The manifest wire shape: every edgepack-key field present, hex digests,
+    /// and the optional fields elided until ready.
+    #[test]
+    fn depshard_manifest_serde_shape() {
+        let key = vector::shard::EdgepackKey {
+            package: heart::PackageId::from_uuid(uuid::Uuid::from_u128(3)),
+            version: smol_str::SmolStr::new("0.4.2"),
+            model_id: vector::ModelId::new("jinaai/jina-embeddings-v2-base-code"),
+            recipe_id: smol_str::SmolStr::new(crate::bakery::RECIPE_ID),
+            quant_profile: vector::quant::QP1,
+            edge_format_version: vector::shard::EDGE_FORMAT_VERSION,
+        };
 
-		// Pending: no row yet → optional fields elided, status pending.
-		let pending = DepshardManifestDto::from_parts(&key, None);
-		let value = serde_json::to_value(&pending).expect("serializes");
-		let object = value.as_object().expect("object");
-		for field in [
-			"package",
-			"version",
-			"model_id",
-			"recipe_id",
-			"quant_profile",
-			"edge_format_version",
-			"edgepack_key_digest",
-			"status",
-		] {
-			assert!(object.contains_key(field), "manifest must carry `{field}`");
-		}
-		assert!(!object.contains_key("artifact_id"), "artifact_id elided while pending");
-		assert!(!object.contains_key("ram_estimate"), "ram_estimate elided while pending");
-		assert_eq!(object["status"], "pending");
-		assert_eq!(object["quant_profile"], quant_profile_token(&vector::quant::QP1));
+        // Pending: no row yet → optional fields elided, status pending.
+        let pending = DepshardManifestDto::from_parts(&key, None);
+        let value = serde_json::to_value(&pending).expect("serializes");
+        let object = value.as_object().expect("object");
+        for field in [
+            "package",
+            "version",
+            "model_id",
+            "recipe_id",
+            "quant_profile",
+            "edge_format_version",
+            "edgepack_key_digest",
+            "status",
+        ] {
+            assert!(object.contains_key(field), "manifest must carry `{field}`");
+        }
+        assert!(
+            !object.contains_key("artifact_id"),
+            "artifact_id elided while pending"
+        );
+        assert!(
+            !object.contains_key("ram_estimate"),
+            "ram_estimate elided while pending"
+        );
+        assert_eq!(object["status"], "pending");
+        assert_eq!(
+            object["quant_profile"],
+            quant_profile_token(&vector::quant::QP1)
+        );
 
-		// Ready: artifact + estimate present, digests lower-hex.
-		let row = crate::bakery::EdgepackRow {
-			digest: key.digest(),
-			status: crate::bakery::EdgepackStatus::Ready,
-			artifact: Some(heart::ContentHash::of_bytes(b"artifact")),
-			ram_estimate: Some(9216),
-		};
-		let ready = DepshardManifestDto::from_parts(&key, Some(&row));
-		assert!(ready.is_ready());
-		let value = serde_json::to_value(&ready).expect("serializes");
-		assert_eq!(value["ram_estimate"], 9216);
-		let artifact = value["artifact_id"].as_str().expect("hex artifact id");
-		assert_eq!(artifact.len(), 64);
-		assert!(artifact.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-	}
+        // Ready: artifact + estimate present, digests lower-hex.
+        let row = crate::bakery::EdgepackRow {
+            digest: key.digest(),
+            status: crate::bakery::EdgepackStatus::Ready,
+            artifact: Some(heart::ContentHash::of_bytes(b"artifact")),
+            ram_estimate: Some(9216),
+        };
+        let ready = DepshardManifestDto::from_parts(&key, Some(&row));
+        assert!(ready.is_ready());
+        let value = serde_json::to_value(&ready).expect("serializes");
+        assert_eq!(value["ram_estimate"], 9216);
+        let artifact = value["artifact_id"].as_str().expect("hex artifact id");
+        assert_eq!(artifact.len(), 64);
+        assert!(
+            artifact
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
+    }
 
-	/// Rerank request validation: empty query/documents and oversize batches
-	/// are typed 400s.
-	#[test]
-	fn rerank_request_validation() {
-		let valid = RerankRequestDto {
-			query: "parse a toml file".to_owned(),
-			documents: vec![crate::rerank::RerankDocument {
-				id: "a".to_owned(),
-				text: "toml::from_str".to_owned(),
-			}],
-			top_k: std::num::NonZeroU32::new(5).expect("non-zero"),
-		};
-		assert!(valid.validate().is_ok());
+    /// Rerank request validation: empty query/documents and oversize batches
+    /// are typed 400s.
+    #[test]
+    fn rerank_request_validation() {
+        let valid = RerankRequestDto {
+            query: "parse a toml file".to_owned(),
+            documents: vec![crate::rerank::RerankDocument {
+                id: "a".to_owned(),
+                text: "toml::from_str".to_owned(),
+            }],
+            top_k: std::num::NonZeroU32::new(5).expect("non-zero"),
+        };
+        assert!(valid.validate().is_ok());
 
-		let mut empty_query = valid.clone();
-		empty_query.query = "  ".to_owned();
-		assert!(empty_query.validate().is_err());
+        let mut empty_query = valid.clone();
+        empty_query.query = "  ".to_owned();
+        assert!(empty_query.validate().is_err());
 
-		let mut no_documents = valid.clone();
-		no_documents.documents.clear();
-		assert!(no_documents.validate().is_err());
+        let mut no_documents = valid.clone();
+        no_documents.documents.clear();
+        assert!(no_documents.validate().is_err());
 
-		let mut oversize = valid;
-		oversize.documents = (0..=RERANK_MAX_DOCUMENTS)
-			.map(|i| crate::rerank::RerankDocument { id: i.to_string(), text: String::new() })
-			.collect();
-		assert!(oversize.validate().is_err());
-	}
+        let mut oversize = valid;
+        oversize.documents = (0..=RERANK_MAX_DOCUMENTS)
+            .map(|i| crate::rerank::RerankDocument {
+                id: i.to_string(),
+                text: String::new(),
+            })
+            .collect();
+        assert!(oversize.validate().is_err());
+    }
 }

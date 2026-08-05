@@ -20,43 +20,46 @@ use super::config::{Sampler, TelemetryConfig};
 /// hard *construction*-time error (malformed endpoint, TLS setup failure)
 /// reaches this `Result`.
 pub(crate) fn build_provider(
-	config: &TelemetryConfig,
-	resource: Resource,
+    config: &TelemetryConfig,
+    resource: Resource,
 ) -> anyhow::Result<SdkTracerProvider> {
-	let exporter = opentelemetry_otlp::SpanExporter::builder()
-		.with_http()
-		.with_endpoint(format!("{}/v1/traces", config.otlp_endpoint.trim_end_matches('/')))
-		.with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-		.with_timeout(config.export_timeout)
-		.build()?;
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_http()
+        .with_endpoint(format!(
+            "{}/v1/traces",
+            config.otlp_endpoint.trim_end_matches('/')
+        ))
+        .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+        .with_timeout(config.export_timeout)
+        .build()?;
 
-	let sampler = match config.sampler {
-		Sampler::AlwaysOn => SdkSampler::AlwaysOn,
-		Sampler::AlwaysOff => SdkSampler::AlwaysOff,
-		Sampler::ParentBasedTraceIdRatio(ratio) => {
-			SdkSampler::ParentBased(Box::new(SdkSampler::TraceIdRatioBased(ratio)))
-		}
-	};
+    let sampler = match config.sampler {
+        Sampler::AlwaysOn => SdkSampler::AlwaysOn,
+        Sampler::AlwaysOff => SdkSampler::AlwaysOff,
+        Sampler::ParentBasedTraceIdRatio(ratio) => {
+            SdkSampler::ParentBased(Box::new(SdkSampler::TraceIdRatioBased(ratio)))
+        }
+    };
 
-	let provider = SdkTracerProvider::builder()
-		.with_batch_exporter(exporter)
-		.with_resource(resource)
-		.with_sampler(sampler)
-		.build();
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource)
+        .with_sampler(sampler)
+        .build();
 
-	Ok(provider)
+    Ok(provider)
 }
 
 /// The `tracing-opentelemetry` bridge layer over the given provider's default
 /// tracer, named after the service so downstream OTel tooling can attribute
 /// spans to `nudox-backend` even without the resource attribute round-trip.
 pub(crate) fn layer<S>(
-	provider: &SdkTracerProvider,
-	service_name: &str,
+    provider: &SdkTracerProvider,
+    service_name: &str,
 ) -> tracing_opentelemetry::OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>
 where
-	S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
+    S: tracing::Subscriber + for<'span> tracing_subscriber::registry::LookupSpan<'span>,
 {
-	let tracer = provider.tracer(service_name.to_owned());
-	tracing_opentelemetry::layer().with_tracer(tracer)
+    let tracer = provider.tracer(service_name.to_owned());
+    tracing_opentelemetry::layer().with_tracer(tracer)
 }

@@ -1,5 +1,7 @@
-use thiserror::Error;
+use std::io;
+
 use super::{BackendKind, Retryable};
+use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConnectFailure {
@@ -16,20 +18,20 @@ pub enum ConnectFailure {
     SchemaMismatch,
 
     /// A vector collection's dimension disagrees with the compiled-in `DIM`.
-    #[error("vector dimension mismatch: store has {found}, expected {expected}")]
+    #[error("vector dimension mismatch")]
     DimensionMismatch { expected: usize, found: usize },
 
     /// The handshake timed out.
     #[error("connection timed out")]
     Timeout,
 
-    /// Anything else, with its source preserved.
-    #[error("connection failed")]
-    Other(#[from] anyhow::Error),
+    /// A host I/O error during connect (mkdir, file open, etc.).
+    #[error("i/o error during connect")]
+    Io(#[from] io::Error),
 }
 
 #[derive(Debug, Error)]
-#[error("failed to connect to {backend}: {kind}")]
+#[error("failed to connect")]
 pub struct ConnectError {
     /// Which backend failed to connect.
     pub backend: BackendKind,

@@ -99,7 +99,10 @@ impl Corpus {
         let pkg = map.get(&key.package)?.clone();
         // Verify the intro exists before producing the EntryRef.
         let _ = pkg.view().entry(key.intro)?;
-        Some(EntryRef { package: pkg, intro: key.intro })
+        Some(EntryRef {
+            package: pkg,
+            intro: key.intro,
+        })
     }
 
     /// Iterate over all currently loaded packages.

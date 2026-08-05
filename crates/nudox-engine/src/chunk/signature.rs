@@ -24,9 +24,8 @@ use nudox_ir::{
     index::Ref,
     kind::Kind,
     kinds::{
-        FnModifier, Function, GenericParam, Receiver,
+        FieldKey, FnModifier, Function, GenericParam, Param, Receiver, RecordForm, Type,
         ty::{Primitive, TemplatePart, TupleElement, Variance, Width},
-        Field, FieldKey, Param, Record, RecordForm, Type,
     },
 };
 use nudox_store::package::PackageView;
@@ -378,11 +377,7 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
 }
 
 /// Append the type of a `Ref<Param>` to `toks`, or `"?"` if unresolvable.
-fn push_param_type(
-    toks: &mut Vec<SigToken>,
-    param_ref: &Ref<Param>,
-    package: &PackageView,
-) {
+fn push_param_type(toks: &mut Vec<SigToken>, param_ref: &Ref<Param>, package: &PackageView) {
     let view = package.view();
     let mut rendered = false;
     if let Ref::Intro(id) = param_ref {
@@ -479,7 +474,9 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
             push_type(toks, inner, package);
             toks.push(SigToken::Punct(";"));
             toks.push(SigToken::Ws);
-            toks.push(SigToken::Ident(SharedStr::from(length.to_string().as_str())));
+            toks.push(SigToken::Ident(SharedStr::from(
+                length.to_string().as_str(),
+            )));
             toks.push(SigToken::Punct("]"));
         }
 
@@ -585,9 +582,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 push_type(&mut bound_toks, b, package);
                 let bound_text = tokens_to_text(&bound_toks);
                 toks.push(SigToken::Ty {
-                    text: SharedStr::from(
-                        format!("{} extends {}", prefix, bound_text).as_str(),
-                    ),
+                    text: SharedStr::from(format!("{} extends {}", prefix, bound_text).as_str()),
                     target: None,
                 });
             } else {
@@ -746,11 +741,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
 // ---------------------------------------------------------------------------
 
 /// Render a list of `Type` bounds joined by ` + `.
-fn push_plus_bounds(
-    toks: &mut Vec<SigToken>,
-    bounds: &[Type],
-    package: &PackageView,
-) {
+fn push_plus_bounds(toks: &mut Vec<SigToken>, bounds: &[Type], package: &PackageView) {
     let mut first = true;
     for b in bounds.iter() {
         if !first {
@@ -863,11 +854,7 @@ pub(crate) fn tokens_to_text(toks: &[SigToken]) -> String {
 }
 
 /// Push generic parameters `<T, U, …>` onto `toks`.
-fn push_generics(
-    toks: &mut Vec<SigToken>,
-    generics: &[GenericParam],
-    package: &PackageView,
-) {
+fn push_generics(toks: &mut Vec<SigToken>, generics: &[GenericParam], package: &PackageView) {
     if generics.is_empty() {
         return;
     }
@@ -932,9 +919,8 @@ mod tests {
         index::Ref,
         kind::Kind,
         kinds::{
-            ty::{Primitive, Width},
-            Alias, Const, Field, FieldKey, Function, Module, Param, Record, Static, Trait, Type,
-            Variant, VariantForm, GenericParam,
+            Alias, Const, Field, FieldKey, Function, GenericParam, Module, Record, Type,
+            ty::Primitive,
         },
         view::IrView,
     };
@@ -1096,7 +1082,10 @@ mod tests {
                 id(2),
                 raw_entry(
                     sym("COUNTER"),
-                    Kind::Static(Static { ty: Type::I32, mutable: true }),
+                    Kind::Static(Static {
+                        ty: Type::I32,
+                        mutable: true,
+                    }),
                 ),
                 Some(id(1)),
             ),
@@ -1113,10 +1102,7 @@ mod tests {
             (id(1), raw_entry(sym("root"), Kind::Module(Module)), None),
             (
                 id(2),
-                raw_entry(
-                    sym("noop"),
-                    Kind::Function(Function::builder().build()),
-                ),
+                raw_entry(sym("noop"), Kind::Function(Function::builder().build())),
                 Some(id(1)),
             ),
         ]);
@@ -1137,11 +1123,7 @@ mod tests {
                 id(2),
                 raw_entry(
                     sym("clone"),
-                    Kind::Function(
-                        Function::builder()
-                            .receiver(Receiver::SharedRef)
-                            .build(),
-                    ),
+                    Kind::Function(Function::builder().receiver(Receiver::SharedRef).build()),
                 ),
                 Some(id(1)),
             ),
@@ -1160,7 +1142,11 @@ mod tests {
                 id(2),
                 raw_entry(
                     sym("MyStr"),
-                    Kind::Alias(Alias::builder().target(Type::Primitive(Primitive::Str)).build()),
+                    Kind::Alias(
+                        Alias::builder()
+                            .target(Type::Primitive(Primitive::Str))
+                            .build(),
+                    ),
                 ),
                 Some(id(1)),
             ),
@@ -1255,10 +1241,19 @@ mod tests {
         let e = pkg.view().entry(id(3)).unwrap();
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "x");
-        let has_target = toks
-            .iter()
-            .any(|t| matches!(t, SigToken::Ty { target: Some(_), .. }));
-        assert!(has_target, "Nominal ref in same pkg should resolve to target");
+        let has_target = toks.iter().any(|t| {
+            matches!(
+                t,
+                SigToken::Ty {
+                    target: Some(_),
+                    ..
+                }
+            )
+        });
+        assert!(
+            has_target,
+            "Nominal ref in same pkg should resolve to target"
+        );
     }
 
     #[test]

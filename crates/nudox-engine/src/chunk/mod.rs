@@ -159,16 +159,12 @@ mod tests {
     /// valid stream yields a valid page.  Modelled as a small state machine.
     #[test]
     fn doc_event_prefix_is_valid_page() {
-        use crate::wire::{DocEvent, HighlightSpan, SymbolHead};
+        use crate::wire::{DocEvent, HighlightSpan};
         use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-        use std::collections::HashSet;
         use std::sync::Arc;
 
         // Build a synthetic but realistic event stream.
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("test"),
-            PackageName::new("test-pkg"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("test-pkg"));
         let intro = IntroId::from_raw([0x01u8; 32]);
         let _key = StableRef::new(lineage, intro);
 

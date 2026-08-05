@@ -1,7 +1,7 @@
 # Full backend image pipeline check (Nushell).
 #
 # Env (wired by tests/backend-image/default.nix):
-#   NUDOX_SERVER           — server derivation (bin/server)
+#   NUDOX_SERVER           — backend derivation (bin/driver)
 #   NUDOX_BACKEND_IMAGE    — nix2container image JSON path
 #   NUDOX_COMPILER_PACKAGE — packages.compiler-daemon store path
 #   NUDOX_PROJECT_ROOT     — repo checkout for buck2 fallback (optional)
@@ -136,9 +136,9 @@ $env.NUDOX_DEFINITIVE__ENDPOINTS__TERMINUS_PASSWORD = "root"
 $env.NUDOX_DEFINITIVE__ENDPOINTS__QDRANT = $"http://127.0.0.1:($ports.qdrant_grpc)"
 $env.NUDOX_DEFINITIVE__ENDPOINTS__QDRANT_COLLECTION = "symbols"
 $env.NUDOX_DEFINITIVE__ENDPOINTS__OBJECT_STORE = $"file://($blobs)"
-$env.RUST_LOG = "info,server=debug,registry=info"
+$env.RUST_LOG = "info,driver=debug,registry=info"
 
-let server_bin = $server | path join "bin/server"
+let server_bin = $server | path join "bin/driver"
 let server_log = $work | path join "server.log"
 let _server_pid = (spawn-bg $server_bin $server_log)
 
@@ -184,9 +184,16 @@ let blob_count = try {
   fail $work $"blob assert failed: ($err.msg? | default ($err | to nuon))"
 }
 
+let downloaded_bytes = try {
+  download-package-file $base_url $work $axum_id "src/lib.rs" "axum-source"
+} catch {|err|
+  fail $work $"source download failed: ($err.msg? | default ($err | to nuon))"
+}
+
 print "==> backend image full-pipeline check passed"
 print $"    axum@($axum_version) → Stored \(($axum_id)\)"
 print $"    zod@($zod_version) → Stored \(($zod_id)\)"
 print $"    blobs: ($blob_count) objects under object_store"
+print $"    source download: ($downloaded_bytes) bytes with CAS etag"
 
 cleanup-work $work

@@ -63,7 +63,11 @@ fn extract_description(value: &Value) -> Option<String> {
     match &value["description"] {
         Value::String(s) => {
             let trimmed = s.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
         }
         Value::Array(parts) => {
             let joined: String = parts
@@ -73,7 +77,11 @@ fn extract_description(value: &Value) -> Option<String> {
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join(" ");
-            if joined.is_empty() { None } else { Some(joined) }
+            if joined.is_empty() {
+                None
+            } else {
+                Some(joined)
+            }
         }
         _ => None,
     }
@@ -91,12 +99,20 @@ fn extract_dependency_token(entry: &Value) -> Option<String> {
     match entry {
         Value::String(s) => {
             let trimmed = s.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
         }
         Value::Object(_) => {
             let name = entry["name"].as_str()?;
             let trimmed = name.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_owned()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
         }
         _ => None,
     }
@@ -117,14 +133,25 @@ mod tests {
             "dependencies": ["zlib", "openssl", {"name": "boost-filesystem"}]
         }"#;
         let manifest = parse(text);
-        assert_eq!(manifest.facts.description.as_deref(), Some("A useful C++ library"));
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("A useful C++ library")
+        );
         assert_eq!(manifest.facts.license.as_deref(), Some("MIT"));
-        assert_eq!(manifest.facts.repository.as_deref(), Some("https://github.com/example/mylib"));
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://github.com/example/mylib")
+        );
         assert_eq!(manifest.dependencies.len(), 3);
         assert_eq!(manifest.dependencies[0].token, "zlib");
         assert_eq!(manifest.dependencies[1].token, "openssl");
         assert_eq!(manifest.dependencies[2].token, "boost-filesystem");
-        assert!(manifest.dependencies.iter().all(|d| d.mechanism == DependencyMechanism::Recipe));
+        assert!(
+            manifest
+                .dependencies
+                .iter()
+                .all(|d| d.mechanism == DependencyMechanism::Recipe)
+        );
     }
 
     #[test]

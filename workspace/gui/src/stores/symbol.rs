@@ -294,14 +294,15 @@ impl<E: SymbolEngine> SymbolStore<E> {
         // §7.4 — four policy lines.
         doc.slot_meta.generation = doc.gens.next();
         doc.slot_meta.begin_loading();
+        let stream_generation = doc.slot_meta.generation;
 
         // Convert BridgeGen to wire Gen.
-        let wire_gen = nudox_engine::wire::Gen(doc.slot_meta.generation.0);
+        let wire_gen = nudox_engine::wire::Gen(stream_generation.0);
         let (handle, rx) = self.engine.open_symbol(key.clone(), wire_gen);
         doc.slot_meta.handle = Some(handle);
 
         doc.drain_task = drain(cx, rx, move |store, ev, cx| {
-            store.apply_doc_event(tab_id, ev, cx);
+            store.apply_doc_event(tab_id, stream_generation, ev, cx);
         });
 
         self.docs.insert(tab_id, doc);
@@ -331,10 +332,26 @@ impl<E: SymbolEngine> SymbolStore<E> {
     pub fn close(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         if let Some(doc) = self.docs.remove(&tab_id) {
             self.key_to_tab.remove(&doc.key);
+            if self.active == Some(tab_id) {
+                self.active = None;
+            }
             // doc.drain_task is dropped here → GPUI cancels it.
             // doc.slot_meta.handle is dropped here → cancels the engine stream.
         }
         cx.notify();
+    }
+
+    /// Keep the store's Replace target aligned with the pane's active tab.
+    ///
+    /// Pane activation is a view concern, so the shell calls this after a tab
+    /// click or keyboard activation. It emits no `TabActivated`: the pane is
+    /// already showing this tab and re-routing that event would re-enter the
+    /// shell.
+    pub fn activate(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        if self.docs.contains_key(&tab_id) && self.active != Some(tab_id) {
+            self.active = Some(tab_id);
+            cx.notify();
+        }
     }
 
     /// Reload the current stream for a tab (re-open at the same key).
@@ -371,26 +388,40 @@ impl<E: SymbolEngine> SymbolStore<E> {
         // §7.4 — supersede.
         doc.slot_meta.generation = doc.gens.next();
         doc.slot_meta.begin_loading();
+        let stream_generation = doc.slot_meta.generation;
         // Preserve old content for stale-while-revalidate (LD-15):
         // do NOT call doc.reset_content() here — old sections stay visible.
 
-        let wire_gen = nudox_engine::wire::Gen(doc.slot_meta.generation.0);
+        let wire_gen = nudox_engine::wire::Gen(stream_generation.0);
         let (handle, rx) = self.engine.open_symbol(key.clone(), wire_gen);
         doc.slot_meta.handle = Some(handle); // drops+cancels predecessor.
 
         doc.drain_task = drain(cx, rx, move |store, ev, cx| {
-            store.apply_doc_event(tab_id, ev, cx);
+            store.apply_doc_event(tab_id, stream_generation, ev, cx);
         });
         cx.notify();
     }
 
     // ── Event application ─────────────────────────────────────────────────
 
-    fn apply_doc_event(&mut self, tab_id: TabId, ev: DocEvent, cx: &mut Context<Self>) {
+    fn apply_doc_event(
+        &mut self,
+        tab_id: TabId,
+        stream_generation: BridgeGen,
+        ev: DocEvent,
+        cx: &mut Context<Self>,
+    ) {
         let doc = match self.docs.get_mut(&tab_id) {
             Some(d) => d,
             None => return, // tab was closed while events were in-flight
         };
+
+        // DocEvent itself predates generation tags. The drain closure carries
+        // the generation of its stream, supplying the stale guard when a
+        // cancelled stream still has queued events.
+        if doc.slot_meta.generation != stream_generation {
+            return;
+        }
 
         match ev {
             DocEvent::Head(head) => {
@@ -513,7 +544,21 @@ impl<E: SymbolEngine> gpui::EventEmitter<TabCountsChanged> for SymbolStore<E> {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::AppContext as _;
     use std::sync::Arc;
+
+    struct NullEngine;
+
+    impl SymbolEngine for NullEngine {
+        fn open_symbol(
+            &self,
+            _key: SymbolKey,
+            generation: nudox_engine::wire::Gen,
+        ) -> (StreamHandle, flume::Receiver<DocEvent>) {
+            let (_tx, rx) = flume::bounded(1);
+            (StreamHandle::new(generation, || {}), rx)
+        }
+    }
 
     // ── Helpers ───────────────────────────────────────────────────────────
     //
@@ -565,6 +610,32 @@ mod tests {
         let stale = BridgeGen(current.0 - 1);
         assert_ne!(stale, current, "old gen does not match current");
         assert_eq!(current, gens.current(), "current gen is stable");
+    }
+
+    /// A terminal event already queued by an older stream must not complete a
+    /// replacement stream. `DocEvent` has no wire generation, so this exercises
+    /// the generation captured by the owning drain closure at the store seam.
+    #[gpui::test]
+    async fn stale_doc_event_does_not_complete_new_stream(cx: &mut gpui::TestAppContext) {
+        let store = cx.new(|_| SymbolStore::new(NullEngine));
+        let tab = store.update(cx, |store, cx| {
+            store.open(make_key(1), OpenDisposition::Replace, cx)
+        });
+        store.update(cx, |store, cx| store.reload(tab, cx));
+
+        // The first open is generation 1; reload has moved the same doc to
+        // generation 2. Apply an event tagged with the superseded stream.
+        store.update(cx, |store, cx| {
+            store.apply_doc_event(tab, BridgeGen(1), DocEvent::Done, cx);
+        });
+
+        store.read_with(cx, |store, _| {
+            let doc = store.doc(tab).expect("reloaded document must remain open");
+            assert!(
+                matches!(doc.slot_meta.phase, crate::bridge::slot::Phase::Loading { .. }),
+                "a stale Done event must not complete the replacement stream"
+            );
+        });
     }
 
     // ── open() dedup ──────────────────────────────────────────────────────

@@ -89,11 +89,12 @@ impl<S: ObjectPackStore + 'static> ContentIo for ObjectPackContentIo<S> {
     /// identical path to what `install_pack` does internally.  A passing
     /// `verify` is the sole licence to write.
     fn verify(&self, id: &ObjectPackId, bytes: &[u8]) -> Result<(), VerifyError> {
-        let reader = ObjectPackReader::open_bytes(Bytes::copy_from_slice(bytes))
-            .map_err(|e| VerifyError::HashMismatch {
+        let reader = ObjectPackReader::open_bytes(Bytes::copy_from_slice(bytes)).map_err(|e| {
+            VerifyError::HashMismatch {
                 expected: id.to_string(),
                 got: format!("(parse error: {e})"),
-            })?;
+            }
+        })?;
         let derived = reader.id();
         if derived != *id {
             return Err(VerifyError::HashMismatch {
@@ -171,10 +172,10 @@ impl<S: ObjectPackStore + 'static> ApplyHook for ObjectPackApplyHook<S> {
             let pack_bytes = self
                 .store
                 .read_pack_bytes(id)
-                .map_err(|e| SyncError::Io(io::Error::other(e.to_string())))?;
+                .map_err(|e| SyncError::Io(io::Error::other(e)))?;
             self.store
                 .install_pack(id, &pack_bytes, outboards)
-                .map_err(|e| SyncError::Io(io::Error::other(e.to_string())))?;
+                .map_err(|e| SyncError::Io(io::Error::other(e)))?;
         }
 
         Ok(tip)
@@ -186,5 +187,5 @@ impl<S: ObjectPackStore + 'static> ApplyHook for ObjectPackApplyHook<S> {
 // ---------------------------------------------------------------------------
 
 fn pack_err_to_io(e: PackError) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e)
 }

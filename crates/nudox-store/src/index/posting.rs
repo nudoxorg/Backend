@@ -44,7 +44,9 @@ pub struct PostingListBuilder<K: Ord, V: Ord> {
 impl<K: Ord, V: Ord> PostingListBuilder<K, V> {
     /// Create an empty builder.
     pub fn new() -> Self {
-        Self { raw: BTreeMap::new() }
+        Self {
+            raw: BTreeMap::new(),
+        }
     }
 
     /// Add one `(key, value)` pair.
@@ -88,7 +90,9 @@ impl<K: Ord, V: Ord> PostingList<K, V> {
     ///
     /// Useful for the case where an index section has no entries at all.
     pub fn empty() -> Self {
-        Self { inner: BTreeMap::new() }
+        Self {
+            inner: BTreeMap::new(),
+        }
     }
 
     /// Return the sorted, deduplicated postings for `key`.
@@ -129,10 +133,7 @@ mod tests {
     }
 
     fn sref(n: u8) -> StableRef {
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("cargo"),
-            PackageName::new("test"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("test"));
         StableRef::new(lineage, intro(n))
     }
 

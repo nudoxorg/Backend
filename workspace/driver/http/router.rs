@@ -6,27 +6,39 @@
 //! path with ingest. Both planes share the `Arc<Server<M>>` application state.
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-	Router,
-	error_handling::HandleErrorLayer,
-	extract::{DefaultBodyLimit, MatchedPath, Request},
-	http::StatusCode,
-	middleware::{self, Next},
-	response::Response,
-	routing::{get, post},
+    Router,
+    error_handling::HandleErrorLayer,
+    extract::{DefaultBodyLimit, MatchedPath, Request},
+    http::{HeaderMap, StatusCode},
+    middleware::{self, Next},
+    response::Response,
+    routing::{get, post},
 };
+use opentelemetry::{global, propagation::Extractor};
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::trace::TraceLayer;
 use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-use registry::vector::EmbeddingModel;
-use crate::config::Limits;
 use crate::Server;
-use crate::http::handlers::{admin, compiled, depshards, health, indexing, rerank as rerank_handler, search};
+use crate::config::Limits;
+use crate::http::handlers::{
+    admin, compiled, depshards, health, indexing, rerank as rerank_handler, search,
+};
+use registry::vector::EmbeddingModel;
+
+/// Names passed to the metrics facade. Prometheus owns the `_total` counter
+/// suffix in exposition, while the histogram name is already complete.
+pub(crate) const HTTP_REQUESTS_METRIC: &str = "http_requests";
+pub(crate) const HTTP_REQUEST_DURATION_METRIC: &str = "http_request_duration_seconds";
+pub(crate) const HTTP_ROUTE_LABEL: &str = "http_route";
+pub(crate) const HTTP_METHOD_LABEL: &str = "method";
+pub(crate) const HTTP_STATUS_LABEL: &str = "status";
 
 /// The largest read-plane request body: search/expand requests are JSON control
 /// messages plus at most a pasted code snippet.
@@ -55,23 +67,23 @@ const COMPILED_LOOKUP_BODY_CEILING: usize = 256 * 1024;
 /// (e.g. `health::readyz`) nest under this request span unchanged — this
 /// layer only adds the outer span, it does not replace inner instrumentation.
 pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
-	let limits = &server.config().limits;
-	Router::new()
-		.merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
-		.merge(write_plane(limits))
-		.merge(admin_plane(limits))
-		.merge(compiled_plane())
-		.merge(vector_plane())
-		// RED metrics via `route_layer` (not `layer`): it runs *after* route
-		// matching, so `MatchedPath` is populated and the `http_route` label is
-		// the low-cardinality template (`/symbols/:id`) rather than the raw path
-		// — the difference between a bounded metric and a per-id series
-		// explosion. It also skips unmatched 404s, the desired RED denominator.
-		// The trace layer below stays `.layer` so it still spans unmatched
-		// requests.
-		.route_layer(middleware::from_fn(record_http_metrics))
-		.layer(request_trace_layer())
-		.with_state(server)
+    let limits = &server.config().limits;
+    Router::new()
+        .merge(read_plane().layer(DefaultBodyLimit::max(READ_PLANE_BODY_CEILING)))
+        .merge(write_plane(limits))
+        .merge(admin_plane(limits))
+        .merge(compiled_plane())
+        .merge(vector_plane())
+        // RED metrics via `route_layer` (not `layer`): it runs *after* route
+        // matching, so `MatchedPath` is populated and the `http_route` label is
+        // the low-cardinality template (`/symbols/:id`) rather than the raw path
+        // — the difference between a bounded metric and a per-id series
+        // explosion. It also skips unmatched 404s, the desired RED denominator.
+        // The trace layer below stays `.layer` so it still spans unmatched
+        // requests.
+        .route_layer(middleware::from_fn(record_http_metrics))
+        .layer(request_trace_layer())
+        .with_state(server)
 }
 
 /// RED (Rate / Errors / Duration) HTTP metrics, emitted through the `metrics`
@@ -90,33 +102,37 @@ pub fn router<M: EmbeddingModel>(server: Arc<Server<M>>) -> Router {
 /// `http_route` comes from `MatchedPath` (the route template) — see the
 /// `route_layer` note at the call site for why that is available here.
 async fn record_http_metrics(request: Request, next: Next) -> Response {
-	let method = request.method().as_str().to_owned();
-	let route = request
-		.extensions()
-		.get::<MatchedPath>()
-		.map(|matched| matched.as_str().to_owned())
-		.unwrap_or_else(|| request.uri().path().to_owned());
-	let started = Instant::now();
+    let method = request.method().as_str().to_owned();
+    let route = http_route_label(&request);
+    let started = Instant::now();
 
-	let response = next.run(request).await;
+    let response = next.run(request).await;
 
-	let status = response.status().as_u16().to_string();
-	metrics::counter!(
-		"http_requests",
-		"http_route" => route.clone(),
-		"method" => method.clone(),
-		"status" => status.clone(),
-	)
-	.increment(1);
-	metrics::histogram!(
-		"http_request_duration_seconds",
-		"http_route" => route,
-		"method" => method,
-		"status" => status,
-	)
-	.record(started.elapsed().as_secs_f64());
+    let status = response.status().as_u16().to_string();
+    metrics::counter!(
+        HTTP_REQUESTS_METRIC,
+        HTTP_ROUTE_LABEL => route.clone(),
+        HTTP_METHOD_LABEL => method.clone(),
+        HTTP_STATUS_LABEL => status.clone(),
+    )
+    .increment(1);
+    metrics::histogram!(
+        HTTP_REQUEST_DURATION_METRIC,
+        HTTP_ROUTE_LABEL => route,
+        HTTP_METHOD_LABEL => method,
+        HTTP_STATUS_LABEL => status,
+    )
+    .record(started.elapsed().as_secs_f64());
 
-	response
+    response
+}
+
+fn http_route_label(request: &Request) -> String {
+    request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|matched| matched.as_str().to_owned())
+        .unwrap_or_else(|| request.uri().path().to_owned())
 }
 
 /// The `TraceLayer` shared by every route. `make_span_with` opens one span per
@@ -131,60 +147,82 @@ async fn record_http_metrics(request: Request, next: Next) -> Response {
 /// preserving the previous `trace_request`'s guarantee.
 #[allow(clippy::type_complexity)]
 fn request_trace_layer() -> TraceLayer<
-	tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
-	impl Fn(&Request) -> Span + Clone,
-	tower_http::trace::DefaultOnRequest,
-	impl Fn(&Response, Duration, &Span) + Clone,
-	tower_http::trace::DefaultOnBodyChunk,
-	tower_http::trace::DefaultOnEos,
-	impl Fn(ServerErrorsFailureClass, Duration, &Span) + Clone,
+    tower_http::classify::SharedClassifier<tower_http::classify::ServerErrorsAsFailures>,
+    impl Fn(&Request) -> Span + Clone,
+    tower_http::trace::DefaultOnRequest,
+    impl Fn(&Response, Duration, &Span) + Clone,
+    tower_http::trace::DefaultOnBodyChunk,
+    tower_http::trace::DefaultOnEos,
+    impl Fn(ServerErrorsFailureClass, Duration, &Span) + Clone,
 > {
-	TraceLayer::new_for_http()
-		.make_span_with(|request: &Request| {
-			let route = request
-				.extensions()
-				.get::<MatchedPath>()
-				.map(MatchedPath::as_str)
-				.unwrap_or_else(|| request.uri().path());
-			tracing::info_span!(
-				"http.server.request",
-				"http.route" = %route,
-				"http.request.method" = %request.method(),
-				"http.response.status_code" = tracing::field::Empty,
-				"otel.name" = %format!("{} {}", request.method(), route),
-				"otel.kind" = "server",
-			)
-		})
-		.on_response(|response: &Response, latency: Duration, span: &Span| {
-			span.record("http.response.status_code", response.status().as_u16());
-			tracing::info!(
-				parent: span,
-				status = response.status().as_u16(),
-				elapsed_ms = latency.as_millis() as u64,
-				"request served"
-			);
-		})
-		.on_failure(|error: ServerErrorsFailureClass, latency: Duration, span: &Span| {
-			tracing::warn!(
-				parent: span,
-				?error,
-				elapsed_ms = latency.as_millis() as u64,
-				"request failed"
-			);
-		})
+    TraceLayer::new_for_http()
+        .make_span_with(|request: &Request| {
+            let route = request
+                .extensions()
+                .get::<MatchedPath>()
+                .map(MatchedPath::as_str)
+                .unwrap_or_else(|| request.uri().path());
+            let span = tracing::info_span!(
+                "http.server.request",
+                "http.route" = %route,
+                "http.request.method" = %request.method(),
+                "http.response.status_code" = tracing::field::Empty,
+                "otel.name" = %format!("{} {}", request.method(), route),
+                "otel.kind" = "server",
+            );
+
+            // Invalid or absent W3C headers simply create a new root span.
+            // Propagation must never change the HTTP response path.
+            let parent = global::get_text_map_propagator(|propagator| {
+                propagator.extract(&HeaderExtractor(request.headers()))
+            });
+            let _ = span.set_parent(parent);
+            span
+        })
+        .on_response(|response: &Response, latency: Duration, span: &Span| {
+            span.record("http.response.status_code", response.status().as_u16());
+            tracing::info!(
+                parent: span,
+                status = response.status().as_u16(),
+                elapsed_ms = latency.as_millis() as u64,
+                "request served"
+            );
+        })
+        .on_failure(
+            |error: ServerErrorsFailureClass, latency: Duration, span: &Span| {
+                tracing::warn!(
+                    parent: span,
+                    ?error,
+                    elapsed_ms = latency.as_millis() as u64,
+                    "request failed"
+                );
+            },
+        )
+}
+
+struct HeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for HeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|name| name.as_str()).collect()
+    }
 }
 
 /// The read plane: `/search`, `/search/semantic`, `/packages/search`,
 /// `/usages`, `/symbols/:id`, `/expand`, `/sessions/:id`.
 fn read_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
-	Router::new()
-		.route("/search", post(search::search))
-		.route("/search/semantic", post(search::search_semantic))
-		.route("/packages/search", post(search::search_packages))
-		.route("/usages", post(search::usages))
-		.route("/expand", post(search::expand))
-		.route("/symbols/:id", get(search::get_symbol))
-		.route("/sessions/:id", get(search::get_session))
+    Router::new()
+        .route("/search", post(search::search))
+        .route("/search/semantic", post(search::search_semantic))
+        .route("/packages/search", post(search::search_packages))
+        .route("/usages", post(search::usages))
+        .route("/expand", post(search::expand))
+        .route("/symbols/:id", get(search::get_symbol))
+        .route("/sessions/:id", get(search::get_session))
 }
 
 /// The write/admin plane: `POST /packages` (add/index), `GET /packages/:id`,
@@ -193,39 +231,42 @@ fn read_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
 /// configured upload timeout; the operational probes stay unbounded so a slow
 /// backend can never mask its own readiness report.
 fn write_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
-	let body_ceiling =
-		usize::try_from(limits.max_request_bytes).unwrap_or(usize::MAX).min(WRITE_PLANE_BODY_CEILING);
-	let mutations = Router::new()
-		.route("/packages", post(indexing::add_package))
-		.route("/packages/:id", get(indexing::get_package))
-		.route("/packages/:id/sync", post(indexing::sync_package))
-		.layer(
-			tower::ServiceBuilder::new()
-				.layer(HandleErrorLayer::new(admission_timed_out))
-				.layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
-		)
-		.layer(DefaultBodyLimit::max(body_ceiling));
-	let operations = Router::new()
-		.route("/healthz", get(health::livez))
-		.route("/readyz", get(health::readyz))
-		.route("/metrics", get(health::metrics));
-	mutations.merge(operations)
+    let body_ceiling = usize::try_from(limits.max_request_bytes)
+        .unwrap_or(usize::MAX)
+        .min(WRITE_PLANE_BODY_CEILING);
+    let mutations = Router::new()
+        .route("/packages", post(indexing::add_package))
+        .route("/packages/:id", get(indexing::get_package))
+        .route("/packages/:id/files/*path", get(indexing::get_source_file))
+        .route("/packages/:id/sync", post(indexing::sync_package))
+        .layer(
+            tower::ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(admission_timed_out))
+                .layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
+        )
+        .layer(DefaultBodyLimit::max(body_ceiling));
+    let operations = Router::new()
+        .route("/healthz", get(health::livez))
+        .route("/readyz", get(health::readyz))
+        .route("/metrics", get(health::metrics));
+    mutations.merge(operations)
 }
 
 /// The admin plane: privileged operations behind [`AdminPrincipal`] extraction.
 /// Both routes carry the same body ceiling and upload timeout as write mutations.
 fn admin_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
-	let body_ceiling =
-		usize::try_from(limits.max_request_bytes).unwrap_or(usize::MAX).min(WRITE_PLANE_BODY_CEILING);
-	Router::new()
-		.route("/admin/packages/:id/verify", post(admin::verify_package))
-		.route("/admin/packages/:id/rebuild", post(admin::rebuild_package))
-		.layer(
-			tower::ServiceBuilder::new()
-				.layer(HandleErrorLayer::new(admission_timed_out))
-				.layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
-		)
-		.layer(DefaultBodyLimit::max(body_ceiling))
+    let body_ceiling = usize::try_from(limits.max_request_bytes)
+        .unwrap_or(usize::MAX)
+        .min(WRITE_PLANE_BODY_CEILING);
+    Router::new()
+        .route("/admin/packages/:id/verify", post(admin::verify_package))
+        .route("/admin/packages/:id/rebuild", post(admin::rebuild_package))
+        .layer(
+            tower::ServiceBuilder::new()
+                .layer(HandleErrorLayer::new(admission_timed_out))
+                .layer(tower::timeout::TimeoutLayer::new(limits.upload_timeout)),
+        )
+        .layer(DefaultBodyLimit::max(body_ceiling))
 }
 
 /// The compiled-output plane: `POST /v1/compiled/lookup` (SMOLVM-PLAN §5, SV-6).
@@ -238,9 +279,9 @@ fn admin_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
 /// allow-all policy every request is granted; future enforcement will require a
 /// `DownloadGrant`-equivalent token (SV-7).
 fn compiled_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
-	Router::new()
-		.route("/v1/compiled/lookup", post(compiled::compiled_lookup))
-		.layer(DefaultBodyLimit::max(COMPILED_LOOKUP_BODY_CEILING))
+    Router::new()
+        .route("/v1/compiled/lookup", post(compiled::compiled_lookup))
+        .layer(DefaultBodyLimit::max(COMPILED_LOOKUP_BODY_CEILING))
 }
 
 /// The body ceiling for `POST /v1/rerank` (256 documents × ~512 bytes ≈ 128 KiB
@@ -255,17 +296,96 @@ const RERANK_BODY_CEILING: usize = 256 * 1024;
 /// - `POST /v1/rerank` — cross-encoder reranking for Deep mode queries
 ///   (§20.8); timeout → explicit `rerank_unavailable` (§20.9).
 fn vector_plane<M: EmbeddingModel>() -> Router<Arc<Server<M>>> {
-	Router::new()
-		.route(
-			"/v1/depshards/:package/:version/manifest",
-			get(depshards::get_manifest),
-		)
-		.route("/v1/rerank", post(rerank_handler::rerank))
-		.layer(DefaultBodyLimit::max(RERANK_BODY_CEILING))
+    Router::new()
+        .route(
+            "/v1/depshards/:package/:version/manifest",
+            get(depshards::get_manifest),
+        )
+        .route("/v1/rerank", post(rerank_handler::rerank))
+        .layer(DefaultBodyLimit::max(RERANK_BODY_CEILING))
 }
 
 /// The timeout layer's error projection: an admin mutation that outlived
 /// `limits.upload_timeout` answers `504` rather than hanging the client.
 async fn admission_timed_out(error: tower::BoxError) -> (StatusCode, String) {
-	(StatusCode::GATEWAY_TIMEOUT, format!("request timed out: {error}"))
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        format!("request timed out: {error}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        HTTP_METHOD_LABEL, HTTP_REQUEST_DURATION_METRIC, HTTP_REQUESTS_METRIC, HTTP_ROUTE_LABEL,
+        HTTP_STATUS_LABEL, http_route_label,
+    };
+    use axum::extract::MatchedPath;
+    use axum::http::{Request, Uri};
+    use opentelemetry::propagation::Extractor;
+
+    #[test]
+    fn http_metric_names_match_prometheus_contract() {
+        assert_eq!(HTTP_REQUESTS_METRIC, "http_requests");
+        assert_eq!(
+            format!("{HTTP_REQUESTS_METRIC}_total"),
+            "http_requests_total"
+        );
+        assert_eq!(
+            HTTP_REQUEST_DURATION_METRIC,
+            "http_request_duration_seconds"
+        );
+        assert_eq!(
+            format!("{HTTP_REQUEST_DURATION_METRIC}_bucket"),
+            "http_request_duration_seconds_bucket"
+        );
+        assert!(!HTTP_REQUESTS_METRIC.ends_with("_total"));
+        assert_eq!(
+            (HTTP_ROUTE_LABEL, HTTP_METHOD_LABEL, HTTP_STATUS_LABEL),
+            ("http_route", "method", "status")
+        );
+    }
+
+    #[test]
+    fn route_label_prefers_matched_template_over_raw_path() {
+        let mut request = Request::builder()
+            .uri(Uri::from_static("/symbols/0123456789abcdef"))
+            .body(axum::body::Body::empty())
+            .expect("request is valid");
+        request
+            .extensions_mut()
+            .insert(MatchedPath::from("/symbols/:id"));
+
+        assert_eq!(http_route_label(&request), "/symbols/:id");
+    }
+
+    #[test]
+    fn route_label_falls_back_to_path_without_match() {
+        let request = Request::builder()
+            .uri(Uri::from_static("/not-found"))
+            .body(axum::body::Body::empty())
+            .expect("request is valid");
+
+        assert_eq!(http_route_label(&request), "/not-found");
+    }
+
+    #[test]
+    fn header_extractor_exposes_w3c_headers_without_panicking_on_invalid_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "traceparent",
+            "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert("x-invalid", http::HeaderValue::from_bytes(&[0xff]).unwrap());
+        let extractor = super::HeaderExtractor(&headers);
+
+        assert_eq!(
+            Extractor::get(&extractor, "traceparent"),
+            Some("00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+        );
+        assert_eq!(Extractor::get(&extractor, "x-invalid"), None);
+        assert!(Extractor::keys(&extractor).contains(&"traceparent"));
+    }
 }

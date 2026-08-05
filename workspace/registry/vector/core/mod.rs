@@ -23,29 +23,29 @@ pub mod shard;
 pub mod store;
 
 pub use admission::{
-	AdmissionBudget, AdmissionOutcome, DepCandidate, HitEma, admit, eviction_victim,
-	ram_estimate_bytes,
+    AdmissionBudget, AdmissionOutcome, DepCandidate, HitEma, admit, eviction_victim,
+    ram_estimate_bytes,
 };
 pub use embed::{AccelKind, EmbedRole, EmbedRuntimeInfo, Embedder, EmbeddingPurpose};
 pub use embedding::{EmbedError, Embedding, l2_normalize};
 pub use fusion::{FusedHit, RRF_K, RankedList, rrf_fuse};
 pub use key::{ChangedSymbol, SymbolDelta, SymbolPartHashes, embed_key, tool_digest};
 pub use model::{
-	CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, VoyageCode3,
-	WeightsArtifact,
-	license::{FORBIDDEN_MODEL_IDS, LicenseError, assert_licensed},
+    CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, VoyageCode3,
+    WeightsArtifact,
+    license::{FORBIDDEN_MODEL_IDS, LicenseError, assert_licensed},
 };
 pub use quant::{HnswParams, QP1, QuantProfile, RescorePolicy, project_ladder, search_ef};
 pub use recipe::{
-	ApproxTokenCounter, EmbedFacets, EmbedFacetsBuf, EmbedText, RECIPE_ID, TokenCounter,
-	VectorName, build_embed_text,
+    ApproxTokenCounter, EmbedFacets, EmbedFacetsBuf, EmbedText, RECIPE_ID, TokenCounter,
+    VectorName, build_embed_text,
 };
 pub use routing::{
-	DEEP_STAGE1_TOP_K, DenseTarget, QualityMode, QueryScope, RerankTier, RouteInputs, RouteLabel,
-	RoutePlan, Stage2, plan_route,
+    DEEP_STAGE1_TOP_K, DenseTarget, QualityMode, QueryScope, RerankTier, RouteInputs, RouteLabel,
+    RoutePlan, Stage2, plan_route,
 };
 pub use shard::{EDGE_FORMAT_VERSION, EdgepackKey, ShardSchema};
 pub use store::{
-	FilterClause, NAMESPACE_NUDOX, Payload, PayloadValue, PointId, SearchFilter, SearchHit,
-	SearchRequest, SourceTag, StoreCapabilities, StoreError, VectorPoint, VectorStore,
+    FilterClause, NAMESPACE_NUDOX, Payload, PayloadValue, PointId, SearchFilter, SearchHit,
+    SearchRequest, SourceTag, StoreCapabilities, StoreError, VectorPoint, VectorStore,
 };

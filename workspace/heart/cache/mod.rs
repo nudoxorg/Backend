@@ -48,8 +48,8 @@
 //! the tiers that can honestly evict ([`DiskCas`], [`MemoryCas`], [`Tiered`]).
 
 #![allow(
-	async_fn_in_trait,
-	reason = "native RPITIT is the CAS convention; the trait is not object-safe by design"
+    async_fn_in_trait,
+    reason = "native RPITIT is the CAS convention; the trait is not object-safe by design"
 )]
 
 // ── Stampede-resistant caching primitives (formerly the `caching` crate) ──────
@@ -91,21 +91,22 @@ use bytes::Bytes;
 /// - For job keys the envelope binds value→self-hash only; the key is not
 ///   required to equal `ContentHash::of_bytes(value)`.
 pub trait Cas: Send + Sync {
-	/// Lookup `key`. `Ok(None)` is a clean miss.
-	fn get(&self, key: ContentHash) -> impl Future<Output = Result<Option<Bytes>, CasError>> + Send;
+    /// Lookup `key`. `Ok(None)` is a clean miss.
+    fn get(&self, key: ContentHash)
+    -> impl Future<Output = Result<Option<Bytes>, CasError>> + Send;
 
-	/// Store `bytes` under `ContentHash::of_bytes(bytes)`.
-	fn put(&self, bytes: Bytes) -> impl Future<Output = Result<ContentHash, CasError>> + Send;
+    /// Store `bytes` under `ContentHash::of_bytes(bytes)`.
+    fn put(&self, bytes: Bytes) -> impl Future<Output = Result<ContentHash, CasError>> + Send;
 
-	/// Store `bytes` under a pre-computed `key`.
-	///
-	/// Returns `true` when the key was newly written, `false` when it already
-	/// existed (first-write-wins; existing payload is left alone).
-	fn put_keyed(
-		&self,
-		key: ContentHash,
-		bytes: Bytes,
-	) -> impl Future<Output = Result<bool, CasError>> + Send;
+    /// Store `bytes` under a pre-computed `key`.
+    ///
+    /// Returns `true` when the key was newly written, `false` when it already
+    /// existed (first-write-wins; existing payload is left alone).
+    fn put_keyed(
+        &self,
+        key: ContentHash,
+        bytes: Bytes,
+    ) -> impl Future<Output = Result<bool, CasError>> + Send;
 }
 
 /// A [`Cas`] tier that can drop a key so a subsequent put can land.
@@ -116,6 +117,6 @@ pub trait Cas: Send + Sync {
 /// state ([`DiskCas`], [`MemoryCas`]) — and the composite [`Tiered`] over them —
 /// implement this.
 pub trait EvictableCas: Cas {
-	/// Drop `key` from this tier so a subsequent put can land.
-	fn invalidate(&self, key: ContentHash) -> impl Future<Output = Result<(), CasError>> + Send;
+    /// Drop `key` from this tier so a subsequent put can land.
+    fn invalidate(&self, key: ContentHash) -> impl Future<Output = Result<(), CasError>> + Send;
 }

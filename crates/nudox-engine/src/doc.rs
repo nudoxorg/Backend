@@ -22,8 +22,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 use crate::{
-    chunk, timeline,
+    chunk,
     runtime::{EngineHandle, StreamHandle},
+    timeline,
     versions::{VersionRegistry, VersionSlice},
     wire::{
         DocEvent, EngineError, Gen, HighlightSpan, ImplRow, ImplsPage, RefRow, RefsPage, SharedStr,
@@ -121,7 +122,7 @@ async fn stream_symbol(
     versions: Arc<VersionRegistry>,
     highlighter: crate::highlight::SharedHighlighter,
     key: SymbolKey,
-    generation: Gen,
+    _generation: Gen,
     tx: flume::Sender<DocEvent>,
     cancel: CancellationToken,
 ) {
@@ -134,17 +135,20 @@ async fn stream_symbol(
     let pkg_arc = match corpus.package(&key.package).await {
         Some(p) => p,
         None => {
-            let _ = tx.send_async(DocEvent::Failed(
-                EngineError::PackageNotLoaded { package: key.package.clone() },
-            ))
-            .await;
+            let _ = tx
+                .send_async(DocEvent::Failed(EngineError::PackageNotLoaded {
+                    package: key.package.clone(),
+                }))
+                .await;
             return;
         }
     };
 
     // Verify the entry exists before we start emitting.
     if pkg_arc.view().entry(key.intro).is_none() {
-        let _ = tx.send_async(DocEvent::Failed(EngineError::SymbolNotFound)).await;
+        let _ = tx
+            .send_async(DocEvent::Failed(EngineError::SymbolNotFound))
+            .await;
         return;
     }
 
@@ -280,7 +284,10 @@ async fn stream_symbol(
         // was just sent on the line above, so the section is already in the
         // receiver's buffer when `Highlight { section: section_id, .. }` lands.
         if tx
-            .send_async(DocEvent::Highlight { section: section_id, spans })
+            .send_async(DocEvent::Highlight {
+                section: section_id,
+                spans,
+            })
             .await
             .is_err()
         {
@@ -321,8 +328,7 @@ async fn stream_symbol(
     // GUI cannot distinguish "none" from "still loading", which is the exact
     // failure mode that made this empty forever.
     if !cancel.is_cancelled() {
-        let impls_result =
-            collect_impls(key.intro, &pkg_arc, key.package.clone());
+        let impls_result = collect_impls(key.intro, &pkg_arc, key.package.clone());
         emit_impls_pages(&tx, &cancel, impls_result).await;
         if cancel.is_cancelled() {
             return;
@@ -380,9 +386,9 @@ fn collect_impls(
     pkg: &nudox_store::package::PackageView,
     lineage: nudox_ir::change::PackageLineageId,
 ) -> Vec<ImplRow> {
+    use nudox_ir::index::Ref;
     use nudox_ir::kind::{Kind, KindDiscriminant};
     use nudox_ir::kinds::Type;
-    use nudox_ir::index::Ref;
 
     let view = pkg.view();
     let indexes = pkg.indexes();
@@ -401,7 +407,9 @@ fn collect_impls(
             Type::Nominal(Ref::Intro(id)) => *id == target,
             // Generic application: `impl Debug for Router<E>` — the outer
             // `Apply` has a `Nominal(Intro(router_intro))` as its base.
-            Type::Apply { base, .. } => matches!(base.as_ref(), Type::Nominal(Ref::Intro(id)) if *id == target),
+            Type::Apply { base, .. } => {
+                matches!(base.as_ref(), Type::Nominal(Ref::Intro(id)) if *id == target)
+            }
             _ => false,
         }
     };
@@ -470,7 +478,10 @@ async fn emit_impls_pages(
         // No impls — one empty terminal page.
         let _ = tx
             .send_async(DocEvent::Impls {
-                page: ImplsPage { impls: Arc::from([] as [ImplRow; 0]), total: 0 },
+                page: ImplsPage {
+                    impls: Arc::from([] as [ImplRow; 0]),
+                    total: 0,
+                },
                 done: true,
             })
             .await;
@@ -562,7 +573,10 @@ async fn emit_refs_pages(
     if rows.is_empty() {
         let _ = tx
             .send_async(DocEvent::Refs {
-                page: RefsPage { refs: Arc::from([] as [RefRow; 0]), total: 0 },
+                page: RefsPage {
+                    refs: Arc::from([] as [RefRow; 0]),
+                    total: 0,
+                },
                 done: true,
             })
             .await;
@@ -624,7 +638,10 @@ mod tests {
         // Grab a real SymbolKey from the rich corpus.
         let corpus = engine.corpus();
         let lineage = nudox_store::source::fixtures::rich_lineage();
-        let pkg = corpus.package(&lineage).await.expect("rich package must be loaded");
+        let pkg = corpus
+            .package(&lineage)
+            .await
+            .expect("rich package must be loaded");
         let (intro, _entry) = pkg.view().entries().next().expect("must have entries");
         let key = nudox_ir::change::StableRef::new(lineage, intro);
 
@@ -632,8 +649,7 @@ mod tests {
 
         let mut events = Vec::new();
         while let Ok(ev) = rx.recv_async().await {
-            let is_terminal =
-                matches!(ev, DocEvent::Done | DocEvent::Failed(_));
+            let is_terminal = matches!(ev, DocEvent::Done | DocEvent::Failed(_));
             events.push(ev);
             if is_terminal {
                 break;
@@ -710,7 +726,10 @@ mod tests {
         while let Ok(ev) = rx2.recv_async().await {
             match &ev {
                 DocEvent::Head(_) => got_head = true,
-                DocEvent::Done => { got_done = true; break; }
+                DocEvent::Done => {
+                    got_done = true;
+                    break;
+                }
                 DocEvent::Failed(_) => break,
                 _ => {}
             }
@@ -727,8 +746,10 @@ mod tests {
         wait_for_corpus(&engine).await;
 
         use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
-        let fake_lineage =
-            PackageLineageId::new(EcosystemId::new("fixture"), PackageName::new("nudox-fixture-rich"));
+        let fake_lineage = PackageLineageId::new(
+            EcosystemId::new("fixture"),
+            PackageName::new("nudox-fixture-rich"),
+        );
         let fake_intro = IntroId::from_raw([0xFFu8; 32]);
         let bad_key = StableRef::new(fake_lineage, fake_intro);
 
@@ -863,10 +884,7 @@ mod tests {
 
         assert_eq!(t.rows.len(), 1, "no row for the version that lacked it");
         assert_eq!(t.rows[0].change, TimelineChange::Introduced);
-        assert_eq!(
-            t.versions_examined, 2,
-            "but both generations were examined"
-        );
+        assert_eq!(t.versions_examined, 2, "but both generations were examined");
     }
 }
 

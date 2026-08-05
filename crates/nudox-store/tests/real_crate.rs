@@ -86,11 +86,7 @@ fn real_crate_root(name: &str) -> PathBuf {
 ///
 /// Returns `None` if the checkout is absent (missing fixture is an environment
 /// problem, not a code defect) and prints a human-readable skip message.
-fn try_lower(
-    root: &PathBuf,
-    name: &str,
-    version: &str,
-) -> Option<PackageView> {
+fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
     if !root.join("Cargo.toml").is_file() {
         eprintln!(
             "SKIP: no checkout at {}. \
@@ -306,7 +302,11 @@ fn ids_are_deterministic_across_runs() {
         &descriptor.lineage,
     )
     .expect("first lowering must succeed");
-    eprintln!("run 1: {} entries in {:.1}s", table1.len(), t1_start.elapsed().as_secs_f32());
+    eprintln!(
+        "run 1: {} entries in {:.1}s",
+        table1.len(),
+        t1_start.elapsed().as_secs_f32()
+    );
 
     // Second run — identical inputs, must produce identical outputs.
     let t2_start = std::time::Instant::now();
@@ -316,7 +316,11 @@ fn ids_are_deterministic_across_runs() {
         &descriptor.lineage,
     )
     .expect("second lowering must succeed");
-    eprintln!("run 2: {} entries in {:.1}s", table2.len(), t2_start.elapsed().as_secs_f32());
+    eprintln!(
+        "run 2: {} entries in {:.1}s",
+        table2.len(),
+        t2_start.elapsed().as_secs_f32()
+    );
 
     // Collect sorted id + name pairs for both runs.
     let mut run1: Vec<(IntroId, String)> = table1
@@ -694,7 +698,10 @@ fn router_doc_comment_survives_lowering() {
         "no entry named Router found in the lowered IR"
     );
 
-    let non_empty: Vec<&String> = router_docs.iter().filter(|d| !d.trim().is_empty()).collect();
+    let non_empty: Vec<&String> = router_docs
+        .iter()
+        .filter(|d| !d.trim().is_empty())
+        .collect();
     assert!(
         !non_empty.is_empty(),
         "found {} Router entries but all have empty documentation. \
@@ -843,14 +850,12 @@ fn generic_params_survive_lowering() {
     // Find any Record or Trait entry that carries generics.
     let generic_entries: Vec<_> = view
         .entries()
-        .filter(|(_, entry)| {
-            match entry.kind().as_owned_kind() {
-                Some(Kind::Record(r)) => !r.generics.is_empty(),
-                Some(Kind::Trait(t)) => !t.generics.is_empty(),
-                Some(Kind::Function(f)) => !f.generics.is_empty(),
-                Some(Kind::Impl(i)) => !i.generics.is_empty(),
-                _ => false,
-            }
+        .filter(|(_, entry)| match entry.kind().as_owned_kind() {
+            Some(Kind::Record(r)) => !r.generics.is_empty(),
+            Some(Kind::Trait(t)) => !t.generics.is_empty(),
+            Some(Kind::Function(f)) => !f.generics.is_empty(),
+            Some(Kind::Impl(i)) => !i.generics.is_empty(),
+            _ => false,
         })
         .map(|(id, e)| (id, e.sym().name.clone()))
         .collect();
@@ -1104,11 +1109,7 @@ fn occurrences_are_recorded_for_axum_functions() {
         return;
     }
 
-    use nudox_ir::{
-        change::PackageLineageId,
-        view::IrView,
-        vocab::Confidence,
-    };
+    use nudox_ir::{change::PackageLineageId, view::IrView, vocab::Confidence};
 
     let descriptor = PackageDescriptor::cargo(&root, "axum", "0.8.9");
     let started = std::time::Instant::now();
@@ -1156,7 +1157,8 @@ fn occurrences_are_recorded_for_axum_functions() {
         .count();
 
     assert_eq!(
-        non_oracle, 0,
+        non_oracle,
+        0,
         "{}/{} occurrences have non-Oracle confidence. The body-walk path \
          uses Semantics for every resolution; only Oracle-confidence facts \
          should appear here. Non-Oracle occurrences indicate a code path that \
@@ -1178,8 +1180,7 @@ fn occurrences_are_recorded_for_axum_functions() {
         total_in_view, total_added,
         "occurrence count in view ({}) differs from number added ({}). \
          IrView::add_occurrence must not silently drop or deduplicate occurrences.",
-        total_in_view,
-        total_added
+        total_in_view, total_added
     );
 
     eprintln!(
@@ -1272,8 +1273,7 @@ fn pin_project_macro_impls_are_present_and_correctly_parented() {
         .entries()
         .filter(|(_, e)| {
             if let Some(k) = e.kind().as_owned_kind() {
-                k.discriminant() == KindDiscriminant::Impl
-                    && e.sym().name.contains("RouteFuture")
+                k.discriminant() == KindDiscriminant::Impl && e.sym().name.contains("RouteFuture")
             } else {
                 false
             }
@@ -1363,10 +1363,10 @@ fn two_crates_have_disjoint_ids_and_correct_names() {
         return;
     }
 
-    let axum_pkg = try_lower(&axum_path, "axum", "0.8.9")
-        .expect("axum checkout exists but lowering failed");
-    let itoa_pkg = try_lower(&itoa_path, "itoa", "1.0.14")
-        .expect("itoa checkout exists but lowering failed");
+    let axum_pkg =
+        try_lower(&axum_path, "axum", "0.8.9").expect("axum checkout exists but lowering failed");
+    let itoa_pkg =
+        try_lower(&itoa_path, "itoa", "1.0.14").expect("itoa checkout exists but lowering failed");
 
     // Both packages must carry the right name.
     assert_eq!(

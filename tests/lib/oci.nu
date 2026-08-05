@@ -5,8 +5,8 @@ export def assert-backend-image [image_json: string] {
   print "==> asserting packages.backend OCI config"
   let cfg = open $image_json | get image-config
 
-  if $cfg.Entrypoint != ["/bin/server"] {
-    error make { msg: $"expected Entrypoint [/bin/server], got ($cfg.Entrypoint | to json)" }
+  if $cfg.Entrypoint != ["/bin/driver"] {
+    error make { msg: $"expected Entrypoint [/bin/driver], got ($cfg.Entrypoint | to json)" }
   }
   if not ("8080/tcp" in ($cfg.ExposedPorts | columns)) {
     error make { msg: "expected ExposedPorts to include 8080/tcp" }
@@ -19,5 +19,5 @@ export def assert-backend-image [image_json: string] {
   if $component != "backend" {
     error make { msg: $"expected label org.nudox.component=backend, got ($component)" }
   }
-  print "    image config ok (entrypoint /bin/server, port 8080, env, labels)"
+  print "    image config ok (entrypoint /bin/driver, port 8080, env, labels)"
 }

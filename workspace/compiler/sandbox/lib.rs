@@ -62,10 +62,10 @@ pub mod worker;
 
 pub use budget::{CapabilityBudget, EgressAllowlist, FsGrant, NetGrant, ThreatTier};
 pub use cage::{Cage, CageCaps, CageId, DevPassthrough, Policy, run_sealed};
-pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
 pub use cancel::CancelToken;
 pub use error::{CageError, KillReason, SandboxError, to_io_error};
 pub use golden_sync::{GoldenContentIo, MAX_GOLDEN_BYTES};
+pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
 pub use limits::{LimitOverride, Limits, Network};
 pub use node::NodeId;
 pub use observer::{CountingObserver, ForgeObserver, NullObserver};
@@ -74,20 +74,20 @@ pub use probe::{HostIsolation, IsolationPolicy, VirtSupport, require as require_
 pub use profiles::ProducerProfile;
 pub use seal::{SealedCommand, SealedInput, Sealer};
 pub use smolvm::{
-	GoldenPool, SmolvmCage, project_network, project_run_spec, project_vm_config,
-	project_vm_config_with_stream,
+    GoldenPool, SmolvmCage, project_network, project_run_spec, project_vm_config,
+    project_vm_config_with_stream,
 };
 pub use smolvm_backend::{RootfsStore, SmolvmRuntime};
+pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
 pub use toolchains::ToolchainSet;
 pub use toolchains::images::{
-	ImageDigest, OciImageRef, OciReference, ToolchainImage, ToolchainImageSet,
-	ToolchainImageStore, ToolchainPlane,
+    ImageDigest, OciImageRef, OciReference, ToolchainImage, ToolchainImageSet, ToolchainImageStore,
+    ToolchainPlane,
 };
-pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
 pub use vm::{
-	Cidr, DnsName, DnsPolicy, EgressPolicy, FakeVmRuntime, GoldenId, GuestRlimits, MountTag,
-	NetworkPolicy, OverlayMode, RunSpec, ScratchOverlay, StreamPort, VirtiofsMount, VmConfig,
-	VmError, VmHandle, VmRuntime, VsockPort,
+    Cidr, DnsName, DnsPolicy, EgressPolicy, FakeVmRuntime, GoldenId, GuestRlimits, MountTag,
+    NetworkPolicy, OverlayMode, RunSpec, ScratchOverlay, StreamPort, VirtiofsMount, VmConfig,
+    VmError, VmHandle, VmRuntime, VsockPort,
 };
 /// Type alias kept for external crates; new code should use [`Output`] directly.
 pub type Captured = Output;
@@ -95,5 +95,5 @@ pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConf
 
 /// Probe host isolation and enforce policy from the environment.
 pub fn boot_check() -> Result<HostIsolation, SandboxError> {
-	require_isolation(IsolationPolicy::from_env())
+    require_isolation(IsolationPolicy::from_env())
 }

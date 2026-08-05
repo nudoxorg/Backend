@@ -2,20 +2,19 @@
 
 use std::sync::Arc;
 
+use futures::StreamExt as _;
+use nudox_graph::adapter::CorpusAdapter;
+use nudox_graph::queries::{
+    FIND_IMPLEMENTORS, FIND_SYMBOL_BY_KEY, FIND_USAGES, FindImplementorsRow, FindSymbolByKeyRow,
+    FindUsagesRow, LIST_PACKAGE_FUNCTIONS, ListPackageFunctionsRow, SYMBOLS_MENTIONING_TYPE,
+    SymbolsMentioningTypeRow,
+};
 use nudox_store::{
     corpus::Corpus,
     package::{PackageView, Provenance},
     source::fixtures::{build_rich_view, rich_lineage},
 };
-use nudox_graph::adapter::CorpusAdapter;
 use trustfall::{Schema, TryIntoStruct, execute_query_async};
-use nudox_graph::queries::{
-    FindSymbolByKeyRow, FindUsagesRow, FindImplementorsRow, ListPackageFunctionsRow,
-    SymbolsMentioningTypeRow,
-    FIND_SYMBOL_BY_KEY, FIND_USAGES, FIND_IMPLEMENTORS, LIST_PACKAGE_FUNCTIONS,
-    SYMBOLS_MENTIONING_TYPE,
-};
-use futures::StreamExt as _;
 
 fn schema() -> Schema {
     Schema::parse(include_str!("../schema.graphql")).expect("schema must parse")
@@ -56,7 +55,11 @@ async fn find_symbol_by_key_distance_function() {
         vars.into_iter().collect(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no stream error").try_into_struct::<FindSymbolByKeyRow>().expect("deserialize"));
+    .map(|row| {
+        row.expect("no stream error")
+            .try_into_struct::<FindSymbolByKeyRow>()
+            .expect("deserialize")
+    });
 
     let row = stream.next().await.expect("at least one row");
     assert_eq!(row.key, key);
@@ -83,16 +86,30 @@ async fn list_package_functions_finds_functions() {
         vars.into_iter().collect(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<ListPackageFunctionsRow>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<ListPackageFunctionsRow>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
     let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
-    assert!(names.contains(&"distance"), "distance not found in {names:?}");
-    assert!(names.contains(&"format_point"), "format_point not found in {names:?}");
+    assert!(
+        names.contains(&"distance"),
+        "distance not found in {names:?}"
+    );
+    assert!(
+        names.contains(&"format_point"),
+        "format_point not found in {names:?}"
+    );
     // All rows must have receiverKind
     for row in &results {
-        assert!(row.receiver_kind.is_some(), "receiverKind missing for {}", row.name);
+        assert!(
+            row.receiver_kind.is_some(),
+            "receiverKind missing for {}",
+            row.name
+        );
     }
 }
 
@@ -108,16 +125,16 @@ async fn find_usages_of_distance() {
     let key = rich_key(6); // distance
 
     let vars = [("key".to_string(), key)];
-    let results: Vec<FindUsagesRow> = execute_query_async(
-        &schema,
-        adapter,
-        FIND_USAGES,
-        vars.into_iter().collect(),
-    )
-    .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<FindUsagesRow>().expect("deserialize"))
-    .collect()
-    .await;
+    let results: Vec<FindUsagesRow> =
+        execute_query_async(&schema, adapter, FIND_USAGES, vars.into_iter().collect())
+            .expect("query must execute")
+            .map(|row| {
+                row.expect("no error")
+                    .try_into_struct::<FindUsagesRow>()
+                    .expect("deserialize")
+            })
+            .collect()
+            .await;
 
     let names: Vec<&str> = results.iter().map(|r| r.name.as_str()).collect();
     assert!(
@@ -145,7 +162,11 @@ async fn find_implementors_of_display() {
         vars.into_iter().collect(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<FindImplementorsRow>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<FindImplementorsRow>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -175,7 +196,11 @@ async fn symbols_mentioning_display() {
         vars.into_iter().collect(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<SymbolsMentioningTypeRow>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<SymbolsMentioningTypeRow>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -294,7 +319,11 @@ async fn target_key_and_target_edge_coexist() {
         vars.into_iter().collect(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -363,7 +392,11 @@ async fn variant_coercion_matches_color_variants() {
         std::collections::BTreeMap::new(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -417,7 +450,11 @@ async fn static_coercion_matches_registry() {
         std::collections::BTreeMap::new(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -454,7 +491,11 @@ async fn module_coercion_matches_modules() {
         std::collections::BTreeMap::new(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -490,7 +531,11 @@ async fn reexport_coercion_matches_reexports() {
         std::collections::BTreeMap::new(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 
@@ -527,7 +572,11 @@ async fn param_coercion_matches_params() {
         std::collections::BTreeMap::new(),
     )
     .expect("query must execute")
-    .map(|row| row.expect("no error").try_into_struct::<Row>().expect("deserialize"))
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<Row>()
+            .expect("deserialize")
+    })
     .collect()
     .await;
 

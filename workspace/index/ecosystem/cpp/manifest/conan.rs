@@ -46,7 +46,10 @@ fn is_conanfile_txt(text: &str) -> bool {
             return true;
         }
         // If we see Python indicators first, it's a .py
-        if trimmed.starts_with("class ") || trimmed.starts_with("def ") || trimmed.starts_with("import ") {
+        if trimmed.starts_with("class ")
+            || trimmed.starts_with("def ")
+            || trimmed.starts_with("import ")
+        {
             return false;
         }
     }
@@ -72,8 +75,7 @@ fn parse_conanfile_txt(text: &str) -> CppManifest {
         if trimmed.starts_with('[') {
             // Section header.
             let section = trimmed.trim_start_matches('[').trim_end_matches(']').trim();
-            in_requires_section =
-                section.eq_ignore_ascii_case("requires")
+            in_requires_section = section.eq_ignore_ascii_case("requires")
                 || section.eq_ignore_ascii_case("tool_requires");
             continue;
         }
@@ -143,8 +145,7 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
         // `self.requires("dep/ver")` or `self.tool_requires("dep/ver")`
         if trimmed.contains("self.requires(") || trimmed.contains("self.tool_requires(") {
             if let Some(token) = extract_single_call_dep(trimmed) {
-                manifest
-                    .push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
             }
             index += 1;
             continue;
@@ -153,8 +154,7 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
         // `requires = "dep/ver"` — single string assignment.
         if let Some(value) = extract_string_assignment(effective, "requires") {
             if let Some(token) = conan_dep_token(&value) {
-                manifest
-                    .push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
             }
             index += 1;
             continue;
@@ -181,8 +181,7 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
             }
             // Extract all quoted strings from `collected`.
             for token in extract_all_quoted_dep_tokens(&collected) {
-                manifest
-                    .push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
+                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
             }
             continue;
         }
@@ -206,7 +205,11 @@ fn conan_dep_token(spec: &str) -> Option<String> {
         return None;
     }
     let token = spec.split('/').next().unwrap_or(spec).trim();
-    if token.is_empty() { None } else { Some(token.to_owned()) }
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_owned())
+    }
 }
 
 /// Extract a single-line `key = "value"` or `key = 'value'` assignment.
@@ -238,7 +241,10 @@ fn extract_quoted_string(text: &str, quote: char) -> String {
                 Some('\\') => result.push('\\'),
                 Some('n') => result.push('\n'),
                 Some('t') => result.push('\t'),
-                Some(other) => { result.push('\\'); result.push(other); }
+                Some(other) => {
+                    result.push('\\');
+                    result.push(other);
+                }
                 None => {}
             }
         } else if c == quote {
@@ -262,9 +268,15 @@ fn strip_inline_comment(line: &str) -> &str {
             continue;
         }
         match (c, in_string) {
-            ('\\', Some(_)) => { escape_next = true; }
-            (q, None) if q == '"' || q == '\'' => { in_string = Some(q); }
-            (q, Some(open)) if q == open => { in_string = None; }
+            ('\\', Some(_)) => {
+                escape_next = true;
+            }
+            (q, None) if q == '"' || q == '\'' => {
+                in_string = Some(q);
+            }
+            (q, Some(open)) if q == open => {
+                in_string = None;
+            }
             ('#', None) => return line[..i].trim_end(),
             _ => {}
         }
@@ -288,7 +300,11 @@ fn extract_topics(line: &str) -> Option<Vec<String>> {
     };
 
     let keywords: Vec<String> = extract_all_quoted_strings(rest);
-    if keywords.is_empty() { None } else { Some(keywords) }
+    if keywords.is_empty() {
+        None
+    } else {
+        Some(keywords)
+    }
 }
 
 /// Extract all quoted string literals from a snippet, returning their unquoted
@@ -305,7 +321,11 @@ fn extract_all_quoted_strings(text: &str) -> Vec<String> {
                 if inner == '\\' {
                     // consume next char as escaped
                     if let Some(next) = chars.next() {
-                        if next == quote { s.push(quote); } else { s.push(next); }
+                        if next == quote {
+                            s.push(quote);
+                        } else {
+                            s.push(next);
+                        }
                     }
                 } else if inner == quote {
                     done = true;
@@ -377,7 +397,12 @@ mod tests {
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "zlib");
         assert_eq!(manifest.dependencies[1].token, "openssl");
-        assert!(manifest.dependencies.iter().all(|d| d.mechanism == DependencyMechanism::Recipe));
+        assert!(
+            manifest
+                .dependencies
+                .iter()
+                .all(|d| d.mechanism == DependencyMechanism::Recipe)
+        );
     }
 
     #[test]
@@ -407,9 +432,15 @@ class MyConan(ConanFile):
     requires = "zlib/1.2.11"
 "#;
         let manifest = parse(text);
-        assert_eq!(manifest.facts.description.as_deref(), Some("A great library"));
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("A great library")
+        );
         assert_eq!(manifest.facts.license.as_deref(), Some("MIT"));
-        assert_eq!(manifest.facts.repository.as_deref(), Some("https://github.com/example/mylib"));
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://github.com/example/mylib")
+        );
         assert_eq!(manifest.facts.keywords, vec!["networking", "http"]);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "zlib");

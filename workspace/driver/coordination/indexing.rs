@@ -7,25 +7,22 @@
 //! state they operate on.
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::registry::identity::PackageCoordinates;
 use crate::registry::blob::creation::BlobBuilder;
-use crate::registry::ingest::{
-    EntryAllowlist, ExtractionLimits, ingest_archive,
-};
+use crate::registry::blob::{BlobManifest, FileEntry, creation::PendingSection};
+use crate::registry::identity::PackageCoordinates;
 use crate::registry::metadata::rich::{self, ExtractionInput};
-use index::ecosystem::{DynSpec, LanguageExt};
-use heart::Retryable;
 use crate::registry::queue::LeasedJob;
 use crate::registry::{RegistryError, error::ResolveError};
 use futures::StreamExt;
-use heart::{
-    ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, ResolutionState,
-};
+use heart::Retryable;
+use heart::{ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, ResolutionState};
+use index::ecosystem::{DynSpec, LanguageExt};
+use index::ingest::archive::{EntryAllowlist, ExtractionLimits, ingest_archive};
 use registry::vector::EmbeddingModel;
 
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
@@ -147,7 +144,8 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(RegistryError::from)?;
 
-        let archive_format = index::ecosystem::spec(record.package.coordinates.ecosystem()).archive();
+        let archive_format =
+            index::ecosystem::spec(record.package.coordinates.ecosystem()).archive();
         Ok(ingest_archive(
             package,
             record.package.toolchain,
@@ -202,10 +200,9 @@ impl<M: EmbeddingModel> Indexer<M> {
             })?;
         let source_root = workspace.path().join("src");
         let scratch_root = workspace.path().join("scratch");
-        materialize_sources(builder, &source_root, &scratch_root)
-            .map_err(|source| {
-                ServerError::Internal(InternalError::MaterializeForCompile { source })
-            })?;
+        materialize_sources(builder, &source_root, &scratch_root).map_err(|source| {
+            ServerError::Internal(InternalError::MaterializeForCompile { source })
+        })?;
 
         // ── 2. Resolve toolchain golden + drive the cage (blocking) ───────────
         // The cage is a synchronous, CPU/VM-bound boundary; run it off the async
@@ -219,7 +216,14 @@ impl<M: EmbeddingModel> Indexer<M> {
             .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
         let cage_name = name.clone();
         let ir_bytes = tokio::task::spawn_blocking(move || {
-            run_producer_in_cage(&cage_name, language, profile, image, &source_root, &scratch_root)
+            run_producer_in_cage(
+                &cage_name,
+                language,
+                profile,
+                image,
+                &source_root,
+                &scratch_root,
+            )
         })
         .await
         .map_err(|join| {
@@ -294,14 +298,10 @@ impl<M: EmbeddingModel> Indexer<M> {
             );
         }
 
-        let emitted = crate::registry::blob::emit::emit(
-            &stores.blobs,
-            &stores.outbox,
-            manifest,
-            sections,
-        )
-        .await
-        .map_err(RegistryError::from)?;
+        let emitted =
+            crate::registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
+                .await
+                .map_err(RegistryError::from)?;
 
         stores
             .outbox
@@ -354,7 +354,9 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(|e| match e {
                 UpstreamError::NotFound => not_found(coordinates),
-                other => ServerError::Internal(InternalError::UpstreamFetch { reason: other.to_string() }),
+                other => ServerError::Internal(InternalError::UpstreamFetch {
+                    reason: other.to_string(),
+                }),
             })?;
 
         if archive.len() as u64 > ExtractionLimits::DEFAULT.max_total_bytes {
@@ -447,9 +449,14 @@ impl<M: EmbeddingModel> Indexer<M> {
             .await
             .map_err(|e| match e {
                 UpstreamError::NotFound => ServerError::Registry(
-                    ResolveError::NotFound { name: name.to_owned() }.into(),
+                    ResolveError::NotFound {
+                        name: name.to_owned(),
+                    }
+                    .into(),
                 ),
-                other => ServerError::Internal(InternalError::UpstreamFetch { reason: other.to_string() }),
+                other => ServerError::Internal(InternalError::UpstreamFetch {
+                    reason: other.to_string(),
+                }),
             })?;
 
         let release: PyPiRelease = serde_json::from_slice(&bytes).map_err(|_| {
@@ -661,7 +668,6 @@ fn zero_percent() -> Percent {
     Percent::try_new(Percent::ZERO).expect("zero is a valid percentage")
 }
 
-
 fn not_found(coordinates: &PackageCoordinates) -> ServerError {
     ServerError::Registry(
         ResolveError::NotFound {
@@ -725,9 +731,12 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         Language::Rust => ProducerInvocation {
             entrypoint: "/opt/nudox/rust/bin/nudox-rust-producer",
             args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-                "--edition", "2021",
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--edition",
+                "2021",
             ],
         },
 
@@ -738,9 +747,12 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         Language::Java => ProducerInvocation {
             entrypoint: "/opt/nudox/java/bin/nudox-java-producer",
             args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-                "--target-jdk", "21",
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--target-jdk",
+                "21",
             ],
         },
 
@@ -750,9 +762,12 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         Language::Go => ProducerInvocation {
             entrypoint: "/opt/nudox/go/bin/nudox-go-producer",
             args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-                "--module-root", GUEST_SOURCE_MOUNT,
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--module-root",
+                GUEST_SOURCE_MOUNT,
             ],
         },
 
@@ -762,9 +777,12 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         Language::CSharp => ProducerInvocation {
             entrypoint: "/opt/nudox/dotnet/bin/nudox-csharp-producer",
             args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-                "--target-tfm", "net9.0",
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--target-tfm",
+                "net9.0",
             ],
         },
 
@@ -775,8 +793,10 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         Language::Nix => ProducerInvocation {
             entrypoint: "/opt/nudox/nix/bin/nudox-nix-producer",
             args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
                 "--flake",
             ],
         },
@@ -785,29 +805,20 @@ pub fn producer_command(language: index::ecosystem::Language) -> ProducerInvocat
         // OXC operates on the source tree directly; no separate oracle binary.
         Language::Typescript => ProducerInvocation {
             entrypoint: "/opt/nudox/ts/bin/nudox-ts-producer",
-            args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-            ],
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
         },
 
         // Python: nudox-python-producer (pyrefly/static-parse-backed, LOW tier).
         Language::Python => ProducerInvocation {
             entrypoint: "/opt/nudox/python/bin/nudox-python-producer",
-            args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-            ],
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
         },
 
         // C/C++: nudox-cpp-producer (tree-sitter static parse, LOW tier).
         // No compiler oracle yet; source-only, git-checkout plane (RL-14 §7.4).
         Language::Cpp => ProducerInvocation {
             entrypoint: "/opt/nudox/cpp/bin/nudox-cpp-producer",
-            args: &[
-                "--source", GUEST_SOURCE_MOUNT,
-                "--emit", "ndirf1",
-            ],
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
         },
     }
 }
@@ -825,9 +836,7 @@ fn producer_profile(language: index::ecosystem::Language) -> sandbox::ProducerPr
         Language::Nix => ProducerProfile::Nix,
         // deno_doc (TS) / pyrefly (Python) are LOW static parsers; C/C++ has no
         // dedicated profile yet and reads as a static parse over source.
-        Language::Typescript | Language::Python | Language::Cpp => {
-            ProducerProfile::StaticParser
-        }
+        Language::Typescript | Language::Python | Language::Cpp => ProducerProfile::StaticParser,
     }
 }
 
@@ -844,7 +853,9 @@ fn producer_profile(language: index::ecosystem::Language) -> sandbox::ProducerPr
 /// `ToolchainImageStore`; once images are provisioned the store lookup in
 /// `execute_compile_phase` supersedes this function for every language whose
 /// image is registered. This fallback fires only for the not-found case.
-fn toolchain_image_digest_placeholder(language: index::ecosystem::Language) -> sandbox::ImageDigest {
+fn toolchain_image_digest_placeholder(
+    language: index::ecosystem::Language,
+) -> sandbox::ImageDigest {
     let mut bytes = [0u8; 32];
     if let Some(&b0) = language.as_token().as_bytes().first() {
         bytes[0] = b0;
@@ -899,8 +910,8 @@ fn run_producer_in_cage(
 ) -> ServerResult<Vec<u8>> {
     use sandbox::vm::{VmError, VmHandle, VmRuntime};
     use sandbox::{
-        Cage, CancelToken, CapabilityBudget, Env, FsGrant, NetGrant, RootfsStore,
-        SealedCommand, SmolvmCage, SmolvmRuntime,
+        Cage, CancelToken, CapabilityBudget, Env, FsGrant, NetGrant, RootfsStore, SealedCommand,
+        SmolvmCage, SmolvmRuntime,
     };
 
     let cage_err = |reason: String| {
@@ -941,12 +952,7 @@ fn run_producer_in_cage(
     // binds — only the package source is bound RO. A host-bind toolchain plane
     // would extend this `FsGrant`; the golden-image plane does not need it.
     let fs = FsGrant::scratch(scratch_root).ro(source_root);
-    let budget = CapabilityBudget::new(
-        fs,
-        NetGrant::Off,
-        Env::empty(),
-        profile.limits(),
-    );
+    let budget = CapabilityBudget::new(fs, NetGrant::Off, Env::empty(), profile.limits());
 
     // ── The producer invocation ───────────────────────────────────────────────
     // `producer_command` specifies the per-language invocation contract (guest
@@ -954,11 +960,7 @@ fn run_producer_in_cage(
     // execs this verbatim; the binary inside the image reads the RO source tree
     // at GUEST_SOURCE_MOUNT and streams NdIrF1 IR frames on its stdout.
     let inv = producer_command(language);
-    let command = SealedCommand::new(
-        inv.entrypoint,
-        inv.args.iter().copied(),
-        budget,
-    );
+    let command = SealedCommand::new(inv.entrypoint, inv.args.iter().copied(), budget);
 
     let cancel = CancelToken::never();
     let output = match handle {
@@ -1087,11 +1089,8 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
                     // Capture the owning package key (ecosystem:name) once.
                     if owning_pkg_key.is_none() {
                         let pkg = &entry.stable.package;
-                        owning_pkg_key = Some(format!(
-                            "{}:{}",
-                            pkg.ecosystem.as_str(),
-                            pkg.name.as_str()
-                        ));
+                        owning_pkg_key =
+                            Some(format!("{}:{}", pkg.ecosystem.as_str(), pkg.name.as_str()));
                     }
 
                     identifiers.push(entry.payload.symbol.name.clone());
@@ -1162,16 +1161,23 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
     // `TreesitterBody` side have no cross-package stable target and are
     // skipped (they contribute call-site counts, not cross-reference graph
     // edges, per §5.1 merge rule 3 / Confidence::GRAPH_FLOOR).
-    let ref_set = build_reference_set_from_bodies(&bodies, &intro_to_path, owning_pkg_key.as_deref());
+    let ref_set =
+        build_reference_set_from_bodies(&bodies, &intro_to_path, owning_pkg_key.as_deref());
     tracing::debug!(
         by_file = ref_set.by_file.len(),
-        total_refs = ref_set.by_file.iter().map(|f| f.references.len()).sum::<usize>(),
+        total_refs = ref_set
+            .by_file
+            .iter()
+            .map(|f| f.references.len())
+            .sum::<usize>(),
         "reference set derived from Bodies frames"
     );
 
     if let Err(err) = builder.set_references(&ref_set) {
         tracing::warn!(error = %err, "set_references failed; attaching empty reference set");
-        let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
+        let empty_refs = crate::registry::blob::ReferenceSet {
+            by_file: Vec::new(),
+        };
         let _ = builder.set_references(&empty_refs);
     }
 
@@ -1218,7 +1224,9 @@ fn build_reference_set_from_bodies(
         if let BodyEmbed::Present(facts) = &bw.body {
             // Oracle calls: only those with a resolved target.
             for call in &facts.oracle.calls {
-                let Some(ref stable) = call.target else { continue };
+                let Some(ref stable) = call.target else {
+                    continue;
+                };
                 // Policy: emit only graph-worthy references (Confidence >= Index).
                 if !call.confidence.is_graph_worthy() {
                     continue;
@@ -1293,7 +1301,9 @@ fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
     let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
     let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
-    let empty_refs = crate::registry::blob::ReferenceSet { by_file: Vec::new() };
+    let empty_refs = crate::registry::blob::ReferenceSet {
+        by_file: Vec::new(),
+    };
     let _ = builder.set_references(&empty_refs);
 }
 
@@ -1405,26 +1415,24 @@ async fn fetch_and_set_downloads(
     let name = coordinates.name.canonical();
     let url = endpoint.url.replace("{name}", name);
     match client.get(coordinates.ecosystem(), &url).await {
-        Ok(body) => {
-            match spec.parse_download_count(&body) {
-                Some(count) => {
-                    facets.downloads = Some(count);
-                    tracing::debug!(
-                        package = %coordinates.name.canonical(),
-                        ecosystem = ?coordinates.ecosystem(),
-                        downloads = count,
-                        "download count fetched"
-                    );
-                }
-                None => {
-                    tracing::debug!(
-                        package = %coordinates.name.canonical(),
-                        ecosystem = ?coordinates.ecosystem(),
-                        "download count endpoint returned unparseable body"
-                    );
-                }
+        Ok(body) => match spec.parse_download_count(&body) {
+            Some(count) => {
+                facets.downloads = Some(count);
+                tracing::debug!(
+                    package = %coordinates.name.canonical(),
+                    ecosystem = ?coordinates.ecosystem(),
+                    downloads = count,
+                    "download count fetched"
+                );
             }
-        }
+            None => {
+                tracing::debug!(
+                    package = %coordinates.name.canonical(),
+                    ecosystem = ?coordinates.ecosystem(),
+                    "download count endpoint returned unparseable body"
+                );
+            }
+        },
         Err(e) => {
             tracing::debug!(
                 package = %coordinates.name.canonical(),
@@ -1504,17 +1512,18 @@ fn extract_facets(
         'outer: for candidate in candidates {
             for entry in &manifest.files {
                 if matches_candidate(entry.path.as_str(), candidate.path_suffix)
-                    && let Some(bytes) = file_bytes(entry) {
-                        found = spec.extract_facts(candidate, &bytes);
-                        if found.is_some() {
-                            tracing::debug!(
-                                package = %manifest.package,
-                                manifest = entry.path.as_str(),
-                                "manifest parsed"
-                            );
-                            break 'outer;
-                        }
+                    && let Some(bytes) = file_bytes(entry)
+                {
+                    found = spec.extract_facts(candidate, &bytes);
+                    if found.is_some() {
+                        tracing::debug!(
+                            package = %manifest.package,
+                            manifest = entry.path.as_str(),
+                            "manifest parsed"
+                        );
+                        break 'outer;
                     }
+                }
             }
         }
         match found {
@@ -1542,15 +1551,21 @@ fn extract_facets(
                 || leaf == "readme")
                 && path.matches('/').count() <= 1
         };
-        let entry = manifest.files.iter().find(|e| readme_leaf_matches(e.path.as_str()));
+        let entry = manifest
+            .files
+            .iter()
+            .find(|e| readme_leaf_matches(e.path.as_str()));
         let entry = entry.or_else(|| {
             facts.readme_hint.as_deref().and_then(|hint| {
-                manifest.files.iter().find(|e| {
-                    e.path.as_str().eq_ignore_ascii_case(hint)
-                })
+                manifest
+                    .files
+                    .iter()
+                    .find(|e| e.path.as_str().eq_ignore_ascii_case(hint))
             })
         });
-        entry.and_then(file_bytes).and_then(|b| String::from_utf8(b.to_vec()).ok())
+        entry
+            .and_then(file_bytes)
+            .and_then(|b| String::from_utf8(b.to_vec()).ok())
     };
 
     // ── LOC count ─────────────────────────────────────────────────────────────
@@ -1616,10 +1631,8 @@ fn extract_facets(
     }
 
     // verified_repo soft signal from name + repo slug.
-    facets.verified_repo = crate::registry::search::gates::verified_repo(
-        &name,
-        facets.repo_slug.as_deref(),
-    );
+    facets.verified_repo =
+        crate::registry::search::gates::verified_repo(&name, facets.repo_slug.as_deref());
 
     // Automatic squat / land-grab heuristic (quality-gated; never flags mature pkgs).
     facets.squat_suspect = crate::registry::search::squat::is_squat_suspect(

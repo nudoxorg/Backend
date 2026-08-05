@@ -103,8 +103,7 @@ fn plan_size_hints_match_rendered_sections() {
                 panic!(
                     "planned section {:?} for {} was never emitted — \
                      the skeleton would be left showing an empty slot forever",
-                    planned.id,
-                    head.key
+                    planned.id, head.key
                 );
             };
 
@@ -119,8 +118,7 @@ fn plan_size_hints_match_rendered_sections() {
                 real
             );
 
-            if let (Some(hinted), Some(actual_n)) =
-                (magnitude(&planned.size_hint), magnitude(real))
+            if let (Some(hinted), Some(actual_n)) = (magnitude(&planned.size_hint), magnitude(real))
             {
                 let tolerance = match real {
                     // Rows are counted, not estimated — demand exactness.
@@ -173,6 +171,31 @@ fn no_section_arrives_unplanned() {
             );
         }
     }
+}
+
+/// The same fixture pass emits a machine-readable cost line so the test suite
+/// doubles as a regression benchmark without changing the production path.
+#[test]
+fn measured_fixture_chunking_reports_cost() {
+    let directory =
+        std::env::temp_dir().join(format!("nudox-engine-zero-jump-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create measurement directory");
+    let (checked, cost) =
+        nudox_test_support::measured("engine.zero_jump.fixture_chunking", &directory, || {
+            let view = build_rich_view();
+            let package = PackageView::build(view, Provenance::TrustedLocal);
+            package
+                .view()
+                .entries()
+                .filter_map(|(intro, _)| chunk::chunk(intro, package.view(), &package))
+                .count()
+        });
+    assert!(
+        checked > 20,
+        "fixture pass measured too few entries: {checked}"
+    );
+    assert!(cost.wall > std::time::Duration::ZERO);
+    let _ = std::fs::remove_dir_all(directory);
 }
 
 /// Every `SigToken::Ty` that claims a target must actually resolve.
@@ -237,7 +260,11 @@ fn chunk_output_is_independent_of_corpus_state() {
         let second = chunk::chunk(intro, package_b.view(), &package_b);
         match (first, second) {
             (Some((h1, s1)), Some((h2, s2))) => {
-                assert_eq!(h1.signature, h2.signature, "signature diverged for {}", h1.key);
+                assert_eq!(
+                    h1.signature, h2.signature,
+                    "signature diverged for {}",
+                    h1.key
+                );
                 assert_eq!(
                     h1.section_plan, h2.section_plan,
                     "section plan diverged for {}",

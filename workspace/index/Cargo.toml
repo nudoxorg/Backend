@@ -73,13 +73,13 @@ postcard = { version = "1.1", features = ["alloc"] }
 zstd = "0.13"
 bytes = "1"
 memmap2 = "0.9"
-# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b): the
-# bespoke bao outboard math + iroh endpoint/framing that `index::pack` carried
-# moved here. `index::pack::{outboard, transport}` now wrap `transport::{bao,
-# endpoint, frame}`. iroh-blobs + bao-tree + range-collections are gone from
-# this crate's direct deps.
-transport = { path = "../transport" }
-# iroh is still used directly by `index::pack::transport` + the object-pack
+# The shared iroh/bao content-transfer plane now lives as `index::transport`
+# (folded from the former standalone `transport` crate). The deps that the
+# transport layer needed (iroh-blobs, bao-tree) are listed here so the crate
+# compiles as one unit.
+iroh-blobs = { version = "0.103.0", default-features = false }
+bao-tree = { version = "0.16.0", default-features = false }
+# iroh is used directly by `index::pack::transport` + `index::transport` + the object-pack
 # tests (Endpoint / SecretKey / MemoryLookup vocabulary).
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
 tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
@@ -90,7 +90,7 @@ tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time
 # vector-shard types and any vector payload the folded code builds.
 registry = { path = "../registry", features = ["local", "remote"] }
 # The IR plane the graph reverse-index (usages projection) is built over.
-ir = { package = "nudox-ir", path = "../../crates/nudox-ir" }
+ir = { package = "nudox-ir", path = "../ir/model" }
 
 # Async / concurrency for the folded coordination/poll/save workers.
 futures = { version = "0.3", features = ["std", "async-await", "alloc"] }

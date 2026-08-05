@@ -1,8 +1,0 @@
----
-source: workspace/compiler/tests/snap_rust.rs
-expression: rendered
----
-pub enum Mode {
-    Fast,
-    Careful,
-}

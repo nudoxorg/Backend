@@ -20,8 +20,9 @@ use std::path::PathBuf;
 /// `workspace/vendor/`, so we resolve the sibling `doltlite` from this crate's
 /// manifest directory.
 fn vendored_doltlite_directory() -> PathBuf {
-    let manifest_directory =
-        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"));
+    let manifest_directory = PathBuf::from(
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"),
+    );
     manifest_directory
         .parent()
         .expect("rusqdoltlite manifest directory has a parent (workspace/vendor/)")

@@ -73,7 +73,7 @@ use crate::theme::ext::ThemeExtAccessor as _;
 use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
 use crate::views::symbol_page::SymbolPage;
 use crate::workspace::overlays::{OverlayKind, OverlayStack};
-use crate::workspace::pane::{Pane, TabId as PaneTabId};
+use crate::workspace::pane::{Pane, PaneEvent, TabId as PaneTabId};
 use crate::workspace::status_bar::StatusBar;
 use gpui::prelude::*;
 
@@ -526,6 +526,50 @@ impl Shell {
 
         // ── Subscribe to layout changes ───────────────────────────────────────
         let mut subs = Vec::new();
+        // Keep the store's Replace target aligned with the pane. Without this
+        // edge, selecting an older tab and then opening a new symbol could close
+        // the last-opened document instead of the document being read.
+        subs.push(cx.subscribe(&pane, |shell, _pane, event: &PaneEvent, cx| {
+            match event {
+                PaneEvent::ActiveTabChanged { id: Some(pane_id) } => {
+                    let doc = shell
+                        .tabs
+                        .iter()
+                        .find(|(_, mapped)| **mapped == *pane_id)
+                        .map(|(doc, _)| *doc);
+                    if let Some(doc) = doc {
+                        shell.symbols.update(cx, |store, cx| store.activate(doc, cx));
+                    }
+                }
+                PaneEvent::TabClosed { id } => {
+                    let doc = shell
+                        .tabs
+                        .iter()
+                        .find(|(_, mapped)| **mapped == *id)
+                        .map(|(doc, _)| *doc);
+                    if let Some(doc) = doc {
+                        shell.tabs.remove(&doc);
+                        shell.symbols.update(cx, |store, cx| store.close(doc, cx));
+                    }
+
+                    // Closing the active pane tab selects its neighbour. Sync
+                    // that selection too, since the close event carries only
+                    // the id that disappeared.
+                    let active_pane = shell.pane.read(cx).active_id();
+                    let active_doc = active_pane.and_then(|pane_id| {
+                        shell
+                            .tabs
+                            .iter()
+                            .find(|(_, mapped)| **mapped == pane_id)
+                            .map(|(doc, _)| *doc)
+                    });
+                    if let Some(doc) = active_doc {
+                        shell.symbols.update(cx, |store, cx| store.activate(doc, cx));
+                    }
+                }
+                PaneEvent::ActiveTabChanged { id: None } => {}
+            }
+        }));
         {
             let _entity = cx.entity();
             subs.push(cx.subscribe(&dock_area, move |shell, _, evt: &DockEvent, cx| {

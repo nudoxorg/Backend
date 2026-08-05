@@ -220,7 +220,10 @@ pub trait VersionGrammar {
     /// corresponding element of `numeric_prefix(v)` (zero-padded on the right).
     fn prefix_matches(&self, v: &Self::V, prefix: &[u64]) -> bool {
         let nums = self.numeric_prefix(v);
-        prefix.iter().enumerate().all(|(i, p)| nums.get(i).copied().unwrap_or(0) == *p)
+        prefix
+            .iter()
+            .enumerate()
+            .all(|(i, p)| nums.get(i).copied().unwrap_or(0) == *p)
     }
 }
 
@@ -290,10 +293,7 @@ where
 /// Semantics are identical to the inner loop in [`resolve_from_tags`]:
 /// prefer the greatest stable version, fall back to the greatest prerelease
 /// only when no stable candidate exists.
-pub fn pick_best<V, T>(
-    candidates: &[(V, T)],
-    is_prerelease: impl Fn(&V) -> bool,
-) -> Option<&T>
+pub fn pick_best<V, T>(candidates: &[(V, T)], is_prerelease: impl Fn(&V) -> bool) -> Option<&T>
 where
     V: Ord,
 {
@@ -328,7 +328,11 @@ mod selection_tests {
         type V = SimpleVer;
         type C = PrefixConstraint;
 
-        fn parse_tag<'a>(&self, raw: &'a str, _ctx: &TagContext<'_>) -> Option<(SimpleVer, &'a str)> {
+        fn parse_tag<'a>(
+            &self,
+            raw: &'a str,
+            _ctx: &TagContext<'_>,
+        ) -> Option<(SimpleVer, &'a str)> {
             let rest = raw.strip_prefix('v').unwrap_or(raw);
             let (core, pre) = match rest.split_once('-') {
                 Some((c, p)) => (c, Some(p.to_string())),
@@ -338,8 +342,18 @@ mod selection_tests {
             let major: u32 = parts.next()?.parse().ok()?;
             let minor: u32 = parts.next()?.parse().ok()?;
             let patch: u32 = parts.next()?.parse().ok()?;
-            if parts.next().is_some() { return None; }
-            Some((SimpleVer { major, minor, patch, pre }, raw))
+            if parts.next().is_some() {
+                return None;
+            }
+            Some((
+                SimpleVer {
+                    major,
+                    minor,
+                    patch,
+                    pre,
+                },
+                raw,
+            ))
         }
 
         fn is_prerelease(&self, v: &SimpleVer) -> bool {
@@ -358,7 +372,9 @@ mod selection_tests {
             match request {
                 VersionRequest::Latest => true,
                 VersionRequest::Exact(want) => v == want,
-                VersionRequest::Constraint(PrefixConstraint(prefix)) => self.prefix_matches(v, prefix),
+                VersionRequest::Constraint(PrefixConstraint(prefix)) => {
+                    self.prefix_matches(v, prefix)
+                }
             }
         }
 
@@ -413,7 +429,12 @@ mod selection_tests {
     fn prefix_picks_newest_in_range() {
         let t = tags(&["v1.4.2", "v1.4.9", "v1.4.1", "v2.0.0"]);
         let ctx = TagContext::default();
-        let result = resolve_from_tags(&t, &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])), &ctx, &SimpleGrammar);
+        let result = resolve_from_tags(
+            &t,
+            &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])),
+            &ctx,
+            &SimpleGrammar,
+        );
         assert_eq!(result, Some("v1.4.9".to_string()));
     }
 
@@ -421,7 +442,12 @@ mod selection_tests {
     fn prefix_stable_beats_prerelease_in_same_prefix() {
         let t = tags(&["v1.4.9-rc1", "v1.4.8"]);
         let ctx = TagContext::default();
-        let result = resolve_from_tags(&t, &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])), &ctx, &SimpleGrammar);
+        let result = resolve_from_tags(
+            &t,
+            &VersionRequest::Constraint(PrefixConstraint(vec![1, 4])),
+            &ctx,
+            &SimpleGrammar,
+        );
         assert_eq!(result, Some("v1.4.8".to_string()));
     }
 

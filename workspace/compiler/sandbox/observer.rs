@@ -17,20 +17,26 @@ use crate::profiles::ProducerProfile;
 /// Owned by the `ForgeRuntime`; two runtimes carry independent observers so the
 /// multi-tenant smoke test can assert distinct counts.
 pub trait ForgeObserver: Send + Sync {
-	/// A content-addressed producer cache hit.
-	fn cache_hit(&self) {}
+    /// A content-addressed producer cache hit.
+    fn cache_hit(&self) {}
 
-	/// A content-addressed producer cache miss (a run followed).
-	fn cache_miss(&self) {}
+    /// A content-addressed producer cache miss (a run followed).
+    fn cache_miss(&self) {}
 
-	/// A producer run finished (exit 0 or non-zero — not a resource kill).
-	fn producer_finished(&self, _profile: Option<ProducerProfile>, _wall: Duration, _peak_mem: Option<u64>) {}
+    /// A producer run finished (exit 0 or non-zero — not a resource kill).
+    fn producer_finished(
+        &self,
+        _profile: Option<ProducerProfile>,
+        _wall: Duration,
+        _peak_mem: Option<u64>,
+    ) {
+    }
 
-	/// A producer run was killed by a resource ceiling.
-	fn producer_killed(&self, _profile: Option<ProducerProfile>, _reason: KillReason) {}
+    /// A producer run was killed by a resource ceiling.
+    fn producer_killed(&self, _profile: Option<ProducerProfile>, _reason: KillReason) {}
 
-	/// A worker pool restarted a slot (crash / watermark).
-	fn worker_restart(&self, _reason: &str) {}
+    /// A worker pool restarted a slot (crash / watermark).
+    fn worker_restart(&self, _reason: &str) {}
 }
 
 /// No-op observer (default).
@@ -42,32 +48,32 @@ impl ForgeObserver for NullObserver {}
 /// Atomic counters for tests / simple ops dashboards.
 #[derive(Debug, Default)]
 pub struct CountingObserver {
-	/// Cache hits.
-	pub cache_hits: AtomicU64,
-	/// Cache misses.
-	pub cache_misses: AtomicU64,
-	/// Successful or non-zero completions.
-	pub finished: AtomicU64,
-	/// Resource kills.
-	pub killed: AtomicU64,
-	/// Worker restarts.
-	pub worker_restarts: AtomicU64,
+    /// Cache hits.
+    pub cache_hits: AtomicU64,
+    /// Cache misses.
+    pub cache_misses: AtomicU64,
+    /// Successful or non-zero completions.
+    pub finished: AtomicU64,
+    /// Resource kills.
+    pub killed: AtomicU64,
+    /// Worker restarts.
+    pub worker_restarts: AtomicU64,
 }
 
 impl ForgeObserver for CountingObserver {
-	fn cache_hit(&self) {
-		self.cache_hits.fetch_add(1, Ordering::Relaxed);
-	}
-	fn cache_miss(&self) {
-		self.cache_misses.fetch_add(1, Ordering::Relaxed);
-	}
-	fn producer_finished(&self, _: Option<ProducerProfile>, _: Duration, _: Option<u64>) {
-		self.finished.fetch_add(1, Ordering::Relaxed);
-	}
-	fn producer_killed(&self, _: Option<ProducerProfile>, _: KillReason) {
-		self.killed.fetch_add(1, Ordering::Relaxed);
-	}
-	fn worker_restart(&self, _: &str) {
-		self.worker_restarts.fetch_add(1, Ordering::Relaxed);
-	}
+    fn cache_hit(&self) {
+        self.cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+    fn cache_miss(&self) {
+        self.cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+    fn producer_finished(&self, _: Option<ProducerProfile>, _: Duration, _: Option<u64>) {
+        self.finished.fetch_add(1, Ordering::Relaxed);
+    }
+    fn producer_killed(&self, _: Option<ProducerProfile>, _: KillReason) {
+        self.killed.fetch_add(1, Ordering::Relaxed);
+    }
+    fn worker_restart(&self, _: &str) {
+        self.worker_restarts.fetch_add(1, Ordering::Relaxed);
+    }
 }

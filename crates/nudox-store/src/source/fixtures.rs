@@ -233,7 +233,12 @@ pub fn build_rich_view() -> IrView {
         fixture_intro(4),
         fentry(
             fsym("x"),
-            Kind::Field(Field::builder().key(FieldKey::Named).ty(Type::Primitive(Primitive::Float(Width::W64))).build()),
+            Kind::Field(
+                Field::builder()
+                    .key(FieldKey::Named)
+                    .ty(Type::Primitive(Primitive::Float(Width::W64)))
+                    .build(),
+            ),
         ),
         Some(fixture_intro(3)),
     );
@@ -243,7 +248,12 @@ pub fn build_rich_view() -> IrView {
         fixture_intro(5),
         fentry(
             fsym("y"),
-            Kind::Field(Field::builder().key(FieldKey::Named).ty(Type::Primitive(Primitive::Float(Width::W64))).build()),
+            Kind::Field(
+                Field::builder()
+                    .key(FieldKey::Named)
+                    .ty(Type::Primitive(Primitive::Float(Width::W64)))
+                    .build(),
+            ),
         ),
         Some(fixture_intro(3)),
     );
@@ -310,7 +320,10 @@ pub fn build_rich_view() -> IrView {
     table.insert_live(
         fixture_intro(10),
         fentry(
-            fsym_doc("Color", "An RGB color value.\n\n- `Red`\n- `Green`\n- `Blue`"),
+            fsym_doc(
+                "Color",
+                "An RGB color value.\n\n- `Red`\n- `Green`\n- `Blue`",
+            ),
             Kind::Enum(
                 Enum::builder()
                     .variants([
@@ -341,7 +354,12 @@ pub fn build_rich_view() -> IrView {
         fixture_intro(14),
         fentry(
             fsym_doc("MAX_SIZE", "The maximum number of items in the registry."),
-            Kind::Const(Const::builder().ty(Type::U64).value("1024".to_owned()).build()),
+            Kind::Const(
+                Const::builder()
+                    .ty(Type::U64)
+                    .value("1024".to_owned())
+                    .build(),
+            ),
         ),
         Some(fixture_intro(1)),
     );
@@ -396,10 +414,7 @@ pub fn build_rich_view() -> IrView {
             Kind::Record(
                 Record::builder()
                     .form(RecordForm::Tuple)
-                    .fields([
-                        Ref::Intro(fixture_intro(19)),
-                        Ref::Intro(fixture_intro(20)),
-                    ])
+                    .fields([Ref::Intro(fixture_intro(19)), Ref::Intro(fixture_intro(20))])
                     .build(),
             ),
         ),
@@ -410,7 +425,12 @@ pub fn build_rich_view() -> IrView {
         fixture_intro(19),
         fentry(
             fsym("0"),
-            Kind::Field(Field::builder().key(FieldKey::Positional(0)).ty(Type::I32).build()),
+            Kind::Field(
+                Field::builder()
+                    .key(FieldKey::Positional(0))
+                    .ty(Type::I32)
+                    .build(),
+            ),
         ),
         Some(fixture_intro(18)),
     );
@@ -460,10 +480,7 @@ pub fn build_rich_view() -> IrView {
     // However, the spec says Reexport is a proper Kind variant, so we use that:
     table.insert_live(
         fixture_intro(22),
-        fentry(
-            fsym("reexport_distance"),
-            Kind::Reexport(Reexport),
-        ),
+        fentry(fsym("reexport_distance"), Kind::Reexport(Reexport)),
         Some(fixture_intro(1)),
     );
 
@@ -588,17 +605,23 @@ pub struct FixtureSource {
 impl FixtureSource {
     /// Construct a source that loads only the rich fixture package.
     pub fn rich() -> Self {
-        Self { set: FixtureSet::RichOnly }
+        Self {
+            set: FixtureSet::RichOnly,
+        }
     }
 
     /// Construct a source that loads only the performance fixture package.
     pub fn perf() -> Self {
-        Self { set: FixtureSet::PerfOnly }
+        Self {
+            set: FixtureSet::PerfOnly,
+        }
     }
 
     /// Construct a source that loads both packages.
     pub fn both() -> Self {
-        Self { set: FixtureSet::Both }
+        Self {
+            set: FixtureSet::Both,
+        }
     }
 }
 
@@ -715,7 +738,10 @@ mod tests {
             KindDiscriminant::Reexport,
             KindDiscriminant::Param,
         ] {
-            assert!(seen.contains(&expected), "missing KindDiscriminant::{expected:?}");
+            assert!(
+                seen.contains(&expected),
+                "missing KindDiscriminant::{expected:?}"
+            );
         }
     }
 
@@ -728,7 +754,9 @@ mod tests {
         let mut has_union = false;
 
         for (_intro, entry) in view.entries() {
-            let Some(kind) = entry.kind().as_owned_kind() else { continue };
+            let Some(kind) = entry.kind().as_owned_kind() else {
+                continue;
+            };
             match kind {
                 Kind::Alias(a) => {
                     if let Some(ty) = &a.target {
@@ -767,14 +795,20 @@ mod tests {
     fn rich_view_has_deprecation() {
         let view = build_rich_view();
         let has_deprecated = view.entries().any(|(_, e)| e.sym().deprecation.is_some());
-        assert!(has_deprecated, "rich fixture must have at least one deprecated symbol");
+        assert!(
+            has_deprecated,
+            "rich fixture must have at least one deprecated symbol"
+        );
     }
 
     #[test]
     fn rich_view_has_cross_symbol_occurrences() {
         let view = build_rich_view();
         let total: usize = view.all_occurrences().count();
-        assert!(total >= 2, "rich fixture must have cross-symbol occurrences; got {total}");
+        assert!(
+            total >= 2,
+            "rich fixture must have cross-symbol occurrences; got {total}"
+        );
     }
 
     #[test]
@@ -840,25 +874,22 @@ mod tests {
     #[tokio::test]
     async fn fixture_source_stream_emits_ready() {
         let source = FixtureSource::rich();
-        let events: Vec<_> = source
-            .load(LoadRequest::default())
-            .collect()
-            .await;
+        let events: Vec<_> = source.load(LoadRequest::default()).collect().await;
 
         let ready_count = events
             .iter()
             .filter(|r| matches!(r, Ok(LoadEvent::Ready { .. })))
             .count();
-        assert_eq!(ready_count, 1, "rich source must emit exactly one Ready event");
+        assert_eq!(
+            ready_count, 1,
+            "rich source must emit exactly one Ready event"
+        );
     }
 
     #[tokio::test]
     async fn fixture_source_emits_discovered_before_ready() {
         let source = FixtureSource::rich();
-        let events: Vec<_> = source
-            .load(LoadRequest::default())
-            .collect()
-            .await;
+        let events: Vec<_> = source.load(LoadRequest::default()).collect().await;
 
         let mut saw_discovered = false;
         let mut saw_ready = false;

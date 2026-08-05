@@ -14,9 +14,7 @@ use index::engine::{CatalogEngine, VersioningEngine};
 use index::enums::{EdgeKind, EdgeSource, SinkKind};
 use index::ids::{PackageId, PackageStemId};
 use index::migrations::runner::migrate_to_v4;
-use index::protocol::{
-    CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates,
-};
+use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
 use index::store::writer::CatalogWriter;
 use index::store::{Catalog, CatalogCursor, MetaStore};
 
@@ -80,12 +78,16 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
             source: None,
         },
     ];
-    let report = writer.apply_ops(&batch).expect("batch applies on real engine");
+    let report = writer
+        .apply_ops(&batch)
+        .expect("batch applies on real engine");
     assert_eq!(report.applied, 2);
     assert_eq!(report.outbox_rows, 1, "only the version upsert fans out");
 
     // ── commit the batch: a real dolt_commit ──────────────────────────────────
-    let commit = writer.commit_batch("ingest axum@0.7.9").expect("dolt_commit");
+    let commit = writer
+        .commit_batch("ingest axum@0.7.9")
+        .expect("dolt_commit");
     assert!(!commit.0.is_empty(), "commit produced a hash");
 
     // ── read-back through the facade ──────────────────────────────────────────
@@ -96,7 +98,9 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     assert_eq!(package.name_canonical, "axum");
 
     // ── outbox claim + changed_since cursor ───────────────────────────────────
-    let claimed = writer.outbox_claim(SinkKind::Text, 16).expect("claim outbox");
+    let claimed = writer
+        .outbox_claim(SinkKind::Text, 16)
+        .expect("claim outbox");
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].version_id, Some(*version(1).as_uuid()));
 
@@ -127,10 +131,8 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     let mut tip = Query::select();
     tip.from(index::entity::packages::Entity::default())
         .expr(Func::count(Expr::col(Asterisk)));
-    let now_count: Vec<i64> = stmt::query_select(writer.engine(), tip, &mut |row| {
-        row.get_integer(0)
-    })
-    .expect("count now");
+    let now_count: Vec<i64> =
+        stmt::query_select(writer.engine(), tip, &mut |row| row.get_integer(0)).expect("count now");
     assert_eq!(now_count, vec![2]);
 
     // As of one commit back (HEAD~1) there was exactly one package.
@@ -148,7 +150,9 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
 
     // The `at()` view resolves a pinned commit for the first commit's instant.
     let pinned = writer
-        .at(&AsOf::Commit(heart::query::CatalogCommitHash(commit.0.clone())))
+        .at(&AsOf::Commit(heart::query::CatalogCommitHash(
+            commit.0.clone(),
+        )))
         .expect("pin AsOf::Commit");
     assert_eq!(pinned.commit.0, commit.0);
 

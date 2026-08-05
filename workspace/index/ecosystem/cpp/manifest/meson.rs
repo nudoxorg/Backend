@@ -319,7 +319,11 @@ subproject('googletest')
     fn parse_multiple_calls_per_line() {
         let text = "a = dependency('libfoo'); b = dependency('libbar')\n";
         let manifest = parse(text);
-        let tokens: Vec<&str> = manifest.dependencies.iter().map(|r| r.token.as_str()).collect();
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|r| r.token.as_str())
+            .collect();
         assert!(tokens.contains(&"libfoo"));
         assert!(tokens.contains(&"libbar"));
     }

@@ -10,11 +10,11 @@ mod common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use driver::Server;
+use driver::registry::coordination::{OutboxSeq, SinkKind};
 use futures::TryStreamExt;
 use heart::{PackageId, ResolutionState, Scored, Symbol};
 use index::ecosystem::PackageNameExt as _;
-use driver::registry::coordination::{OutboxSeq, SinkKind};
-use driver::Server;
 
 /// The tiny, dependency-free fixture crate the pipeline chews through.
 const FIXTURE_NAME: &str = "either";
@@ -42,7 +42,10 @@ async fn tracked_package_is_text_searchable() {
     let package = track_and_await_stored(&server).await;
 
     let hit = await_text_hit(&server, FIXTURE_SYMBOL, package).await;
-    assert_eq!(hit.value.package, package, "the hit carries the tracked package's identity");
+    assert_eq!(
+        hit.value.package, package,
+        "the hit carries the tracked package's identity"
+    );
     assert_eq!(hit.value.ecosystem, heart::Language::Rust);
 }
 
@@ -61,13 +64,11 @@ async fn tracked_package_is_semantically_searchable() {
     // Text visibility first: the cheap proxy that fan-out has caught up.
     await_text_hit(&server, FIXTURE_SYMBOL, package).await;
 
-    let request = driver::search::query::Search {
-        query: driver::search::query::Query::Abstract(
-            driver::search::query::AbstractQuery::NaturalLanguage(
-                "a value that is one of two alternatives, left or right".into(),
-            ),
-        ),
-        filter: driver::search::query::Filter::default(),
+    let request = driver::search::Search {
+        query: driver::search::Query::Abstract(driver::search::AbstractQuery::NaturalLanguage(
+            "a value that is one of two alternatives, left or right".into(),
+        )),
+        filter: driver::search::Filter::default(),
         page: common::page(16),
         _lifetime: std::marker::PhantomData,
     };
@@ -110,7 +111,9 @@ async fn tracked_package_is_graph_expandable() {
     .await
     .expect("expansion answers once the graph sink has materialized");
     assert!(
-        related.iter().all(|neighbour| neighbour.value.package == package),
+        related
+            .iter()
+            .all(|neighbour| neighbour.value.package == package),
         "the fixture crate's neighbourhood stays inside the fixture crate"
     );
 }
@@ -134,8 +137,10 @@ async fn package_is_parsed_once_and_fanned_out() {
             .read_since(sink, OutboxSeq(0), 1024)
             .await
             .expect("the outbox answers");
-        let for_package: Vec<_> =
-            intents.into_iter().filter(|entry| entry.package == package).collect();
+        let for_package: Vec<_> = intents
+            .into_iter()
+            .filter(|entry| entry.package == package)
+            .collect();
         assert_eq!(
             for_package.len(),
             1,
@@ -149,7 +154,10 @@ async fn package_is_parsed_once_and_fanned_out() {
             (watermark >= intent).then_some(())
         })
         .await;
-        assert!(consumed.is_some(), "the {sink:?} poller consumes the fan-out intent");
+        assert!(
+            consumed.is_some(),
+            "the {sink:?} poller consumes the fan-out intent"
+        );
     }
 }
 
@@ -177,7 +185,9 @@ async fn deferred_external_symbol_resolves_later() {
         .await
         .expect("the stream yields");
     assert!(
-        before.iter().all(|hit| hit.value.name.plain != FIXTURE_SYMBOL),
+        before
+            .iter()
+            .all(|hit| hit.value.name.plain != FIXTURE_SYMBOL),
         "an untracked library's symbol must not resolve yet"
     );
 
@@ -185,7 +195,10 @@ async fn deferred_external_symbol_resolves_later() {
     let package = ensure(&server).await;
     await_stored(&server, package).await;
     let hit = await_text_hit(&server, FIXTURE_SYMBOL, package).await;
-    assert_eq!(hit.value.name.plain, FIXTURE_SYMBOL, "the deferred symbol now resolves");
+    assert_eq!(
+        hit.value.name.plain, FIXTURE_SYMBOL,
+        "the deferred symbol now resolves"
+    );
 }
 
 /// Track the fixture package, run the full server, and wait for `Stored`.
@@ -225,7 +238,10 @@ async fn await_stored(server: &Arc<Server<common::TestModel>>, package: PackageI
         }
     })
     .await;
-    assert!(stored.is_some(), "the pipeline reaches Stored within the deadline");
+    assert!(
+        stored.is_some(),
+        "the pipeline reaches Stored within the deadline"
+    );
 }
 
 /// Wait until a text search for `name` yields a hit from `package`.
@@ -251,12 +267,12 @@ async fn await_text_hit(
 }
 
 /// A literal search request for `query`.
-fn literal(query: &str) -> driver::search::query::Search<'static> {
-    driver::search::query::Search {
-        query: driver::search::query::Query::Literal(
-            driver::search::query::LiteralQuery::parse(query).expect("fixture queries are valid"),
+fn literal(query: &str) -> driver::search::Search<'static> {
+    driver::search::Search {
+        query: driver::search::Query::Literal(
+            driver::search::LiteralQuery::parse(query).expect("fixture queries are valid"),
         ),
-        filter: driver::search::query::Filter::default(),
+        filter: driver::search::Filter::default(),
         page: common::page(16),
         _lifetime: std::marker::PhantomData,
     }

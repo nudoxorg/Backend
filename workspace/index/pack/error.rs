@@ -4,6 +4,8 @@
 //! panics on malformed input; adversarial bytes (truncation, bad magic, version
 //! skew, TOC hash mismatch, corrupt frames) map to a typed variant.
 
+use std::io;
+
 use heart::object_pack::MemberKey;
 
 /// Every way an ObjectPack operation can fail.
@@ -11,7 +13,7 @@ use heart::object_pack::MemberKey;
 pub enum PackError {
     /// The bytes are too short to contain the structure being read (header,
     /// TOC, a member frame, or a chunk frame). Carries what was expected.
-    #[error("truncated pack: needed {needed} bytes at offset {offset}, had {available}")]
+    #[error("truncated pack")]
     Truncated {
         /// Byte offset where the read began.
         offset: u64,
@@ -22,7 +24,7 @@ pub enum PackError {
     },
 
     /// The leading four bytes were not `NDPK`.
-    #[error("bad magic: expected NDPK, found {found:02x?}")]
+    #[error("bad magic")]
     BadMagic {
         /// The four bytes that were present.
         found: [u8; 4],
@@ -30,7 +32,7 @@ pub enum PackError {
 
     /// The container version is outside the readable range (`< MIN_READ` or
     /// `> CURRENT`, per INDEX-PLAN ID-22 N/N-1 support).
-    #[error("unsupported container version {found} (readable {min_read}..={current})")]
+    #[error("unsupported container version")]
     UnsupportedVersion {
         /// The version found in the header.
         found: u16,
@@ -41,7 +43,7 @@ pub enum PackError {
     },
 
     /// The unknown header flag bits were set — a forward-incompatible pack.
-    #[error("unknown header flags set: {bits:#06x}")]
+    #[error("unknown header flags set")]
     UnknownFlags {
         /// The raw flags field.
         bits: u16,
@@ -49,19 +51,19 @@ pub enum PackError {
 
     /// A structural offset/length pair in the header or a TOC row points
     /// outside the pack, or a length arithmetic overflowed.
-    #[error("structural bounds violated: {detail}")]
+    #[error("structural bounds violated")]
     BadStructure {
-        /// Human-readable detail of the inconsistency.
+        /// Human-readable detail of the inconsistency (domain data).
         detail: String,
     },
 
     /// The TOC did not decode as valid postcard.
-    #[error("table of contents decode failed: {0}")]
-    TocDecode(String),
+    #[error("table of contents decode failed")]
+    TocDecode(#[source] postcard::Error),
 
     /// The recomputed BLAKE3 of the TOC bytes did not match the id / embedded
     /// digest — the pack is corrupt or tampered.
-    #[error("table of contents hash mismatch (pack is corrupt or tampered)")]
+    #[error("table of contents hash mismatch")]
     TocHashMismatch,
 
     /// The TOC was not sorted strictly ascending by [`MemberKey`], or contained
@@ -70,28 +72,22 @@ pub enum PackError {
     TocNotSorted,
 
     /// A member's recomputed content digest did not match its TOC row.
-    #[error("member content hash mismatch for key {key:?}")]
+    #[error("member content hash mismatch")]
     MemberHashMismatch {
         /// The offending member key.
         key: MemberKey,
     },
 
     /// A zstd frame failed to decompress, or produced the wrong byte count.
-    #[error("zstd frame decode failed: {detail}")]
-    FrameDecode {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("zstd frame decode failed")]
+    FrameDecode(#[source] io::Error),
 
     /// A zstd frame failed to *compress* while sealing a pack.
-    #[error("zstd frame encode failed: {detail}")]
-    FrameEncode {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("zstd frame encode failed")]
+    FrameEncode(#[source] io::Error),
 
     /// A lookup was performed for a member not present in the pack.
-    #[error("no such member: {key:?}")]
+    #[error("no such member")]
     MemberNotFound {
         /// The key that was requested.
         key: MemberKey,
@@ -99,9 +95,7 @@ pub enum PackError {
 
     /// A requested byte range was invalid: `start > end`, or `end` beyond the
     /// member's uncompressed length.
-    #[error(
-        "invalid range {start}..{end} for member of {member_length} uncompressed bytes"
-    )]
+    #[error("range out of bounds")]
     RangeOutOfBounds {
         /// Requested start (inclusive).
         start: u64,
@@ -114,7 +108,7 @@ pub enum PackError {
     // ---- Builder-side path validation (INDEX-PLAN §6.2) ----
     /// A `Source` member path was absolute (started with `/` or a drive/UNC
     /// prefix).
-    #[error("absolute path rejected: {path:?}")]
+    #[error("absolute path rejected")]
     AbsolutePath {
         /// The offending path.
         path: String,
@@ -122,16 +116,16 @@ pub enum PackError {
 
     /// A path contained a `.` or `..` segment, an empty segment, a backslash,
     /// a NUL, or otherwise failed normalization.
-    #[error("unsafe path segment in {path:?}: {reason}")]
+    #[error("unsafe path segment")]
     UnsafePathSegment {
         /// The offending path.
         path: String,
-        /// Why it was rejected.
+        /// Why it was rejected (domain data).
         reason: String,
     },
 
     /// Two members were added with the same [`MemberKey`].
-    #[error("duplicate member key: {key:?}")]
+    #[error("duplicate member key")]
     DuplicateMember {
         /// The duplicated key.
         key: MemberKey,
@@ -139,32 +133,26 @@ pub enum PackError {
 
     /// A member exceeded the maximum encodable size (`u64` chunk arithmetic
     /// would overflow), or the pack exceeded addressable size.
-    #[error("member or pack too large: {detail}")]
+    #[error("member or pack too large")]
     TooLarge {
-        /// Human-readable detail.
+        /// Human-readable detail (domain data).
         detail: String,
     },
 
     // ---- Bao verified streaming (INDEX-PLAN §6.2) ----
     /// Generating a verified Bao range encoding failed — the member bytes did
     /// not verify against their outboard (corruption between pack and outboard).
-    #[error("bao range encode failed: {detail}")]
-    BaoEncode {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("bao range encode failed")]
+    BaoEncode(#[source] io::Error),
 
     /// Verifying a received Bao range failed — a leaf or interior hash did not
     /// match the announced root. The transferred bytes are tampered or corrupt.
-    #[error("bao range verification failed: {detail}")]
-    BaoDecode {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("bao range verification failed")]
+    BaoDecode(#[source] io::Error),
 
     /// An outboard was requested for a member that does not carry one (its
     /// uncompressed length is below [`heart::object_pack::BAO_OUTBOARD_THRESHOLD_BYTES`]).
-    #[error("no bao outboard for member {key:?} (sub-threshold)")]
+    #[error("no bao outboard (sub-threshold)")]
     NoOutboard {
         /// The member key.
         key: MemberKey,
@@ -172,54 +160,53 @@ pub enum PackError {
 
     // ---- Transport (INDEX-PLAN §7.2) ----
     /// An iroh transport operation failed (bind, connect, stream, or blob I/O).
-    #[error("iroh transport error: {detail}")]
-    Transport {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("iroh transport error")]
+    Transport(#[source] io::Error),
 
     /// A provide/fetch was attempted against an endpoint that is not on the
     /// device's trusted-remote list, or lacks the required capability
     /// (INDEX-PLAN ID-18).
-    #[error("endpoint not enrolled or lacks capability: {detail}")]
+    #[error("endpoint not enrolled or lacks capability")]
     NotEnrolled {
-        /// Human-readable detail (which endpoint / which capability).
+        /// Which endpoint / which capability was missing (domain data).
         detail: String,
     },
 
     /// A fetched pack's recomputed [`heart::object_pack::ObjectPackId`] did not
     /// match the id that was requested — a wrong or tampered pack was served.
-    #[error("fetched pack id mismatch: requested a different pack than was served")]
+    #[error("fetched pack id mismatch")]
     FetchedIdMismatch,
 
     /// A wire message could not be encoded or decoded.
-    #[error("transport codec error: {detail}")]
-    Codec {
-        /// Human-readable detail.
-        detail: String,
-    },
+    #[error("transport codec error")]
+    Codec(#[source] postcard::Error),
 
     /// An iroh transport method was called before the transport wave landed.
     /// Retained for the trait signature during migration; new code returns a
     /// specific variant above.
-    #[error("iroh transport is not wired yet (INDEX-PLAN §7.2, later wave)")]
+    #[error("iroh transport is not wired yet")]
     TransportNotWired,
 
     // ---- Host I/O ----
     /// A filesystem operation failed (store / tree walk / mmap open).
-    #[error("i/o error: {0}")]
-    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Io(#[from] io::Error),
 }
 
 /// Map a shared [`heart::sync::SyncError`] (produced by the `transport` crate's
 /// framing / endpoint helpers) onto the pack-format [`PackError`] so the pack
-/// transport surface is unchanged. Codec failures stay codec failures; every
-/// other transport-plane failure folds into [`PackError::Transport`].
+/// transport surface is unchanged. Codec failures stay codec failures; transport
+/// failures fold into PackError::Transport; I/O errors pass through directly.
 impl From<heart::sync::SyncError> for PackError {
     fn from(error: heart::sync::SyncError) -> Self {
         match error {
-            heart::sync::SyncError::Codec(detail) => PackError::Codec { detail },
-            other => PackError::Transport { detail: other.to_string() },
+            heart::sync::SyncError::Codec(source) => PackError::Codec(source),
+            heart::sync::SyncError::Transport(source) => PackError::Transport(source),
+            heart::sync::SyncError::Io(source) => PackError::Io(source),
+            heart::sync::SyncError::VerificationFailed(_) => {
+                PackError::Transport(io::Error::other(error))
+            }
+            other => PackError::Transport(io::Error::other(other)),
         }
     }
 }

@@ -80,10 +80,7 @@ pub fn serialize_lineage_id<S: serde::Serializer>(
 }
 
 /// Serialise a `SystemTime` as unix seconds (u64).
-pub fn serialize_unix_secs<S: serde::Serializer>(
-    t: &SystemTime,
-    s: S,
-) -> Result<S::Ok, S::Error> {
+pub fn serialize_unix_secs<S: serde::Serializer>(t: &SystemTime, s: S) -> Result<S::Ok, S::Error> {
     let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
     s.serialize_u64(secs)
 }
@@ -343,7 +340,10 @@ pub enum SigToken {
     /// An identifier (symbol name, parameter name, …).
     Ident(SharedStr),
     /// A type reference, optionally linked to another symbol.
-    Ty { text: SharedStr, target: Option<SymbolKey> },
+    Ty {
+        text: SharedStr,
+        target: Option<SymbolKey>,
+    },
     /// Punctuation (`(`, `)`, `,`, `->`, `<`, `>`, …).
     Punct(&'static str),
     /// A single whitespace separator — keeps rendering logic whitespace-aware.
@@ -589,11 +589,18 @@ pub enum ProseBlock {
     /// A heading inside a section (H1 only — H2+ splits into a new section).
     Heading { level: u8, runs: Vec<InlineRun> },
     /// An ordered or unordered list.
-    List { ordered: bool, items: Vec<Vec<InlineRun>> },
+    List {
+        ordered: bool,
+        items: Vec<Vec<InlineRun>>,
+    },
     /// A thematic break (`---`).
     Rule,
     /// A fenced code block.
-    Code { lang: LangId, text: SharedStr, line_count: u32 },
+    Code {
+        lang: LangId,
+        text: SharedStr,
+        line_count: u32,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -647,17 +654,38 @@ pub struct FieldRow {
 #[non_exhaustive]
 pub enum RenderSection {
     /// Free-form prose (parsed markdown).
-    Prose { id: SectionId, blocks: Vec<ProseBlock> },
+    Prose {
+        id: SectionId,
+        blocks: Vec<ProseBlock>,
+    },
     /// A standalone fenced code block.
-    CodeBlock { id: SectionId, lang: LangId, text: SharedStr, line_count: u32 },
+    CodeBlock {
+        id: SectionId,
+        lang: LangId,
+        text: SharedStr,
+        line_count: u32,
+    },
     /// The entry's module / trait / impl children.
-    Members { id: SectionId, entries: Arc<[MemberRow]> },
+    Members {
+        id: SectionId,
+        entries: Arc<[MemberRow]>,
+    },
     /// The entry's field and variant children.
-    Fields { id: SectionId, entries: Arc<[FieldRow]> },
+    Fields {
+        id: SectionId,
+        entries: Arc<[FieldRow]>,
+    },
     /// A prose section whose heading matches `^Examples?$`.
-    Examples { id: SectionId, blocks: Vec<ProseBlock> },
+    Examples {
+        id: SectionId,
+        blocks: Vec<ProseBlock>,
+    },
     /// A callout blockquote (`[!NOTE]`, `[!WARNING]`, …).
-    Callout { id: SectionId, level: CalloutLevel, blocks: Vec<ProseBlock> },
+    Callout {
+        id: SectionId,
+        level: CalloutLevel,
+        blocks: Vec<ProseBlock>,
+    },
     /// A section kind this binary does not understand; renders as a chip.
     Unknown { id: SectionId, kind_tag: SharedStr },
 }
@@ -745,7 +773,6 @@ pub struct SymbolHead {
     // numbers should record them in the IR directly; until then the GUI should
     // label these offsets explicitly (e.g. "bytes 10–42") so the user is never
     // misled into thinking they are line numbers.
-
     /// The path of the file in which the symbol is defined, as recorded by the
     /// producer.  `None` when the producer did not supply a source location or
     /// when `Symbol::source` is the empty path.
@@ -1216,7 +1243,10 @@ pub enum DocEvent {
     /// One section of content, in `section_plan` order.
     Section(RenderSection),
     /// Async syntax-highlight upgrade for a previously-sent code section.
-    Highlight { section: SectionId, spans: Arc<[HighlightSpan]> },
+    Highlight {
+        section: SectionId,
+        spans: Arc<[HighlightSpan]>,
+    },
     /// One page of cross-references (may interleave with `Section`s).
     Refs { page: RefsPage, done: bool },
     /// One page of trait implementations.
@@ -1235,11 +1265,23 @@ pub enum DocEvent {
 #[non_exhaustive]
 pub enum SearchEvent {
     /// Initial results for a section.
-    Section { generation: Gen, section: SearchSectionId, rows: Arc<[HitRow]> },
+    Section {
+        generation: Gen,
+        section: SearchSectionId,
+        rows: Arc<[HitRow]>,
+    },
     /// Incremental merge/update for an existing section.
-    Merge { generation: Gen, section: SearchSectionId, rows: Arc<[HitRow]> },
+    Merge {
+        generation: Gen,
+        section: SearchSectionId,
+        rows: Arc<[HitRow]>,
+    },
     /// Latency measurement for one section.
-    Latency { generation: Gen, section: SearchSectionId, elapsed: Duration },
+    Latency {
+        generation: Gen,
+        section: SearchSectionId,
+        elapsed: Duration,
+    },
     /// Terminal — all sections are complete.
     Done { generation: Gen },
     /// Terminal — stream failed.
@@ -1253,9 +1295,15 @@ pub enum SearchEvent {
 #[non_exhaustive]
 pub enum QueryEvent {
     /// Column names, sent once before any rows.
-    Columns { generation: Gen, columns: Arc<[SharedStr]> },
+    Columns {
+        generation: Gen,
+        columns: Arc<[SharedStr]>,
+    },
     /// A batch of result rows.
-    Rows { generation: Gen, rows: Arc<[QueryRow]> },
+    Rows {
+        generation: Gen,
+        rows: Arc<[QueryRow]>,
+    },
     /// Terminal — all rows are complete.
     Done { generation: Gen, total: u64 },
     /// Terminal — query failed.

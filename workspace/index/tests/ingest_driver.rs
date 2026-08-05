@@ -12,7 +12,7 @@ use index::store::Catalog;
 
 use index::ingest::driver::{DriveOutcome, FollowerDriver};
 use index::ingest::follower::{Follower, FollowerBatch, FollowerError, PollCadence};
-use index::ingest::homebrew::{parse_formulae, HomebrewFollower, FEED_ID};
+use index::ingest::homebrew::{FEED_ID, HomebrewFollower, parse_formulae};
 use index::ingest::transport::{FixtureTransport, TransportError};
 use index::ingest::watermark::{FeedWatermark, MemoryWatermarkStore, WatermarkStore};
 
@@ -28,9 +28,18 @@ fn homebrew_fixture_maps_to_expected_ops() {
     let ops = parse_formulae(FIXTURE).expect("parse fixture");
 
     // 3 formulae × (package + alias + version) = 9 ops (all have stable).
-    let packages = ops.iter().filter(|o| matches!(o, CatalogOp::UpsertPackage { .. })).count();
-    let aliases = ops.iter().filter(|o| matches!(o, CatalogOp::UpsertAlias { .. })).count();
-    let versions = ops.iter().filter(|o| matches!(o, CatalogOp::UpsertVersion { .. })).count();
+    let packages = ops
+        .iter()
+        .filter(|o| matches!(o, CatalogOp::UpsertPackage { .. }))
+        .count();
+    let aliases = ops
+        .iter()
+        .filter(|o| matches!(o, CatalogOp::UpsertAlias { .. }))
+        .count();
+    let versions = ops
+        .iter()
+        .filter(|o| matches!(o, CatalogOp::UpsertVersion { .. }))
+        .count();
     assert_eq!((packages, aliases, versions), (3, 3, 3));
 
     // Every alias is a brew_formula alias for one of the three formulae.
@@ -56,9 +65,9 @@ fn homebrew_alias_confidence_tiers_are_correct() {
     let tier = |name: &str| -> AliasConfidence {
         ops.iter()
             .find_map(|o| match o {
-                CatalogOp::UpsertAlias { alias, confidence, .. } if alias.as_str() == name => {
-                    Some(*confidence)
-                }
+                CatalogOp::UpsertAlias {
+                    alias, confidence, ..
+                } if alias.as_str() == name => Some(*confidence),
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no alias for {name}"))
@@ -80,7 +89,10 @@ fn homebrew_version_keeps_checksum_and_no_git_source() {
             // Brew records the registry checksum for honesty…
             assert!(source.registry_checksum.is_some(), "sha256 checksum kept");
             // …but never claims a git rev (git is preferred when P6 enumerates).
-            assert!(source.source_rev.is_none(), "brew is reconstruction fallback, no git rev");
+            assert!(
+                source.source_rev.is_none(),
+                "brew is reconstruction fallback, no git rev"
+            );
         }
     }
 }
@@ -93,7 +105,9 @@ fn homebrew_github_release_url_reduces_to_clean_stem() {
     // clustering keys on the repo root.
     let ops = parse_formulae(FIXTURE).expect("parse fixture");
     let zlib_package = ops.iter().find_map(|o| match o {
-        CatalogOp::UpsertPackage { stem, repo_url } if stem.name_canonical == "github.com/madler/zlib" => {
+        CatalogOp::UpsertPackage { stem, repo_url }
+            if stem.name_canonical == "github.com/madler/zlib" =>
+        {
             Some(repo_url.clone())
         }
         _ => None,
@@ -107,13 +121,19 @@ fn homebrew_recipe_edges_recorded_literally() {
     let ops = parse_formulae(FIXTURE).expect("parse fixture");
     // curl has 5 runtime + 1 build dependency = 6 recipe edges.
     let curl_edges = ops.iter().find_map(|o| match o {
-        CatalogOp::UpsertVersion { coordinates: _, edges, .. } if !edges.is_empty() && edges.len() == 6 => {
-            Some(edges.clone())
-        }
+        CatalogOp::UpsertVersion {
+            coordinates: _,
+            edges,
+            ..
+        } if !edges.is_empty() && edges.len() == 6 => Some(edges.clone()),
         _ => None,
     });
     let edges = curl_edges.expect("curl's 6 recipe edges");
-    assert!(edges.iter().all(|e| matches!(e.kind, index::enums::EdgeKind::Recipe)));
+    assert!(
+        edges
+            .iter()
+            .all(|e| matches!(e.kind, index::enums::EdgeKind::Recipe))
+    );
     assert!(edges.iter().any(|e| e.dep_name_canonical == "openssl@3"));
 }
 
@@ -139,7 +159,10 @@ fn driver_commits_homebrew_batch_and_advances_watermark() {
     }
 
     // The watermark now carries the server ETag.
-    let watermark = watermarks.feed_watermark(FEED_ID).expect("read").expect("exists");
+    let watermark = watermarks
+        .feed_watermark(FEED_ID)
+        .expect("read")
+        .expect("exists");
     assert_eq!(watermark.last_ref.as_deref(), Some("etag-v1"));
     assert!(watermark.last_error.is_none());
 
@@ -169,10 +192,16 @@ fn driver_short_circuits_on_etag_304() {
     let follower = HomebrewFollower::new(brew_transport());
 
     let outcome = driver.drive_once(&follower, 2000).expect("drive brew");
-    assert!(matches!(outcome, DriveOutcome::NoChange), "304 short-circuits to NoChange");
+    assert!(
+        matches!(outcome, DriveOutcome::NoChange),
+        "304 short-circuits to NoChange"
+    );
 
     // The crawl clock advanced but the ETag is unchanged and no rows were written.
-    let watermark = watermarks.feed_watermark(FEED_ID).expect("read").expect("exists");
+    let watermark = watermarks
+        .feed_watermark(FEED_ID)
+        .expect("read")
+        .expect("exists");
     assert_eq!(watermark.last_ref.as_deref(), Some("etag-v1"));
     assert_eq!(watermark.last_checked_at, 2000);
 }
@@ -255,16 +284,25 @@ fn bad_batch_does_not_advance_watermark_or_write_rows() {
     let driver = FollowerDriver::new(&writer, &watermarks);
 
     let result = driver.drive_once(&BadBatchFollower, 9000);
-    assert!(result.is_err(), "a failing op batch must surface as a DriveError");
+    assert!(
+        result.is_err(),
+        "a failing op batch must surface as a DriveError"
+    );
 
     // Watermark was NOT advanced — the follower would re-deliver the batch.
     let watermark = watermarks.feed_watermark("bad-batch").expect("read");
-    assert!(watermark.is_none(), "no watermark persisted after a failed batch");
+    assert!(
+        watermark.is_none(),
+        "no watermark persisted after a failed batch"
+    );
 
     // And the *valid* leading package op rolled back with the batch — proving
     // atomicity, not just that the bad op was skipped.
     let package = writer.get_package(BadBatchFollower::stem()).expect("read");
-    assert!(package.is_none(), "no partial rows after a rolled-back batch");
+    assert!(
+        package.is_none(),
+        "no partial rows after a rolled-back batch"
+    );
 }
 
 // A transport error must also propagate typed, not panic.
@@ -289,5 +327,8 @@ fn transport_error_propagates_typed() {
     let follower = HomebrewFollower::new(BrokenTransport);
 
     let result = driver.drive_once(&follower, 1000);
-    assert!(result.is_err(), "transport failure is a typed DriveError, never a panic");
+    assert!(
+        result.is_err(),
+        "transport failure is a typed DriveError, never a panic"
+    );
 }

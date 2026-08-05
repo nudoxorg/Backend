@@ -296,8 +296,7 @@ mod tests {
     fn job_key_hex_rejects_wrong_length_and_uppercase() {
         let too_short: Result<JobKeyHex, _> = serde_json::from_str("\"abcd\"");
         assert!(too_short.is_err());
-        let upper: Result<JobKeyHex, _> =
-            serde_json::from_str(&format!("\"{}\"", "A".repeat(64)));
+        let upper: Result<JobKeyHex, _> = serde_json::from_str(&format!("\"{}\"", "A".repeat(64)));
         assert!(upper.is_err());
         let ok: JobKeyHex =
             serde_json::from_str(&format!("\"{}\"", "a".repeat(64))).expect("valid");
@@ -314,7 +313,10 @@ mod tests {
     fn rerank_request_validation() {
         let valid = RerankRequestDto {
             query: "parse a toml file".to_owned(),
-            documents: vec![RerankDocument { id: "a".to_owned(), text: "toml::from_str".to_owned() }],
+            documents: vec![RerankDocument {
+                id: "a".to_owned(),
+                text: "toml::from_str".to_owned(),
+            }],
             top_k: std::num::NonZeroU32::new(5).expect("non-zero"),
         };
         assert!(valid.validate().is_ok());
@@ -325,7 +327,10 @@ mod tests {
 
         let mut oversize = valid;
         oversize.documents = (0..=RERANK_MAX_DOCUMENTS)
-            .map(|i| RerankDocument { id: i.to_string(), text: String::new() })
+            .map(|i| RerankDocument {
+                id: i.to_string(),
+                text: String::new(),
+            })
             .collect();
         assert!(matches!(
             oversize.validate(),

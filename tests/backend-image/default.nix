@@ -5,7 +5,8 @@
   tests/backend-image/check.nu + tests/lib modules.
 
   Provisions postgres, qdrant, terminusdb + the compiler daemon under $TMPDIR,
-  starts packages.server with NUDOX_ROLE=all, then:
+  starts the driver package (published as packages.server for compatibility)
+  with NUDOX_ROLE=all, then:
 
     GET  /healthz
     POST /packages  { ecosystem: rust,       name: axum, version: … }
@@ -87,7 +88,7 @@ mkNuCheck {
     "compiler: ${toString compilerDaemon}"
     "axum: ${axumVersion}"
     "zod: ${zodVersion}"
-    "coverage: OCI config + GET /healthz + POST /packages + poll until Stored + blob emit"
+    "coverage: OCI config + health + package add/poll + source download + blob emit"
     "pipeline: acquire → extract → compile (postcard) → emit blobs → Stored"
     "wire: application/x-postcard CompileRequest/CompileResponse"
   ];

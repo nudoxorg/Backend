@@ -23,8 +23,7 @@ use qdrant_client::qdrant::{
     HnswConfigDiffBuilder, KeywordIndexParamsBuilder, PointsIdsList, QuantizationSearchParams,
     ScalarQuantizationBuilder, SearchParams, SearchPointsBuilder, UpsertPointsBuilder,
     VectorParams, VectorParamsBuilder, VectorParamsMap, VectorsConfig, payload_index_params,
-    points_selector,
-    quantization_config, vectors_config,
+    points_selector, quantization_config, vectors_config,
 };
 use thiserror::Error;
 

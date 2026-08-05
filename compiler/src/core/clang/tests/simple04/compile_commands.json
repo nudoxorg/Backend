@@ -1,7 +1,0 @@
-[
-  {
-    "directory": ".",
-    "command": "clang -std=c11 -c simple04.c",
-    "file": "simple04.c"
-  }
-]

@@ -108,7 +108,9 @@ impl IrSource for StaticSource {
                             version: version.clone(),
                         },
                     }),
-                    Ok(LoadEvent::Ready { package: Arc::clone(pkg) }),
+                    Ok(LoadEvent::Ready {
+                        package: Arc::clone(pkg),
+                    }),
                 ]
             })
             .collect();
@@ -142,7 +144,9 @@ impl IrSource for FailingSource {
                     version: Some("1.0.0".to_owned()),
                 },
             }),
-            Ok(LoadEvent::Ready { package: Arc::clone(&self.ok_pkg) }),
+            Ok(LoadEvent::Ready {
+                package: Arc::clone(&self.ok_pkg),
+            }),
             Ok(LoadEvent::Discovered {
                 lineage: self.fail_lid.clone(),
                 hint: PackageHint {
@@ -181,7 +185,10 @@ async fn drain_packages(
 }
 
 /// Wait until `n` packages appear in the packages() stream.
-async fn wait_for_n_packages(engine: &nudox_engine::EngineHandle, n: usize) -> Vec<PackageLoadEvent> {
+async fn wait_for_n_packages(
+    engine: &nudox_engine::EngineHandle,
+    n: usize,
+) -> Vec<PackageLoadEvent> {
     let rx = engine.packages();
     let deadline = Duration::from_millis(2000);
     let mut out = Vec::new();
@@ -198,16 +205,21 @@ async fn wait_for_n_packages(engine: &nudox_engine::EngineHandle, n: usize) -> V
 }
 
 /// Drain a search receiver to completion.
-async fn drain_search(rx: flume::Receiver<nudox_engine::wire::SearchEvent>) -> Vec<nudox_engine::wire::SearchEvent> {
+async fn drain_search(
+    rx: flume::Receiver<nudox_engine::wire::SearchEvent>,
+) -> Vec<nudox_engine::wire::SearchEvent> {
     use nudox_engine::wire::SearchEvent;
     let mut events = Vec::new();
     let _ = tokio::time::timeout(Duration::from_millis(1000), async {
         while let Ok(ev) = rx.recv_async().await {
             let done = matches!(ev, SearchEvent::Done { .. } | SearchEvent::Failed { .. });
             events.push(ev);
-            if done { break; }
+            if done {
+                break;
+            }
         }
-    }).await;
+    })
+    .await;
     events
 }
 
@@ -235,7 +247,12 @@ async fn search_spans_multiple_packages() {
 
     // Wait for both packages.
     let events = wait_for_n_packages(&engine, 2).await;
-    assert_eq!(events.len(), 2, "expected 2 package load events, got {}", events.len());
+    assert_eq!(
+        events.len(),
+        2,
+        "expected 2 package load events, got {}",
+        events.len()
+    );
 
     // Search for something only in pkg-a.
     let q_a = SearchQuery {
@@ -245,11 +262,17 @@ async fn search_spans_multiple_packages() {
     };
     let (_h, rx) = engine.search(q_a, Gen(1));
     let ev_a = drain_search(rx).await;
-    let hits_a: Vec<_> = ev_a.iter().flat_map(|e| match e {
-        nudox_engine::wire::SearchEvent::Section { section, rows, .. }
-        if *section == nudox_engine::search::SECTION_NAME => rows.iter().cloned().collect::<Vec<_>>(),
-        _ => Vec::new(),
-    }).collect();
+    let hits_a: Vec<_> = ev_a
+        .iter()
+        .flat_map(|e| match e {
+            nudox_engine::wire::SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_NAME =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
     assert!(
         hits_a.iter().any(|h| h.display_name.contains("RouterA")),
         "searching for 'RouterA' must return a hit from pkg-a; got: {:?}",
@@ -264,11 +287,17 @@ async fn search_spans_multiple_packages() {
     };
     let (_h, rx) = engine.search(q_b, Gen(2));
     let ev_b = drain_search(rx).await;
-    let hits_b: Vec<_> = ev_b.iter().flat_map(|e| match e {
-        nudox_engine::wire::SearchEvent::Section { section, rows, .. }
-        if *section == nudox_engine::search::SECTION_NAME => rows.iter().cloned().collect::<Vec<_>>(),
-        _ => Vec::new(),
-    }).collect();
+    let hits_b: Vec<_> = ev_b
+        .iter()
+        .flat_map(|e| match e {
+            nudox_engine::wire::SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_NAME =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
     assert!(
         hits_b.iter().any(|h| h.display_name.contains("HandlerB")),
         "searching for 'HandlerB' must return a hit from pkg-b; got: {:?}",
@@ -316,7 +345,8 @@ async fn packages_emits_one_row_per_lineage_not_per_generation() {
         .collect();
 
     assert_eq!(
-        loaded.len(), 1,
+        loaded.len(),
+        1,
         "two generations of the same lineage must collapse to one packages() row; \
          got {} rows",
         loaded.len()
@@ -364,18 +394,25 @@ async fn name_collisions_across_packages_are_disambiguated() {
     let (_h, rx) = engine.search(q, Gen(10));
     let events = drain_search(rx).await;
 
-    let hits: Vec<_> = events.iter().flat_map(|e| match e {
-        nudox_engine::wire::SearchEvent::Section { section, rows, .. }
-        if *section == nudox_engine::search::SECTION_NAME => rows.iter().cloned().collect::<Vec<_>>(),
-        _ => Vec::new(),
-    }).collect();
+    let hits: Vec<_> = events
+        .iter()
+        .flat_map(|e| match e {
+            nudox_engine::wire::SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_NAME =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
 
     if hits.len() >= 2 {
         // With multiple packages, display names must differ so they can be told apart.
         let names: Vec<&str> = hits.iter().map(|h| h.display_name.as_ref()).collect();
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
         assert_eq!(
-            unique.len(), names.len(),
+            unique.len(),
+            names.len(),
             "two 'Router' symbols from different packages must have different display names; \
              got duplicates: {:?}",
             names
@@ -424,11 +461,17 @@ async fn one_failing_package_does_not_block_others() {
     let (_h, rx) = engine.search(q, Gen(20));
     let events = drain_search(rx).await;
 
-    let hits: Vec<_> = events.iter().flat_map(|e| match e {
-        nudox_engine::wire::SearchEvent::Section { section, rows, .. }
-        if *section == nudox_engine::search::SECTION_NAME => rows.iter().cloned().collect::<Vec<_>>(),
-        _ => Vec::new(),
-    }).collect();
+    let hits: Vec<_> = events
+        .iter()
+        .flat_map(|e| match e {
+            nudox_engine::wire::SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_NAME =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
 
     assert!(
         hits.iter().any(|h| h.display_name.contains("StableApi")),
@@ -511,13 +554,17 @@ async fn late_subscriber_sees_already_loaded_packages_exactly_once() {
         .collect();
 
     assert_eq!(
-        loaded.len(), 2,
+        loaded.len(),
+        2,
         "late subscriber must see both packages exactly once; got {} events: {:?}",
         loaded.len(),
-        loaded.iter().map(|e| match e {
-            PackageLoadEvent::Loaded { name, .. } => name.to_string(),
-            _ => "?".to_owned(),
-        }).collect::<Vec<_>>()
+        loaded
+            .iter()
+            .map(|e| match e {
+                PackageLoadEvent::Loaded { name, .. } => name.to_string(),
+                _ => "?".to_owned(),
+            })
+            .collect::<Vec<_>>()
     );
 
     // Names must be distinct (no duplicates from the dedup path failing).
@@ -530,7 +577,8 @@ async fn late_subscriber_sees_already_loaded_packages_exactly_once() {
         .collect();
     let unique: std::collections::HashSet<&String> = names.iter().collect();
     assert_eq!(
-        unique.len(), names.len(),
+        unique.len(),
+        names.len(),
         "late subscriber must receive each package exactly once; got duplicates: {:?}",
         names
     );

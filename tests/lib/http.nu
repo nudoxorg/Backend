@@ -115,3 +115,32 @@ export def await-stored [
     sleep 1sec
   }
 }
+
+# Download one manifest-declared source file and require both non-empty bytes
+# and the server's content hash validator. Returns the byte count.
+export def download-package-file [
+  base_url: string
+  work: string
+  pkg: string
+  relative_path: string
+  label: string
+] {
+  let out = $work | path join $"download-($label).bin"
+  let headers = $work | path join $"download-($label).headers"
+  print $"==> GET /packages/($pkg)/files/($relative_path) (($label))"
+  let code = (^curl -sS -D $headers -o $out -w "%{http_code}" --max-time 10
+    $"($base_url)/packages/($pkg)/files/($relative_path)" | str trim)
+  if $code != "200" {
+    error make { msg: $"download expected 200, got ($code) for ($relative_path)" }
+  }
+  let bytes = (ls $out | get 0.size | into int)
+  if $bytes <= 0 {
+    error make { msg: $"download returned no bytes for ($relative_path)" }
+  }
+  let header_text = (open --raw $headers | str lowercase)
+  if not ($header_text | str contains "etag:") {
+    error make { msg: $"download response omitted integrity etag for ($relative_path)" }
+  }
+  print $"    downloaded ($bytes) bytes with etag"
+  $bytes
+}

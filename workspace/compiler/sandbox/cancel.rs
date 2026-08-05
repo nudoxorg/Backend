@@ -12,43 +12,43 @@ use std::sync::{Arc, OnceLock};
 /// the same way.
 #[derive(Debug, Clone)]
 pub struct CancelToken {
-	inner: Arc<AtomicBool>,
+    inner: Arc<AtomicBool>,
 }
 
 impl Default for CancelToken {
-	fn default() -> Self {
-		Self::new()
-	}
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CancelToken {
-	/// Fresh token (not cancelled).
-	pub fn new() -> Self {
-		Self {
-			inner: Arc::new(AtomicBool::new(false)),
-		}
-	}
+    /// Fresh token (not cancelled).
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
-	/// Process-wide token that is never cancelled.
-	///
-	/// Do **not** call [`cancel`](Self::cancel) on this handle — it is shared.
-	pub fn never() -> Self {
-		static NEVER: OnceLock<CancelToken> = OnceLock::new();
-		NEVER
-			.get_or_init(|| Self {
-				// Shared flag that stays false for the process lifetime.
-				inner: Arc::new(AtomicBool::new(false)),
-			})
-			.clone()
-	}
+    /// Process-wide token that is never cancelled.
+    ///
+    /// Do **not** call [`cancel`](Self::cancel) on this handle — it is shared.
+    pub fn never() -> Self {
+        static NEVER: OnceLock<CancelToken> = OnceLock::new();
+        NEVER
+            .get_or_init(|| Self {
+                // Shared flag that stays false for the process lifetime.
+                inner: Arc::new(AtomicBool::new(false)),
+            })
+            .clone()
+    }
 
-	/// Request cancellation. Idempotent.
-	pub fn cancel(&self) {
-		self.inner.store(true, Ordering::SeqCst);
-	}
+    /// Request cancellation. Idempotent.
+    pub fn cancel(&self) {
+        self.inner.store(true, Ordering::SeqCst);
+    }
 
-	/// Whether cancellation has been requested.
-	pub fn is_cancelled(&self) -> bool {
-		self.inner.load(Ordering::SeqCst)
-	}
+    /// Whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.inner.load(Ordering::SeqCst)
+    }
 }

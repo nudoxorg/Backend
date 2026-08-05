@@ -54,7 +54,11 @@ pub struct FakeGitRepository {
 
 impl FakeGitRepository {
     pub fn new() -> Self {
-        Self { ls_remote: BTreeMap::new(), head: BTreeMap::new(), calls: AtomicUsize::new(0) }
+        Self {
+            ls_remote: BTreeMap::new(),
+            head: BTreeMap::new(),
+            calls: AtomicUsize::new(0),
+        }
     }
 
     pub fn with_ls_remote(mut self, url: &str, bytes: &[u8]) -> Self {
@@ -63,7 +67,8 @@ impl FakeGitRepository {
     }
 
     pub fn with_ls_remote_error(mut self, url: &str, message: &str) -> Self {
-        self.ls_remote.insert(url.to_owned(), Err(message.to_owned()));
+        self.ls_remote
+            .insert(url.to_owned(), Err(message.to_owned()));
         self
     }
 
@@ -93,18 +98,23 @@ impl GitRepository for FakeGitRepository {
 
     fn list_remote_refs(&self, url: &str) -> Result<Vec<LsRemoteRef>, GitRepositoryError> {
         let bytes = self.ls_remote_bytes(url)?;
-        let text = std::str::from_utf8(&bytes).map_err(|_| {
-            GitRepositoryError::MalformedOutput { url: url.to_owned(), detail: "utf8".into() }
-        })?;
+        let text =
+            std::str::from_utf8(&bytes).map_err(|_| GitRepositoryError::MalformedOutput {
+                url: url.to_owned(),
+                detail: "utf8".into(),
+            })?;
         let mut refs = Vec::new();
         for line in text.split('\n') {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            let (oid, reference) = line.split_once('\t').ok_or_else(|| {
-                GitRepositoryError::MalformedOutput { url: url.to_owned(), detail: "no tab".into() }
-            })?;
+            let (oid, reference) =
+                line.split_once('\t')
+                    .ok_or_else(|| GitRepositoryError::MalformedOutput {
+                        url: url.to_owned(),
+                        detail: "no tab".into(),
+                    })?;
             refs.push(LsRemoteRef {
                 object_id: oid.trim().to_owned(),
                 reference: reference.trim().to_owned(),

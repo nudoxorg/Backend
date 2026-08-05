@@ -11,58 +11,58 @@
 //! - `POST /admin/packages/:id/rebuild` — re-emit fan-out intent for all derived stores
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use std::sync::Arc;
 
 use axum::{
-	Json,
-	extract::{Path, State},
+    Json,
+    extract::{Path, State},
 };
 use heart::PackageId;
 use serde::Serialize;
 
-use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::AdminPrincipal;
 use crate::error::ServerResult;
 use crate::save::blobs::BlobAudit;
+use registry::vector::EmbeddingModel;
 
 /// Response for `POST /admin/packages/:id/verify`.
 #[derive(Debug, Serialize)]
 pub struct VerifyResponse {
-	pub package: uuid::Uuid,
-	pub sound: bool,
-	pub files_verified: usize,
-	pub bytes_verified: u64,
-	pub missing: usize,
-	pub corrupt: usize,
-	pub size_mismatches: usize,
-	pub matches_recorded: bool,
-	pub references_decoded: bool,
+    pub package: uuid::Uuid,
+    pub sound: bool,
+    pub files_verified: usize,
+    pub bytes_verified: u64,
+    pub missing: usize,
+    pub corrupt: usize,
+    pub size_mismatches: usize,
+    pub matches_recorded: bool,
+    pub references_decoded: bool,
 }
 
 impl From<BlobAudit> for VerifyResponse {
-	fn from(audit: BlobAudit) -> Self {
-		Self {
-			package: *audit.package.as_uuid(),
-			sound: audit.is_sound(),
-			files_verified: audit.files_verified,
-			bytes_verified: audit.bytes_verified,
-			missing: audit.missing.len(),
-			corrupt: audit.corrupt.len(),
-			size_mismatches: audit.size_mismatches.len(),
-			matches_recorded: audit.matches_recorded,
-			references_decoded: audit.references_decoded,
-		}
-	}
+    fn from(audit: BlobAudit) -> Self {
+        Self {
+            package: *audit.package.as_uuid(),
+            sound: audit.is_sound(),
+            files_verified: audit.files_verified,
+            bytes_verified: audit.bytes_verified,
+            missing: audit.missing.len(),
+            corrupt: audit.corrupt.len(),
+            size_mismatches: audit.size_mismatches.len(),
+            matches_recorded: audit.matches_recorded,
+            references_decoded: audit.references_decoded,
+        }
+    }
 }
 
 /// Response for `POST /admin/packages/:id/rebuild`.
 #[derive(Debug, Serialize)]
 pub struct RebuildResponse {
-	pub package: uuid::Uuid,
-	/// The content hash the fan-out intents were re-emitted at.
-	pub snapshot: String,
+    pub package: uuid::Uuid,
+    /// The content hash the fan-out intents were re-emitted at.
+    pub snapshot: String,
 }
 
 /// `POST /admin/packages/:id/verify`
@@ -81,20 +81,20 @@ pub struct RebuildResponse {
 /// not the absence of garbage. See `save/blobs.rs` for the full gap description.
 #[tracing::instrument(skip_all, fields(package = %id))]
 pub async fn verify_package<M: EmbeddingModel>(
-	State(server): State<Arc<Server<M>>>,
-	admin: AdminPrincipal,
-	Path(id): Path<uuid::Uuid>,
+    State(server): State<Arc<Server<M>>>,
+    admin: AdminPrincipal,
+    Path(id): Path<uuid::Uuid>,
 ) -> ServerResult<Json<VerifyResponse>> {
-	let cap = server.authorize_admin(&admin, "admin.verify")?;
-	let package = PackageId::from_uuid(id);
-	let audit = server.verify_blobs(&cap, package).await?;
-	tracing::info!(
-		%package,
-		sound = audit.is_sound(),
-		files = audit.files_verified,
-		"admin verify completed"
-	);
-	Ok(Json(VerifyResponse::from(audit)))
+    let cap = server.authorize_admin(&admin, "admin.verify")?;
+    let package = PackageId::from_uuid(id);
+    let audit = server.verify_blobs(&cap, package).await?;
+    tracing::info!(
+        %package,
+        sound = audit.is_sound(),
+        files = audit.files_verified,
+        "admin verify completed"
+    );
+    Ok(Json(VerifyResponse::from(audit)))
 }
 
 /// `POST /admin/packages/:id/rebuild`
@@ -107,16 +107,16 @@ pub async fn verify_package<M: EmbeddingModel>(
 /// body executes. The resulting [`AdminCap`] is threaded into [`Server::rebuild_from_blobs`].
 #[tracing::instrument(skip_all, fields(package = %id))]
 pub async fn rebuild_package<M: EmbeddingModel>(
-	State(server): State<Arc<Server<M>>>,
-	admin: AdminPrincipal,
-	Path(id): Path<uuid::Uuid>,
+    State(server): State<Arc<Server<M>>>,
+    admin: AdminPrincipal,
+    Path(id): Path<uuid::Uuid>,
 ) -> ServerResult<Json<RebuildResponse>> {
-	let cap = server.authorize_admin(&admin, "admin.rebuild")?;
-	let package = PackageId::from_uuid(id);
-	let snapshot = server.rebuild_from_blobs(&cap, package).await?;
-	tracing::info!(%package, "admin rebuild completed");
-	Ok(Json(RebuildResponse {
-		package: id,
-		snapshot: snapshot.to_string(),
-	}))
+    let cap = server.authorize_admin(&admin, "admin.rebuild")?;
+    let package = PackageId::from_uuid(id);
+    let snapshot = server.rebuild_from_blobs(&cap, package).await?;
+    tracing::info!(%package, "admin rebuild completed");
+    Ok(Json(RebuildResponse {
+        package: id,
+        snapshot: snapshot.to_string(),
+    }))
 }

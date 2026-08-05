@@ -30,34 +30,34 @@
 #[must_use = "a SemanticGate authorizes exactly one semantic query; dropping it wastes the authorization"]
 #[derive(Debug)]
 pub struct SemanticGate {
-	/// Why this gate was issued — carried for audit/tracing. Not part of any
-	/// equality/identity; purely explanatory.
-	reason: &'static str,
+    /// Why this gate was issued — carried for audit/tracing. Not part of any
+    /// equality/identity; purely explanatory.
+    reason: &'static str,
 }
 
 impl SemanticGate {
-	/// Issue a gate authorizing one user-facing semantic query, recording *why*.
-	///
-	/// INVARIANT: call this only from the server's query planner / policy layer,
-	/// once it has decided the expensive semantic path is warranted. Readiness
-	/// probes must use [`Self::for_readiness`] instead.
-	pub fn issue(reason: &'static str) -> Self {
-		Self { reason }
-	}
+    /// Issue a gate authorizing one user-facing semantic query, recording *why*.
+    ///
+    /// INVARIANT: call this only from the server's query planner / policy layer,
+    /// once it has decided the expensive semantic path is warranted. Readiness
+    /// probes must use [`Self::for_readiness`] instead.
+    pub fn issue(reason: &'static str) -> Self {
+        Self { reason }
+    }
 
-	/// Gate for a readiness / liveness probe (not a user query).
-	///
-	/// The sole sanctioned non-planner issuance site: store `Probeable` impls
-	/// that need a one-hit zero-vector connectivity check. Fixed reason so
-	/// metrics/audit can filter readiness traffic.
-	pub fn for_readiness() -> Self {
-		Self {
-			reason: "readiness probe",
-		}
-	}
+    /// Gate for a readiness / liveness probe (not a user query).
+    ///
+    /// The sole sanctioned non-planner issuance site: store `Probeable` impls
+    /// that need a one-hit zero-vector connectivity check. Fixed reason so
+    /// metrics/audit can filter readiness traffic.
+    pub fn for_readiness() -> Self {
+        Self {
+            reason: "readiness probe",
+        }
+    }
 
-	/// The audit reason this gate was issued for.
-	pub const fn reason(&self) -> &'static str {
-		self.reason
-	}
+    /// The audit reason this gate was issued for.
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
 }

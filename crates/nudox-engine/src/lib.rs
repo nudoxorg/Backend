@@ -51,28 +51,28 @@
 //! partially, and has nothing for a `Gen` to guard, so a channel would buy a
 //! task hop and no correctness.
 
-pub mod wire;
 pub mod chunk;
-pub mod runtime;
 pub mod doc;
 pub mod highlight;
-pub mod search;
 pub mod query;
+pub mod runtime;
+pub mod search;
 pub mod timeline;
 pub mod versions;
+pub mod wire;
 
 #[cfg(test)]
 pub(crate) mod test_support;
 
 // Re-export the primary public surface so callers can `use nudox_engine::*`
 // if they prefer.
+pub use query::GraphQuery;
 pub use runtime::{Engine, EngineConfig, EngineHandle, StreamHandle};
 pub use search::SearchQuery;
-pub use query::GraphQuery;
 pub use wire::{
-    DocEvent, EngineError, Gen, GenerationId, HitRow, KindTag, Provenance, QueryEvent,
-    QueryRow, RenderSection, SearchEvent, SearchSectionId, SectionId, SharedStr, SymbolHead,
-    SymbolKey, Timeline, TimelineChange, TimelineRow, VersionEvent, VersionList, VersionRow,
+    DocEvent, EngineError, Gen, GenerationId, HitRow, KindTag, Provenance, QueryEvent, QueryRow,
+    RenderSection, SearchEvent, SearchSectionId, SectionId, SharedStr, SymbolHead, SymbolKey,
+    Timeline, TimelineChange, TimelineRow, VersionEvent, VersionList, VersionRow,
 };
 // `PackageLoadEvent`, `PackageSpec`, and `ProducerLanguage` are defined below
 // and are `pub`; they are visible to `lindsey` as `nudox_engine::PackageLoadEvent`
@@ -381,10 +381,7 @@ impl EngineHandle {
     /// Resolve a project workspace and stream package discovery events.
     ///
     /// **Stub (M3).** Returns an immediately-`Done` stream.
-    pub fn resolve_project(
-        &self,
-        _root: PathBuf,
-    ) -> (StreamHandle, flume::Receiver<ProjectEvent>) {
+    pub fn resolve_project(&self, _root: PathBuf) -> (StreamHandle, flume::Receiver<ProjectEvent>) {
         let generation = Gen(0);
         let (tx, rx) = flume::bounded::<ProjectEvent>(32);
         let (_, cancel_fn) = Self::make_cancel();

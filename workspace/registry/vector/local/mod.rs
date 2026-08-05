@@ -24,11 +24,11 @@ pub mod store;
 
 pub use actor::StoreHandle;
 pub use compact::{
-	COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, spawn_compactor,
+    COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, spawn_compactor,
 };
 pub use depshard::{
-	ArtifactFetcher, DepManifestEntry, FetchError, InstallError, InstallOutcome, RemoteRouteReason,
-	evict, install, install_with_io,
+    ArtifactFetcher, DepManifestEntry, FetchError, InstallError, InstallOutcome, RemoteRouteReason,
+    evict, install, install_with_io,
 };
 pub use fanout::{SharedWorkingSet, WorkingSet, merge_hits};
 pub use hotset::{AdmissionState, HotSetManager, InstallPlan, PackageStats, apply_plan, diff_plan};
@@ -41,16 +41,19 @@ use crate::vector::core::StoreError;
 
 /// Wrap an Edge / IO failure as the trait-level backend error.
 pub(crate) fn backend_error(err: impl std::fmt::Display) -> StoreError {
-	StoreError::Backend(err.to_string())
+    StoreError::Backend(err.to_string())
 }
 
 /// A shard whose on-disk state cannot be trusted (schema mismatch, torn
 /// files). The message must be actionable (09c §1.1).
 pub(crate) fn corrupt_error(msg: impl Into<String>) -> StoreError {
-	StoreError::Corrupt(msg.into())
+    StoreError::Corrupt(msg.into())
 }
 
 /// Another window / process owns the mutable shard (09c §1.1 multi-window).
 pub(crate) fn locked_error(msg: impl Into<String>) -> StoreError {
-	StoreError::Io(std::io::Error::new(std::io::ErrorKind::WouldBlock, msg.into()))
+    StoreError::Io(std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        msg.into(),
+    ))
 }

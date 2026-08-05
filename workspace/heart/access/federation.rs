@@ -71,7 +71,9 @@ impl<S> Federation<S> {
     }
 
     /// The definitive base's handle — the single-source fast path.
-    pub fn base(&self) -> &S { &self.base.value }
+    pub fn base(&self) -> &S {
+        &self.base.value
+    }
 
     /// Every source in resolution-precedence order: overlays (highest first),
     /// then the definitive base.

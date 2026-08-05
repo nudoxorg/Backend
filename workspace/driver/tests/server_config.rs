@@ -37,8 +37,14 @@ fn default_exposes_instance_token() {
 fn default_role_is_all() {
     let configuration = ServerConfiguration::default();
     assert_eq!(configuration.role, Role::All);
-    assert!(configuration.role.runs_forge(), "All must run the compile worker");
-    assert!(configuration.role.runs_gateway(), "All must run the fan-out loops");
+    assert!(
+        configuration.role.runs_forge(),
+        "All must run the compile worker"
+    );
+    assert!(
+        configuration.role.runs_gateway(),
+        "All must run the fan-out loops"
+    );
 }
 
 /// Each role gates exactly the loops it owns.
@@ -88,9 +94,9 @@ fn production_with_default_config_passes_validation() {
     let mut configuration = ServerConfiguration::default();
     configuration.deployment = Deployment::Production;
 
-    configuration.validate().expect(
-        "production with default configuration must pass structural validation"
-    );
+    configuration
+        .validate()
+        .expect("production with default configuration must pass structural validation");
 }
 
 /// Development (default) with default credentials → validation passes.
@@ -105,7 +111,7 @@ fn development_with_default_credentials_passes_validation() {
         Deployment::Development,
         "the default deployment must be Development"
     );
-    configuration.validate().expect(
-        "development + default credentials must pass validation (no boot guard in dev)"
-    );
+    configuration
+        .validate()
+        .expect("development + default credentials must pass validation (no boot guard in dev)");
 }

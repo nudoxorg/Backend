@@ -26,7 +26,10 @@ pub fn section_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_store::{package::{PackageView, Provenance}, source::fixtures::build_rich_view};
+    use nudox_store::{
+        package::{PackageView, Provenance},
+        source::fixtures::build_rich_view,
+    };
 
     #[test]
     fn plan_ids_match_section_ids() {
@@ -38,9 +41,20 @@ mod tests {
         for (intro, entry) in pkg.view().entries() {
             let plan = section_plan(intro, entry, pkg.view(), &pkg);
             let sects = sections(intro, entry, pkg.view(), &pkg);
-            assert_eq!(plan.len(), sects.len(), "plan/section count mismatch for '{}'", entry.sym().name);
+            assert_eq!(
+                plan.len(),
+                sects.len(),
+                "plan/section count mismatch for '{}'",
+                entry.sym().name
+            );
             for (p, s) in plan.iter().zip(sects.iter()) {
-                assert_eq!(p.id, s.section_id(), "id mismatch at {:?} for '{}'", p.id, entry.sym().name);
+                assert_eq!(
+                    p.id,
+                    s.section_id(),
+                    "id mismatch at {:?} for '{}'",
+                    p.id,
+                    entry.sym().name
+                );
             }
         }
     }
@@ -55,8 +69,12 @@ mod tests {
         for (intro, entry) in pkg.view().entries() {
             for p in section_plan(intro, entry, pkg.view(), &pkg) {
                 match p.size_hint {
-                    SizeHint::Lines(n) => assert!(n > 0, "zero line count in plan for '{}'", entry.sym().name),
-                    SizeHint::Rows(n) => assert!(n > 0, "zero row count in plan for '{}'", entry.sym().name),
+                    SizeHint::Lines(n) => {
+                        assert!(n > 0, "zero line count in plan for '{}'", entry.sym().name)
+                    }
+                    SizeHint::Rows(n) => {
+                        assert!(n > 0, "zero row count in plan for '{}'", entry.sym().name)
+                    }
                     SizeHint::Unknown => {}
                 }
             }

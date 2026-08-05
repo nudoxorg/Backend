@@ -63,34 +63,37 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// meant to reach into the providers; `tracing`/`metrics`/pyroscope call
 /// sites are the only intended API surface once `init` has run.
 pub struct TelemetryGuard {
-	tracer_provider: Option<SdkTracerProvider>,
-	meter_provider: Option<SdkMeterProvider>,
-	logger_provider: Option<SdkLoggerProvider>,
-	pyroscope: Option<pyroscope::PyroscopeHandle>,
+    tracer_provider: Option<SdkTracerProvider>,
+    meter_provider: Option<SdkMeterProvider>,
+    logger_provider: Option<SdkLoggerProvider>,
+    pyroscope: Option<pyroscope::PyroscopeHandle>,
 }
 
 impl Drop for TelemetryGuard {
-	fn drop(&mut self) {
-		// Best-effort, in reverse dependency order (profiling first — it does
-		// not depend on the OTel SDK state at all — then logs/metrics/traces).
-		// Every provider's `shutdown()` is fallible (network/collector down);
-		// none of those failures propagate as a panic during unwind/shutdown.
-		if let Some(pyroscope) = self.pyroscope.take() {
-			pyroscope.stop();
-		}
-		if let Some(provider) = self.logger_provider.take()
-			&& let Err(error) = provider.shutdown() {
-				eprintln!("telemetry: logger provider shutdown failed: {error}");
-			}
-		if let Some(provider) = self.meter_provider.take()
-			&& let Err(error) = provider.shutdown() {
-				eprintln!("telemetry: meter provider shutdown failed: {error}");
-			}
-		if let Some(provider) = self.tracer_provider.take()
-			&& let Err(error) = provider.shutdown() {
-				eprintln!("telemetry: tracer provider shutdown failed: {error}");
-			}
-	}
+    fn drop(&mut self) {
+        // Best-effort, in reverse dependency order (profiling first — it does
+        // not depend on the OTel SDK state at all — then logs/metrics/traces).
+        // Every provider's `shutdown()` is fallible (network/collector down);
+        // none of those failures propagate as a panic during unwind/shutdown.
+        if let Some(pyroscope) = self.pyroscope.take() {
+            pyroscope.stop();
+        }
+        if let Some(provider) = self.logger_provider.take()
+            && let Err(error) = provider.shutdown()
+        {
+            eprintln!("telemetry: logger provider shutdown failed: {error}");
+        }
+        if let Some(provider) = self.meter_provider.take()
+            && let Err(error) = provider.shutdown()
+        {
+            eprintln!("telemetry: meter provider shutdown failed: {error}");
+        }
+        if let Some(provider) = self.tracer_provider.take()
+            && let Err(error) = provider.shutdown()
+        {
+            eprintln!("telemetry: tracer provider shutdown failed: {error}");
+        }
+    }
 }
 
 /// Initialize the process-wide `tracing` subscriber and OTel pipelines.
@@ -113,105 +116,110 @@ impl Drop for TelemetryGuard {
 /// time (e.g. an unparseable OTLP endpoint) — never because a collector is
 /// unreachable over the network. See the module-level fail-open contract.
 pub fn init(config: &TelemetryConfig) -> anyhow::Result<TelemetryGuard> {
-	let filter = logging::env_filter(config);
-	let fmt = logging::fmt_layer(config);
+    let filter = logging::env_filter(config);
+    let fmt = logging::fmt_layer(config);
 
-	if config.disabled {
-		tracing_subscriber::registry().with(filter).with(fmt).init();
-		// Even with the OTLP SDK bypassed, the `metrics` facade still needs a
-		// recorder or every `counter!`/`gauge!` call site becomes a silent
-		// no-op and `/metrics` answers 503. Install the Prometheus pull
-		// recorder alone (no OTLP fan-out) so the scrape path keeps working.
-		metrics_bridge::install(None);
-		tracing::info!("telemetry: OTEL_SDK_DISABLED set; plain logging + prometheus /metrics only");
-		return Ok(TelemetryGuard {
-			tracer_provider: None,
-			meter_provider: None,
-			logger_provider: None,
-			pyroscope: None,
-		});
-	}
+    if config.disabled {
+        tracing_subscriber::registry().with(filter).with(fmt).init();
+        // Even with the OTLP SDK bypassed, the `metrics` facade still needs a
+        // recorder or every `counter!`/`gauge!` call site becomes a silent
+        // no-op and `/metrics` answers 503. Install the Prometheus pull
+        // recorder alone (no OTLP fan-out) so the scrape path keeps working.
+        metrics_bridge::install(None);
+        tracing::info!(
+            "telemetry: OTEL_SDK_DISABLED set; plain logging + prometheus /metrics only"
+        );
+        return Ok(TelemetryGuard {
+            tracer_provider: None,
+            meter_provider: None,
+            logger_provider: None,
+            pyroscope: None,
+        });
+    }
 
-	// W3C TraceContext propagation across the HTTP boundary (Traefik →
-	// backend and any outbound calls this process makes) — installed
-	// regardless of whether any individual OTLP pipeline below succeeds,
-	// since propagation itself has no network dependency.
-	global::set_text_map_propagator(TraceContextPropagator::new());
+    // W3C TraceContext propagation across the HTTP boundary (Traefik →
+    // backend and any outbound calls this process makes) — installed
+    // regardless of whether any individual OTLP pipeline below succeeds,
+    // since propagation itself has no network dependency.
+    global::set_text_map_propagator(TraceContextPropagator::new());
 
-	let otel_resource = resource::build(config);
+    let otel_resource = resource::build(config);
 
-	// Each pipeline is built independently and degrades independently: a
-	// failure building the trace exporter must not prevent metrics/logs from
-	// coming up, and vice versa. This is the concrete shape of "fail open".
-	let tracer_provider = match tracing_otel::build_provider(config, otel_resource.clone()) {
-		Ok(provider) => Some(provider),
-		Err(error) => {
-			tracing::warn!(%error, "telemetry: OTLP trace pipeline unavailable; continuing without it");
-			None
-		}
-	};
-	let meter_provider = match metrics_otel::build_provider(config, otel_resource.clone()) {
-		Ok(provider) => Some(provider),
-		Err(error) => {
-			tracing::warn!(%error, "telemetry: OTLP metrics pipeline unavailable; continuing without it");
-			None
-		}
-	};
-	let logger_provider = match logs_otel::build_provider(config, otel_resource) {
-		Ok(provider) => Some(provider),
-		Err(error) => {
-			tracing::warn!(%error, "telemetry: OTLP log pipeline unavailable; continuing without it");
-			None
-		}
-	};
+    // Each pipeline is built independently and degrades independently: a
+    // failure building the trace exporter must not prevent metrics/logs from
+    // coming up, and vice versa. This is the concrete shape of "fail open".
+    let tracer_provider = match tracing_otel::build_provider(config, otel_resource.clone()) {
+        Ok(provider) => Some(provider),
+        Err(error) => {
+            tracing::warn!(%error, "telemetry: OTLP trace pipeline unavailable; continuing without it");
+            None
+        }
+    };
+    let meter_provider = match metrics_otel::build_provider(config, otel_resource.clone()) {
+        Ok(provider) => Some(provider),
+        Err(error) => {
+            tracing::warn!(%error, "telemetry: OTLP metrics pipeline unavailable; continuing without it");
+            None
+        }
+    };
+    let logger_provider = match logs_otel::build_provider(config, otel_resource) {
+        Ok(provider) => Some(provider),
+        Err(error) => {
+            tracing::warn!(%error, "telemetry: OTLP log pipeline unavailable; continuing without it");
+            None
+        }
+    };
 
-	if let Some(provider) = &meter_provider {
-		global::set_meter_provider(provider.clone());
-	}
+    if let Some(provider) = &meter_provider {
+        global::set_meter_provider(provider.clone());
+    }
 
-	// Install the process-wide `metrics`-crate recorder: a Prometheus+OTLP
-	// fan-out when the OTLP meter pipeline is up (so `metrics::counter!` &c.
-	// reach both `/metrics` and the collector), Prometheus-only otherwise. This
-	// subsumes the old `server::http::handlers::health::install_prometheus` —
-	// the recorder is now installed here, once, before `serve()` runs.
-	let meter = meter_provider.as_ref().map(|provider| provider.meter("nudox-backend"));
-	metrics_bridge::install(meter);
+    // Install the process-wide `metrics`-crate recorder: a Prometheus+OTLP
+    // fan-out when the OTLP meter pipeline is up (so `metrics::counter!` &c.
+    // reach both `/metrics` and the collector), Prometheus-only otherwise. This
+    // subsumes the old `server::http::handlers::health::install_prometheus` —
+    // the recorder is now installed here, once, before `serve()` runs.
+    let meter = meter_provider
+        .as_ref()
+        .map(|provider| provider.meter("nudox-backend"));
+    metrics_bridge::install(meter);
 
-	// Assemble the registry. `tracing_subscriber::Layer` composition requires
-	// static dispatch per layer type, but the OTel layers are optional
-	// (Option<Layer> implements Layer as "no-op when None"), so this compiles
-	// regardless of which pipelines came up.
-	let otel_trace_layer =
-		tracer_provider.as_ref().map(|provider| tracing_otel::layer(provider, &config.service_name));
-	let otel_log_layer = logger_provider.as_ref().map(logs_otel::layer);
+    // Assemble the registry. `tracing_subscriber::Layer` composition requires
+    // static dispatch per layer type, but the OTel layers are optional
+    // (Option<Layer> implements Layer as "no-op when None"), so this compiles
+    // regardless of which pipelines came up.
+    let otel_trace_layer = tracer_provider
+        .as_ref()
+        .map(|provider| tracing_otel::layer(provider, &config.service_name));
+    let otel_log_layer = logger_provider.as_ref().map(logs_otel::layer);
 
-	tracing_subscriber::registry()
-		.with(filter)
-		.with(fmt)
-		.with(otel_trace_layer)
-		.with(otel_log_layer)
-		.init();
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt)
+        .with(otel_trace_layer)
+        .with(otel_log_layer)
+        .init();
 
-	if tracer_provider.is_none() && meter_provider.is_none() && logger_provider.is_none() {
-		tracing::warn!(
-			endpoint = %config.otlp_endpoint,
-			"telemetry: no OTLP pipeline could be constructed; running with fmt logging only"
-		);
-	} else {
-		tracing::info!(
-			endpoint = %config.otlp_endpoint,
-			service = %config.service_name,
-			environment = %config.environment,
-			"telemetry initialized"
-		);
-	}
+    if tracer_provider.is_none() && meter_provider.is_none() && logger_provider.is_none() {
+        tracing::warn!(
+            endpoint = %config.otlp_endpoint,
+            "telemetry: no OTLP pipeline could be constructed; running with fmt logging only"
+        );
+    } else {
+        tracing::info!(
+            endpoint = %config.otlp_endpoint,
+            service = %config.service_name,
+            environment = %config.environment,
+            "telemetry initialized"
+        );
+    }
 
-	let pyroscope_handle = pyroscope::PyroscopeHandle::start(config);
+    let pyroscope_handle = pyroscope::PyroscopeHandle::start(config);
 
-	Ok(TelemetryGuard {
-		tracer_provider,
-		meter_provider,
-		logger_provider,
-		pyroscope: Some(pyroscope_handle),
-	})
+    Ok(TelemetryGuard {
+        tracer_provider,
+        meter_provider,
+        logger_provider,
+        pyroscope: Some(pyroscope_handle),
+    })
 }

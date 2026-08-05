@@ -1,7 +1,0 @@
-[
-  {
-    "directory": ".",
-    "command": "clang++ -std=c++17 -c simple07.cpp",
-    "file": "simple07.cpp"
-  }
-]

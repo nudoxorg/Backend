@@ -1,0 +1,267 @@
+schema {
+    query: RootSchemaQuery
+}
+
+directive @filter(op: String!, value: [String!]) repeatable on FIELD | INLINE_FRAGMENT
+directive @tag(name: String) on FIELD
+directive @output(name: String) on FIELD
+directive @optional on FIELD
+directive @recurse(depth: Int!) on FIELD
+directive @fold on FIELD
+directive @transform(op: String!) on FIELD
+
+type RootSchemaQuery {
+    Packages: [Package!]!
+    Symbols: [Symbol!]!
+}
+
+type Package {
+    lineage: String!
+    name: String!
+    ecosystem: String!
+    members: [Symbol!]
+}
+
+interface Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+
+type Function implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+    isAsync: Boolean!
+    receiverKind: String!
+}
+
+type Record implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Trait implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+    supertraits: [String!]
+    implementors: [Symbol!]
+}
+type Impl implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+    ofTrait: String
+}
+type Enum implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Field implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+    typeStr: String!
+}
+type Const implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Alias implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Static implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Variant implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Module implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Reexport implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type Param implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+type OtherSymbol implements Symbol {
+    key: String!
+    name: String!
+    path: String
+    kind: String!
+    isPublic: Boolean!
+    documentation: String!
+    isDeprecated: Boolean!
+    package: Package!
+    members: [Symbol!]
+    parent: Symbol
+    usages: [Symbol!]
+    mentions: [Symbol!]
+    occurrencesOf: [Occurrence!]
+}
+
+type Occurrence {
+    targetKey: String!
+    referenceKind: String!
+    confidence: String!
+    spanStart: Int!
+    spanEnd: Int!
+    target: Symbol
+}

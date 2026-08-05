@@ -42,10 +42,10 @@ use serde::{Deserialize, Serialize};
 use crate::pack::error::{PackError, PackResult};
 
 // The raw bao Merkle math (generate / encode-range / verify-range over a 32-byte
-// BLAKE3 root and plain byte slices) now lives once in the shared `transport`
-// crate (CONSOLIDATION-NOTES §8b). This module keeps only the pack-format
+// BLAKE3 root and plain byte slices) now lives once in `index::transport`
+// (CONSOLIDATION-NOTES §8b). This module keeps only the pack-format
 // wrapper: the `MemberOutboard`/`OutboardSidecar` types keyed by `MemberKey`.
-pub use transport::bao::{BAO_BLOCK_SIZE, BAO_CHUNK_BYTES};
+pub use crate::transport::bao::{BAO_BLOCK_SIZE, BAO_CHUNK_BYTES};
 
 /// The on-disk sidecar file extension (NDPK OutBoard).
 pub const OUTBOARD_FILE_EXTENSION: &str = "ndob";
@@ -77,7 +77,7 @@ impl MemberOutboard {
     /// concatenated in order), because the Bao tree spans the entire logical
     /// content.
     pub fn generate(key: MemberKey, uncompressed: &[u8]) -> Self {
-        let outboard = transport::bao::generate(uncompressed);
+        let outboard = crate::transport::bao::generate(uncompressed);
         MemberOutboard {
             key,
             root_hash: ContentHash::from_bytes(outboard.root),
@@ -86,9 +86,9 @@ impl MemberOutboard {
         }
     }
 
-    /// Reconstruct the shared [`transport::bao::Outboard`] from the stored parts.
-    fn to_transport(&self) -> transport::bao::Outboard {
-        transport::bao::Outboard {
+    /// Reconstruct the shared [`crate::transport::bao::Outboard`] from the stored parts.
+    fn to_transport(&self) -> crate::transport::bao::Outboard {
+        crate::transport::bao::Outboard {
             root: *self.root_hash.as_bytes(),
             length: self.uncompressed_length,
             bytes: self.outboard_bytes.clone(),
@@ -118,20 +118,28 @@ impl MemberOutboard {
         start: u64,
         end: u64,
     ) -> PackResult<Bytes> {
-        transport::bao::encode_range(&self.to_transport(), member_uncompressed, start, end)
+        crate::transport::bao::encode_range(&self.to_transport(), member_uncompressed, start, end)
             .map_err(bao_error_to_pack)
     }
 }
 
-/// Map a shared [`transport::bao::BaoError`] onto the pack-format [`PackError`]
+/// Map a shared [`crate::transport::bao::BaoError`] onto the pack-format [`PackError`]
 /// so the transfer error surface is unchanged for downstream callers.
-fn bao_error_to_pack(error: transport::bao::BaoError) -> PackError {
+fn bao_error_to_pack(error: crate::transport::bao::BaoError) -> PackError {
     match error {
-        transport::bao::BaoError::RangeOutOfBounds { start, end, length } => {
-            PackError::RangeOutOfBounds { start, end, member_length: length }
+        crate::transport::bao::BaoError::RangeOutOfBounds { start, end, length } => {
+            PackError::RangeOutOfBounds {
+                start,
+                end,
+                member_length: length,
+            }
         }
-        transport::bao::BaoError::Encode(detail) => PackError::BaoEncode { detail },
-        transport::bao::BaoError::Decode(detail) => PackError::BaoDecode { detail },
+        crate::transport::bao::BaoError::Encode(source) => {
+            PackError::BaoEncode(std::io::Error::other(source))
+        }
+        crate::transport::bao::BaoError::Decode(source) => {
+            PackError::BaoDecode(std::io::Error::other(source))
+        }
     }
 }
 
@@ -154,7 +162,7 @@ pub fn verify_bao_range(
     start: u64,
     end: u64,
 ) -> PackResult<Bytes> {
-    transport::bao::verify_range(
+    crate::transport::bao::verify_range(
         root_hash.as_bytes(),
         uncompressed_length,
         encoded,
@@ -199,16 +207,12 @@ impl OutboardSidecar {
 
     /// Serialize to sidecar bytes (postcard).
     pub fn encode(&self) -> PackResult<Vec<u8>> {
-        postcard::to_allocvec(self).map_err(|error| PackError::Codec {
-            detail: format!("outboard sidecar encode: {error}"),
-        })
+        postcard::to_allocvec(self).map_err(PackError::Codec)
     }
 
     /// Deserialize sidecar bytes (postcard).
     pub fn decode(bytes: &[u8]) -> PackResult<Self> {
-        postcard::from_bytes(bytes).map_err(|error| PackError::Codec {
-            detail: format!("outboard sidecar decode: {error}"),
-        })
+        postcard::from_bytes(bytes).map_err(PackError::Codec)
     }
 }
 
@@ -218,7 +222,9 @@ mod tests {
     use smol_str::SmolStr;
 
     fn source_key(path: &str) -> MemberKey {
-        MemberKey::Source { path: heart::object_pack::RelativePath(SmolStr::new(path)) }
+        MemberKey::Source {
+            path: heart::object_pack::RelativePath(SmolStr::new(path)),
+        }
     }
 
     fn big_member() -> Vec<u8> {

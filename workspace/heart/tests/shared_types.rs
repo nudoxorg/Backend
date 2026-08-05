@@ -41,7 +41,10 @@ fn scored_pairs_value_with_score() {
 /// `Versioned<T>` pairs an object with its (ecosystem-typed) version.
 #[test]
 fn versioned_pairs_object_with_version() {
-    let v = Versioned::new(PackageVersion::Cargo(semver::Version::new(1, 2, 3)), "payload");
+    let v = Versioned::new(
+        PackageVersion::Cargo(semver::Version::new(1, 2, 3)),
+        "payload",
+    );
     assert_eq!(*v.get(), "payload");
     assert!(matches!(v.version(), PackageVersion::Cargo(_)));
     assert_eq!(v.into_inner(), "payload");
@@ -55,7 +58,9 @@ fn progressive_completes_from_state() {
     use heart::{Phase, ResolutionState};
 
     let stored = JobProgress {
-        state: ResolutionState::Stored { hash: ContentHash::of_bytes(b"x") },
+        state: ResolutionState::Stored {
+            hash: ContentHash::of_bytes(b"x"),
+        },
         phase_fraction: Percent::try_new(0).unwrap(),
     };
     assert!(stored.is_complete());
@@ -89,11 +94,15 @@ async fn sink_deliver_retries_transient_failures() {
         retryable: bool,
     }
     impl std::fmt::Display for TestErr {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "test error") }
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "test error")
+        }
     }
     impl std::error::Error for TestErr {}
     impl Retryable for TestErr {
-        fn is_retryable(&self) -> bool { self.retryable }
+        fn is_retryable(&self) -> bool {
+            self.retryable
+        }
     }
 
     // A tower service that fails transiently `fails_left` times then succeeds.
@@ -102,7 +111,7 @@ async fn sink_deliver_retries_transient_failures() {
     #[derive(Clone)]
     struct Flaky {
         fails_left: Arc<AtomicU32>,
-        attempts:   Arc<AtomicU32>,
+        attempts: Arc<AtomicU32>,
     }
     impl Service<()> for Flaky {
         type Response = ();
@@ -126,9 +135,16 @@ async fn sink_deliver_retries_transient_failures() {
     }
 
     let attempts = Arc::new(AtomicU32::new(0));
-    let flaky = Flaky { fails_left: Arc::new(AtomicU32::new(2)), attempts: attempts.clone() };
+    let flaky = Flaky {
+        fails_left: Arc::new(AtomicU32::new(2)),
+        attempts: attempts.clone(),
+    };
     assert!(flaky.deliver(()).await.is_ok());
-    assert_eq!(attempts.load(Ordering::SeqCst), 3, "2 transient failures then success");
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "2 transient failures then success"
+    );
 
     // A non-retryable failure is surfaced on the first attempt.
     #[derive(Clone)]
@@ -148,7 +164,13 @@ async fn sink_deliver_retries_transient_failures() {
         }
     }
     let fatal_attempts = Arc::new(AtomicU32::new(0));
-    let fatal = Fatal { attempts: fatal_attempts.clone() };
+    let fatal = Fatal {
+        attempts: fatal_attempts.clone(),
+    };
     assert!(fatal.deliver(()).await.is_err());
-    assert_eq!(fatal_attempts.load(Ordering::SeqCst), 1, "non-retryable: no retries");
+    assert_eq!(
+        fatal_attempts.load(Ordering::SeqCst),
+        1,
+        "non-retryable: no retries"
+    );
 }

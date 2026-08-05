@@ -10,14 +10,13 @@
 //! If the pushdown silently regresses to a scan, `packages_scanned` will be
 //! ≥ 2 (one per package) and the assertion will fail.
 
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use futures::StreamExt as _;
 use nudox_graph::adapter::CorpusAdapter;
-use nudox_store::{
-    corpus::Corpus,
-    package::{PackageView, Provenance},
-};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -25,6 +24,10 @@ use nudox_ir::{
     kind::Kind,
     kinds::Function,
     view::IrView,
+};
+use nudox_store::{
+    corpus::Corpus,
+    package::{PackageView, Provenance},
 };
 use trustfall::{FieldValue, Schema, execute_query_async};
 
@@ -60,7 +63,11 @@ fn make_package(eco: &str, name: &str) -> Arc<PackageView> {
     let mut table = PristineIntroTable::new();
     table.insert_live(
         intro(1),
-        Entry::new(sym("my_fn"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Function(Function::builder().build())),
+        Entry::new(
+            sym("my_fn"),
+            Node::build(None::<nudox_ir::index::RawRef>, []),
+            Kind::Function(Function::builder().build()),
+        ),
         None,
     );
     let view = IrView::with_package(lid, table);
@@ -84,7 +91,10 @@ async fn key_filter_does_not_scan_second_package() {
     // The adapter is wired with a probe counter.  The counter is only
     // incremented on the full-scan path inside `Symbols`; it is never
     // incremented on the `key` pushdown path.
-    let adapter = Arc::new(CorpusAdapter::new_with_counter(corpus, Arc::clone(&counter)));
+    let adapter = Arc::new(CorpusAdapter::new_with_counter(
+        corpus,
+        Arc::clone(&counter),
+    ));
 
     // Build a key that belongs to pkg-alpha (so the query can actually resolve).
     let key = StableRef::new(lineage("cargo", "pkg-alpha"), intro(1)).to_string();

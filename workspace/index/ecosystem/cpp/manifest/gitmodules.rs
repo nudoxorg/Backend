@@ -179,7 +179,8 @@ mod tests {
 
     #[test]
     fn parse_scp_style_url_normalized() {
-        let text = "[submodule \"ext/fmt\"]\n\tpath = ext/fmt\n\turl = git@github.com:fmtlib/fmt.git\n";
+        let text =
+            "[submodule \"ext/fmt\"]\n\tpath = ext/fmt\n\turl = git@github.com:fmtlib/fmt.git\n";
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "github.com/fmtlib/fmt");
@@ -221,8 +222,11 @@ mod tests {
         let text = "[submodule \"deps/googletest\"]\n\tpath = deps/googletest\n\turl = https://github.com/google/googletest.git\n\n[submodule \"deps/abseil\"]\n\tpath = deps/abseil\n\turl = https://github.com/abseil/abseil-cpp.git\n";
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 2);
-        let tokens: Vec<&str> =
-            manifest.dependencies.iter().map(|r| r.token.as_str()).collect();
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|r| r.token.as_str())
+            .collect();
         assert!(tokens.contains(&"github.com/google/googletest"));
         assert!(tokens.contains(&"github.com/abseil/abseil-cpp"));
     }
@@ -231,7 +235,12 @@ mod tests {
     fn parse_facts_mirror_synced() {
         let text = "[submodule \"lib\"]\n\turl = https://github.com/owner/lib.git\n";
         let manifest = parse(text);
-        assert!(manifest.facts.dependencies.contains(&"github.com/owner/lib".to_owned()));
+        assert!(
+            manifest
+                .facts
+                .dependencies
+                .contains(&"github.com/owner/lib".to_owned())
+        );
     }
 
     #[test]

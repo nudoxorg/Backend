@@ -42,4 +42,3 @@ pub enum BackendKind {
     /// The full-text search index.
     Tantivy,
 }
-

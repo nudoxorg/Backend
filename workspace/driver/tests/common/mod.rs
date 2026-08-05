@@ -4,15 +4,18 @@
 #![allow(dead_code, reason = "each integration test binary uses its own subset")]
 
 #[allow(unused_imports)]
-use driver::{registry};
+use driver::registry;
+use std::fmt;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
-use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use driver::authz::{Principal, ReadCap, WriteCap};
-use heart::PageSpecification;
-use driver::search::query::{Filter, Query, Search};
 use driver::{Server, ServerConfiguration};
+use heart::PageSpecification;
+use heart::client::query::{ExecutionQuery as Query, Filter, Search};
+use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
 use smol_str::SmolStr;
 
 /// The embedding-model brand every test monomorphizes over. The sealed model
@@ -45,7 +48,10 @@ pub fn rust_symbol(
         id: uri.symbol_id(TEST_INSTANCE),
         package,
         ecosystem: Language::Rust,
-        name: Name { plain: SmolStr::new(plain), fully_qualified: SmolStr::new(fully_qualified) },
+        name: Name {
+            plain: SmolStr::new(plain),
+            fully_qualified: SmolStr::new(fully_qualified),
+        },
         kind,
     }
 }
@@ -75,7 +81,7 @@ pub fn write_cap<M: registry::vector::EmbeddingModel>(server: &Server<M>) -> Wri
 
 /// A literal search request over `query` with an unbounded filter.
 pub fn literal_search(query: &str, limit: u32) -> Search<'static> {
-    use driver::search::query::LiteralQuery;
+    use heart::client::query::LiteralQuery;
     Search {
         query: Query::Literal(LiteralQuery::parse(query).expect("fixture queries are valid")),
         filter: Filter::default(),
@@ -86,7 +92,10 @@ pub fn literal_search(query: &str, limit: u32) -> Search<'static> {
 
 /// A page of `limit` results from the start.
 pub fn page(limit: u32) -> PageSpecification {
-    PageSpecification { limit, cursor: None }
+    PageSpecification {
+        limit,
+        cursor: None,
+    }
 }
 
 /// A unique temporary directory removed on drop (for package-index replicas and
@@ -129,12 +138,8 @@ pub async fn assembled_server(test: &str) -> Option<(Arc<Server<TestModel>>, Tem
         );
         return None;
     }
-    let data_directory = TempDir::new(test);
-    let mut configuration = ServerConfiguration::resolve().expect("test configuration resolves");
-    configuration.definitive.data_directory = Some(data_directory.path().to_path_buf());
-    configuration.serving_address = free_loopback_address();
-    match Server::assemble(configuration).await {
-        Ok(server) => Some((Arc::new(server), data_directory)),
+    match assemble_server(test).await {
+        Ok(server) => Some(server),
         Err(error) => {
             eprintln!("skipping {test}: backends opted in but unreachable: {error}");
             None
@@ -142,23 +147,187 @@ pub async fn assembled_server(test: &str) -> Option<(Arc<Server<TestModel>>, Tem
     }
 }
 
-/// A fresh loopback address the OS just proved free (released before use, so a
-/// parallel test could steal it — acceptable in an opt-in suite).
-pub fn free_loopback_address() -> std::net::SocketAddr {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("loopback binds")
-        .local_addr()
-        .expect("a bound listener has an address")
+/// Assemble the live backend stack and fail the test if it is not available.
+///
+/// Unlike [`assembled_server`], this is for tests whose assertions are only
+/// meaningful against real dependencies. Missing opt-in, configuration errors,
+/// and unreachable backends are all hard failures rather than skips.
+pub async fn required_assembled_server(test: &str) -> (Arc<Server<TestModel>>, TempDir) {
+    if !std::env::var_os("SERVER_TEST_BACKENDS").is_some_and(|value| !value.as_os_str().is_empty())
+    {
+        panic!(
+            "{test} requires live backends: set SERVER_TEST_BACKENDS=1 and make the "
+                "catalog/qdrant/object-store dependencies reachable"
+        );
+    }
+
+    assemble_server(test).await.unwrap_or_else(|error| {
+        panic!("{test} requires live backends, but assembly failed: {error}")
+    })
+}
+
+async fn assemble_server(test: &str) -> Result<(Arc<Server<TestModel>>, TempDir), String> {
+    let data_directory = TempDir::new(test);
+    let mut configuration = ServerConfiguration::resolve()
+        .map_err(|error| format!("test configuration resolves: {error}"))?;
+    configuration.definitive.data_directory = Some(data_directory.path().to_path_buf());
+
+    // Server::serve binds this address itself. Port zero lets that bind choose
+    // an ephemeral port atomically instead of reserving a port and releasing it
+    // before the server starts, which leaves a bind-then-release race.
+    configuration.serving_address = SocketAddr::from(([127, 0, 0, 1], 0));
+    let server = Server::assemble(configuration)
+        .await
+        .map_err(|error| format!("backends are unreachable: {error}"))?;
+    Ok((Arc::new(server), data_directory))
+}
+
+/// Reserve a loopback listener for helpers that need to keep the port held
+/// across setup. The caller owns the listener and must keep it alive until the
+/// consumer has taken over the socket.
+pub fn loopback_listener() -> std::io::Result<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    listener.set_nonblocking(true)?;
+    Ok(listener)
 }
 
 /// Run the full server (HTTP + background pollers) for the rest of the test
-/// process. The task is detached; the test binary's exit reaps it.
+/// process. The task is detached; the test binary's exit reaps it. The legacy
+/// signature is retained, but serving is bounded so a wedged server cannot keep
+/// a test process alive indefinitely.
 pub fn spawn_serving(server: Arc<Server<TestModel>>) {
+    let serving = spawn_serving_bounded(server, Duration::from_secs(10 * 60));
     tokio::spawn(async move {
-        if let Err(error) = server.serve().await {
+        if let Err(error) = serving.wait().await {
             eprintln!("background serve exited: {error}");
         }
     });
+}
+
+/// A bounded, abort-on-drop server task for tests that need explicit lifetime
+/// management. `Server::serve` has process-signal shutdown only, so this helper
+/// supplies the test-side bound and makes dropping the handle stop the task.
+pub struct ServingTask {
+    handle: Option<tokio::task::JoinHandle<Result<(), String>>>,
+}
+
+impl ServingTask {
+    /// Wait for serving to finish or report its bounded failure.
+    pub async fn wait(mut self) -> Result<(), String> {
+        let handle = self.handle.take().expect("serving task handle is present");
+        handle
+            .await
+            .map_err(|error| format!("serving task panicked or was cancelled: {error}"))?
+    }
+
+    /// Abort serving immediately. Dropping the task also performs this action.
+    pub fn abort(&self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+
+    /// Abort and reap the serving task before returning.
+    pub async fn shutdown(mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+    }
+}
+
+impl Drop for ServingTask {
+    fn drop(&mut self) {
+        if let Some(handle) = &self.handle {
+            handle.abort();
+        }
+    }
+}
+
+/// Start serving with a hard upper bound and an explicit task lifetime.
+pub fn spawn_serving_bounded(server: Arc<Server<TestModel>>, timeout: Duration) -> ServingTask {
+    let handle = tokio::spawn(async move {
+        match tokio::time::timeout(timeout, server.serve()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(format!("background serve exited: {error}")),
+            Err(_) => Err(format!("background serve exceeded {timeout:?}")),
+        }
+    });
+    ServingTask {
+        handle: Some(handle),
+    }
+}
+
+/// Errors returned by [`call_json`].
+#[derive(Debug)]
+pub enum JsonResponseError {
+    Router(String),
+    Body(String),
+    Empty {
+        status: axum::http::StatusCode,
+    },
+    InvalidJson {
+        status: axum::http::StatusCode,
+        source: serde_json::Error,
+    },
+}
+
+impl fmt::Display for JsonResponseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Router(error) => write!(formatter, "router failed: {error}"),
+            Self::Body(error) => write!(formatter, "response body failed: {error}"),
+            Self::Empty { status } => write!(formatter, "{status} response has an empty body"),
+            Self::InvalidJson { status, source } => {
+                write!(formatter, "{status} response is not valid JSON: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for JsonResponseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::InvalidJson { source, .. } => Some(source),
+            Self::Router(_) | Self::Body(_) | Self::Empty { .. } => None,
+        }
+    }
+}
+
+async fn response_bytes(
+    router: axum::Router,
+    request: axum::http::Request<axum::body::Body>,
+) -> Result<(axum::http::StatusCode, bytes::Bytes), JsonResponseError> {
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let response = router
+        .oneshot(request)
+        .await
+        .map_err(|error| JsonResponseError::Router(error.to_string()))?;
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .map_err(|error| JsonResponseError::Body(error.to_string()))?
+        .to_bytes();
+    Ok((status, bytes))
+}
+
+/// A strict JSON round-trip. Empty and malformed bodies are errors, never
+/// converted into `serde_json::Value::Null`.
+pub async fn call_json(
+    router: axum::Router,
+    request: axum::http::Request<axum::body::Body>,
+) -> Result<(axum::http::StatusCode, serde_json::Value), JsonResponseError> {
+    let (status, bytes) = response_bytes(router, request).await?;
+    if bytes.is_empty() {
+        return Err(JsonResponseError::Empty { status });
+    }
+    let body = serde_json::from_slice(&bytes)
+        .map_err(|source| JsonResponseError::InvalidJson { status, source })?;
+    Ok((status, body))
 }
 
 /// One HTTP round-trip through the full router via `tower::ServiceExt`,
@@ -167,16 +336,15 @@ pub async fn call(
     router: axum::Router,
     request: axum::http::Request<axum::body::Body>,
 ) -> (axum::http::StatusCode, serde_json::Value) {
-    use http_body_util::BodyExt;
-    use tower::ServiceExt;
-
-    let response = router.oneshot(request).await.expect("the router is infallible");
-    let status = response.status();
-    let bytes = response.into_body().collect().await.expect("body collects").to_bytes();
+    let (status, bytes) = response_bytes(router, request)
+        .await
+        .unwrap_or_else(|error| panic!("HTTP response collection failed: {error}"));
     let body = if bytes.is_empty() {
+        // Keep the old no-body compatibility behavior for status-only callers.
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|error| panic!("{status} response body is not valid JSON: {error}"))
     };
     (status, body)
 }

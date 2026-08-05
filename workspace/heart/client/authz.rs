@@ -107,7 +107,9 @@ impl WriteCap {
     /// Mint a system-level write capability for internal background operations
     /// (e.g. mirror catalog followers). Bypasses principal-based authorization.
     pub fn system() -> Self {
-        sealed::WriteCap { tenant: TenantId::system() }
+        sealed::WriteCap {
+            tenant: TenantId::system(),
+        }
     }
 }
 
@@ -140,7 +142,9 @@ impl Principal {
     /// The anonymous public principal — used in tests and for requests that
     /// carry no bearer token.
     pub fn anonymous() -> Self {
-        Self { tenant: TenantId::anonymous() }
+        Self {
+            tenant: TenantId::anonymous(),
+        }
     }
 }
 

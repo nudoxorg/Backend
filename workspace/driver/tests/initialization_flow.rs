@@ -9,11 +9,9 @@
 
 mod common;
 
+use driver::coordination::initialization::{InitializationDecision, initialization_decision};
 use heart::{ContentHash, Failure, Freshness, Phase, ResolutionState};
 use index::ecosystem::PackageNameExt as _;
-use driver::coordination::initialization::{
-    InitializationDecision, initialization_decision,
-};
 
 /// An uninitialized library is indexed on first use.
 ///
@@ -21,7 +19,10 @@ use driver::coordination::initialization::{
 ///   kicked off (or deferred to the queue's owner) rather than answered cold.
 #[tokio::test]
 async fn first_use_triggers_indexing() {
-    assert_eq!(initialization_decision(None, None), InitializationDecision::Enqueue);
+    assert_eq!(
+        initialization_decision(None, None),
+        InitializationDecision::Enqueue
+    );
     assert_eq!(
         initialization_decision(Some(&ResolutionState::Unindexed { needed: true }), None),
         InitializationDecision::Enqueue,
@@ -34,7 +35,9 @@ async fn first_use_triggers_indexing() {
 /// Assert: when the stored hash still matches, no re-parse happens.
 #[tokio::test]
 async fn fresh_library_is_served_without_reindex() {
-    let stored = ResolutionState::Stored { hash: fixture_hash(b"stored-blob") };
+    let stored = ResolutionState::Stored {
+        hash: fixture_hash(b"stored-blob"),
+    };
     assert_eq!(
         initialization_decision(Some(&stored), Some(Freshness::Fresh)),
         InitializationDecision::Serve
@@ -52,7 +55,9 @@ async fn fresh_library_is_served_without_reindex() {
 ///   is re-enqueued for re-fetch + re-index.
 #[tokio::test]
 async fn unfresh_library_is_pulled_down_again() {
-    let stored = ResolutionState::Stored { hash: fixture_hash(b"stored-blob") };
+    let stored = ResolutionState::Stored {
+        hash: fixture_hash(b"stored-blob"),
+    };
     assert_eq!(
         initialization_decision(Some(&stored), Some(Freshness::Stale)),
         InitializationDecision::Enqueue
@@ -72,7 +77,10 @@ async fn ensure_init_returns_or_requests() {
         "a worker already owns it: answer its state, do not re-enqueue"
     );
     assert_eq!(
-        initialization_decision(Some(&ResolutionState::DeadLettered(fixture_failure())), None),
+        initialization_decision(
+            Some(&ResolutionState::DeadLettered(fixture_failure())),
+            None
+        ),
         InitializationDecision::Hold,
         "dead-lettered work is a human's now; never auto-requeue"
     );
@@ -88,10 +96,22 @@ async fn ensure_init_returns_or_requests() {
     };
     let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let first = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
-    assert!(first.enqueued, "a never-seen package requests initialization");
-    let second = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
-    assert!(!second.enqueued, "an in-flight package returns state without re-requesting");
+    let first = server
+        .ensure_initialized(&cap, &coordinates)
+        .await
+        .expect("ensure answers");
+    assert!(
+        first.enqueued,
+        "a never-seen package requests initialization"
+    );
+    let second = server
+        .ensure_initialized(&cap, &coordinates)
+        .await
+        .expect("ensure answers");
+    assert!(
+        !second.enqueued,
+        "an in-flight package returns state without re-requesting"
+    );
     assert_eq!(second.package, first.package, "identity is deterministic");
 }
 
@@ -100,14 +120,16 @@ async fn ensure_init_returns_or_requests() {
 /// Assert: after init, the catalog holds the package's metadata + status.
 #[tokio::test]
 async fn initialization_loads_into_catalog() {
-    let Some((server, _data)) =
-        common::assembled_server("initialization_loads_into_catalog").await
+    let Some((server, _data)) = common::assembled_server("initialization_loads_into_catalog").await
     else {
         return;
     };
     let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let initialized = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
+    let initialized = server
+        .ensure_initialized(&cap, &coordinates)
+        .await
+        .expect("ensure answers");
 
     let state = server
         .parse_status(initialized.package)
@@ -115,7 +137,10 @@ async fn initialization_loads_into_catalog() {
         .expect("the status lookup answers")
         .expect("the ensured package now has a catalog row");
     assert!(
-        matches!(state, ResolutionState::Unindexed { needed: true } | ResolutionState::Progressing(_)),
+        matches!(
+            state,
+            ResolutionState::Unindexed { needed: true } | ResolutionState::Progressing(_)
+        ),
         "the loaded row is on the pipeline's leading edge, got {state:?}"
     );
 }
@@ -134,11 +159,20 @@ async fn usage_is_tracked_for_tiering() {
     };
     let cap = common::write_cap(&server);
     let coordinates = fixture_coordinates();
-    let first = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
+    let first = server
+        .ensure_initialized(&cap, &coordinates)
+        .await
+        .expect("ensure answers");
     for _ in 0..3 {
-        let repeat = server.ensure_initialized(&cap, &coordinates).await.expect("ensure answers");
+        let repeat = server
+            .ensure_initialized(&cap, &coordinates)
+            .await
+            .expect("ensure answers");
         assert_eq!(repeat.package, first.package);
-        assert!(!repeat.enqueued, "repeated use converges on the one live job");
+        assert!(
+            !repeat.enqueued,
+            "repeated use converges on the one live job"
+        );
     }
 }
 
@@ -168,7 +202,9 @@ fn fixture_failure() -> Failure {
         attempts: 1,
         phase: Phase::Compiling,
         message: "fixture: the compiler rejected the package".into(),
-        cause: Some(heart::ErrorDetails::Message("fixture: the compiler rejected the package".into())),
+        cause: Some(heart::ErrorDetails::Message(
+            "fixture: the compiler rejected the package".into(),
+        )),
         at: chrono::Utc::now(),
     }
 }

@@ -18,10 +18,10 @@ use thiserror::Error;
 
 use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::entry::Entry;
-use ir::vocab::Occurrence;
 use ir::view::IrView;
+use ir::vocab::Occurrence;
 
-use crate::graph::reverse_index::{typerefs_of_entry, ReversePositionIndex};
+use crate::graph::reverse_index::{ReversePositionIndex, typerefs_of_entry};
 
 // ---------------------------------------------------------------------------
 // GraphVertex
@@ -108,7 +108,10 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// Construct an adapter with a pre-built reverse index for O(log n)
     /// reverse look-ups.
     pub fn with_reverse(ir: &'a IrView, reverse: &'a ReversePositionIndex) -> Self {
-        Self { ir, reverse: Some(reverse) }
+        Self {
+            ir,
+            reverse: Some(reverse),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -224,8 +227,8 @@ mod tests {
     use ir::entry::{Entry, Node, Symbol, Visibility};
     use ir::kind::Kind;
     use ir::kinds::{Function, Module};
-    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
     use ir::view::IrView;
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
 
     use crate::graph::reverse_index::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
 
@@ -274,7 +277,10 @@ mod tests {
     }
 
     fn default_key() -> ReverseIndexKey {
-        ReverseIndexKey { channel_tip: [1u8; 32], schema_version: SCHEMA_VERSION }
+        ReverseIndexKey {
+            channel_tip: [1u8; 32],
+            schema_version: SCHEMA_VERSION,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -310,7 +316,12 @@ mod tests {
         let target = sref_local(3);
         ir.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                RelSpan::new(0, 5),
+            ),
         );
 
         let adapter = IrTrustfallAdapter::new(&ir);
@@ -331,7 +342,12 @@ mod tests {
         let target = sref_local(3);
         ir.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                RelSpan::new(0, 5),
+            ),
         );
 
         let reverse = ReversePositionIndex::build(&ir, default_key());
@@ -356,7 +372,12 @@ mod tests {
         for owner in [intro(2), intro(3)] {
             ir.add_occurrence(
                 owner,
-                Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Import, RelSpan::new(0, 3)),
+                Occurrence::new(
+                    target.clone(),
+                    ReferenceKind::FunctionCall,
+                    Confidence::Import,
+                    RelSpan::new(0, 3),
+                ),
             );
         }
 

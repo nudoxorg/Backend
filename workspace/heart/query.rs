@@ -69,7 +69,9 @@ pub enum StableReferenceError {
 impl StableReference {
     /// Parse the frozen grammar `F:<eco>/<pkg>#<hex>`.
     pub fn parse(raw: &str) -> Result<Self, StableReferenceError> {
-        let body = raw.strip_prefix("F:").ok_or(StableReferenceError::MissingPrefix)?;
+        let body = raw
+            .strip_prefix("F:")
+            .ok_or(StableReferenceError::MissingPrefix)?;
         let (coordinate, intro_hex) = body
             .rsplit_once('#')
             .ok_or(StableReferenceError::MissingTerminator)?;
@@ -79,7 +81,10 @@ impl StableReference {
         if ecosystem.is_empty() || package.is_empty() || intro_hex.is_empty() {
             return Err(StableReferenceError::EmptyComponent);
         }
-        if !intro_hex.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        if !intro_hex
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        {
             return Err(StableReferenceError::MalformedIntro);
         }
         Ok(Self {
@@ -107,7 +112,11 @@ impl StableReference {
 
 impl std::fmt::Display for StableReference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "F:{}/{}#{}", self.ecosystem, self.package, self.intro_hex)
+        write!(
+            f,
+            "F:{}/{}#{}",
+            self.ecosystem, self.package, self.intro_hex
+        )
     }
 }
 
@@ -251,7 +260,10 @@ pub struct PageSpecification {
 
 impl Default for PageSpecification {
     fn default() -> Self {
-        Self { limit: 30, cursor: None }
+        Self {
+            limit: 30,
+            cursor: None,
+        }
     }
 }
 
@@ -288,6 +300,11 @@ pub struct Query {
     /// Page shape; the engine paginates after ranking.
     #[serde(default)]
     pub page: PageSpecification,
+    /// Opaque per-request identifier for caller-side tracing correlation.
+    /// A server-generated fresh id when absent on the wire; echoed back as
+    /// the `x-nudox-query-id` response header. Optional on every surface.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query_id: Option<crate::Guid>,
 }
 
 /// The engine-side entry point every deployment shape implements.

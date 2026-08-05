@@ -24,91 +24,100 @@ use crate::vector::{EmbedError, EmbedRole, Embedder, Embedding, EmbeddingModel, 
 /// embeds identically regardless of which package it came from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EmbeddingKey {
-	/// The model that produced (or would produce) the vector.
-	pub model:     ModelId,
-	/// The retrieval role — query vs document encoding.
-	pub role:      EmbedRole,
-	/// The BLAKE3 hash of the embedded text.
-	pub text_hash: ContentHash,
+    /// The model that produced (or would produce) the vector.
+    pub model: ModelId,
+    /// The retrieval role — query vs document encoding.
+    pub role: EmbedRole,
+    /// The BLAKE3 hash of the embedded text.
+    pub text_hash: ContentHash,
 }
 
 impl EmbeddingKey {
-	/// Build a key for `text` under `model` and `role`, hashing the text.
-	pub fn new(model: ModelId, role: EmbedRole, text: &str) -> Self {
-		Self { model, role, text_hash: ContentHash::of_bytes(text.as_bytes()) }
-	}
+    /// Build a key for `text` under `model` and `role`, hashing the text.
+    pub fn new(model: ModelId, role: EmbedRole, text: &str) -> Self {
+        Self {
+            model,
+            role,
+            text_hash: ContentHash::of_bytes(text.as_bytes()),
+        }
+    }
 }
 
 /// A `moka`-backed cache from [`EmbeddingKey`] to `Embedding<DIM>`, so
 /// re-parses and cross-package duplicate symbols never re-embed.
 pub struct EmbeddingCache<M: EmbeddingModel> {
-	inner: Cache<EmbeddingKey, Embedding<M>>,
+    inner: Cache<EmbeddingKey, Embedding<M>>,
 }
 
 impl<M: EmbeddingModel> EmbeddingCache<M> {
-	/// Create a cache holding up to `capacity` entries (LRU/TinyLFU eviction).
-	pub fn new(capacity: u64) -> Self {
-		Self { inner: Cache::new(capacity) }
-	}
+    /// Create a cache holding up to `capacity` entries (LRU/TinyLFU eviction).
+    pub fn new(capacity: u64) -> Self {
+        Self {
+            inner: Cache::new(capacity),
+        }
+    }
 
-	/// Look up the embedding for `text` under `embedder`'s model; on a miss,
-	/// embed it (fallibly), populate the cache, and return the result.
-	///
-	/// `key` is passed explicitly so callers that already computed the text hash
-	/// (e.g. from the symbol record) avoid re-hashing.
-	///
-	/// Deliberately get-then-insert rather than moka's coalesced `try_get_with`:
-	/// that API surfaces errors as `Arc<E>`, and [`EmbedError`] carries non-Clone
-	/// sources. Two racing misses may embed the same text twice — harmless,
-	/// since embedding is deterministic and last-write-wins stores equal values.
-	pub async fn get_or_embed<E: Embedder<Model = M>>(
-		&self,
-		key: EmbeddingKey,
-		embedder: &E,
-		text: &str,
-	) -> Result<Embedding<M>, EmbedError> {
-		if let Some(hit) = self.inner.get(&key).await {
-			tracing::debug!(model = %key.model, role = ?key.role, "embedding cache hit");
-			return Ok(hit);
-		}
-		let role = key.role;
-		let embedding = embedder.embed(text, role).await?;
-		self.inner.insert(key, embedding.clone()).await;
-		Ok(embedding)
-	}
+    /// Look up the embedding for `text` under `embedder`'s model; on a miss,
+    /// embed it (fallibly), populate the cache, and return the result.
+    ///
+    /// `key` is passed explicitly so callers that already computed the text hash
+    /// (e.g. from the symbol record) avoid re-hashing.
+    ///
+    /// Deliberately get-then-insert rather than moka's coalesced `try_get_with`:
+    /// that API surfaces errors as `Arc<E>`, and [`EmbedError`] carries non-Clone
+    /// sources. Two racing misses may embed the same text twice — harmless,
+    /// since embedding is deterministic and last-write-wins stores equal values.
+    pub async fn get_or_embed<E: Embedder<Model = M>>(
+        &self,
+        key: EmbeddingKey,
+        embedder: &E,
+        text: &str,
+    ) -> Result<Embedding<M>, EmbedError> {
+        if let Some(hit) = self.inner.get(&key).await {
+            tracing::debug!(model = %key.model, role = ?key.role, "embedding cache hit");
+            return Ok(hit);
+        }
+        let role = key.role;
+        let embedding = embedder.embed(text, role).await?;
+        self.inner.insert(key, embedding.clone()).await;
+        Ok(embedding)
+    }
 
-	/// Best-effort peek without embedding — returns `None` on a miss.
-	pub async fn get(&self, key: &EmbeddingKey) -> Option<Embedding<M>> {
-		self.inner.get(key).await
-	}
+    /// Best-effort peek without embedding — returns `None` on a miss.
+    pub async fn get(&self, key: &EmbeddingKey) -> Option<Embedding<M>> {
+        self.inner.get(key).await
+    }
 }
 
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::vector::{EmbeddingModel, JinaCodeV2};
+    use super::*;
+    use crate::vector::{EmbeddingModel, JinaCodeV2};
 
-	/// Verify that Query and Document roles produce distinct cache entries for
-	/// identical text, so a query embedding never collides with a document
-	/// embedding in the cache.
-	#[test]
-	fn embed_role_is_part_of_cache_key() {
-		let model = JinaCodeV2::id();
-		let text = "fn search(query: &str) -> Vec<Symbol>";
+    /// Verify that Query and Document roles produce distinct cache entries for
+    /// identical text, so a query embedding never collides with a document
+    /// embedding in the cache.
+    #[test]
+    fn embed_role_is_part_of_cache_key() {
+        let model = JinaCodeV2::id();
+        let text = "fn search(query: &str) -> Vec<Symbol>";
 
-		let query_key = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
-		let doc_key = EmbeddingKey::new(model, EmbedRole::Document, text);
+        let query_key = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
+        let doc_key = EmbeddingKey::new(model, EmbedRole::Document, text);
 
-		assert_ne!(query_key, doc_key, "Query and Document roles must produce distinct keys");
-	}
+        assert_ne!(
+            query_key, doc_key,
+            "Query and Document roles must produce distinct keys"
+        );
+    }
 
-	#[test]
-	fn same_text_same_role_same_key() {
-		let model = JinaCodeV2::id();
-		let text = "fn search(query: &str) -> Vec<Symbol>";
+    #[test]
+    fn same_text_same_role_same_key() {
+        let model = JinaCodeV2::id();
+        let text = "fn search(query: &str) -> Vec<Symbol>";
 
-		let k1 = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
-		let k2 = EmbeddingKey::new(model, EmbedRole::Query, text);
-		assert_eq!(k1, k2);
-	}
+        let k1 = EmbeddingKey::new(model.clone(), EmbedRole::Query, text);
+        let k2 = EmbeddingKey::new(model, EmbedRole::Query, text);
+        assert_eq!(k1, k2);
+    }
 }

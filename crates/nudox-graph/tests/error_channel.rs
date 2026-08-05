@@ -67,7 +67,10 @@ async fn invalid_key_yields_error() {
     let schema = schema();
     let adapter = Arc::new(CorpusAdapter::new(corpus));
 
-    let vars = [("key".to_owned(), trustfall::FieldValue::String("not-a-valid-key".into()))];
+    let vars = [(
+        "key".to_owned(),
+        trustfall::FieldValue::String("not-a-valid-key".into()),
+    )];
     let mut stream = execute_query_async(
         &schema,
         adapter,
@@ -99,12 +102,21 @@ fn graph_error_display() {
 
     let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("foo"));
     let e = GraphError::PackageNotLoaded(lineage);
-    assert!(e.to_string().contains("cargo:foo"), "PackageNotLoaded display: {e}");
+    assert!(
+        e.to_string().contains("cargo:foo"),
+        "PackageNotLoaded display: {e}"
+    );
 
     let intro = IntroId::from_raw([0u8; 32]);
     let e2 = GraphError::SymbolNotFound(intro);
-    assert!(e2.to_string().contains("symbol not found"), "SymbolNotFound display: {e2}");
+    assert!(
+        e2.to_string().contains("symbol not found"),
+        "SymbolNotFound display: {e2}"
+    );
 
     let e3 = GraphError::InvalidKey("bad".to_owned());
-    assert!(e3.to_string().contains("invalid stable-ref key"), "InvalidKey display: {e3}");
+    assert!(
+        e3.to_string().contains("invalid stable-ref key"),
+        "InvalidKey display: {e3}"
+    );
 }

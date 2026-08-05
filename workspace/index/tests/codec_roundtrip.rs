@@ -6,9 +6,7 @@ use index::enums::{
     LineageRelation, ListingStatus, LocationStatus, OutboxOperation, ParseState, SinkKind,
     SourceKind, StoreKind, TextEnum,
 };
-use index::ids::{
-    GenerationStamp, IdDecodeError, ObjectPackHash, PackageStemId, StoreId,
-};
+use index::ids::{GenerationStamp, IdDecodeError, ObjectPackHash, PackageStemId, StoreId};
 
 /// Assert every variant of a `TextEnum` round-trips token → variant → token,
 /// and that an unknown token is a typed error.
@@ -76,12 +74,18 @@ fn wrong_length_blob_is_typed_error_not_panic() {
     let too_short = [0u8; 8];
     assert!(matches!(
         PackageStemId::from_blob(&too_short),
-        Err(IdDecodeError::WrongLength { expected: 16, actual: 8 })
+        Err(IdDecodeError::WrongLength {
+            expected: 16,
+            actual: 8
+        })
     ));
     let too_long = [0u8; 40];
     assert!(matches!(
         GenerationStamp::from_blob(&too_long),
-        Err(IdDecodeError::WrongLength { expected: 32, actual: 40 })
+        Err(IdDecodeError::WrongLength {
+            expected: 32,
+            actual: 40
+        })
     ));
 }
 

@@ -74,10 +74,8 @@ pub fn parse(text: &str) -> CppManifest {
             || command.eq_ignore_ascii_case("pkg_search_module")
         {
             for token in extract_pkg_check_modules_deps(&arguments) {
-                manifest.push_dependency(DependencyRecord::new(
-                    token,
-                    DependencyMechanism::PkgConfig,
-                ));
+                manifest
+                    .push_dependency(DependencyRecord::new(token, DependencyMechanism::PkgConfig));
             }
         } else if command.eq_ignore_ascii_case("fetchcontent_declare") {
             if let Some(url) = extract_fetchcontent_url(&arguments) {
@@ -215,8 +213,14 @@ fn extract_project_description(arguments: &[String]) -> Option<String> {
 
 /// Keywords to skip in the `pkg_check_modules` argument list (first position
 /// is the output prefix; subsequent positions may be flag keywords).
-const PKG_CHECK_SKIP_KEYWORDS: &[&str] =
-    &["REQUIRED", "QUIET", "IMPORTED_TARGET", "GLOBAL", "NO_CMAKE_PATH", "NO_CMAKE_ENVIRONMENT_PATH"];
+const PKG_CHECK_SKIP_KEYWORDS: &[&str] = &[
+    "REQUIRED",
+    "QUIET",
+    "IMPORTED_TARGET",
+    "GLOBAL",
+    "NO_CMAKE_PATH",
+    "NO_CMAKE_ENVIRONMENT_PATH",
+];
 
 /// Extract pkg-config module name tokens from `pkg_check_modules` /
 /// `pkg_search_module` arguments.
@@ -291,7 +295,10 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "ZLIB");
-        assert_eq!(manifest.dependencies[0].mechanism, DependencyMechanism::FindPackage);
+        assert_eq!(
+            manifest.dependencies[0].mechanism,
+            DependencyMechanism::FindPackage
+        );
         assert_eq!(manifest.dependencies[1].token, "OpenSSL");
     }
 
@@ -299,7 +306,10 @@ mod tests {
     fn parse_cmake_project_description() {
         let text = r#"project(MyLib VERSION 1.0 DESCRIPTION "A useful C++ library" LANGUAGES CXX)"#;
         let manifest = parse(text);
-        assert_eq!(manifest.facts.description.as_deref(), Some("A useful C++ library"));
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("A useful C++ library")
+        );
     }
 
     #[test]
@@ -308,7 +318,10 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 2);
         assert_eq!(manifest.dependencies[0].token, "glib-2.0");
-        assert_eq!(manifest.dependencies[0].mechanism, DependencyMechanism::PkgConfig);
+        assert_eq!(
+            manifest.dependencies[0].mechanism,
+            DependencyMechanism::PkgConfig
+        );
         assert_eq!(manifest.dependencies[1].token, "gio-2.0");
     }
 
@@ -323,8 +336,14 @@ FetchContent_Declare(
 "#;
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
-        assert_eq!(manifest.dependencies[0].token, "https://github.com/nlohmann/json.git");
-        assert_eq!(manifest.dependencies[0].mechanism, DependencyMechanism::FetchContent);
+        assert_eq!(
+            manifest.dependencies[0].token,
+            "https://github.com/nlohmann/json.git"
+        );
+        assert_eq!(
+            manifest.dependencies[0].mechanism,
+            DependencyMechanism::FetchContent
+        );
     }
 
     #[test]

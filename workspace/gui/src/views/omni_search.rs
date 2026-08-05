@@ -1113,9 +1113,11 @@ impl<S: SearchAccess> OmniSearch<S> {
 
     fn commit(&mut self, disposition: OpenDisposition, cx: &mut Context<Self>) {
         let snapshot = self.store.read(cx).snapshot();
-        let Some(cursor) = snapshot.selection else {
-            return;
-        };
+        let cursor = snapshot.selection.or_else(|| {
+            let counts = snapshot.counts();
+            first_populated_from(&counts, 0).map(|section| Cursor { section, row: 0 })
+        });
+        let Some(cursor) = cursor else { return };
         let Some(row) = snapshot.row_at(cursor) else {
             return;
         };

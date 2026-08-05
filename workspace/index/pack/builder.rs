@@ -64,7 +64,9 @@ fn validate_relative_path(path: &RelativePath) -> PackResult<()> {
 
     // Reject Unix-absolute paths.
     if raw.starts_with('/') {
-        return Err(PackError::AbsolutePath { path: raw.to_owned() });
+        return Err(PackError::AbsolutePath {
+            path: raw.to_owned(),
+        });
     }
 
     // Reject Windows drive letters (e.g. `C:`, `c:`) and UNC paths (`\\` was
@@ -75,7 +77,9 @@ fn validate_relative_path(path: &RelativePath) -> PackResult<()> {
         let second = chars.next();
         if let (Some(drive), Some(':')) = (first, second) {
             if drive.is_ascii_alphabetic() {
-                return Err(PackError::AbsolutePath { path: raw.to_owned() });
+                return Err(PackError::AbsolutePath {
+                    path: raw.to_owned(),
+                });
             }
         }
     }
@@ -123,7 +127,9 @@ pub struct ObjectPackBuilder {
 impl ObjectPackBuilder {
     /// Create an empty builder.
     pub fn new() -> Self {
-        Self { pending: BTreeMap::new() }
+        Self {
+            pending: BTreeMap::new(),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -141,11 +147,7 @@ impl ObjectPackBuilder {
     ///   already added.
     /// - [`PackError::AbsolutePath`] or [`PackError::UnsafePathSegment`] if
     ///   `key` is a [`MemberKey::Source`] with an invalid path.
-    pub fn add_member(
-        &mut self,
-        key: MemberKey,
-        uncompressed: Bytes,
-    ) -> Result<(), PackError> {
+    pub fn add_member(&mut self, key: MemberKey, uncompressed: Bytes) -> Result<(), PackError> {
         // Path validation for Source members.
         if let MemberKey::Source { path } = &key {
             validate_relative_path(path)?;
@@ -270,23 +272,21 @@ impl ObjectPackBuilder {
 
             for raw_chunk in chunks_data {
                 // Compress the chunk into an independent zstd frame.
-                let compressed_frame =
-                    zstd::bulk::compress(raw_chunk, ZSTD_COMPRESSION_LEVEL).map_err(|io_err| {
-                        PackError::FrameEncode {
-                            detail: format!("zstd compress error: {io_err}"),
-                        }
-                    })?;
+                let compressed_frame = zstd::bulk::compress(raw_chunk, ZSTD_COMPRESSION_LEVEL)
+                    .map_err(PackError::FrameEncode)?;
 
                 let compressed_frame_len = compressed_frame.len();
 
                 // Checked arithmetic: frame length must fit in u64.
                 let compressed_frame_len_u64: u64 =
-                    compressed_frame_len.try_into().map_err(|_| PackError::TooLarge {
-                        detail: format!(
-                            "compressed frame length {} overflows u64",
-                            compressed_frame_len
-                        ),
-                    })?;
+                    compressed_frame_len
+                        .try_into()
+                        .map_err(|_| PackError::TooLarge {
+                            detail: format!(
+                                "compressed frame length {} overflows u64",
+                                compressed_frame_len
+                            ),
+                        })?;
 
                 let chunk_entry = ChunkEntry {
                     frame_offset: PackOffset(cursor),
@@ -299,16 +299,15 @@ impl ObjectPackBuilder {
                 cursor = cursor
                     .checked_add(compressed_frame_len_u64)
                     .ok_or_else(|| PackError::TooLarge {
-                        detail: "file offset overflowed u64 while appending chunk frame"
-                            .to_owned(),
+                        detail: "file offset overflowed u64 while appending chunk frame".to_owned(),
                     })?;
 
                 // Accumulate compressed total.
                 total_compressed_len = total_compressed_len
                     .checked_add(compressed_frame_len_u64)
                     .ok_or_else(|| PackError::TooLarge {
-                        detail: "total compressed length overflowed u64".to_owned(),
-                    })?;
+                    detail: "total compressed length overflowed u64".to_owned(),
+                })?;
 
                 file.extend_from_slice(&compressed_frame);
             }
@@ -317,12 +316,14 @@ impl ObjectPackBuilder {
             let content_hash: ContentHash = ContentHash::of_bytes(uncompressed_bytes);
 
             let uncompressed_total_len_u64: u64 =
-                uncompressed_total_len.try_into().map_err(|_| PackError::TooLarge {
-                    detail: format!(
-                        "uncompressed member length {} overflows u64",
-                        uncompressed_total_len
-                    ),
-                })?;
+                uncompressed_total_len
+                    .try_into()
+                    .map_err(|_| PackError::TooLarge {
+                        detail: format!(
+                            "uncompressed member length {} overflows u64",
+                            uncompressed_total_len
+                        ),
+                    })?;
 
             // Generate a Bao outboard for verified range streaming (INDEX-PLAN
             // §6.2) when the member is at or above the threshold. The outboard
@@ -359,8 +360,9 @@ impl ObjectPackBuilder {
         let toc_bytes: Vec<u8> = toc.encode()?;
 
         let toc_length_usize = toc_bytes.len();
-        let toc_length: u64 =
-            toc_length_usize.try_into().map_err(|_| PackError::TooLarge {
+        let toc_length: u64 = toc_length_usize
+            .try_into()
+            .map_err(|_| PackError::TooLarge {
                 detail: format!("TOC length {} overflows u64", toc_length_usize),
             })?;
 
@@ -393,7 +395,9 @@ mod tests {
     use smol_str::SmolStr;
 
     fn source_key(path: &str) -> MemberKey {
-        MemberKey::Source { path: RelativePath(SmolStr::new(path)) }
+        MemberKey::Source {
+            path: RelativePath(SmolStr::new(path)),
+        }
     }
 
     fn relative_path(path: &str) -> RelativePath {
@@ -406,18 +410,30 @@ mod tests {
     fn determinism_insertion_order_independent() {
         let mut builder_a = ObjectPackBuilder::new();
         builder_a
-            .add_member(source_key("alpha/one.txt"), Bytes::from_static(b"hello world"))
+            .add_member(
+                source_key("alpha/one.txt"),
+                Bytes::from_static(b"hello world"),
+            )
             .unwrap();
         builder_a
-            .add_member(source_key("beta/two.txt"), Bytes::from_static(b"goodbye world"))
+            .add_member(
+                source_key("beta/two.txt"),
+                Bytes::from_static(b"goodbye world"),
+            )
             .unwrap();
 
         let mut builder_b = ObjectPackBuilder::new();
         builder_b
-            .add_member(source_key("beta/two.txt"), Bytes::from_static(b"goodbye world"))
+            .add_member(
+                source_key("beta/two.txt"),
+                Bytes::from_static(b"goodbye world"),
+            )
             .unwrap();
         builder_b
-            .add_member(source_key("alpha/one.txt"), Bytes::from_static(b"hello world"))
+            .add_member(
+                source_key("alpha/one.txt"),
+                Bytes::from_static(b"hello world"),
+            )
             .unwrap();
 
         let (bytes_a, id_a) = builder_a.seal_to_bytes().unwrap();
@@ -432,11 +448,17 @@ mod tests {
     fn duplicate_key_is_rejected() {
         let mut builder = ObjectPackBuilder::new();
         builder
-            .add_member(source_key("src/lib.rs"), Bytes::from_static(b"fn main() {}"))
+            .add_member(
+                source_key("src/lib.rs"),
+                Bytes::from_static(b"fn main() {}"),
+            )
             .unwrap();
 
         let result = builder
-            .add_member(source_key("src/lib.rs"), Bytes::from_static(b"fn main() {}"))
+            .add_member(
+                source_key("src/lib.rs"),
+                Bytes::from_static(b"fn main() {}"),
+            )
             .unwrap_err();
 
         assert!(
@@ -551,7 +573,10 @@ mod tests {
             .unwrap();
 
         let (bytes, _id) = builder.seal_to_bytes().unwrap();
-        assert!(!bytes.is_empty(), "pack must have bytes even for empty member");
+        assert!(
+            !bytes.is_empty(),
+            "pack must have bytes even for empty member"
+        );
     }
 
     /// `seal_to_writer` must produce the same bytes as `seal_to_bytes`.

@@ -652,6 +652,7 @@ mod tests {
 			session: None,
 			at: None,
 			page: PageSpecification::default(),
+			query_id: None,
 		};
 		let json = serde_json::to_value(&q).expect("heart::query::Query serializes");
 		let obj = json.as_object().expect("object");

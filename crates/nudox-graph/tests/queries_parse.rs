@@ -9,11 +9,7 @@
 //! The stream may immediately produce errors (empty corpus), but the *parse*
 //! and *schema-validation* phase succeeded.
 
-use std::{
-    collections::BTreeMap,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use nudox_graph::adapter::CorpusAdapter;
 use nudox_store::corpus::Corpus;
@@ -92,8 +88,8 @@ fn all_trustfall_queries_parse() {
     let queries_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/queries");
 
     let mut found = 0usize;
-    for entry in std::fs::read_dir(&queries_dir)
-        .unwrap_or_else(|e| panic!("cannot read src/queries/: {e}"))
+    for entry in
+        std::fs::read_dir(&queries_dir).unwrap_or_else(|e| panic!("cannot read src/queries/: {e}"))
     {
         let entry = entry.unwrap_or_else(|e| panic!("dir entry error: {e}"));
         let path = entry.path();
@@ -104,18 +100,13 @@ fn all_trustfall_queries_parse() {
         let query = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
-        execute_query_async(
-            &schema,
-            Arc::clone(&adapter),
-            &query,
-            vars_for(&query),
-        )
-        .unwrap_or_else(|e| {
-            panic!(
-                "query {} failed to parse:\n{e}\n\nQuery text:\n{query}",
-                path.display()
-            )
-        });
+        execute_query_async(&schema, Arc::clone(&adapter), &query, vars_for(&query))
+            .unwrap_or_else(|e| {
+                panic!(
+                    "query {} failed to parse:\n{e}\n\nQuery text:\n{query}",
+                    path.display()
+                )
+            });
     }
 
     assert!(

@@ -90,7 +90,13 @@ async fn already_loaded_packages_delivered_to_late_subscriber() {
         loaded.len()
     );
 
-    if let PackageLoadEvent::Loaded { name, ecosystem, symbol_count, .. } = &loaded[0] {
+    if let PackageLoadEvent::Loaded {
+        name,
+        ecosystem,
+        symbol_count,
+        ..
+    } = &loaded[0]
+    {
         // `&**` rather than `.as_ref()`: `SharedStr` is `triomphe::Arc<str>`,
         // which has several `AsRef` impls, so the target type is ambiguous
         // (E0283). These bindings are `&SharedStr` (the match is on a
@@ -131,8 +137,7 @@ async fn packages_delivered_exactly_once() {
     let events = collect_n_or_close(rx, 10, 3000).await;
 
     // Count Loaded events by name.
-    let mut counts: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for ev in &events {
         if let PackageLoadEvent::Loaded { name, .. } = ev {
             *counts.entry(name.to_string()).or_insert(0) += 1;

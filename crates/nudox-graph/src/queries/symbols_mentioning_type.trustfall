@@ -1,0 +1,10 @@
+{
+    Symbols {
+        key @filter(op: "=", value: ["$key"])
+        mentions {
+            key @output
+            name @output
+            kind @output
+        }
+    }
+}

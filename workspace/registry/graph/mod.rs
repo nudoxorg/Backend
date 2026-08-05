@@ -22,5 +22,5 @@ pub mod trustfall_adapter;
 
 pub use reverse_index::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
 pub use trustfall_adapter::{
-    execute_graph_query, GraphQueryError, GraphVertex, IrTrustfallAdapter,
+    GraphQueryError, GraphVertex, IrTrustfallAdapter, execute_graph_query,
 };

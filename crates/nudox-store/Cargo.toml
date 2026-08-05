@@ -14,9 +14,9 @@ default = []
 fixtures = []
 
 [dependencies]
-nudox-ir = { path = "../nudox-ir" }
-nudox-producer = { path = "../nudox-producer" }
-nudox-producer-rust = { path = "../nudox-producer-rust" }
+nudox-ir = { path = "../../workspace/ir/model" }
+nudox-producer = { path = "../../workspace/compiler/producer" }
+nudox-producer-rust = { path = "../../workspace/compiler/languages/rust" }
 
 futures = { workspace = true }
 indexmap = { workspace = true }

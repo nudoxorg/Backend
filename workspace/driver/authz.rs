@@ -19,11 +19,8 @@
 
 #[allow(unused_imports)]
 use crate::registry;
-use axum::{
-    extract::FromRequestParts,
-    http::request::Parts,
-};
 use crate::registry::vector::EmbeddingModel;
+use axum::{extract::FromRequestParts, http::request::Parts};
 
 use crate::Server;
 use crate::error::{ForbiddenReason, ServerError};
@@ -52,7 +49,9 @@ impl Principal {
     /// The anonymous public principal — used in tests and for requests that
     /// carry no bearer token.
     pub fn anonymous() -> Self {
-        Self { tenant: TenantId::anonymous() }
+        Self {
+            tenant: TenantId::anonymous(),
+        }
     }
 }
 
@@ -73,10 +72,7 @@ where
 {
     type Rejection = ServerError;
 
-    async fn from_request_parts(
-        _parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(_parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         // Allow-all: every request is a valid principal with the anonymous tenant.
         // Future: extract bearer token / trusted-proxy header here.
         Ok(Principal::anonymous())
@@ -90,16 +86,15 @@ where
 {
     type Rejection = ServerError;
 
-    async fn from_request_parts(
-        _parts: &mut Parts,
-        _state: &S,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_parts(_parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         // Allow-all: every request is admitted as admin.
         // Future: enforce an admin claim / role in the bearer token here.
         //
         // To flip to deny-all for a test:
         //   return Err(ForbiddenReason::ActionDenied { action: "admin" }.into());
-        Ok(AdminPrincipal { tenant: TenantId::anonymous() })
+        Ok(AdminPrincipal {
+            tenant: TenantId::anonymous(),
+        })
     }
 }
 
@@ -204,7 +199,9 @@ mod tests {
     /// The `ForbiddenReason::ActionDenied` message includes the action string.
     #[test]
     fn forbidden_reason_display_includes_action() {
-        let reason = ForbiddenReason::ActionDenied { action: "admin.rebuild" };
+        let reason = ForbiddenReason::ActionDenied {
+            action: "admin.rebuild",
+        };
         assert!(
             reason.to_string().contains("admin.rebuild"),
             "error display must name the denied action"

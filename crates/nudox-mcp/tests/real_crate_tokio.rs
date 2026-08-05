@@ -138,7 +138,10 @@ async fn wait_for_tokio_corpus(tools: &NudoxTools) {
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { lineage, .. }))
-                if lineage.name.as_str() == "tokio" => return,
+                if lineage.name.as_str() == "tokio" =>
+            {
+                return;
+            }
             Ok(Ok(PackageLoadEvent::Loaded { .. })) => continue,
             Ok(Ok(_)) => continue,
             Ok(Err(_)) => return, // channel closed → already loaded
@@ -165,7 +168,13 @@ fn graph_schema_lists_all_five_new_distinct_types() {
     let sdl = nudox_mcp::SCHEMA_SDL;
 
     // Limit 2: each of the five formerly-collapsed kinds has its own type.
-    for new_type in ["type Static ", "type Variant ", "type Module ", "type Reexport ", "type Param "] {
+    for new_type in [
+        "type Static ",
+        "type Variant ",
+        "type Module ",
+        "type Reexport ",
+        "type Param ",
+    ] {
         assert!(
             sdl.contains(new_type),
             "schema must declare '{new_type}' as a concrete Symbol implementor; \
@@ -203,7 +212,10 @@ async fn list_packages_tokio_present_with_correct_lineage() {
     let tools = make_tokio_tools();
     wait_for_tokio_corpus(&tools).await;
 
-    let result = tools.do_list_packages().await.expect("list_packages must not fail");
+    let result = tools
+        .do_list_packages()
+        .await
+        .expect("list_packages must not fail");
     assert!(
         !result.packages.is_empty(),
         "corpus must have at least the tokio package"
@@ -216,12 +228,22 @@ async fn list_packages_tokio_present_with_correct_lineage() {
         .unwrap_or_else(|| {
             panic!(
                 "tokio must appear in list_packages; got: {:?}",
-                result.packages.iter().map(|p| p.lineage.clone()).collect::<Vec<_>>()
+                result
+                    .packages
+                    .iter()
+                    .map(|p| p.lineage.clone())
+                    .collect::<Vec<_>>()
             )
         });
 
-    assert_eq!(tokio_pkg.ecosystem, "cargo", "tokio must report 'cargo' as its ecosystem");
-    assert_eq!(tokio_pkg.name, "tokio", "tokio must carry 'tokio' as its name");
+    assert_eq!(
+        tokio_pkg.ecosystem, "cargo",
+        "tokio must report 'cargo' as its ecosystem"
+    );
+    assert_eq!(
+        tokio_pkg.name, "tokio",
+        "tokio must carry 'tokio' as its name"
+    );
     assert!(
         tokio_pkg.lineage.starts_with("cargo:tokio"),
         "lineage must start with 'cargo:tokio'; got: {}",
@@ -347,7 +369,11 @@ async fn get_symbol_runtime_streams_head_and_sections() {
     }) else {
         panic!(
             "tokio::Runtime must appear in search; got: {:?}",
-            search.hits.iter().map(|h| h.display_name.to_string()).collect::<Vec<_>>()
+            search
+                .hits
+                .iter()
+                .map(|h| h.display_name.to_string())
+                .collect::<Vec<_>>()
         );
     };
 
@@ -360,7 +386,9 @@ async fn get_symbol_runtime_streams_head_and_sections() {
 
     let doc = tokio::time::timeout(
         Duration::from_secs(30),
-        tools.do_get_symbol(GetSymbolArgs { key: SymbolKeyDto(key_str.clone()) }),
+        tools.do_get_symbol(GetSymbolArgs {
+            key: SymbolKeyDto(key_str.clone()),
+        }),
     )
     .await
     .expect("get_symbol must complete within 30 s")
@@ -406,7 +434,11 @@ async fn find_usages_runtime_has_callers() {
         .await
         .expect("search must succeed");
 
-    let Some(hit) = search.hits.iter().find(|h| h.display_name.contains("Runtime")) else {
+    let Some(hit) = search
+        .hits
+        .iter()
+        .find(|h| h.display_name.contains("Runtime"))
+    else {
         panic!("tokio::Runtime must appear in search results");
     };
 
@@ -611,7 +643,10 @@ async fn graph_query_variant_coercion_returns_real_rows() {
          If this is empty the adapter is still emitting OtherSymbol for Variant entries."
     );
 
-    let kind_col = result.columns.iter().position(|c| c == "variant_kind")
+    let kind_col = result
+        .columns
+        .iter()
+        .position(|c| c == "variant_kind")
         .expect("must have a 'variant_kind' column");
 
     for row in &result.rows {
@@ -625,7 +660,12 @@ async fn graph_query_variant_coercion_returns_real_rows() {
     eprintln!(
         "Variant coercion: {} rows returned, sample: {:?}",
         result.rows.len(),
-        result.rows.iter().take(3).map(|r| r.cells.get(0)).collect::<Vec<_>>()
+        result
+            .rows
+            .iter()
+            .take(3)
+            .map(|r| r.cells.get(0))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -663,11 +703,17 @@ async fn graph_query_module_coercion_returns_real_rows() {
          If empty, the adapter is still emitting OtherSymbol for Module entries."
     );
 
-    let kind_col = result.columns.iter().position(|c| c == "mod_kind")
+    let kind_col = result
+        .columns
+        .iter()
+        .position(|c| c == "mod_kind")
         .expect("must have a 'mod_kind' column");
     for row in &result.rows {
         let kind = row.cells.get(kind_col).map(|c| c.as_str()).unwrap_or("");
-        assert_eq!(kind, "Module", "every Module row must have kind=Module; got {kind:?}");
+        assert_eq!(
+            kind, "Module",
+            "every Module row must have kind=Module; got {kind:?}"
+        );
     }
 }
 
@@ -796,7 +842,10 @@ async fn graph_query_package_members_traversal_still_works() {
         "tokio package must have members visible via Package → members traversal"
     );
 
-    let name_col = result.columns.iter().position(|c| c == "name")
+    let name_col = result
+        .columns
+        .iter()
+        .position(|c| c == "name")
         .expect("must have name column");
     let names: Vec<&str> = result
         .rows

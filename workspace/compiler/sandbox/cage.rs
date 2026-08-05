@@ -25,63 +25,63 @@ use crate::spec::Output;
 pub struct CageId(pub &'static str);
 
 impl CageId {
-	/// Borrow the id string.
-	pub fn as_str(&self) -> &'static str {
-		self.0
-	}
+    /// Borrow the id string.
+    pub fn as_str(&self) -> &'static str {
+        self.0
+    }
 }
 
 impl std::fmt::Display for CageId {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		f.write_str(self.0)
-	}
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
 }
 
 /// What a cage can enforce.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CageCaps {
-	/// A real isolation boundary exists (hardware virtualization).
-	pub isolation: bool,
-	/// Network can be made *absent* (no NIC), not merely filtered.
-	pub network_off: bool,
-	/// Filesystem visibility is scoped to the granted mounts.
-	pub fs_scope: bool,
-	/// Resource ceilings (memory / cpu / pids) are enforced.
-	pub resource_limits: bool,
-	/// Suitable as production security boundary of record.
-	pub production_grade: bool,
+    /// A real isolation boundary exists (hardware virtualization).
+    pub isolation: bool,
+    /// Network can be made *absent* (no NIC), not merely filtered.
+    pub network_off: bool,
+    /// Filesystem visibility is scoped to the granted mounts.
+    pub fs_scope: bool,
+    /// Resource ceilings (memory / cpu / pids) are enforced.
+    pub resource_limits: bool,
+    /// Suitable as production security boundary of record.
+    pub production_grade: bool,
 }
 
 /// Runtime policy resolved once at assemble.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Policy {
-	/// Production: only production-grade cages.
-	Production,
-	/// Development: passthrough allowed.
-	Development,
+    /// Production: only production-grade cages.
+    Production,
+    /// Development: passthrough allowed.
+    Development,
 }
 
 impl Policy {
-	/// From the existing isolation env gate.
-	pub fn from_env() -> Self {
-		if crate::probe::IsolationPolicy::env_requires_production() {
-			Self::Production
-		} else {
-			Self::Development
-		}
-	}
+    /// From the existing isolation env gate.
+    pub fn from_env() -> Self {
+        if crate::probe::IsolationPolicy::env_requires_production() {
+            Self::Production
+        } else {
+            Self::Development
+        }
+    }
 }
 
 /// Capability-budgeted process isolation.
 pub trait Cage: Send + Sync {
-	/// Stable cage identity.
-	fn id(&self) -> CageId;
+    /// Stable cage identity.
+    fn id(&self) -> CageId;
 
-	/// What this cage can enforce on this host.
-	fn capabilities(&self) -> CageCaps;
+    /// What this cage can enforce on this host.
+    fn capabilities(&self) -> CageCaps;
 
-	/// Run a sealed command under the budget; honor `cancel` when possible.
-	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError>;
+    /// Run a sealed command under the budget; honor `cancel` when possible.
+    fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError>;
 }
 
 // ─── DevPassthrough ─────────────────────────────────────────────────────────
@@ -93,7 +93,7 @@ pub trait Cage: Send + Sync {
 /// under a production policy, replacing thrice-read env gates at the boundary.
 #[derive(Debug)]
 pub struct DevPassthrough {
-	_policy: DevOnly,
+    _policy: DevOnly,
 }
 
 /// Zero-sized token proving construction went through [`Policy::Development`].
@@ -101,82 +101,82 @@ pub struct DevPassthrough {
 struct DevOnly;
 
 impl DevPassthrough {
-	/// Construct when `policy` is [`Policy::Development`].
-	pub fn try_new(policy: Policy) -> Result<Self, CageError> {
-		match policy {
-			Policy::Development => Ok(Self { _policy: DevOnly }),
-			Policy::Production => Err(CageError::Denied {
-				reason: "DevPassthrough is not constructible under Policy::Production".into(),
-			}),
-		}
-	}
+    /// Construct when `policy` is [`Policy::Development`].
+    pub fn try_new(policy: Policy) -> Result<Self, CageError> {
+        match policy {
+            Policy::Development => Ok(Self { _policy: DevOnly }),
+            Policy::Production => Err(CageError::Denied {
+                reason: "DevPassthrough is not constructible under Policy::Production".into(),
+            }),
+        }
+    }
 
-	/// Convenience: build from the process env policy (dev only).
-	pub fn from_env() -> Result<Self, CageError> {
-		Self::try_new(Policy::from_env())
-	}
+    /// Convenience: build from the process env policy (dev only).
+    pub fn from_env() -> Result<Self, CageError> {
+        Self::try_new(Policy::from_env())
+    }
 }
 
 impl Cage for DevPassthrough {
-	fn id(&self) -> CageId {
-		CageId("dev-passthrough")
-	}
+    fn id(&self) -> CageId {
+        CageId("dev-passthrough")
+    }
 
-	fn capabilities(&self) -> CageCaps {
-		CageCaps {
-			isolation: false,
-			network_off: false,
-			fs_scope: false,
-			resource_limits: false,
-			production_grade: false,
-		}
-	}
+    fn capabilities(&self) -> CageCaps {
+        CageCaps {
+            isolation: false,
+            network_off: false,
+            fs_scope: false,
+            resource_limits: false,
+            production_grade: false,
+        }
+    }
 
-	fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
-		if cancel.is_cancelled() {
-			return Err(CageError::Cancelled);
-		}
+    fn run(&self, cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
+        if cancel.is_cancelled() {
+            return Err(CageError::Cancelled);
+        }
 
-		if which::which(&cmd.command).is_err() && !cmd.command.exists() {
-			return Err(CageError::ToolchainMissing {
-				program: cmd.command_display(),
-			});
-		}
+        if which::which(&cmd.command).is_err() && !cmd.command.exists() {
+            return Err(CageError::ToolchainMissing {
+                program: cmd.command_display(),
+            });
+        }
 
-		let limits = cmd.budget.resources;
-		let cgroup = Cgroup::try_create(&limits).map_err(CageError::from)?;
+        let limits = cmd.budget.resources;
+        let cgroup = Cgroup::try_create(&limits).map_err(CageError::from)?;
 
-		use std::process::Stdio;
-		let mut proc = supervisor::base_command(&cmd.command);
-		proc.args(&cmd.args);
-		for (k, v) in cmd.budget.env.iter() {
-			proc.env(k, v);
-		}
-		if let Some(cwd) = &cmd.cwd {
-			proc.current_dir(cwd);
-		}
-		proc.stdin(Stdio::null());
+        use std::process::Stdio;
+        let mut proc = supervisor::base_command(&cmd.command);
+        proc.args(&cmd.args);
+        for (k, v) in cmd.budget.env.iter() {
+            proc.env(k, v);
+        }
+        if let Some(cwd) = &cmd.cwd {
+            proc.current_dir(cwd);
+        }
+        proc.stdin(Stdio::null());
 
-		#[cfg(unix)]
-		{
-			use std::os::unix::process::CommandExt;
-			#[allow(clippy::redundant_locals)]
-			let limits = limits;
-			unsafe {
-				proc.pre_exec(move || {
-					apply_rlimits(&limits).map_err(crate::error::to_io_error)?;
-					Ok(())
-				});
-			}
-		}
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            #[allow(clippy::redundant_locals)]
+            let limits = limits;
+            unsafe {
+                proc.pre_exec(move || {
+                    apply_rlimits(&limits).map_err(crate::error::to_io_error)?;
+                    Ok(())
+                });
+            }
+        }
 
-		if cancel.is_cancelled() {
-			return Err(CageError::Cancelled);
-		}
+        if cancel.is_cancelled() {
+            return Err(CageError::Cancelled);
+        }
 
-		let child = proc.spawn().map_err(CageError::Spawn)?;
-		supervisor::supervise(child, &limits, cgroup, cancel).map_err(CageError::from)
-	}
+        let child = proc.spawn().map_err(CageError::Spawn)?;
+        supervisor::supervise(child, &limits, cgroup, cancel).map_err(CageError::from)
+    }
 }
 
 /// Run a sealed command on the production smolvm microVM cage (SMOLVM-PLAN §3).
@@ -196,12 +196,12 @@ impl Cage for DevPassthrough {
 /// - [`CageError::Vm`] with [`crate::vm::VmError::Launch`] — hypervisor refused
 ///   to boot (libkrun unavailable, smolvm binary missing, etc.).
 pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, CageError> {
-	if cancel.is_cancelled() {
-		return Err(CageError::Cancelled);
-	}
+    if cancel.is_cancelled() {
+        return Err(CageError::Cancelled);
+    }
 
-	let store = RootfsStore::from_env().map_err(CageError::from)?;
-	let runtime = SmolvmRuntime::new(store);
-	let cage = SmolvmCage::with_runtime(runtime);
-	Cage::run(&cage, cmd, cancel)
+    let store = RootfsStore::from_env().map_err(CageError::from)?;
+    let runtime = SmolvmRuntime::new(store);
+    let cage = SmolvmCage::with_runtime(runtime);
+    Cage::run(&cage, cmd, cancel)
 }

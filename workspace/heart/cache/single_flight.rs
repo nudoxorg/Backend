@@ -12,10 +12,7 @@
 //! error types — like the embedder's — flow through unchanged. See the
 //! [`crate::stampede`] cache for the read-side loop that drives this gate.
 
-use std::{
-	hash::Hash,
-	sync::Arc,
-};
+use std::{hash::Hash, sync::Arc};
 
 use dashmap::{DashMap, mapref::entry::Entry};
 use tokio::sync::Notify;
@@ -23,54 +20,66 @@ use tokio::sync::Notify;
 /// A set of in-flight keys, each guarding one leader computation. Cheap to
 /// clone-share behind an [`Arc`]; holds only the keys currently being computed.
 pub struct SingleFlight<K> {
-	inflight: DashMap<K, Arc<Notify>>,
+    inflight: DashMap<K, Arc<Notify>>,
 }
 
 impl<K> Default for SingleFlight<K>
 where
-	K: Eq + Hash + Clone,
+    K: Eq + Hash + Clone,
 {
-	fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The outcome of trying to claim a key: either this caller is the *leader* and
 /// must produce the value, or it is a *waiter* parked on the leader's [`Notify`].
 pub enum Ticket<'a, K>
 where
-	K: Eq + Hash + Clone,
+    K: Eq + Hash + Clone,
 {
-	/// This caller won the race: it must compute the value. Dropping the held
-	/// [`Leader`] guard clears the key and wakes every waiter.
-	Leader(Leader<'a, K>),
-	/// Another caller is already computing; await this handle, then re-check the
-	/// backing store. A lost-wakeup-safe await pattern lives in [`Leader`]'s docs.
-	Waiter(Arc<Notify>),
+    /// This caller won the race: it must compute the value. Dropping the held
+    /// [`Leader`] guard clears the key and wakes every waiter.
+    Leader(Leader<'a, K>),
+    /// Another caller is already computing; await this handle, then re-check the
+    /// backing store. A lost-wakeup-safe await pattern lives in [`Leader`]'s docs.
+    Waiter(Arc<Notify>),
 }
 
 impl<K> SingleFlight<K>
 where
-	K: Eq + Hash + Clone,
+    K: Eq + Hash + Clone,
 {
-	/// Create an empty coalescer.
-	pub fn new() -> Self { Self { inflight: DashMap::new() } }
+    /// Create an empty coalescer.
+    pub fn new() -> Self {
+        Self {
+            inflight: DashMap::new(),
+        }
+    }
 
-	/// Claim `key`. The first caller for an absent key becomes the
-	/// [`Ticket::Leader`]; concurrent callers become [`Ticket::Waiter`]s sharing
-	/// the leader's notify handle.
-	pub fn enter(&self, key: K) -> Ticket<'_, K> {
-		match self.inflight.entry(key.clone()) {
-			Entry::Occupied(e) => Ticket::Waiter(e.get().clone()),
-			Entry::Vacant(v) => {
-				let notify = Arc::new(Notify::new());
-				v.insert(notify.clone());
-				Ticket::Leader(Leader { sf: self, key, notify })
-			},
-		}
-	}
+    /// Claim `key`. The first caller for an absent key becomes the
+    /// [`Ticket::Leader`]; concurrent callers become [`Ticket::Waiter`]s sharing
+    /// the leader's notify handle.
+    pub fn enter(&self, key: K) -> Ticket<'_, K> {
+        match self.inflight.entry(key.clone()) {
+            Entry::Occupied(e) => Ticket::Waiter(e.get().clone()),
+            Entry::Vacant(v) => {
+                let notify = Arc::new(Notify::new());
+                v.insert(notify.clone());
+                Ticket::Leader(Leader {
+                    sf: self,
+                    key,
+                    notify,
+                })
+            }
+        }
+    }
 
-	/// Whether `key` currently has a leader in flight. Used by waiters to detect
-	/// a leader that finished (or died) between claiming and awaiting.
-	pub fn is_inflight(&self, key: &K) -> bool { self.inflight.contains_key(key) }
+    /// Whether `key` currently has a leader in flight. Used by waiters to detect
+    /// a leader that finished (or died) between claiming and awaiting.
+    pub fn is_inflight(&self, key: &K) -> bool {
+        self.inflight.contains_key(key)
+    }
 }
 
 /// RAII guard for the leader of a key. On drop — whether the compute succeeded,
@@ -91,19 +100,19 @@ where
 /// ```
 pub struct Leader<'a, K>
 where
-	K: Eq + Hash + Clone,
+    K: Eq + Hash + Clone,
 {
-	sf:     &'a SingleFlight<K>,
-	key:    K,
-	notify: Arc<Notify>,
+    sf: &'a SingleFlight<K>,
+    key: K,
+    notify: Arc<Notify>,
 }
 
 impl<K> Drop for Leader<'_, K>
 where
-	K: Eq + Hash + Clone,
+    K: Eq + Hash + Clone,
 {
-	fn drop(&mut self) {
-		self.sf.inflight.remove(&self.key);
-		self.notify.notify_waiters();
-	}
+    fn drop(&mut self) {
+        self.sf.inflight.remove(&self.key);
+        self.notify.notify_waiters();
+    }
 }

@@ -34,7 +34,7 @@ let
     ;
 
   # ── Service binaries ──────────────────────────────────────────────────────
-  server = callPackage ./server/package.nix {
+  server = callPackage ./driver/package.nix {
     inherit mkRustService src version;
   };
 
@@ -51,7 +51,7 @@ let
   };
 
   # ── Container images (nix2container) ──────────────────────────────────────
-  backend = callPackage ./server/image.nix {
+  backend = callPackage ./driver/image.nix {
     inherit mkServiceImage buildImage server;
   };
 

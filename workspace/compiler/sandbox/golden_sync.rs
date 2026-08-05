@@ -194,24 +194,19 @@ impl GoldenContentIo {
             })?;
         }
         std::fs::create_dir_all(&checkpoint_dir).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!("create checkpoint dir: {e}"),
-            )
+            io::Error::new(io::ErrorKind::Other, format!("create checkpoint dir: {e}"))
         })?;
 
         // Drive the FORK command: freezes the golden, writes memfd RAM + device
         // snapshot to checkpoint_dir. On success the golden stays paused as
         // the shared CoW base; subsequent fork_golden calls still work.
-        let reply =
-            control_socket_cmd(&ctl, &format!("FORK {}", checkpoint_dir.display())).map_err(
-                |e| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("golden '{name}' FORK command failed: {e}"),
-                    )
-                },
-            )?;
+        let reply = control_socket_cmd(&ctl, &format!("FORK {}", checkpoint_dir.display()))
+            .map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("golden '{name}' FORK command failed: {e}"),
+                )
+            })?;
         if !reply.starts_with("OK") {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -283,8 +278,7 @@ impl ContentIo for GoldenContentIo {
 
         // Register the golden so fork_golden(id) resolves. The GoldenId mirrors
         // the deterministic golden VM name derived from the digest.
-        self.pool
-            .install(*id, GoldenId::new(golden_vm_name(id)));
+        self.pool.install(*id, GoldenId::new(golden_vm_name(id)));
         Ok(())
     }
 
@@ -322,11 +316,7 @@ impl ContentIo for GoldenContentIo {
 /// Recursively collect `(relative_path, absolute_path)` for every regular file
 /// under `root`, sorted bytewise by relative path for deterministic output.
 fn collect_files(root: &Path) -> io::Result<Vec<(Vec<u8>, PathBuf)>> {
-    fn walk(
-        root: &Path,
-        dir: &Path,
-        out: &mut Vec<(Vec<u8>, PathBuf)>,
-    ) -> io::Result<()> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(Vec<u8>, PathBuf)>) -> io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
@@ -447,7 +437,10 @@ fn parse_and_check(
     if pos != bytes.len() - FOOTER {
         return Err(VerifyError::HashMismatch {
             expected: id.to_string(),
-            got: format!("(trailing bytes: parsed to {pos}, body ends at {})", bytes.len() - FOOTER),
+            got: format!(
+                "(trailing bytes: parsed to {pos}, body ends at {})",
+                bytes.len() - FOOTER
+            ),
         });
     }
 
@@ -466,7 +459,10 @@ fn slice_at(bytes: &[u8], off: usize, len: usize) -> Result<&[u8], VerifyError> 
         .get(off..off + len)
         .ok_or_else(|| VerifyError::HashMismatch {
             expected: "(well-formed archive framing)".to_string(),
-            got: format!("(truncated: need {len} bytes at offset {off}, have {})", bytes.len()),
+            got: format!(
+                "(truncated: need {len} bytes at offset {off}, have {})",
+                bytes.len()
+            ),
         })
 }
 
@@ -558,7 +554,9 @@ mod tests {
         make_snapshot(tmp.path());
         let bytes = pack_snapshot(&digest(0x22), tmp.path()).unwrap();
         let io = GoldenContentIo::new(Arc::new(GoldenPool::new()));
-        let err = io.verify(&digest(0x33), &bytes).expect_err("wrong id must fail");
+        let err = io
+            .verify(&digest(0x33), &bytes)
+            .expect_err("wrong id must fail");
         assert!(matches!(err, VerifyError::HashMismatch { .. }));
     }
 

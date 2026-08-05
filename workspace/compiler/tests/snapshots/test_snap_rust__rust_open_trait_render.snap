@@ -1,8 +1,0 @@
----
-source: workspace/compiler/tests/snap_rust.rs
-expression: rendered
----
-/// An open trait: its only supertrait is public, so it is not sealed.
-pub trait OpenTrait {
-    fn kind(&self) -> u8;
-}

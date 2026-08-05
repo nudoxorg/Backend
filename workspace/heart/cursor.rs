@@ -121,7 +121,11 @@ where
     /// silently decoded under another — [`Cursor::decode_tagged`] rejects a tag
     /// mismatch with [`CursorError::PolicyMismatch`].
     pub fn encode(&self) -> String {
-        let wire = Wire { after: &self.after, snapshot: self.snapshot, policy: P::TAG };
+        let wire = Wire {
+            after: &self.after,
+            snapshot: self.snapshot,
+            policy: P::TAG,
+        };
         let bytes = postcard::to_allocvec(&wire)
             .expect("cursor keys are plain data and serialize infallibly");
         data_encoding::BASE64URL_NOPAD.encode(&bytes)
@@ -146,7 +150,11 @@ where
                 found: wire.policy,
             });
         }
-        Ok(Self { after: wire.after, snapshot: wire.snapshot, _policy: PhantomData })
+        Ok(Self {
+            after: wire.after,
+            snapshot: wire.snapshot,
+            _policy: PhantomData,
+        })
     }
 }
 
@@ -159,7 +167,11 @@ where
     /// The snapshot is carried as a hint; no freshness check is performed at
     /// construction. Use for eventually-consistent backends (e.g. Qdrant ANN).
     pub fn new(after: K, snapshot: ContentHash) -> Self {
-        Self { after, snapshot, _policy: PhantomData }
+        Self {
+            after,
+            snapshot,
+            _policy: PhantomData,
+        }
     }
 
     /// Decode an opaque token into an [`Advisory`] cursor.
@@ -187,7 +199,11 @@ where
     /// Only backends that can cheaply compute a content hash of the live index
     /// (e.g. tantivy) should mint enforced cursors.
     pub fn mint_enforced(after: K, snapshot: ContentHash) -> Self {
-        Self { after, snapshot, _policy: PhantomData }
+        Self {
+            after,
+            snapshot,
+            _policy: PhantomData,
+        }
     }
 
     /// Decode an opaque token into an [`Enforced`] cursor, re-proving freshness.
@@ -231,7 +247,10 @@ pub enum CursorError {
     /// explicitly on the wire precisely so this mismatch is caught rather than
     /// silently reinterpreted.
     #[error("cursor policy mismatch: token is {found:?}, expected {expected:?}")]
-    PolicyMismatch { expected: PolicyTag, found: PolicyTag },
+    PolicyMismatch {
+        expected: PolicyTag,
+        found: PolicyTag,
+    },
     /// The cursor's snapshot does not match the current index snapshot; the
     /// caller should discard this cursor and restart from the first page.
     /// Surfaced by [`Cursor::<K, Enforced>::decode`]'s mandatory live-snapshot
@@ -262,8 +281,8 @@ mod tests {
         let cursor = Cursor::<Key, Enforced>::mint_enforced((7, 3), live);
         let token = cursor.encode();
 
-        let decoded = Cursor::<Key, Enforced>::decode(&token, live)
-            .expect("matching snapshot must decode");
+        let decoded =
+            Cursor::<Key, Enforced>::decode(&token, live).expect("matching snapshot must decode");
         assert_eq!(decoded.after, (7, 3));
         assert_eq!(decoded.snapshot, live);
     }
@@ -335,8 +354,7 @@ mod tests {
     fn advisory_round_trips() {
         let cursor = Cursor::<Key, Advisory>::new((9, 4), snap(5));
         let token = cursor.encode();
-        let decoded = Cursor::<Key, Advisory>::decode(&token)
-            .expect("advisory token must decode");
+        let decoded = Cursor::<Key, Advisory>::decode(&token).expect("advisory token must decode");
         assert_eq!(decoded.after, (9, 4));
     }
 }

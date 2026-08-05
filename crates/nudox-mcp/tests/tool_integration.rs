@@ -24,8 +24,8 @@
 
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
 use nudox_engine::wire::{KindDiscriminant, KindTag};
+use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
 use nudox_mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
 use nudox_mcp::{NudoxTools, SymbolKeyDto};
 
@@ -79,8 +79,14 @@ async fn graph_schema_returns_the_full_sdl() {
         schema.contains("type RootSchemaQuery"),
         "schema must define the root query type"
     );
-    assert!(schema.contains("Symbols"), "schema must expose the Symbols entry point");
-    assert!(schema.contains("Packages"), "schema must expose the Packages entry point");
+    assert!(
+        schema.contains("Symbols"),
+        "schema must expose the Symbols entry point"
+    );
+    assert!(
+        schema.contains("Packages"),
+        "schema must expose the Packages entry point"
+    );
     assert!(
         schema.contains("implementors"),
         "schema must document the implementors edge that graph_query can traverse"
@@ -95,7 +101,13 @@ async fn graph_schema_returns_the_full_sdl() {
     );
     // Verify the five formerly-collapsed kinds each have their own schema type
     // (Limit 2 fix). An agent can now write `... on Variant { }` etc.
-    for new_type in ["type Static ", "type Variant ", "type Module ", "type Reexport ", "type Param "] {
+    for new_type in [
+        "type Static ",
+        "type Variant ",
+        "type Module ",
+        "type Reexport ",
+        "type Param ",
+    ] {
         assert!(
             schema.contains(new_type),
             "schema must declare '{new_type}' as a concrete symbol type"
@@ -127,7 +139,10 @@ async fn list_packages_returns_the_fixture_package() {
     let tools = make_tools();
     wait_for_corpus(&tools).await;
 
-    let result = tools.do_list_packages().await.expect("list_packages must not fail");
+    let result = tools
+        .do_list_packages()
+        .await
+        .expect("list_packages must not fail");
     assert!(
         !result.packages.is_empty(),
         "at least the fixture package must be visible"
@@ -137,9 +152,17 @@ async fn list_packages_returns_the_fixture_package() {
         .packages
         .iter()
         .find(|p| p.lineage == FIXTURE_LINEAGE)
-        .unwrap_or_else(|| panic!("fixture package {FIXTURE_LINEAGE} must appear in list_packages; got {:?}", result.packages));
+        .unwrap_or_else(|| {
+            panic!(
+                "fixture package {FIXTURE_LINEAGE} must appear in list_packages; got {:?}",
+                result.packages
+            )
+        });
 
-    assert_eq!(pkg.ecosystem, "fixture", "ecosystem field must be 'fixture'");
+    assert_eq!(
+        pkg.ecosystem, "fixture",
+        "ecosystem field must be 'fixture'"
+    );
     assert_eq!(pkg.name, "nudox-fixture-rich", "name must match");
 }
 
@@ -152,8 +175,14 @@ async fn list_packages_is_deterministic() {
     let tools = make_tools();
     wait_for_corpus(&tools).await;
 
-    let a = tools.do_list_packages().await.expect("first call must succeed");
-    let b = tools.do_list_packages().await.expect("second call must succeed");
+    let a = tools
+        .do_list_packages()
+        .await
+        .expect("first call must succeed");
+    let b = tools
+        .do_list_packages()
+        .await
+        .expect("second call must succeed");
 
     // Compare names (lineage strings), not full struct equality, to avoid
     // depending on ordering details of the graph plane.
@@ -161,7 +190,10 @@ async fn list_packages_is_deterministic() {
     let mut names_b: Vec<String> = b.packages.iter().map(|p| p.lineage.clone()).collect();
     names_a.sort();
     names_b.sort();
-    assert_eq!(names_a, names_b, "list_packages must return the same packages on every call");
+    assert_eq!(
+        names_a, names_b,
+        "list_packages must return the same packages on every call"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -300,7 +332,10 @@ async fn search_symbols_empty_packages_list_is_rejected() {
     assert!(
         matches!(
             err,
-            nudox_mcp::McpError::InvalidArgument { argument: "packages", .. }
+            nudox_mcp::McpError::InvalidArgument {
+                argument: "packages",
+                ..
+            }
         ),
         "expected InvalidArgument for packages, got {err:?}"
     );
@@ -423,10 +458,13 @@ async fn get_symbol_returns_doc_for_fixture_symbol() {
     let point_hit = search
         .hits
         .iter()
-        .find(|h| {
-            matches!(&h.kind, KindTag::Known(KindDiscriminant::Record))
-        })
-        .unwrap_or_else(|| panic!("Point record must appear in search results; got {:?}", search.hits));
+        .find(|h| matches!(&h.kind, KindTag::Known(KindDiscriminant::Record)))
+        .unwrap_or_else(|| {
+            panic!(
+                "Point record must appear in search results; got {:?}",
+                search.hits
+            )
+        });
 
     let key_str = format!(
         "{}:{}#{}",
@@ -584,7 +622,8 @@ async fn find_usages_returns_oracle_confidence_callers() {
         // a corpus-wait issue, not a tools issue.  Fail with a clear message.
         panic!(
             "fixture must have a 'distance' function; search returned: {:?}",
-            search.hits
+            search
+                .hits
                 .iter()
                 .map(|h| h.display_name.to_string())
                 .collect::<Vec<_>>()
@@ -607,11 +646,7 @@ async fn find_usages_returns_oracle_confidence_callers() {
         .expect("find_usages for distance must not fail");
 
     // The fixture has exactly one Oracle caller: `format_point`.
-    let caller_names: Vec<String> = result
-        .usages
-        .iter()
-        .map(|u| u.name.clone())
-        .collect();
+    let caller_names: Vec<String> = result.usages.iter().map(|u| u.name.clone()).collect();
     assert!(
         caller_names.iter().any(|n| n.contains("format_point")),
         "format_point must appear as a caller of distance; got callers: {caller_names:?}"
@@ -712,10 +747,12 @@ async fn graph_query_list_packages_returns_fixture() {
 
     // At least the fixture package must appear.
     let lineage_col = result.columns.iter().position(|c| c == "lineage").unwrap();
-    let fixture_found = result
-        .rows
-        .iter()
-        .any(|r| r.cells.get(lineage_col).map(|c| c == FIXTURE_LINEAGE).unwrap_or(false));
+    let fixture_found = result.rows.iter().any(|r| {
+        r.cells
+            .get(lineage_col)
+            .map(|c| c == FIXTURE_LINEAGE)
+            .unwrap_or(false)
+    });
     assert!(
         fixture_found,
         "fixture package must appear in Packages query; rows: {:?}",
@@ -740,7 +777,11 @@ async fn graph_query_symbols_query_returns_rows() {
         .await
         .expect("Symbols query must succeed");
 
-    assert_eq!(result.columns.len(), 2, "must have 2 columns: name and kind");
+    assert_eq!(
+        result.columns.len(),
+        2,
+        "must have 2 columns: name and kind"
+    );
     assert!(!result.rows.is_empty(), "fixture corpus must have symbols");
 }
 
@@ -761,7 +802,10 @@ async fn graph_query_empty_query_is_rejected() {
     assert!(
         matches!(
             err,
-            nudox_mcp::McpError::InvalidArgument { argument: "query", .. }
+            nudox_mcp::McpError::InvalidArgument {
+                argument: "query",
+                ..
+            }
         ),
         "expected InvalidArgument for query, got {err:?}"
     );
@@ -833,7 +877,10 @@ async fn graph_query_limit_is_applied_and_truncated_is_set() {
         .expect("query with limit=1 must succeed");
 
     assert_eq!(result.rows.len(), 1, "limit=1 must return exactly 1 row");
-    assert!(result.truncated, "truncated must be true when rows were cut");
+    assert!(
+        result.truncated,
+        "truncated must be true when rows were cut"
+    );
 }
 
 /// Columns are addressed by name, not position — this exercises the column
@@ -891,15 +938,24 @@ async fn graph_query_symbol_members_traversal_is_reachable() {
                         kind @output(name: "member_kind")
                     }
                 }
-            }"#.to_owned(),
-            args: Some([("name".to_owned(), "Point".to_owned())].into_iter().collect()),
+            }"#
+            .to_owned(),
+            args: Some(
+                [("name".to_owned(), "Point".to_owned())]
+                    .into_iter()
+                    .collect(),
+            ),
             limit: Some(20),
         })
         .await
         .expect("Symbols → members traversal must succeed");
 
     let member_col = result.columns.iter().position(|c| c == "member_name");
-    assert!(member_col.is_some(), "must have a member_name column; got {:?}", result.columns);
+    assert!(
+        member_col.is_some(),
+        "must have a member_name column; got {:?}",
+        result.columns
+    );
     let member_col = member_col.unwrap();
 
     let member_names: Vec<String> = result
@@ -944,9 +1000,7 @@ async fn graph_query_trait_implementors_traversal_is_reachable() {
                 let display = search
                     .hits
                     .iter()
-                    .find(|h| {
-                        matches!(&h.kind, KindTag::Known(KindDiscriminant::Trait))
-                    })
+                    .find(|h| matches!(&h.kind, KindTag::Known(KindDiscriminant::Trait)))
                     .unwrap_or_else(|| panic!("Display trait must appear in search results"));
                 let key_str = format!(
                     "{}:{}#{}",
@@ -1002,9 +1056,10 @@ async fn graph_query_usages_edge_is_reachable() {
         .await
         .expect("search for distance must succeed");
 
-    let distance = search.hits.iter().find(|h| {
-        h.display_name.contains("distance") && !h.display_name.contains("reexport")
-    });
+    let distance = search
+        .hits
+        .iter()
+        .find(|h| h.display_name.contains("distance") && !h.display_name.contains("reexport"));
 
     let Some(hit) = distance else {
         return; // corpus not ready
@@ -1027,7 +1082,11 @@ async fn graph_query_usages_edge_is_reachable() {
         .expect("FIND_USAGES query must succeed");
 
     // format_point must appear as a caller.
-    let name_col = result.columns.iter().position(|c| c == "name").expect("must have name column");
+    let name_col = result
+        .columns
+        .iter()
+        .position(|c| c == "name")
+        .expect("must have name column");
     let callers: Vec<String> = result
         .rows
         .iter()
@@ -1057,7 +1116,8 @@ async fn graph_query_package_members_traversal_is_reachable() {
                         kind @output
                     }
                 }
-            }"#.to_owned(),
+            }"#
+            .to_owned(),
             args: Some(
                 [("lineage".to_owned(), FIXTURE_LINEAGE.to_owned())]
                     .into_iter()
@@ -1069,7 +1129,11 @@ async fn graph_query_package_members_traversal_is_reachable() {
         .expect("Package → members traversal must succeed");
 
     assert!(!result.rows.is_empty(), "fixture package must have members");
-    let name_col = result.columns.iter().position(|c| c == "name").expect("must have name col");
+    let name_col = result
+        .columns
+        .iter()
+        .position(|c| c == "name")
+        .expect("must have name col");
     let names: Vec<String> = result
         .rows
         .iter()

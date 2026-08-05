@@ -43,7 +43,7 @@ use nudox_ir::{
 use nudox_store::package::{PackageView, Provenance};
 
 use nudox_engine::chunk;
-use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection, SectionKind};
+use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -105,8 +105,16 @@ fn two_entry_pkg(
     let child_id = intro(2);
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(child_id, make_module_entry(blank_sym(child_name)), Some(root_id));
-    table.insert_live(root_id, make_module_entry(sym_with("root", doc, links)), None);
+    table.insert_live(
+        child_id,
+        make_module_entry(blank_sym(child_name)),
+        Some(root_id),
+    );
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with("root", doc, links)),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     (
@@ -118,8 +126,8 @@ fn two_entry_pkg(
 
 /// Run `chunk::chunk` on `root_id` inside `pkg` and return the prose sections.
 fn prose_sections(pkg: &PackageView, root_id: IntroId) -> Vec<Vec<ProseBlock>> {
-    let (_, sections) = chunk::chunk(root_id, pkg.view(), pkg)
-        .expect("chunk must succeed for the root entry");
+    let (_, sections) =
+        chunk::chunk(root_id, pkg.view(), pkg).expect("chunk must succeed for the root entry");
     sections
         .into_iter()
         .filter_map(|s| match s {
@@ -132,8 +140,15 @@ fn prose_sections(pkg: &PackageView, root_id: IntroId) -> Vec<Vec<ProseBlock>> {
 /// Flatten all `InlineRun`s from the first paragraph of the first prose section.
 fn first_paragraph_runs(pkg: &PackageView, root_id: IntroId) -> Vec<InlineRun> {
     let sections = prose_sections(pkg, root_id);
-    let blocks = sections.into_iter().next().expect("must have at least one Prose section");
-    match blocks.into_iter().next().expect("must have at least one block") {
+    let blocks = sections
+        .into_iter()
+        .next()
+        .expect("must have at least one Prose section");
+    match blocks
+        .into_iter()
+        .next()
+        .expect("must have at least one block")
+    {
         ProseBlock::Paragraph { runs } => runs,
         other => panic!("expected Paragraph block, got {other:?}"),
     }
@@ -175,9 +190,18 @@ fn bare_shortcut_link_becomes_symbol_link_through_chunk() {
         });
 
     match link {
-        InlineRun::Link { text, target: LinkTarget::Symbol { key } } => {
-            assert_eq!(&**text, "child_fn", "link text must be the inner shortcut name");
-            assert_eq!(key.intro, child_id, "link must point at the child's IntroId");
+        InlineRun::Link {
+            text,
+            target: LinkTarget::Symbol { key },
+        } => {
+            assert_eq!(
+                &**text, "child_fn",
+                "link text must be the inner shortcut name"
+            );
+            assert_eq!(
+                key.intro, child_id,
+                "link must point at the child's IntroId"
+            );
         }
         other => panic!("expected Link(Symbol), got {other:?}"),
     }
@@ -208,15 +232,13 @@ fn backtick_shortcut_link_becomes_symbol_link_through_chunk() {
     let link = runs
         .iter()
         .find(|r| matches!(r, InlineRun::Link { .. }))
-        .unwrap_or_else(|| {
-            panic!(
-                "backtick shortcut must produce a Link run; got: {:?}",
-                runs
-            )
-        });
+        .unwrap_or_else(|| panic!("backtick shortcut must produce a Link run; got: {:?}", runs));
 
     match link {
-        InlineRun::Link { text, target: LinkTarget::Symbol { key } } => {
+        InlineRun::Link {
+            text,
+            target: LinkTarget::Symbol { key },
+        } => {
             // pulldown-cmark's `Code` event strips the backticks, so the text is bare.
             assert_eq!(&**text, "child_fn");
             assert_eq!(key.intro, child_id);
@@ -239,16 +261,24 @@ fn cross_crate_link_strips_brackets_and_emits_plain_text() {
     let mut table = PristineIntroTable::new();
 
     // A doc_link for "tower::Service" which is NOT in this package.
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Use [tower::Service] to implement the trait.",
-        vec![DocLink {
-            target: "tower::Service".to_owned(),
-            label: Some("Service".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Use [tower::Service] to implement the trait.",
+            vec![DocLink {
+                target: "tower::Service".to_owned(),
+                label: Some("Service".to_owned()),
+            }],
+        )),
+        None,
+    );
     // Add a child with a DIFFERENT name so the index has an entry but "Service" is absent.
-    table.insert_live(intro(2), make_module_entry(blank_sym("NotService")), Some(root_id));
+    table.insert_live(
+        intro(2),
+        make_module_entry(blank_sym("NotService")),
+        Some(root_id),
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -257,7 +287,13 @@ fn cross_crate_link_strips_brackets_and_emits_plain_text() {
 
     // Must not produce a dead Symbol link.
     let dead_link = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     });
     assert!(
         dead_link.is_none(),
@@ -303,21 +339,28 @@ fn callout_lead_survives_verbatim_and_is_not_a_link() {
 
     // A doc_link is present so the lookahead is even attempted.
     // The child "something" is in the corpus; "[!NOTE]" must still not become a link.
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "> [!NOTE]\n> This is important.",
-        vec![DocLink {
-            target: "something".to_owned(),
-            label: Some("something".to_owned()),
-        }],
-    )), None);
-    table.insert_live(intro(2), make_module_entry(blank_sym("something")), Some(root_id));
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "> [!NOTE]\n> This is important.",
+            vec![DocLink {
+                target: "something".to_owned(),
+                label: Some("something".to_owned()),
+            }],
+        )),
+        None,
+    );
+    table.insert_live(
+        intro(2),
+        make_module_entry(blank_sym("something")),
+        Some(root_id),
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
 
-    let (_, sections) = chunk::chunk(root_id, pkg.view(), &pkg)
-        .expect("chunk must succeed");
+    let (_, sections) = chunk::chunk(root_id, pkg.view(), &pkg).expect("chunk must succeed");
 
     // No section may have a Symbol link produced from "[!NOTE]".
     let has_bad_symbol_link = sections.iter().any(|s| {
@@ -327,7 +370,13 @@ fn callout_lead_survives_verbatim_and_is_not_a_link() {
         };
         blocks.iter().any(|b| match b {
             ProseBlock::Paragraph { runs } => runs.iter().any(|r| {
-                matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+                matches!(
+                    r,
+                    InlineRun::Link {
+                        target: LinkTarget::Symbol { .. },
+                        ..
+                    }
+                )
             }),
             _ => false,
         })
@@ -340,19 +389,30 @@ fn callout_lead_survives_verbatim_and_is_not_a_link() {
     );
 
     // The NOTE or callout content must appear somewhere.
-    let full_text: String = sections.iter().flat_map(|s| {
-        let blocks: &[ProseBlock] = match s {
-            RenderSection::Prose { blocks, .. } | RenderSection::Callout { blocks, .. } => blocks,
-            _ => return Vec::new(),
-        };
-        blocks.iter().flat_map(|b| match b {
-            ProseBlock::Paragraph { runs } => runs.iter().filter_map(|r| match r {
-                InlineRun::Text { text } => Some(text.to_string()),
-                _ => None,
-            }).collect::<Vec<_>>(),
-            _ => Vec::new(),
-        }).collect::<Vec<_>>()
-    }).collect();
+    let full_text: String = sections
+        .iter()
+        .flat_map(|s| {
+            let blocks: &[ProseBlock] = match s {
+                RenderSection::Prose { blocks, .. } | RenderSection::Callout { blocks, .. } => {
+                    blocks
+                }
+                _ => return Vec::new(),
+            };
+            blocks
+                .iter()
+                .flat_map(|b| match b {
+                    ProseBlock::Paragraph { runs } => runs
+                        .iter()
+                        .filter_map(|r| match r {
+                            InlineRun::Text { text } => Some(text.to_string()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>(),
+                    _ => Vec::new(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
 
     assert!(
         full_text.contains("NOTE") || full_text.contains("important"),
@@ -377,9 +437,15 @@ fn real_markdown_url_link_stays_url_link() {
 
     let runs = first_paragraph_runs(&pkg, root_id);
 
-    let url_link = runs
-        .iter()
-        .find(|r| matches!(r, InlineRun::Link { target: LinkTarget::Url { .. }, .. }));
+    let url_link = runs.iter().find(|r| {
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Url { .. },
+                ..
+            }
+        )
+    });
 
     assert!(
         url_link.is_some(),
@@ -388,7 +454,10 @@ fn real_markdown_url_link_stays_url_link() {
     );
 
     match url_link.unwrap() {
-        InlineRun::Link { text, target: LinkTarget::Url { url } } => {
+        InlineRun::Link {
+            text,
+            target: LinkTarget::Url { url },
+        } => {
             assert_eq!(&**text, "docs", "link text must be 'docs'");
             assert!(
                 url.contains("docs.rs"),
@@ -416,19 +485,31 @@ fn ambiguous_leaf_name_does_not_resolve_to_wrong_symbol() {
     let read_b_id = intro(3); // also named "Read"
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(read_a_id, make_module_entry(blank_sym("Read")), Some(root_id));
-    table.insert_live(read_b_id, make_module_entry(blank_sym("Read")), Some(root_id));
+    table.insert_live(
+        read_a_id,
+        make_module_entry(blank_sym("Read")),
+        Some(root_id),
+    );
+    table.insert_live(
+        read_b_id,
+        make_module_entry(blank_sym("Read")),
+        Some(root_id),
+    );
 
     // The doc says [io::Read]; the doc_link target is "io::Read".
     // The suffix-narrowing must not pick read_b_id over read_a_id arbitrarily.
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Implement [io::Read] for your type.",
-        vec![DocLink {
-            target: "io::Read".to_owned(),
-            label: Some("io::Read".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Implement [io::Read] for your type.",
+            vec![DocLink {
+                target: "io::Read".to_owned(),
+                label: Some("io::Read".to_owned()),
+            }],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -441,10 +522,19 @@ fn ambiguous_leaf_name_does_not_resolve_to_wrong_symbol() {
     // package, the suffix narrowing may produce no match — which is fine.
     // The critical assertion is "never the wrong symbol", not "always a link".
     if let Some(link) = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     }) {
         match link {
-            InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+            InlineRun::Link {
+                target: LinkTarget::Symbol { key },
+                ..
+            } => {
                 // Both are valid because we can't know which one is "io::Read"
                 // without a real module path — but neither must be a fabricated one.
                 assert!(
@@ -481,9 +571,15 @@ fn shortcut_link_inside_strong_is_still_a_link() {
 
     let runs = first_paragraph_runs(&pkg, root_id);
 
-    let link = runs
-        .iter()
-        .find(|r| matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. }));
+    let link = runs.iter().find(|r| {
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
+    });
 
     assert!(
         link.is_some(),
@@ -493,7 +589,10 @@ fn shortcut_link_inside_strong_is_still_a_link() {
     );
 
     match link.unwrap() {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+        InlineRun::Link {
+            target: LinkTarget::Symbol { key },
+            ..
+        } => {
             assert_eq!(key.intro, child_id);
         }
         _ => unreachable!(),
@@ -565,9 +664,9 @@ fn trailing_prose_after_shortcut_link_is_not_lost() {
     let all_text: String = runs
         .iter()
         .filter_map(|r| match r {
-            InlineRun::Text { text }
-            | InlineRun::Strong { text }
-            | InlineRun::Em { text } => Some(text.as_ref()),
+            InlineRun::Text { text } | InlineRun::Strong { text } | InlineRun::Em { text } => {
+                Some(text.as_ref())
+            }
             InlineRun::Link { text, .. } => Some(text.as_ref()),
             _ => None,
         })
@@ -599,15 +698,23 @@ fn qualified_path_shortcut_resolves_via_leaf_fallback() {
     let fn_id = intro(2);
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(fn_id, make_module_entry(blank_sym("with_state")), Some(root_id));
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Call [Router::with_state] to build a router.",
-        vec![DocLink {
-            target: "Router::with_state".to_owned(),
-            label: Some("Router::with_state".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        fn_id,
+        make_module_entry(blank_sym("with_state")),
+        Some(root_id),
+    );
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Call [Router::with_state] to build a router.",
+            vec![DocLink {
+                target: "Router::with_state".to_owned(),
+                label: Some("Router::with_state".to_owned()),
+            }],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -615,7 +722,13 @@ fn qualified_path_shortcut_resolves_via_leaf_fallback() {
     let runs = first_paragraph_runs(&pkg, root_id);
 
     let link = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     });
 
     assert!(
@@ -626,7 +739,10 @@ fn qualified_path_shortcut_resolves_via_leaf_fallback() {
     );
 
     match link.unwrap() {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+        InlineRun::Link {
+            target: LinkTarget::Symbol { key },
+            ..
+        } => {
             assert_eq!(key.intro, fn_id, "link must point at with_state's IntroId");
         }
         _ => unreachable!(),
@@ -672,13 +788,16 @@ fn three_fenced_code_blocks_each_become_own_render_section() {
         "After all blocks.",
     );
 
-    table.insert_live(root_id, make_module_entry(sym_with("root", doc, vec![])), None);
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with("root", doc, vec![])),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
 
-    let (head, sections) = chunk::chunk(root_id, pkg.view(), &pkg)
-        .expect("chunk must succeed");
+    let (head, sections) = chunk::chunk(root_id, pkg.view(), &pkg).expect("chunk must succeed");
 
     // Three CodeBlock sections must exist.
     let code_sections: Vec<_> = sections
@@ -693,7 +812,10 @@ fn three_fenced_code_blocks_each_become_own_render_section() {
          got {} code sections out of {} total: {:#?}",
         code_sections.len(),
         sections.len(),
-        sections.iter().map(|s| format!("{:?}", s.section_id())).collect::<Vec<_>>(),
+        sections
+            .iter()
+            .map(|s| format!("{:?}", s.section_id()))
+            .collect::<Vec<_>>(),
     );
 
     // All three must have distinct SectionIds.
@@ -701,17 +823,26 @@ fn three_fenced_code_blocks_each_become_own_render_section() {
     {
         let mut sorted = ids.clone();
         sorted.dedup();
-        assert_eq!(sorted.len(), ids.len(), "all code section ids must be distinct: {ids:?}");
+        assert_eq!(
+            sorted.len(),
+            ids.len(),
+            "all code section ids must be distinct: {ids:?}"
+        );
     }
 
     // Every CodeBlock SectionId must appear in the plan with kind CodeBlock.
     for id in &ids {
-        let plan_entry = head.section_plan.iter().find(|p| p.id == *id)
-            .unwrap_or_else(|| panic!(
-                "SectionId {id:?} is in sections but absent from section_plan; \
+        let plan_entry = head
+            .section_plan
+            .iter()
+            .find(|p| p.id == *id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "SectionId {id:?} is in sections but absent from section_plan; \
                  plan: {:#?}",
-                head.section_plan
-            ));
+                    head.section_plan
+                )
+            });
         assert_eq!(
             plan_entry.kind,
             nudox_engine::wire::SectionKind::CodeBlock,
@@ -721,12 +852,15 @@ fn three_fenced_code_blocks_each_become_own_render_section() {
     }
 
     // Language tags must appear in source order.
-    let langs: Vec<&str> = code_sections.iter().map(|s| match s {
-        // `lang.0` is `&SharedStr` (behind reference), so `&*lang.0` dereferences
-        // both the `&SharedStr` wrapper and the `SharedStr` → `str` Deref.
-        RenderSection::CodeBlock { lang, .. } => &*lang.0,
-        _ => unreachable!(),
-    }).collect();
+    let langs: Vec<&str> = code_sections
+        .iter()
+        .map(|s| match s {
+            // `lang.0` is `&SharedStr` (behind reference), so `&*lang.0` dereferences
+            // both the `&SharedStr` wrapper and the `SharedStr` → `str` Deref.
+            RenderSection::CodeBlock { lang, .. } => &*lang.0,
+            _ => unreachable!(),
+        })
+        .collect();
     assert_eq!(
         langs,
         vec!["rust", "python", "javascript"],
@@ -754,17 +888,25 @@ fn namespace_tagged_target_produces_symbol_link_through_chunk() {
     let fn_id = intro(2);
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(fn_id, make_module_entry(blank_sym("with_state")), Some(root_id));
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Call [Router::with_state] to build the app.",
-        vec![DocLink {
-            // The producer emits a namespace tag to disambiguate methods from
-            // same-name fields/consts.  The `!m` suffix must be stripped.
-            target: "Router::with_state!m".to_owned(),
-            label: Some("Router::with_state".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        fn_id,
+        make_module_entry(blank_sym("with_state")),
+        Some(root_id),
+    );
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Call [Router::with_state] to build the app.",
+            vec![DocLink {
+                // The producer emits a namespace tag to disambiguate methods from
+                // same-name fields/consts.  The `!m` suffix must be stripped.
+                target: "Router::with_state!m".to_owned(),
+                label: Some("Router::with_state".to_owned()),
+            }],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -772,7 +914,13 @@ fn namespace_tagged_target_produces_symbol_link_through_chunk() {
     let runs = first_paragraph_runs(&pkg, root_id);
 
     let link = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     });
 
     assert!(
@@ -782,7 +930,10 @@ fn namespace_tagged_target_produces_symbol_link_through_chunk() {
     );
 
     match link.unwrap() {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+        InlineRun::Link {
+            target: LinkTarget::Symbol { key },
+            ..
+        } => {
             assert_eq!(key.intro, fn_id, "link must point at with_state's IntroId");
         }
         _ => unreachable!(),
@@ -801,15 +952,23 @@ fn dot_path_namespace_tagged_target_produces_symbol_link_through_chunk() {
     let fn_id = intro(2);
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(fn_id, make_module_entry(blank_sym("with_state")), Some(root_id));
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Call [Router::with_state] to build the app.",
-        vec![DocLink {
-            target: "axum.routing.Router.with_state!m".to_owned(),
-            label: Some("Router::with_state".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        fn_id,
+        make_module_entry(blank_sym("with_state")),
+        Some(root_id),
+    );
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Call [Router::with_state] to build the app.",
+            vec![DocLink {
+                target: "axum.routing.Router.with_state!m".to_owned(),
+                label: Some("Router::with_state".to_owned()),
+            }],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -817,7 +976,13 @@ fn dot_path_namespace_tagged_target_produces_symbol_link_through_chunk() {
     let runs = first_paragraph_runs(&pkg, root_id);
 
     let link = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     });
 
     assert!(
@@ -827,7 +992,10 @@ fn dot_path_namespace_tagged_target_produces_symbol_link_through_chunk() {
     );
 
     match link.unwrap() {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+        InlineRun::Link {
+            target: LinkTarget::Symbol { key },
+            ..
+        } => {
             assert_eq!(key.intro, fn_id);
         }
         _ => unreachable!(),
@@ -847,15 +1015,23 @@ fn anchor_style_target_produces_symbol_link_through_chunk() {
     let fn_id = intro(2);
     let mut table = PristineIntroTable::new();
 
-    table.insert_live(fn_id, make_module_entry(blank_sym("with_state")), Some(root_id));
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Call [with_state] here.",
-        vec![DocLink {
-            target: "#method.with_state".to_owned(),
-            label: Some("with_state".to_owned()),
-        }],
-    )), None);
+    table.insert_live(
+        fn_id,
+        make_module_entry(blank_sym("with_state")),
+        Some(root_id),
+    );
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Call [with_state] here.",
+            vec![DocLink {
+                target: "#method.with_state".to_owned(),
+                label: Some("with_state".to_owned()),
+            }],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -863,7 +1039,13 @@ fn anchor_style_target_produces_symbol_link_through_chunk() {
     let runs = first_paragraph_runs(&pkg, root_id);
 
     let link = runs.iter().find(|r| {
-        matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. })
+        matches!(
+            r,
+            InlineRun::Link {
+                target: LinkTarget::Symbol { .. },
+                ..
+            }
+        )
     });
 
     assert!(
@@ -873,7 +1055,10 @@ fn anchor_style_target_produces_symbol_link_through_chunk() {
     );
 
     match link.unwrap() {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => {
+        InlineRun::Link {
+            target: LinkTarget::Symbol { key },
+            ..
+        } => {
             assert_eq!(key.intro, fn_id);
         }
         _ => unreachable!(),
@@ -896,22 +1081,30 @@ fn self_and_crate_prefixed_paths_produce_symbol_links_through_chunk() {
     let mut table = PristineIntroTable::new();
 
     table.insert_live(bar_id, make_module_entry(blank_sym("bar")), Some(root_id));
-    table.insert_live(router_id, make_module_entry(blank_sym("Router")), Some(root_id));
+    table.insert_live(
+        router_id,
+        make_module_entry(blank_sym("Router")),
+        Some(root_id),
+    );
 
-    table.insert_live(root_id, make_module_entry(sym_with(
-        "root",
-        "Use [Self::bar] or [crate::routing::Router] in your code.",
-        vec![
-            DocLink {
-                target: "Self::bar".to_owned(),
-                label: Some("Self::bar".to_owned()),
-            },
-            DocLink {
-                target: "crate::routing::Router".to_owned(),
-                label: Some("crate::routing::Router".to_owned()),
-            },
-        ],
-    )), None);
+    table.insert_live(
+        root_id,
+        make_module_entry(sym_with(
+            "root",
+            "Use [Self::bar] or [crate::routing::Router] in your code.",
+            vec![
+                DocLink {
+                    target: "Self::bar".to_owned(),
+                    label: Some("Self::bar".to_owned()),
+                },
+                DocLink {
+                    target: "crate::routing::Router".to_owned(),
+                    label: Some("crate::routing::Router".to_owned()),
+                },
+            ],
+        )),
+        None,
+    );
 
     let view = IrView::with_package(lid, table);
     let pkg = PackageView::build(view, Provenance::TrustedLocal);
@@ -920,7 +1113,15 @@ fn self_and_crate_prefixed_paths_produce_symbol_links_through_chunk() {
 
     let symbol_links: Vec<_> = runs
         .iter()
-        .filter(|r| matches!(r, InlineRun::Link { target: LinkTarget::Symbol { .. }, .. }))
+        .filter(|r| {
+            matches!(
+                r,
+                InlineRun::Link {
+                    target: LinkTarget::Symbol { .. },
+                    ..
+                }
+            )
+        })
         .collect();
 
     assert_eq!(
@@ -931,11 +1132,23 @@ fn self_and_crate_prefixed_paths_produce_symbol_links_through_chunk() {
         symbol_links.len(),
     );
 
-    let intros: std::collections::HashSet<_> = symbol_links.iter().map(|r| match r {
-        InlineRun::Link { target: LinkTarget::Symbol { key }, .. } => key.intro,
-        _ => unreachable!(),
-    }).collect();
+    let intros: std::collections::HashSet<_> = symbol_links
+        .iter()
+        .map(|r| match r {
+            InlineRun::Link {
+                target: LinkTarget::Symbol { key },
+                ..
+            } => key.intro,
+            _ => unreachable!(),
+        })
+        .collect();
 
-    assert!(intros.contains(&bar_id), "bar_id must be in the resolved symbols");
-    assert!(intros.contains(&router_id), "router_id must be in the resolved symbols");
+    assert!(
+        intros.contains(&bar_id),
+        "bar_id must be in the resolved symbols"
+    );
+    assert!(
+        intros.contains(&router_id),
+        "router_id must be in the resolved symbols"
+    );
 }

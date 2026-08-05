@@ -43,24 +43,23 @@ members = [
     # `ir-vcs` (the libpijul/iroh-linked patch engine / serve / diff / semver /
     # transfer). `registry` reads only the light `ir` and no longer transitively
     # links libpijul.
-    "workspace/ir-vcs",
+    "workspace/ir/vcs",
     # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
-    # The ONE abstracted iroh/iroh-blobs + bao provide-fetch. heart stays
-    # iroh-free (only the `heart::sync` seam); the concrete transport lives
-    # here and every `ContentIo` implementor (ir-vcs::sync, index::pack, …)
-    # wires its provide/fetch over this crate. No per-plane bespoke bao/iroh.
-    "workspace/transport",
+    # The transport crate has been folded into `index::transport`. Heart stays
+    # iroh-free (only the `heart::sync` seam); the concrete iroh/iroh-blobs/
+    # bao plumbing lives once as a module of the index package, removed from
+    # the workspace member list. No per-plane bespoke bao/iroh.
     # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
-    "crates/nudox-ir",
+    "workspace/ir/model",
     # ── Producer plane: shared contract + one crate per language ─────────────
-    "crates/nudox-producer",
-    "crates/nudox-producer-go",
-    "crates/nudox-producer-csharp",
-    "crates/nudox-producer-rust",
-    "crates/nudox-producer-typescript",
-    "crates/nudox-producer-clang",
-    "crates/nudox-producer-java",
-    "crates/nudox-producer-python",
+    "workspace/compiler/producer",
+    "workspace/compiler/languages/go",
+    "workspace/compiler/languages/csharp",
+    "workspace/compiler/languages/rust",
+    "workspace/compiler/languages/typescript",
+    "workspace/compiler/languages/clang",
+    "workspace/compiler/languages/java",
+    "workspace/compiler/languages/python",
     # ── Local-first GUI planes (GUI-LOCAL-PLAN §L0) ──────────────────────────
     # store → graph → engine → mcp. `lindsey` (workspace/gui) is deliberately
     # NOT a member: it keeps its own lockfile so gpui stays out of the backend
@@ -70,6 +69,7 @@ members = [
     "crates/nudox-store",
     "crates/nudox-graph",
     "crates/nudox-engine",
+    "crates/nudox-test-support",
     "crates/nudox-mcp",
 ]
 

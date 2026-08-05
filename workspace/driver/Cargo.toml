@@ -35,10 +35,8 @@ heart    = { path = "../heart", features = ["telemetry"] }
 # / `vector::…` in the moved modules then resolve to the crate-local facades.
 xregistry = { package = "registry", path = "../registry", features = ["local", "remote"] }
 index    = { path = "../index", features = ["dolt-engine"] }
-# The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c).
-# `driver::sync` (the federation sync orchestrator, §8e) fans a verified content
-# item across the federation topology over `heart::sync` + this transport.
-transport = { path = "../transport" }
+# The concrete iroh/bao content-transfer plane is owned by `index::transport`.
+# Driver only composes the index-owned sync implementation.
 # The one cage abstraction (SMOLVM-PLAN §3): the ephemeral SmolvmCage the
 # compile phase forks-from-golden and runs the producer inside. The compiler
 # daemon is gone; IR is produced by a microVM per job, driven from here.
@@ -47,12 +45,12 @@ sandbox   = { path = "../compiler/sandbox" }
 # postcard-framed producer output from the cage stdout into `WireEntry` batches.
 # Driver is the first layer to link ir-vcs (libpijul lives here, not in
 # index/registry which stay libpijul-free).
-ir-vcs    = { path = "../ir-vcs" }
+ir-vcs    = { path = "../ir/vcs" }
 # IR data-model types (OwnedEntryPayload, SymbolWire, …) used by the stream
 # decoder in ingest_ir_bytes. Aliased as `ir` — points to nudox-ir which is
 # the new canonical IR data model (workspace/ir is the legacy layer being
 # migrated away from; ir-vcs already uses nudox-ir via the same alias).
-ir        = { package = "nudox-ir", path = "../../crates/nudox-ir" }
+ir        = { package = "nudox-ir", path = "../ir/model" }
 
 # ── Async / concurrency ───────────────────────────────────────────────────────
 tokio        = { version = "1.52",  features = ["full"] }
@@ -114,6 +112,8 @@ async-trait = "0.1"
 
 # ── Observability ─────────────────────────────────────────────────────────────
 tracing  = "0.1"
+opentelemetry = "0.28"
+tracing-opentelemetry = "0.29"
 metrics  = "0.24"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"] }
 

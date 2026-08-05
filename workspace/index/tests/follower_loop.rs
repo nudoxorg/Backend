@@ -11,8 +11,8 @@ use common::{migrated_writer, stem_id, version_id};
 
 use index::enums::SinkKind;
 use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::follower::{drain_once, FollowerError, SinkFollower};
 use index::store::MetaStore;
+use index::store::follower::{FollowerError, SinkFollower, drain_once};
 use index::tables::outbox::OutboxRow;
 
 /// A test follower that records every `seq` it projects, so a test can assert on
@@ -26,11 +26,19 @@ struct RecordingFollower {
 
 impl RecordingFollower {
     fn new(sink: SinkKind) -> Self {
-        Self { sink, projected: RefCell::new(Vec::new()), fail_on_seq: None }
+        Self {
+            sink,
+            projected: RefCell::new(Vec::new()),
+            fail_on_seq: None,
+        }
     }
 
     fn failing_on(sink: SinkKind, seq: i64) -> Self {
-        Self { sink, projected: RefCell::new(Vec::new()), fail_on_seq: Some(seq) }
+        Self {
+            sink,
+            projected: RefCell::new(Vec::new()),
+            fail_on_seq: Some(seq),
+        }
     }
 
     fn seen(&self) -> Vec<i64> {
@@ -58,7 +66,10 @@ impl SinkFollower for RecordingFollower {
 }
 
 /// Seed some version upserts so the outbox has Text-sink rows to drain.
-fn seed_versions(writer: &index::store::writer::CatalogWriter<index::engine::memory::MemoryEngine>, count: u8) {
+fn seed_versions(
+    writer: &index::store::writer::CatalogWriter<index::engine::memory::MemoryEngine>,
+    count: u8,
+) {
     let mut ops = vec![CatalogOp::UpsertPackage {
         stem: PackageStemWire {
             stem_id: stem_id(1),
@@ -96,7 +107,10 @@ fn drain_projects_all_rows_and_advances_watermark() {
     let mut follower = RecordingFollower::new(SinkKind::Text);
     let report = drain_once(&writer, &mut follower, 64).expect("drain");
 
-    assert_eq!(report.claimed, 3, "three version upserts fan out three Text rows");
+    assert_eq!(
+        report.claimed, 3,
+        "three version upserts fan out three Text rows"
+    );
     assert_eq!(report.projected, 3);
     assert_eq!(report.skipped, 0);
     assert_eq!(follower.seen().len(), 3);
@@ -111,7 +125,10 @@ fn drain_projects_all_rows_and_advances_watermark() {
     // A second drain has nothing left to do (all consumed).
     let mut follower2 = RecordingFollower::new(SinkKind::Text);
     let report2 = drain_once(&writer, &mut follower2, 64).expect("second drain");
-    assert_eq!(report2.claimed, 0, "watermark past every row → nothing to claim");
+    assert_eq!(
+        report2.claimed, 0,
+        "watermark past every row → nothing to claim"
+    );
     assert_eq!(report2.projected, 0);
     assert!(follower2.seen().is_empty());
 }
@@ -143,7 +160,9 @@ fn crash_before_advance_redelivers_then_skips_idempotently_by_seq() {
     assert_eq!(crashing.seen(), vec![seqs[0]]);
     // Watermark did NOT advance (crash-before-advance).
     assert_eq!(
-        writer.current_sink_watermark(SinkKind::Text).expect("watermark"),
+        writer
+            .current_sink_watermark(SinkKind::Text)
+            .expect("watermark"),
         0,
         "a crash before the watermark advance leaves it un-advanced"
     );
@@ -155,12 +174,24 @@ fn crash_before_advance_redelivers_then_skips_idempotently_by_seq() {
     // *idempotent projection* contract covers it (re-projecting seq[0] is safe).
     let mut recovery = RecordingFollower::new(SinkKind::Text);
     let recovered = drain_once(&writer, &mut recovery, 64).expect("recovery drain");
-    assert_eq!(recovered.claimed, 3, "un-advanced watermark re-claims the whole batch");
-    assert_eq!(recovered.projected, 3, "all rows (re)projected at-least-once");
-    assert_eq!(recovery.seen(), seqs, "redelivery covers seq[0] again — at-least-once");
+    assert_eq!(
+        recovered.claimed, 3,
+        "un-advanced watermark re-claims the whole batch"
+    );
+    assert_eq!(
+        recovered.projected, 3,
+        "all rows (re)projected at-least-once"
+    );
+    assert_eq!(
+        recovery.seen(),
+        seqs,
+        "redelivery covers seq[0] again — at-least-once"
+    );
 
     // Now the watermark is at the top.
-    let top = writer.current_sink_watermark(SinkKind::Text).expect("watermark");
+    let top = writer
+        .current_sink_watermark(SinkKind::Text)
+        .expect("watermark");
     assert_eq!(top, *seqs.last().unwrap());
 }
 
@@ -189,7 +220,10 @@ fn seq_skip_guard_elides_a_row_at_or_below_the_watermark() {
     // A normal drain now only sees rows strictly after seq[0].
     let mut follower = RecordingFollower::new(SinkKind::Text);
     let report = drain_once(&writer, &mut follower, 64).expect("drain");
-    assert_eq!(report.claimed, 1, "outbox_claim already filters seq <= watermark");
+    assert_eq!(
+        report.claimed, 1,
+        "outbox_claim already filters seq <= watermark"
+    );
     assert_eq!(report.projected, 1);
     assert_eq!(report.skipped, 0);
     assert_eq!(follower.seen(), vec![seqs[1]]);

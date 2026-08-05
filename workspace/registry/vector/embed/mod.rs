@@ -35,10 +35,10 @@ pub const ORT_PACKAGE_ID: &str = "ort@2.0.0-rc.12";
 
 /// Construct a backend/runtime [`EmbedError`] from a message.
 pub(crate) fn backend_error(msg: impl std::fmt::Display) -> EmbedError {
-	EmbedError::Backend(msg.to_string())
+    EmbedError::Backend(msg.to_string())
 }
 
 /// The raw float view of an embedding (for CAS blobs).
 pub(crate) fn embedding_floats<M: EmbeddingModel>(embedding: &Embedding<M>) -> &[f32] {
-	embedding.as_ref()
+    embedding.as_ref()
 }

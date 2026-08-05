@@ -45,9 +45,7 @@ use nudox_store::corpus::Corpus;
 use crate::{
     chunk::signature,
     runtime::{EngineHandle, StreamHandle},
-    wire::{
-        Gen, HitRow, KindTag, Provenance, SearchEvent, SearchSectionId, SharedStr,
-    },
+    wire::{Gen, HitRow, KindTag, Provenance, SearchEvent, SearchSectionId, SharedStr},
 };
 
 // ---------------------------------------------------------------------------
@@ -84,7 +82,11 @@ pub struct SearchQuery {
 
 impl Default for SearchQuery {
     fn default() -> Self {
-        Self { text: String::new(), kinds: Vec::new(), limit: 50 }
+        Self {
+            text: String::new(),
+            kinds: Vec::new(),
+            limit: 50,
+        }
     }
 }
 
@@ -246,7 +248,11 @@ fn collect_name_hits(
     }
 
     let prefix_lower = text.to_lowercase();
-    let limit = if query.limit == 0 { usize::MAX } else { query.limit };
+    let limit = if query.limit == 0 {
+        usize::MAX
+    } else {
+        query.limit
+    };
 
     let mut rows: Vec<HitRow> = Vec::new();
 
@@ -347,7 +353,11 @@ fn collect_type_hits(
     packages: &[std::sync::Arc<nudox_store::package::PackageView>],
     query: &SearchQuery,
 ) -> Vec<HitRow> {
-    let limit = if query.limit == 0 { usize::MAX } else { query.limit };
+    let limit = if query.limit == 0 {
+        usize::MAX
+    } else {
+        query.limit
+    };
 
     // Determine which kind discriminant(s) to emit for the "type" section.
     // Priority:
@@ -387,8 +397,7 @@ fn collect_type_hits(
                 };
                 let key = nudox_ir::change::StableRef::new(pkg.lineage().clone(), intro);
                 let sig_preview = signature::tokens(ir_entry, pkg);
-                let display_name: SharedStr =
-                    SharedStr::from(ir_entry.sym().name.as_str());
+                let display_name: SharedStr = SharedStr::from(ir_entry.sym().name.as_str());
 
                 rows.push(HitRow {
                     key,
@@ -436,8 +445,8 @@ mod tests {
 
     use crate::{
         runtime::{Engine, EngineConfig},
-        search::{SearchQuery, SECTION_NAME, SECTION_TYPE},
-        wire::{Gen, SearchEvent, SearchSectionId},
+        search::{SECTION_NAME, SECTION_TYPE, SearchQuery},
+        wire::{Gen, SearchEvent},
     };
 
     fn make_engine() -> crate::runtime::EngineHandle {
@@ -482,9 +491,9 @@ mod tests {
         let events = drain(rx).await;
 
         // Find the position of SECTION_NAME and SECTION_SEMANTIC events.
-        let name_pos = events
-            .iter()
-            .position(|e| matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_NAME));
+        let name_pos = events.iter().position(
+            |e| matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_NAME),
+        );
         let semantic_pos = events
             .iter()
             .position(|e| matches!(e, SearchEvent::Section { section, .. } if *section == crate::search::SECTION_SEMANTIC));
@@ -503,7 +512,10 @@ mod tests {
         let engine = make_engine();
         wait_for_corpus(&engine).await;
 
-        let query = SearchQuery { text: "fn".to_owned(), ..Default::default() };
+        let query = SearchQuery {
+            text: "fn".to_owned(),
+            ..Default::default()
+        };
         let (_handle, rx) = engine.search(query, Gen(2));
         let events = drain(rx).await;
 
@@ -518,7 +530,10 @@ mod tests {
         let engine = make_engine();
         wait_for_corpus(&engine).await;
 
-        let query = SearchQuery { text: "Point".to_owned(), ..Default::default() };
+        let query = SearchQuery {
+            text: "Point".to_owned(),
+            ..Default::default()
+        };
         let (handle, rx) = engine.search(query, Gen(3));
 
         // Drop handle immediately — cancels before any events land.
@@ -542,7 +557,10 @@ mod tests {
         let engine = make_engine();
         wait_for_corpus(&engine).await;
 
-        let q = SearchQuery { text: "Color".to_owned(), ..Default::default() };
+        let q = SearchQuery {
+            text: "Color".to_owned(),
+            ..Default::default()
+        };
 
         // Gen 4: cancel immediately.
         let (handle4, _rx4) = engine.search(q.clone(), Gen(4));
@@ -562,13 +580,16 @@ mod tests {
         let engine = make_engine();
         wait_for_corpus(&engine).await;
 
-        let q = SearchQuery { text: "".to_owned(), ..Default::default() };
+        let q = SearchQuery {
+            text: "".to_owned(),
+            ..Default::default()
+        };
         let (_handle, rx) = engine.search(q, Gen(6));
         let events = drain(rx).await;
 
-        let name_section = events.iter().find(|e| {
-            matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_NAME)
-        });
+        let name_section = events.iter().find(
+            |e| matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_NAME),
+        );
         if let Some(SearchEvent::Section { rows, .. }) = name_section {
             assert!(rows.is_empty(), "empty query must produce no name hits");
         }
@@ -579,18 +600,24 @@ mod tests {
         let engine = make_engine();
         wait_for_corpus(&engine).await;
 
-        let q = SearchQuery { text: "fn".to_owned(), ..Default::default() };
+        let q = SearchQuery {
+            text: "fn".to_owned(),
+            ..Default::default()
+        };
         let (_handle, rx) = engine.search(q, Gen(7));
         let events = drain(rx).await;
 
-        let type_section = events.iter().find(|e| {
-            matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_TYPE)
-        });
+        let type_section = events.iter().find(
+            |e| matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_TYPE),
+        );
         let rows = match type_section {
             Some(SearchEvent::Section { rows, .. }) => rows,
             _ => panic!("must have SECTION_TYPE"),
         };
         // The rich corpus has several functions; at least one must appear.
-        assert!(!rows.is_empty(), "keyword 'fn' must produce type-section hits");
+        assert!(
+            !rows.is_empty(),
+            "keyword 'fn' must produce type-section hits"
+        );
     }
 }

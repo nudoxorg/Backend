@@ -19,10 +19,15 @@
 
 pub mod authz;
 pub mod dto;
+pub mod query;
 
 pub use authz::{AdminCap, Principal, ReadCap, TenantId, WriteCap};
 pub use dto::{
-    AddPackageDto, CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse, HealthDto,
-    JobKeyHex, JobKeyHexError, COMPILED_LOOKUP_MAX_KEYS, RERANK_MAX_DOCUMENTS,
+    AddPackageDto, COMPILED_LOOKUP_MAX_KEYS, CompiledLookupEntry, CompiledLookupRequest,
+    CompiledLookupResponse, HealthDto, JobKeyHex, JobKeyHexError, RERANK_MAX_DOCUMENTS,
     RerankDocument, RerankRequestDto, RerankResponseDto, RerankScore,
+};
+pub use query::{
+    AbstractQuery, ExecutionQuery, Filter, LiteralQuery, PackageSelector, QueryError, Search,
+    SymbolCursor, SymbolCursorKey, VersionConstraint,
 };

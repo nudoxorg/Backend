@@ -23,6 +23,12 @@
 //! §13).
 
 pub mod codec;
+/// The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c),
+/// moved from the former standalone `transport` crate into `index::transport`.
+/// Heart stays iroh-free; this module holds the concrete iroh/iroh-blobs/bao
+/// plumbing once, shared by all `ContentIo` implementors (ir-vcs::sync,
+/// index::pack, etc.).
+pub mod transport;
 /// The per-ecosystem spec (ECOSYSTEM-PLAN): name/version/upstream/manifest/search
 /// grammar per `heart::Language`. Folded in from the former standalone
 /// `ecosystem` crate; used only by `index` and `driver` (which composes index),

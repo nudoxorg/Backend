@@ -94,7 +94,10 @@ impl NudoxMcpServer {
 
     /// Build a server over an existing tool set.
     pub fn from_tools(tools: NudoxTools) -> Self {
-        Self { tools, tool_router: Self::tool_router() }
+        Self {
+            tools,
+            tool_router: Self::tool_router(),
+        }
     }
 
     /// The tool set this server exposes.
@@ -121,14 +124,17 @@ Read this before writing a query.",
 
         for pkg in self.tools.do_list_packages().await?.packages {
             resources.push(
-                Resource::new(format!("{PACKAGE_URI_PREFIX}{}", pkg.lineage), pkg.name.clone())
-                    .with_title(pkg.lineage.clone())
-                    .with_description(format!(
-                        "Package {} from the {} ecosystem. Its lineage key `{}` prefixes every \
+                Resource::new(
+                    format!("{PACKAGE_URI_PREFIX}{}", pkg.lineage),
+                    pkg.name.clone(),
+                )
+                .with_title(pkg.lineage.clone())
+                .with_description(format!(
+                    "Package {} from the {} ecosystem. Its lineage key `{}` prefixes every \
 symbol key it declares, and is what `search_symbols`'s `packages` filter accepts.",
-                        pkg.name, pkg.ecosystem, pkg.lineage
-                    ))
-                    .with_mime_type("application/json"),
+                    pkg.name, pkg.ecosystem, pkg.lineage
+                ))
+                .with_mime_type("application/json"),
             );
         }
 
@@ -252,7 +258,9 @@ life of the server, so one call per session is enough."
         &self,
         Parameters(_args): Parameters<GraphSchemaArgs>,
     ) -> Result<Json<SchemaResult>, ErrorData> {
-        Ok(Json(SchemaResult { schema: crate::SCHEMA_SDL.to_owned() }))
+        Ok(Json(SchemaResult {
+            schema: crate::SCHEMA_SDL.to_owned(),
+        }))
     }
 }
 
@@ -264,7 +272,10 @@ life of the server, so one call per session is enough."
 impl ServerHandler for NudoxMcpServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
-            ServerCapabilities::builder().enable_tools().enable_resources().build(),
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
         )
         .with_protocol_version(ProtocolVersion::LATEST)
         .with_server_info(Implementation::from_build_env())
@@ -303,7 +314,9 @@ impl ServerHandler for NudoxMcpServer {
             let body = serde_json::to_string_pretty(&found).map_err(|e| {
                 ErrorData::internal_error(format!("failed to encode package resource: {e}"), None)
             })?;
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(body, &uri)]));
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                body, &uri,
+            )]));
         }
 
         Err(McpError::UnknownResource(uri).into())

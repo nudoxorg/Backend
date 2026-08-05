@@ -53,8 +53,7 @@ use crate::session::{SessionToken, Unauthenticated};
 /// Not configurable in v1 (§L6). Changing this constant is the only way to
 /// make the server reachable off-box, which makes such a change visible in a
 /// diff rather than hidden in a settings file.
-pub const LOOPBACK_BIND: SocketAddr =
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+pub const LOOPBACK_BIND: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 
 /// The HTTP path the MCP endpoint is mounted at.
 pub const MCP_PATH: &str = "/mcp";
@@ -97,10 +96,14 @@ impl McpEndpoint {
     ) -> Result<Self, McpError> {
         let listener = TcpListener::bind(LOOPBACK_BIND)
             .await
-            .map_err(|source| McpError::Bind { addr: LOOPBACK_BIND, source })?;
-        let addr = listener
-            .local_addr()
-            .map_err(|source| McpError::Bind { addr: LOOPBACK_BIND, source })?;
+            .map_err(|source| McpError::Bind {
+                addr: LOOPBACK_BIND,
+                source,
+            })?;
+        let addr = listener.local_addr().map_err(|source| McpError::Bind {
+            addr: LOOPBACK_BIND,
+            source,
+        })?;
 
         debug_assert!(addr.ip().is_loopback(), "LOOPBACK_BIND must bind loopback");
 
@@ -114,9 +117,13 @@ impl McpEndpoint {
                 config,
             );
 
-        let app = Router::new().nest_service(MCP_PATH, mcp).layer(
-            axum::middleware::from_fn_with_state(token.clone(), require_session_token),
-        );
+        let app =
+            Router::new()
+                .nest_service(MCP_PATH, mcp)
+                .layer(axum::middleware::from_fn_with_state(
+                    token.clone(),
+                    require_session_token,
+                ));
 
         let serve_shutdown = shutdown.clone();
         let task = tokio::spawn(async move {
@@ -129,7 +136,12 @@ impl McpEndpoint {
         });
 
         tracing::info!(%addr, "mcp server listening on loopback");
-        Ok(Self { addr, token, shutdown, task })
+        Ok(Self {
+            addr,
+            token,
+            shutdown,
+            task,
+        })
     }
 
     /// The bound address, including the kernel-assigned port.
@@ -177,7 +189,9 @@ impl McpEndpoint {
 
 impl std::fmt::Debug for McpEndpoint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("McpEndpoint").field("addr", &self.addr).finish_non_exhaustive()
+        f.debug_struct("McpEndpoint")
+            .field("addr", &self.addr)
+            .finish_non_exhaustive()
     }
 }
 
@@ -225,7 +239,9 @@ impl ClientConfig {
             headers,
         };
 
-        Self { mcp_servers: [("nudox".to_owned(), entry)].into_iter().collect() }
+        Self {
+            mcp_servers: [("nudox".to_owned(), entry)].into_iter().collect(),
+        }
     }
 }
 
@@ -265,7 +281,10 @@ async fn require_session_token(
 fn unauthorized() -> impl IntoResponse {
     (
         StatusCode::UNAUTHORIZED,
-        [(axum::http::header::WWW_AUTHENTICATE, "Bearer realm=\"nudox\"")],
+        [(
+            axum::http::header::WWW_AUTHENTICATE,
+            "Bearer realm=\"nudox\"",
+        )],
         "missing or invalid session token",
     )
 }
@@ -276,7 +295,14 @@ mod tests {
 
     #[test]
     fn the_bind_address_is_loopback_with_an_ephemeral_port() {
-        assert!(LOOPBACK_BIND.ip().is_loopback(), "must never bind a routable address");
-        assert_eq!(LOOPBACK_BIND.port(), 0, "port 0 asks the kernel for a free port");
+        assert!(
+            LOOPBACK_BIND.ip().is_loopback(),
+            "must never bind a routable address"
+        );
+        assert_eq!(
+            LOOPBACK_BIND.port(),
+            0,
+            "port 0 asks the kernel for a free port"
+        );
     }
 }

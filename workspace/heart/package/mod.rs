@@ -52,14 +52,24 @@ impl PackageName {
         }
         let max = length_limit(ecosystem);
         if original.len() > max {
-            return Err(NameError::NameTooLong { ecosystem, len: original.len(), max });
+            return Err(NameError::NameTooLong {
+                ecosystem,
+                len: original.len(),
+                max,
+            });
         }
         Ok(())
     }
 
-    pub fn canonical(&self) -> &str { &self.canonical }
-    pub fn original(&self) -> &str { &self.original }
-    pub const fn ecosystem(&self) -> Language { self.ecosystem }
+    pub fn canonical(&self) -> &str {
+        &self.canonical
+    }
+    pub fn original(&self) -> &str {
+        &self.original
+    }
+    pub const fn ecosystem(&self) -> Language {
+        self.ecosystem
+    }
 }
 
 /// The per-ecosystem raw-name length ceiling (crates.io caps at 64; npm and

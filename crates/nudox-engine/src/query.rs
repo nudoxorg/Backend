@@ -31,7 +31,7 @@ use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use nudox_graph::{CorpusAdapter, adapter::GraphError};
+use nudox_graph::CorpusAdapter;
 use nudox_store::corpus::Corpus;
 use trustfall::FieldValue;
 
@@ -142,7 +142,9 @@ pub(crate) async fn run_query(
             let _ = tx
                 .send_async(QueryEvent::Failed {
                     generation,
-                    error: EngineError::Chunk { message: e.to_string() },
+                    error: EngineError::Chunk {
+                        message: e.to_string(),
+                    },
                 })
                 .await;
             return;
@@ -165,7 +167,9 @@ pub(crate) async fn run_query(
                 let _ = tx
                     .send_async(QueryEvent::Failed {
                         generation,
-                        error: EngineError::Chunk { message: e.to_string() },
+                        error: EngineError::Chunk {
+                            message: e.to_string(),
+                        },
                     })
                     .await;
                 return;
@@ -174,8 +178,10 @@ pub(crate) async fn run_query(
 
         // Establish column order on first row.
         if columns.is_none() {
-            let cols: Vec<SharedStr> =
-                row_map.keys().map(|k| SharedStr::from(k.as_ref())).collect();
+            let cols: Vec<SharedStr> = row_map
+                .keys()
+                .map(|k| SharedStr::from(k.as_ref()))
+                .collect();
             let cols_arc: Arc<[SharedStr]> = Arc::from(cols.as_slice());
             columns = Some(cols_arc.clone());
 
@@ -208,7 +214,9 @@ pub(crate) async fn run_query(
             })
             .collect();
 
-        let query_row = QueryRow { cells: Arc::from(cells.as_slice()) };
+        let query_row = QueryRow {
+            cells: Arc::from(cells.as_slice()),
+        };
         total += 1;
 
         if tx
@@ -300,8 +308,7 @@ mod tests {
     async fn drain(rx: flume::Receiver<QueryEvent>) -> Vec<QueryEvent> {
         let mut events = Vec::new();
         while let Ok(ev) = rx.recv_async().await {
-            let done =
-                matches!(ev, QueryEvent::Done { .. } | QueryEvent::Failed { .. });
+            let done = matches!(ev, QueryEvent::Done { .. } | QueryEvent::Failed { .. });
             events.push(ev);
             if done {
                 break;

@@ -661,15 +661,24 @@ mod tests {
         let lid = lineage("axum");
 
         // First generation always establishes the designation.
-        assert!(reg.record(&lid, Some("0.7.9".into()), package_with(&lid, &[])).is_some());
+        assert!(
+            reg.record(&lid, Some("0.7.9".into()), package_with(&lid, &[]))
+                .is_some()
+        );
         assert_eq!(&*reg.versions(&lid).current().unwrap().version, "0.7.9");
 
         // A newer one takes it, and the corpus must be repointed.
-        assert!(reg.record(&lid, Some("0.8.1".into()), package_with(&lid, &[])).is_some());
+        assert!(
+            reg.record(&lid, Some("0.8.1".into()), package_with(&lid, &[]))
+                .is_some()
+        );
         assert_eq!(&*reg.versions(&lid).current().unwrap().version, "0.8.1");
 
         // An older late arrival does not, and needs no corpus write.
-        assert!(reg.record(&lid, Some("0.5.0".into()), package_with(&lid, &[])).is_none());
+        assert!(
+            reg.record(&lid, Some("0.5.0".into()), package_with(&lid, &[]))
+                .is_none()
+        );
         assert_eq!(&*reg.versions(&lid).current().unwrap().version, "0.8.1");
     }
 
@@ -685,7 +694,10 @@ mod tests {
 
         // A newer generation lands afterwards; the pin must hold, and no
         // corpus repoint may be requested.
-        assert!(reg.record(&lid, Some("0.9.0".into()), package_with(&lid, &[])).is_none());
+        assert!(
+            reg.record(&lid, Some("0.9.0".into()), package_with(&lid, &[]))
+                .is_none()
+        );
         assert_eq!(&*reg.versions(&lid).current().unwrap().version, "0.7.9");
         // ...but the new generation is still listed.
         assert_eq!(reg.versions(&lid).len(), 3);
@@ -709,7 +721,10 @@ mod tests {
 
         // Same version string, freshly produced view: one generation, not two,
         // and the corpus is holding a stale Arc so it must be repointed.
-        assert!(reg.record(&lid, Some("0.7.9".into()), package_with(&lid, &[])).is_some());
+        assert!(
+            reg.record(&lid, Some("0.7.9".into()), package_with(&lid, &[]))
+                .is_some()
+        );
         assert_eq!(reg.versions(&lid).len(), 1);
     }
 

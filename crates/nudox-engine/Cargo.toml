@@ -14,7 +14,7 @@ default = []
 fixtures = ["nudox-store/fixtures"]
 
 [dependencies]
-nudox-ir = { path = "../nudox-ir" }
+nudox-ir = { path = "../../workspace/ir/model" }
 nudox-store = { path = "../nudox-store" }
 nudox-graph = { path = "../nudox-graph" }
 
@@ -40,9 +40,10 @@ trustfall = { workspace = true }
 
 
 [dev-dependencies]
+nudox-test-support = { path = "../nudox-test-support" }
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }
-nudox-producer = { path = "../nudox-producer" }
-nudox-producer-rust = { path = "../nudox-producer-rust" }
+nudox-producer = { path = "../../workspace/compiler/producer" }
+nudox-producer-rust = { path = "../../workspace/compiler/languages/rust" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 # The packages_subscription integration tests exercise `Engine::start_with_fixtures`

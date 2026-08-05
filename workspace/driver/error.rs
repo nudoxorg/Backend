@@ -7,10 +7,8 @@
 //! projection decides what the client sees.
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use heart::{ConnectError, NameError, PackageId, Retryable};
-
-
 
 /// The single error type every handler and coordination flow returns.
 #[derive(Debug, thiserror::Error)]
@@ -65,74 +63,10 @@ pub enum ServerError {
     Unsupported(#[from] crate::registry::search::usages::UsageQueryError),
 }
 
-/// Why a search query (literal or abstract) was rejected. Lives here (in the
-/// server's error taxonomy) so it can be carried losslessly inside
-/// `BadRequestReason::MalformedQuery` with full `#[from]` chaining, while still
-/// being re-exported from `search::query` for the query-parsing API.
-#[derive(Debug, thiserror::Error)]
-pub enum QueryError {
-	/// The query string was completely empty (no characters at all).
-	#[error("empty query")]
-	Empty,
-
-	/// The query contained only whitespace; nothing left after trim.
-	#[error("query empty after trimming whitespace")]
-	EmptyAfterTrim { raw: String },
-
-	/// Query text exceeded the hard safety limit for literal paste queries.
-	#[error("query length {len} exceeds maximum of {max}")]
-	TooLong {
-		len: usize,
-		max: usize,
-		/// First ~64 chars of the offending query for diagnostics.
-		snippet: String,
-	},
-
-	/// Query text contained a control character (NUL, DEL, etc.).
-	#[error("query contains control character")]
-	ControlCharacter {
-		position: usize,
-		/// Surrounding snippet around the bad char.
-		snippet: String,
-	},
-
-	/// An operator character was used in a context the literal surface does not
-	/// support (future use by a full query parser surface).
-	#[error("invalid operator '{op}' at position {position}")]
-	InvalidOperator {
-		query: String,
-		position: usize,
-		op: char,
-	},
-
-	/// Parentheses (or other grouping) were unbalanced.
-	#[error("unbalanced parentheses in query")]
-	UnbalancedParens { query: String, position: usize },
-
-	/// A field name in a structured query clause is not known to this index.
-	#[error("unknown field '{field}'")]
-	UnknownField {
-		query: String,
-		field: String,
-		position: Option<usize>,
-	},
-
-	/// A literal value supplied for a field had the wrong type for the field's
-	/// schema (e.g. number where string expected).
-	#[error("type mismatch for field '{field}': expected {expected}")]
-	TypeMismatch {
-		query: String,
-		field: String,
-		expected: &'static str,
-		actual: String,
-		position: Option<usize>,
-	},
-
-	/// Other query malformation not covered by the explicit cases above.
-	/// Prefer adding a variant rather than widening this.
-	#[error("malformed query: {detail}")]
-	Malformed { detail: String, query: String },
-}
+/// Re-export the shared query-error vocabulary so `driver/error` callers
+/// keep importing from one place. The errors themselves are now owned by
+/// `heart::client::query` (the transport-free vocabulary).
+pub use heart::client::query::QueryError;
 
 /// Rich, typed reasons a request was rejected as bad (client error, 4xx).
 /// Never uses dynamic format strings in the variant data; all information is
@@ -213,6 +147,10 @@ pub enum BadRequestReason {
     /// reached `Stored` state (no snapshot recorded).
     #[error("package {package} has no recorded snapshot")]
     NoRecordedSnapshot { package: PackageId },
+
+    /// A source-file download contained an empty or traversal path component.
+    #[error("invalid source path {path:?}")]
+    InvalidSourcePath { path: String },
 }
 
 /// Reasons a request was denied by the access policy (403).

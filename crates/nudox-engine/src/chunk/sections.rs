@@ -25,7 +25,10 @@ pub fn sections(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_store::{package::{PackageView, Provenance}, source::fixtures::build_rich_view};
+    use nudox_store::{
+        package::{PackageView, Provenance},
+        source::fixtures::build_rich_view,
+    };
 
     #[test]
     fn sections_non_empty_for_module_with_children() {
@@ -33,9 +36,10 @@ mod tests {
         let pkg = PackageView::build(view, Provenance::TrustedLocal);
 
         // At least one entry should produce at least one section.
-        let any_sections = pkg.view().entries().any(|(intro, entry)| {
-            !sections(intro, entry, pkg.view(), &pkg).is_empty()
-        });
+        let any_sections = pkg
+            .view()
+            .entries()
+            .any(|(intro, entry)| !sections(intro, entry, pkg.view(), &pkg).is_empty());
         assert!(any_sections, "expected at least one entry with sections");
     }
 

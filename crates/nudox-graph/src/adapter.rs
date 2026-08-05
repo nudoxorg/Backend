@@ -43,28 +43,19 @@ use std::sync::{
 use futures::{StreamExt as _, stream};
 use nudox_ir::{
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
+    entry::Visibility,
+    index::Ref,
     kind::{Kind, KindDiscriminant},
     kinds::{FnModifier, Receiver, Type},
-    index::Ref,
-    entry::Visibility,
 };
 use nudox_store::{corpus::Corpus, package::PackageView};
 use thiserror::Error;
 use trustfall::FieldValue;
-use trustfall::provider::{
-    AsVertex,
-    CandidateValue,
-    Typename as _,
-    ContextOutcomeStream,
-    ContextStream,
-    EdgeParameters,
-    ResolveEdgeInfo,
-    ResolveInfo,
-    VertexInfo as _,
-    VertexStream,
-    AsyncAdapter,
-};
 use trustfall::provider::async_helpers;
+use trustfall::provider::{
+    AsVertex, AsyncAdapter, CandidateValue, ContextOutcomeStream, ContextStream, EdgeParameters,
+    ResolveEdgeInfo, ResolveInfo, Typename as _, VertexInfo as _, VertexStream,
+};
 
 use crate::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
 
@@ -121,7 +112,10 @@ pub struct CorpusAdapter {
 impl CorpusAdapter {
     /// Construct an adapter wrapping the given corpus.
     pub fn new(corpus: Corpus) -> Self {
-        Self { corpus, packages_scanned: None }
+        Self {
+            corpus,
+            packages_scanned: None,
+        }
     }
 
     /// Construct an adapter with a probe counter.
@@ -131,7 +125,10 @@ impl CorpusAdapter {
     /// counter is incremented by the number of packages enumerated.  Use this
     /// variant in tests that assert pushdown is happening.
     pub fn new_with_counter(corpus: Corpus, counter: Arc<AtomicUsize>) -> Self {
-        Self { corpus, packages_scanned: Some(counter) }
+        Self {
+            corpus,
+            packages_scanned: Some(counter),
+        }
     }
 
     /// Borrow the underlying corpus handle.
@@ -269,7 +266,7 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
             return Err(GraphError::UnknownProperty {
                 ty: "Symbol".to_string(),
                 prop: property_name.to_string(),
-            })
+            });
         }
     })
 }
@@ -320,13 +317,11 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // Add `@filter(op: "=", value: ["$lineage"])` on `lineage` to
             // narrow, or traverse `Packages → members` instead of `Symbols`
             // when a single-package filter is needed.
-            "Packages" => {
-                Box::pin(
-                    stream::once(async move { corpus.packages().await }).flat_map(|pkgs| {
-                        stream::iter(pkgs.into_iter().map(|p| Ok(Vertex::Package(p))))
-                    }),
-                )
-            }
+            "Packages" => Box::pin(
+                stream::once(async move { corpus.packages().await }).flat_map(|pkgs| {
+                    stream::iter(pkgs.into_iter().map(|p| Ok(Vertex::Package(p))))
+                }),
+            ),
 
             // ── Symbols ──────────────────────────────────────────────────────
             //
@@ -523,15 +518,17 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         })?;
                     Ok(match prop.as_str() {
                         "lineage" => FieldValue::String(pkg.lineage().to_string().into()),
-                        "name" => FieldValue::String(pkg.lineage().name.as_str().to_string().into()),
-                        "ecosystem" => FieldValue::String(
-                            pkg.lineage().ecosystem.as_str().to_string().into(),
-                        ),
+                        "name" => {
+                            FieldValue::String(pkg.lineage().name.as_str().to_string().into())
+                        }
+                        "ecosystem" => {
+                            FieldValue::String(pkg.lineage().ecosystem.as_str().to_string().into())
+                        }
                         _ => {
                             return Err(GraphError::UnknownProperty {
                                 ty: "Package".to_string(),
                                 prop: prop.clone(),
-                            })
+                            });
                         }
                     })
                 })
@@ -548,24 +545,20 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             prop: prop.clone(),
                         })?;
                     let occs = ov.owner.package.view().occurrences_of(ov.owner.intro);
-                    let occ = occs.get(ov.occ_index).ok_or_else(|| {
-                        GraphError::SymbolNotFound(ov.owner.intro)
-                    })?;
+                    let occ = occs
+                        .get(ov.occ_index)
+                        .ok_or_else(|| GraphError::SymbolNotFound(ov.owner.intro))?;
                     Ok(match prop.as_str() {
                         "targetKey" => FieldValue::String(occ.target.to_string().into()),
-                        "referenceKind" => {
-                            FieldValue::String(format!("{:?}", occ.kind).into())
-                        }
-                        "confidence" => {
-                            FieldValue::String(format!("{:?}", occ.confidence).into())
-                        }
+                        "referenceKind" => FieldValue::String(format!("{:?}", occ.kind).into()),
+                        "confidence" => FieldValue::String(format!("{:?}", occ.confidence).into()),
                         "spanStart" => FieldValue::Int64(occ.span.start as i64),
                         "spanEnd" => FieldValue::Int64(occ.span.end as i64),
                         _ => {
                             return Err(GraphError::UnknownProperty {
                                 ty: "Occurrence".to_string(),
                                 prop: prop.clone(),
-                            })
+                            });
                         }
                     })
                 })
@@ -617,11 +610,11 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         .entry(sv.intro)
                         .ok_or(GraphError::SymbolNotFound(sv.intro))?;
                     let type_str = match entry.kind().as_owned_kind() {
-                        Some(Kind::Field(f)) => f
-                            .ty
-                            .as_ref()
-                            .map(|t| format!("{t:?}"))
-                            .unwrap_or_else(|| "?".to_string()),
+                        Some(Kind::Field(f)) => {
+                            f.ty.as_ref()
+                                .map(|t| format!("{t:?}"))
+                                .unwrap_or_else(|| "?".to_string())
+                        }
                         _ => "?".to_string(),
                     };
                     Ok(FieldValue::String(type_str.into()))
@@ -641,9 +634,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         Some(Kind::Trait(t)) => t
                             .supers
                             .iter()
-                            .filter_map(|ty| {
-                                type_to_stable_ref_str(ty, sv.package.lineage())
-                            })
+                            .filter_map(|ty| type_to_stable_ref_str(ty, sv.package.lineage()))
                             .map(|s| FieldValue::String(s.into()))
                             .collect(),
                         _ => vec![],
@@ -726,7 +717,9 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             let intros: Vec<IntroId> =
                                 pkg.view().entries().map(|(id, _)| id).collect();
                             Box::pin(stream::iter(
-                                intros.into_iter().map(move |intro| vertex_for_intro(pkg.clone(), intro)),
+                                intros
+                                    .into_iter()
+                                    .map(move |intro| vertex_for_intro(pkg.clone(), intro)),
                             ))
                         }
                     }
@@ -734,73 +727,69 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             }
 
             // ── Symbol → package ───────────────────────────────────────────
-            (_, "package") => {
-                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "package".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => {
-                            let pkg = sv.package.clone();
-                            Box::pin(stream::once(async move { Ok(Vertex::Package(pkg)) }))
-                        }
+            (_, "package") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                match extract_symbol_vertex(vertex) {
+                    None => {
+                        let e = GraphError::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "package".to_string(),
+                        };
+                        Box::pin(stream::once(async move { Err(e) }))
+                            as VertexStream<'vertex, Result<Vertex, GraphError>>
                     }
-                })
-            }
+                    Some(sv) => {
+                        let pkg = sv.package.clone();
+                        Box::pin(stream::once(async move { Ok(Vertex::Package(pkg)) }))
+                    }
+                }
+            }),
 
             // ── Symbol → members (children) ────────────────────────────────
-            (_, "members") => {
-                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "members".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => {
-                            let children: Vec<IntroId> =
-                                sv.package.view().children_of(sv.intro).to_vec();
-                            let pkg = sv.package.clone();
-                            Box::pin(stream::iter(
-                                children.into_iter().map(move |child| vertex_for_intro(pkg.clone(), child)),
-                            ))
-                        }
+            (_, "members") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                match extract_symbol_vertex(vertex) {
+                    None => {
+                        let e = GraphError::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "members".to_string(),
+                        };
+                        Box::pin(stream::once(async move { Err(e) }))
+                            as VertexStream<'vertex, Result<Vertex, GraphError>>
                     }
-                })
-            }
+                    Some(sv) => {
+                        let children: Vec<IntroId> =
+                            sv.package.view().children_of(sv.intro).to_vec();
+                        let pkg = sv.package.clone();
+                        Box::pin(stream::iter(
+                            children
+                                .into_iter()
+                                .map(move |child| vertex_for_intro(pkg.clone(), child)),
+                        ))
+                    }
+                }
+            }),
 
             // ── Symbol → parent ────────────────────────────────────────────
-            (_, "parent") => {
-                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "parent".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => match sv.package.view().parent_of(sv.intro) {
-                            None => Box::pin(stream::empty()),
-                            Some(parent_intro) => {
-                                let pkg = sv.package.clone();
-                                Box::pin(stream::once(async move {
-                                    vertex_for_intro(pkg, parent_intro)
-                                }))
-                            }
-                        },
+            (_, "parent") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                match extract_symbol_vertex(vertex) {
+                    None => {
+                        let e = GraphError::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "parent".to_string(),
+                        };
+                        Box::pin(stream::once(async move { Err(e) }))
+                            as VertexStream<'vertex, Result<Vertex, GraphError>>
                     }
-                })
-            }
+                    Some(sv) => match sv.package.view().parent_of(sv.intro) {
+                        None => Box::pin(stream::empty()),
+                        Some(parent_intro) => {
+                            let pkg = sv.package.clone();
+                            Box::pin(stream::once(
+                                async move { vertex_for_intro(pkg, parent_intro) },
+                            ))
+                        }
+                    },
+                }
+            }),
 
             // ── Symbol → usages (reverse occurrences across all packages) ──
             (_, "usages") => {
@@ -819,8 +808,8 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             let target = sv.stable_ref();
                             let corpus2 = corpus_clone.clone();
                             Box::pin(
-                                stream::once(async move { corpus2.packages().await })
-                                    .flat_map(move |pkgs| {
+                                stream::once(async move { corpus2.packages().await }).flat_map(
+                                    move |pkgs| {
                                         let target = target.clone();
                                         let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
                                             .into_iter()
@@ -830,10 +819,13 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                                 intros.into_iter().map(move |i| (pkg.clone(), i))
                                             })
                                             .collect();
-                                        stream::iter(pairs.into_iter().map(|(pkg, intro)| {
-                                            vertex_for_intro(pkg, intro)
-                                        }))
-                                    }),
+                                        stream::iter(
+                                            pairs
+                                                .into_iter()
+                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
+                                        )
+                                    },
+                                ),
                             )
                         }
                     }
@@ -857,8 +849,8 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             let target = sv.stable_ref();
                             let corpus2 = corpus_clone.clone();
                             Box::pin(
-                                stream::once(async move { corpus2.packages().await })
-                                    .flat_map(move |pkgs| {
+                                stream::once(async move { corpus2.packages().await }).flat_map(
+                                    move |pkgs| {
                                         let target = target.clone();
                                         let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
                                             .into_iter()
@@ -868,10 +860,13 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                                 intros.into_iter().map(move |i| (pkg.clone(), i))
                                             })
                                             .collect();
-                                        stream::iter(pairs.into_iter().map(|(pkg, intro)| {
-                                            vertex_for_intro(pkg, intro)
-                                        }))
-                                    }),
+                                        stream::iter(
+                                            pairs
+                                                .into_iter()
+                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
+                                        )
+                                    },
+                                ),
                             )
                         }
                     }
@@ -949,29 +944,31 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         }
                     };
                     let corpus2 = corpus_clone.clone();
-                    Box::pin(stream::once(async move {
-                        // Look up the package that owns the target.  If it is
-                        // not loaded, yield nothing (optional edge).
-                        let pkg = match corpus2.package(&target_sr.package).await {
-                            Some(p) => p,
-                            None => return Ok(None),
-                        };
-                        // Build the vertex.  A missing intro in a loaded package
-                        // is a corpus inconsistency; surface it as an error so
-                        // the caller can diagnose it rather than silently losing
-                        // the row.
-                        let v = vertex_for_intro(pkg, target_sr.intro)?;
-                        Ok(Some(v))
-                    })
-                    // `stream::once` yields `Result<Option<Vertex>, GraphError>`.
-                    // We must flatten the `Option` into a zero-or-one element
-                    // stream without losing the `Result` wrapper.
-                    .flat_map(|result| match result {
-                        Err(e) => Box::pin(stream::once(async move { Err(e) }))
-                            as VertexStream<'vertex, Result<Vertex, GraphError>>,
-                        Ok(None) => Box::pin(stream::empty()),
-                        Ok(Some(v)) => Box::pin(stream::once(async move { Ok(v) })),
-                    }))
+                    Box::pin(
+                        stream::once(async move {
+                            // Look up the package that owns the target.  If it is
+                            // not loaded, yield nothing (optional edge).
+                            let pkg = match corpus2.package(&target_sr.package).await {
+                                Some(p) => p,
+                                None => return Ok(None),
+                            };
+                            // Build the vertex.  A missing intro in a loaded package
+                            // is a corpus inconsistency; surface it as an error so
+                            // the caller can diagnose it rather than silently losing
+                            // the row.
+                            let v = vertex_for_intro(pkg, target_sr.intro)?;
+                            Ok(Some(v))
+                        })
+                        // `stream::once` yields `Result<Option<Vertex>, GraphError>`.
+                        // We must flatten the `Option` into a zero-or-one element
+                        // stream without losing the `Result` wrapper.
+                        .flat_map(|result| match result {
+                            Err(e) => Box::pin(stream::once(async move { Err(e) }))
+                                as VertexStream<'vertex, Result<Vertex, GraphError>>,
+                            Ok(None) => Box::pin(stream::empty()),
+                            Ok(Some(v)) => Box::pin(stream::once(async move { Ok(v) })),
+                        }),
+                    )
                 })
             }
 
@@ -992,8 +989,8 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             let target = sv.stable_ref();
                             let corpus2 = corpus_clone.clone();
                             Box::pin(
-                                stream::once(async move { corpus2.packages().await })
-                                    .flat_map(move |pkgs| {
+                                stream::once(async move { corpus2.packages().await }).flat_map(
+                                    move |pkgs| {
                                         let target = target.clone();
                                         let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
                                             .into_iter()
@@ -1003,10 +1000,13 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                                 intros.into_iter().map(move |i| (pkg.clone(), i))
                                             })
                                             .collect();
-                                        stream::iter(pairs.into_iter().map(|(pkg, intro)| {
-                                            vertex_for_intro(pkg, intro)
-                                        }))
-                                    }),
+                                        stream::iter(
+                                            pairs
+                                                .into_iter()
+                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
+                                        )
+                                    },
+                                ),
                             )
                         }
                     }

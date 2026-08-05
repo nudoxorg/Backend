@@ -10,10 +10,10 @@ mod common;
 
 use std::sync::Arc;
 
+use driver::coordination::indexing::Indexer;
+use driver::registry::coordination::{OutboxSeq, SinkKind};
 use heart::ResolutionState;
 use index::ecosystem::PackageNameExt as _;
-use driver::registry::coordination::{OutboxSeq, SinkKind};
-use driver::coordination::indexing::Indexer;
 
 /// The tiny, dependency-free fixture crate one job indexes.
 const FIXTURE_NAME: &str = "either";
@@ -25,13 +25,15 @@ const FIXTURE_VERSION: &str = "1.15.0";
 ///   `Stored { hash }` — the compile phase's terminal proof.
 #[tokio::test]
 async fn indexing_runs_the_compiler() {
-    let Some((server, _data)) = common::assembled_server("indexing_runs_the_compiler").await
-    else {
+    let Some((server, _data)) = common::assembled_server("indexing_runs_the_compiler").await else {
         return;
     };
     let (package, indexer) = ensured_job(&server).await;
 
-    let snapshot = indexer.run_indexing_job(package).await.expect("the pipeline completes");
+    let snapshot = indexer
+        .run_indexing_job(package)
+        .await
+        .expect("the pipeline completes");
 
     let state = server
         .parse_status(package)
@@ -57,12 +59,21 @@ async fn indexing_generates_blob_information() {
         return;
     };
     let (package, indexer) = ensured_job(&server).await;
-    let snapshot = indexer.run_indexing_job(package).await.expect("the pipeline completes");
+    let snapshot = indexer
+        .run_indexing_job(package)
+        .await
+        .expect("the pipeline completes");
 
     // The recomputable content hash *is* the blob information: recomputing it
     // from the persisted manifest reproduces the recorded snapshot exactly.
-    let recomputed = indexer.content_hash(package).await.expect("the stored manifest resolves");
-    assert_eq!(recomputed, snapshot, "blob info persisted content-addressed and reproducible");
+    let recomputed = indexer
+        .content_hash(package)
+        .await
+        .expect("the stored manifest resolves");
+    assert_eq!(
+        recomputed, snapshot,
+        "blob info persisted content-addressed and reproducible"
+    );
 }
 
 /// Indexing updates catalog status; the package index picks it up by polling.
@@ -78,7 +89,10 @@ async fn indexing_updates_catalog_and_package_index_polls() {
         return;
     };
     let (package, indexer) = ensured_job(&server).await;
-    indexer.run_indexing_job(package).await.expect("the pipeline completes");
+    indexer
+        .run_indexing_job(package)
+        .await
+        .expect("the pipeline completes");
 
     // Push half: catalog holds the terminal status.
     let state = server.parse_status(package).await.expect("status answers");
@@ -108,7 +122,10 @@ async fn one_parse_fans_out_to_all_stores() {
         return;
     };
     let (package, indexer) = ensured_job(&server).await;
-    indexer.run_indexing_job(package).await.expect("the pipeline completes");
+    indexer
+        .run_indexing_job(package)
+        .await
+        .expect("the pipeline completes");
 
     for sink in [SinkKind::Text, SinkKind::Vector, SinkKind::Graph] {
         let intents = server
@@ -123,7 +140,10 @@ async fn one_parse_fans_out_to_all_stores() {
     }
     // And the blob store holds the projection they all materialize from.
     let recomputed = indexer.content_hash(package).await;
-    assert!(recomputed.is_ok(), "the shared blob projection is persisted");
+    assert!(
+        recomputed.is_ok(),
+        "the shared blob projection is persisted"
+    );
 }
 
 /// Ensure the fixture package is tracked, returning its id and an indexer.

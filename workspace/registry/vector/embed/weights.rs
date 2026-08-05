@@ -10,9 +10,9 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use crate::vector::core::EmbeddingModel as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::vector::core::EmbeddingModel as _;
 
 /// Where the model artifacts live and what the ONNX file must hash to.
 ///
@@ -21,78 +21,93 @@ use crate::vector::core::EmbeddingModel as _;
 /// 09c §8.3) — an unpinned default in shipping config is a bug (I16).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeightsSpec {
-	/// Directory holding the ONNX file plus the tokenizer sidecar files
-	/// (`tokenizer.json`, `config.json`, `special_tokens_map.json`,
-	/// `tokenizer_config.json`).
-	pub dir: PathBuf,
+    /// Directory holding the ONNX file plus the tokenizer sidecar files
+    /// (`tokenizer.json`, `config.json`, `special_tokens_map.json`,
+    /// `tokenizer_config.json`).
+    pub dir: PathBuf,
 
-	/// The ONNX file name inside `dir`. Canonical: the brand's weights hint
-	/// (`model_quantized.onnx` for JinaCodeV2).
-	pub onnx_file: String,
+    /// The ONNX file name inside `dir`. Canonical: the brand's weights hint
+    /// (`model_quantized.onnx` for JinaCodeV2).
+    pub onnx_file: String,
 
-	/// Pinned sha256 of the ONNX file, if the config pins one.
-	pub expected_sha256: Option<[u8; 32]>,
+    /// Pinned sha256 of the ONNX file, if the config pins one.
+    pub expected_sha256: Option<[u8; 32]>,
 }
 
 impl WeightsSpec {
-	/// A spec for the canonical JinaCodeV2 artifact under `dir`.
-	pub fn jina_code_v2(dir: impl Into<PathBuf>) -> Self {
-		Self {
-			dir: dir.into(),
-			onnx_file: crate::vector::core::JinaCodeV2::weights_hint()
-			.expect("JinaCodeV2 is self-hostable with a pinned ONNX artifact")
-			.file
-			.to_owned(),
-			expected_sha256: None,
-		}
-	}
+    /// A spec for the canonical JinaCodeV2 artifact under `dir`.
+    pub fn jina_code_v2(dir: impl Into<PathBuf>) -> Self {
+        Self {
+            dir: dir.into(),
+            onnx_file: crate::vector::core::JinaCodeV2::weights_hint()
+                .expect("JinaCodeV2 is self-hostable with a pinned ONNX artifact")
+                .file
+                .to_owned(),
+            expected_sha256: None,
+        }
+    }
 
-	/// Pin the expected sha256 of the ONNX file.
-	pub fn with_sha256(mut self, sha256: [u8; 32]) -> Self {
-		self.expected_sha256 = Some(sha256);
-		self
-	}
+    /// Pin the expected sha256 of the ONNX file.
+    pub fn with_sha256(mut self, sha256: [u8; 32]) -> Self {
+        self.expected_sha256 = Some(sha256);
+        self
+    }
 
-	/// Absolute path of the ONNX file.
-	pub fn onnx_path(&self) -> PathBuf { self.dir.join(&self.onnx_file) }
+    /// Absolute path of the ONNX file.
+    pub fn onnx_path(&self) -> PathBuf {
+        self.dir.join(&self.onnx_file)
+    }
 
-	/// Path of a tokenizer sidecar file inside `dir`.
-	pub fn sidecar(&self, name: &str) -> PathBuf { self.dir.join(name) }
+    /// Path of a tokenizer sidecar file inside `dir`.
+    pub fn sidecar(&self, name: &str) -> PathBuf {
+        self.dir.join(name)
+    }
 
-	/// Verify the artifact: exists, readable, and — if pinned — sha256 matches.
-	///
-	/// Streams the file through sha2 (the artifact is ~162 MB; never buffer it
-	/// just to hash). On success returns the *actual* digest so callers can
-	/// report it in `EmbedRuntimeInfo.weights_sha256` and fold it into
-	/// `tool_digest` honestly, even when the config didn't pin one.
-	pub fn verify(&self) -> Result<VerifiedWeights, WeightsError> {
-		let path = self.onnx_path();
-		let file = File::open(&path).map_err(|source| match source.kind() {
-			std::io::ErrorKind::NotFound => WeightsError::MissingWeights { path: path.clone() },
-			_ => WeightsError::Io { path: path.clone(), source },
-		})?;
+    /// Verify the artifact: exists, readable, and — if pinned — sha256 matches.
+    ///
+    /// Streams the file through sha2 (the artifact is ~162 MB; never buffer it
+    /// just to hash). On success returns the *actual* digest so callers can
+    /// report it in `EmbedRuntimeInfo.weights_sha256` and fold it into
+    /// `tool_digest` honestly, even when the config didn't pin one.
+    pub fn verify(&self) -> Result<VerifiedWeights, WeightsError> {
+        let path = self.onnx_path();
+        let file = File::open(&path).map_err(|source| match source.kind() {
+            std::io::ErrorKind::NotFound => WeightsError::MissingWeights { path: path.clone() },
+            _ => WeightsError::Io {
+                path: path.clone(),
+                source,
+            },
+        })?;
 
-		let (sha256, bytes) = stream_sha256(file, &path)?;
+        let (sha256, bytes) = stream_sha256(file, &path)?;
 
-		if let Some(expected) = self.expected_sha256
-			&& expected != sha256
-		{
-			return Err(WeightsError::Sha256Mismatch { path, expected, actual: sha256 });
-		}
+        if let Some(expected) = self.expected_sha256
+            && expected != sha256
+        {
+            return Err(WeightsError::Sha256Mismatch {
+                path,
+                expected,
+                actual: sha256,
+            });
+        }
 
-		Ok(VerifiedWeights { path, sha256, bytes })
-	}
+        Ok(VerifiedWeights {
+            path,
+            sha256,
+            bytes,
+        })
+    }
 }
 
 /// Proof that the on-disk artifact matched its pin (or was hashed unpinned).
 #[derive(Debug, Clone)]
 pub struct VerifiedWeights {
-	/// Absolute path of the verified ONNX file.
-	pub path: PathBuf,
-	/// The actual sha256 of the file contents.
-	pub sha256: [u8; 32],
-	/// File size in bytes.
-	pub bytes: u64,
+    /// Absolute path of the verified ONNX file.
+    pub path: PathBuf,
+    /// The actual sha256 of the file contents.
+    pub sha256: [u8; 32],
+    /// File size in bytes.
+    pub bytes: u64,
 }
 
 /// Why the weights artifact is unusable.
@@ -101,38 +116,50 @@ pub struct VerifiedWeights {
 /// semantic search off, everything else keeps working (09-vector §13.5).
 #[derive(Debug, thiserror::Error)]
 pub enum WeightsError {
-	/// The pinned artifact is not on disk. Disable semantic search; do not
-	/// mark the corpus Ready (09b §16.9).
-	#[error("model weights missing at {path} — semantic search disabled")]
-	MissingWeights { path: PathBuf },
+    /// The pinned artifact is not on disk. Disable semantic search; do not
+    /// mark the corpus Ready (09b §16.9).
+    #[error("model weights missing at {path} — semantic search disabled")]
+    MissingWeights { path: PathBuf },
 
-	/// The artifact exists but does not hash to its pin — corrupt or swapped.
-	/// Never load it (I11): a wrong-weights vector poisons parity and CAS.
-	#[error("weights sha256 mismatch at {path}: expected {}, got {}", hex(expected), hex(actual))]
-	Sha256Mismatch { path: PathBuf, expected: [u8; 32], actual: [u8; 32] },
+    /// The artifact exists but does not hash to its pin — corrupt or swapped.
+    /// Never load it (I11): a wrong-weights vector poisons parity and CAS.
+    #[error(
+        "weights sha256 mismatch at {path}: expected {}, got {}",
+        hex(expected),
+        hex(actual)
+    )]
+    Sha256Mismatch {
+        path: PathBuf,
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
 
-	/// The artifact could not be read.
-	#[error("reading weights at {path}: {source}")]
-	Io { path: PathBuf, source: std::io::Error },
+    /// The artifact could not be read.
+    #[error("reading weights at {path}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 fn stream_sha256(mut file: File, path: &Path) -> Result<([u8; 32], u64), WeightsError> {
-	let mut hasher = Sha256::new();
-	let mut buf = vec![0u8; 1 << 20];
-	let mut total = 0u64;
-	loop {
-		let n = file
-			.read(&mut buf)
-			.map_err(|source| WeightsError::Io { path: path.to_owned(), source })?;
-		if n == 0 {
-			break;
-		}
-		hasher.update(&buf[..n]);
-		total += n as u64;
-	}
-	Ok((hasher.finalize().into(), total))
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut total = 0u64;
+    loop {
+        let n = file.read(&mut buf).map_err(|source| WeightsError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        total += n as u64;
+    }
+    Ok((hasher.finalize().into(), total))
 }
 
 fn hex(bytes: &[u8; 32]) -> String {
-	bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

@@ -12,9 +12,12 @@ use heart::{
 /// system is provider-agnostic.
 #[test]
 fn providers_are_addressed_through_sources() {
-    for backend in
-        [BackendKind::Terminus, BackendKind::Qdrant, BackendKind::Tantivy, BackendKind::Catalog]
-    {
+    for backend in [
+        BackendKind::Terminus,
+        BackendKind::Qdrant,
+        BackendKind::Tantivy,
+        BackendKind::Catalog,
+    ] {
         let source = Source::new("provider".into(), backend);
         assert_eq!(source.backend, backend);
     }
@@ -29,10 +32,11 @@ fn multiple_sources_can_coexist() {
     let overlay_b: SourceId = Id::new_random();
 
     // Handles are irrelevant here — federation is generic over them.
-    let fed = Federation::new(base, ()).with_overlay(overlay_a, ()).with_overlay(overlay_b, ());
+    let fed = Federation::new(base, ())
+        .with_overlay(overlay_a, ())
+        .with_overlay(overlay_b, ());
 
-    let order: Vec<(_, SourceRole)> =
-        fed.in_precedence().map(|s| (s.source, s.role)).collect();
+    let order: Vec<(_, SourceRole)> = fed.in_precedence().map(|s| (s.source, s.role)).collect();
     // Overlays first (in declared order), then the definitive base last.
     assert_eq!(
         order,

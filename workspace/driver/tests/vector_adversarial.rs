@@ -35,19 +35,19 @@ use driver::{registry, vector};
 // §5 — Bakery claim protocol adversarial cases
 // ─────────────────────────────────────────────────────────────────────────────
 
-use heart::{ContentHash, PackageId};
 use driver::bakery::{
-    BakeOutcome, BakedArtifact, BakeRequest, BakeryError, ClaimStore, EdgepackStatus, RECIPE_ID,
+    BakeOutcome, BakeRequest, BakedArtifact, BakeryError, ClaimStore, EdgepackStatus, RECIPE_ID,
     run_bake,
 };
+use heart::{ContentHash, PackageId};
 // The sealed model brands' `id()` etc. come from this trait; bring it in scope
 // so `JinaCodeV2::id()` resolves in the fixtures below.
-use vector::EmbeddingModel;
 use std::collections::HashSet;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use vector::EmbeddingModel;
 
 /// A ClaimStore that always succeeds `try_claim` but fails `mark_ready` once.
 /// Used to test that a `mark_ready` failure surfaces as an `Err` from `run_bake`.
@@ -224,9 +224,9 @@ fn bake_closure_panic_is_not_caught_design_note() {
 /// quant profile, and edge format version.
 #[test]
 fn recipe_fingerprint_sensitivity_each_component() {
-    use vector::shard::{EDGE_FORMAT_VERSION, EdgepackKey};
     use vector::model::{JinaCodeV2, ModelId};
     use vector::quant::{QP1, QuantProfile};
+    use vector::shard::{EDGE_FORMAT_VERSION, EdgepackKey};
 
     let base_request = make_request();
     let base_fp = base_request.recipe_fingerprint();
@@ -251,7 +251,10 @@ fn recipe_fingerprint_sensitivity_each_component() {
 
     // Quant profile change (quantile).
     let mut r = make_request();
-    r.edgepack_key.quant_profile = QuantProfile::ScalarInt8 { quantile: 0.95, always_ram: true };
+    r.edgepack_key.quant_profile = QuantProfile::ScalarInt8 {
+        quantile: 0.95,
+        always_ram: true,
+    };
     assert_ne!(
         base_fp,
         r.recipe_fingerprint(),
@@ -260,7 +263,10 @@ fn recipe_fingerprint_sensitivity_each_component() {
 
     // Quant profile change (always_ram).
     let mut r = make_request();
-    r.edgepack_key.quant_profile = QuantProfile::ScalarInt8 { quantile: 0.99, always_ram: false };
+    r.edgepack_key.quant_profile = QuantProfile::ScalarInt8 {
+        quantile: 0.99,
+        always_ram: false,
+    };
     assert_ne!(
         base_fp,
         r.recipe_fingerprint(),
@@ -298,8 +304,7 @@ fn bake_request_recipe_fingerprint_matches_free_function() {
     let from_free_fn = driver::bakery::recipe_fingerprint::<JinaCodeV2>();
 
     assert_eq!(
-        from_method,
-        from_free_fn,
+        from_method, from_free_fn,
         "BakeRequest::recipe_fingerprint() must equal recipe_fingerprint::<M>() for the same model"
     );
 }
@@ -313,13 +318,21 @@ use driver::search::routing::{
 };
 
 fn inputs(scope: QueryScope, quality: QualityMode) -> RouteInputs {
-    RouteInputs { scope, quality, online: true, claimed_hot: Vec::new() }
+    RouteInputs {
+        scope,
+        quality,
+        online: true,
+        claimed_hot: Vec::new(),
+    }
 }
 
 /// DEEP_STAGE_ONE_LIMIT is pinned at 100 (§20.5: "stage-1 top-100 → server rerank").
 #[test]
 fn deep_stage_one_limit_is_100() {
-    assert_eq!(DEEP_STAGE_ONE_LIMIT, 100, "DEEP_STAGE_ONE_LIMIT must be exactly 100");
+    assert_eq!(
+        DEEP_STAGE_ONE_LIMIT, 100,
+        "DEEP_STAGE_ONE_LIMIT must be exactly 100"
+    );
 }
 
 /// Table cell: (local, online) → collection=None, rerank=false, label="precise-only".
@@ -350,7 +363,11 @@ fn routing_parity_online_index_jina() {
 #[test]
 fn routing_premium_online_index_voyage() {
     let route = route_stage_one(&inputs(QueryScope::Org, QualityMode::Premium));
-    assert_eq!(route.collection, Some(DenseCollection::Premium), "premium → premium collection");
+    assert_eq!(
+        route.collection,
+        Some(DenseCollection::Premium),
+        "premium → premium collection"
+    );
     assert!(!route.rerank, "premium: no rerank");
     assert_eq!(route.source_label, "index-voyage");
 }
@@ -359,7 +376,11 @@ fn routing_premium_online_index_voyage() {
 #[test]
 fn routing_deep_online_premium_plus_rerank() {
     let route = route_stage_one(&inputs(QueryScope::Org, QualityMode::Deep));
-    assert_eq!(route.collection, Some(DenseCollection::Premium), "deep → premium collection");
+    assert_eq!(
+        route.collection,
+        Some(DenseCollection::Premium),
+        "deep → premium collection"
+    );
     assert!(route.rerank, "deep: rerank must be enabled");
     assert_eq!(route.source_label, "index-voyage");
 }
@@ -367,7 +388,12 @@ fn routing_deep_online_premium_plus_rerank() {
 /// Table cell: (any quality, offline) → collection=None, rerank=false, label="precise-only".
 #[test]
 fn routing_offline_all_qualities_precise_only() {
-    for quality in [QualityMode::Local, QualityMode::Parity, QualityMode::Premium, QualityMode::Deep] {
+    for quality in [
+        QualityMode::Local,
+        QualityMode::Parity,
+        QualityMode::Premium,
+        QualityMode::Deep,
+    ] {
         let mut req = inputs(QueryScope::Org, quality);
         req.online = false;
         let route = route_stage_one(&req);
@@ -376,7 +402,10 @@ fn routing_offline_all_qualities_precise_only() {
             "offline {quality:?}: no dense collection"
         );
         assert!(!route.rerank, "offline {quality:?}: no rerank");
-        assert_eq!(route.source_label, "precise-only", "offline {quality:?}: precise-only label");
+        assert_eq!(
+            route.source_label, "precise-only",
+            "offline {quality:?}: precise-only label"
+        );
     }
 }
 
@@ -393,7 +422,10 @@ fn routing_claimed_hot_exclusion_exact() {
 
     assert!(route.excluded.contains(&hot1), "hot1 must be in excluded");
     assert!(route.excluded.contains(&hot2), "hot2 must be in excluded");
-    assert!(!route.excluded.contains(&not_hot), "not_hot must not be in excluded");
+    assert!(
+        !route.excluded.contains(&not_hot),
+        "not_hot must not be in excluded"
+    );
     assert_eq!(route.excluded.len(), 2, "exactly 2 packages in excluded");
 }
 
@@ -429,8 +461,8 @@ fn routing_claimed_hot_dedup_in_exclusion_set() {
 // §7 — Rerank endpoint semantics via mock RerankService
 // ─────────────────────────────────────────────────────────────────────────────
 
+use driver::http::dto::{RERANK_MAX_DOCUMENTS, RerankRequestDto};
 use driver::rerank::{RerankDocument, RerankError, RerankScore, RerankService};
-use driver::http::dto::{RerankRequestDto, RERANK_MAX_DOCUMENTS};
 use std::time::Duration;
 
 /// A mock reranker that exceeds the configured timeout.
@@ -445,10 +477,14 @@ impl RerankService for SlowReranker {
         _documents: &[RerankDocument],
         _top_k: usize,
     ) -> Result<Vec<RerankScore>, RerankError> {
-        Err(RerankError::Timeout { budget: self.budget })
+        Err(RerankError::Timeout {
+            budget: self.budget,
+        })
     }
 
-    fn model_id(&self) -> &str { "test/slow-reranker" }
+    fn model_id(&self) -> &str {
+        "test/slow-reranker"
+    }
 }
 
 /// A mock reranker that returns a successful result immediately.
@@ -461,14 +497,20 @@ impl RerankService for InstantReranker {
         documents: &[RerankDocument],
         top_k: usize,
     ) -> Result<Vec<RerankScore>, RerankError> {
-        let scores = documents.iter().take(top_k).map(|d| RerankScore {
-            id: d.id.clone(),
-            score: 0.5,
-        }).collect();
+        let scores = documents
+            .iter()
+            .take(top_k)
+            .map(|d| RerankScore {
+                id: d.id.clone(),
+                score: 0.5,
+            })
+            .collect();
         Ok(scores)
     }
 
-    fn model_id(&self) -> &str { "test/instant" }
+    fn model_id(&self) -> &str {
+        "test/instant"
+    }
 }
 
 /// A reranker that sleeps past the configured timeout must produce the exact
@@ -478,7 +520,10 @@ impl RerankService for InstantReranker {
 async fn slow_reranker_produces_timeout_variant_not_silent() {
     let budget = Duration::from_millis(1_200);
     let reranker = SlowReranker { budget };
-    let docs = vec![RerankDocument { id: "0".to_owned(), text: "tokio".to_owned() }];
+    let docs = vec![RerankDocument {
+        id: "0".to_owned(),
+        text: "tokio".to_owned(),
+    }];
 
     let result = reranker.rerank("async scheduler", &docs, 1).await;
     let err = result.expect_err("slow reranker must return error");
@@ -499,7 +544,10 @@ fn rerank_request_over_max_documents_rejected() {
     let dto = RerankRequestDto {
         query: "parse TOML".to_owned(),
         documents: (0..=RERANK_MAX_DOCUMENTS)
-            .map(|i| RerankDocument { id: i.to_string(), text: "x".to_owned() })
+            .map(|i| RerankDocument {
+                id: i.to_string(),
+                text: "x".to_owned(),
+            })
             .collect(),
         top_k: std::num::NonZeroU32::new(5).unwrap(),
     };
@@ -524,11 +572,18 @@ fn rerank_request_at_max_documents_accepted() {
     let dto = RerankRequestDto {
         query: "parse TOML".to_owned(),
         documents: (0..RERANK_MAX_DOCUMENTS)
-            .map(|i| RerankDocument { id: i.to_string(), text: "x".to_owned() })
+            .map(|i| RerankDocument {
+                id: i.to_string(),
+                text: "x".to_owned(),
+            })
             .collect(),
         top_k: std::num::NonZeroU32::new(5).unwrap(),
     };
-    assert_eq!(dto.documents.len(), RERANK_MAX_DOCUMENTS, "exactly at limit");
+    assert_eq!(
+        dto.documents.len(),
+        RERANK_MAX_DOCUMENTS,
+        "exactly at limit"
+    );
     assert!(
         dto.validate().is_ok(),
         "exactly RERANK_MAX_DOCUMENTS documents must be accepted"
@@ -543,10 +598,7 @@ fn rerank_request_empty_documents_rejected() {
         documents: vec![],
         top_k: std::num::NonZeroU32::new(5).unwrap(),
     };
-    assert!(
-        dto.validate().is_err(),
-        "empty documents must be rejected"
-    );
+    assert!(dto.validate().is_err(), "empty documents must be rejected");
 }
 
 /// Empty query (whitespace only) → 400.
@@ -554,7 +606,10 @@ fn rerank_request_empty_documents_rejected() {
 fn rerank_request_whitespace_query_rejected() {
     let dto = RerankRequestDto {
         query: "   \t\n".to_owned(),
-        documents: vec![RerankDocument { id: "0".to_owned(), text: "x".to_owned() }],
+        documents: vec![RerankDocument {
+            id: "0".to_owned(),
+            text: "x".to_owned(),
+        }],
         top_k: std::num::NonZeroU32::new(5).unwrap(),
     };
     assert!(
@@ -568,7 +623,10 @@ fn rerank_request_whitespace_query_rejected() {
 fn rerank_request_empty_query_rejected() {
     let dto = RerankRequestDto {
         query: String::new(),
-        documents: vec![RerankDocument { id: "0".to_owned(), text: "x".to_owned() }],
+        documents: vec![RerankDocument {
+            id: "0".to_owned(),
+            text: "x".to_owned(),
+        }],
         top_k: std::num::NonZeroU32::new(5).unwrap(),
     };
     assert!(dto.validate().is_err(), "empty query must be rejected");
@@ -584,9 +642,18 @@ fn rerank_request_duplicate_doc_ids_not_rejected_by_validate() {
     let dto = RerankRequestDto {
         query: "parse TOML config".to_owned(),
         documents: vec![
-            RerankDocument { id: "doc-1".to_owned(), text: "toml::from_str".to_owned() },
-            RerankDocument { id: "doc-1".to_owned(), text: "serde_json::from_str".to_owned() },
-            RerankDocument { id: "doc-2".to_owned(), text: "serde::Deserialize".to_owned() },
+            RerankDocument {
+                id: "doc-1".to_owned(),
+                text: "toml::from_str".to_owned(),
+            },
+            RerankDocument {
+                id: "doc-1".to_owned(),
+                text: "serde_json::from_str".to_owned(),
+            },
+            RerankDocument {
+                id: "doc-2".to_owned(),
+                text: "serde::Deserialize".to_owned(),
+            },
         ],
         top_k: std::num::NonZeroU32::new(3).unwrap(),
     };
@@ -595,7 +662,11 @@ fn rerank_request_duplicate_doc_ids_not_rejected_by_validate() {
         "duplicate ids must not be rejected by DTO validation; the reranker handles them"
     );
     // The documents vec is preserved as-is (no dedup by the DTO layer).
-    assert_eq!(dto.documents.len(), 3, "no dedup in validate(); all 3 entries survive");
+    assert_eq!(
+        dto.documents.len(),
+        3,
+        "no dedup in validate(); all 3 entries survive"
+    );
 }
 
 /// When the reranker times out, the InstantReranker (stand-in for the Stage-1
@@ -613,9 +684,18 @@ fn rerank_timeout_stage1_order_untouched() {
     // Stage-1 documents in order: the caller's ordered list must survive a
     // failed rerank. Simulate: docs pre-ordered by Stage-1 rank.
     let stage1_docs = vec![
-        RerankDocument { id: "rank-1".to_owned(), text: "tokio::spawn".to_owned() },
-        RerankDocument { id: "rank-2".to_owned(), text: "std::thread::spawn".to_owned() },
-        RerankDocument { id: "rank-3".to_owned(), text: "rayon::spawn".to_owned() },
+        RerankDocument {
+            id: "rank-1".to_owned(),
+            text: "tokio::spawn".to_owned(),
+        },
+        RerankDocument {
+            id: "rank-2".to_owned(),
+            text: "std::thread::spawn".to_owned(),
+        },
+        RerankDocument {
+            id: "rank-3".to_owned(),
+            text: "rayon::spawn".to_owned(),
+        },
     ];
 
     // Simulate timeout: the reranker returns RerankError::Timeout.
@@ -630,9 +710,18 @@ fn rerank_timeout_stage1_order_untouched() {
         "timeout variant must carry the exact budget for diagnostics"
     );
     // Stage-1 order preserved: the first doc is still rank-1.
-    assert_eq!(stage1_docs[0].id, "rank-1", "stage-1 rank-1 doc must remain first on timeout");
-    assert_eq!(stage1_docs[1].id, "rank-2", "stage-1 rank-2 doc must remain second on timeout");
-    assert_eq!(stage1_docs[2].id, "rank-3", "stage-1 rank-3 doc must remain third on timeout");
+    assert_eq!(
+        stage1_docs[0].id, "rank-1",
+        "stage-1 rank-1 doc must remain first on timeout"
+    );
+    assert_eq!(
+        stage1_docs[1].id, "rank-2",
+        "stage-1 rank-2 doc must remain second on timeout"
+    );
+    assert_eq!(
+        stage1_docs[2].id, "rank-3",
+        "stage-1 rank-3 doc must remain third on timeout"
+    );
     // No truncation: all 3 docs survive.
     assert_eq!(stage1_docs.len(), 3, "no truncation on rerank timeout");
 }
@@ -663,12 +752,29 @@ fn manifest_pending_serde_snapshot() {
     let v = serde_json::to_value(&dto).expect("serializes");
     let obj = v.as_object().expect("object");
 
-    for field in ["package", "version", "model_id", "recipe_id", "quant_profile",
-                  "edge_format_version", "edgepack_key_digest", "status"] {
-        assert!(obj.contains_key(field), "pending manifest must carry `{field}`");
+    for field in [
+        "package",
+        "version",
+        "model_id",
+        "recipe_id",
+        "quant_profile",
+        "edge_format_version",
+        "edgepack_key_digest",
+        "status",
+    ] {
+        assert!(
+            obj.contains_key(field),
+            "pending manifest must carry `{field}`"
+        );
     }
-    assert!(!obj.contains_key("artifact_id"), "artifact_id absent in pending");
-    assert!(!obj.contains_key("ram_estimate"), "ram_estimate absent in pending");
+    assert!(
+        !obj.contains_key("artifact_id"),
+        "artifact_id absent in pending"
+    );
+    assert!(
+        !obj.contains_key("ram_estimate"),
+        "ram_estimate absent in pending"
+    );
     assert_eq!(obj["status"].as_str().unwrap(), "pending");
 }
 
@@ -688,20 +794,32 @@ fn manifest_ready_serde_snapshot_hex_form() {
     assert!(dto.is_ready());
     let v = serde_json::to_value(&dto).expect("serializes");
 
-    let hex = v["artifact_id"].as_str().expect("artifact_id present when ready");
-    assert_eq!(hex.len(), 64, "blake3 hex is exactly 64 chars; got {}", hex.len());
+    let hex = v["artifact_id"]
+        .as_str()
+        .expect("artifact_id present when ready");
+    assert_eq!(
+        hex.len(),
+        64,
+        "blake3 hex is exactly 64 chars; got {}",
+        hex.len()
+    );
     assert!(
-        hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        hex.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "artifact_id must be lowercase hex; got: {hex}"
     );
     assert_eq!(v["ram_estimate"].as_i64().unwrap(), 16384);
     assert_eq!(v["status"].as_str().unwrap(), "ready");
 
     // edgepack_key_digest is also 64 lowercase hex chars.
-    let key_digest = v["edgepack_key_digest"].as_str().expect("edgepack_key_digest present");
+    let key_digest = v["edgepack_key_digest"]
+        .as_str()
+        .expect("edgepack_key_digest present");
     assert_eq!(key_digest.len(), 64, "edgepack_key_digest must be 64 chars");
     assert!(
-        key_digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        key_digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
         "edgepack_key_digest must be lowercase hex; got: {key_digest}"
     );
 }
@@ -721,9 +839,18 @@ fn manifest_failed_serde_snapshot() {
     let obj = v.as_object().unwrap();
 
     assert_eq!(v["status"].as_str().unwrap(), "failed");
-    assert!(!obj.contains_key("artifact_id"), "artifact_id absent in failed");
-    assert!(!obj.contains_key("ram_estimate"), "ram_estimate absent in failed");
-    assert!(!dto.is_ready(), "failed manifest must not report is_ready()=true");
+    assert!(
+        !obj.contains_key("artifact_id"),
+        "artifact_id absent in failed"
+    );
+    assert!(
+        !obj.contains_key("ram_estimate"),
+        "ram_estimate absent in failed"
+    );
+    assert!(
+        !dto.is_ready(),
+        "failed manifest must not report is_ready()=true"
+    );
 }
 
 /// `quant_profile` token for QP1 must be exactly "scalar-int8/q0.99/ram1".
@@ -732,8 +859,7 @@ fn manifest_failed_serde_snapshot() {
 fn manifest_qp1_quant_profile_token_is_exact() {
     let dto = DepshardManifestDto::from_parts(&test_key(), None);
     assert_eq!(
-        dto.quant_profile,
-        "scalar-int8/q0.99/ram1",
+        dto.quant_profile, "scalar-int8/q0.99/ram1",
         "QP1 quant_profile token must be 'scalar-int8/q0.99/ram1'; got: {}",
         dto.quant_profile
     );
@@ -746,7 +872,10 @@ fn manifest_quant_none_token_is_none() {
     let mut key = test_key();
     key.quant_profile = QuantProfile::None;
     let dto = DepshardManifestDto::from_parts(&key, None);
-    assert_eq!(dto.quant_profile, "none", "QuantProfile::None token must be 'none'");
+    assert_eq!(
+        dto.quant_profile, "none",
+        "QuantProfile::None token must be 'none'"
+    );
 }
 
 /// `RerankRequestDto` is tolerant of unknown fields (serde default: deny unknown
@@ -785,8 +914,8 @@ fn rerank_request_dto_unknown_field_tolerance() {
 // The cache itself is async (moka), so we test the key semantics here, and
 // the eviction behavior in a tokio runtime.
 
-use registry::vector::{EmbedRole, EmbeddingKey};
 use registry::vector::JinaCodeV2;
+use registry::vector::{EmbedRole, EmbeddingKey};
 
 /// Same text under Query and Document roles produces DISTINCT keys.
 /// This means a cache with capacity=1 holding a query embedding for text T
@@ -801,8 +930,7 @@ fn embed_role_split_same_text_two_distinct_keys() {
     let doc_key = EmbeddingKey::new(model.clone(), EmbedRole::Document, text);
 
     assert_ne!(
-        query_key,
-        doc_key,
+        query_key, doc_key,
         "same text under Query vs Document must produce distinct keys"
     );
     // They must hash differently (HashMap relies on this).
@@ -824,8 +952,8 @@ fn embed_role_split_same_text_two_distinct_keys() {
 /// counts as 2 entries toward capacity".
 #[tokio::test]
 async fn cache_capacity_counts_both_roles_separately() {
-    use registry::vector::cache::EmbeddingCache;
     use registry::vector::JinaCodeV2;
+    use registry::vector::cache::EmbeddingCache;
 
     // capacity = 2 (1 query + 1 document for the same text both fit)
     let cache: EmbeddingCache<JinaCodeV2> = EmbeddingCache::new(2);
@@ -841,8 +969,14 @@ async fn cache_capacity_counts_both_roles_separately() {
     // are independently absent initially.
     let miss_q = cache.get(&query_key).await;
     let miss_d = cache.get(&doc_key).await;
-    assert!(miss_q.is_none(), "query key must be a cache miss before insertion");
-    assert!(miss_d.is_none(), "document key must be a cache miss before insertion");
+    assert!(
+        miss_q.is_none(),
+        "query key must be a cache miss before insertion"
+    );
+    assert!(
+        miss_d.is_none(),
+        "document key must be a cache miss before insertion"
+    );
 
     // The structural proof: since the keys differ (proven above), moka treats
     // them as 2 separate entries. A cache with capacity 1 would evict one to
@@ -865,5 +999,8 @@ fn embed_model_id_part_of_key() {
     let key_a = EmbeddingKey::new(model_a, EmbedRole::Query, text);
     let key_b = EmbeddingKey::new(model_b, EmbedRole::Query, text);
 
-    assert_ne!(key_a, key_b, "different model ids must produce distinct keys");
+    assert_ne!(
+        key_a, key_b,
+        "different model ids must produce distinct keys"
+    );
 }

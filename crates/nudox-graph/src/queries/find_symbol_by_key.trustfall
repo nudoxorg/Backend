@@ -1,0 +1,9 @@
+{
+    Symbols {
+        key @filter(op: "=", value: ["$key"]) @output
+        name @output
+        kind @output
+        path @output
+        documentation @output
+    }
+}

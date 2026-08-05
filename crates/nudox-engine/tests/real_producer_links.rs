@@ -186,8 +186,8 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
     );
 
     // Run the full chunk pipeline — this is the real code path the app uses.
-    let (_, sections) = chunk::chunk(router_id, view, &package)
-        .expect("chunk must succeed for the Router entry");
+    let (_, sections) =
+        chunk::chunk(router_id, view, &package).expect("chunk must succeed for the Router entry");
 
     // Collect all InlineRun::Link { Symbol } instances across all prose sections.
     let mut symbol_links: Vec<(String, String)> = Vec::new(); // (text, intro_hex)
@@ -211,10 +211,8 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
                                 target: LinkTarget::Symbol { key },
                             } = run
                             {
-                                symbol_links.push((
-                                    text.to_string(),
-                                    key.intro.to_hex()[..12].to_owned(),
-                                ));
+                                symbol_links
+                                    .push((text.to_string(), key.intro.to_hex()[..12].to_owned()));
                             }
                         }
                     }
@@ -229,10 +227,7 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
                     target: LinkTarget::Symbol { key },
                 } = run
                 {
-                    symbol_links.push((
-                        text.to_string(),
-                        key.intro.to_hex()[..12].to_owned(),
-                    ));
+                    symbol_links.push((text.to_string(), key.intro.to_hex()[..12].to_owned()));
                 }
             }
         }
@@ -263,7 +258,10 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
             .map(|e| e.sym().doc_links.to_vec())
             .unwrap_or_default(),
         sections.len(),
-        sections.iter().map(|s| format!("{:?}", s.section_id())).collect::<Vec<_>>(),
+        sections
+            .iter()
+            .map(|s| format!("{:?}", s.section_id()))
+            .collect::<Vec<_>>(),
     );
 
     // Specifically check that at least one link targets `with_state` (the most

@@ -23,9 +23,16 @@ pub enum NameError {
     #[error("package name is empty")]
     NameEmpty,
     #[error("package name for {ecosystem} is too long (len={len}, max={max})")]
-    NameTooLong { ecosystem: Language, len: usize, max: usize },
+    NameTooLong {
+        ecosystem: Language,
+        len: usize,
+        max: usize,
+    },
     #[error("package name for {ecosystem} contains invalid characters: {invalid_chars:?}")]
-    NameHasInvalidChars { ecosystem: Language, invalid_chars: Vec<char> },
+    NameHasInvalidChars {
+        ecosystem: Language,
+        invalid_chars: Vec<char>,
+    },
 }
 
 /// Wrapper carrying raw input + source for Cargo/npm (both use semver but
@@ -111,19 +118,26 @@ impl TryFrom<(Language, &str)> for PackageVersion {
     fn try_from((ecosystem, raw): (Language, &str)) -> Result<Self, Self::Error> {
         match ecosystem {
             Language::Rust => {
-                let v = semver::Version::parse(raw)
-                    .map_err(|source| CargoVersionError { raw: raw.to_owned(), source })?;
+                let v = semver::Version::parse(raw).map_err(|source| CargoVersionError {
+                    raw: raw.to_owned(),
+                    source,
+                })?;
                 Ok(Self::Cargo(v))
             }
             Language::Typescript => {
-                let v = semver::Version::parse(raw)
-                    .map_err(|source| NpmVersionError { raw: raw.to_owned(), source })?;
+                let v = semver::Version::parse(raw).map_err(|source| NpmVersionError {
+                    raw: raw.to_owned(),
+                    source,
+                })?;
                 Ok(Self::Npm(v))
             }
             Language::Python => {
                 let v = raw
                     .parse::<uv_pep440::Version>()
-                    .map_err(|source| PythonVersionError { raw: raw.to_owned(), source })?;
+                    .map_err(|source| PythonVersionError {
+                        raw: raw.to_owned(),
+                        source,
+                    })?;
                 Ok(Self::Python(v))
             }
             Language::Go => Ok(Self::Go(raw.to_owned())),
@@ -134,8 +148,10 @@ impl TryFrom<(Language, &str)> for PackageVersion {
             // string is always accepted here.
             Language::Cpp => Ok(Self::Cpp(raw.to_owned())),
             Language::Nix => {
-                let v = semver::Version::parse(raw)
-                    .map_err(|source| NixVersionError { raw: raw.to_owned(), source })?;
+                let v = semver::Version::parse(raw).map_err(|source| NixVersionError {
+                    raw: raw.to_owned(),
+                    source,
+                })?;
                 Ok(Self::Nix(v))
             }
         }
@@ -192,7 +208,10 @@ pub enum RegistryOrigin {
     /// there is no registry, identity is the repo slug, and source is acquired
     /// by checking out a rev rather than downloading from a registry.
     Git,
-    Custom { name: SmolStr, url: url::Url },
+    Custom {
+        name: SmolStr,
+        url: url::Url,
+    },
 }
 
 impl RegistryOrigin {

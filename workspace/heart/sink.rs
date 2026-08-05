@@ -7,8 +7,8 @@ use std::future::{Ready, ready};
 
 use serde::{Deserialize, Serialize};
 use tower::{
-    retry::{Policy, Retry},
     Service, ServiceExt,
+    retry::{Policy, Retry},
 };
 
 use crate::error::Retryable;
@@ -60,9 +60,9 @@ where
 
     fn retry(&self, _req: &Req, result: Result<&Res, &E>) -> Option<Ready<RetryTransient>> {
         match result {
-            Err(e) if self.remaining > 0 && e.is_retryable() => {
-                Some(ready(RetryTransient { remaining: self.remaining - 1 }))
-            }
+            Err(e) if self.remaining > 0 && e.is_retryable() => Some(ready(RetryTransient {
+                remaining: self.remaining - 1,
+            })),
             _ => None,
         }
     }
@@ -81,7 +81,8 @@ where
     const DEFAULT_BUDGET: usize = 4;
 
     async fn deliver(&self, payload: Req) -> Result<Self::Response, Self::Error> {
-        self.deliver_with_budget(payload, Self::DEFAULT_BUDGET).await
+        self.deliver_with_budget(payload, Self::DEFAULT_BUDGET)
+            .await
     }
 
     async fn deliver_with_budget(

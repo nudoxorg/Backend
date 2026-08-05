@@ -20,11 +20,11 @@
 //!
 //! # Metrics
 //!
-//! - `compile_lookup_hits_total`
-//! - `compile_lookup_misses_total`
+//! - `compile_lookup_hits` → renders `compile_lookup_hits_total`
+//! - `compile_lookup_misses` → renders `compile_lookup_misses_total`
 
 #[allow(unused_imports)]
-use crate::{registry};
+use crate::registry;
 use std::sync::Arc;
 
 use axum::{Json, extract::State};
@@ -34,9 +34,12 @@ use registry::vector::EmbeddingModel;
 use crate::Server;
 use crate::authz::Principal;
 use crate::error::ServerResult;
-use crate::http::dto::{
-    CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse,
-};
+use crate::http::dto::{CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse};
+
+/// Names passed to the metrics facade. The Prometheus exporter appends
+/// `_total` when rendering counters, so these must not include that suffix.
+pub(crate) const COMPILE_LOOKUP_HITS_METRIC: &str = "compile_lookup_hits";
+pub(crate) const COMPILE_LOOKUP_MISSES_METRIC: &str = "compile_lookup_misses";
 
 /// `POST /v1/compiled/lookup` — batch JobKey → hit/miss + VCS change-set ref.
 #[tracing::instrument(skip_all, fields(key_count = req.job_keys.len()))]
@@ -56,19 +59,19 @@ pub async fn compiled_lookup<M: EmbeddingModel>(
         let raw = key.clone().into_bytes();
         match store.lookup(&raw).await {
             Ok(registry::compiled::LookupResult::Hit(hit)) => {
-                metrics::counter!("compile_lookup_hits_total").increment(1);
+                metrics::counter!(COMPILE_LOOKUP_HITS_METRIC).increment(1);
                 tracing::debug!(job_key = %key, "compiled lookup: hit");
                 results.push(CompiledLookupEntry::hit(key, &hit));
             }
             Ok(registry::compiled::LookupResult::Miss) => {
-                metrics::counter!("compile_lookup_misses_total").increment(1);
+                metrics::counter!(COMPILE_LOOKUP_MISSES_METRIC).increment(1);
                 tracing::debug!(job_key = %key, "compiled lookup: miss");
                 results.push(CompiledLookupEntry::miss(key));
             }
             Err(error) => {
                 // A single-key backend failure should not abort the whole batch.
                 // Downgrade to miss + log; client always falls back to local compile.
-                metrics::counter!("compile_lookup_misses_total").increment(1);
+                metrics::counter!(COMPILE_LOOKUP_MISSES_METRIC).increment(1);
                 tracing::error!(%error, job_key = %key, "compiled store error; treating as miss");
                 results.push(CompiledLookupEntry::miss(key));
             }
@@ -81,4 +84,17 @@ pub async fn compiled_lookup<M: EmbeddingModel>(
         "compiled lookup served"
     );
     Ok(Json(CompiledLookupResponse { results }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{COMPILE_LOOKUP_HITS_METRIC, COMPILE_LOOKUP_MISSES_METRIC};
+
+    #[test]
+    fn compiled_lookup_counter_names_leave_prometheus_suffixing_to_exporter() {
+        assert_eq!(COMPILE_LOOKUP_HITS_METRIC, "compile_lookup_hits");
+        assert_eq!(COMPILE_LOOKUP_MISSES_METRIC, "compile_lookup_misses");
+        assert!(!COMPILE_LOOKUP_HITS_METRIC.ends_with("_total"));
+        assert!(!COMPILE_LOOKUP_MISSES_METRIC.ends_with("_total"));
+    }
 }

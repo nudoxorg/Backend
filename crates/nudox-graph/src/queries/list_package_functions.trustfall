@@ -1,0 +1,15 @@
+{
+    Packages {
+        lineage @filter(op: "=", value: ["$package"])
+        members {
+            ... on Function {
+                key @output
+                name @output
+                path @output
+                documentation @output
+                isAsync @output
+                receiverKind @output
+            }
+        }
+    }
+}

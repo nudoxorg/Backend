@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 
 use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::entry::Entry;
-use ir::index::{Ref, RawRef};
+use ir::index::{RawRef, Ref};
 use ir::kind::Kind;
 use ir::kinds::Type;
 use ir::view::IrView;
@@ -217,7 +217,10 @@ impl ReversePositionIndex {
         // The owner is the first element; `Occurrence` itself has no `owner` field.
         for (owner, occ) in ir.all_occurrences() {
             if occ.confidence.is_graph_worthy() {
-                occ_postings.entry(occ.target.clone()).or_default().push(owner);
+                occ_postings
+                    .entry(occ.target.clone())
+                    .or_default()
+                    .push(owner);
             }
         }
 
@@ -240,7 +243,11 @@ impl ReversePositionIndex {
             list.dedup();
         }
 
-        Self { key, occ_postings, typeref_postings }
+        Self {
+            key,
+            occ_postings,
+            typeref_postings,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -260,7 +267,10 @@ impl ReversePositionIndex {
     /// floor.
     #[inline]
     pub fn usages_of(&self, target: &StableRef) -> &[IntroId] {
-        self.occ_postings.get(target).map(Vec::as_slice).unwrap_or(&[])
+        self.occ_postings
+            .get(target)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     /// The sorted, deduplicated list of entries that carry a load-bearing type
@@ -269,7 +279,10 @@ impl ReversePositionIndex {
     /// Returns an empty slice when no entry mentions `ty`.
     #[inline]
     pub fn mentions_of(&self, ty: &StableRef) -> &[IntroId] {
-        self.typeref_postings.get(ty).map(Vec::as_slice).unwrap_or(&[])
+        self.typeref_postings
+            .get(ty)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
@@ -288,8 +301,8 @@ mod tests {
     use ir::index::Ref;
     use ir::kind::Kind;
     use ir::kinds::{Function, Module, Trait, Type};
-    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
     use ir::view::IrView;
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
 
     // -----------------------------------------------------------------------
     // Local test helpers
@@ -344,7 +357,10 @@ mod tests {
     }
 
     fn default_key() -> ReverseIndexKey {
-        ReverseIndexKey { channel_tip: [0u8; 32], schema_version: SCHEMA_VERSION }
+        ReverseIndexKey {
+            channel_tip: [0u8; 32],
+            schema_version: SCHEMA_VERSION,
+        }
     }
 
     /// Build a minimal [`IrView`] for `pkg_id()` with the given entries and
@@ -374,7 +390,12 @@ mod tests {
         // Oracle occurrence (above floor) → should appear.
         view.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 5)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                RelSpan::new(0, 5),
+            ),
         );
 
         let idx = ReversePositionIndex::build(&view, default_key());
@@ -396,7 +417,12 @@ mod tests {
         // Syntactic only — below floor.
         view.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Syntactic, RelSpan::new(0, 5)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Syntactic,
+                RelSpan::new(0, 5),
+            ),
         );
 
         let idx = ReversePositionIndex::build(&view, default_key());
@@ -416,7 +442,12 @@ mod tests {
         let target = sref_local(2);
         view.add_occurrence(
             intro(1),
-            Occurrence::new(target.clone(), ReferenceKind::TypeReference, Confidence::Suffix, RelSpan::new(0, 3)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::TypeReference,
+                Confidence::Suffix,
+                RelSpan::new(0, 3),
+            ),
         );
         let idx = ReversePositionIndex::build(&view, default_key());
         assert_eq!(idx.usages_of(&target), &[] as &[IntroId]);
@@ -434,7 +465,12 @@ mod tests {
         let target = sref_local(3);
         view.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(0, 4)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Index,
+                RelSpan::new(0, 4),
+            ),
         );
 
         let idx1 = ReversePositionIndex::build(&view, default_key());
@@ -477,7 +513,11 @@ mod tests {
         let base_sr = sref_local(2);
         let idx = ReversePositionIndex::build(&view, default_key());
         let mentions = idx.mentions_of(&base_sr);
-        assert_eq!(mentions, &[intro(3)], "derived trait should appear in mentions of base");
+        assert_eq!(
+            mentions,
+            &[intro(3)],
+            "derived trait should appear in mentions of base"
+        );
     }
 
     /// Multiple owners for the same target are all captured and deduplicated.
@@ -494,16 +534,31 @@ mod tests {
 
         view.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Import, RelSpan::new(0, 3)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Import,
+                RelSpan::new(0, 3),
+            ),
         );
         view.add_occurrence(
             intro(3),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Oracle, RelSpan::new(0, 3)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                RelSpan::new(0, 3),
+            ),
         );
         // Duplicate from owner 2 (should dedup).
         view.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::MethodCall, Confidence::Index, RelSpan::new(10, 15)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::MethodCall,
+                Confidence::Index,
+                RelSpan::new(10, 15),
+            ),
         );
 
         let idx = ReversePositionIndex::build(&view, default_key());

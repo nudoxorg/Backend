@@ -55,8 +55,13 @@ async fn post_status_line(addr: SocketAddr, token: Option<&str>, body: &str) -> 
         len = body.len(),
     );
 
-    let mut stream = TcpStream::connect(addr).await.expect("endpoint must accept connections");
-    stream.write_all(request.as_bytes()).await.expect("request must send");
+    let mut stream = TcpStream::connect(addr)
+        .await
+        .expect("endpoint must accept connections");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("request must send");
     stream.flush().await.expect("request must flush");
 
     let mut buf = Vec::new();
@@ -81,9 +86,19 @@ fn binds_loopback_on_an_ephemeral_port_and_reports_it() {
     });
 
     assert!(addr.ip().is_loopback(), "must bind loopback, bound {addr}");
-    assert_ne!(addr.port(), 0, "the kernel-assigned port must be reported, not 0");
-    assert!(url.starts_with("http://127.0.0.1:"), "url must be loopback: {url}");
-    assert!(url.ends_with(nudox_mcp::MCP_PATH), "url must include the mcp path: {url}");
+    assert_ne!(
+        addr.port(),
+        0,
+        "the kernel-assigned port must be reported, not 0"
+    );
+    assert!(
+        url.starts_with("http://127.0.0.1:"),
+        "url must be loopback: {url}"
+    );
+    assert!(
+        url.ends_with(nudox_mcp::MCP_PATH),
+        "url must include the mcp path: {url}"
+    );
 
     drop(engine);
     drop(runtime);
@@ -170,16 +185,18 @@ fn a_request_with_the_correct_token_is_not_rejected() {
     let status = runtime.block_on(async {
         let token = SessionToken::generate();
         let secret = token.expose().to_owned();
-        let endpoint =
-            McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone()), token)
-                .await
-                .expect("server must bind");
+        let endpoint = McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone()), token)
+            .await
+            .expect("server must bind");
         let status = post_status_line(endpoint.addr(), Some(&secret), INITIALIZE).await;
         endpoint.stop().await;
         status
     });
 
-    assert!(!status.is_empty(), "server must answer an authenticated request");
+    assert!(
+        !status.is_empty(),
+        "server must answer an authenticated request"
+    );
     assert!(
         !status.contains("401"),
         "the correct token must not be rejected, got {status:?}"
@@ -208,8 +225,14 @@ fn the_client_config_snippet_carries_the_live_url_and_token() {
         observed
     });
 
-    assert!(snippet.contains(&url), "snippet must point at the bound url");
-    assert!(snippet.contains(&secret), "snippet must carry the launch token");
+    assert!(
+        snippet.contains(&url),
+        "snippet must point at the bound url"
+    );
+    assert!(
+        snippet.contains(&secret),
+        "snippet must carry the launch token"
+    );
     let parsed: serde_json::Value =
         serde_json::from_str(&snippet).expect("the snippet must be valid JSON");
     assert!(

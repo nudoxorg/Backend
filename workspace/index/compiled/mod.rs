@@ -143,11 +143,11 @@ pub enum LookupResult {
 #[derive(Debug, thiserror::Error)]
 pub enum CompiledError {
     /// A backing-store I/O failure.
-    #[error("compiled store backend error: {0}")]
+    #[error("compiled store backend error")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
 
     /// The stored record could not be decoded.
-    #[error("compiled record codec error: {0}")]
+    #[error("compiled record codec error")]
     Codec(#[source] postcard::Error),
 
     /// A channel name was empty.
@@ -178,7 +178,10 @@ impl heart::Retryable for CompiledError {
 
 /// The object-store path for a compiled record, keyed by job_key hex.
 pub(crate) fn compiled_path(job_key: &[u8; 32]) -> Path {
-    Path::from(format!("compiled/{}", data_encoding::HEXLOWER.encode(job_key)))
+    Path::from(format!(
+        "compiled/{}",
+        data_encoding::HEXLOWER.encode(job_key)
+    ))
 }
 
 // ── ObjectCompiledStore ───────────────────────────────────────────────────────
@@ -213,7 +216,9 @@ impl ObjectCompiledStore {
     ) -> Result<(), CompiledError> {
         let path = compiled_path(job_key.as_bytes());
         let bytes = postcard::to_allocvec(&record).map_err(CompiledError::Codec)?;
-        self.backend.put(&path, PutPayload::from(bytes::Bytes::from(bytes))).await?;
+        self.backend
+            .put(&path, PutPayload::from(bytes::Bytes::from(bytes)))
+            .await?;
         Ok(())
     }
 }

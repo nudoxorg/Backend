@@ -160,10 +160,7 @@ pub(crate) fn package(lineage: &PackageLineageId, entries: Vec<EntrySpec>) -> Ar
 }
 
 /// Shorthand for a package of inert entries named by `(intro, name)` pairs.
-pub(crate) fn package_with(
-    lineage: &PackageLineageId,
-    entries: &[(u8, &str)],
-) -> Arc<PackageView> {
+pub(crate) fn package_with(lineage: &PackageLineageId, entries: &[(u8, &str)]) -> Arc<PackageView> {
     package(
         lineage,
         entries.iter().map(|(n, name)| entry(*n, name)).collect(),

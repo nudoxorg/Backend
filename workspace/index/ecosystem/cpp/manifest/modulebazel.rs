@@ -176,9 +176,7 @@ fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(Stri
                     if is_keyword_assignment(bytes, kw_pos + 4, index) {
                         let value_start = index + 1;
                         let value_end = after.saturating_sub(1).min(bytes.len());
-                        if let Ok(value) =
-                            std::str::from_utf8(&bytes[value_start..value_end])
-                        {
+                        if let Ok(value) = std::str::from_utf8(&bytes[value_start..value_end]) {
                             return Some((value.to_owned(), after));
                         }
                     }
@@ -204,8 +202,7 @@ fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(Stri
                     // Must be followed by optional whitespace then `=`, and
                     // must not be part of a longer identifier.
                     let preceding_ok = index == 0
-                        || !bytes[index - 1].is_ascii_alphanumeric()
-                        && bytes[index - 1] != b'_';
+                        || !bytes[index - 1].is_ascii_alphanumeric() && bytes[index - 1] != b'_';
                     let after_name = index + 4;
                     let following_ok = bytes
                         .get(after_name)
@@ -229,13 +226,17 @@ fn is_keyword_assignment(bytes: &[u8], from: usize, to: usize) -> bool {
         return false;
     }
     let slice = &bytes[from..to];
-    let trimmed = slice.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r');
+    let trimmed = slice
+        .iter()
+        .position(|&b| b != b' ' && b != b'\t' && b != b'\n' && b != b'\r');
     let Some(eq_pos) = trimmed else { return false };
     if slice[eq_pos] != b'=' {
         return false;
     }
     // Everything after `=` must be whitespace.
-    slice[eq_pos + 1..].iter().all(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
+    slice[eq_pos + 1..]
+        .iter()
+        .all(|&b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r')
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -258,8 +259,11 @@ bazel_dep(name = "rules_cc", version = "0.0.9")
 bazel_dep(name = "abseil-cpp", version = "20230802.1")
 "#;
         let manifest = parse(text);
-        let tokens: Vec<&str> =
-            manifest.dependencies.iter().map(|r| r.token.as_str()).collect();
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|r| r.token.as_str())
+            .collect();
         assert!(tokens.contains(&"rules_cc"));
         assert!(tokens.contains(&"abseil-cpp"));
         assert_eq!(
@@ -295,7 +299,8 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
 
     #[test]
     fn parse_call_spanning_multiple_lines() {
-        let text = "bazel_dep(\n    name = \"boringssl\",\n    version = \"0.0.0-20230215-5c22014\",\n)\n";
+        let text =
+            "bazel_dep(\n    name = \"boringssl\",\n    version = \"0.0.0-20230215-5c22014\",\n)\n";
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "boringssl");
@@ -319,8 +324,11 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
     fn parse_crlf_line_endings() {
         let text = "bazel_dep(name = \"sdl\", version = \"2.0\")\r\nbazel_dep(name = \"glfw\", version = \"3.3\")\r\n";
         let manifest = parse(text);
-        let tokens: Vec<&str> =
-            manifest.dependencies.iter().map(|r| r.token.as_str()).collect();
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|r| r.token.as_str())
+            .collect();
         assert!(tokens.contains(&"sdl"));
         assert!(tokens.contains(&"glfw"));
     }

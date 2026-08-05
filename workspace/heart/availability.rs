@@ -137,7 +137,9 @@ mod tests {
     fn ir_availability_accessors() {
         assert!(IrAvailability::Local.is_local());
         assert!(!IrAvailability::Pending.is_local());
-        let remote = IrAvailability::Remote { store_id: sample_store_id() };
+        let remote = IrAvailability::Remote {
+            store_id: sample_store_id(),
+        };
         assert_eq!(remote.remote_store(), Some(sample_store_id()));
         assert_eq!(IrAvailability::Missing.remote_store(), None);
     }
@@ -145,7 +147,9 @@ mod tests {
     #[test]
     fn object_availability_accessors() {
         assert!(ObjectAvailability::Local.is_local());
-        let remote = ObjectAvailability::Remote { store_id: sample_store_id() };
+        let remote = ObjectAvailability::Remote {
+            store_id: sample_store_id(),
+        };
         assert_eq!(remote.remote_store(), Some(sample_store_id()));
         assert_eq!(ObjectAvailability::Pending.remote_store(), None);
     }
@@ -166,8 +170,8 @@ mod tests {
         assert_eq!(
             remote,
             vec![
-                0x01, 0x10, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb,
-                0xcc, 0xdd, 0xee, 0xff, 0x00,
+                0x01, 0x10, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc,
+                0xdd, 0xee, 0xff, 0x00,
             ]
         );
 
@@ -198,7 +202,9 @@ mod tests {
     fn ir_availability_roundtrips() {
         for value in [
             IrAvailability::Local,
-            IrAvailability::Remote { store_id: sample_store_id() },
+            IrAvailability::Remote {
+                store_id: sample_store_id(),
+            },
             IrAvailability::Pending,
             IrAvailability::Missing,
         ] {

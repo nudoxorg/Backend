@@ -60,8 +60,8 @@ fn assert_tagged_repo_enumerates_one_version_per_tag(adapter: &impl GitRepositor
     let (_dir, url) = init_repo(true);
     let slug = "example.test/lib";
 
-    let ops = enumerate_git_versions(adapter, slug, &url, 20250101000000)
-        .expect("enumerate tagged repo");
+    let ops =
+        enumerate_git_versions(adapter, slug, &url, 20250101000000).expect("enumerate tagged repo");
 
     let versions: Vec<&CatalogOp> = ops
         .iter()
@@ -70,7 +70,12 @@ fn assert_tagged_repo_enumerates_one_version_per_tag(adapter: &impl GitRepositor
     assert_eq!(versions.len(), 2, "one op per tag (v1.0.0, v1.1.0)");
 
     for op in versions {
-        if let CatalogOp::UpsertVersion { coordinates, source, .. } = op {
+        if let CatalogOp::UpsertVersion {
+            coordinates,
+            source,
+            ..
+        } = op
+        {
             assert!(
                 coordinates.version_canonical.starts_with("v1."),
                 "tag preserved as canonical: {}",
@@ -107,14 +112,24 @@ fn assert_untagged_repo_yields_one_pseudo_version(adapter: &impl GitRepository) 
         .collect();
     assert_eq!(versions.len(), 1, "exactly one pseudo-version from HEAD");
 
-    if let CatalogOp::UpsertVersion { coordinates, source, .. } = versions[0] {
+    if let CatalogOp::UpsertVersion {
+        coordinates,
+        source,
+        ..
+    } = versions[0]
+    {
         // Go pseudo-version form 1: v0.0.0-<ts>-<hash12>.
         assert!(
-            coordinates.version_canonical.starts_with("v0.0.0-20250101000000-"),
+            coordinates
+                .version_canonical
+                .starts_with("v0.0.0-20250101000000-"),
             "pseudo-version form 1: {}",
             coordinates.version_canonical
         );
-        let rev = source.as_ref().and_then(|s| s.source_rev.as_ref()).expect("HEAD oid");
+        let rev = source
+            .as_ref()
+            .and_then(|s| s.source_rev.as_ref())
+            .expect("HEAD oid");
         assert_eq!(rev.len(), 40);
     }
 }
@@ -131,8 +146,12 @@ fn untagged_repo_yields_one_pseudo_version_from_head_via_grit() {
 
 /// The nonexistent-repo contract, generic over the adapter.
 fn assert_nonexistent_repo_is_typed_error(adapter: &impl GitRepository) {
-    let result =
-        enumerate_git_versions(adapter, "x/y", "file:///nonexistent/repo/path", 20250101000000);
+    let result = enumerate_git_versions(
+        adapter,
+        "x/y",
+        "file:///nonexistent/repo/path",
+        20250101000000,
+    );
     assert!(result.is_err(), "nonexistent repo must be a typed error");
 }
 
@@ -156,18 +175,28 @@ fn grit_and_git_command_adapters_agree_on_fixture_refs() {
     let command_adapter = GitCommandAdapter::default();
 
     let mut grit_refs = grit_adapter.list_remote_refs(&url).expect("grit ls-remote");
-    let mut command_refs = command_adapter.list_remote_refs(&url).expect("git ls-remote");
+    let mut command_refs = command_adapter
+        .list_remote_refs(&url)
+        .expect("git ls-remote");
     grit_refs.sort_by(|a, b| a.reference.cmp(&b.reference));
     command_refs.sort_by(|a, b| a.reference.cmp(&b.reference));
-    assert_eq!(grit_refs, command_refs, "adapters must advertise identical ref sets");
+    assert_eq!(
+        grit_refs, command_refs,
+        "adapters must advertise identical ref sets"
+    );
     assert!(
-        grit_refs.iter().any(|entry| entry.reference.ends_with("^{}")),
+        grit_refs
+            .iter()
+            .any(|entry| entry.reference.ends_with("^{}")),
         "fixture's annotated tag must produce a peeled entry"
     );
 
     let grit_head = grit_adapter.head_object_id(&url).expect("grit HEAD");
     let command_head = command_adapter.head_object_id(&url).expect("git HEAD");
-    assert_eq!(grit_head, command_head, "adapters must agree on the HEAD oid");
+    assert_eq!(
+        grit_head, command_head,
+        "adapters must agree on the HEAD oid"
+    );
     assert!(grit_head.is_some(), "fixture has a HEAD");
 }
 
@@ -204,7 +233,10 @@ fn ext_transport_url_is_refused_and_command_never_runs() {
     let adapter = GitCommandAdapter::default();
     let result = adapter.ls_remote_bytes(&hostile);
 
-    assert!(result.is_err(), "ext:: transport must be refused, got {result:?}");
+    assert!(
+        result.is_err(),
+        "ext:: transport must be refused, got {result:?}"
+    );
     assert!(
         !sentinel.exists(),
         "the injected shell command must never execute (sentinel present)"
@@ -225,7 +257,10 @@ fn option_shaped_url_is_positional_not_a_flag() {
     let adapter = GitCommandAdapter::default();
     let result = adapter.ls_remote_bytes(&hostile);
 
-    assert!(result.is_err(), "option-shaped URL must fail as a repo, not inject a flag");
+    assert!(
+        result.is_err(),
+        "option-shaped URL must fail as a repo, not inject a flag"
+    );
     assert!(!sentinel.exists(), "no --upload-pack command may run");
     let _ = std::fs::remove_file(&sentinel);
 }
@@ -239,11 +274,14 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
     let stem = cpp_stem_id("example.test/repo");
 
     // First tick with no watermark → Moved (records the digest).
-    let first = monitor.tick(stem, "example.test/repo", url, None, 1000, 20250101000000).unwrap();
+    let first = monitor
+        .tick(stem, "example.test/repo", url, None, 1000, 20250101000000)
+        .unwrap();
     let digest = match first {
         TickOutcome::Moved { rev, ops } => {
             assert!(
-                ops.iter().any(|op| matches!(op, CatalogOp::SourceMoved { .. })),
+                ops.iter()
+                    .any(|op| matches!(op, CatalogOp::SourceMoved { .. })),
                 "first observation emits SourceMoved"
             );
             rev
@@ -252,9 +290,20 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
     };
 
     // Second tick with the same digest as last_rev → Unchanged, no ops.
-    let second =
-        monitor.tick(stem, "example.test/repo", url, Some(&digest), 2000, 20250101000000).unwrap();
-    assert!(matches!(second, TickOutcome::Unchanged { .. }), "matching digest is unchanged");
+    let second = monitor
+        .tick(
+            stem,
+            "example.test/repo",
+            url,
+            Some(&digest),
+            2000,
+            20250101000000,
+        )
+        .unwrap();
+    assert!(
+        matches!(second, TickOutcome::Unchanged { .. }),
+        "matching digest is unchanged"
+    );
 }
 
 #[test]
@@ -266,13 +315,24 @@ fn monitor_emits_source_moved_and_versions_on_change() {
 
     // Stale watermark (old digest) → move.
     let outcome = monitor
-        .tick(stem, "example.test/repo", url, Some("stale-digest"), 3000, 20250101000000)
+        .tick(
+            stem,
+            "example.test/repo",
+            url,
+            Some("stale-digest"),
+            3000,
+            20250101000000,
+        )
         .unwrap();
     match outcome {
         TickOutcome::Moved { ops, .. } => {
-            assert!(matches!(ops[0], CatalogOp::SourceMoved { .. }), "SourceMoved leads the batch");
             assert!(
-                ops.iter().any(|op| matches!(op, CatalogOp::UpsertVersion { .. })),
+                matches!(ops[0], CatalogOp::SourceMoved { .. }),
+                "SourceMoved leads the batch"
+            );
+            assert!(
+                ops.iter()
+                    .any(|op| matches!(op, CatalogOp::UpsertVersion { .. })),
                 "move re-enumerates versions"
             );
         }
@@ -287,5 +347,8 @@ fn monitor_git_failure_is_typed_error() {
     let monitor = GitMonitor::new(fake);
     let stem = cpp_stem_id("example.test/gone");
     let result = monitor.tick(stem, "example.test/gone", url, None, 4000, 20250101000000);
-    assert!(result.is_err(), "adapter failure surfaces as a typed MonitorError");
+    assert!(
+        result.is_err(),
+        "adapter failure surfaces as a typed MonitorError"
+    );
 }

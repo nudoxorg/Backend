@@ -63,7 +63,9 @@ impl SessionToken {
     pub fn generate() -> Self {
         let hi: u64 = rand::random();
         let lo: u64 = rand::random();
-        Self { secret: format!("{hi:016x}{lo:016x}") }
+        Self {
+            secret: format!("{hi:016x}{lo:016x}"),
+        }
     }
 
     /// Wrap an externally supplied secret.
@@ -71,7 +73,9 @@ impl SessionToken {
     /// Exists for tests and for a future "reuse the previous token" setting;
     /// production callers should use [`SessionToken::generate`].
     pub fn from_secret(secret: impl Into<String>) -> Self {
-        Self { secret: secret.into() }
+        Self {
+            secret: secret.into(),
+        }
     }
 
     /// The secret in the form a client must present.
@@ -121,7 +125,9 @@ impl<'h> Unauthenticated<'h> {
             .and_then(|v| v.to_str().ok())
             .map(str::trim);
 
-        Self { presented: bearer.or(custom) }
+        Self {
+            presented: bearer.or(custom),
+        }
     }
 
     /// Construct directly from a presented credential (tests, and any future
@@ -224,16 +230,31 @@ mod tests {
         let mut bearer = HeaderMap::new();
         bearer.insert(
             axum::http::header::AUTHORIZATION,
-            token.bearer_header_value().parse().expect("valid header value"),
+            token
+                .bearer_header_value()
+                .parse()
+                .expect("valid header value"),
         );
-        assert!(Unauthenticated::from_headers(&bearer).authenticate(&token).is_ok());
+        assert!(
+            Unauthenticated::from_headers(&bearer)
+                .authenticate(&token)
+                .is_ok()
+        );
 
         let mut custom = HeaderMap::new();
         custom.insert(TOKEN_HEADER, "s3cret".parse().expect("valid header value"));
-        assert!(Unauthenticated::from_headers(&custom).authenticate(&token).is_ok());
+        assert!(
+            Unauthenticated::from_headers(&custom)
+                .authenticate(&token)
+                .is_ok()
+        );
 
         let empty = HeaderMap::new();
-        assert!(Unauthenticated::from_headers(&empty).authenticate(&token).is_err());
+        assert!(
+            Unauthenticated::from_headers(&empty)
+                .authenticate(&token)
+                .is_err()
+        );
     }
 
     #[test]

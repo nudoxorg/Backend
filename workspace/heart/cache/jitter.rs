@@ -11,11 +11,11 @@ use std::time::Duration;
 /// `frac` is clamped to `[0.0, 1.0]`; `frac = 0.0` returns `base` unchanged,
 /// `frac = 0.2` yields ±20%. Use when seeding many entries with the "same" TTL.
 pub fn jittered(base: Duration, frac: f64) -> Duration {
-	let frac = frac.clamp(0.0, 1.0);
-	if frac == 0.0 {
-		return base;
-	}
-	let u: f64 = rand::random::<f64>(); // [0, 1)
-	let factor = 1.0 - frac + u * (2.0 * frac);
-	base.mul_f64(factor.max(0.0))
+    let frac = frac.clamp(0.0, 1.0);
+    if frac == 0.0 {
+        return base;
+    }
+    let u: f64 = rand::random::<f64>(); // [0, 1)
+    let factor = 1.0 - frac + u * (2.0 * frac);
+    base.mul_f64(factor.max(0.0))
 }

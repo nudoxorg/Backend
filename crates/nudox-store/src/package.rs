@@ -32,11 +32,7 @@ use nudox_ir::{
     vocab::Confidence,
 };
 
-use crate::index::{
-    NameIndex,
-    PostingList,
-    posting::PostingListBuilder,
-};
+use crate::index::{NameIndex, PostingList, posting::PostingListBuilder};
 
 // Re-export so callers can name the prior-art helper without importing
 // `workspace/registry/...` directly.
@@ -315,7 +311,11 @@ impl PackageView {
     /// are frozen; wrap the result in `Arc::new` before sharing.
     pub fn build(view: IrView, provenance: Provenance) -> Self {
         let indexes = PackageIndexes::build(&view);
-        Self { view, provenance, indexes }
+        Self {
+            view,
+            provenance,
+            indexes,
+        }
     }
 
     /// The lineage of this package (ecosystem + name).
@@ -353,9 +353,9 @@ mod tests {
         apply::PristineIntroTable,
         change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         entry::{Node, Symbol, Visibility},
+        index::Ref,
         kind::Kind,
         kinds::{Function, Module, Trait, Type},
-        index::Ref,
         view::IrView,
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
@@ -385,8 +385,24 @@ mod tests {
 
     fn make_view() -> IrView {
         let mut table = PristineIntroTable::new();
-        table.insert_live(intro(1), nudox_ir::entry::Entry::new(sym("root"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Module(Module)), None);
-        table.insert_live(intro(2), nudox_ir::entry::Entry::new(sym("my_fn"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Function(Function::builder().build())), Some(intro(1)));
+        table.insert_live(
+            intro(1),
+            nudox_ir::entry::Entry::new(
+                sym("root"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            intro(2),
+            nudox_ir::entry::Entry::new(
+                sym("my_fn"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(intro(1)),
+        );
         IrView::with_package(lineage(), table)
     }
 
@@ -409,16 +425,38 @@ mod tests {
     #[test]
     fn usages_floor_is_confidence_index() {
         let mut table = PristineIntroTable::new();
-        table.insert_live(intro(1), nudox_ir::entry::Entry::new(sym("root"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Module(Module)), None);
-        table.insert_live(intro(2), nudox_ir::entry::Entry::new(sym("caller"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Function(Function::builder().build())), Some(intro(1)));
+        table.insert_live(
+            intro(1),
+            nudox_ir::entry::Entry::new(
+                sym("root"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            intro(2),
+            nudox_ir::entry::Entry::new(
+                sym("caller"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(intro(1)),
+        );
         let mut view = IrView::with_package(lineage(), table);
 
         let target = StableRef::new(lineage(), intro(99));
 
         // Below the floor — must NOT appear.
-        view.add_occurrence(intro(2), Occurrence::new(
-            target.clone(), ReferenceKind::FunctionCall, Confidence::Syntactic, RelSpan::new(0, 5),
-        ));
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Syntactic,
+                RelSpan::new(0, 5),
+            ),
+        );
 
         let indexes = PackageIndexes::build(&view);
         assert_eq!(indexes.usages_of(&target), &[] as &[IntroId]);
@@ -427,14 +465,36 @@ mod tests {
     #[test]
     fn usages_at_index_confidence_appear() {
         let mut table = PristineIntroTable::new();
-        table.insert_live(intro(1), nudox_ir::entry::Entry::new(sym("root"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Module(Module)), None);
-        table.insert_live(intro(2), nudox_ir::entry::Entry::new(sym("caller"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Function(Function::builder().build())), Some(intro(1)));
+        table.insert_live(
+            intro(1),
+            nudox_ir::entry::Entry::new(
+                sym("root"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            intro(2),
+            nudox_ir::entry::Entry::new(
+                sym("caller"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(intro(1)),
+        );
         let mut view = IrView::with_package(lineage(), table);
 
         let target = StableRef::new(lineage(), intro(99));
-        view.add_occurrence(intro(2), Occurrence::new(
-            target.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(0, 5),
-        ));
+        view.add_occurrence(
+            intro(2),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Index,
+                RelSpan::new(0, 5),
+            ),
+        );
 
         let indexes = PackageIndexes::build(&view);
         assert_eq!(indexes.usages_of(&target), &[intro(2)]);
@@ -445,9 +505,33 @@ mod tests {
         let base_intro = intro(10);
         let base_ref = Type::Nominal(Ref::Intro(base_intro));
         let mut table = PristineIntroTable::new();
-        table.insert_live(intro(1), nudox_ir::entry::Entry::new(sym("root"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Module(Module)), None);
-        table.insert_live(intro(10), nudox_ir::entry::Entry::new(sym("BaseTrait"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Trait(Trait::builder().build())), Some(intro(1)));
-        table.insert_live(intro(11), nudox_ir::entry::Entry::new(sym("DerivedTrait"), Node::build(None::<nudox_ir::index::RawRef>, []), Kind::Trait(Trait::builder().supers([base_ref]).build())), Some(intro(1)));
+        table.insert_live(
+            intro(1),
+            nudox_ir::entry::Entry::new(
+                sym("root"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            intro(10),
+            nudox_ir::entry::Entry::new(
+                sym("BaseTrait"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Trait(Trait::builder().build()),
+            ),
+            Some(intro(1)),
+        );
+        table.insert_live(
+            intro(11),
+            nudox_ir::entry::Entry::new(
+                sym("DerivedTrait"),
+                Node::build(None::<nudox_ir::index::RawRef>, []),
+                Kind::Trait(Trait::builder().supers([base_ref]).build()),
+            ),
+            Some(intro(1)),
+        );
 
         let view = IrView::with_package(lineage(), table);
         let indexes = PackageIndexes::build(&view);

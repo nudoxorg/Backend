@@ -87,10 +87,9 @@ impl McpError {
                 rmcp::ErrorData::invalid_params(message, None)
             }
             Self::UnknownResource(_) => rmcp::ErrorData::resource_not_found(message, None),
-            Self::Engine(_)
-            | Self::TruncatedStream
-            | Self::Bind { .. }
-            | Self::Serve(_) => rmcp::ErrorData::internal_error(message, None),
+            Self::Engine(_) | Self::TruncatedStream | Self::Bind { .. } | Self::Serve(_) => {
+                rmcp::ErrorData::internal_error(message, None)
+            }
         }
     }
 }

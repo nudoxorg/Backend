@@ -16,7 +16,10 @@ fn unknown_target_variant_is_rejected() {
         "target": "Nonsense",
         "text": "x"
     }));
-    assert!(result.is_err(), "unknown target variant must not deserialize");
+    assert!(
+        result.is_err(),
+        "unknown target variant must not deserialize"
+    );
 }
 
 /// A body with only `target` and `text` must deserialize; all other fields
@@ -30,7 +33,10 @@ fn minimal_body_deserializes_with_defaults() {
     .expect("minimal body must deserialize");
     assert_eq!(query.page.limit, 30, "default page limit is 30");
     assert_eq!(query.mode, QueryMode::Precise, "default mode is Precise");
-    assert!(query.scope.ecosystems.is_empty(), "default scope has no ecosystem filter");
+    assert!(
+        query.scope.ecosystems.is_empty(),
+        "default scope has no ecosystem filter"
+    );
 }
 
 /// `Usages` without the required `of` field must be rejected — a handler
@@ -41,7 +47,10 @@ fn usages_target_requires_of() {
         "target": { "Usages": {} },
         "text": ""
     }));
-    assert!(missing_of.is_err(), "Usages without `of` must not deserialize");
+    assert!(
+        missing_of.is_err(),
+        "Usages without `of` must not deserialize"
+    );
 
     // A well-formed reference does parse.
     let ok: Query = serde_json::from_value(json!({
@@ -63,7 +72,10 @@ fn usages_target_rejects_malformed_stable_reference() {
         "target": { "Usages": { "of": "not-a-ref" } },
         "text": ""
     }));
-    assert!(result.is_err(), "malformed stable reference must not deserialize");
+    assert!(
+        result.is_err(),
+        "malformed stable reference must not deserialize"
+    );
 }
 
 /// A package path with slashes in the stem is valid (REGISTRYLESS-PLAN RL-10):
@@ -104,6 +116,13 @@ fn cursor_is_opaque_string() {
         "page": { "limit": 5, "cursor": "abc" }
     }))
     .expect("page with opaque cursor must deserialize");
-    assert_eq!(query.page.cursor, Some("abc".to_string()), "cursor must round-trip verbatim");
-    assert_eq!(query.page.limit, 5, "limit must be taken from the wire value");
+    assert_eq!(
+        query.page.cursor,
+        Some("abc".to_string()),
+        "cursor must round-trip verbatim"
+    );
+    assert_eq!(
+        query.page.limit, 5,
+        "limit must be taken from the wire value"
+    );
 }

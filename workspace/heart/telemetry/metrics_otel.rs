@@ -18,19 +18,25 @@ use super::config::TelemetryConfig;
 /// Build the OTLP metrics exporter + periodic-reader `SdkMeterProvider`, same
 /// endpoint/protocol/timeout discipline as the tracer provider.
 pub(crate) fn build_provider(
-	config: &TelemetryConfig,
-	resource: Resource,
+    config: &TelemetryConfig,
+    resource: Resource,
 ) -> anyhow::Result<SdkMeterProvider> {
-	let exporter = opentelemetry_otlp::MetricExporter::builder()
-		.with_http()
-		.with_endpoint(format!("{}/v1/metrics", config.otlp_endpoint.trim_end_matches('/')))
-		.with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
-		.with_timeout(config.export_timeout)
-		.build()?;
+    let exporter = opentelemetry_otlp::MetricExporter::builder()
+        .with_http()
+        .with_endpoint(format!(
+            "{}/v1/metrics",
+            config.otlp_endpoint.trim_end_matches('/')
+        ))
+        .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+        .with_timeout(config.export_timeout)
+        .build()?;
 
-	let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter).build();
+    let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(exporter).build();
 
-	let provider = SdkMeterProvider::builder().with_reader(reader).with_resource(resource).build();
+    let provider = SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(resource)
+        .build();
 
-	Ok(provider)
+    Ok(provider)
 }

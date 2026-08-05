@@ -268,7 +268,10 @@ impl std::fmt::Debug for NudoxTools {
 impl NudoxTools {
     /// Build the tool set over an already-started engine.
     pub fn new(engine: EngineHandle) -> Self {
-        Self { engine, generation: std::sync::Arc::new(AtomicU64::new(1)) }
+        Self {
+            engine,
+            generation: std::sync::Arc::new(AtomicU64::new(1)),
+        }
     }
 
     /// The engine this tool set views.
@@ -288,10 +291,7 @@ impl NudoxTools {
 
 impl NudoxTools {
     /// `search_symbols`, minus the MCP wrapping.
-    pub async fn do_search(
-        &self,
-        args: SearchSymbolsArgs,
-    ) -> Result<SearchResult, McpError> {
+    pub async fn do_search(&self, args: SearchSymbolsArgs) -> Result<SearchResult, McpError> {
         let limit = clamp_limit(args.limit);
 
         let kinds = match &args.kinds {
@@ -311,7 +311,11 @@ impl NudoxTools {
             }
         };
 
-        let query = SearchQuery { text: args.query, kinds, limit };
+        let query = SearchQuery {
+            text: args.query,
+            kinds,
+            limit,
+        };
         let generation = self.next_gen();
         // Bind the handle: dropping it cancels the stream mid-drain.
         let (_stream, rx) = self.engine.search(query, generation);
@@ -382,7 +386,10 @@ impl NudoxTools {
 
         let truncated = rows.len() > limit;
         rows.truncate(limit);
-        Ok(SearchResult { hits: rows, truncated })
+        Ok(SearchResult {
+            hits: rows,
+            truncated,
+        })
     }
 
     /// `get_symbol`, minus the MCP wrapping.
@@ -422,10 +429,7 @@ impl NudoxTools {
     }
 
     /// `find_usages`, minus the MCP wrapping.
-    pub async fn do_find_usages(
-        &self,
-        args: FindUsagesArgs,
-    ) -> Result<UsagesResult, McpError> {
+    pub async fn do_find_usages(&self, args: FindUsagesArgs) -> Result<UsagesResult, McpError> {
         // Validate the key even though the query plane takes it as a string:
         // a malformed key should be `invalid_params`, not an empty result set.
         args.key.to_wire()?;
@@ -454,14 +458,20 @@ impl NudoxTools {
             })
             .collect();
 
-        Ok(UsagesResult { usages, truncated: result.truncated })
+        Ok(UsagesResult {
+            usages,
+            truncated: result.truncated,
+        })
     }
 
     /// `list_packages`, minus the MCP wrapping.
     pub async fn do_list_packages(&self) -> Result<PackagesResult, McpError> {
         let result = self
             .run_query(
-                GraphQuery { query: PACKAGES_QUERY.to_owned(), args: BTreeMap::new() },
+                GraphQuery {
+                    query: PACKAGES_QUERY.to_owned(),
+                    args: BTreeMap::new(),
+                },
                 MAX_LIMIT,
             )
             .await?;
@@ -480,10 +490,7 @@ impl NudoxTools {
     }
 
     /// `graph_query`, minus the MCP wrapping.
-    pub async fn do_graph_query(
-        &self,
-        args: GraphQueryArgs,
-    ) -> Result<QueryResult, McpError> {
+    pub async fn do_graph_query(&self, args: GraphQueryArgs) -> Result<QueryResult, McpError> {
         if args.query.trim().is_empty() {
             return Err(McpError::InvalidArgument {
                 argument: "query",
@@ -492,7 +499,10 @@ impl NudoxTools {
         }
         let limit = clamp_limit(args.limit);
         self.run_query(
-            GraphQuery { query: args.query, args: args.args.unwrap_or_default() },
+            GraphQuery {
+                query: args.query,
+                args: args.args.unwrap_or_default(),
+            },
             limit,
         )
         .await
@@ -540,7 +550,11 @@ impl NudoxTools {
             return Err(McpError::TruncatedStream);
         }
 
-        Ok(QueryResult { columns, rows, truncated })
+        Ok(QueryResult {
+            columns,
+            rows,
+            truncated,
+        })
     }
 }
 
@@ -597,7 +611,10 @@ mod tests {
             "Module", "Record", "Field", "Function", "Alias", "Trait", "Impl", "Enum", "Variant",
             "Const", "Static", "Reexport", "Param",
         ] {
-            assert!(names.iter().any(|n| n == expected), "missing kind {expected}");
+            assert!(
+                names.iter().any(|n| n == expected),
+                "missing kind {expected}"
+            );
         }
     }
 
@@ -620,9 +637,17 @@ mod tests {
     #[test]
     fn columns_are_addressed_by_name_not_position() {
         let columns = vec!["name".to_owned(), "key".to_owned()];
-        let row = QueryResultRow { cells: vec!["Deserializer".into(), "cargo:serde#ab".into()] };
-        assert_eq!(column(&columns, &row, "key").as_deref(), Some("cargo:serde#ab"));
-        assert_eq!(column(&columns, &row, "name").as_deref(), Some("Deserializer"));
+        let row = QueryResultRow {
+            cells: vec!["Deserializer".into(), "cargo:serde#ab".into()],
+        };
+        assert_eq!(
+            column(&columns, &row, "key").as_deref(),
+            Some("cargo:serde#ab")
+        );
+        assert_eq!(
+            column(&columns, &row, "name").as_deref(),
+            Some("Deserializer")
+        );
         assert_eq!(column(&columns, &row, "absent"), None);
     }
 

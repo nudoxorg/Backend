@@ -17,6 +17,7 @@
 
 use std::io;
 
+use postcard;
 use thiserror::Error;
 
 /// A content-addressed item store: read/write/probe/verify items keyed by their
@@ -30,32 +31,32 @@ use thiserror::Error;
 /// The sync driver enforces the ordering; implementations must still refuse to
 /// write bytes they can detect are inconsistent with the id.
 pub trait ContentIo: Send + Sync {
-	/// The content-address id — the item's trust anchor (e.g. a pijul change
-	/// hash, an NDPK member hash). It is recomputable from the item bytes, so a
-	/// correct [`verify`](ContentIo::verify) needs nothing but `(id, bytes)`.
-	type Id: Clone + core::fmt::Display;
+    /// The content-address id — the item's trust anchor (e.g. a pijul change
+    /// hash, an NDPK member hash). It is recomputable from the item bytes, so a
+    /// correct [`verify`](ContentIo::verify) needs nothing but `(id, bytes)`.
+    type Id: Clone + core::fmt::Display;
 
-	/// Read the raw bytes of the item for `id`.
-	fn read(&self, id: &Self::Id) -> io::Result<Vec<u8>>;
+    /// Read the raw bytes of the item for `id`.
+    fn read(&self, id: &Self::Id) -> io::Result<Vec<u8>>;
 
-	/// Write raw item bytes. The caller guarantees [`verify`](ContentIo::verify)
-	/// already succeeded for `(id, bytes)`.
-	fn write(&self, id: &Self::Id, bytes: &[u8]) -> io::Result<()>;
+    /// Write raw item bytes. The caller guarantees [`verify`](ContentIo::verify)
+    /// already succeeded for `(id, bytes)`.
+    fn write(&self, id: &Self::Id, bytes: &[u8]) -> io::Result<()>;
 
-	/// Whether the item is already present (idempotent re-sync skips it).
-	fn has(&self, id: &Self::Id) -> io::Result<bool>;
+    /// Whether the item is already present (idempotent re-sync skips it).
+    fn has(&self, id: &Self::Id) -> io::Result<bool>;
 
-	/// Verify `bytes` are consistent with `id` — the full content-address check
-	/// for this item kind (e.g. libpijul change deserialize + hash, or BLAKE3 /
-	/// bao). MUST be sufficient on its own: a passing verify is the sole license
-	/// to write.
-	fn verify(&self, id: &Self::Id, bytes: &[u8]) -> Result<(), VerifyError>;
+    /// Verify `bytes` are consistent with `id` — the full content-address check
+    /// for this item kind (e.g. libpijul change deserialize + hash, or BLAKE3 /
+    /// bao). MUST be sufficient on its own: a passing verify is the sole license
+    /// to write.
+    fn verify(&self, id: &Self::Id, bytes: &[u8]) -> Result<(), VerifyError>;
 
-	/// Hard per-item byte cap applied *before* writing untrusted bytes. Declared
-	/// sizes from an announcement are never trusted — only the bytes received.
-	fn max_item_bytes(&self) -> usize {
-		64 * 1024 * 1024
-	}
+    /// Hard per-item byte cap applied *before* writing untrusted bytes. Declared
+    /// sizes from an announcement are never trusted — only the bytes received.
+    fn max_item_bytes(&self) -> usize {
+        64 * 1024 * 1024
+    }
 }
 
 /// Applies a fetched, dependency-ordered set of items to a durable target and
@@ -65,79 +66,81 @@ pub trait ContentIo: Send + Sync {
 /// is an install into the pack store. Called only after every item in the set
 /// has been fetched, verified, and written through [`ContentIo`].
 pub trait ApplyHook: Send + Sync {
-	/// The item id type (matches the paired [`ContentIo::Id`]).
-	type Id;
-	/// What the items are applied to (a channel ref, a pack target, …).
-	type Target;
-	/// The resulting tip after applying the ordered set.
-	type Tip;
+    /// The item id type (matches the paired [`ContentIo::Id`]).
+    type Id;
+    /// What the items are applied to (a channel ref, a pack target, …).
+    type Target;
+    /// The resulting tip after applying the ordered set.
+    type Tip;
 
-	/// Apply `ids` (in dependency order) to `target`, returning the new tip.
-	fn apply(&self, target: &Self::Target, ids: &[Self::Id]) -> Result<Self::Tip, SyncError>;
+    /// Apply `ids` (in dependency order) to `target`, returning the new tip.
+    fn apply(&self, target: &Self::Target, ids: &[Self::Id]) -> Result<Self::Tip, SyncError>;
 }
 
 /// An item's bytes did not verify against its content-address id.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum VerifyError {
-	/// A content-address hex id had the wrong length.
-	#[error("expected {expected}-char id, got {got} chars")]
-	InvalidLength { expected: usize, got: usize },
+    /// A content-address hex id had the wrong length.
+    #[error("content-address id has invalid length")]
+    InvalidLength { expected: usize, got: usize },
 
-	/// A hex id contained an out-of-alphabet character.
-	#[error("invalid character in content-address id: {0:?}")]
-	InvalidChar(char),
+    /// A hex id contained an out-of-alphabet character.
+    #[error("invalid hex character in content-address id")]
+    InvalidChar(char),
 
-	/// The bytes did not hash to the announced id (the core content-address
-	/// failure). Ids are rendered to strings so this stays item-kind-agnostic.
-	#[error("hash mismatch: expected {expected}, computed {got}")]
-	HashMismatch { expected: String, got: String },
+    /// The bytes did not hash to the announced id (the core content-address
+    /// failure). Ids are rendered to strings so this stays item-kind-agnostic.
+    #[error("hash mismatch")]
+    HashMismatch { expected: String, got: String },
 
-	/// The item bytes exceeded the store's per-item cap.
-	#[error("item {id} is too large: {size} bytes (max {max})")]
-	TooLarge { id: String, size: usize, max: usize },
+    /// The item bytes exceeded the store's per-item cap.
+    #[error("item exceeds per-item byte cap")]
+    TooLarge { id: String, size: usize, max: usize },
 }
 
 /// A sync operation failed.
 #[derive(Debug, Error)]
 pub enum SyncError {
-	/// An item failed verification. NOTHING is written or applied past this.
-	#[error("verification failed: {0}")]
-	VerificationFailed(#[from] VerifyError),
+    /// An item failed verification. NOTHING is written or applied past this.
+    #[error(transparent)]
+    VerificationFailed(#[from] VerifyError),
 
-	/// The transport (QUIC / iroh / …) failed. Kept as a string so no transport
-	/// type leaks into the generic seam.
-	#[error("transport error: {0}")]
-	Transport(String),
+    /// The transport (QUIC / iroh / …) failed.
+    #[error("transport error")]
+    Transport(#[source] io::Error),
 
-	/// A single item exceeded the configured size cap before it could be written.
-	#[error("item {id} exceeds size cap: {size} > {max} bytes")]
-	ItemTooLarge { id: String, size: usize, max: usize },
+    /// A single item exceeded the configured size cap before it could be written.
+    #[error("item exceeds size cap")]
+    ItemTooLarge { id: String, size: usize, max: usize },
 
-	/// Could not connect to the remote peer.
-	#[error("connection to remote failed")]
-	ConnectionFailed,
+    /// Could not connect to the remote peer.
+    #[error("connection to remote failed")]
+    ConnectionFailed,
 
-	/// The operation timed out.
-	#[error("sync timed out")]
-	Timeout,
+    /// The operation timed out.
+    #[error("sync timed out")]
+    Timeout,
 
-	/// The remote peer explicitly refused the sync.
-	#[error("remote refused: {0}")]
-	RemoteRefused(String),
+    /// The remote peer explicitly refused the sync. Reason is stored as a String
+    /// so no transport type leaks into the generic seam; it is domain data, not
+    /// a causal error.
+    #[error("remote peer refused the sync")]
+    RemoteRefused(String),
 
-	/// A local [`ContentIo`] I/O error.
-	#[error("io error: {0}")]
-	Io(#[from] io::Error),
+    /// A local [`ContentIo`] I/O error.
+    #[error(transparent)]
+    Io(#[from] io::Error),
 
-	/// An announcement / message could not be (de)serialized.
-	#[error("codec error: {0}")]
-	Codec(String),
+    /// An announcement / message could not be (de)serialized.
+    #[error("codec error")]
+    Codec(#[source] postcard::Error),
 
-	/// The sender announced an item it does not actually hold.
-	#[error("sender is missing announced item {0}")]
-	MissingItem(String),
+    /// The sender announced an item it does not actually hold.
+    #[error("sender missing announced item")]
+    MissingItem(String),
 
-	/// An implementation-specific rejection carrying the essential detail.
-	#[error("sync error: {0}")]
-	Other(String),
+    /// An implementation-specific rejection. Detail is domain data, not a
+    /// causal error (the seamless transport-agnostic contract).
+    #[error("sync error")]
+    Other(String),
 }

@@ -48,9 +48,7 @@ use tokio::task;
 
 use crate::{
     package::{PackageView, Provenance},
-    source::{
-        IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, SourceError,
-    },
+    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, SourceError},
 };
 
 // ---------------------------------------------------------------------------
@@ -116,7 +114,9 @@ pub struct ProducerRegistry {
 impl ProducerRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self { entries: std::collections::HashMap::new() }
+        Self {
+            entries: std::collections::HashMap::new(),
+        }
     }
 
     /// Create a registry pre-loaded with `nudox-producer-rust` as the pilot.
@@ -143,7 +143,9 @@ impl ProducerRegistry {
     {
         self.entries.insert(
             language,
-            ProducerEntry { runner: Box::new(TypedRunner(producer)) },
+            ProducerEntry {
+                runner: Box::new(TypedRunner(producer)),
+            },
         );
     }
 
@@ -160,12 +162,13 @@ impl ProducerRegistry {
         src: &PackageSource,
         lineage: &PackageLineageId,
     ) -> Result<nudox_ir::apply::PristineIntroTable, SourceError> {
-        let entry = self.entries.get(&language).ok_or_else(|| {
-            SourceError::ToolchainMissing {
+        let entry = self
+            .entries
+            .get(&language)
+            .ok_or_else(|| SourceError::ToolchainMissing {
                 language,
                 package: lineage.clone(),
-            }
-        })?;
+            })?;
 
         entry.runner.run(src, lineage).map_err(|err| match &err {
             ProducerError::OracleSpawn { .. } | ProducerError::OracleExit { .. } => {
@@ -328,9 +331,7 @@ impl IrSource for ProducerSource {
         });
 
         // Flatten each `Vec<Result<LoadEvent, _>>` into individual items.
-        event_stream
-            .flat_map(|events| stream::iter(events))
-            .boxed()
+        event_stream.flat_map(|events| stream::iter(events)).boxed()
     }
 }
 
@@ -353,10 +354,7 @@ mod tests {
     fn missing_language_yields_toolchain_missing() {
         let reg = ProducerRegistry::new();
         let src = PackageSource::new("/tmp", "test", "0.1.0");
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("cargo"),
-            PackageName::new("test"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("test"));
         let err = reg.run(Language::Rust, &src, &lineage).unwrap_err();
         assert!(matches!(err, SourceError::ToolchainMissing { .. }));
     }

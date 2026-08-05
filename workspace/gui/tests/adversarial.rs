@@ -70,6 +70,22 @@ use nudox_engine::runtime::{Engine, EngineConfig};
 const REAL_QUERY: &str = "Point";
 const BOGUS_QUERY: &str = "zzzznotasymbolzzzz";
 
+/// A distinct key for testing pane placement without depending on a third
+/// fixture hit. The stream may fail, but tab activation is independent of it.
+fn synthetic_key(n: u8) -> nudox_engine::wire::SymbolKey {
+    let json = format!(
+        r#"{{
+          "package": {{"ecosystem": "cargo", "name": "gui-test-pkg"}},
+          "intro": [{}, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0,
+                     0, 0, 0, 0, 0, 0, 0, 0]
+        }}"#,
+        n
+    );
+    serde_json::from_str(&json).expect("synthetic key must deserialize")
+}
+
 async fn wait_until(
     cx: &mut TestAppContext,
     what: &str,
@@ -293,15 +309,15 @@ async fn click_and_enter_open_the_same_document(cx: &mut TestAppContext) {
 // §B — OmniSearchEvent::Open routed correctly through the shell
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Confirming a search result with Enter (ConfirmOverlay action) must open a
-/// pane tab and close the overlay.
+/// Confirming a search result with plain Enter must open the first row even
+/// when the user has not moved the selection cursor first.
 ///
 /// This exercises the complete path:
 ///   keystroke → action → OmniSearch::on_confirm → OmniSearchEvent::Open
 ///   → Shell::on_omni_event → SymbolStore::open → TabActivated
 ///   → Shell::reveal_document → Pane::open_item.
 #[gpui::test]
-async fn enter_on_a_search_hit_opens_a_tab_and_closes_the_overlay(cx: &mut TestAppContext) {
+async fn plain_enter_on_an_unselected_search_hit_opens_a_tab(cx: &mut TestAppContext) {
     let (shell, mut vcx, _window, search, symbols, _packages) = boot_shell!(cx);
 
     // Open the omni-search overlay.
@@ -316,11 +332,8 @@ async fn enter_on_a_search_hit_opens_a_tab_and_closes_the_overlay(cx: &mut TestA
     .await;
     vcx.run_until_parked();
 
-    // Move selection to the first row.
-    vcx.simulate_keystrokes("down");
-    vcx.run_until_parked();
-
-    // Confirm with Enter — this should open the document and close the overlay.
+    // Confirm with Enter without first pressing Down. The first populated row
+    // is the implicit default selection for a plain commit.
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
 
@@ -1189,4 +1202,71 @@ async fn reveal_document_reuses_existing_pane_tab(cx: &mut TestAppContext) {
         "second open of same key must not create a second pane tab — \
          tab_count={tab_count_after_second}"
     );
+}
+
+/// Keyboard tab activation must update the store's Replace target as well as
+/// the pane. Otherwise opening a new symbol after switching tabs closes the
+/// last-opened document and leaves a ghost tab in the pane.
+#[gpui::test]
+async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, search, symbols, _packages) = boot_shell!(cx);
+
+    search.update(cx, |s, cx| s.set_input(REAL_QUERY.into(), cx));
+    wait_until(cx, "Name section has at least 2 hits", |cx| {
+        search.read_with(cx, |s, _| s.snapshot().sections[0].rows.len() >= 2)
+    })
+    .await;
+
+    let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
+    let key1 = rows[0].key.clone();
+    let key2 = rows[1].key.clone();
+    let key3 = synthetic_key(99);
+
+    let tab1 = symbols.update(cx, |s, cx| s.open(key1.clone(), OpenDisposition::Stay, cx));
+    let tab2 = symbols.update(cx, |s, cx| s.open(key2.clone(), OpenDisposition::Stay, cx));
+    vcx.run_until_parked();
+
+    let pane_tab1 = shell
+        .read_with(&mut vcx, |s, _| s.pane_tab_for_document(tab1))
+        .expect("first document must have a pane tab");
+
+    // The pane starts on the second tab. cmd-1 must activate the first tab.
+    vcx.simulate_keystrokes("cmd-1");
+    vcx.run_until_parked();
+    let active = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).active_id());
+    assert_eq!(active, Some(pane_tab1), "cmd-1 must activate the first pane tab");
+
+    // Replace the selected first tab with a new symbol. The second tab must
+    // survive, proving the pane activation was mirrored into SymbolStore.
+    let tab3 = symbols.update(cx, |s, cx| s.open(key3.clone(), OpenDisposition::Replace, cx));
+    vcx.run_until_parked();
+
+    symbols.read_with(cx, |s, _| {
+        assert!(!s.is_open(&key1), "the selected first document must be replaced");
+        assert!(s.is_open(&key2), "the unselected second document must survive");
+        assert!(s.is_open(&key3), "the replacement document must be open");
+    });
+
+    let pane_len = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
+    assert_eq!(pane_len, 2, "replacement must not leave a ghost pane tab");
+    assert!(
+        shell.read_with(&mut vcx, |s, _| s.pane_tab_for_document(tab2)).is_some(),
+        "the second document's pane tab must remain mapped"
+    );
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).active_id()),
+        shell.read_with(&mut vcx, |s, _| s.pane_tab_for_document(tab3)),
+        "the replacement document must be active"
+    );
+
+    // CloseTab is handled by the same Pane context and must tear down the
+    // corresponding SymbolDoc rather than leaving an open-store orphan.
+    vcx.simulate_keystrokes("cmd-w");
+    vcx.run_until_parked();
+    let pane_len_after_close = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
+    assert_eq!(pane_len_after_close, 1, "cmd-w must close the active pane tab");
+    symbols.read_with(cx, |s, _| {
+        assert!(!s.is_open(&key3), "closing a pane tab must close its SymbolDoc");
+        assert!(s.is_open(&key2), "the surviving pane tab must keep its SymbolDoc");
+    });
 }

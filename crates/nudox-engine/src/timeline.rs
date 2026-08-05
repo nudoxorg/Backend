@@ -298,12 +298,19 @@ mod tests {
         let lid = lineage("axum");
         let slices = slices(vec![
             ("0.7.9", package(&lid, vec![spec(1, "Router")])),
-            ("0.8.1", package(&lid, vec![spec(1, "Router"), spec(2, "Extractor")])),
+            (
+                "0.8.1",
+                package(&lid, vec![spec(1, "Router"), spec(2, "Extractor")]),
+            ),
         ]);
 
         let t = build(&key("axum", 2), &slices);
 
-        assert_eq!(t.rows.len(), 1, "no row for a version that lacks the symbol");
+        assert_eq!(
+            t.rows.len(),
+            1,
+            "no row for a version that lacks the symbol"
+        );
         assert_eq!(t.rows[0].change, TimelineChange::Introduced);
         assert_eq!(&*t.rows[0].version, "0.8.1");
         assert_eq!(
@@ -316,7 +323,10 @@ mod tests {
     fn a_symbol_that_disappears_gets_a_removed_row() {
         let lid = lineage("axum");
         let slices = slices(vec![
-            ("0.7.9", package(&lid, vec![spec(1, "Router"), spec(2, "Handler")])),
+            (
+                "0.7.9",
+                package(&lid, vec![spec(1, "Router"), spec(2, "Handler")]),
+            ),
             ("0.8.1", package(&lid, vec![spec(1, "Router")])),
         ]);
 
@@ -327,7 +337,10 @@ mod tests {
             vec![TimelineChange::Removed, TimelineChange::Present]
         );
         assert_eq!(&*t.rows[0].version, "0.8.1");
-        assert!(t.rows[0].sig.is_empty(), "a removed symbol has no signature");
+        assert!(
+            t.rows[0].sig.is_empty(),
+            "a removed symbol has no signature"
+        );
         assert_eq!(&*t.rows[0].name, "");
     }
 

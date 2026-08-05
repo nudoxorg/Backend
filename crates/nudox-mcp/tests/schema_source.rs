@@ -9,8 +9,7 @@ use std::path::PathBuf;
 
 /// The schema file `nudox-graph` compiles in.
 fn graph_schema_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../nudox-graph/schema.graphql")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../nudox-graph/schema.graphql")
 }
 
 #[test]
@@ -18,7 +17,8 @@ fn served_sdl_is_byte_identical_to_the_graph_crates_schema_file() {
     let on_disk = std::fs::read_to_string(graph_schema_path())
         .expect("crates/nudox-graph/schema.graphql must exist");
     assert_eq!(
-        nudox_mcp::SCHEMA_SDL, on_disk,
+        nudox_mcp::SCHEMA_SDL,
+        on_disk,
         "SCHEMA_SDL has drifted from nudox-graph/schema.graphql — LR-7 says there is one schema"
     );
 }

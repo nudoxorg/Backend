@@ -24,14 +24,23 @@ async fn add_package_returns_immediately_then_syncs() {
         return;
     };
     let body = add_body("serde", "1.0.219");
-    let (status, response) = common::call(router(server), common::post_json("/packages", &body)).await;
+    let (status, response) =
+        common::call(router(server), common::post_json("/packages", &body)).await;
 
-    assert_eq!(status, StatusCode::OK, "the add is answered immediately: {response}");
     assert_eq!(
-        response["enqueued"], serde_json::Value::Bool(true),
+        status,
+        StatusCode::OK,
+        "the add is answered immediately: {response}"
+    );
+    assert_eq!(
+        response["enqueued"],
+        serde_json::Value::Bool(true),
         "a first add enqueues background indexing"
     );
-    assert!(response["package"].is_string(), "the deterministic package id comes back");
+    assert!(
+        response["package"].is_string(),
+        "the deterministic package id comes back"
+    );
 }
 
 /// Adding a duplicate package returns the existing record, no re-queue.
@@ -51,7 +60,10 @@ async fn duplicate_add_returns_existing() {
     let (status, second) = common::call(application, common::post_json("/packages", &body)).await;
 
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(second["package"], first["package"], "identity is deterministic across adds");
+    assert_eq!(
+        second["package"], first["package"],
+        "identity is deterministic across adds"
+    );
     assert_eq!(
         second["enqueued"],
         serde_json::Value::Bool(false),
@@ -74,15 +86,26 @@ async fn list_and_get_reflect_tracked_packages() {
     let application = router(server);
     let body = add_body("smol_str", "0.3.2");
     let (_, added) = common::call(application.clone(), common::post_json("/packages", &body)).await;
-    let id = added["package"].as_str().expect("the add answers with the package id").to_owned();
+    let id = added["package"]
+        .as_str()
+        .expect("the add answers with the package id")
+        .to_owned();
 
-    let (status, fetched) = common::call(application.clone(), common::get(&format!("/packages/{id}"))).await;
+    let (status, fetched) =
+        common::call(application.clone(), common::get(&format!("/packages/{id}"))).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(fetched["package"], added["package"], "the snapshot names the same package");
+    assert_eq!(
+        fetched["package"], added["package"],
+        "the snapshot names the same package"
+    );
 
     let absent = uuid::Uuid::new_v4();
     let (status, _) = common::call(application, common::get(&format!("/packages/{absent}"))).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "an untracked id is a 404, not an error");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an untracked id is a 404, not an error"
+    );
 }
 
 /// An unsupported language is rejected with 400.
@@ -96,7 +119,10 @@ async fn unsupported_language_is_rejected() {
         "name": "legacy",
         "version": "1.0.0",
     }));
-    assert!(rejected.is_err(), "an unknown ecosystem must fail wire validation (→ 400)");
+    assert!(
+        rejected.is_err(),
+        "an unknown ecosystem must fail wire validation (→ 400)"
+    );
 
     // And a malformed version for a *supported* language is rejected at lowering.
     let malformed = AddPackageDto {
@@ -105,7 +131,10 @@ async fn unsupported_language_is_rejected() {
         version: "not-a-version".into(),
         origin: None,
     };
-    assert!(malformed.into_coordinates().is_err(), "an invalid version is a 400 at lowering");
+    assert!(
+        malformed.into_coordinates().is_err(),
+        "an invalid version is a 400 at lowering"
+    );
 }
 
 /// The read plane never holds a handle the write plane mutates.
@@ -126,7 +155,11 @@ async fn read_and_write_planes_are_separated() {
     // The write surface does not answer reads-as-writes: GET on the mutation
     // route is not a handler, it is a method mismatch.
     let (status, _) = common::call(application.clone(), common::get("/packages")).await;
-    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "the mutation route only accepts POST");
+    assert_eq!(
+        status,
+        StatusCode::METHOD_NOT_ALLOWED,
+        "the mutation route only accepts POST"
+    );
 
     // The read surface has no mutation aliases: posting a package to the
     // search route is a shape error, never an ingest.
@@ -190,9 +223,9 @@ async fn go_with_unknown_origin_is_rejected() {
         version: "1.8.1".into(),
         origin: Some("nonexistent-registry".into()),
     };
-    let error = dto.into_coordinates().expect_err(
-        "an unknown custom registry name must be rejected with BadRequest"
-    );
+    let error = dto
+        .into_coordinates()
+        .expect_err("an unknown custom registry name must be rejected with BadRequest");
     let message = error.to_string();
     assert!(
         message.contains("nonexistent-registry"),
@@ -209,9 +242,8 @@ async fn rust_without_origin_defaults_to_crates_io() {
         version: "1.0.219".into(),
         origin: None,
     };
-    dto.into_coordinates().expect(
-        "rust without origin must default to crates.io (no origin required for Rust)"
-    );
+    dto.into_coordinates()
+        .expect("rust without origin must default to crates.io (no origin required for Rust)");
 }
 
 /// The wire body of a crates.io add request.

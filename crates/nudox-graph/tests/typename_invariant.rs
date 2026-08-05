@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
+use nudox_graph::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
 use nudox_ir::change::IntroId;
 use nudox_store::{
     package::{PackageView, Provenance},
     source::fixtures::build_rich_view,
 };
-use nudox_graph::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
 use trustfall::provider::Typename as _;
 
 fn dummy_pkg() -> Arc<PackageView> {
@@ -39,11 +39,11 @@ fn expected_type_names() -> Vec<(&'static str, Vertex)> {
         ("Const", Vertex::Const(dummy_sym(pkg.clone(), 14))),
         ("Alias", Vertex::Alias(dummy_sym(pkg.clone(), 16))),
         // The five formerly-collapsed kinds now have dedicated variants.
-        ("Static",   Vertex::Static(dummy_sym(pkg.clone(), 15))),
-        ("Variant",  Vertex::Variant(dummy_sym(pkg.clone(), 11))),
-        ("Module",   Vertex::Module(dummy_sym(pkg.clone(), 1))),
+        ("Static", Vertex::Static(dummy_sym(pkg.clone(), 15))),
+        ("Variant", Vertex::Variant(dummy_sym(pkg.clone(), 11))),
+        ("Module", Vertex::Module(dummy_sym(pkg.clone(), 1))),
         ("Reexport", Vertex::Reexport(dummy_sym(pkg.clone(), 22))),
-        ("Param",    Vertex::Param(dummy_sym(pkg.clone(), 7))),
+        ("Param", Vertex::Param(dummy_sym(pkg.clone(), 7))),
         (
             "OtherSymbol",
             Vertex::OtherSymbol(dummy_sym(pkg.clone(), 255)),

@@ -149,9 +149,10 @@ impl EgressPolicy {
     /// context (talking to the internal host itself is the whole point); only a
     /// *public* target under an *internal* stem is forbidden.
     pub fn permit(&self, request: &EgressRequest<'_>) -> Result<(), EgressDenied> {
-        let target_host = parse_host(request.url).ok_or_else(|| EgressDenied::UnparseableTarget {
-            url: request.url.to_owned(),
-        })?;
+        let target_host =
+            parse_host(request.url).ok_or_else(|| EgressDenied::UnparseableTarget {
+                url: request.url.to_owned(),
+            })?;
 
         // Only internal stems are constrained.
         let stem_is_internal = request
@@ -197,11 +198,20 @@ mod tests {
     fn wildcard_matches_subdomain_and_base_but_not_lookalike() {
         let glob = HostGlob::new("*.internal.example");
         assert!(glob.matches("sub.internal.example"), "subdomain matches");
-        assert!(glob.matches("deep.sub.internal.example"), "deep subdomain matches");
+        assert!(
+            glob.matches("deep.sub.internal.example"),
+            "deep subdomain matches"
+        );
         assert!(glob.matches("internal.example"), "base domain matches");
         // The adversarial look-alike must NOT match — matching is label-aware.
-        assert!(!glob.matches("evilinternal.example"), "look-alike must not match");
-        assert!(!glob.matches("internal.example.attacker.com"), "suffix trick must not match");
+        assert!(
+            !glob.matches("evilinternal.example"),
+            "look-alike must not match"
+        );
+        assert!(
+            !glob.matches("internal.example.attacker.com"),
+            "suffix trick must not match"
+        );
     }
 
     #[test]
@@ -227,9 +237,15 @@ mod tests {
             Some("internal.host")
         );
         // A port never changes the host.
-        assert_eq!(parse_host("https://internal.host:8443/x").as_deref(), Some("internal.host"));
+        assert_eq!(
+            parse_host("https://internal.host:8443/x").as_deref(),
+            Some("internal.host")
+        );
         // Case folded.
-        assert_eq!(parse_host("https://INTERNAL.HOST/x").as_deref(), Some("internal.host"));
+        assert_eq!(
+            parse_host("https://INTERNAL.HOST/x").as_deref(),
+            Some("internal.host")
+        );
     }
 
     #[test]
@@ -266,7 +282,10 @@ mod tests {
             url: "https://internal.host@public.example/leak",
         };
         assert!(
-            matches!(policy.permit(&request), Err(EgressDenied::InternalStemPublicTarget { .. })),
+            matches!(
+                policy.permit(&request),
+                Err(EgressDenied::InternalStemPublicTarget { .. })
+            ),
             "the parsed host is public.example — a leak"
         );
     }
@@ -278,13 +297,20 @@ mod tests {
             stem_authority: Some("github.com"),
             url: "https://api.osv.dev/v1/query",
         };
-        assert_eq!(policy.permit(&request), Ok(()), "public stems are unconstrained");
+        assert_eq!(
+            policy.permit(&request),
+            Ok(()),
+            "public stems are unconstrained"
+        );
     }
 
     #[test]
     fn unscoped_request_is_permitted() {
         let policy = policy_with(&["git.corp.example"]);
-        let request = EgressRequest { stem_authority: None, url: "https://crates.io/api" };
+        let request = EgressRequest {
+            stem_authority: None,
+            url: "https://crates.io/api",
+        };
         assert_eq!(policy.permit(&request), Ok(()));
     }
 
@@ -318,34 +344,53 @@ mod tests {
         }
         impl MockTransport<'_> {
             fn get(&self, stem_authority: &str, url: &str) -> Result<(), EgressDenied> {
-                self.policy
-                    .permit(&EgressRequest { stem_authority: Some(stem_authority), url })?;
+                self.policy.permit(&EgressRequest {
+                    stem_authority: Some(stem_authority),
+                    url,
+                })?;
                 self.sent.borrow_mut().push(url.to_owned());
                 Ok(())
             }
         }
 
         let policy = policy_with(&["*.internal.example"]);
-        let transport = MockTransport { policy: &policy, sent: RefCell::new(Vec::new()) };
+        let transport = MockTransport {
+            policy: &policy,
+            sent: RefCell::new(Vec::new()),
+        };
         let internal_stem = "code.internal.example";
 
         // The pipeline, operating for an internal stem, would attempt: a public
         // OSV lookup, a public vcpkg feed fetch, and a legitimate internal fetch.
         let public_osv = transport.get(internal_stem, "https://api.osv.dev/v1/query");
-        let public_feed =
-            transport.get(internal_stem, "https://raw.githubusercontent.com/microsoft/vcpkg/master/x");
-        let internal_fetch =
-            transport.get(internal_stem, "https://code.internal.example/team/lib/info/refs");
+        let public_feed = transport.get(
+            internal_stem,
+            "https://raw.githubusercontent.com/microsoft/vcpkg/master/x",
+        );
+        let internal_fetch = transport.get(
+            internal_stem,
+            "https://code.internal.example/team/lib/info/refs",
+        );
 
-        assert!(public_osv.is_err(), "public OSV lookup for an internal stem must be denied");
-        assert!(public_feed.is_err(), "public feed fetch for an internal stem must be denied");
-        assert!(internal_fetch.is_ok(), "the internal host itself is reachable");
+        assert!(
+            public_osv.is_err(),
+            "public OSV lookup for an internal stem must be denied"
+        );
+        assert!(
+            public_feed.is_err(),
+            "public feed fetch for an internal stem must be denied"
+        );
+        assert!(
+            internal_fetch.is_ok(),
+            "the internal host itself is reachable"
+        );
 
         // Zero *public* URLs left the transport; only the internal host was hit.
         let sent = transport.sent.borrow();
         assert_eq!(sent.len(), 1, "exactly one request left the transport");
         assert!(
-            sent.iter().all(|url| parse_host(url).is_some_and(|h| policy.is_internal_host(&h))),
+            sent.iter()
+                .all(|url| parse_host(url).is_some_and(|h| policy.is_internal_host(&h))),
             "every sent request targeted an internal host — zero public egress"
         );
     }

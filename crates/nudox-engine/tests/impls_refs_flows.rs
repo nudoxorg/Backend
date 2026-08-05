@@ -33,7 +33,7 @@ use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
     entry::{Entry, Node, Symbol, Visibility},
-    index::{Ref, RawRef},
+    index::{RawRef, Ref},
     kind::Kind,
     kinds::{Impl, ImplFlags, Module, Record, Type},
     view::IrView,
@@ -44,7 +44,10 @@ use nudox_store::{
     source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, SourceError},
 };
 
-use nudox_engine::{wire::{DocEvent, Gen, ImplsPage, RefsPage}, Engine, EngineConfig};
+use nudox_engine::{
+    Engine, EngineConfig,
+    wire::{DocEvent, Gen, ImplsPage, RefsPage},
+};
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -74,11 +77,19 @@ fn blank_sym(name: &str) -> Symbol {
 }
 
 fn module_entry(name: &str) -> Entry {
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Module(Module))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Module(Module),
+    )
 }
 
 fn record_entry(name: &str) -> Entry {
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Record(Record::builder().build()))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Record(Record::builder().build()),
+    )
 }
 
 /// Build an inherent impl entry (`impl <self_ty>`).
@@ -87,7 +98,11 @@ fn inherent_impl_entry(name: &str, self_ty_intro: IntroId) -> Entry {
         .maybe_of(None)
         .self_ty(Type::Nominal(Ref::Intro(self_ty_intro)))
         .build();
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Impl(impl_))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Impl(impl_),
+    )
 }
 
 /// Build a trait impl entry (`impl <trait_intro> for <self_ty_intro>`).
@@ -96,7 +111,11 @@ fn trait_impl_entry(name: &str, self_ty_intro: IntroId, trait_intro: IntroId) ->
         .maybe_of(Some(Type::Nominal(Ref::Intro(trait_intro))))
         .self_ty(Type::Nominal(Ref::Intro(self_ty_intro)))
         .build();
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Impl(impl_))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Impl(impl_),
+    )
 }
 
 /// Build a blanket impl entry (`impl<T: Bound> <trait_intro> for T`).
@@ -111,17 +130,20 @@ fn trait_impl_entry(name: &str, self_ty_intro: IntroId, trait_intro: IntroId) ->
 /// For the blanket-flag tests we therefore set the `self_ty` to the target's
 /// nominal AND set `flags.blanket = true`, so the impl shows up in the page
 /// (it matches `self_ty`) and the flag is exposed on the row.
-fn blanket_impl_entry(
-    name: &str,
-    self_ty_intro: IntroId,
-    trait_intro: IntroId,
-) -> Entry {
+fn blanket_impl_entry(name: &str, self_ty_intro: IntroId, trait_intro: IntroId) -> Entry {
     let impl_ = Impl::builder()
-        .flags(ImplFlags { blanket: true, negative: false })
+        .flags(ImplFlags {
+            blanket: true,
+            negative: false,
+        })
         .maybe_of(Some(Type::Nominal(Ref::Intro(trait_intro))))
         .self_ty(Type::Nominal(Ref::Intro(self_ty_intro)))
         .build();
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Impl(impl_))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Impl(impl_),
+    )
 }
 
 /// Build a trait impl whose self type is `Type::Apply { base: Nominal(self_ty_intro), args }`.
@@ -145,7 +167,11 @@ fn generic_impl_entry(
         .maybe_of(Some(Type::Nominal(Ref::Intro(trait_intro))))
         .self_ty(self_ty)
         .build();
-    Entry::new(blank_sym(name), Node::build(None::<RawRef>, []), Kind::Impl(impl_))
+    Entry::new(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Impl(impl_),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +184,9 @@ struct StaticSource {
 
 impl StaticSource {
     fn single(lid: PackageLineageId, version: &str, pkg: Arc<PackageView>) -> Self {
-        Self { items: vec![(lid, version.to_owned(), pkg)] }
+        Self {
+            items: vec![(lid, version.to_owned(), pkg)],
+        }
     }
 }
 
@@ -185,7 +213,9 @@ impl IrSource for StaticSource {
                             version: Some(v.clone()),
                         },
                     }),
-                    Ok(LoadEvent::Ready { package: Arc::clone(pkg) }),
+                    Ok(LoadEvent::Ready {
+                        package: Arc::clone(pkg),
+                    }),
                 ]
             })
             .collect();
@@ -216,7 +246,11 @@ async fn start_and_settle(
 }
 
 /// Collect all DocEvents for `key` to completion.
-async fn drain(engine: &nudox_engine::EngineHandle, key: StableRef, generation: u64) -> Vec<DocEvent> {
+async fn drain(
+    engine: &nudox_engine::EngineHandle,
+    key: StableRef,
+    generation: u64,
+) -> Vec<DocEvent> {
     let (handle, rx) = engine.open_symbol(key, Gen(generation));
     let mut events = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
@@ -301,9 +335,21 @@ async fn three_impls_all_appear_in_impls_events() {
     table.insert_live(intro(2), record_entry("Router"), Some(intro(1)));
     table.insert_live(intro(3), module_entry("Display"), Some(intro(1)));
     table.insert_live(intro(4), module_entry("Debug"), Some(intro(1)));
-    table.insert_live(intro(5), inherent_impl_entry("impl Router", intro(2)), Some(intro(1)));
-    table.insert_live(intro(6), trait_impl_entry("impl Display for Router", intro(2), intro(3)), Some(intro(1)));
-    table.insert_live(intro(7), trait_impl_entry("impl Debug for Router", intro(2), intro(4)), Some(intro(1)));
+    table.insert_live(
+        intro(5),
+        inherent_impl_entry("impl Router", intro(2)),
+        Some(intro(1)),
+    );
+    table.insert_live(
+        intro(6),
+        trait_impl_entry("impl Display for Router", intro(2), intro(3)),
+        Some(intro(1)),
+    );
+    table.insert_live(
+        intro(7),
+        trait_impl_entry("impl Debug for Router", intro(2), intro(4)),
+        Some(intro(1)),
+    );
 
     let view = IrView::with_package(lid.clone(), table);
     let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -316,7 +362,10 @@ async fn three_impls_all_appear_in_impls_events() {
     assert!(!pages.is_empty(), "must have at least one Impls page");
 
     let row_count: usize = pages.iter().map(|p| p.impls.len()).sum();
-    assert_eq!(row_count, 3, "Router must have exactly three impl rows; got {row_count}");
+    assert_eq!(
+        row_count, 3,
+        "Router must have exactly three impl rows; got {row_count}"
+    );
     assert_eq!(total_impls(&events), 3, "total must agree with row count");
 
     // Every row must carry a non-empty label.
@@ -351,7 +400,11 @@ async fn zero_impls_emits_one_empty_done_page() {
         .iter()
         .filter(|e| matches!(e, DocEvent::Impls { .. }))
         .collect();
-    assert_eq!(impls_events.len(), 1, "zero-impl symbol must produce exactly one Impls event");
+    assert_eq!(
+        impls_events.len(),
+        1,
+        "zero-impl symbol must produce exactly one Impls event"
+    );
 
     // That event must be marked done with an empty slice.
     match impls_events[0] {
@@ -396,17 +449,29 @@ async fn two_index_confidence_usages_appear_in_refs_events() {
     table.insert_live(intro(2), fn_entry, Some(intro(1)));
     table.insert_live(
         intro(3),
-        Entry::new(blank_sym("caller_a"), Node::build(None::<RawRef>, []), Kind::Function(Function::builder().build())),
+        Entry::new(
+            blank_sym("caller_a"),
+            Node::build(None::<RawRef>, []),
+            Kind::Function(Function::builder().build()),
+        ),
         Some(intro(1)),
     );
     table.insert_live(
         intro(4),
-        Entry::new(blank_sym("caller_b"), Node::build(None::<RawRef>, []), Kind::Function(Function::builder().build())),
+        Entry::new(
+            blank_sym("caller_b"),
+            Node::build(None::<RawRef>, []),
+            Kind::Function(Function::builder().build()),
+        ),
         Some(intro(1)),
     );
     table.insert_live(
         intro(5),
-        Entry::new(blank_sym("caller_c"), Node::build(None::<RawRef>, []), Kind::Function(Function::builder().build())),
+        Entry::new(
+            blank_sym("caller_c"),
+            Node::build(None::<RawRef>, []),
+            Kind::Function(Function::builder().build()),
+        ),
         Some(intro(1)),
     );
 
@@ -415,17 +480,32 @@ async fn two_index_confidence_usages_appear_in_refs_events() {
     // CallerA → MyFn at Index confidence.
     view.add_occurrence(
         intro(3),
-        Occurrence::new(target_sr.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(0, 5)),
+        Occurrence::new(
+            target_sr.clone(),
+            ReferenceKind::FunctionCall,
+            Confidence::Index,
+            RelSpan::new(0, 5),
+        ),
     );
     // CallerB → MyFn at Index confidence.
     view.add_occurrence(
         intro(4),
-        Occurrence::new(target_sr.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(10, 15)),
+        Occurrence::new(
+            target_sr.clone(),
+            ReferenceKind::FunctionCall,
+            Confidence::Index,
+            RelSpan::new(10, 15),
+        ),
     );
     // CallerC → MyFn at Syntactic confidence — below the Index floor; must NOT appear.
     view.add_occurrence(
         intro(5),
-        Occurrence::new(target_sr, ReferenceKind::FunctionCall, Confidence::Syntactic, RelSpan::new(20, 25)),
+        Occurrence::new(
+            target_sr,
+            ReferenceKind::FunctionCall,
+            Confidence::Syntactic,
+            RelSpan::new(20, 25),
+        ),
     );
 
     let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -438,7 +518,10 @@ async fn two_index_confidence_usages_appear_in_refs_events() {
     assert!(!pages.is_empty(), "must have at least one Refs page");
 
     let row_count: usize = pages.iter().map(|p| p.refs.len()).sum();
-    assert_eq!(row_count, 2, "exactly two Index-confidence callers must appear; got {row_count}");
+    assert_eq!(
+        row_count, 2,
+        "exactly two Index-confidence callers must appear; got {row_count}"
+    );
     assert_eq!(total_refs(&events), 2, "total must agree");
 
     // The rows must name caller_a and caller_b (paths include "root.caller_a" etc.).
@@ -486,7 +569,11 @@ async fn zero_refs_emits_one_empty_done_page() {
         .iter()
         .filter(|e| matches!(e, DocEvent::Refs { .. }))
         .collect();
-    assert_eq!(refs_events.len(), 1, "zero-refs symbol must produce exactly one Refs event");
+    assert_eq!(
+        refs_events.len(),
+        1,
+        "zero-refs symbol must produce exactly one Refs event"
+    );
 
     match refs_events[0] {
         DocEvent::Refs { page, done } => {
@@ -524,18 +611,31 @@ async fn impls_and_refs_arrive_after_head_and_before_done() {
     table.insert_live(intro(1), module_entry("root"), None);
     table.insert_live(intro(2), fn_entry, Some(intro(1)));
     // One impl for good measure (impl block targets intro(2) as self_ty).
-    table.insert_live(intro(3), inherent_impl_entry("impl target_fn", intro(2)), Some(intro(1)));
+    table.insert_live(
+        intro(3),
+        inherent_impl_entry("impl target_fn", intro(2)),
+        Some(intro(1)),
+    );
     // One usage.
     table.insert_live(
         intro(4),
-        Entry::new(blank_sym("caller"), Node::build(None::<RawRef>, []), Kind::Function(Function::builder().build())),
+        Entry::new(
+            blank_sym("caller"),
+            Node::build(None::<RawRef>, []),
+            Kind::Function(Function::builder().build()),
+        ),
         Some(intro(1)),
     );
 
     let mut view = IrView::with_package(lid.clone(), table);
     view.add_occurrence(
         intro(4),
-        Occurrence::new(target_sr, ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(0, 10)),
+        Occurrence::new(
+            target_sr,
+            ReferenceKind::FunctionCall,
+            Confidence::Index,
+            RelSpan::new(0, 10),
+        ),
     );
 
     let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -587,10 +687,26 @@ async fn impls_order_is_deterministic_across_two_opens() {
     table.insert_live(intro(3), module_entry("Display"), Some(intro(1)));
     table.insert_live(intro(4), module_entry("Debug"), Some(intro(1)));
     table.insert_live(intro(5), module_entry("Clone"), Some(intro(1)));
-    table.insert_live(intro(6), inherent_impl_entry("impl Point", intro(2)), Some(intro(1)));
-    table.insert_live(intro(7), trait_impl_entry("impl Display for Point", intro(2), intro(3)), Some(intro(1)));
-    table.insert_live(intro(8), trait_impl_entry("impl Debug for Point", intro(2), intro(4)), Some(intro(1)));
-    table.insert_live(intro(9), trait_impl_entry("impl Clone for Point", intro(2), intro(5)), Some(intro(1)));
+    table.insert_live(
+        intro(6),
+        inherent_impl_entry("impl Point", intro(2)),
+        Some(intro(1)),
+    );
+    table.insert_live(
+        intro(7),
+        trait_impl_entry("impl Display for Point", intro(2), intro(3)),
+        Some(intro(1)),
+    );
+    table.insert_live(
+        intro(8),
+        trait_impl_entry("impl Debug for Point", intro(2), intro(4)),
+        Some(intro(1)),
+    );
+    table.insert_live(
+        intro(9),
+        trait_impl_entry("impl Clone for Point", intro(2), intro(5)),
+        Some(intro(1)),
+    );
 
     let view = IrView::with_package(lid.clone(), table);
     let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -605,7 +721,12 @@ async fn impls_order_is_deterministic_across_two_opens() {
     let labels_of = |evs: &[DocEvent]| -> Vec<String> {
         evs.iter()
             .filter_map(|e| match e {
-                DocEvent::Impls { page, .. } => Some(page.impls.iter().map(|r| r.label.to_string()).collect::<Vec<_>>()),
+                DocEvent::Impls { page, .. } => Some(
+                    page.impls
+                        .iter()
+                        .map(|r| r.label.to_string())
+                        .collect::<Vec<_>>(),
+                ),
                 _ => None,
             })
             .flatten()
@@ -730,12 +851,22 @@ async fn two_member_arity_run_emits_two_rows_not_one() {
     // Use 101/102 to avoid colliding with intro(1) ([1;32]) or intro(50/51).
     table.insert_live(
         IntroId::from_raw([101u8; 32]),
-        generic_impl_entry("impl Handler for F<T1>", intro(self_type_idx), intro(trait_idx), 1),
+        generic_impl_entry(
+            "impl Handler for F<T1>",
+            intro(self_type_idx),
+            intro(trait_idx),
+            1,
+        ),
         Some(intro(1)),
     );
     table.insert_live(
         IntroId::from_raw([102u8; 32]),
-        generic_impl_entry("impl Handler for F<T1,T2>", intro(self_type_idx), intro(trait_idx), 2),
+        generic_impl_entry(
+            "impl Handler for F<T1,T2>",
+            intro(self_type_idx),
+            intro(trait_idx),
+            2,
+        ),
         Some(intro(1)),
     );
 
@@ -747,7 +878,11 @@ async fn two_member_arity_run_emits_two_rows_not_one() {
 
     let pages = collect_impls_pages(&events);
     let all_rows: Vec<_> = pages.iter().flat_map(|p| p.impls.iter()).collect();
-    assert_eq!(all_rows.len(), 2, "engine emits both rows; GUI decides whether to collapse");
+    assert_eq!(
+        all_rows.len(),
+        2,
+        "engine emits both rows; GUI decides whether to collapse"
+    );
 
     let mut counts: Vec<u32> = all_rows.iter().map(|r| r.self_generic_count).collect();
     counts.sort_unstable();
@@ -772,7 +907,12 @@ async fn non_consecutive_arities_emit_separate_rows() {
     for &n in &[1u8, 2, 5] {
         table.insert_live(
             IntroId::from_raw([100 + n; 32]),
-            generic_impl_entry(&format!("impl Handler for F<{n}>"), intro(self_type_idx), intro(trait_idx), n as usize),
+            generic_impl_entry(
+                &format!("impl Handler for F<{n}>"),
+                intro(self_type_idx),
+                intro(trait_idx),
+                n as usize,
+            ),
             Some(intro(1)),
         );
     }
@@ -785,7 +925,11 @@ async fn non_consecutive_arities_emit_separate_rows() {
 
     let pages = collect_impls_pages(&events);
     let all_rows: Vec<_> = pages.iter().flat_map(|p| p.impls.iter()).collect();
-    assert_eq!(all_rows.len(), 3, "three non-consecutive arities produce three rows");
+    assert_eq!(
+        all_rows.len(),
+        3,
+        "three non-consecutive arities produce three rows"
+    );
 
     let mut counts: Vec<u32> = all_rows.iter().map(|r| r.self_generic_count).collect();
     counts.sort_unstable();

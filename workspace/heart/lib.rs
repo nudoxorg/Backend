@@ -17,8 +17,8 @@ pub mod error;
 pub mod health;
 pub mod identity;
 pub mod object_pack;
-pub mod page;
 pub mod package;
+pub mod page;
 pub mod progress;
 pub mod query;
 pub mod score;
@@ -41,7 +41,6 @@ pub mod telemetry;
 
 pub use access::{Federation, Source, SourceId, SourceRole, Sourced};
 pub use availability::{AvailabilityStoreId, IrAvailability, ObjectAvailability};
-pub use health::{assert_probe_future_send, timed as timed_probe, Probe, Probeable};
 pub use connection::{Cold, Connect, Live};
 pub use content::{ContentHash, ContentHasher, Freshness, JobKey};
 pub use cursor::{Advisory, Cursor, CursorError, Enforced, PolicyTag, SnapshotPolicy};
@@ -49,12 +48,13 @@ pub use deployment::{DeploymentKind, DeploymentProfile, TrustedRemote};
 pub use ecosystem::{Edition, Language, Toolchain};
 pub use egress::{EgressDenied, EgressPolicy, EgressRequest, HostGlob};
 pub use error::{
-    BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase, ResolutionState,
-    Retryable, StoreError,
+    BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase,
+    ResolutionState, Retryable, StoreError,
 };
+pub use health::{Probe, Probeable, assert_probe_future_send, timed as timed_probe};
 pub use identity::{
-    CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageId,
-    PackageCoordinates, PackageVersion, PythonVersionError, RegistryOrigin, SymbolId, VersionError,
+    CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageCoordinates,
+    PackageId, PackageVersion, PythonVersionError, RegistryOrigin, SymbolId, VersionError,
 };
 pub use object_pack::{MemberKey, MemberRecord, ObjectPackId};
 pub use progress::{JobProgress, Percent, Progressive};

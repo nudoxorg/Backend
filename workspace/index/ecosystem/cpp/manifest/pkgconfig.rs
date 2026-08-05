@@ -140,10 +140,16 @@ mod tests {
     fn parse_pkgconfig_basic() {
         let text = "Name: libfoo\nDescription: A useful library\nVersion: 1.0\nRequires: glib-2.0 >= 2.40\n";
         let manifest = parse(text);
-        assert_eq!(manifest.facts.description.as_deref(), Some("A useful library"));
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("A useful library")
+        );
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "glib-2.0");
-        assert_eq!(manifest.dependencies[0].mechanism, DependencyMechanism::PkgConfig);
+        assert_eq!(
+            manifest.dependencies[0].mechanism,
+            DependencyMechanism::PkgConfig
+        );
     }
 
     #[test]
@@ -160,7 +166,11 @@ mod tests {
         let text = "Requires: foo, bar >= 1.0, baz\n";
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 3);
-        let tokens: Vec<&str> = manifest.dependencies.iter().map(|d| d.token.as_str()).collect();
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|d| d.token.as_str())
+            .collect();
         assert!(tokens.contains(&"foo"));
         assert!(tokens.contains(&"bar"));
         assert!(tokens.contains(&"baz"));
@@ -214,6 +224,9 @@ mod tests {
         // Variable assignment lines (`prefix=/usr`) must not be treated as metadata.
         let text = "prefix=/usr\nlibdir=${prefix}/lib\nDescription: Real description\n";
         let manifest = parse(text);
-        assert_eq!(manifest.facts.description.as_deref(), Some("Real description"));
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("Real description")
+        );
     }
 }
