@@ -176,52 +176,49 @@
           manifestFile = builtins.readFile ./corpus/manifest.toml;
           manifest = builtins.fromTOML manifestFile;
 
-          # Group packages by name (to handle multiple versions)
-          buildPackage =
-            pkgEntry:
+          # Fetch and prepare a single crate version
+          prepareCrate =
+            name: version: hash:
             let
-              inherit (pkgEntry) name ecosystem versions;
+              crateArchive = nixPackages.fetchurl {
+                url = "https://static.crates.io/crates/${name}/${name}-${version}.crate";
+                sha256 = hash;
+              };
             in
-            map (
-              versionEntry:
-              let
-                inherit (versionEntry) version hash;
-                crateArchive = nixPackages.fetchurl {
-                  url = "https://static.crates.io/crates/${name}/${name}-${version}.crate";
-                  sha256 = hash;
-                };
-              in
-              nixPackages.runCommand "${name}-${version}-prepared" { } ''
-                mkdir -p "$out"
-                cd "$out"
+            nixPackages.runCommand "${name}-${version}-prepared" { } ''
+              mkdir -p "$out"
+              cd "$out"
 
-                # Unpack the crate archive
-                ${nixPackages.unzip}/bin/unzip -q "${crateArchive}"
+              # Unpack the crate archive
+              ${nixPackages.unzip}/bin/unzip -q "${crateArchive}"
 
-                # Find the extracted directory (should be ${name}-${version})
-                crate_dir="${name}-${version}"
+              # Append empty [workspace] table to Cargo.toml if it exists
+              crate_dir="${name}-${version}"
+              if [ -f "$crate_dir/Cargo.toml" ]; then
+                echo "" >> "$crate_dir/Cargo.toml"
+                echo "[workspace]" >> "$crate_dir/Cargo.toml"
+              fi
+            '';
 
-                # Append empty [workspace] table to Cargo.toml if it exists
-                if [ -f "$crate_dir/Cargo.toml" ]; then
-                  echo "" >> "$crate_dir/Cargo.toml"
-                  echo "[workspace]" >> "$crate_dir/Cargo.toml"
-                fi
-              ''
-            ) versions;
-
-          # Flatten the list of derivations
-          allPreparedPackages = nixPackages.lib.flatten (
-            map buildPackage manifest.packages
-          );
+          # Collect all prepared crates as a flat list
+          allPreparedCrates =
+            nixPackages.lib.flatten (
+              map (
+                pkgEntry:
+                map (
+                  verEntry:
+                  prepareCrate pkgEntry.name verEntry.version verEntry.hash
+                ) pkgEntry.versions
+              ) manifest.packages
+            );
 
           # Assemble all prepared packages into one directory
           assembliedCorpus = nixPackages.runCommand "real-crates" { } ''
             mkdir -p "$out"
             ${nixPackages.lib.concatStringsSep "\n" (
-              map (
-                derivation:
+              map (derivation:
                 "cp -r ${derivation}/*-*/ $out/ 2>/dev/null || true"
-              ) allPreparedPackages
+              ) allPreparedCrates
             )}
           '';
         in
