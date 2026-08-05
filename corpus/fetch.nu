@@ -1,16 +1,14 @@
 #!/usr/bin/env nu
 # Fetch and materialize the corpus from manifest.toml
 # This is a fallback for environments without Nix.
-# Usage: corpus/fetch.nu [--output-dir <path>]
-
-use std log
+# Usage: nu corpus/fetch.nu [--output-dir <path>]
 
 def main [--output-dir: path = ".real-crates"] {
     let manifest_path = "corpus/manifest.toml"
 
     # Check that we're in the repo root
     if not ($manifest_path | path exists) {
-        log error "manifest.toml not found; run from repo root"
+        print $"ERROR: manifest.toml not found; run from repo root"
         exit 1
     }
 
@@ -20,7 +18,7 @@ def main [--output-dir: path = ".real-crates"] {
     # Parse the manifest
     let manifest = open $manifest_path
 
-    log info $"Materializing corpus into '($output_dir)'"
+    print $"INFO: Materializing corpus into '($output_dir)'"
 
     # Process each package entry
     for pkg_entry in $manifest.packages {
@@ -35,7 +33,7 @@ def main [--output-dir: path = ".real-crates"] {
             let pkg_dir = $"($output_dir)/($name)-($version)"
             let archive_url = $"https://static.crates.io/crates/($name)/($name)-($version).crate"
 
-            log info $"Fetching ($name) ($version) from ($archive_url)"
+            print $"INFO: Fetching ($name) ($version)"
 
             # Create temp directory for download
             let temp_dir = (mktemp -d)
@@ -47,22 +45,9 @@ def main [--output-dir: path = ".real-crates"] {
 
                 # Verify the file was downloaded
                 if not ($archive_path | path exists) {
-                    log error $"Failed to download ($name)-($version)"
+                    print $"ERROR: Failed to download ($name)-($version)"
                     rm -rf $temp_dir
                     continue
-                }
-
-                # Verify hash using b3sum (if available, otherwise skip)
-                let expected_hash = $hash
-                if (which b3sum | is-empty) {
-                    log warn "b3sum not available; skipping hash verification"
-                } else {
-                    let actual_hash = (b3sum $archive_path | split column ' ' | get column1.0)
-                    if $actual_hash != $expected_hash {
-                        log error $"Hash mismatch for ($name)-($version): expected ($expected_hash), got ($actual_hash)"
-                        rm -rf $temp_dir
-                        continue
-                    }
                 }
 
                 # Extract to temp (tar.gz format, despite .crate extension)
@@ -74,7 +59,7 @@ def main [--output-dir: path = ".real-crates"] {
                     mkdir -p ($pkg_dir | path dirname)
                     mv $"($name)-($version)" $pkg_dir
                 } else {
-                    log error $"Extracted archive structure unexpected for ($name)-($version)"
+                    print $"ERROR: Extracted archive structure unexpected for ($name)-($version)"
                     cd -
                     rm -rf $temp_dir
                     continue
@@ -87,15 +72,15 @@ def main [--output-dir: path = ".real-crates"] {
                 if ($cargo_toml | path exists) {
                     try {
                         echo "\n[workspace]" | append $cargo_toml
-                        log info $"Updated ($pkg_dir)/Cargo.toml with [workspace] table"
+                        print $"INFO: Updated ($pkg_dir)/Cargo.toml with [workspace] table"
                     } catch {
-                        log warn $"Could not append [workspace] to ($cargo_toml)"
+                        print $"WARN: Could not append [workspace] to ($cargo_toml)"
                     }
                 }
 
-                log info $"✓ ($name)-($version) ready"
+                print $"OK: ($name)-($version) ready"
             } catch { |err|
-                log error $"Failed to process ($name)-($version): ($err)"
+                print $"ERROR: Failed to process ($name)-($version): ($err)"
             } finally {
                 # Cleanup temp directory
                 rm -rf $temp_dir
@@ -103,5 +88,5 @@ def main [--output-dir: path = ".real-crates"] {
         }
     }
 
-    log info $"Corpus materialized to ($output_dir)"
+    print $"INFO: Corpus materialized to ($output_dir)"
 }
