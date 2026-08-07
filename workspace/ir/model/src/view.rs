@@ -150,9 +150,21 @@ impl IrView {
         self.table.children_of(intro)
     }
 
-    /// Iterate over all live intros and their declaration entries.
+    /// Iterate over all live intros and their declaration entries in
+    /// **unspecified** order — see [`PristineIntroTable::iter`] for why that is
+    /// a per-process hash seed and not merely "arbitrary but fixed".
     pub fn entries(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
         self.table.iter()
+    }
+
+    /// Iterate over all live intros and their declaration entries in
+    /// deterministic [`IntroId`] order.
+    ///
+    /// Every projection whose output a user can observe (search indexes, ranked
+    /// lists, serialized snapshots) must be built from this rather than from
+    /// [`entries`](Self::entries).
+    pub fn entries_sorted(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
+        self.table.iter_sorted()
     }
 
     // -----------------------------------------------------------------------

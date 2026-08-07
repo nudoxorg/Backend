@@ -31,7 +31,27 @@
 //!   disambiguation is needed.
 //! * `kind` — `KindTag::from(discriminant)`.
 //! * `provenance` — from the owning `PackageView`.
-//! * `score` — simple relevance: exact match > prefix match, boosted by kind.
+//! * `score` — see [Relevance](#relevance) below.
+//!
+//! # Relevance
+//!
+//! `score = text_relevance × visibility_weight × kind_weight`, every factor in
+//! `(0, 1]`. A **public, top-level** symbol whose name the query matched
+//! exactly therefore scores exactly `1.0`: that case is the reference point the
+//! other two factors discount away from, so `score` keeps its documented "an
+//! exact match is 1.0" wire meaning. See [`visibility_weight`] and
+//! [`kind_weight`] for what each factor means and why.
+//!
+//! # Result order
+//!
+//! Rows are ordered by a **total** comparator — score descending, then display
+//! name, then the symbol's `StableRef` (package lineage, then `IntroId`). The
+//! last term is what makes it total: two rows that agree on every *scoring*
+//! input still have distinct identities, so their relative order is fixed by
+//! the data rather than inherited from whatever order the index walk happened
+//! to produce. It has to be, because that walk used to be a `HashMap`
+//! iteration, and its per-process seed was reaching the user's screen as a
+//! different ranking on every launch.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -39,7 +59,7 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use nudox_ir::kind::KindDiscriminant;
+use nudox_ir::{entry::Visibility, kind::KindDiscriminant};
 use nudox_store::corpus::Corpus;
 
 use crate::{
@@ -235,6 +255,208 @@ async fn run_search(
 }
 
 // ---------------------------------------------------------------------------
+// Display-name disambiguation (L20)
+// ---------------------------------------------------------------------------
+//
+// Real crates repeat leaf names across modules constantly — `memchr` alone
+// declares `mod memchr` once per architecture backend
+// (`arch::x86_64::memchr`, `arch::aarch64::memchr`, `arch::generic::memchr`,
+// …). A hit row that shows only the leaf name is then indistinguishable from
+// its siblings: same text, same kind badge, nothing to click on with intent.
+//
+// The fix used to apply only when the corpus held more than one package,
+// which is precisely wrong — leaf-name collisions are just as real *within*
+// a single package (see `memchr` above), and a single-package corpus is the
+// common case (open one crate's docs, search it). Disambiguation must key
+// off whether the leaf name actually collides in the returned result set,
+// not off how many packages are loaded.
+
+/// One collected hit, still carrying both display-name candidates so the
+/// collision pass (`finalize_candidates`) can choose after sorting and
+/// truncation — a leaf name that only collides with a row cut for exceeding
+/// `limit` renders in its short form, since nothing on screen would be
+/// confused with it.
+struct Candidate {
+    /// The wire row. `row.display_name` holds the **leaf** (unqualified)
+    /// name until `finalize_candidates` runs.
+    row: HitRow,
+    /// The fully-qualified in-package path, computed once so the final pass
+    /// never re-walks the parent chain per query.
+    qualified: SharedStr,
+}
+
+/// The fully-qualified display candidate for `intro`, used when its leaf
+/// name collides with another hit in the same result set.
+///
+/// `path_of` is the *in-package* moniker, so on its own it cannot separate
+/// `a::Router` from `b::Router` in a multi-package corpus — both roots
+/// render the same string. The package name has to be part of it. The
+/// moniker already begins with the crate's root module for most producers
+/// (Rust's root module is named after the crate), so prefixing
+/// unconditionally would yield `axum::axum.routing.…` — prepend only when
+/// the first segment is not already the package name.
+fn qualified_display_name(
+    indexes: &nudox_store::package::PackageIndexes,
+    intro: nudox_ir::change::IntroId,
+    leaf: &str,
+    pkg_name: &str,
+) -> SharedStr {
+    let base = indexes
+        .path_of(intro)
+        .map(|p| p.as_ref().to_owned())
+        .unwrap_or_else(|| leaf.to_owned());
+    if base.split(['.', ':']).next() == Some(pkg_name) {
+        SharedStr::from(base)
+    } else {
+        SharedStr::from(format!("{pkg_name}::{base}"))
+    }
+}
+
+/// Resolve each candidate's final `display_name`: the short leaf form when
+/// it is unique in this result set, the fully-qualified path when it
+/// collides with another row's leaf name (L20).
+///
+/// The invariant this exists to guarantee: **N rows sharing a leaf name
+/// produce N distinct `display_name`s.**
+fn finalize_candidates(candidates: Vec<Candidate>) -> Vec<HitRow> {
+    // Keyed on cloned `SharedStr` (cheap — it's an `Arc<str>` under the hood)
+    // rather than `&str` borrowed from `candidates`, so the counts table does
+    // not keep `candidates` borrowed for the `into_iter()` below.
+    let mut leaf_counts: std::collections::HashMap<SharedStr, usize> =
+        std::collections::HashMap::new();
+    for c in &candidates {
+        *leaf_counts.entry(c.row.display_name.clone()).or_insert(0) += 1;
+    }
+
+    candidates
+        .into_iter()
+        .map(|mut c| {
+            let collides = leaf_counts
+                .get(&c.row.display_name)
+                .copied()
+                .unwrap_or(0)
+                > 1;
+            if collides {
+                c.row.display_name = c.qualified;
+            }
+            c.row
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Relevance
+// ---------------------------------------------------------------------------
+
+/// How much of the query the matched name is: `1.0` for a case-folded exact
+/// match, otherwise the fraction of the matched name the query covers.
+///
+/// This is the only factor derived from the *query*. The two below are
+/// properties of the symbol alone.
+fn text_relevance(entry_key: &str, prefix_lower: &str) -> f32 {
+    if entry_key == prefix_lower {
+        1.0
+    } else {
+        prefix_lower.len() as f32 / entry_key.len().max(1) as f32
+    }
+}
+
+/// The relevance the "type" section assigns before quality weighting.
+///
+/// Kind-facet hits are not text matches at all — the query named a *kind*, not
+/// a symbol — so they sit below every genuine name match by construction
+/// rather than by tuning.
+const TYPE_FACET_RELEVANCE: f32 = 0.5;
+
+/// Weight by **audience breadth**: how large the set of callers is that the
+/// author declared this symbol for.
+///
+/// The reader is looking at documentation, which means they are looking for
+/// something they can actually reach. A `pub` item is the thing being
+/// documented; a private one is an implementation detail that happens to share
+/// a name with it — real crates are full of these (`memchr` declares a private
+/// `mod memchr` once per architecture backend, all of them exact-matching a
+/// search for `memchr`). Public is deliberately `1.0`, so this factor only ever
+/// pushes *down*: it can reorder a tie, never promote a worse text match over a
+/// better one.
+fn visibility_weight(visibility: Visibility) -> f32 {
+    match visibility {
+        // Reachable from anywhere. The reference point.
+        Visibility::Public => 1.0,
+        // Reachable from subtypes of the declaring type.
+        Visibility::Protected => 0.75,
+        // Reachable within one compilation unit (crate / assembly / package).
+        Visibility::Internal | Visibility::Package | Visibility::Crate => 0.6,
+        // Reachable only inside the declaring scope.
+        Visibility::Private => 0.4,
+    }
+}
+
+/// Weight by **addressability**: whether this kind is something a reader
+/// navigates *to*, or a part of something they navigate to.
+///
+/// A field, a variant and a parameter are only meaningful in the context of
+/// their owner — landing on one is usually a step on the way to the owner
+/// rather than the destination. Independently addressable declarations are the
+/// reference point at `1.0`, for the same reason `Public` is: this factor must
+/// not be able to lift a weaker match above a stronger one.
+///
+/// The match is exhaustive on purpose. `KindDiscriminant` gains a variant every
+/// time a language contributes one, and "what is this kind worth in a ranked
+/// list?" is a question the person adding it should have to answer here rather
+/// than have silently answered for them by a `_` arm.
+fn kind_weight(kind: KindDiscriminant) -> f32 {
+    match kind {
+        KindDiscriminant::Module
+        | KindDiscriminant::Record
+        | KindDiscriminant::Function
+        | KindDiscriminant::Alias
+        | KindDiscriminant::Trait
+        | KindDiscriminant::Impl
+        | KindDiscriminant::Enum
+        | KindDiscriminant::Const
+        | KindDiscriminant::Static
+        | KindDiscriminant::Reexport => 1.0,
+        // Members: addressable, but only through their owner.
+        KindDiscriminant::Field | KindDiscriminant::Variant => 0.85,
+        // Part of a signature, not a documented API surface of its own.
+        KindDiscriminant::Param => 0.7,
+    }
+}
+
+/// The full relevance of one hit: query fit scaled by the two symbol-quality
+/// factors. See the module docs.
+fn score_of(relevance: f32, visibility: Visibility, kind: KindDiscriminant) -> f32 {
+    relevance * visibility_weight(visibility) * kind_weight(kind)
+}
+
+/// The **total** order search results are presented in.
+///
+/// Score descending, then display name ascending, then `StableRef` — package
+/// lineage, then `IntroId`. Terminating in the symbol's identity is the whole
+/// point: `IntroId` is a content hash, so every remaining tie is broken by a
+/// value that is a property of the package rather than of the run, and no
+/// upstream iteration order can reach the output. A comparator that stops at
+/// `display_name` is *not* total here — every case-folded exact match scores
+/// identically and carries the same leaf name at sort time, so a whole result
+/// set can be one flat tie.
+///
+/// `total_cmp` rather than `partial_cmp(..).unwrap_or(Equal)`: an `Equal`
+/// fallback for an unorderable score is exactly the silent tie this function
+/// exists to eliminate.
+fn compare_candidates(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+    b.row
+        .score
+        .total_cmp(&a.row.score)
+        .then_with(|| {
+            let a_str: &str = &a.row.display_name;
+            let b_str: &str = &b.row.display_name;
+            a_str.cmp(b_str)
+        })
+        .then_with(|| a.row.key.cmp(&b.row.key))
+}
+
+// ---------------------------------------------------------------------------
 // Name-hit collection
 // ---------------------------------------------------------------------------
 
@@ -254,14 +476,15 @@ fn collect_name_hits(
         query.limit
     };
 
-    let mut rows: Vec<HitRow> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
 
     for pkg in packages {
         let indexes = pkg.indexes();
         let provenance: Provenance = pkg.provenance().into();
+        let pkg_name = pkg.lineage().name.as_str();
 
         for entry in indexes.by_name.prefix(&prefix_lower) {
-            if rows.len() >= limit {
+            if candidates.len() >= limit {
                 break;
             }
 
@@ -281,64 +504,33 @@ fn collect_name_hits(
             // LR-4: signature from the single renderer.
             let sig_preview = signature::tokens(ir_entry, pkg);
 
-            // Disambiguate the display name once the corpus holds more than
-            // one package.
-            //
-            // `path_of` is the *in-package* moniker, so on its own it cannot
-            // separate `a::Router` from `b::Router` — both roots render the
-            // same string, and the reader is shown two identical rows for two
-            // different symbols. The package name has to be part of it.
-            //
-            // The moniker already begins with the crate's root module for most
-            // producers (Rust's root module is named after the crate), so
-            // prefixing unconditionally would yield `axum::axum.routing.…`.
-            // Prepend only when the first segment is not already the package.
-            let display_name: SharedStr = if packages.len() > 1 {
-                let base = indexes
-                    .path_of(entry.intro)
-                    .map(|p| p.as_ref().to_owned())
-                    .unwrap_or_else(|| entry.display.as_str().to_owned());
-                let pkg_name = pkg.lineage().name.as_str();
-                if base.split(['.', ':']).next() == Some(pkg_name) {
-                    SharedStr::from(base)
-                } else {
-                    SharedStr::from(format!("{pkg_name}::{base}"))
-                }
-            } else {
-                SharedStr::from(entry.display.as_str())
-            };
+            let leaf: SharedStr = SharedStr::from(entry.display.as_str());
+            let qualified =
+                qualified_display_name(indexes, entry.intro, entry.display.as_str(), pkg_name);
 
-            // Score: exact match scores 1.0, prefix match scores by ratio.
-            let score = if entry.key == prefix_lower {
-                1.0_f32
-            } else {
-                prefix_lower.len() as f32 / entry.key.len().max(1) as f32
-            };
+            let score = score_of(
+                text_relevance(&entry.key, &prefix_lower),
+                ir_entry.sym().visibility,
+                disc,
+            );
 
-            rows.push(HitRow {
-                key,
-                display_name,
-                sig_preview,
-                kind: KindTag::Known(disc),
-                provenance: provenance.clone(),
-                score,
+            candidates.push(Candidate {
+                row: HitRow {
+                    key,
+                    display_name: leaf,
+                    sig_preview,
+                    kind: KindTag::Known(disc),
+                    provenance: provenance.clone(),
+                    score,
+                },
+                qualified,
             });
         }
     }
 
-    // Sort: highest score first, then stable by name.
-    rows.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| {
-                let a_str: &str = &a.display_name;
-                let b_str: &str = &b.display_name;
-                a_str.cmp(b_str)
-            })
-    });
-    rows.truncate(limit);
-    rows
+    candidates.sort_by(compare_candidates);
+    candidates.truncate(limit);
+    finalize_candidates(candidates)
 }
 
 // ---------------------------------------------------------------------------
@@ -375,21 +567,22 @@ fn collect_type_hits(
         return Vec::new();
     }
 
-    let mut rows: Vec<HitRow> = Vec::new();
+    let mut candidates: Vec<Candidate> = Vec::new();
 
     for pkg in packages {
-        if rows.len() >= limit {
+        if candidates.len() >= limit {
             break;
         }
         let indexes = pkg.indexes();
         let provenance: Provenance = pkg.provenance().into();
+        let pkg_name = pkg.lineage().name.as_str();
 
         for &disc in &target_kinds {
             let Some(intros) = indexes.by_kind.get(&disc) else {
                 continue;
             };
             for &intro in intros.iter() {
-                if rows.len() >= limit {
+                if candidates.len() >= limit {
                     break;
                 }
                 let Some(ir_entry) = pkg.view().entry(intro) else {
@@ -397,22 +590,35 @@ fn collect_type_hits(
                 };
                 let key = nudox_ir::change::StableRef::new(pkg.lineage().clone(), intro);
                 let sig_preview = signature::tokens(ir_entry, pkg);
-                let display_name: SharedStr = SharedStr::from(ir_entry.sym().name.as_str());
+                let leaf_str = ir_entry.sym().name.as_str();
+                let leaf: SharedStr = SharedStr::from(leaf_str);
+                let qualified = qualified_display_name(indexes, intro, leaf_str, pkg_name);
 
-                rows.push(HitRow {
-                    key,
-                    display_name,
-                    sig_preview,
-                    kind: KindTag::Known(disc),
-                    provenance: provenance.clone(),
-                    // Type-section hits all score 0.5 (they are kind-facet, not text-relevance).
-                    score: 0.5,
+                candidates.push(Candidate {
+                    row: HitRow {
+                        key,
+                        display_name: leaf,
+                        sig_preview,
+                        kind: KindTag::Known(disc),
+                        provenance: provenance.clone(),
+                        // Kind-facet, not text-relevance: a fixed base relevance,
+                        // weighted by the same quality factors the name section
+                        // uses so that a public API item outranks a private one
+                        // inside the facet too.
+                        score: score_of(TYPE_FACET_RELEVANCE, ir_entry.sym().visibility, disc),
+                    },
+                    qualified,
                 });
             }
         }
     }
 
-    rows
+    // The same total order the name section uses. This section used to ship
+    // whatever order the package walk produced, which is how corpus-map hash
+    // order reached the screen even for queries that never touched `by_name`.
+    candidates.sort_by(compare_candidates);
+    candidates.truncate(limit);
+    finalize_candidates(candidates)
 }
 
 /// Map common kind-keyword strings to one or more [`KindDiscriminant`]s.
@@ -439,14 +645,15 @@ fn keyword_to_kinds(lower: &str) -> Vec<KindDiscriminant> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use nudox_store::source::fixtures::FixtureSource;
 
     use crate::{
         runtime::{Engine, EngineConfig},
-        search::{SECTION_NAME, SECTION_TYPE, SearchQuery},
-        wire::{Gen, SearchEvent},
+        search::{SECTION_NAME, SECTION_TYPE, SearchQuery, collect_name_hits},
+        wire::{Gen, SearchEvent, SharedStr},
     };
 
     fn make_engine() -> crate::runtime::EngineHandle {
@@ -618,6 +825,463 @@ mod tests {
         assert!(
             !rows.is_empty(),
             "keyword 'fn' must produce type-section hits"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // L20: colliding leaf names must yield distinct display names, even
+    // within a single package.
+    // -----------------------------------------------------------------------
+
+    /// Build a single-package fixture with two functions named `foo` under
+    /// different modules (`a::foo`, `b::foo`) plus one uniquely-named
+    /// function (`zzunique`), calling `collect_name_hits` directly — it is
+    /// private to this module, so a test here can exercise it without going
+    /// through the whole engine/source plumbing.
+    ///
+    /// This mirrors the real bug's shape (real memchr declares `mod memchr`
+    /// once per architecture backend, e.g. `arch::x86_64::memchr` and
+    /// `arch::aarch64::memchr`) without depending on a real crate checkout —
+    /// see `real_memchr_leaf_collisions_get_distinct_display_names` below for
+    /// the real-fixture counterpart.
+    fn package_with_leaf_collision() -> Arc<nudox_store::package::PackageView> {
+        use nudox_ir::{
+            apply::PristineIntroTable,
+            change::{EcosystemId, IntroId, PackageLineageId, PackageName},
+            entry::{Entry, Node, Symbol, Visibility},
+            index::RawRef,
+            kind::Kind,
+            kinds::{Function, Module},
+            view::IrView,
+        };
+        use nudox_store::package::{PackageView, Provenance};
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::new(),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let root_id = IntroId::from_raw([21u8; 32]);
+        let mod_a_id = IntroId::from_raw([22u8; 32]);
+        let mod_b_id = IntroId::from_raw([23u8; 32]);
+        let foo_a_id = IntroId::from_raw([24u8; 32]);
+        let foo_b_id = IntroId::from_raw([25u8; 32]);
+        let unique_id = IntroId::from_raw([26u8; 32]);
+
+        let mut table = PristineIntroTable::new();
+        table.insert_live(
+            root_id,
+            Entry::new(
+                sym("testpkg"),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            mod_a_id,
+            Entry::new(sym("a"), Node::build(None::<RawRef>, []), Kind::Module(Module)),
+            Some(root_id),
+        );
+        table.insert_live(
+            mod_b_id,
+            Entry::new(sym("b"), Node::build(None::<RawRef>, []), Kind::Module(Module)),
+            Some(root_id),
+        );
+        table.insert_live(
+            foo_a_id,
+            Entry::new(
+                sym("foo"),
+                Node::build(None::<RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(mod_a_id),
+        );
+        table.insert_live(
+            foo_b_id,
+            Entry::new(
+                sym("foo"),
+                Node::build(None::<RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(mod_b_id),
+        );
+        table.insert_live(
+            unique_id,
+            Entry::new(
+                sym("zzunique"),
+                Node::build(None::<RawRef>, []),
+                Kind::Function(Function::builder().build()),
+            ),
+            Some(root_id),
+        );
+
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("testpkg"));
+        let view = IrView::with_package(lineage, table);
+        Arc::new(PackageView::build(view, Provenance::TrustedLocal))
+    }
+
+    // -----------------------------------------------------------------------
+    // The comparator is a *total* order, including over genuine ties
+    // -----------------------------------------------------------------------
+
+    /// Build a candidate that differs from its siblings only in `intro`.
+    fn tied_candidate(pkg: &str, intro_byte: u8, leaf: &str, score: f32) -> super::Candidate {
+        use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
+        use crate::wire::{HitRow, KindTag, Provenance};
+
+        let key = nudox_ir::change::StableRef::new(
+            PackageLineageId::new(EcosystemId::new("test"), PackageName::new(pkg)),
+            IntroId::from_raw([intro_byte; 32]),
+        );
+        super::Candidate {
+            row: HitRow {
+                key,
+                display_name: SharedStr::from(leaf),
+                sig_preview: Vec::new(),
+                kind: KindTag::Known(nudox_ir::kind::KindDiscriminant::Function),
+                provenance: Provenance::TrustedLocal,
+                score,
+            },
+            qualified: SharedStr::from(leaf),
+        }
+    }
+
+    /// No two *distinct* symbols may compare `Equal`, even when they agree on
+    /// every scoring input.
+    ///
+    /// This is what "total" buys: `sort_by` is stable, so any pair that
+    /// compares `Equal` silently keeps whatever relative order the input had —
+    /// and the input order is a `HashMap` walk. A comparator that bottoms out
+    /// in `display_name` reports `Equal` for the entire set below, which is the
+    /// exact shape a real query produces (every case-folded exact match scores
+    /// identically and carries the same leaf name at sort time).
+    #[test]
+    fn comparator_never_reports_equal_for_two_distinct_symbols() {
+        let set = vec![
+            tied_candidate("aaa", 0x40, "dup", 1.0),
+            tied_candidate("aaa", 0x10, "dup", 1.0),
+            tied_candidate("zzz", 0x10, "dup", 1.0),
+            tied_candidate("aaa", 0x70, "dup", 1.0),
+            tied_candidate("zzz", 0xB0, "dup", 1.0),
+        ];
+
+        for (i, a) in set.iter().enumerate() {
+            for (j, b) in set.iter().enumerate() {
+                let ord = super::compare_candidates(a, b);
+                if i == j {
+                    assert_eq!(
+                        ord,
+                        std::cmp::Ordering::Equal,
+                        "a candidate must compare Equal to itself"
+                    );
+                    continue;
+                }
+                assert_ne!(
+                    ord,
+                    std::cmp::Ordering::Equal,
+                    "candidates {i} and {j} tie on every scoring input and the \
+                     comparator cannot separate them — their order is therefore \
+                     whatever the index walk produced"
+                );
+                // Antisymmetry: reversing the arguments must reverse the result.
+                assert_eq!(
+                    ord.reverse(),
+                    super::compare_candidates(b, a),
+                    "comparator is not antisymmetric for {i} vs {j}"
+                );
+            }
+        }
+
+        // Transitivity across the whole set: sorting must produce a sequence in
+        // which every adjacent pair is strictly Less.
+        let mut sorted = set;
+        sorted.sort_by(super::compare_candidates);
+        for pair in sorted.windows(2) {
+            assert_eq!(
+                super::compare_candidates(&pair[0], &pair[1]),
+                std::cmp::Ordering::Less,
+                "sorted output contains an adjacent pair that is not strictly ordered"
+            );
+        }
+
+        // And the order really is the identity order: package, then IntroId.
+        let ids: Vec<(String, u8)> = sorted
+            .iter()
+            .map(|c| {
+                (
+                    c.row.key.package.name.as_str().to_owned(),
+                    c.row.key.intro.as_bytes()[0],
+                )
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("aaa".to_owned(), 0x10),
+                ("aaa".to_owned(), 0x40),
+                ("aaa".to_owned(), 0x70),
+                ("zzz".to_owned(), 0x10),
+                ("zzz".to_owned(), 0xB0),
+            ]
+        );
+    }
+
+    /// A higher score always wins, whatever the identities say.
+    ///
+    /// Guards the ordering of the comparator's terms: identity is the *last*
+    /// resort, not a co-equal key that could reorder real relevance.
+    #[test]
+    fn score_dominates_identity_in_the_comparator() {
+        // The lower-scoring candidate has the smaller package name and the
+        // smaller intro — it wins on every tiebreak and must still lose.
+        let strong = tied_candidate("zzz", 0xFF, "dup", 1.0);
+        let weak = tied_candidate("aaa", 0x00, "dup", 0.4);
+        assert_eq!(
+            super::compare_candidates(&strong, &weak),
+            std::cmp::Ordering::Less,
+            "the higher-scoring row must sort first"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Scoring model
+    // -----------------------------------------------------------------------
+
+    /// A public, top-level, exactly-matched symbol scores exactly 1.0, and
+    /// every weight is a discount from it.
+    ///
+    /// This is the contract `HitRow::score` documents and that the MCP layer
+    /// and the adversarial suite both assume. Asserting the *bound* rather than
+    /// each constant means the weights can be re-argued without the test
+    /// having to be edited to agree with them.
+    #[test]
+    fn public_top_level_exact_match_is_the_scoring_reference_point() {
+        use nudox_ir::entry::Visibility;
+        use nudox_ir::kind::KindDiscriminant as K;
+
+        assert_eq!(
+            super::score_of(1.0, Visibility::Public, K::Function),
+            1.0,
+            "an exact match on a public function is the 1.0 reference point"
+        );
+
+        let all_visibilities = [
+            Visibility::Public,
+            Visibility::Protected,
+            Visibility::Internal,
+            Visibility::Package,
+            Visibility::Crate,
+            Visibility::Private,
+        ];
+        let all_kinds = [
+            K::Module, K::Record, K::Field, K::Function, K::Alias, K::Trait,
+            K::Impl, K::Enum, K::Variant, K::Const, K::Static, K::Reexport, K::Param,
+        ];
+        for v in all_visibilities {
+            for k in all_kinds {
+                let s = super::score_of(1.0, v, k);
+                assert!(
+                    s > 0.0 && s <= 1.0,
+                    "score for ({v:?}, {k:?}) escaped (0, 1]: {s} — a weight above \
+                     1.0 would let a quality factor promote a worse text match"
+                );
+            }
+        }
+    }
+
+    /// Visibility separates two symbols that are identical to the text matcher.
+    #[test]
+    fn less_visible_symbols_score_below_public_ones() {
+        use nudox_ir::entry::Visibility;
+        use nudox_ir::kind::KindDiscriminant as K;
+
+        let public = super::score_of(1.0, Visibility::Public, K::Module);
+        for lesser in [
+            Visibility::Protected,
+            Visibility::Internal,
+            Visibility::Package,
+            Visibility::Crate,
+            Visibility::Private,
+        ] {
+            assert!(
+                super::score_of(1.0, lesser, K::Module) < public,
+                "{lesser:?} must score below Public on an otherwise identical match"
+            );
+        }
+    }
+
+    /// Two entries sharing the leaf name `foo` in different modules of the
+    /// *same* package must render with distinct `display_name`s.
+    ///
+    /// This is the regression the old code missed: disambiguation only ran
+    /// when `packages.len() > 1`, so a single-package corpus (the common
+    /// case — open one crate's docs and search it) never qualified anything,
+    /// no matter how many leaf names collided inside that one package.
+    #[test]
+    fn colliding_leaf_names_within_one_package_get_distinct_display_names() {
+        let pkg = package_with_leaf_collision();
+
+        let query = SearchQuery {
+            text: "foo".to_owned(),
+            kinds: Vec::new(),
+            limit: 50,
+        };
+        let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
+
+        assert_eq!(rows.len(), 2, "both `foo` entries must be returned");
+        assert_ne!(
+            rows[0].display_name, rows[1].display_name,
+            "two entries with the same leaf name in one package must not \
+             render identical display names; got {:?} and {:?}",
+            rows[0].display_name, rows[1].display_name
+        );
+        // Qualified, not just "different by accident" — each must still
+        // read as `foo`, distinguished by its module path.
+        for row in &rows {
+            assert!(
+                row.display_name.contains("foo"),
+                "qualified display name must still contain the leaf name, \
+                 got {:?}",
+                row.display_name
+            );
+        }
+    }
+
+    /// A leaf name that does not collide with anything in the result set
+    /// must keep its short, unqualified form — disambiguation is a cost we
+    /// pay only where the reader actually needs it.
+    #[test]
+    fn unique_leaf_name_keeps_short_display_name() {
+        let pkg = package_with_leaf_collision();
+
+        let query = SearchQuery {
+            text: "zzunique".to_owned(),
+            kinds: Vec::new(),
+            limit: 50,
+        };
+        let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
+
+        assert_eq!(rows.len(), 1, "exactly one `zzunique` entry exists");
+        assert_eq!(
+            &*rows[0].display_name, "zzunique",
+            "a non-colliding leaf name must not be qualified"
+        );
+    }
+
+    /// End-to-end regression against the **real** `memchr` crate (L20): the
+    /// exact case the limitations ledger used to demonstrate the bug —
+    /// `memchr` declares `mod memchr` once per architecture backend
+    /// (`arch::x86_64::memchr`, `arch::aarch64::memchr`, …), so a search for
+    /// `memchr` returns several same-kind, same-name rows that were
+    /// previously pixel-identical apart from vertical position.
+    ///
+    /// # Running
+    ///
+    /// ```text
+    /// cargo test -p nudox-engine --lib \
+    ///   search::tests::real_memchr_leaf_collisions_get_distinct_display_names \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "loads a real Cargo workspace through rust-analyzer; run with --ignored"]
+    fn real_memchr_leaf_collisions_get_distinct_display_names() {
+        use nudox_ir::view::IrView;
+        use nudox_producer::produce;
+        use nudox_producer_rust::RustProducer;
+        use nudox_store::package::{PackageView, Provenance};
+        use nudox_store::source::producer::PackageDescriptor;
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.real-crates/memchr-2.8.3")
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
+
+        if !root.join("Cargo.toml").is_file() {
+            eprintln!(
+                "SKIP: no memchr checkout at {}. \
+                 Run: scripts/fetch-real-crate.sh memchr 2.8.3",
+                root.display()
+            );
+            return;
+        }
+
+        // `direct_repo: false` matches `ProducerRegistry::with_rust_pilot`,
+        // the constructor the real app uses.
+        let descriptor = PackageDescriptor::cargo(&root, "memchr", "2.8.3");
+        let table = produce(
+            &RustProducer { direct_repo: false },
+            &descriptor.source,
+            &descriptor.lineage,
+            &nudox_ir::foreign::Unlinked,
+        )
+        .expect("memchr must lower without error for a real checkout").table;
+
+        let view = IrView::with_package(descriptor.lineage, table);
+        let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
+
+        let query = SearchQuery {
+            text: "memchr".to_owned(),
+            kinds: Vec::new(),
+            limit: 0, // unlimited — we need the full collision set to exist
+        };
+        let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
+        eprintln!(
+            "memchr search rows: {:?}",
+            rows.iter().map(|r| &*r.display_name).collect::<Vec<_>>()
+        );
+
+        // Ground truth, independent of `collect_name_hits`: group the
+        // *actual* IR entries by leaf name (case-sensitive, as displayed).
+        let mut leaf_of_intro: std::collections::HashMap<nudox_ir::change::IntroId, &str> =
+            std::collections::HashMap::new();
+        for (id, entry) in pkg.view().entries() {
+            leaf_of_intro.insert(id, entry.sym().name.as_str());
+        }
+        let mut groups: std::collections::HashMap<&str, Vec<SharedStr>> =
+            std::collections::HashMap::new();
+        for row in &rows {
+            let leaf = leaf_of_intro
+                .get(&row.key.intro)
+                .copied()
+                .expect("every hit row must resolve back to a real entry");
+            groups.entry(leaf).or_default().push(row.display_name.clone());
+        }
+
+        let mut proved_a_collision = false;
+        for (leaf, display_names) in &groups {
+            if display_names.len() < 2 {
+                continue;
+            }
+            proved_a_collision = true;
+            let unique: std::collections::HashSet<&SharedStr> = display_names.iter().collect();
+            assert_eq!(
+                unique.len(),
+                display_names.len(),
+                "leaf name {leaf:?} has {} colliding rows but only {} distinct \
+                 display names: {display_names:?}",
+                display_names.len(),
+                unique.len(),
+            );
+        }
+
+        assert!(
+            proved_a_collision,
+            "expected at least one leaf-name collision among real memchr's \
+             `memchr`-prefixed symbols (the L20 evidence found seven) — \
+             found none, so this run does not actually exercise the \
+             invariant. Rows: {:?}",
+            rows.iter().map(|r| &*r.display_name).collect::<Vec<_>>()
         );
     }
 }

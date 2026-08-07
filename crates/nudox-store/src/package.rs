@@ -116,8 +116,16 @@ mod typerefs {
     fn raw_ref_to_stable(raw: &RawRef, package: &PackageLineageId) -> Option<StableRef> {
         match raw {
             Ref::Intro(id) => Some(StableRef::new(package.clone(), *id)),
-            Ref::Foreign(sr) => Some(sr.clone()),
-            // Ref::Local must not appear in a sealed table.
+            // A cross-package reference earns a `mentions` posting only once it
+            // is *linked* — the index maps a `StableRef` to the entries that
+            // name it, and a named-but-unlinked reference has no `StableRef` to
+            // key on. This is why "who implements this trait" is empty for a
+            // foreign trait whose package is not in the corpus, and why it
+            // starts working the moment one is.
+            Ref::Foreign { target, .. } => target.clone(),
+            // `Ref::Local` really does not appear in a sealed table now: the
+            // import arena that used to hide behind this variant is gone, and
+            // `seal` reports any residual local in `SealReport::unmapped_local`.
             Ref::Local(_) => None,
         }
     }
@@ -193,6 +201,17 @@ impl PackageIndexes {
     ///
     /// Complexity: O(n log n) dominated by sort+dedup of posting lists and
     /// path-string allocation. Called once per package load.
+    ///
+    /// # Why the walk is `entries_sorted`, not `entries`
+    ///
+    /// Every index here is *derived* state that ends up on a user's screen, so
+    /// the walk that feeds them all is the single place determinism has to be
+    /// established. `IrView::entries` yields in `HashMap` order — a function of
+    /// std's per-process `RandomState` seed — so a walk through it makes each
+    /// index individually responsible for re-imposing an order, and the one
+    /// index that forgot (`by_name`) leaked the seed all the way to the search
+    /// ranking. Fixing it here means a *future* index added to this loop is
+    /// deterministic without its author having to know that.
     pub fn build(view: &IrView) -> Self {
         let package = view.package();
 
@@ -203,8 +222,8 @@ impl PackageIndexes {
             PostingListBuilder::new();
         let mut paths: HashMap<IntroId, Arc<str>> = HashMap::new();
 
-        // Single pass over the declaration table.
-        for (intro, entry) in view.entries() {
+        // Single pass over the declaration table, in IntroId order.
+        for (intro, entry) in view.entries_sorted() {
             // -- NameIndex ---------------------------------------------------
             by_name.insert(entry.sym().name.clone(), intro);
 

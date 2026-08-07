@@ -9,7 +9,7 @@
 //!
 //! # Interior mutability
 //!
-//! The package map is wrapped in a `tokio::sync::RwLock<HashMap<...>>` rather
+//! The package map is wrapped in a `tokio::sync::RwLock<BTreeMap<...>>` rather
 //! than a `DashMap` or `papaya::HashMap`. Rationale (see also `lib.rs`):
 //!
 //! * Packages are inserted during the initial workspace load and then the map
@@ -21,8 +21,20 @@
 //! * `package()` and `entry()` clone the `Arc<PackageView>` before releasing
 //!   the guard, so callers always hold a value (never a reference into a
 //!   locked structure) — this is safe across `.await` points.
+//!
+//! # Why `BTreeMap` and not `HashMap`
+//!
+//! `packages()` hands the whole corpus to the search fan-out, which ranks the
+//! rows it produces and shows them to a user. Under a `HashMap` that Vec came
+//! out in std `RandomState` order, so the *same* corpus and the *same* query
+//! produced a different ranking in every process — a per-process random seed
+//! reaching the UI. Sorting inside `packages()` would fix that one caller;
+//! keying the map by the `Ord` lineage id fixes it for every caller there will
+//! ever be, at no cost worth measuring for a map this small. This is the
+//! house rule from `nudox_ir::continuity`: iteration is over `BTreeMap`/
+//! `BTreeSet`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use nudox_ir::{
@@ -44,7 +56,10 @@ struct CorpusInner {
     ///
     /// Each `PackageView` is itself `Arc`-wrapped so that returning a
     /// reference to one package does not require holding the outer lock.
-    packages: RwLock<HashMap<PackageLineageId, Arc<PackageView>>>,
+    ///
+    /// Ordered by `PackageLineageId` (ecosystem, then name) so that every
+    /// iteration of the corpus is reproducible — see the module docs.
+    packages: RwLock<BTreeMap<PackageLineageId, Arc<PackageView>>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -67,7 +82,7 @@ impl Corpus {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(CorpusInner {
-                packages: RwLock::new(HashMap::new()),
+                packages: RwLock::new(BTreeMap::new()),
             }),
         }
     }
@@ -105,11 +120,16 @@ impl Corpus {
         })
     }
 
-    /// Iterate over all currently loaded packages.
+    /// Iterate over all currently loaded packages, ordered by lineage
+    /// (ecosystem, then package name).
     ///
     /// Collects into a `Vec` to avoid holding the read lock across the
     /// caller's iteration. The allocation is bounded by the number of loaded
     /// packages, which is small (< 10 000 in any realistic workspace).
+    ///
+    /// The order is part of the contract, not an artefact: search fans out over
+    /// this Vec and its ranking inherits the order for rows that tie, so a
+    /// caller must be able to rely on two processes producing the same list.
     pub async fn packages(&self) -> Vec<Arc<PackageView>> {
         let map = self.inner.packages.read().await;
         map.values().cloned().collect()
@@ -272,6 +292,54 @@ mod tests {
 
         let pkgs = corpus.packages().await;
         assert_eq!(pkgs.len(), 3);
+    }
+
+    /// `packages()` is ordered by lineage, and that order does not depend on
+    /// the order packages were loaded in.
+    ///
+    /// Search fans out over this Vec and its ranking inherits the order for
+    /// rows that tie, so an unordered result made the same query rank
+    /// differently in every process.
+    #[tokio::test]
+    async fn packages_are_ordered_by_lineage_whatever_the_load_order() {
+        // Enough packages that agreeing with the sorted order by chance is
+        // implausible, and names whose sorted order is not the insertion order.
+        let names = ["delta", "alpha", "echo", "charlie", "bravo", "foxtrot"];
+
+        let forward = Corpus::new();
+        for name in names {
+            forward.insert(make_package(name)).await;
+        }
+
+        let reversed = Corpus::new();
+        for name in names.iter().rev() {
+            reversed.insert(make_package(name)).await;
+        }
+
+        let listed = |c: &Corpus| {
+            let c = c.clone();
+            async move {
+                c.packages()
+                    .await
+                    .iter()
+                    .map(|p| p.lineage().name.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        let expected: Vec<String> = {
+            let mut v: Vec<String> = names.iter().map(|s| (*s).to_owned()).collect();
+            v.sort();
+            v
+        };
+
+        assert_eq!(listed(&forward).await, expected);
+        assert_eq!(
+            listed(&reversed).await,
+            expected,
+            "the corpus listing changed when packages were loaded in a \
+             different order"
+        );
     }
 
     #[tokio::test]
