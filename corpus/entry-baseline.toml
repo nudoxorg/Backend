@@ -1,0 +1,1021 @@
+# Corpus entry baseline — the ONE authoritative record of how many IR entries
+# each package in `corpus/manifest.toml` lowers to.
+#
+# DO NOT hand-edit a number here. Every figure is produced by running the real
+# producer over the real, hash-pinned fixture; a number typed in by hand is
+# indistinguishable from a measured one and destroys the only property that
+# makes this file worth having.
+#
+# Regenerate with (this rewrites the file AND fails the run, deliberately —
+# review `git diff corpus/entry-baseline.toml` before re-running clean):
+#
+#   UPDATE_CORPUS_BASELINE=1 cargo test -p nudox-store --features fixtures \
+#     --test corpus_contract corpus_entry_counts -- --ignored --nocapture
+#
+# Keyed by (ecosystem, name, version), exactly as `corpus/manifest.toml` is.
+# Every manifest version must appear here — `nudox-store`'s
+# `every_corpus_package_has_a_recorded_entry_baseline` fails otherwise.
+#
+# Each `versions` entry is exactly one of three shapes:
+#
+#   { version = "X", entries = N }            producer ran, sealed N entries
+#   { version = "X", producer_error = "…" }   producer ran and failed
+#   { version = "X", unmeasured = "…" }       never measured, and why not
+#
+# `unmeasured` is measurement debt. Its total is pinned by
+# `corpus_baseline_measurement_debt_does_not_grow`, so the debt cannot grow
+# without someone raising the pin on purpose.
+
+[[packages]]
+ecosystem = "crates.io"
+name = "bytes"
+versions = [
+  { version = "1.11.0", entries = 2058 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "clap"
+versions = [
+  { version = "4.5.1", entries = 97 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "hashbrown"
+versions = [
+  { version = "0.17.1", entries = 3049 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "indexmap"
+versions = [
+  { version = "2.13.0", entries = 3281 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "itoa"
+versions = [
+  { version = "1.0.18", entries = 154 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "lazy_static"
+versions = [
+  { version = "1.4.0", entries = 20 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "libc"
+versions = [
+  { version = "0.2.161", entries = 18864 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "log"
+versions = [
+  { version = "0.4.17", entries = 1255 },
+  { version = "0.4.33", entries = 1424 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "memchr"
+versions = [
+  { version = "2.7.6", entries = 1825 },
+  { version = "2.8.0", entries = 1835 },
+  { version = "2.8.3", entries = 1835 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "nom"
+versions = [
+  { version = "5.1.3", entries = 3260 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "once_cell"
+versions = [
+  { version = "1.20.2", entries = 332 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "parking_lot"
+versions = [
+  { version = "0.12.1", entries = 424 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "rayon"
+versions = [
+  { version = "1.9.0", entries = 7760 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "regex"
+versions = [
+  { version = "1.10.3", entries = 1367 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "serde"
+versions = [
+  { version = "1.0.196", entries = 9136 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "serde_json"
+versions = [
+  { version = "1.0.113", entries = 5201 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "syn"
+versions = [
+  { version = "1.0.109", entries = 15544 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "thiserror"
+versions = [
+  { version = "1.0.40", entries = 48 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "tracing"
+versions = [
+  { version = "0.1.40", entries = 467 },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "unicode-width"
+versions = [
+  { version = "0.1.11", entries = 37 },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/BurntSushi/toml"
+versions = [
+  { version = "v1.6.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/fsnotify/fsnotify"
+versions = [
+  { version = "v1.10.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/gin-gonic/gin"
+versions = [
+  { version = "v1.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/golang-jwt/jwt/v5"
+versions = [
+  { version = "v5.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/google/go-cmp"
+versions = [
+  { version = "v0.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/google/uuid"
+versions = [
+  { version = "v1.6.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/hashicorp/go-multierror"
+versions = [
+  { version = "v1.1.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/mattn/go-sqlite3"
+versions = [
+  { version = "v1.14.49", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/pkg/errors"
+versions = [
+  { version = "v0.8.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v0.9.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/prometheus/client_golang"
+versions = [
+  { version = "v1.24.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/redis/go-redis/v9"
+versions = [
+  { version = "v9.22.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/robfig/cron/v3"
+versions = [
+  { version = "v3.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/samber/lo"
+versions = [
+  { version = "v1.53.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/spf13/cobra"
+versions = [
+  { version = "v1.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/spf13/viper"
+versions = [
+  { version = "v1.21.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/stretchr/testify"
+versions = [
+  { version = "v1.11.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "go.uber.org/zap"
+versions = [
+  { version = "v1.28.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "golang.org/x/sync"
+versions = [
+  { version = "v0.22.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "golang.org/x/text"
+versions = [
+  { version = "v0.40.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "gopkg.in/yaml.v3"
+versions = [
+  { version = "v3.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "ch.qos.logback:logback-classic"
+versions = [
+  { version = "1.4.14", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.fasterxml.jackson.core:jackson-databind"
+versions = [
+  { version = "2.15.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.16.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.code.gson:gson"
+versions = [
+  { version = "2.10.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.dagger:dagger"
+versions = [
+  { version = "2.51", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.guava:guava"
+versions = [
+  { version = "32.1.3-jre", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "33.0.0-jre", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.h2database:h2"
+versions = [
+  { version = "2.2.224", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.squareup.retrofit2:retrofit"
+versions = [
+  { version = "2.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "io.reactivex.rxjava3:rxjava"
+versions = [
+  { version = "3.1.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "io.vavr:vavr"
+versions = [
+  { version = "0.10.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "jakarta.validation:jakarta.validation-api"
+versions = [
+  { version = "3.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "junit:junit"
+versions = [
+  { version = "4.13.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.commons:commons-lang3"
+versions = [
+  { version = "3.14.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.httpcomponents.client5:httpclient5"
+versions = [
+  { version = "5.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.kafka:kafka-clients"
+versions = [
+  { version = "3.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.assertj:assertj-core"
+versions = [
+  { version = "3.25.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.junit.jupiter:junit-jupiter-api"
+versions = [
+  { version = "5.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.mapstruct:mapstruct"
+versions = [
+  { version = "1.5.5.Final", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.mockito:mockito-core"
+versions = [
+  { version = "5.10.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.projectlombok:lombok"
+versions = [
+  { version = "1.18.30", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.slf4j:slf4j-api"
+versions = [
+  { version = "2.0.12", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "AutoMapper"
+versions = [
+  { version = "13.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "CsvHelper"
+versions = [
+  { version = "30.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Dapper"
+versions = [
+  { version = "2.1.35", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "FluentValidation"
+versions = [
+  { version = "11.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Humanizer.Core"
+versions = [
+  { version = "2.14.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "MediatR"
+versions = [
+  { version = "12.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Microsoft.Bcl.AsyncInterfaces"
+versions = [
+  { version = "8.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Microsoft.Extensions.DependencyInjection.Abstractions"
+versions = [
+  { version = "8.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Moq"
+versions = [
+  { version = "4.20.70", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "NLog"
+versions = [
+  { version = "5.2.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "NUnit"
+versions = [
+  { version = "4.1.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Newtonsoft.Json"
+versions = [
+  { version = "12.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "13.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Polly"
+versions = [
+  { version = "8.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Refit"
+versions = [
+  { version = "7.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "RestSharp"
+versions = [
+  { version = "111.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Serilog"
+versions = [
+  { version = "2.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "3.1.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "StackExchange.Redis"
+versions = [
+  { version = "2.7.33", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "System.Text.Json"
+versions = [
+  { version = "8.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "protobuf-net"
+versions = [
+  { version = "3.2.30", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "xunit"
+versions = [
+  { version = "2.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "@types/node"
+versions = [
+  { version = "20.11.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "axios"
+versions = [
+  { version = "1.6.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "chalk"
+versions = [
+  { version = "5.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "class-validator"
+versions = [
+  { version = "0.14.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "commander"
+versions = [
+  { version = "12.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "date-fns"
+versions = [
+  { version = "3.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "dayjs"
+versions = [
+  { version = "1.11.10", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "debug"
+versions = [
+  { version = "4.3.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "fp-ts"
+versions = [
+  { version = "2.16.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "immer"
+versions = [
+  { version = "10.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "left-pad"
+versions = [
+  { version = "1.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "lodash"
+versions = [
+  { version = "4.17.20", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "4.17.21", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "p-limit"
+versions = [
+  { version = "5.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "reflect-metadata"
+versions = [
+  { version = "0.2.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "rxjs"
+versions = [
+  { version = "7.8.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "type-fest"
+versions = [
+  { version = "4.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "uuid"
+versions = [
+  { version = "9.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "ws"
+versions = [
+  { version = "8.16.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "yup"
+versions = [
+  { version = "1.4.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "zod"
+versions = [
+  { version = "3.22.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "3.23.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "attrs"
+versions = [
+  { version = "23.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "beautifulsoup4"
+versions = [
+  { version = "4.12.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "black"
+versions = [
+  { version = "24.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "cattrs"
+versions = [
+  { version = "23.2.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "click"
+versions = [
+  { version = "8.0.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "8.1.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "dataclasses-json"
+versions = [
+  { version = "0.6.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "flask"
+versions = [
+  { version = "3.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "httpx"
+versions = [
+  { version = "0.27.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "jsonschema"
+versions = [
+  { version = "4.21.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "more-itertools"
+versions = [
+  { version = "10.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "pydantic"
+versions = [
+  { version = "1.10.14", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "2.6.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "python-dateutil"
+versions = [
+  { version = "2.8.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "pyyaml"
+versions = [
+  { version = "6.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "requests"
+versions = [
+  { version = "2.31.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "rich"
+versions = [
+  { version = "13.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "six"
+versions = [
+  { version = "1.16.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "sqlalchemy"
+versions = [
+  { version = "2.0.27", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "structlog"
+versions = [
+  { version = "24.1.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "tenacity"
+versions = [
+  { version = "8.2.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "typer"
+versions = [
+  { version = "0.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "abseil-cpp"
+versions = [
+  { version = "20260526.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "argparse"
+versions = [
+  { version = "v3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "catch2"
+versions = [
+  { version = "v3.15.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cereal"
+versions = [
+  { version = "v1.3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cli11"
+versions = [
+  { version = "v2.7.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cpp-httplib"
+versions = [
+  { version = "v0.52.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cxxopts"
+versions = [
+  { version = "v3.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "date"
+versions = [
+  { version = "v3.0.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "fmt"
+versions = [
+  { version = "12.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "glm"
+versions = [
+  { version = "1.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "googletest"
+versions = [
+  { version = "v1.17.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "lz4"
+versions = [
+  { version = "v1.10.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "magic-enum"
+versions = [
+  { version = "v0.9.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "nlohmann-json"
+versions = [
+  { version = "v3.10.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.11.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "range-v3"
+versions = [
+  { version = "0.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "simdjson"
+versions = [
+  { version = "v4.6.6", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "spdlog"
+versions = [
+  { version = "v1.17.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "tomlplusplus"
+versions = [
+  { version = "v3.4.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "zlib"
+versions = [
+  { version = "v1.3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "zstd"
+versions = [
+  { version = "v1.5.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+]

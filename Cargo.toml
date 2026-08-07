@@ -73,6 +73,22 @@ members = [
     "crates/nudox-mcp",
 ]
 
+# `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default
+# `dolt-engine` feature), not a member. Cargo auto-promotes in-tree path deps to
+# members unless excluded, which is why this list has to say so out loud: without
+# it, `cargo check --workspace` tries to compile `vendor/doltlite/doltlite.c`, a
+# ~20 MB generated amalgamation that is deliberately not committed (see
+# `workspace/vendor/doltlite/VENDORING.md`). Excluding it makes the comment at
+# the top of `members` true instead of aspirational.
+#
+# `qdrant-edge` is a `[patch.crates-io]` entry with vendored C++ sources (cpp/)
+# that are deliberately not committed. Like rusqdoltlite, it must be excluded
+# from the workspace so `cargo check --workspace --all-targets` does not attempt
+# to compile it. The patch entry remains valid: when registry's `local` feature
+# is enabled, Cargo will use the patched version; when disabled, Cargo will skip
+# compiling qdrant-edge entirely.
+exclude = ["workspace/vendor/rusqdoltlite", "workspace/vendor/doltlite", "workspace/vendor/qdrant-edge"]
+
 # Depth-1 structured record (DEPTH1 plan §2): every `libpijul = "=1.0.0-beta.11"`
 # requirement in the workspace resolves to the vendored fork (build metadata
 # `+nudox.N` is ignored in semver comparison). Fork diff = src/diff/diff.rs +
@@ -105,6 +121,11 @@ rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# `corpus/manifest.toml` and `corpus/entry-baseline.toml` are read by tests in
+# more than one crate (`workspace/index`, `nudox-store`). Declared once here so
+# two readers of the same corpus files cannot end up on different toml majors
+# and disagree about what the corpus contains.
+toml = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 triomphe = "0.1"
 vfs = "0.13"
@@ -119,6 +140,14 @@ pulldown-cmark = { version = "0.13", default-features = false, features = ["simd
 flume = "0.11"
 schemars = "1"
 tracing = "0.1"
+# Untrusted-archive ingest. `index::ingest::archive` sanitizes tar and zip
+# uploads; `driver` re-extracts the same shapes on the serving side. Declared
+# once here so the two cannot drift onto different zip majors and disagree about
+# what a given archive contains — a divergence that would land as a security
+# difference, not a build error. `default-features = false` keeps bzip2/zstd/aes
+# C dependencies out; `deflate` is the only method these packs use besides
+# `Stored`.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [workspace.lints.clippy]
 result_large_err = "allow"
