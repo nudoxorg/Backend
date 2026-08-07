@@ -1,5 +1,7 @@
 use std::env;
 
+use crate::build_common::require_vendored_source;
+
 pub fn main() {
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH")
         .expect("CARGO_CFG_TARGET_ARCH env-var is not defined or is not UTF-8");
@@ -14,6 +16,13 @@ pub fn main() {
         .expect("CARGO_CFG_TARGET_FEATURE env-var is not defined or is not UTF-8");
 
     if target_arch == "aarch64" && target_feature.split(',').any(|feat| feat == "neon") {
+        println!("cargo:rerun-if-changed=src/segment/spaces/metric_f16/cpp/neon.c");
+        require_vendored_source(
+            "src/segment/spaces/metric_f16/cpp/neon.c",
+            "dotProduct_half_4x4, euclideanDist_half_4x4, manhattanDist_half_4x4 \
+             (the f16 metric kernels behind spaces::metric_f16::neon)",
+        );
+
         let mut builder = cc::Build::new();
         builder.file("src/segment/spaces/metric_f16/cpp/neon.c");
         builder.flag("-O3");

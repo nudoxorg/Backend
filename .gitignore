@@ -50,6 +50,28 @@
 !/compiler/src/core/clang/tests/**/*.cpp
 !/compiler/src/core/clang/tests/**/compile_commands.json
 
+# Vendored C sources that are the ONLY definition of symbols the Rust tree
+# declares as `extern "C"`. These were absent from the checkout, and because
+# both qdrant-edge build scripts warned-and-skipped instead of failing, the
+# gap surfaced ~200 lines later as six undefined symbols at `driver`'s link
+# step (LIMITATIONS L7). `build_common.rs::require_vendored_source` now makes
+# that a hard build error, but the error only helps if the sources can be
+# committed in the first place — the blanket `/**/*` rule above silently
+# swallowed them, so `git add` no-opped and every clean checkout rebuilt the
+# same breakage. ~37 KB total.
+!/workspace/vendor/**/cpp/**/*.c
+!/workspace/vendor/**/cpp/**/*.h
+
+# The Vaporetto tokenizer model `japanese.rs` pulls in via `include_bytes!`.
+# What was on disk was a 4-byte file containing the ASCII text `STUB`, which
+# compiles cleanly and then panics inside `Model::read_slice(MODEL).unwrap()`
+# on the first Japanese tokenization. The real artifact is 817,859 bytes and
+# is verified against `MODEL_CHECKSUM`, declared in `japanese.rs` itself, so
+# a wrong or truncated copy fails loudly rather than at first use. Binary and
+# large for a source tree, tracked deliberately: the alternative is an
+# unpinned network fetch in a build script, or the stub coming back.
+!/workspace/vendor/**/tokenizer/*.model
+
 # Nix
 !/flake.nix
 !/flake.lock
@@ -86,10 +108,37 @@
 # go_binary / java_library. They must be tracked or fresh checkouts / git
 # worktrees build an empty target ("not package main" / "expected exactly one
 # default output").
+# NOTE: `workspace/compiler/compile/` no longer exists (folded into
+# `workspace/compiler/languages/` — see git history at 23530d7). These two
+# patterns are dead but harmless; kept so a future revert of that migration
+# does not silently lose tracking. The Go oracle's new home is covered below.
 !/workspace/compiler/compile/**/*.go
 !/workspace/compiler/compile/**/*.java
 !/workspace/compiler/compile/**/go.mod
 !/workspace/compiler/compile/**/go.sum
+# Go oracle source at its post-migration home. The compiled `nudox-go-oracle`
+# binary this produces is NOT allow-listed here — it stays denied by the
+# default-deny rule at the top of this file, same as every other build
+# artifact.
+!/workspace/compiler/languages/go/oracle/*.go
+!/workspace/compiler/languages/go/oracle/go.mod
+!/workspace/compiler/languages/go/oracle/go.sum
+# Java oracle source at its post-migration home (JAVELIN restoration from git
+# history at 23530d7^) — same reasoning as the Go oracle above: `javac`
+# (via build.rs) compiles these two committed .java files at crate build
+# time; the resulting `.class` files land under Cargo's own `OUT_DIR` and
+# stay denied by the default-deny rule, same as every other build artifact.
+!/workspace/compiler/languages/java/oracle/*.java
+
+# C# Roslyn oracle — unlike Go and Java above, this was NOT recovered from
+# history (only a BUCK file ever existed); it is new source and is the sole copy.
+# Single-level `*` is deliberate: `**/` would also un-ignore `obj/**/*.g.cs` and
+# the generated `AssemblyInfo.cs`, which must stay denied as build artifacts.
+!/workspace/compiler/languages/csharp/oracle/*.cs
+!/workspace/compiler/languages/csharp/oracle/oracle.csproj
+!/workspace/compiler/languages/csharp/oracle/packages.lock.json
+!/workspace/compiler/languages/csharp/tests/fixture/*.cs
+!/workspace/compiler/languages/csharp/tests/fixture/fixture.csproj
 
 # Producer test fixtures: source files for the TypeScript / Nix producers are
 # committed (mirroring the committed Rust `.rs` fixtures). Manifests that tests
@@ -107,8 +156,26 @@
 !/workspace/compiler/tests/fixtures/**/*.java
 !/workspace/compiler/tests/fixtures/**/go.mod
 !/workspace/compiler/tests/fixtures/**/go.sum
+# nudox-producer-java's own real-library fixture (Gson 2.11.0, vendored —
+# see workspace/compiler/languages/java/tests/producer_tests.rs's module doc
+# for exactly what is/isn't real Gson source) plus small hand-written-but-
+# really-compiled supplementary fixtures (records/sealed/module-info; a JEP
+# 467 probe). Committed, not `workspace/compiler/tests/fixtures/` above,
+# because these are specific to this one producer crate. Committed at all —
+# rather than fetched over the network at test time — so a fresh checkout can
+# run `cargo test -p nudox-producer-java` hermetically.
+!/workspace/compiler/languages/java/tests/fixtures/**/*.java
+!/workspace/compiler/languages/java/tests/fixtures/**/LICENSE-gson.txt
 # Index ingest test fixtures (moved from workspace/ingestor).
 !/workspace/index/tests/fixtures/*.json
+
+# The curated `cpp` alias seed. This is NOT a fixture — `ecosystem/cpp/alias.rs`
+# pulls it in with `include_str!`, so it is a build input: without it the whole
+# `index` crate fails to compile. The blanket `/**/*` rule at the top would
+# swallow it, `git add` would silently no-op, and a fresh clone would be back to
+# the "couldn't read cpp_alias_seed.ron" error that kept this crate from
+# building at all.
+!/workspace/index/ecosystem/assets/*.ron
 
 # insta snapshot expectations (accepted `.snap` files) for the producer /
 # renderer snapshot tests. These are the committed test baselines; insta's
@@ -122,6 +189,12 @@
 # Allow empty .keep files
 !/**/.keep
 !/.config/scripts/*.nu
+# cargo-nextest configuration. Without this the blanket `/**/*` rule at the top
+# swallows it, `git add .config/nextest.toml` silently no-ops, and a fresh clone
+# gets no test groups at all — which is how the GUI and real-crate serialisation
+# would quietly stop being enforced.
+!/.config/nextest.toml
+!/.config/nextest-gui.toml
 !/.vscode/settings.json
 
 ## Cue

@@ -1,7 +1,10 @@
 use std::env;
 
+use crate::build_common::require_vendored_source;
+
 pub fn main() {
     println!("cargo:rerun-if-changed=cpp");
+
     let mut builder = cc::Build::new();
 
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH")
@@ -16,7 +19,19 @@ pub fn main() {
     let target_feature = env::var("CARGO_CFG_TARGET_FEATURE")
         .expect("CARGO_CFG_TARGET_FEATURE env-var is not defined or is not UTF-8");
 
+    // Demand each source at the point this target actually selects it, so a
+    // partially-vendored `cpp/` fails naming the one file it is short of rather
+    // than a whole directory.
     if target_arch == "x86_64" {
+        require_vendored_source(
+            "cpp/quantization/sse.c",
+            "impl_score_dot_sse, impl_score_l1_sse, impl_xor_popcnt_sse_uint{32,64,128}, \
+             impl_xor_popcnt_scalar{4,8}_sse_{uint128,u8}",
+        );
+        require_vendored_source(
+            "cpp/quantization/avx2.c",
+            "impl_score_dot_avx, impl_score_l1_avx, impl_xor_popcnt_scalar{4,8}_avx_uint128",
+        );
         builder.file("cpp/quantization/sse.c");
         builder.file("cpp/quantization/avx2.c");
 
@@ -34,6 +49,11 @@ pub fn main() {
         // Use popcnt instruction
         builder.flag("-mpopcnt");
     } else if target_arch == "aarch64" && target_feature.split(',').any(|feat| feat == "neon") {
+        require_vendored_source(
+            "cpp/quantization/neon.c",
+            "impl_score_dot_neon, impl_score_l1_neon, impl_xor_popcnt_neon_uint{64,128}, \
+             impl_xor_popcnt_scalar{4,8}_neon_{uint128,u8}",
+        );
         builder.file("cpp/quantization/neon.c");
         builder.flag("-O3");
     }
