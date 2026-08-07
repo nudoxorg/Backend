@@ -77,25 +77,48 @@ fn lower_workspace_inner(
     root_package_name: &str,
     out: &mut Lowering<RaId>,
 ) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
+    // The single choke point both public entry points pass through, so there is
+    // no way to obtain a lowering from a `--no-deps` workspace without either
+    // fixing the resolution failure or calling
+    // `LoadedWorkspace::accept_degraded_dependencies`. Checked before any walk
+    // work so the failure costs nothing and names its own cause.
+    oracle.require_resolved_dependencies()?;
+
     let package_names =
         documented_package_names(&oracle.ws, root_package_name, oracle.document_private);
     if package_names.is_empty() {
-        return Err(RustProducerError::Load(Box::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("no documented packages found for `{root_package_name}`"),
-        ))));
+        return Err(RustProducerError::NothingToDocument {
+            package: root_package_name.to_owned(),
+            cause: crate::error::NothingToDocument::NoPackageMatched {
+                requested: root_package_name.to_owned(),
+            },
+        });
     }
     debug!(?package_names, "documented package set");
 
     // `attach_db` installs the salsa TLS slot required for HIR display / type
     // probing.  Everything inside the closure is single-threaded.
-    let result = attach_db(&oracle.db, || {
+    //
+    // Its upstream signature is `attach_db<R>(db: &dyn HirDatabase, op: impl FnOnce() -> R) -> R`
+    // (ra_ap_hir_ty::next_solver::interner) — it is a TLS guard, NOT a panic
+    // boundary. It returns whatever the closure returned, verbatim.
+    //
+    // This used to be followed by `.map_err(|_| RustProducerError::Cancelled)`,
+    // under a comment claiming `attach_db` yielded `Result<T, Box<dyn Any>>` of
+    // panic payloads. It does not, and never did. The effect was that *every*
+    // error `lower_all_packages_into` could return — "no local hir::Crate
+    // matching packages", a lowering bug, a genuine load failure — was relabelled
+    // "rust-analyzer analysis cancelled" and its cause destroyed. Every such
+    // failure then pointed the reader at salsa cancellation, which is the one
+    // thing it was not.
+    //
+    // Real cancellation is already caught where it can actually occur: the
+    // per-crate `catch_unwind` in `lower_all_packages_into` downcasts the payload
+    // to `Cancelled` and returns `RustProducerError::Cancelled` for it alone.
+    // So the correct thing to do here is nothing at all.
+    attach_db(&oracle.db, || {
         lower_all_packages_into(&oracle.db, &package_names, oracle.document_private, out)
-    });
-
-    // `attach_db` returns `Result<T, E>` where `E = Box<dyn Any>` (salsa
-    // `Cancelled`); it re-panics non-Cancelled payloads.
-    result.map_err(|_| RustProducerError::Cancelled)
+    })
 }
 
 // ── Package enumeration ───────────────────────────────────────────────────────
@@ -193,10 +216,12 @@ fn lower_all_packages_into(
 ) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
     let crates = find_local_crates(db, package_names);
     if crates.is_empty() {
-        return Err(RustProducerError::Load(Box::new(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("no local hir::Crate matching packages {package_names:?}"),
-        ))));
+        return Err(RustProducerError::NothingToDocument {
+            package: package_names.first().cloned().unwrap_or_default(),
+            cause: crate::error::NothingToDocument::NoCrateForPackages {
+                packages: package_names.to_vec(),
+            },
+        });
     }
 
     let mut all_occs: Vec<ctx::PendingOcc> = Vec::new();

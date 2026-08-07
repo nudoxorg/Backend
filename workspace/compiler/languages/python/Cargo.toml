@@ -12,7 +12,27 @@ license.workspace = true
 #
 #   PYREFLY_REV = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"  (version 1.1.1)
 #
-# Three blockers prevent declaring the git dep here:
+# FIVE blockers, not three. Two were missing from this list, and they are the
+# two that matter most, because the three below read as "we chose not to" while
+# these two are "it does not work":
+#
+#   0a. RESOLUTION. Declaring the git dep exactly as written below fails Cargo
+#       *dependency resolution*, before a single crate is compiled: pyrefly pins
+#       `blake3 =1.8.2`, and `workspace/index`'s `iroh` dependency requires
+#       `^1.8.3`. The two ranges are disjoint, so there is no lock file that
+#       satisfies both. (`workspace/driver`'s `blake3 = "^1.8"` resolves to
+#       1.8.5 and is the first collision Cargo reports; the index/iroh one
+#       surfaces only once that is forced.)
+#
+#   0b. THE GATED CODE IS NOT IN THE TREE. `src/lib.rs` declares
+#       `#[cfg(feature = "pyrefly")] pub mod context;` and `src/producer.rs`
+#       calls `crate::context::invoke_oracle(src)` under the same cfg — but
+#       `src/context.rs` does not exist. Even with resolution fixed, enabling
+#       the feature fails to compile at the module declaration. The note at the
+#       bottom of this comment saying "only the oracle-driving code
+#       (context.rs, traversal.rs) is gated" describes files that are absent.
+#
+# The three originally listed blockers, all still true:
 #
 #   1. `pyrefly_bundled` has a build.rs that downloads and compresses a Python
 #      typeshed at build time over the network (using sha2 / tar / zstd). A
@@ -29,10 +49,19 @@ license.workspace = true
 #      that may not be stable across minor revisions.
 #
 # The `pyrefly` feature therefore defaults to OFF. The lowering layer (types,
-# docstring, emit) compiles and is fully tested without it. Only the
-# oracle-driving code (context.rs, traversal.rs) is gated.
+# docstring, emit) compiles and is fully tested without it. The oracle-driving
+# code that was gated (context.rs, traversal.rs) is no longer in the tree at
+# all — see 0b above.
 #
-# To enable: add the git dep below and activate the feature.
+# What OFF costs is now stated in the type system rather than left to comments:
+# `PythonProducer::yield_contract` returns `YieldContract::RootOnly` under
+# `cfg(not(feature = "pyrefly"))`, so `nudox_producer::produce` refuses to
+# report a Python lowering as a success. It also refuses the reverse — if this
+# producer ever declares real entries while that override is still in place,
+# `produce` fails with `ProducerError::YieldContractOutgrown`, so the claim
+# above cannot outlive the repair.
+#
+# To enable: fix 0a and 0b, then add the git dep below and activate the feature.
 #
 #   [dependencies.pyrefly]
 #   git = "https://github.com/facebook/pyrefly"
@@ -56,3 +85,4 @@ nudox-ir      = { path = "../../../ir/model" }
 nudox-producer = { path = "../../producer" }
 
 [dev-dependencies]
+nudox-test-support = { path = "../../../../crates/nudox-test-support" }

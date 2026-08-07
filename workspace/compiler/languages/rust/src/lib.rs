@@ -63,14 +63,14 @@ use nudox_ir::{
     kind::Kind,
     lower::Lowering,
     package::PackageId,
-    vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
+    vocab::{Confidence, Occurrence, RelSpan},
 };
 use nudox_producer::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::ra::ctx::{PendingOcc, PendingTarget};
 
 pub use self::error::Error as RustProducerError;
-pub use self::ra::loaded::LoadedWorkspace;
+pub use self::ra::loaded::{DependencyResolution, LoadedWorkspace, NoDepsFallback};
 
 // ── RaId — producer-local item identity ──────────────────────────────────────
 
@@ -140,13 +140,54 @@ impl Producer for RustProducer {
         oracle: &LoadedWorkspace,
         out: &mut Lowering<RaId>,
     ) -> Result<(), ProducerError> {
-        ra::lower_workspace(oracle, &oracle.package_name, out).map_err(|e| {
-            ProducerError::UnsupportedConstruct {
-                package: oracle.package_name.clone(),
-                symbol: String::new(),
-                description: e.to_string(),
+        ra::lower_workspace(oracle, &oracle.package_name, out)
+            .map_err(|e| producer_error_for(&oracle.package_name, e))
+    }
+}
+
+// ── Error mapping across the Producer boundary ────────────────────────────────
+
+/// Translate a [`RustProducerError`] into the language-agnostic
+/// [`ProducerError`] without destroying its cause.
+///
+/// [`RustProducerError::DependenciesUnresolved`] maps to the `ProducerError`
+/// variant of the same meaning, which keeps the `cargo metadata` failure in a
+/// `#[source]` slot so `std::error::Error::source` still reaches
+/// [`NoDepsFallback::cargo_diagnostic`] — the one string that says which
+/// dependency failed and why. It must not become `UnsupportedConstruct`, which
+/// flattens its cause into a `description` and ends the chain, nor
+/// `LoweringFailed`, whose contract is "the producer has a bug".
+///
+/// [`RustProducerError::NothingToDocument`] maps to
+/// [`ProducerError::NoDeclarationsContributed`] for the same reason in the
+/// other direction: that is the *generic* variant `produce`'s yield-contract
+/// gate would raise for this run anyway, at the end, with `source: None`
+/// because the gate has no cause to offer. Mapping here rather than into the
+/// `UnsupportedConstruct` catch-all means the run fails with the same typed
+/// variant either way — so a caller matching on it is not sensitive to whether
+/// the Rust producer happened to detect the emptiness early — while filling in
+/// the `#[source]` the backstop cannot. Anything else would make the early,
+/// better-diagnosed path the *less* recognisable one.
+fn producer_error_for(package: &str, err: RustProducerError) -> ProducerError {
+    match err {
+        e @ RustProducerError::DependenciesUnresolved { .. } => {
+            ProducerError::DependenciesUnresolved {
+                package: package.to_owned(),
+                source: Box::new(e),
             }
-        })
+        }
+        e @ RustProducerError::NothingToDocument { .. } => {
+            ProducerError::NoDeclarationsContributed {
+                package: package.to_owned(),
+                producer: <RustProducer as Producer>::ID,
+                source: Some(Box::new(e)),
+            }
+        }
+        other => ProducerError::UnsupportedConstruct {
+            package: package.to_owned(),
+            symbol: String::new(),
+            description: other.to_string(),
+        },
     }
 }
 
@@ -180,6 +221,7 @@ pub fn produce_with_occurrences(
     producer: &RustProducer,
     src: &PackageSource,
     lineage: &PackageLineageId,
+    imports: &dyn nudox_ir::foreign::ForeignResolver,
 ) -> Result<(PristineIntroTable, Vec<(IntroId, Occurrence)>), ProducerError> {
     let oracle = producer.invoke(src)?;
 
@@ -200,18 +242,31 @@ pub fn produce_with_occurrences(
     let mut sink: Lowering<RaId> = Lowering::new(pkg_id, root_sym);
 
     let pending_occs = ra::lower_workspace_with_occs(&oracle, &oracle.package_name, &mut sink)
-        .map_err(|e| ProducerError::UnsupportedConstruct {
-            package: oracle.package_name.clone(),
-            symbol: String::new(),
-            description: e.to_string(),
-        })?;
+        .map_err(|e| producer_error_for(&oracle.package_name, e))?;
 
     let ir_package = sink.finish().map_err(|err| ProducerError::LoweringFailed {
         package: src.name.as_str().to_owned(),
         source: Box::new(err),
     })?;
 
-    let table = ir_package.seal(lineage);
+    // This function is a second copy of `nudox_producer::produce`'s pipeline —
+    // it exists only to also return occurrence facts — so it must repeat
+    // `produce`'s yield-contract gate too, or the one producer with a bespoke
+    // pipeline would be the one producer exempt from the contract. Sharing the
+    // check as a function rather than restating the rule is what makes that a
+    // one-line obligation instead of a rule to remember.
+    //
+    // The returned `YieldContract` is discarded here, unlike in `produce`,
+    // because this function's signature predates `Produced` and returns a bare
+    // `PristineIntroTable`: there is nowhere to put it. That is a real gap —
+    // a caller of this function cannot tell a degraded table from a real one —
+    // but the Rust producer never declares degradation (it takes the trait
+    // default), so the only reachable outcome here is `Declarations`, and the
+    // gate below is what enforces that it earned it. Widening the return type
+    // is the right follow-up if a second producer ever needs occurrences.
+    let _contract = nudox_producer::enforce_yield_contract(producer, src, &ir_package)?;
+
+    let table = ir_package.seal(lineage, imports).table;
 
     // Resolve pending occurrences against the sealed table.
     let resolved = resolve_occurrences(&table, lineage, pending_occs);

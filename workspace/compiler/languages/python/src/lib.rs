@@ -15,13 +15,27 @@
 //!
 //! The `pyrefly` Cargo feature is **off by default**. Without it:
 //! - All lowering, type-mapping, and docstring code compiles and tests cleanly.
-//! - `invoke()` returns an empty `PythonOracle`.
+//! - `invoke()` ignores its `PackageSource` and returns an empty
+//!   `PythonOracle`, and [`PythonProducer`] declares that through
+//!   `Producer::yield_contract` so `nudox_producer::produce` cannot report the
+//!   result as a successful lowering.
 //! - Tests that need a live oracle are marked `#[ignore]` or gated behind
 //!   `#[cfg(feature = "pyrefly")]`.
 //!
-//! See `Cargo.toml` for the full rationale on why the git dep is not declared
-//! by default (pyrefly_bundled downloads a typeshed at build time; the crate
-//! is not on crates.io at the needed version).
+//! **Turning the feature on does not work, and this is not a matter of adding a
+//! `--features` flag.** Two blockers, both verified against this tree:
+//!
+//!  1. `context` is declared below as `#[cfg(feature = "pyrefly")] pub mod
+//!     context;` and `src/context.rs` **does not exist**. With the feature on,
+//!     the crate fails to compile at this declaration.
+//!  2. Declaring the git dependency exactly as `Cargo.toml`'s "Pyrefly gate"
+//!     comment prescribes fails Cargo *dependency resolution*: pyrefly pins
+//!     `blake3 =1.8.2` against `workspace/index`'s `iroh` requirement of
+//!     `^1.8.3` — disjoint ranges, no version in common.
+//!
+//! See `Cargo.toml` for the rest of the rationale on why the git dep is not
+//! declared by default (pyrefly_bundled downloads a typeshed at build time; the
+//! crate is not on crates.io at the needed version).
 //!
 //! # Id scheme: `PythonId`
 //!
@@ -62,11 +76,24 @@
 //! # Constructs not yet representable
 //!
 //! - `ParamSpec` / `TypeVarTuple` in generic positions — lowered to `TypeVar(name)`.
-//! - `Annotated[T, meta...]` — lowered to `Type::Any` (no IR annotation slot).
 //! - `TypeGuard` / `TypeIs` predicates — lowered to `Type::Any`.
-//! - Keyword-only params after `*` without a name — no `ParamAttribute` yet.
+//! - Positional-only parameters (before Python's `/` marker) — no
+//!   `ParamAttribute` exists in `nudox-ir` for this calling-convention
+//!   restriction (it has `KeywordOnly` but no positional-only counterpart);
+//!   `types.rs`/`emit/mod.rs` deliberately emit no attribute rather than
+//!   reuse `Inout`, which would misreport it as pass-by-mutable-reference.
+//!   Adding the counterpart variant is an `nudox-ir` change, out of this
+//!   crate's scope.
 //! - Default-value expressions — the `value` string is preserved on `Const`
 //!   but param defaults are `ParamAttribute::Optional` (no const-expr system yet).
+//!
+//! Two items previously listed here are now representable and have been
+//! removed from this list because the code already does what the list said
+//! it could not: `Annotated[T, meta...]` lowers to `Type::Annotated` (see
+//! `types.rs`), and keyword-only parameters lower to
+//! `ParamAttribute::KeywordOnly` (see `emit/mod.rs`) — that variant exists in
+//! `nudox-ir` specifically for this case; its own doc comment cites Python's
+//! `def f(a, *, b)`.
 
 pub mod docstring;
 pub mod emit;
