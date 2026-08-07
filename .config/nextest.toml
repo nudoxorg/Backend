@@ -271,7 +271,8 @@ max-threads = 1
 # provisioned packages of one ecosystem under `.real-crates/` through the full
 # `produce()` pipeline (`invoke` -> `lower` -> `finish` [-> `seal`]):
 #
-#   nudox-producer-clang::corpus_sweep    20 cpp packages       MEASURED 595 s
+#   nudox-producer-clang::corpus_sweep    20 cpp packages       MEASURED 595 s idle
+#                                                               MEASURED 803 s contended
 #   nudox-producer-go::corpus_sweep       22 go module versions MEASURED  22.1 s
 #   nudox-producer-java::corpus_sweep     22 maven versions     MEASURED  21.6 s
 #   nudox-producer-python::corpus_sweep   22 pypi sdists        MEASURED   0.11 s
@@ -629,7 +630,17 @@ slow-timeout = { period = "60s", terminate-after = 3, on-timeout = "fail" }
 # numbers were taken; see the group's doc comment.
 filter = 'binary(=corpus_sweep)'
 test-group = "corpus-sweep"
-slow-timeout = { period = "150s", terminate-after = 8, on-timeout = "fail" }
+# 150 s x 11 = SIGKILL at 1650 s. The multiplier is set against the CONTENDED
+# clang figure (803 s), not the isolated one (595 s), which is why it is 11 and
+# not 8. An earlier revision of this line used 8 (= 1200 s) for a 2.02x margin
+# over 595 s — but 595 s was taken with the machine otherwise idle, and the
+# very next clang run, with other builds against the shared `target/`, took
+# 803 s. That would have left the real margin at 1.49x, inside the 2x-4.6x
+# contention swing AGENTS-DOCTRINE.md section 8 documents for this host. A
+# budget derived from an honest measurement taken under dishonest conditions
+# is the same mistake as a stale one: 1650 s is 2.05x the contended figure and
+# 2.77x the isolated one.
+slow-timeout = { period = "150s", terminate-after = 11, on-timeout = "fail" }
 
 [[profile.default.overrides]]
 # Catch-all: every remaining `#[cfg(test)]` unit test, in any package.
