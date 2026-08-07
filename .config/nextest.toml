@@ -1,0 +1,674 @@
+# .config/nextest.toml — the group + profile architecture for the ROOT
+# backend workspace. This file governs the 19 crates under `[workspace]` in
+# the root `Cargo.toml`; it does NOT govern `workspace/gui` (package
+# `lindsey`), a deliberately separate Cargo workspace (AGENTS-DOCTRINE.md §1).
+# The GUI has its own scoped config: `.config/nextest-gui.toml`, invoked with
+# `--manifest-path workspace/gui/Cargo.toml --config-file
+# .config/nextest-gui.toml` — see that file, and the "GUI group assignment"
+# note near the bottom of this one, for why two files are required instead of
+# one.
+#
+# GIT STATUS OF THIS FILE — the previous revision of this header was WRONG,
+# and the way it was wrong is worth keeping. It claimed `.gitignore` had no
+# entry for this file, that the blanket `/**/*` rule swallowed it, and that
+# `git add .config/nextest.toml` "silently no-ops". None of that is true.
+# `.gitignore` DOES un-ignore both this file and its GUI sibling, with two
+# negation patterns:
+#
+#   .gitignore:174:!/.config/nextest.toml
+#   .gitignore:175:!/.config/nextest-gui.toml
+#
+# HOW THE ORIGINAL AUTHOR GOT IT BACKWARDS — this is the load-bearing part,
+# because the same trap is one command away from anyone re-checking this:
+# `git check-ignore -v <path>` exits **0 whenever any pattern MATCHES**,
+# including a NEGATIVE one, and prints the matching line. It does not exit 0
+# only when the file is ignored. Read the exit code alone and a successfully
+# un-ignored file looks exactly like an ignored one. Measured on this host
+# (git 2.54.0), for this exact path:
+#
+#   $ git check-ignore -v .config/nextest.toml
+#   .gitignore:174:!/.config/nextest.toml	.config/nextest.toml
+#   $ echo $?   # 0  ← "a pattern matched", NOT "it is ignored"
+#   $ git check-ignore .config/nextest.toml     # no -v
+#   $ echo $?   # 1  ← the real answer: NOT ignored
+#
+# The leading `!` in the printed pattern was the whole answer and was read
+# past. The non-`-v` form is the one that answers "is this ignored?"; use it,
+# or read the pattern, never the `-v` exit status. (Doctrine §8's "a comment
+# describing behaviour is a claim, and claims rot" — this comment WAS the
+# claim, and it sent readers to a nonexistent `.gitignore` bug.)
+#
+# THE REAL, SMALLER CAVEAT, which survives: those two negations exist only in
+# the **uncommitted working-tree edit** to `.gitignore`.
+# `git show HEAD:.gitignore | grep nextest` returns nothing. So this file is
+# add-able right now and will survive a commit — but only if `.gitignore`'s
+# own working-tree change is committed alongside it. Commit them together or
+# the next clone loses the un-ignore and the original (wrong) complaint
+# becomes retroactively true. This file is still `??` untracked as of
+# 2026-08-07: nothing has actually staged it yet.
+#
+# WHY THIS FILE EXISTS: tests here have wildly different costs and
+# preconditions — a real-crate lowering takes 20-60s and needs a checkout on
+# disk (~600 MB peak RSS, LIMITATIONS.md L1); a wire-protocol unit test takes
+# microseconds. Undifferentiated, nobody runs the expensive ones on purpose
+# and everybody eats their cost by accident. Grouping makes both mistakes
+# hard: `cargo nextest run -E 'group(unit)'` cannot accidentally boot
+# rust-analyzer, and `-P perf` cannot accidentally run two rust-analyzer
+# loads side by side and produce a lying number.
+#
+# Every filter below is grounded in an actual `cargo nextest list`/`show-config
+# test-groups` run over this repository, re-audited for this revision with:
+#
+#   grep -rnE '#\[ignore = .*(rust-analyzer|real Cargo workspace|real cargo workspace)' \
+#     crates workspace --include=*.rs | grep -v /vendor/
+#   grep -rln 'nudox_test_support::measured' crates --include=*.rs
+#
+# — not a guessed naming convention. In particular: most tests in this repo
+# are named for the *invariant* they check (AGENTS-DOCTRINE.md §4), not their
+# mechanism, so `test(/^real_/)`-style regexes would silently miss most of the
+# real-crate suite (e.g. `nudox-store::real_crate`'s `lowers_a_real_crate`,
+# `the_lowered_package_is_named_after_its_source`, … none of which start with
+# "real_" — and, in the other direction, `nudox-engine::chunk::walk::tests::
+# real_memchr_doc_comment_leaks_no_bracket_for_any_link` DOES start with
+# "real_" and is NOT real-crate-driving; it runs against an in-memory fixture
+# and is not `#[ignore]`d at all). The reliable signal is the `#[ignore]`
+# reason string naming rust-analyzer/a real Cargo workspace, cross-checked
+# against `measured()` call sites. That is what the `binary(=…)`/`test(=…)`
+# matchers below key on. The previous revision of this file audited only
+# `tests/*.rs` integration binaries and MISSED four whole real-crate binaries
+# (`feature_gated_api`, `bytes_bench_name_collision_regression`,
+# `generic_signature_shapes`, `real_memchr_generic_return`) plus two
+# real-crate tests embedded as `#[cfg(test)]` items inside `nudox-engine`'s
+# own `src/` (`chunk::head::tests::real_memchr_memchr_breadcrumb_has_no_repeated_segment`,
+# `search::tests::real_memchr_leaf_collisions_get_distinct_display_names`) —
+# all six were falling through the old filter's catch-alls into `unit`/
+# `integration` (uncapped concurrency, no slow-timeout) and, under `-P ci
+# --run-ignored all`, would have run concurrently with the rest of the
+# real-crate suite, corrupting exactly the timings LIMITATIONS.md L1 depends
+# on. Fixed below; see the grep commands above to re-audit after adding a new
+# test file.
+#
+# ── `binary()` MATCHES A NAME, NOT A PACKAGE. Qualify it. ──────────────────
+#
+# nextest's `binary(=foo)` matches every test binary in the workspace whose
+# *name* is `foo`, in ANY package. A `tests/*.rs` binary's name is just its
+# filename, and filenames collide across crates constantly, so an unqualified
+# `binary(=…)` silently over-matches the moment a second crate grows a file
+# with the same name. That is not hypothetical here — it had already
+# happened, in the one direction that costs coverage rather than adding it.
+#
+# `binary(=real_package)` was written to name ONE test:
+# `nudox-store::real_package`, which is `#[ignore]`d and drives in-process
+# rust-analyzer over a real cargo workspace. Two more `tests/real_package.rs`
+# files have since appeared and are NOT `#[ignore]`d:
+#
+#   crates/nudox-store/tests/real_package.rs              1 test, #[ignore]d
+#   workspace/compiler/languages/go/tests/real_package.rs 1 test, NOT ignored
+#   workspace/compiler/languages/clang/tests/real_package.rs
+#                                                         2 tests, NOT ignored
+#
+# Because the matcher appears NEGATED in `[profile.default]`'s
+# `default-filter`, the collision did not add anything to a group — it
+# DELETED go's and clang's three tests from the pre-commit gate entirely, on
+# the strength of a filename their authors chose for readability. A test
+# excluded by accident is indistinguishable from a test that passes; nothing
+# anywhere would have gone red.
+#
+# Every matcher below that names a `tests/*.rs` binary whose filename is not
+# unique across the workspace is therefore qualified as
+# `(package(=<pkg>) and binary(=<name>))`. Audit for new collisions with:
+#
+#   find crates workspace -path '*/tests/*.rs' -not -path '*/vendor/*' \
+#     -not -path '*/.real-crates/*' -exec basename {} \; | sort | uniq -d
+#
+# As of 2026-08-07 that reports exactly two duplicated names: `real_package`
+# (3 files, qualified to `nudox-store` below — go's and clang's now reach the
+# default gate as their authors intended) and `corpus_sweep` (4 files, which
+# is the one case where matching all of them IS the intent; see the
+# `corpus-sweep` group).
+#
+# KNOWN BLOCKER — `--exclude driver`, and ONLY `driver` (LIMITATIONS.md L7).
+#
+# This block used to name L6 and exclude THREE packages
+# (`index`, `driver`, `ir-vcs`). That was stale in both directions and cost
+# roughly a thousand tests. LIMITATIONS.md:736 has recorded L6 as RESOLVED
+# since 2026-08-05 — `index` compiles and `ir-vcs` compiles — while this file,
+# TESTING.md, and `nextest-suite.nu` all went on asserting it did not. Doctrine
+# §7's own warning applies to the exclude list itself: "a crate outside the
+# gate stops being measured".
+#
+# Re-measured 2026-08-07: `RUSTC_BOOTSTRAP=1 cargo check --workspace
+# --all-targets` exits 0 with zero errors, and
+# `cargo nextest list -P default --workspace --exclude driver` enumerates the
+# whole suite including 731 `index` and 216 `ir-vcs` tests that the old
+# three-package exclusion was hiding. Those tests build and run today.
+#
+# `driver` is the one package that does not reliably BUILD here, and the
+# reason is not what any previous revision of this comment said. Two claims
+# are in circulation and BOTH are wrong as stated: "duplicate symbol between
+# libzstd_seekable and libzstd_sys" (nothing in any diagnostic mentions zstd)
+# and "it compiles, the exclude list is just a speed optimisation" (it does
+# not produce artifacts). What is true is narrower and less tidy.
+#
+# Root cause class: LIMITATIONS.md **L7**, vendored C sources under
+# `workspace/vendor/` that `driver` transitively needs — `qdrant-edge`'s
+# hand-written SIMD kernels and `doltlite`'s generated ~20 MB amalgamation.
+# Their presence is the variable, and while this was being written it was
+# LITERALLY a variable: a concurrent track was restoring them. Three runs of
+# `cargo build -p driver --all-targets` inside 25 minutes on 2026-08-07 gave
+# three different answers, each recorded here rather than averaged into a
+# claim:
+#
+#   16:14  FAILS, build script won't compile —
+#          error[E0433]: cannot find type `Path` in this scope
+#            --> workspace/vendor/qdrant-edge/build_segment.rs:22
+#          (a mid-edit tree; transient, not a property of the package)
+#   16:34  SUCCEEDS, exit 0, produces target/debug/driver. A bare
+#          `cargo nextest list -P default --workspace` — NO --exclude at all —
+#          also exits 0 and enumerates 2470 tests, 199 of them in `driver`.
+#   16:37  FAILS again, now in a THIRD place: `rusqdoltlite`'s build script,
+#          because `workspace/vendor/doltlite/doltlite.c` had meanwhile been
+#          restored and cc-rs cannot compile it under this nix toolchain —
+#            cargo:warning=Warning: supplying the --target arm64-apple-macosx
+#              != arm64-apple-darwin argument to a nix-wrapped compiler may
+#              not work correctly ...
+#            cargo:warning=error: unable to create target: 'Unable to find
+#              target for this triple (no targets are registered)'
+#          i.e. an L7 mitigation that unblocks the build by REMOVING a source
+#          stops working the moment the source comes back.
+#
+# The previously-reported link diagnostic — undefined `_dotProduct_half_4x4`,
+# `_euclideanDist_half_4x4`, `_impl_score_dot_neon`, `_impl_score_l1_neon`,
+# `_impl_xor_popcnt_neon_uint128`, `_manhattanDist_half_4x4` from
+# libqdrant_edge, hitting bin `driver` and tests `live_download`,
+# `live_socket`, `pipeline_end_to_end` — is consistent with the same L7 cause
+# and with `build_segment.rs`'s own text, which names those exact f16 kernels.
+# It is recorded here as a REPORTED diagnostic; it was not reproduced by the
+# work that wrote this comment, because by then the failure had moved.
+#
+# So `--exclude driver` stays, and its justification is "this package's build
+# is currently non-deterministic across a churning vendor tree", not a
+# specific symbol list. Build errors — compile OR link OR build-script —
+# happen at the `cargo build` step before any filterset in this file runs, so
+# this must remain a `cargo`/CLI package-selection flag (nextest has no
+# "which packages to build" knob, only "which tests, among those built, to
+# select"). `.config/scripts/nextest-suite.nu` bakes in exactly
+# `--exclude driver`.
+#
+# DROP THE FLAG when this passes twice in a row on a settled tree:
+#   cargo build -p driver --all-targets
+# NOT `cargo check -p driver --lib`. `check` never links (doctrine §8 says
+# this about FFI in general) and `--lib` cannot see failing bin/test targets —
+# that exact combination is what let the old "everything compiles" claim
+# survive. Note also that `driver`'s 199 tests have never been run here, so
+# dropping the flag is a decision to start measuring them, not a no-op.
+#
+# ALSO REQUIRED ON THIS HOST (TESTING.md): `nudox-producer-clang` (and
+# anything that links it, e.g. `nudox-engine`'s test binaries) dynamically
+# links libclang without an embedded rpath. `cargo nextest list`/`run` aborts
+# with `Library not loaded: @rpath/libclang.dylib` unless `DYLD_LIBRARY_PATH`
+# points at a `libclang.dylib` directory at *run* time (a build-time
+# `LIBCLANG_PATH` alone is not enough). `.config/scripts/nextest-suite.nu`
+# locates and exports both automatically.
+#
+# Validate any edit with:
+#   RUSTC_BOOTSTRAP=1 cargo nextest list -P <profile> --workspace --exclude driver
+#   cargo nextest show-config test-groups --workspace --exclude driver
+# 0.9.131 is the precise floor: `profile.ci.flaky-result` (below) was
+# introduced in 0.9.131. (`group()` in the CLI examples throughout this
+# file's comments needs 0.9.133, but `group()` can only be used on the
+# command line — never inside a config file's own filtersets — so it does
+# not raise this floor.) Verified against cargo-nextest 0.9.140 (installed on
+# this host, `cargo nextest --version`) 2026-08-05: every override and
+# filterset below parses and every `test(=…)`/`binary(=…)` matcher resolves
+# to a real test, confirmed with the `show-config test-groups` command above.
+nextest-version = "0.9.131"
+
+[store]
+dir = "target/nextest"
+
+# ── Test groups ───────────────────────────────────────────────────────────
+#
+# A test-group caps *concurrent* execution of the tests assigned to it (via
+# `test-group` in the overrides below); it is a resource-management
+# primitive, not just a label. `unit` and `integration` are still declared as
+# named groups (rather than left in the anonymous "@global" bucket) so that
+# `cargo nextest run -E 'group(unit)'` and `-E 'group(integration)'` are
+# meaningful commands on their own — the whole point of this file is that
+# every tier is independently selectable.
+
+[test-groups.unit]
+# Fast, hermetic, no I/O (`cargo check`-adjacent cost). No concurrency cap
+# needed — the group exists for selectability, not for throttling.
+max-threads = "num-cpus"
+
+[test-groups.integration]
+# Cross-crate, fixture-corpus-backed, still hermetic (no network, no real
+# checkout, no GPU) and still fast in practice: a full run of every
+# non-ignored, non-GUI test in this workspace (1108 passing tests, 2026-08-04)
+# completed with zero individual tests over 10s. No concurrency cap.
+max-threads = "num-cpus"
+
+[test-groups.real-crate-serial]
+# Drives in-process rust-analyzer over a checkout in `.real-crates/`
+# (`ProjectWorkspace::load` + `run_build_scripts` + `parallel_prime_caches` —
+# LIMITATIONS.md L1). Peak RSS is ~517-713 MB *per test*, and the dominant
+# cost is booting rust-analyzer itself, not the crate size — a 34-entry crate
+# and a 14,710-entry crate cost within the same order of magnitude of wall
+# time. A memchr lowering has been measured at 21.9s idle and 44.6s under
+# load (AGENTS-DOCTRINE.md §8, "Do not run two agents that both build
+# workspace/gui...") — a 2x swing from contention alone, with no code change.
+# Two of these running concurrently on a laptop-class machine don't just
+# contend for memory: they contend for the same page cache and CPU the *load*
+# itself is bottlenecked on, so a "parallel" run doesn't get faster, it gets
+# noisier — and the entire reason to run this group is to trust its timings
+# (LIMITATIONS.md L1's whole table, and `.config/scripts/perf-report.nu`'s
+# `cost case=` rows). Serialised to one slot.
+max-threads = 1
+
+[test-groups.corpus-sweep]
+# Every `tests/corpus_sweep.rs` binary — one `#[test]` each, each looping the
+# provisioned packages of one ecosystem under `.real-crates/` through the full
+# `produce()` pipeline (`invoke` -> `lower` -> `finish` [-> `seal`]):
+#
+#   nudox-producer-clang::corpus_sweep    20 cpp packages       MEASURED 595 s
+#   nudox-producer-go::corpus_sweep       22 go module versions MEASURED  22.1 s
+#   nudox-producer-java::corpus_sweep     22 maven versions     MEASURED  21.6 s
+#   nudox-producer-python::corpus_sweep   22 pypi sdists        MEASURED   0.11 s
+#   nudox-producer-rust::corpus_sweep     23 cargo workspaces   NOT MEASURED HERE
+#
+# The rust one appeared while this block was being written (2026-08-07, file
+# created 16:22 by a concurrent track) and is materially different from the
+# other four: it is `#[ignore]`d, and it drives in-process rust-analyzer, which
+# is `real-crate-serial`'s bottleneck rather than an external language
+# toolchain. It is matched here anyway — see the override's filter comment for
+# why that is the safe default — but its cost has NOT been measured by the work
+# that set this group's budget. Its own `#[ignore]` reason self-declares
+# "~20 min, ~600 MB RSS per package", which is close enough to the kill
+# threshold below to matter. Whoever owns that file must re-take the number on
+# its first `-P ci --run-ignored all` run and raise `terminate-after`
+# accordingly; do not treat the current value as validated for it.
+#
+# WHY THEY ARE NOT IN `integration`. They were, by accident: none is
+# `#[ignore]`d, none was named by any filter, so all four fell through the
+# `kind(test)` catch-all into `integration`, which carries no per-override
+# slow-timeout and therefore inherited `[profile.default]`'s
+# `slow-timeout = { period = "10s", terminate-after = 3 }` — a hard SIGKILL at
+# 30 s. Three of the four are over that; one is over it by 20x. They were also
+# selected by `-P default`, i.e. they ran in the fast pre-commit gate. This is
+# the same drift `integration`'s own "1108 tests, zero over 10s" note is
+# vulnerable to: that measurement is dated 2026-08-04 and every one of these
+# files was added after it.
+#
+# WHY THEY ARE NOT IN `real-crate-serial` EITHER. That group's cap is argued
+# from one specific shared bottleneck — booting in-process rust-analyzer, where
+# the dominant cost is the boot rather than the crate, and two concurrent boots
+# contend for the same page cache and CPU. None of these four boots
+# rust-analyzer. Their bottlenecks are four *different* external toolchains
+# (libclang in-process, `go build` + the go oracle, `javac`/javadoc doclet, and
+# for python a stub that does no I/O at all). Folding them in would inherit a
+# cap whose stated justification does not describe them, and would let a
+# 10-minute clang sweep serialise against the memchr lowerings whose timings
+# LIMITATIONS.md L1 depends on. Same reasoning the `slow` group's comment uses
+# to stay separate from `real-crate-serial`.
+#
+# WHY max-threads = 1 ANYWAY. Two independent reasons, neither borrowed:
+#  - `nudox-producer-clang`'s sweep holds a process-wide `CLANG_SINGLETON`
+#    mutex (see that file's comment: `clang::Clang` allows one instance per
+#    process) and peaks at **646 MB** RSS, measured from its own `cost case=`
+#    lines (max `rss_bytes=677871616` over the 20 entries, 2026-08-07) — the
+#    same order as `real-crate-serial`'s 517-713 MB, on a laptop-class host.
+#  - Every one of these tests *is* a benchmark (doctrine §4 — all four call
+#    `nudox_test_support::measured`, emitting one `cost case=` line per corpus
+#    entry into `perf-report.nu`). Running two multi-minute sweeps side by side
+#    reproduces exactly the 21.9s-idle/44.6s-under-load contention swing
+#    AGENTS-DOCTRINE.md §8 documents, which would make every row they emit a
+#    number about machine load rather than about the producer.
+max-threads = 1
+
+[test-groups.gui-serial]
+# The real, load-bearing definition of the group `workspace/gui`'s tests are
+# assigned to — but the ASSIGNMENT happens in `.config/nextest-gui.toml`
+# (this root file's workspace cannot see `lindsey`'s packages/binaries; see
+# that file). Declared here too only so `cargo nextest show-config
+# test-groups` against *this* workspace documents the name and the reasoning,
+# for a reader who only opens the root config. AGENTS-DOCTRINE.md §8: two
+# cargo invocations that both build `workspace/gui` concurrently corrupt the
+# shared `target/`'s build-script cache (observed:
+# `dyld: Library not loaded: @rpath/libclang.dylib`, half-populated `gpui-*`
+# build dirs) — this is a *build-time* hazard, not just a runtime one, so
+# `max-threads = 1` alone is not sufficient; nothing that builds
+# `workspace/gui` may run concurrently with anything else that does, which is
+# why `.config/scripts/nextest-suite.nu` never backgrounds the GUI step
+# against the root-workspace step. One slot, one process, one script owns the
+# ordering.
+max-threads = 1
+
+[test-groups.slow]
+# Anything over ~10s not already covered above. Populated today by:
+#  - `ir-vcs::bench_replay_vs_snapshot` and `ir-vcs::repo_size_and_seal_overhead`
+#    (`workspace/ir/vcs/vcs_tests.rs`, `size_tests.rs`) — `--release`-only
+#    timing/invariant tests (TESTING.md's "Benchmark" tier). Currently
+#    UNREACHABLE by nextest at all: `ir-vcs` depends on `index`
+#    (LIMITATIONS.md L6), so its own test binary does not compile in this
+#    environment. Listed here so the assignment is already correct the day
+#    L6 is fixed.
+#  - `sandbox`'s real-VM tests (`tests/escape.rs`'s 4 `#[ignore]`d cases plus
+#    `smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable`)
+#    — these need `NUDOX_GUEST_ROOTFS` + a `smolvm`/`libkrun` binary on PATH,
+#    neither present on this host. Their real wall-clock cost is UNMEASURED
+#    (this is a new gap, not yet in LIMITATIONS.md — see this track's
+#    report): they need a real VM boot, which is presumptively >10s, but that
+#    presumption has never been checked against real infra. They are a
+#    materially different resource (a VM, not an in-process rust-analyzer
+#    load) from `real-crate-serial`, so they are not folded into that group;
+#    `slow` is the closest fit among the five groups this file defines, not a
+#    confirmed measurement.
+# Capped at 2 rather than 1: unlike `real-crate-serial`'s single shared
+# bottleneck (rust-analyzer's own workspace load), a VM boot and a
+# release-mode replay benchmark do not obviously contend for the same
+# resource, so a hard single-slot serialisation is not clearly justified —
+# but letting every CPU run one is exactly the untested assumption
+# `real-crate-serial`'s comment warns against, so this is deliberately
+# conservative rather than "num-cpus".
+max-threads = 2
+
+# ── Profiles ─────────────────────────────────────────────────────────────
+#
+# Every profile other than `default` inherits from `default`
+# (nextest-version >= 0.9.115 default: `inherits = "default"`), which is why
+# the `[[profile.default.overrides]]` block below — the actual group
+# assignments — is declared exactly once and applies to `ci` and `perf` too.
+# Each profile still sets its *own* `default-filter`, since that is the
+# whole point of having three of them.
+
+[profile.default]
+# The pre-commit gate: unit + integration only (the two hermetic,
+# uncapped-concurrency groups — see "How `slow`'s zero tests over 10s..."
+# below for why this is safe to leave uncapped). High concurrency by design:
+# `test-threads = "num-cpus"`, no group cap on either tier.
+#
+# In practice this filter is *mostly* belt-and-suspenders: every real-crate
+# and slow test named below is already `#[ignore]`d at the source — with ONE
+# exception that is load-bearing rather than redundant, `binary(=corpus_sweep)`
+# (see below). It is
+# still written out explicitly, rather than left to "ignored tests are
+# skipped by default", for two reasons: (1) it is what makes
+# `-E 'group(unit)'` / `-E 'group(integration)'` and this default-filter
+# agree with each other instead of two independent, driftable sources of
+# truth; (2) a developer who runs `cargo nextest run --run-ignored all` on
+# `default` to debug one real-crate test locally should not accidentally
+# also schedule a second rust-analyzer load next to it — the default-filter
+# still applies under `--run-ignored`, `#[ignore]` does not.
+#
+# MAINTENANCE NOTE: nextest's filterset language has no aliasing/macro
+# facility, so this expression, the `[[profile.default.overrides]]` filters
+# below, and the `slow`/`real-crate-serial` group doc comments above all name
+# the same tests independently. Adding a new real-crate/slow test means
+# re-running the two grep commands in the file header and updating all three
+# places — `cargo nextest list -P default --workspace --exclude driver`
+# after the edit is the check (a new
+# rust-analyzer-driving test that shows up in `-P default`'s list is the
+# failure mode this note exists to catch).
+#
+# `binary(=corpus_sweep)` is the one term here that is NOT belt-and-suspenders:
+# none of the four sweeps is `#[ignore]`d, so deleting this term puts all four
+# straight back into the pre-commit gate. They cannot live there, for a reason
+# that is about correctness on a fresh clone rather than about cost: each one's
+# `corpus_root()` is
+# `Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates")
+#  .canonicalize().expect("no .real-crates/ checkout …")`,
+# and `.real-crates/` is gitignored (AGENTS-DOCTRINE.md §8). Go's sweep also
+# shells out to `go build`, Java's needs a JDK `javac`. On a checkout without
+# those, these tests PANIC rather than skip — unlike the `real-crate` group's
+# members, which check for their checkout and print `SKIP:`. A gate that a
+# clean clone cannot pass is not a gate. They still run under `-P ci`
+# (`default-filter = "all()"`) with no `--run-ignored` needed, and under
+# `-P perf`, which is where their `cost case=` lines are wanted.
+default-filter = '''
+not (
+  binary(=real_crate) or (package(=nudox-store) and binary(=real_package))
+or binary(=real_producer_links)
+  or binary(=real_lineage) or binary(=real_crate_tokio)
+  or binary(=feature_gated_api) or binary(=bytes_bench_name_collision_regression)
+  or binary(=generic_signature_shapes) or binary(=real_memchr_generic_return)
+  or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
+  or test(=chunk::head::tests::real_memchr_memchr_breadcrumb_has_no_repeated_segment)
+  or test(=search::tests::real_memchr_leaf_collisions_get_distinct_display_names)
+  or binary(=escape) or test(=smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable)
+  or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and_seal_overhead)))
+  or binary(=corpus_sweep)
+)
+'''
+test-threads = "num-cpus"
+slow-timeout = { period = "10s", terminate-after = 3, on-timeout = "fail" }
+
+[profile.ci]
+# Everything this file's own workspace can see: unit, integration,
+# real-crate-serial, slow, run serialised per-group as declared above. (The
+# GUI's screenshot suite is a separate CI concern — see the note at the
+# bottom of this file and `.config/nextest-gui.toml` — invoked as its own
+# step by `.config/scripts/nextest-suite.nu --gui --screenshots`, never
+# concurrently with this profile's run.) Real-crate/slow tests are still
+# `#[ignore]`d at the source, so getting them into a CI run additionally
+# requires `--run-ignored all` on the command line (see TESTING.md and
+# `nextest-suite.nu`) — no profile setting can flip that; nextest's
+# `run-ignored` is CLI/env only. Retries absorb flakiness in the
+# rust-analyzer boot path (LIMITATIONS.md L1/L5 both describe timing
+# variance) without masking a real regression more than twice; JUnit output
+# feeds a CI reporter.
+#
+# `success-output = "final"` (rather than the config-wide default of
+# "never"): doctrine §4 says every integration test is also a benchmark —
+# `nudox_test_support::measured()` prints one `cost case=…` line per test via
+# `println!`, which — exactly like plain `cargo test` — nextest swallows for
+# a *passing* test unless output display is requested. "final" prints each
+# test's captured stdout once, after the whole run completes, batched by
+# test, which keeps a live run's console readable while still guaranteeing
+# every `cost case=` line reaches stdout for `perf-report.nu` to parse
+# afterwards (verified by this track — see the report). `store-success-output
+# = true` in the JUnit section below carries the same lines into the CI
+# artifact, not just the console, for the same reason.
+#
+# THIS PROFILE DOES NOT ENFORCE "no #[ignore] without a reason" — nextest has
+# no config key for that; `#[ignore]` vs `#[ignore = "..."]` is rustc/libtest
+# metadata nextest never inspects. That check is
+# `.config/scripts/check-ignore-reasons.nu`, run as a gate BEFORE this
+# profile by `.config/scripts/nextest-suite.nu --profile ci` — read that
+# script's header before assuming this file does it.
+default-filter = "all()"
+retries = 2
+flaky-result = "fail"
+slow-timeout = { period = "60s", terminate-after = 5, on-timeout = "fail" }
+status-level = "all"
+final-status-level = "all"
+success-output = "final"
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "nudox-ci"
+store-success-output = true
+store-failure-output = true
+
+[profile.perf]
+# The measurement runs ONLY: real-crate lowering timings (LIMITATIONS.md L1),
+# the four `corpus-sweep` binaries (which emit one `cost case=` line per
+# corpus entry — ~86 rows across the four ecosystems, by far the largest
+# single source of rows this report has), plus whatever else lands in `slow`.
+# The real-crate and `slow` members are `#[ignore]`d and so additionally
+# require `--run-ignored all` (or `only`) on the command line for the same
+# reason as `ci`, above; the corpus sweeps are not `#[ignore]`d and run
+# without it.
+#
+# `test-threads = 1` in addition to each group's own `max-threads`: a
+# real-crate test and a slow test scheduled on adjacent CPUs still skew each
+# other's wall-clock number even though neither group's own cap is violated,
+# because the whole point of this profile is that the number IS the product,
+# not a pass/fail bit. `retries = 0` for the same reason: a retried benchmark
+# reports the *second* run's number under the *first* run's label, which
+# corrupts the measurement rather than recovering from flakiness.
+#
+# `success-output = "immediate"`: this profile exists to produce `cost
+# case=…` lines for `perf-report.nu` to parse (constraint 4 of this track).
+# "immediate" prints each test's captured stdout the moment that test
+# finishes — the most direct path from `measured()`'s `println!` to a
+# pipeline like `cargo nextest run -P perf ... | nu
+# .config/scripts/perf-report.nu`. Verified empirically (see the report):
+# without a `success-output` override, nextest's own default ("never") means
+# a fully green `-P perf` run emits zero `cost case=` lines and
+# `perf-report.nu` reports "no cost lines found" even though every benchmark
+# passed and printed one internally.
+default-filter = '''
+binary(=real_crate) or (package(=nudox-store) and binary(=real_package))
+or binary(=real_producer_links)
+or binary(=real_lineage) or binary(=real_crate_tokio)
+or binary(=feature_gated_api) or binary(=bytes_bench_name_collision_regression)
+or binary(=generic_signature_shapes) or binary(=real_memchr_generic_return)
+or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
+or test(=chunk::head::tests::real_memchr_memchr_breadcrumb_has_no_repeated_segment)
+or test(=search::tests::real_memchr_leaf_collisions_get_distinct_display_names)
+or binary(=escape) or test(=smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable)
+or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and_seal_overhead)))
+or binary(=corpus_sweep)
+'''
+test-threads = 1
+retries = 0
+slow-timeout = { period = "120s", on-timeout = "fail" }
+status-level = "all"
+final-status-level = "all"
+success-output = "immediate"
+failure-output = "immediate"
+
+# ── Group assignment (declared once on `default`; inherited by `ci`/`perf`) ─
+#
+# Overrides are matched top-to-bottom; the most specific filters are listed
+# first so a test that could match more than one (e.g. a real-crate test
+# embedded in `nudox-engine`'s own `src/` also happens to be `kind(lib)`,
+# which the catch-all `unit` filter below would otherwise claim) resolves to
+# the *intended* group, not the first one nextest's `kind()` machinery would
+# put it in. Confirmed with `cargo nextest show-config test-groups` after
+# every edit to this section.
+
+[[profile.default.overrides]]
+filter = '''
+binary(=real_crate) or (package(=nudox-store) and binary(=real_package))
+or binary(=real_producer_links)
+or binary(=real_lineage) or binary(=real_crate_tokio)
+or binary(=feature_gated_api) or binary(=bytes_bench_name_collision_regression)
+or binary(=generic_signature_shapes) or binary(=real_memchr_generic_return)
+or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
+or test(=chunk::head::tests::real_memchr_memchr_breadcrumb_has_no_repeated_segment)
+or test(=search::tests::real_memchr_leaf_collisions_get_distinct_display_names)
+'''
+test-group = "real-crate-serial"
+slow-timeout = { period = "90s", terminate-after = 4, on-timeout = "fail" }
+threads-required = "num-cpus"
+
+[[profile.default.overrides]]
+filter = '''
+binary(=escape) or test(=smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable)
+or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and_seal_overhead)))
+'''
+test-group = "slow"
+slow-timeout = { period = "60s", terminate-after = 3, on-timeout = "fail" }
+
+[[profile.default.overrides]]
+# The real-corpus sweeps. `binary(=corpus_sweep)` is deliberately UNqualified
+# here — unlike `binary(=real_package)` above, matching every package's
+# `corpus_sweep` binary is exactly the intent. The alternative (an explicit
+# four-package list) fails unsafely: an unlisted `tests/corpus_sweep.rs` falls
+# through `kind(test)` into `integration` and inherits a 30 s SIGKILL, which is
+# how all four of these were being killed in the first place. Failing towards
+# "too much budget" beats failing towards "SIGKILL at 5% of runtime".
+#
+# This is not theoretical: `nudox-producer-rust::corpus_sweep` was added by a
+# concurrent track *while this override was being written* and was picked up
+# with no edit here — which is the intended behaviour, and also why the group's
+# doc comment above flags that its cost is unmeasured by this work.
+#
+# The `find … | uniq -d` audit in the file header is what keeps this deliberate
+# over-match distinguishable from an accidental one like `real_package`'s.
+#
+# THE BUDGET BELOW IS MEASURED, NOT GUESSED. Taken 2026-08-07 on this host,
+# each sweep run on its own, `cargo test -p <pkg> --test corpus_sweep --
+# --test-threads=1`, timed end to end (build excluded — `--no-run` first):
+#
+#   nudox-producer-python::corpus_sweep     0.11 s   22 pypi sdists
+#   nudox-producer-java::corpus_sweep      21.6  s   22 maven versions
+#   nudox-producer-go::corpus_sweep        22.1  s   22 go module versions
+#   nudox-producer-clang::corpus_sweep    595    s   20 cpp packages, 20/20 green
+#
+# Clang dominates, and it is real work rather than a hang: its own `cost
+# case=` lines account for the time per package, the four worst being
+# abseil-cpp 137.9 s, range-v3 96.8 s, spdlog 74.1 s, argparse 47.0 s. Peak
+# `rss_bytes` over the run was 677,871,616 (646 MB).
+#
+#   period = "150s"  — the SLOW-report threshold. Chosen so it is above every
+#     non-clang sweep by ~7x (nothing else in this group ever reports slow,
+#     so a "SLOW" line here always means clang, or a real regression in one of
+#     the other three) and below clang's real 595 s, so clang is *reported*
+#     slow every run rather than silently normalising a 10-minute test.
+#   terminate-after = 8  — SIGKILL at 150 x 8 = 1200 s, i.e. 2.02x the
+#     measured 595 s. The 2x factor is not arbitrary: AGENTS-DOCTRINE.md §8
+#     records a real-crate lowering measured at 21.9 s idle and 44.6 s under
+#     concurrent-cargo contention — a 2.04x swing with no code change. A kill
+#     threshold under 2x the idle measurement would turn that documented
+#     machine-load swing into a red test.
+#
+# What this REPLACES: nothing named these four, so they fell through
+# `kind(test)` into `integration` and inherited `[profile.default]`'s
+# `slow-timeout = { period = "10s", terminate-after = 3 }` — SIGKILL at 30 s.
+# Clang's sweep was being killed at 5% of its real runtime; go's and java's
+# sat 8 s under the axe, so any contention at all would have tipped them over
+# too. Re-take these numbers (same commands) if the corpus grows or a
+# producer's extraction changes, and update this comment with the new
+# figures — a budget whose measurement is stale is the `integration` group's
+# "1108 tests, zero over 10s" mistake wearing a different hat. That re-take is
+# ALREADY OWED for `nudox-producer-rust::corpus_sweep`, added after these
+# numbers were taken; see the group's doc comment.
+filter = 'binary(=corpus_sweep)'
+test-group = "corpus-sweep"
+slow-timeout = { period = "150s", terminate-after = 8, on-timeout = "fail" }
+
+[[profile.default.overrides]]
+# Catch-all: every remaining `#[cfg(test)]` unit test, in any package.
+filter = 'kind(lib)'
+test-group = "unit"
+
+[[profile.default.overrides]]
+# Catch-all: every remaining `tests/*.rs` integration-test binary not claimed
+# by a more specific override above.
+filter = 'kind(test)'
+test-group = "integration"
+
+# ── GUI is a second config file, not a second section here ──────────────────
+#
+# `workspace/gui` (package `lindsey`) cannot be named by this file: nextest
+# validates every exact/regex name-matcher in a config file's
+# `default-filter` and `overrides[].filter` EAGERLY, against the metadata of
+# whichever workspace is actually loaded for that invocation, and hard-errors
+# ("operator didn't match any packages/binary names") if a matcher matches
+# nothing — confirmed by running `cargo nextest show-config test-groups
+# --manifest-path workspace/gui/Cargo.toml --config-file .config/nextest.toml`
+# against an earlier draft of this file: it failed on `package(=ir-vcs)`/
+# `binary(=real_crate)` etc. (root-workspace names, absent from the GUI's own
+# tiny one-package workspace) — the exact mirror-image of the failure
+# `package(=lindsey)` produces against the ROOT workspace. A regex matcher
+# (`binary(/^screenshots$/)`) is validated exactly as strictly as an exact one
+# (`binary(=screenshots)`); neither is lenient. So a single nextest config
+# file cannot bind test-group assignments for two different Cargo workspaces.
+#
+# That does NOT mean the GUI is ungoverned, though — nextest's `--config-file`
+# flag accepts an arbitrary path (confirmed via `cargo nextest run --help`:
+# "Config file [default: workspace-root/.config/nextest.toml]", no
+# requirement that the path live under the workspace it configures). A
+# SECOND, GUI-scoped file — `.config/nextest-gui.toml`, living here under
+# `.config/` like this one — defines and assigns `gui-serial` for real, and is
+# invoked as `cargo nextest run --manifest-path workspace/gui/Cargo.toml
+# --config-file .config/nextest-gui.toml`. Read that file for the two
+# screenshot binaries nextest cannot run at all (confirmed empirically — see
+# its header) and the reasoning behind everything else. This root file's own
+# `gui-serial` group (declared above, in the "Test groups" section) documents
+# the cap for a reader who only opens this file, but the real assignment, and
+# the command that exercises it, live in the other one.
