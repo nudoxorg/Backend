@@ -59,6 +59,14 @@ required-features = ["fixtures"]
 name = "search_adversarial"
 required-features = ["fixtures"]
 
+# Pins SECTION_SEMANTIC as empty BY DESIGN (LIMITATIONS.md L41). Needs the
+# fixture corpus for the same reason `search_adversarial` does: the invariant is
+# a conjunction — sections 0 and 1 must return real hits while section 2 stays
+# empty — so it cannot be stated without a corpus that actually matches.
+[[test]]
+name = "semantic_section_contract"
+required-features = ["fixtures"]
+
 # hyperlink_flows and multi_package_flows and versions_adversarial use
 # hand-built StaticSource packages (no fixture feature required).
 [[test]]
