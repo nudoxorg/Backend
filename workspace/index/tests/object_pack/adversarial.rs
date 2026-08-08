@@ -9,7 +9,7 @@
 //! failure is a typed [`PackError`].
 
 use bytes::Bytes;
-use object_pack::{
+use index::pack::{
     MemberKey, ObjectPackBuilder, ObjectPackReader, PackError, RelativePath,
     SOURCE_CHUNK_SIZE_BYTES,
 };
@@ -157,20 +157,48 @@ fn truncation_at_every_length_never_panics() {
     // Truncate at every possible length from 0 to full length - 1. Each must
     // either open (only the full length should fully open) or return a typed
     // error — never panic.
-    for length in 0..full.len() {
-        let truncated = full.slice(0..length);
-        match ObjectPackReader::open_bytes(truncated) {
-            Ok(reader) => {
-                // If it opened, member reads must also never panic.
-                let _ = reader.get_member(&source_key("a.rs"));
-                let _ = reader.get_member(&source_key("b.rs"));
+    //
+    // Doctrine §4: the measured region is the full truncation sweep — one reader
+    // open (plus two member reads when it opens) per prefix length, so the work
+    // scales with the sealed pack size. `disk_delta_bytes` is 0 here by
+    // construction: the sweep is entirely in-memory over `Bytes`, so the signal
+    // on this line is wall/RSS, and wall is only comparable on an idle host. The
+    // reliable figure is `sealed_bytes`, asserted below.
+    let sealed_bytes = full.len();
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let (opened_ok, _cost) = nudox_test_support::measured(
+        "object_pack/truncation_sweep",
+        scratch.path(),
+        || {
+            let mut opened_ok = 0usize;
+            for length in 0..full.len() {
+                let truncated = full.slice(0..length);
+                match ObjectPackReader::open_bytes(truncated) {
+                    Ok(reader) => {
+                        // If it opened, member reads must also never panic.
+                        let _ = reader.get_member(&source_key("a.rs"));
+                        let _ = reader.get_member(&source_key("b.rs"));
+                        opened_ok += 1;
+                    }
+                    Err(error) => {
+                        // Any typed error is acceptable; Display must work.
+                        let _ = format!("{error}");
+                    }
+                }
             }
-            Err(error) => {
-                // Any typed error is acceptable; Display must work.
-                let _ = format!("{error}");
-            }
-        }
-    }
+            opened_ok
+        },
+    );
+
+    // Assert on content, not just on "it didn't panic": a strict prefix of a
+    // well-formed pack must never be mistaken for a complete one, so of the
+    // `sealed_bytes` prefixes swept (0..len, i.e. excluding the full pack) none
+    // may open. A regression that made the header/TOC bounds check permissive
+    // would show up here as a non-zero count.
+    assert_eq!(
+        opened_ok, 0,
+        "no strict prefix of a {sealed_bytes}-byte pack may open as a valid pack"
+    );
 }
 
 #[test]
@@ -203,7 +231,7 @@ fn corrupted_toc_byte_is_detected() {
     };
 
     // The header records where the TOC begins; corrupt every TOC byte in turn.
-    let header = object_pack::format::PackHeader::decode(&full).expect("decode header");
+    let header = index::pack::format::PackHeader::decode(&full).expect("decode header");
     let toc_start = header.toc_offset as usize;
     assert!(toc_start < full.len());
 

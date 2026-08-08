@@ -149,14 +149,12 @@ impl TableOfContents {
     /// ascending — callers must sort before sealing.
     pub fn encode(&self) -> PackResult<Vec<u8>> {
         self.assert_sorted()?;
-        postcard::to_allocvec(self)
-            .map_err(|e| PackError::TocDecode(format!("encode: {e}")))
+        postcard::to_allocvec(self).map_err(PackError::TocEncode)
     }
 
     /// Decode a TOC from its postcard bytes and verify ordering.
     pub fn decode(bytes: &[u8]) -> PackResult<TableOfContents> {
-        let toc: TableOfContents = postcard::from_bytes(bytes)
-            .map_err(|e| PackError::TocDecode(format!("decode: {e}")))?;
+        let toc: TableOfContents = postcard::from_bytes(bytes).map_err(PackError::TocDecode)?;
         toc.assert_sorted()?;
         Ok(toc)
     }

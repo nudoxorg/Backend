@@ -41,7 +41,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::transport::endpoint::bind_endpoint;
-use crate::transport::frame::{recv_framed, send_framed};
+use crate::transport::frame::{TERMINAL_DRAIN, finish_and_drain, recv_framed, send_framed};
 use bytes::Bytes;
 use heart::deployment::TrustedRemote;
 use heart::object_pack::{MemberKey, ObjectPackId};
@@ -254,9 +254,26 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
             let refused = PackResponse::Refused {
                 reason: "endpoint is not enrolled to fetch from this provider".to_owned(),
             };
-            let _ = send_framed(&mut send, &refused).await;
-            let _ = send.finish();
-            connection.close(0u32.into(), b"not enrolled");
+            // The refusal is only real once the peer has it. `close()` here used
+            // to discard the frame before it left, so the fetcher sat in
+            // `read_exact` until QUIC's ~30 s idle timer fired and then reported
+            // a bare transport timeout — `PackError::ProviderRefused` was
+            // unreachable over the wire. Drain, do not close.
+            let delivery = async {
+                send_framed(&mut send, &refused).await?;
+                finish_and_drain(&mut send, &connection, TERMINAL_DRAIN).await
+            }
+            .await;
+            // A failure to *deliver* the refusal is secondary: the local, typed
+            // outcome is still that this peer is not enrolled, and reporting a
+            // transport error instead would lose that. Recorded, not returned.
+            if let Err(error) = delivery {
+                tracing::warn!(
+                    peer = %remote_endpoint_id,
+                    %error,
+                    "could not deliver object-pack refusal to non-enrolled peer"
+                );
+            }
             return Err(PackError::NotEnrolled {
                 detail: format!("fetch from non-enrolled endpoint {remote_endpoint_id}"),
             });
@@ -266,9 +283,11 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
         let response = self.serve(&request);
 
         send_framed(&mut send, &response).await?;
-        send.finish()
-            .map_err(|error| PackError::Transport(io::Error::other(error)))?;
-        connection.closed().await;
+        // Same discipline on the success path, now bounded: the previous
+        // `connection.closed().await` was correct about waiting and wrong about
+        // waiting *forever* — a peer that never closes parked the provider with
+        // no deadline at all.
+        finish_and_drain(&mut send, &connection, TERMINAL_DRAIN).await?;
         Ok(())
     }
 
@@ -421,10 +440,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
                 // only the sidecar changes vs. the previous call).
                 self.store.install_pack(id, &pack_bytes, &outboards)
             }
-            PackResponse::Refused { reason } => Err(PackError::Transport(io::Error::new(
-                io::ErrorKind::Other,
-                format_args!("provider refused: {reason}"),
-            ))),
+            PackResponse::Refused { reason } => Err(PackError::ProviderRefused { reason }),
             _ => Err(PackError::Transport(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "provider returned an unexpected response to WholePack",
@@ -475,10 +491,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
                 }
                 Ok(Bytes::copy_from_slice(&bytes[start as usize..end as usize]))
             }
-            PackResponse::Refused { reason } => Err(PackError::Transport(io::Error::new(
-                io::ErrorKind::Other,
-                format_args!("provider refused: {reason}"),
-            ))),
+            PackResponse::Refused { reason } => Err(PackError::ProviderRefused { reason }),
             _ => Err(PackError::Transport(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "provider returned an unexpected response to MemberRange",

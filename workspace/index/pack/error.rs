@@ -57,9 +57,23 @@ pub enum PackError {
         detail: String,
     },
 
-    /// The TOC did not decode as valid postcard.
+    /// The TOC did not decode as valid postcard — untrusted bytes are corrupt
+    /// or were produced by an incompatible writer.
     #[error("table of contents decode failed")]
     TocDecode(#[source] postcard::Error),
+
+    /// The TOC could not be *encoded* to postcard while sealing a pack or
+    /// re-deriving canonical bytes for verification.
+    ///
+    /// Deliberately distinct from [`PackError::TocDecode`]: encoding runs over a
+    /// `TableOfContents` we already hold in memory, so a failure here is a local
+    /// logic or allocation fault and can never be caused by untrusted input. A
+    /// caller that treats it as pack corruption — quarantining the pack, marking
+    /// the peer bad — would be acting on the wrong diagnosis. The two directions
+    /// shared one variant, which is what let both call sites stringify their
+    /// cause into a `String` the variant could not hold.
+    #[error("table of contents encode failed")]
+    TocEncode(#[source] postcard::Error),
 
     /// The recomputed BLAKE3 of the TOC bytes did not match the id / embedded
     /// digest — the pack is corrupt or tampered.
@@ -78,9 +92,39 @@ pub enum PackError {
         key: MemberKey,
     },
 
-    /// A zstd frame failed to decompress, or produced the wrong byte count.
-    #[error("zstd frame decode failed")]
-    FrameDecode(#[source] io::Error),
+    /// A zstd frame failed to decompress. Carries the frame's byte offset and
+    /// the underlying zstd failure as a real `#[source]`, so the whole chain is
+    /// walkable (§8: reading only the terse top-level `Display` is how a
+    /// five-second diagnosis becomes an hour).
+    ///
+    /// The offset is a field rather than text spliced into the message because
+    /// that is the datum a caller acts on — it identifies which frame to re-fetch.
+    #[error("zstd frame decode failed at offset {offset}")]
+    FrameDecode {
+        /// Byte offset of the frame that failed to decompress.
+        offset: u64,
+        /// The underlying zstd/io failure, preserved rather than stringified.
+        source: io::Error,
+    },
+
+    /// A zstd frame decompressed cleanly but yielded a different byte count than
+    /// its TOC row declares.
+    ///
+    /// This is a container-integrity violation, not an I/O failure, and it used
+    /// to be forced through [`PackError::FrameDecode`] by manufacturing a
+    /// synthetic `io::Error` whose only payload was a formatted message. That is
+    /// what made `format_args!` reachable here at all: the variant could carry an
+    /// `io::Error` but not the two numbers that *are* the evidence. They are
+    /// fields now, so the condition is inspectable without parsing a string.
+    #[error("frame length mismatch at offset {offset}: TOC declares {expected} bytes, frame decoded to {actual}")]
+    FrameLengthMismatch {
+        /// Byte offset of the offending frame.
+        offset: u64,
+        /// Uncompressed length the TOC row declares.
+        expected: u64,
+        /// Uncompressed length the frame actually decoded to.
+        actual: u64,
+    },
 
     /// A zstd frame failed to *compress* while sealing a pack.
     #[error("zstd frame encode failed")]
@@ -162,6 +206,21 @@ pub enum PackError {
     /// An iroh transport operation failed (bind, connect, stream, or blob I/O).
     #[error("iroh transport error")]
     Transport(#[source] io::Error),
+
+    /// The provider answered the protocol correctly and *declined* the request,
+    /// carrying its stated reason.
+    ///
+    /// Deliberately not a [`PackError::Transport`]: the link is healthy and the
+    /// exchange completed, so this is the one negative outcome that retrying
+    /// against the same peer cannot fix. Folding it into `Transport` — which is
+    /// what a hand-built `io::ErrorKind::Other` did — erased exactly the
+    /// distinction a caller needs to choose between "retry" and "ask elsewhere",
+    /// and left the peer's reason recoverable only by parsing a message.
+    #[error("provider refused the request: {reason}")]
+    ProviderRefused {
+        /// The reason the provider gave for declining (domain data).
+        reason: String,
+    },
 
     /// A provide/fetch was attempted against an endpoint that is not on the
     /// device's trusted-remote list, or lacks the required capability

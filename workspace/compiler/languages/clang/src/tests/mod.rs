@@ -3,9 +3,9 @@
 //! All tests parse small literal C/C++ source strings via libclang's unsaved-
 //! file API.  No external build system is required.
 //!
-//! Tests that need libclang at runtime are gated by `Clang::new()` — if
-//! libclang is unavailable they are skipped with a descriptive message rather
-//! than panicking.
+//! Tests that need libclang at runtime go through [`require_clang`], which
+//! **fails the test** if libclang cannot be loaded — see that function's doc
+//! comment for why a silent skip is not an acceptable default here.
 
 use clang::{Clang, Index};
 
@@ -19,9 +19,68 @@ use std::path::Path;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Try to acquire a libclang handle.  Returns `None` if libclang is absent.
-fn try_clang() -> Option<Clang> {
-    Clang::new().ok()
+/// Acquire a libclang handle for a hermetic test, or fail loudly.
+///
+/// `nudox-producer-clang` links `clang-sys`'s `runtime` feature specifically
+/// so that a *missing* libclang is a graceful, typed `Err` at the point of
+/// use (`ClangProducer::invoke` → `ProducerError::OracleSpawn`) rather than a
+/// `dyld` abort at process load (AGENTS-DOCTRINE.md §8) — every test in this
+/// file exercises exactly that "libclang present, drive it" path. libclang
+/// is expected to be resolvable on every host that runs this suite: pinned
+/// via `flake.nix`'s `LIBCLANG_PATH` inside `nix develop`, or via Xcode
+/// Command Line Tools' `libclang.dylib` outside it. A test suite that
+/// quietly returns "skip" instead of failing when that assumption breaks is
+/// a suite that can never fail — the "screenshot suite that cannot fail"
+/// defect (AGENTS-DOCTRINE.md §8), applied to libclang instead of pixels.
+///
+/// This therefore **panics** by default when libclang cannot be loaded,
+/// naming the underlying error. The only way to get the old silent-skip
+/// behaviour is to opt in explicitly by setting
+/// `NUDOX_ALLOW_CLANG_TEST_SKIP=1`, which downgrades the panic to a loud
+/// `eprintln!` skip — for the rare host that genuinely has no libclang and
+/// cannot get one. That is an opt-out you must ask for, never a default.
+///
+/// # Why this also returns a `MutexGuard`
+///
+/// `clang::Clang` is documented as allowing only **one instance in the
+/// whole process at a time** (`Clang::new` fails with `"an instance of
+/// Clang already exists"` otherwise) — a process-wide restriction, not a
+/// per-thread one. `cargo test`'s default harness runs every `#[test]` fn
+/// concurrently on its own thread, so without serialization every test in
+/// this file races the others for that single slot: exactly one wins
+/// `Clang::new()` and the rest see `Err("an instance of Clang already
+/// exists")`. The old `try_clang` conflated that race with "libclang is
+/// absent" and silently skipped either way, so this file's tests never
+/// actually ran together — only whichever one happened to win the race did.
+/// Serializing acquisition through `CLANG_SINGLETON` (held for the caller's
+/// whole test body via the returned guard) turns "lost the race" back into
+/// "didn't happen", instead of a second, misdiagnosed reason to skip.
+static CLANG_SINGLETON: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn require_clang(test_name: &str) -> Option<(std::sync::MutexGuard<'static, ()>, Clang)> {
+    let guard = CLANG_SINGLETON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match Clang::new() {
+        Ok(c) => Some((guard, c)),
+        Err(e) => {
+            if std::env::var_os("NUDOX_ALLOW_CLANG_TEST_SKIP").is_some() {
+                eprintln!(
+                    "SKIP {test_name}: libclang unavailable ({e}) — \
+                     NUDOX_ALLOW_CLANG_TEST_SKIP is set"
+                );
+                None
+            } else {
+                panic!(
+                    "{test_name}: libclang unavailable ({e}). This suite requires \
+                     libclang — run inside `nix develop` (flake.nix pins \
+                     LIBCLANG_PATH) or install Xcode Command Line Tools. Set \
+                     NUDOX_ALLOW_CLANG_TEST_SKIP=1 to skip this test instead of \
+                     failing it."
+                )
+            }
+        }
+    }
 }
 
 /// Parse a C source snippet with the given virtual filename.
@@ -38,12 +97,8 @@ fn parse_cpp<'a>(index: &'a Index<'a>, source: &str) -> crate::oracle::ClangOrac
 
 #[test]
 fn struct_with_fields() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP struct_with_fields: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("struct_with_fields") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -98,12 +153,8 @@ struct Point {
 
 #[test]
 fn function_with_params() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP function_with_params: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("function_with_params") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -135,12 +186,8 @@ int add(int a, int b) { return a + b; }
 
 #[test]
 fn overload_pair_two_distinct_declarations() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP overload_pair_two_distinct_declarations: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("overload_pair_two_distinct_declarations") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -191,12 +238,8 @@ void print(double x) {}
 
 #[test]
 fn enum_class_explicit_values() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP enum_class_explicit_values: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("enum_class_explicit_values") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -234,12 +277,8 @@ enum class Color { Red = 1, Green = 2, Blue = 4 };
 
 #[test]
 fn typedef_and_using_alias() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP typedef_and_using_alias: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("typedef_and_using_alias") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -278,12 +317,8 @@ using MyInt = int;
 
 #[test]
 fn namespace_emitted_as_module() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP namespace_emitted_as_module: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("namespace_emitted_as_module") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -319,12 +354,8 @@ namespace math {
 
 #[test]
 fn template_function_type_var() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP template_function_type_var: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("template_function_type_var") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -364,12 +395,8 @@ T identity(T x) { return x; }
 
 #[test]
 fn lowering_struct_passes_finish() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP lowering_struct_passes_finish: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("lowering_struct_passes_finish") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -414,12 +441,8 @@ struct Vec2 {
 
 #[test]
 fn union_emitted_as_record_union_form() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP union_emitted_as_record_union_form: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("union_emitted_as_record_union_form") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -490,12 +513,8 @@ union Value {
 /// carries the parameter and return types without degrading to `Type::Any`.
 #[test]
 fn c_function_pointer_lowers_to_function_pointer() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP c_function_pointer_lowers_to_function_pointer: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("c_function_pointer_lowers_to_function_pointer") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 
@@ -578,12 +597,8 @@ typedef int (*BinaryOp)(int, int);
 /// A function accepting a void-returning function pointer `typedef void (*Callback)(void)`.
 #[test]
 fn void_function_pointer_has_none_return() {
-    let clang = match try_clang() {
-        Some(c) => c,
-        None => {
-            eprintln!("SKIP void_function_pointer_has_none_return: libclang unavailable");
-            return;
-        }
+    let Some((_guard, clang)) = require_clang("void_function_pointer_has_none_return") else {
+        return;
     };
     let index = Index::new(&clang, false, false);
 

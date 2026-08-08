@@ -16,10 +16,10 @@ use std::sync::Arc;
 use bytes::Bytes;
 use heart::deployment::TrustedRemote;
 use iroh::address_lookup::MemoryLookup;
-use object_pack::transport::{
+use index::pack::transport::{
     ObjectPackFetcher, ObjectPackProvider, PackResponse, ProvideTarget,
 };
-use object_pack::{FilesystemObjectPackStore, MemberKey, ObjectPackBuilder, ObjectPackStore, PackError, RelativePath};
+use index::pack::{FilesystemObjectPackStore, MemberKey, ObjectPackBuilder, ObjectPackStore, PackError, RelativePath};
 use smol_str::SmolStr;
 
 // ---------------------------------------------------------------------------
@@ -99,10 +99,26 @@ async fn whole_pack_provide_fetch_installs_byte_identical() {
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
-    fetcher
-        .fetch_whole_pack(&id, provider_id)
-        .await
-        .expect("fetch whole pack");
+    // Doctrine §4: the measured region is the transfer itself. `disk_delta_bytes`
+    // over the fetcher's root is the honest storage figure here — the bytes a
+    // peer actually gains by installing this pack, sidecar included. Wall time is
+    // reported but is not a usable signal on a shared build host.
+    //
+    // `measured` takes a sync closure, so the await is driven with
+    // `block_in_place` + `Handle::block_on`: that hands the current task's worker
+    // back to the runtime, so the spawned provider-accept task still progresses.
+    // Plain `block_on` inside a runtime worker would stall it.
+    let (fetched, _cost) = tokio::task::block_in_place(|| {
+        nudox_test_support::measured(
+            "object_pack/whole_pack_fetch_install",
+            fetcher_dir.path(),
+            || {
+                tokio::runtime::Handle::current()
+                    .block_on(fetcher.fetch_whole_pack(&id, provider_id))
+            },
+        )
+    });
+    fetched.expect("fetch whole pack");
 
     accept.await.unwrap().expect("provider accept ok");
 
@@ -203,7 +219,7 @@ fn tampered_verified_range_frame_is_rejected() {
     let victim = encoded.len() / 2;
     encoded[victim] ^= 0xFF;
 
-    let result = object_pack::verify_bao_range(
+    let result = index::pack::verify_bao_range(
         &outboard.root_hash,
         outboard.uncompressed_length,
         &encoded,
@@ -235,7 +251,9 @@ async fn fetch_from_non_enrolled_endpoint_is_rejected() {
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
+    let started = std::time::Instant::now();
     let fetch_result = fetcher.fetch_whole_pack(&id, provider_id).await;
+    let elapsed = started.elapsed();
 
     let provider_result = accept.await.unwrap();
 
@@ -244,8 +262,23 @@ async fn fetch_from_non_enrolled_endpoint_is_rejected() {
         matches!(provider_result, Err(PackError::NotEnrolled { .. })),
         "expected NotEnrolled on provider side, got {provider_result:?}"
     );
-    // The fetcher sees a refusal and installs nothing.
-    assert!(fetch_result.is_err(), "fetch must fail for non-enrolled peer");
+
+    // ...and the fetcher must LEARN that, from the provider, as the typed
+    // `ProviderRefused`. Asserting only `is_err()` passed while the provider was
+    // discarding its own `Refused` frame by closing the connection underneath
+    // it: the fetcher actually sat in `read_exact` for QUIC's ~30 s idle timeout
+    // and then reported an opaque `Transport(TimedOut)`. Both halves of that are
+    // asserted here — the variant, and that it arrived by being *sent* rather
+    // than by a timer expiring.
+    assert!(
+        matches!(fetch_result, Err(PackError::ProviderRefused { .. })),
+        "fetcher must receive the provider's typed refusal, got {fetch_result:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "the refusal must be delivered, not discovered via QUIC's ~30s idle \
+         timeout; the fetch took {elapsed:?}"
+    );
     assert!(!fetcher_store.has(&id), "nothing installed on refusal");
 }
 
@@ -286,7 +319,7 @@ fn install_with_wrong_id_is_rejected_and_leaves_nothing() {
     let (bytes, real_id, outboards) = build_mixed_pack().seal_with_outboards().unwrap();
 
     // Claim a different id than the bytes actually derive to.
-    let wrong_id = object_pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"not the pack"));
+    let wrong_id = index::pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"not the pack"));
     let result = store.install_pack(&wrong_id, &bytes, &outboards);
     assert!(matches!(result, Err(PackError::FetchedIdMismatch)));
 
@@ -321,7 +354,7 @@ async fn fetch_unknown_pack_is_refused() {
     let provider_store = Arc::new(FilesystemObjectPackStore::open(provider_dir.path()).unwrap());
     let fetcher_store = Arc::new(FilesystemObjectPackStore::open(fetcher_dir.path()).unwrap());
 
-    let unknown = object_pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"ghost"));
+    let unknown = index::pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"ghost"));
 
     let (provider, fetcher, provider_id) =
         make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), true).await;
@@ -330,8 +363,26 @@ async fn fetch_unknown_pack_is_refused() {
     let fetch_result = fetcher.fetch_whole_pack(&unknown, provider_id).await;
     let _ = accept.await.unwrap();
 
-    assert!(fetch_result.is_err());
+    // The provider answered on a healthy link and *declined*: that is a
+    // `ProviderRefused`, not a `Transport` failure. Asserting the typed variant
+    // (rather than `is_err()`) is what distinguishes "the peer said no" from
+    // "the socket died" — the two demand opposite caller behaviour, and only one
+    // of them means retrying against this peer is pointless.
+    match fetch_result {
+        Err(PackError::ProviderRefused { reason }) => {
+            assert!(
+                !reason.is_empty(),
+                "a refusal must carry the provider's stated reason, got an empty string"
+            );
+        }
+        other => panic!("expected PackError::ProviderRefused, got {other:?}"),
+    }
     assert!(!fetcher_store.has(&unknown));
-    // Keep the unused import meaningful.
-    let _ = PackResponse::Refused { reason: String::new() };
+
+    // The refusal the fetcher decoded is the same wire variant the provider
+    // builds for an unservable request.
+    assert!(matches!(
+        PackResponse::Refused { reason: String::new() },
+        PackResponse::Refused { .. }
+    ));
 }

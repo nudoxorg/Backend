@@ -25,7 +25,7 @@ pub use iroh_blobs::ALPN as BLOBS_ALPN;
 /// the caller's `ContentIo::Id`.
 ///
 /// Serde is derived so [`TransportHash`] can travel inside postcard-framed
-/// announcement messages (see [`crate::announce`]).
+/// announcement messages (see [`super::announce`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct TransportHash(pub [u8; 32]);
 
@@ -52,7 +52,7 @@ pub struct Provider {
 impl Provider {
     /// Wrap a bound endpoint in a blobs router that serves this provider's
     /// in-memory store. The caller builds the endpoint (via
-    /// [`crate::endpoint::bind_endpoint`], advertising [`BLOBS_ALPN`]).
+    /// [`super::endpoint::bind_endpoint`], advertising [`BLOBS_ALPN`]).
     pub fn serve(endpoint: iroh::Endpoint) -> Self {
         let store = MemStore::new();
         let blobs = BlobsProtocol::new(&store, None);

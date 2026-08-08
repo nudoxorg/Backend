@@ -14,7 +14,6 @@
 //! [`ObjectPackReader::get_member_range`] decompresses only the chunks that
 //! overlap the requested byte range, keeping peak memory low for snippet reads.
 
-use std::io;
 use std::ops::Range;
 use std::path::Path;
 
@@ -281,22 +280,19 @@ impl ObjectPackReader {
         let frame_bytes = &slice[frame_offset..frame_end];
         let expected_uncompressed = chunk.uncompressed_length.get() as usize;
 
-        let decompressed =
-            zstd::bulk::decompress(frame_bytes, expected_uncompressed).map_err(|error| {
-                PackError::FrameDecode(std::io::Error::other(format_args!(
-                    "zstd error at offset {frame_offset}: {error}"
-                )))
-            })?;
+        let decompressed = zstd::bulk::decompress(frame_bytes, expected_uncompressed).map_err(
+            |source| PackError::FrameDecode {
+                offset: frame_offset as u64,
+                source,
+            },
+        )?;
 
         if decompressed.len() != expected_uncompressed {
-            return Err(PackError::FrameDecode(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format_args!(
-                    "chunk length mismatch: expected {expected_uncompressed} \
-                     uncompressed bytes, got {}",
-                    decompressed.len()
-                ),
-            )));
+            return Err(PackError::FrameLengthMismatch {
+                offset: frame_offset as u64,
+                expected: expected_uncompressed as u64,
+                actual: decompressed.len() as u64,
+            });
         }
 
         Ok(decompressed)
@@ -474,7 +470,7 @@ impl ObjectPackReader {
     /// # Errors
     ///
     /// - [`PackError::TocHashMismatch`] — on-disk TOC bytes are non-canonical.
-    /// - [`PackError::TocDecode`] — re-encoding the in-memory value failed
+    /// - [`PackError::TocEncode`] — re-encoding the in-memory value failed
     ///   (should never happen; indicates a logic error).
     pub fn verify_table_of_contents(&self) -> PackResult<()> {
         let on_disk_toc_bytes = self.toc_bytes();

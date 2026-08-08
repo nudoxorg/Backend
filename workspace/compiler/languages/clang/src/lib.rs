@@ -15,10 +15,28 @@
 //!
 //! A libclang TU for a `.c`/`.cpp` file transitively includes all headers it
 //! pulls in — including system headers, libc, STL, etc.  The producer filters
-//! all cursors through [`Entity::is_in_main_file`] in the visitor, which
-//! libclang defines as "the entity was lexically defined in the compilation
-//! unit's main source file, not in a header or included file".  This is the
-//! only cheap, correct filter that avoids emitting all of libc.
+//! all cursors down to the file it was asked to parse by comparing each
+//! entity's *resolved* file (`clang_getFileLocation`, which follows macro
+//! expansion to a concrete file — see `extract::is_in_main_file`'s doc
+//! comment) against that path directly, rather than trusting
+//! [`Entity::is_in_main_file`]/`clang_Location_isFromMainFile`: that call
+//! answers `false` for any declaration whose opening token comes from a
+//! macro expansion — e.g. `namespace nlohmann` opened via
+//! `NLOHMANN_JSON_NAMESPACE_BEGIN` — even when every byte of it is in the
+//! file being parsed, which silently discarded such a declaration's entire
+//! subtree.
+//!
+//! # System-header discovery
+//!
+//! `clang_parseTranslationUnit` calls straight into libclang's C API — no
+//! shell, no wrapper script. On a system where the "real" compiler on `PATH`
+//! is a wrapper that injects its toolchain's `-isystem`/`-isysroot` flags
+//! itself (nix's `cc-wrapper` is exactly this), that injection never
+//! happens, so even `#include <algorithm>` fails to resolve and every real
+//! C++ file becomes a near-empty translation unit. [`producer::invoke`]
+//! asks a real compiler driver once, up front, what its default search path
+//! is (`system_includes::discover`), and threads that into every file's
+//! argument list. See that module's docs for how and why.
 //!
 //! # Id choice: USR
 //!
@@ -48,10 +66,12 @@
 //!   each overload gets its own distinct USR from libclang, so the Lowering
 //!   sink naturally produces one entry per overload.
 
+pub(crate) mod compile_commands;
 pub(crate) mod extract;
 pub mod lower;
 pub mod oracle;
 pub mod producer;
+pub(crate) mod system_includes;
 
 #[cfg(test)]
 mod tests;

@@ -42,9 +42,9 @@ use std::sync::Arc;
 
 use heart::sync::SyncError;
 
-use crate::blob::TransportHash;
-use crate::endpoint::EndpointId;
-use crate::frame::{recv_framed, send_framed};
+use super::blob::TransportHash;
+use super::endpoint::EndpointId;
+use super::frame::{recv_framed, send_framed};
 
 /// ALPN for the federation sync announcement/ack control protocol.
 pub const ANNOUNCE_ALPN: &[u8] = b"nudox/sync-announce/1";
@@ -124,9 +124,9 @@ pub async fn send_announcement(
 /// # Example
 ///
 /// ```no_run
-/// # use crate::transport::announce::{ANNOUNCE_ALPN, serve_announcements, Ack};
-/// # use crate::transport::endpoint::{bind_endpoint, AddressLookup, SecretKey};
-/// # use crate::transport::SyncError;
+/// # use index::transport::announce::{ANNOUNCE_ALPN, serve_announcements, Ack};
+/// # use index::transport::endpoint::{bind_endpoint, AddressLookup, SecretKey};
+/// # use index::transport::SyncError;
 /// # async fn example() -> Result<(), SyncError> {
 /// let ep = bind_endpoint(
 ///     vec![ANNOUNCE_ALPN.to_vec()],
@@ -217,7 +217,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::endpoint::{AddressLookup, SecretKey, bind_endpoint};
+    use super::super::endpoint::{AddressLookup, SecretKey, bind_endpoint};
 
     async fn make_receiver(key: SecretKey, lookup: AddressLookup) -> iroh::Endpoint {
         bind_endpoint(vec![ANNOUNCE_ALPN.to_vec()], key, Some(lookup))
@@ -232,13 +232,20 @@ mod tests {
             .expect("bind sender endpoint")
     }
 
-    #[tokio::test]
+    // A shared `MemoryLookup` is the discovery *table*, not its contents:
+    // cloning the handle only means both endpoints read the same map. Each
+    // endpoint must still publish its own bound address into it, or the dialer
+    // resolves the receiver's `EndpointId` to zero addresses and iroh fails the
+    // connect with "All address lookup services failed or produced no results"
+    // before a single announcement byte is written.
+    #[tokio::test(flavor = "multi_thread")]
     async fn send_recv_announcement_round_trip() {
         let lookup = AddressLookup::default();
 
         let receiver_key = SecretKey::from_bytes(&[1u8; 32]);
         let receiver_id = receiver_key.public(); // derive id before moving key
         let receiver_ep = make_receiver(receiver_key, lookup.clone()).await;
+        lookup.add_endpoint_info(receiver_ep.addr());
 
         // Serve exactly one announcement in a spawned task.
         let receiver_task = tokio::spawn(async move {
@@ -254,7 +261,8 @@ mod tests {
             .expect("handle_one_connection");
         });
 
-        let sender_ep = make_sender(SecretKey::from_bytes(&[2u8; 32]), lookup).await;
+        let sender_ep = make_sender(SecretKey::from_bytes(&[2u8; 32]), lookup.clone()).await;
+        lookup.add_endpoint_info(sender_ep.addr());
         let ann = Announcement {
             id: "test-id-42".to_string(),
             transport_hash: TransportHash([0xab; 32]),
@@ -268,13 +276,14 @@ mod tests {
         receiver_task.await.expect("receiver task panicked");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_error_yields_rejected_ack() {
         let lookup = AddressLookup::default();
 
         let receiver_key = SecretKey::from_bytes(&[3u8; 32]);
         let receiver_id = receiver_key.public();
         let receiver_ep = make_receiver(receiver_key, lookup.clone()).await;
+        lookup.add_endpoint_info(receiver_ep.addr());
 
         let receiver_task = tokio::spawn(async move {
             handle_one_connection(
@@ -287,7 +296,8 @@ mod tests {
             .expect("handle_one_connection");
         });
 
-        let sender_ep = make_sender(SecretKey::from_bytes(&[4u8; 32]), lookup).await;
+        let sender_ep = make_sender(SecretKey::from_bytes(&[4u8; 32]), lookup.clone()).await;
+        lookup.add_endpoint_info(sender_ep.addr());
         let ann = Announcement {
             id: "will-fail".to_string(),
             transport_hash: TransportHash([0u8; 32]),

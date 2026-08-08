@@ -56,12 +56,18 @@ fn init_repo(tagged: bool) -> (tempfile::TempDir, String) {
 
 /// The tagged-repo enumeration contract, generic over the adapter under test
 /// so both the grit default and the subprocess fallback are held to it.
-fn assert_tagged_repo_enumerates_one_version_per_tag(adapter: &impl GitRepository) {
+fn assert_tagged_repo_enumerates_one_version_per_tag(case: &str, adapter: &impl GitRepository) {
     let (_dir, url) = init_repo(true);
     let slug = "example.test/lib";
 
-    let ops =
-        enumerate_git_versions(adapter, slug, &url, 20250101000000).expect("enumerate tagged repo");
+    // Doctrine §4: enumeration against a *real* on-disk git repository is the
+    // measured region. The reliable figure is the op count asserted below; the
+    // emitted wall time is per-adapter (subprocess `git` vs in-process grit) and
+    // is only comparable between them on an otherwise idle host.
+    let (ops, _cost) = nudox_test_support::measured(case, _dir.path(), || {
+        enumerate_git_versions(adapter, slug, &url, 20250101000000)
+    });
+    let ops = ops.expect("enumerate tagged repo");
 
     let versions: Vec<&CatalogOp> = ops
         .iter()
@@ -90,12 +96,18 @@ fn assert_tagged_repo_enumerates_one_version_per_tag(adapter: &impl GitRepositor
 
 #[test]
 fn tagged_repo_enumerates_one_version_per_tag_with_pinned_oid_via_git_command() {
-    assert_tagged_repo_enumerates_one_version_per_tag(&GitCommandAdapter::default());
+    assert_tagged_repo_enumerates_one_version_per_tag(
+        "ingest/enumerate_tagged_repo.git_command",
+        &GitCommandAdapter::default(),
+    );
 }
 
 #[test]
 fn tagged_repo_enumerates_one_version_per_tag_with_pinned_oid_via_grit() {
-    assert_tagged_repo_enumerates_one_version_per_tag(&GritAdapter::default());
+    assert_tagged_repo_enumerates_one_version_per_tag(
+        "ingest/enumerate_tagged_repo.grit",
+        &GritAdapter::default(),
+    );
 }
 
 /// The untagged-repo pseudo-version contract, generic over the adapter.

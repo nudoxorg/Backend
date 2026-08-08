@@ -6,9 +6,11 @@ use nudox_ir::lower::Lowering;
 use nudox_producer::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::{
+    compile_commands::CompileCommands,
     extract::extract_file,
     lower::lower_oracle,
     oracle::{ClangOracle, Usr},
+    system_includes,
 };
 
 // ── Producer ──────────────────────────────────────────────────────────────────
@@ -58,17 +60,33 @@ impl Producer for ClangProducer {
         // Find all C/C++ source files under the package root.
         let sources: Vec<_> = find_sources(root);
 
+        // A real project's own build knows its `-I`/`-D`/`-std` flags; a
+        // bare per-extension default cannot (see `compile_commands`'s module
+        // docs for why that matters). Load it once per `invoke`, not once
+        // per file.
+        let compile_db = CompileCommands::load(root);
+
+        // The host toolchain's own `-isystem` search path — see
+        // `system_includes`'s module docs. Discovered (and cached) once;
+        // every file gets it ahead of its own `-I`/`-isystem` flags so a
+        // project's own headers still take priority via `-I`'s normal
+        // higher search precedence over `-isystem`.
+        let system_args = system_includes::args();
+
         let mut oracle = ClangOracle::default();
 
         for path in &sources {
-            // Choose C or C++ parse mode based on file extension.
-            let args: &[&str] = if is_cpp(path) {
-                &["-std=c++17", "-x", "c++"]
-            } else {
-                &["-std=c11"]
-            };
+            let db_args = compile_db.as_ref().and_then(|db| db.args_for(path));
+            let default_args = default_args_for(path);
+            let file_args = db_args.as_deref().unwrap_or(&default_args);
 
-            let partial = extract_file(&index, path, args);
+            let args: Vec<&str> = system_args
+                .iter()
+                .map(String::as_str)
+                .chain(file_args.iter().map(String::as_str))
+                .collect();
+
+            let partial = extract_file(&index, path, &args);
             merge_oracle(&mut oracle, partial);
         }
 
@@ -100,6 +118,16 @@ fn collect_sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         } else if is_cpp(&path) || is_c(&path) {
             out.push(path);
         }
+    }
+}
+
+/// The argument list used when a file has no `compile_commands.json` entry —
+/// exactly what every file used before ingestion existed.
+fn default_args_for(path: &std::path::Path) -> Vec<String> {
+    if is_cpp(path) {
+        vec!["-std=c++17".to_owned(), "-x".to_owned(), "c++".to_owned()]
+    } else {
+        vec!["-std=c11".to_owned()]
     }
 }
 

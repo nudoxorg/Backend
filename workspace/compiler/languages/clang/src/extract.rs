@@ -34,7 +34,7 @@ pub fn extract_file(index: &Index<'_>, path: &Path, args: &[&str]) -> ClangOracl
             return ClangOracle::default();
         }
     };
-    extract_tu(&tu)
+    extract_tu(&tu, path)
 }
 
 /// Parse an **in-memory** source string under the given virtual filename.
@@ -58,25 +58,67 @@ pub fn extract_unsaved(
             return ClangOracle::default();
         }
     };
-    extract_tu(&tu)
+    extract_tu(&tu, virtual_path)
 }
 
 // ── TU extraction ─────────────────────────────────────────────────────────────
 
-fn extract_tu(tu: &TranslationUnit<'_>) -> ClangOracle {
+fn extract_tu(tu: &TranslationUnit<'_>, main_file: &Path) -> ClangOracle {
     let mut oracle = ClangOracle::default();
     let root = tu.get_entity();
     for child in root.get_children() {
-        visit_entity(&mut oracle, child, None);
+        visit_entity(&mut oracle, child, None, main_file);
     }
     oracle
 }
 
+/// Whether `entity` is lexically written in `main_file`, resolved the way a
+/// caller actually means it: "physically part of the file I asked libclang
+/// to parse", not "reachable via `clang_Location_isFromMainFile`".
+///
+/// # Why not `Entity::is_in_main_file`
+///
+/// `clang::Entity::is_in_main_file` (this crate's wrapper around
+/// `clang_Location_isFromMainFile`) is evaluated on the cursor's raw extent
+/// start, which for any declaration whose *opening token* comes from a macro
+/// expansion is still a macro `SourceLocation`, not a resolved file location
+/// — and libclang's `isFromMainFile` answers `false` for those without
+/// resolving through the expansion first. This is not a hypothetical: real
+/// C++ libraries routinely open their public namespace through a macro for
+/// ABI-tagging (`NLOHMANN_JSON_NAMESPACE_BEGIN` in nlohmann/json,
+/// `FMT_BEGIN_NAMESPACE` in fmt, `ABSL_NAMESPACE_BEGIN` in abseil-cpp, …).
+/// Verified empirically: `#define NS_BEGIN namespace foo {` then `NS_BEGIN`
+/// at top level yields a `Namespace` cursor with `is_in_main_file() ==
+/// false`, even though every byte of it is in the file being parsed — while
+/// a `struct` written two lines later with no macro involved correctly comes
+/// back `true`. Because [`visit_entity`] returns early on a `false` result
+/// *before* recursing, one macro-wrapped namespace silently discards its
+/// entire subtree — for `nlohmann::json` specifically, this reduced a
+/// single-header library with hundreds of public declarations down to the
+/// nine names that happened to sit in a macro-free `namespace std { … }`
+/// block.
+///
+/// `entity_file` (used elsewhere in this module for the `source_file` we
+/// actually persist) goes through `clang_getFileLocation`, which *does*
+/// resolve through macro expansion to a concrete file — confirmed against
+/// the same repro to correctly report the main `.cpp` path for the
+/// macro-opened namespace. Comparing that resolved file to the file we asked
+/// the parser to open is what "in the main file" should have meant all
+/// along.
+fn is_in_main_file(entity: Entity<'_>, main_file: &Path) -> bool {
+    entity_file(entity) == main_file
+}
+
 // ── Recursive entity visitor ──────────────────────────────────────────────────
 
-fn visit_entity(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
+fn visit_entity(
+    oracle: &mut ClangOracle,
+    entity: Entity<'_>,
+    parent_usr: Option<&str>,
+    main_file: &Path,
+) {
     // Filter to entities lexically defined in the main translation unit file.
-    if !entity.is_in_main_file() {
+    if !is_in_main_file(entity, main_file) {
         return;
     }
     if entity.is_invalid_declaration() {
@@ -84,12 +126,12 @@ fn visit_entity(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option
     }
 
     match entity.get_kind() {
-        EntityKind::Namespace => visit_namespace(oracle, entity, parent_usr),
-        EntityKind::StructDecl => visit_record(oracle, entity, parent_usr, false),
+        EntityKind::Namespace => visit_namespace(oracle, entity, parent_usr, main_file),
+        EntityKind::StructDecl => visit_record(oracle, entity, parent_usr, false, main_file),
         EntityKind::ClassDecl | EntityKind::ClassTemplate => {
-            visit_record(oracle, entity, parent_usr, false)
+            visit_record(oracle, entity, parent_usr, false, main_file)
         }
-        EntityKind::UnionDecl => visit_record(oracle, entity, parent_usr, true),
+        EntityKind::UnionDecl => visit_record(oracle, entity, parent_usr, true, main_file),
         EntityKind::FunctionDecl | EntityKind::FunctionTemplate => {
             visit_function(oracle, entity, parent_usr, None)
         }
@@ -99,7 +141,7 @@ fn visit_entity(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option
         | EntityKind::ConversionFunction => {
             visit_function(oracle, entity, parent_usr, Some(receiver_kind(entity)))
         }
-        EntityKind::EnumDecl => visit_enum(oracle, entity, parent_usr),
+        EntityKind::EnumDecl => visit_enum(oracle, entity, parent_usr, main_file),
         EntityKind::TypedefDecl | EntityKind::TypeAliasDecl => {
             visit_alias(oracle, entity, parent_usr)
         }
@@ -108,7 +150,7 @@ fn visit_entity(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option
         // Linkage-spec blocks (`extern "C" { … }`) — recurse transparently.
         EntityKind::LinkageSpec => {
             for child in entity.get_children() {
-                visit_entity(oracle, child, parent_usr);
+                visit_entity(oracle, child, parent_usr, main_file);
             }
         }
         // Everything else we skip without error.
@@ -118,7 +160,12 @@ fn visit_entity(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option
 
 // ── Namespace ─────────────────────────────────────────────────────────────────
 
-fn visit_namespace(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
+fn visit_namespace(
+    oracle: &mut ClangOracle,
+    entity: Entity<'_>,
+    parent_usr: Option<&str>,
+    main_file: &Path,
+) {
     let name = match entity.get_name() {
         Some(n) if !n.is_empty() => n,
         _ => return, // anonymous namespace
@@ -140,7 +187,7 @@ fn visit_namespace(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Opt
     });
 
     for child in entity.get_children() {
-        visit_entity(oracle, child, Some(&this_usr));
+        visit_entity(oracle, child, Some(&this_usr), main_file);
     }
 }
 
@@ -151,6 +198,7 @@ fn visit_record(
     entity: Entity<'_>,
     parent_usr: Option<&str>,
     is_union: bool,
+    main_file: &Path,
 ) {
     // Forward declarations (no definition) — skip to avoid duplicates.
     if !entity.is_definition() {
@@ -192,7 +240,7 @@ fn visit_record(
 
     let this_usr = usr.clone();
     for child in children {
-        visit_entity(oracle, child, Some(&this_usr));
+        visit_entity(oracle, child, Some(&this_usr), main_file);
     }
 }
 
@@ -252,7 +300,7 @@ fn visit_function(
 
     let children = entity.get_children();
     let generics = generic_params(&children);
-    let (params, variadic) = function_params(entity);
+    let (params, variadic) = function_params(entity, &children);
     let ret = entity
         .get_result_type()
         .map(resolve_type)
@@ -279,10 +327,12 @@ fn visit_function(
     });
 }
 
-fn function_params(entity: Entity<'_>) -> (Vec<OracleParam>, bool) {
+fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OracleParam>, bool) {
     let mut params = Vec::new();
 
     if let Some(args) = entity.get_arguments() {
+        // The common path: `clang_Cursor_getNumArguments` reports a real
+        // count for concrete function/method declarations.
         for arg in args {
             let ty = arg
                 .get_type()
@@ -293,6 +343,28 @@ fn function_params(entity: Entity<'_>) -> (Vec<OracleParam>, bool) {
                 ty,
                 is_variadic: false,
             });
+        }
+    } else {
+        // `entity.get_arguments()` returns `None` for an *uninstantiated*
+        // `FunctionTemplate` cursor — libclang's `clang_Cursor_getNumArguments`
+        // only answers for concrete declarations, not templates (verified
+        // against `template <typename T> T identity(T x)`: the cursor kind
+        // is `FunctionTemplate` and the call reports no arguments at all,
+        // even though the template plainly has one). The parameters are
+        // still real `ParmDecl` children of the cursor, exactly as for a
+        // non-template function, so filter for those directly instead.
+        for child in children {
+            if child.get_kind() == EntityKind::ParmDecl {
+                let ty = child
+                    .get_type()
+                    .map(resolve_type)
+                    .unwrap_or(OracleType::Inferred);
+                params.push(OracleParam {
+                    name: child.get_name().unwrap_or_default(),
+                    ty,
+                    is_variadic: false,
+                });
+            }
         }
     }
 
@@ -331,7 +403,12 @@ fn fn_abi(entity: Entity<'_>) -> Option<String> {
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
 
-fn visit_enum(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
+fn visit_enum(
+    oracle: &mut ClangOracle,
+    entity: Entity<'_>,
+    parent_usr: Option<&str>,
+    main_file: &Path,
+) {
     if !entity.is_definition() {
         return;
     }
@@ -363,7 +440,7 @@ fn visit_enum(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&
     });
 
     for child in entity.get_children() {
-        if child.get_kind() == EntityKind::EnumConstantDecl && child.is_in_main_file() {
+        if child.get_kind() == EntityKind::EnumConstantDecl && is_in_main_file(child, main_file) {
             let vname = child.get_name().unwrap_or_default();
             if vname.is_empty() {
                 continue;
