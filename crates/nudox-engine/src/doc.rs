@@ -405,6 +405,14 @@ fn collect_impls(
     let ty_matches = |ty: &Type| -> bool {
         match ty {
             Type::Nominal(Ref::Intro(id)) => *id == target,
+            // A cross-package self type never matches a *local* `target`: this
+            // function answers "which impls are on the symbol I opened", and
+            // that symbol is by definition in this package. Stated explicitly
+            // rather than caught by the `_` wildcard below, because the
+            // wildcard would silently drop such an impl from the
+            // Implementations list rather than fail — the exact shape of the
+            // defect this change exists to remove.
+            Type::Nominal(Ref::Foreign { .. }) | Type::Nominal(Ref::Local(_)) => false,
             // Generic application: `impl Debug for Router<E>` — the outer
             // `Apply` has a `Nominal(Intro(router_intro))` as its base.
             Type::Apply { base, .. } => {
@@ -449,12 +457,18 @@ fn collect_impls(
                 _ => 0,
             };
 
+            // The impl block's own location (LIMITATIONS.md L42.3). Read from
+            // the same entry the label came from, so a row can never describe
+            // one impl and link to another.
+            let source = crate::wire::SourceLocation::from_ir(entry.location());
+
             Some(ImplRow {
                 key,
                 label: SharedStr::from(label_text.as_str()),
                 is_blanket,
                 trait_label,
                 self_generic_count,
+                source,
             })
         })
         .collect();

@@ -49,6 +49,13 @@ pub use nudox_ir::kind::KindDiscriminant;
 pub mod repair;
 pub use repair::{LinkOrigin, LinkRepair, LinkRepairKind};
 
+// Where a declaration was written. Its own module because it is a closed
+// vocabulary two unrelated wire types (`SymbolHead`, `ImplRow`) both carry, and
+// because the reason a location is *missing* is itself protocol — see its
+// module docs.
+pub mod source;
+pub use source::{LineCol, SourceLocation, UnlocatedReason};
+
 // ---------------------------------------------------------------------------
 // Serialisation helpers
 // ---------------------------------------------------------------------------
@@ -795,30 +802,16 @@ pub struct SymbolHead {
     /// estimated — so the skeleton is *derived* geometry, not a guess.
     pub section_plan: Vec<SectionPlan>,
 
-    // ── Source location ───────────────────────────────────────────────────────
-    //
-    // The path is whatever the producer recorded in `Symbol::source`.  It may be
-    // absolute (build-machine absolute), package-relative, or empty when the
-    // producer did not record a location.  A future producer pass can strip the
-    // package root at lowering time; we carry what we have rather than silently
-    // drop it.
-    //
-    // `source_span` is a **byte** range, not a line range.  Converting bytes to
-    // line numbers requires reading the file, which the engine deliberately does
-    // not do on the documentation path.  A producer that wants to surface line
-    // numbers should record them in the IR directly; until then the GUI should
-    // label these offsets explicitly (e.g. "bytes 10–42") so the user is never
-    // misled into thinking they are line numbers.
-    /// The path of the file in which the symbol is defined, as recorded by the
-    /// producer.  `None` when the producer did not supply a source location or
-    /// when `Symbol::source` is the empty path.
-    pub source_path: Option<SharedStr>,
-
-    /// The byte range of the symbol's definition within `source_path`.
+    /// Where this symbol was written.
     ///
-    /// These are **byte** offsets, not line numbers.  `None` when
-    /// `source_path` is `None`.
-    pub source_span: Option<[u32; 2]>,
+    /// Replaces the `source_path: Option<SharedStr>` /
+    /// `source_span: Option<[u32; 2]>` pair, which could not express a
+    /// navigable location and could not say why when it had none
+    /// (`LIMITATIONS.md` L31, L42.2). Only
+    /// [`SourceLocation::Declared`](source::SourceLocation::Declared) may be
+    /// rendered as a link; see
+    /// [`SourceLocation::jump_target`](source::SourceLocation::jump_target).
+    pub source: SourceLocation,
 }
 
 // ---------------------------------------------------------------------------
@@ -903,6 +896,19 @@ pub struct ImplRow {
     /// …, TN>`.  Groups with ≥3 consecutive values of this field collapse to a
     /// single arity-range summary row in the GUI.
     pub self_generic_count: u32,
+
+    /// Where the `impl` block was written.
+    ///
+    /// `ImplRow` previously carried `{key, label, is_blanket, trait_label,
+    /// self_generic_count}` and no location at all, so a per-impl source link
+    /// had nothing to point at (`LIMITATIONS.md` L42.3) and the GUI's only
+    /// recourse was to navigate to the impl's own symbol page and read the
+    /// head's location from there — two steps for what docs.rs does in one.
+    ///
+    /// This is the location of the `impl … { }` header, not of any member
+    /// inside it: an impl block is the thing the row names, and the members
+    /// have their own entries.
+    pub source: SourceLocation,
 }
 
 /// A paged list of trait implementations for this symbol.

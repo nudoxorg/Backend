@@ -433,6 +433,13 @@ struct AcceptedDegradations {
 pub struct LoadedWorkspace {
     pub db: RootDatabase,
     pub vfs: Vfs,
+    /// Absolute root of the package this workspace was loaded for.
+    ///
+    /// Kept so that source locations can be reported *relative* to it. An IR
+    /// that embedded `/Users/…/.real-crates/memchr-2.8.3/src/lib.rs` would make
+    /// every entry's identity a property of the build machine; relative to this
+    /// root the same declaration is `src/lib.rs` everywhere.
+    pub root: AbsPathBuf,
     /// Kept for package/target metadata.
     pub ws: ProjectWorkspace,
     /// Whether private items should be lowered.
@@ -776,6 +783,15 @@ pub(crate) fn load(
     Ok(LoadedWorkspace {
         db,
         vfs,
+        // Lexically normalised (`a/b/../c` → `a/c`), because the paths the VFS
+        // reports come back through `cargo metadata` already normalised, and a
+        // root still carrying `..` segments would fail to prefix-match every
+        // one of them — reporting a whole package as "outside itself".
+        // `normalize` and not `canonicalize`: `AbsPath::canonicalize` is a
+        // deliberate `panic!` upstream (paths#14430), and resolving symlinks
+        // would introduce the *opposite* mismatch on any machine whose checkout
+        // sits behind one.
+        root: abs.normalize(),
         ws,
         document_private,
         package_name: package_name.to_owned(),

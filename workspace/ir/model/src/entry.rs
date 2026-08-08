@@ -1,3 +1,4 @@
+mod location;
 mod node;
 mod symbol;
 mod typed;
@@ -7,6 +8,7 @@ use crate::{index::RawRef, kind::Kind, visitor::Visitor};
 pub use self::node::Node;
 
 pub use self::{
+    location::{ByteSpan, LineCol, SourceFile, SourceLocation, Unlocated},
     symbol::{AttrTok, CfgExpr, Deprecation, DocLink, Symbol, Visibility},
     typed::TypedEntry,
 };
@@ -44,11 +46,43 @@ pub struct Entry {
     sym: Symbol,
     node: Node,
     kind: EntryInner,
+    /// Where this declaration was written.
+    ///
+    /// # Why this is on `Entry` and not on `Symbol`
+    ///
+    /// It belongs on `Symbol`, alongside the `source`/`span` pair it
+    /// supersedes, and that is where it should end up. It cannot go there
+    /// *yet*: `Symbol` has public fields and is built with a struct literal at
+    /// 225 sites across 75 files, including three areas under concurrent
+    /// ownership and the GUI's separate cargo workspace. Adding a field there
+    /// is a single atomic edit to all of them or nothing.
+    ///
+    /// `Entry` is reachable without that: it is constructed only through
+    /// [`Entry::new`] / [`Entry::reference`] and their located counterparts, so
+    /// the field can land now and every existing caller keeps compiling with a
+    /// value *derived* from the legacy pair — never invented. See
+    /// [`SourceLocation::from_legacy`].
+    ///
+    /// The follow-up is to move this onto `Symbol` and delete `Symbol::source`
+    /// and `Symbol::span`, at which point `from_legacy` and this comment both
+    /// go away.
+    #[serde(default = "SourceLocation::legacy_encoding")]
+    location: SourceLocation,
 }
 
 impl Entry {
     pub fn sym(&self) -> &Symbol {
         &self.sym
+    }
+
+    /// Where this declaration was written.
+    ///
+    /// Consumers building a source link must match on the variant rather than
+    /// reading `sym().source` / `sym().span`: only
+    /// [`SourceLocation::Declared`] can be turned into a place a user can go,
+    /// and the other variants carry the reason it cannot.
+    pub fn location(&self) -> &SourceLocation {
+        &self.location
     }
 
     pub fn parent(&self) -> Option<&RawRef> {
@@ -95,19 +129,58 @@ impl Entry {
     /// record the parent edge separately and pass a `Node` built from
     /// `Node::build(None::<RawRef>, [])` — the table is the authority on
     /// structural edges in the sealed representation.
+    ///
+    /// The entry's [`location`](Self::location) is **derived** from the
+    /// legacy `sym.source` / `sym.span` pair, which cannot carry line
+    /// information — so an entry built this way is never
+    /// [`SourceLocation::Declared`] and can never be a jump target. A producer
+    /// that knows where its declaration is should call
+    /// [`Entry::new_located`]; every remaining caller of this constructor is
+    /// an open item on `LIMITATIONS.md` L31.
     pub fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
+        let location = SourceLocation::from_legacy(&sym.source, &sym.span);
+        Self::new_located(sym, node, kind, location)
+    }
+
+    /// Construct an owned entry that knows where it was written.
+    ///
+    /// `location` is the authority; `sym.source` and `sym.span` are expected to
+    /// be its [`SourceLocation::legacy_pair`] projection, and a caller that
+    /// builds them any other way is asserting two different origins for one
+    /// declaration.
+    pub fn new_located(sym: Symbol, node: Node, kind: Kind, location: SourceLocation) -> Self {
         Self {
             sym,
             node,
             kind: EntryInner::Owned(kind),
+            location,
         }
     }
 
+    /// Construct a re-export / alias entry; see [`Entry::new`] for how its
+    /// source location is derived.
     pub fn reference(sym: Symbol, node: Node, idx: RawRef) -> Self {
+        let location = SourceLocation::from_legacy(&sym.source, &sym.span);
+        Self::reference_located(sym, node, idx, location)
+    }
+
+    /// Construct a re-export / alias entry that knows where the *re-export*
+    /// was written.
+    ///
+    /// Note the subject: this is where the `pub use` is, not where the item it
+    /// names is declared. Both are useful and they are different places; the
+    /// target's own entry carries the other one.
+    pub fn reference_located(
+        sym: Symbol,
+        node: Node,
+        idx: RawRef,
+        location: SourceLocation,
+    ) -> Self {
         Self {
             sym,
             node,
             kind: EntryInner::Reference(idx),
+            location,
         }
     }
 }

@@ -58,7 +58,15 @@ mod default_impl {
     m::__default_impl_visitor!((), bool, char);
 
     // std types (as needed)
-    m::__default_impl_visitor!(String, PathBuf, NonZeroU16, Range<usize>);
+    // `SourceLocation` holds no `Ref` — it names a file and a range, never
+    // another entry — so it is a leaf for the seal pass, exactly like `String`.
+    m::__default_impl_visitor!(
+        String,
+        PathBuf,
+        NonZeroU16,
+        Range<usize>,
+        crate::entry::SourceLocation
+    );
 }
 
 mod m {

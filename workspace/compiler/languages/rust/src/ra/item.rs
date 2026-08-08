@@ -49,8 +49,6 @@
 //! - Intra-doc links → `Symbol.doc_links`.
 //! - Re-exports (pub use) → `Reexport` entries.
 
-use std::path::PathBuf;
-
 use ra_ap_hir::{
     Adt, AsAssocItem, AssocItem, AssocItemContainer, FieldSource, Function as HirFunction,
     HasSource, HasVisibility, HirDisplay, Impl, LangItem, Module, ModuleDef, PathResolution,
@@ -62,6 +60,7 @@ use ra_ap_syntax::{
 };
 
 use nudox_ir::{
+    entry::{SourceLocation, Unlocated},
     index::Ref,
     kinds::{
         Alias, AutoFact, Const, Enum, Field, FieldAttribute, FieldKey, Function, Impl as IrImpl,
@@ -260,9 +259,10 @@ pub(crate) fn lower_module(
             cfg: None,
             attrs: Box::new([]),
         });
-    let sym = parts.into_symbol(PathBuf::new(), 0..0);
+    let location = source::def_location(ctx, def);
+    let sym = parts.into_symbol(&location);
     ctx.check_unique(&mod_id);
-    out.declare(mod_id.clone(), parent, sym, IrModule);
+    out.declare_at(mod_id.clone(), parent, sym, IrModule, location);
 
     // ── Re-exports (pub use) ──────────────────────────────────────────────────
     // Walk this module's scope.  Items whose *scope path* (module + name)
@@ -422,12 +422,21 @@ pub(crate) fn lower_module(
             }
         };
 
+        // The location that belongs here is the `pub use` statement's own, and
+        // this scan reaches re-exports through module *scope* rather than
+        // through any syntax node, so there is nothing to point at yet.
+        // Deliberately not the target item's location: a re-export and the
+        // thing it names are two different places, and reporting one as the
+        // other is worse than reporting neither.
+        let reexport_location =
+            SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation);
+        let (reexport_source, reexport_span) = reexport_location.legacy_pair();
         let reexport_sym = nudox_ir::entry::Symbol {
             name: scope_name.to_string(),
             visibility: nudox_ir::entry::Visibility::Public,
             documentation: String::new(),
-            source: PathBuf::new(),
-            span: 0..0,
+            source: reexport_source,
+            span: reexport_span,
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -436,7 +445,13 @@ pub(crate) fn lower_module(
         };
 
         ctx.check_unique(&reexport_id);
-        out.declare_ref::<Reexport>(reexport_id, Some(mod_id.clone()), reexport_sym, target_ref);
+        out.declare_ref_at::<Reexport>(
+            reexport_id,
+            Some(mod_id.clone()),
+            reexport_sym,
+            target_ref,
+            reexport_location,
+        );
     }
 
     Ok(())
@@ -570,23 +585,29 @@ pub(crate) fn lower(
             let parts = ctx
                 .symbol_parts(ModuleDef::Macro(m))
                 .unwrap_or_else(default_parts);
+            let location = source::def_location(ctx, ModuleDef::Macro(m));
             ctx.check_unique(&macro_id);
-            out.declare(
+            out.declare_at(
                 macro_id,
                 parent,
-                parts.into_symbol(PathBuf::new(), 0..0),
+                parts.into_symbol(&location),
                 IrModule,
+                location,
             );
         }
         ModuleDef::BuiltinType(b) => {
             // Emit as Alias with no target.
             let id = RaId::from(b.name().as_str());
+            // `u32` and friends are declared by the language, not by any file
+            // in any package. `Synthesized` is the accurate answer, not a gap.
+            let location = SourceLocation::Unlocated(Unlocated::Synthesized);
+            let (source, span) = location.legacy_pair();
             let sym = nudox_ir::entry::Symbol {
                 name: b.name().as_str().to_owned(),
                 visibility: nudox_ir::entry::Visibility::Public,
                 documentation: String::new(),
-                source: PathBuf::new(),
-                span: 0..0,
+                source,
+                span,
                 aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
@@ -594,7 +615,13 @@ pub(crate) fn lower(
                 cfg: None,
             };
             ctx.check_unique(&id);
-            out.declare(id, parent, sym, Alias::builder().maybe_target(None).build());
+            out.declare_at(
+                id,
+                parent,
+                sym,
+                Alias::builder().maybe_target(None).build(),
+                location,
+            );
         }
         ModuleDef::Module(_) | ModuleDef::EnumVariant(_) => {}
     }
@@ -641,7 +668,13 @@ fn lower_free_function_with_id(
         // ancestor-path must include the owning function's name so that two
         // sibling functions' return params seal to distinct IntroIds without
         // relying on the ordinal-escalation backstop.
-        out.declare(param_id.clone(), Some(fn_id.clone()), param_sym, param_body);
+        out.declare_at(
+            param_id.clone(),
+            Some(fn_id.clone()),
+            param_sym,
+            param_body,
+            SourceLocation::Unlocated(Unlocated::Synthesized),
+        );
         let r: Ref<Param> = out.refer(param_id);
         r
     });
@@ -657,13 +690,12 @@ fn lower_free_function_with_id(
         .is_defaulted(fd.body.is_defaulted)
         .build();
 
-    let (src_path, span) =
-        source::fn_source_range(ctx, f).unwrap_or_else(|| (PathBuf::new(), 0..0));
+    let location = source::fn_location(ctx, f);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&fn_id);
-    out.declare(fn_id.clone(), parent, sym, fn_body);
+    out.declare_at(fn_id.clone(), parent, sym, fn_body, location);
 
     // Record occurrences from the function body (post-declare so fn_id is valid).
     // Individual sema calls inside are already panic-guarded; a body with no
@@ -1022,12 +1054,12 @@ fn lower_struct(
         .auto(auto)
         .build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&struct_id);
-    out.declare(struct_id, parent, sym, record_body);
+    out.declare_at(struct_id, parent, sym, record_body, location);
     Ok(())
 }
 
@@ -1110,12 +1142,14 @@ fn lower_enum(
                 .build();
 
             let doc = docs::documentation(ctx, v);
+            let variant_location = source::variant_location(ctx, v);
+            let (variant_source, variant_span) = variant_location.legacy_pair();
             let variant_sym = nudox_ir::entry::Symbol {
                 name: variant_name,
                 visibility: nudox_ir::entry::Visibility::Public,
                 documentation: doc.unwrap_or_default(),
-                source: PathBuf::new(),
-                span: 0..0,
+                source: variant_source,
+                span: variant_span,
                 aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
@@ -1124,11 +1158,12 @@ fn lower_enum(
             };
 
             ctx.check_unique(&variant_id);
-            out.declare(
+            out.declare_at(
                 variant_id.clone(),
                 Some(enum_id.clone()),
                 variant_sym,
                 variant_body,
+                variant_location,
             );
             out.refer::<Variant>(variant_id)
         })
@@ -1141,12 +1176,12 @@ fn lower_enum(
         .auto(auto)
         .build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&enum_id);
-    out.declare(enum_id, parent, sym, enum_body);
+    out.declare_at(enum_id, parent, sym, enum_body, location);
     Ok(())
 }
 
@@ -1186,12 +1221,12 @@ fn lower_union(
         .fields(field_refs)
         .build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&union_id);
-    out.declare(union_id, parent, sym, record_body);
+    out.declare_at(union_id, parent, sym, record_body, location);
     Ok(())
 }
 
@@ -1320,9 +1355,9 @@ fn lower_trait(
         .wheres(wheres)
         .build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     // ── Declare the trait entry FIRST, then its members ──────────────────────
     //
@@ -1338,7 +1373,7 @@ fn lower_trait(
     // entry itself still exists in the tree and the already-declared members
     // keep a valid parent.
     ctx.check_unique(&trait_id);
-    out.declare(trait_id.clone(), parent, sym, trait_body);
+    out.declare_at(trait_id.clone(), parent, sym, trait_body, location);
 
     // ── Declare assoc items as children ──────────────────────────────────────
     lower_trait_assoc_items(ctx, t, &trait_id, out)?;
@@ -1499,12 +1534,17 @@ pub(crate) fn lower_impl(
         .wheres(wheres)
         .build();
 
+    // The `impl` block's own header range. `wire::ImplRow` had no source field
+    // at all (LIMITATIONS.md L42.3); this is where the value it now carries is
+    // produced.
+    let impl_location = source::impl_location(ctx, imp);
+    let (impl_source, impl_span) = impl_location.legacy_pair();
     let sym = nudox_ir::entry::Symbol {
         name: impl_display_name(ctx, imp),
         visibility: nudox_ir::entry::Visibility::Public,
         documentation: docs::documentation(ctx, imp).unwrap_or_default(),
-        source: PathBuf::new(),
-        span: 0..0,
+        source: impl_source,
+        span: impl_span,
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
@@ -1521,7 +1561,7 @@ pub(crate) fn lower_impl(
     // the root module.  Declaring first ensures the parent is always live before
     // any member references it.
     ctx.check_unique(&impl_id);
-    out.declare(impl_id.clone(), parent, sym, impl_body);
+    out.declare_at(impl_id.clone(), parent, sym, impl_body, impl_location);
 
     // ── Declare impl methods as children ─────────────────────────────────────
     //
@@ -1907,12 +1947,12 @@ fn lower_type_alias_with_id(
         .bounds(bounds)
         .build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&ta_id);
-    out.declare(ta_id, parent, sym, alias_body);
+    out.declare_at(ta_id, parent, sym, alias_body, location);
     Ok(())
 }
 
@@ -2015,12 +2055,12 @@ fn lower_const_with_id(
 
     let const_body = Const::builder().ty(const_ty).maybe_value(value).build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&const_id);
-    out.declare(const_id, parent, sym, const_body);
+    out.declare_at(const_id, parent, sym, const_body, location);
     Ok(())
 }
 
@@ -2070,12 +2110,12 @@ fn lower_static_with_id(
 
     let static_body = Static::builder().ty(static_ty).mutable(mutable).build();
 
-    let (src_path, span) = source::def_source_range(ctx, def);
+    let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
-    let sym = parts.into_symbol(src_path, span);
+    let sym = parts.into_symbol(&location);
 
     ctx.check_unique(&static_id);
-    out.declare(static_id, parent, sym, static_body);
+    out.declare_at(static_id, parent, sym, static_body, location);
     Ok(())
 }
 
@@ -2093,6 +2133,13 @@ struct FieldData {
     ty: nudox_ir::kinds::Type,
     visibility: nudox_ir::entry::Visibility,
     doc: String,
+    /// Where the field is written.
+    ///
+    /// Computed in a pass *before* `ref_for` exists, because `ref_for` borrows
+    /// `out` and the line-index cache lives on `ctx` — the two cannot be
+    /// borrowed mutably at once, and threading the location through the data
+    /// struct is cheaper than restructuring the borrow.
+    location: SourceLocation,
 }
 
 /// Declare a vec of HIR fields as `Field` entries and return their `Ref<Field>`.
@@ -2110,12 +2157,19 @@ fn declare_hir_fields(
 ) -> Vec<Ref<Field>> {
     // Pass 1: compute all type / metadata while holding `ref_for` (which
     // borrows `out` via the closure).
+    // Pass 0: locations, before `ref_for` takes its borrow of `out`.
+    let locations: Vec<SourceLocation> = fields
+        .iter()
+        .map(|f| source::field_location(ctx, *f))
+        .collect();
+
     let data: Vec<FieldData> = {
         let mut ref_for = make_ref_for!(ctx, out);
         fields
             .iter()
+            .zip(locations)
             .enumerate()
-            .map(|(idx, f)| {
+            .map(|(idx, (f, location))| {
                 let field_name = f.name(ctx.db).as_str().to_owned();
                 let field_id = RaId::from(format!("{owner_id}::{field_name}").as_str());
 
@@ -2146,6 +2200,7 @@ fn declare_hir_fields(
                     ty: field_ty,
                     visibility,
                     doc,
+                    location,
                 }
             })
             .collect()
@@ -2161,12 +2216,13 @@ fn declare_hir_fields(
                 .attributes(attrs)
                 .build();
 
+            let (field_source, field_span) = fd.location.legacy_pair();
             let field_sym = nudox_ir::entry::Symbol {
                 name: fd.name,
                 visibility: fd.visibility,
                 documentation: fd.doc,
-                source: PathBuf::new(),
-                span: 0..0,
+                source: field_source,
+                span: field_span,
                 aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
@@ -2175,7 +2231,13 @@ fn declare_hir_fields(
             };
 
             ctx.check_unique(&fd.field_id);
-            out.declare(fd.field_id.clone(), parent.clone(), field_sym, field_body);
+            out.declare_at(
+                fd.field_id.clone(),
+                parent.clone(),
+                field_sym,
+                field_body,
+                fd.location,
+            );
             out.refer::<Field>(fd.field_id)
         })
         .collect()
@@ -2193,7 +2255,9 @@ fn declare_hir_fields(
 /// trace of which function declared it, so same-named params of sibling
 /// functions in one module are indistinguishable at that key and fall through
 /// to `Disambiguator::Span` — which is *also* useless here because every
-/// producer-synthesized param (`plain_sym`) carries `span: 0..0`. Parenting on
+/// producer-synthesized param (`plain_sym`) is
+/// `SourceLocation::Unlocated(Synthesized)` and therefore has no span at all.
+/// Parenting on
 /// `fn_id` puts the function's name in the ancestor-path itself, so siblings'
 /// params are distinct by construction and never need the escalation
 /// backstop (`Disambiguator::Ordinal`) to be told apart.
@@ -2213,7 +2277,13 @@ pub(crate) fn declare_params(
                 .build();
             let param_sym = plain_sym(&pd.name);
             ctx.check_unique(&param_id);
-            out.declare(param_id.clone(), Some(fn_id.clone()), param_sym, param_body);
+            out.declare_at(
+                param_id.clone(),
+                Some(fn_id.clone()),
+                param_sym,
+                param_body,
+                SourceLocation::Unlocated(Unlocated::Synthesized),
+            );
             out.refer::<Param>(param_id)
         })
         .collect()
@@ -2283,13 +2353,19 @@ fn probe_auto_traits_partial<'db>(
 
 // ── Convenience helpers ───────────────────────────────────────────────────────
 
+/// A symbol for an entry this producer invents: parameters, `$return`
+/// pseudo-params, desugared receivers.
+///
+/// Its location is [`Unlocated::Synthesized`] — not a gap to be closed later,
+/// but the correct answer: no file contains a declaration of `$return`.
 fn plain_sym(name: &str) -> nudox_ir::entry::Symbol {
+    let (source, span) = SourceLocation::Unlocated(Unlocated::Synthesized).legacy_pair();
     nudox_ir::entry::Symbol {
         name: name.to_owned(),
         visibility: nudox_ir::entry::Visibility::Private,
         documentation: String::new(),
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),

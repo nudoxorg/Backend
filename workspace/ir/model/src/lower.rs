@@ -27,7 +27,7 @@ use triomphe::Arc;
 
 use crate::{
     List,
-    entry::{Entry, Node, Symbol},
+    entry::{Entry, Node, SourceLocation, Symbol},
     foreign::ForeignKey,
     index::{RawRef, Ref, UntypedEntryIndex},
     kind::{EntryKind, Kind},
@@ -45,6 +45,8 @@ enum Slot<Id> {
         /// `None` means "child of the implicit root module".
         parent: Option<Id>,
         kind: Kind,
+        /// Where the declaration was written; see [`Entry::location`].
+        location: SourceLocation,
     },
     /// A re-export / alias whose target is another entry.
     Reference {
@@ -52,6 +54,8 @@ enum Slot<Id> {
         /// `None` means "child of the implicit root module".
         parent: Option<Id>,
         target: RawRef,
+        /// Where the re-export was written; see [`Entry::location`].
+        location: SourceLocation,
     },
 }
 
@@ -187,12 +191,36 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// Calling `declare` twice with the same `id` records a duplicate; the
     /// second call is ignored and the error is reported by
     /// [`finish`](Self::finish).
+    /// The entry's source location is **derived** from the legacy
+    /// `sym.source` / `sym.span` pair, which has no room for line numbers — so
+    /// nothing declared through this method can ever be a jump target. A
+    /// producer that knows where its declaration is calls
+    /// [`declare_at`](Self::declare_at) instead. Every remaining caller of this
+    /// method is an open item on `LIMITATIONS.md` L31, and is countable by
+    /// grep.
     pub fn declare<T: EntryKind>(
         &mut self,
         id: Id,
         parent: Option<Id>,
         sym: Symbol,
         kind: T,
+    ) -> Ref<T> {
+        let location = SourceLocation::from_legacy(&sym.source, &sym.span);
+        self.declare_at(id, parent, sym, kind, location)
+    }
+
+    /// Declare an entry whose source location the producer actually knows.
+    ///
+    /// `location` is the authority. `sym.source` and `sym.span` should be its
+    /// [`SourceLocation::legacy_pair`] projection so the two representations
+    /// cannot disagree while both exist.
+    pub fn declare_at<T: EntryKind>(
+        &mut self,
+        id: Id,
+        parent: Option<Id>,
+        sym: Symbol,
+        kind: T,
+        location: SourceLocation,
     ) -> Ref<T> {
         let idx = self.intern(id.clone());
 
@@ -210,6 +238,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
                 sym,
                 parent,
                 kind: kind.into_kind(),
+                location,
             });
         }
 
@@ -228,6 +257,20 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
         sym: Symbol,
         target: Ref<T>,
     ) -> Ref<T> {
+        let location = SourceLocation::from_legacy(&sym.source, &sym.span);
+        self.declare_ref_at(id, parent, sym, target, location)
+    }
+
+    /// Declare a re-export whose own source location — the site of the
+    /// `pub use`, not of the item it names — the producer knows.
+    pub fn declare_ref_at<T: EntryKind>(
+        &mut self,
+        id: Id,
+        parent: Option<Id>,
+        sym: Symbol,
+        target: Ref<T>,
+        location: SourceLocation,
+    ) -> Ref<T> {
         let idx = self.intern(id.clone());
 
         if let Some(ref p) = parent {
@@ -242,6 +285,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
                 sym,
                 parent,
                 target: target.into_raw(),
+                location,
             });
         }
 
@@ -524,8 +568,18 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
                 children[pos].iter().map(|&p| Ref::Local(idx_of[p])),
             );
             let entry = match slot.expect("undeclared slots rejected above") {
-                Slot::Owned { sym, kind, .. } => Entry::new(sym, node, kind),
-                Slot::Reference { sym, target, .. } => Entry::reference(sym, node, target),
+                Slot::Owned {
+                    sym,
+                    kind,
+                    location,
+                    ..
+                } => Entry::new_located(sym, node, kind, location),
+                Slot::Reference {
+                    sym,
+                    target,
+                    location,
+                    ..
+                } => Entry::reference_located(sym, node, target, location),
             };
             entries.push((idx_of[pos], entry));
         }

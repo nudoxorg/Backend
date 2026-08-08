@@ -6,52 +6,165 @@
 //! `view.parent_of(intro)` upward until we hit `None`, then reverse.
 //! Each ancestor becomes a `CrumbRef { key, label }`.
 //!
+//! # L18: the physical chain can repeat the package name
+//!
+//! `view.parent_of` walks the *defining-module* (physical) tree, which is
+//! not always the tree a reader can name. Real crates routinely have a
+//! private submodule that shares a name with the crate itself and re-export
+//! its public items at the crate root — `memchr`'s `Memchr` iterator is
+//! literally declared inside `mod memchr` (`src/memchr.rs`) and re-exported
+//! via `pub use crate::memchr::Memchr` at the crate root. Walking the
+//! physical chain naively therefore produces the breadcrumb `memchr › memchr`
+//! (crate root, then the private submodule) for a symbol docs.rs shows as
+//! plain `memchr::Memchr`.
+//!
+//! `Symbol::aliases` already carries the producer-resolved re-export path
+//! (see `ctx.rs::collect_aliases` in the Rust producer) — it is exactly the
+//! canonical, reader-facing path the physical chain is missing.
+//! [`shortest_alias_module_path`] prefers the shortest such alias over the
+//! physical chain, but **only ever drops physical ancestors** — every
+//! resulting crumb is still one of `intro`'s real ancestors with a real,
+//! navigable `IntroId`; nothing is fabricated.  When an entry has no alias
+//! (the overwhelming majority), the physical chain is used unchanged.
+//!
 //! # One-walk guarantee for section_plan
 //!
 //! `section_plan` is obtained by calling `plan::section_plan`, which calls
 //! `walk::walk_doc` — the same function that `sections::sections` calls.
 //! The two are guaranteed structurally identical (see `walk.rs` docs).
 
-use nudox_ir::{change::IntroId, entry::Entry, view::IrView};
+use nudox_ir::{
+    change::IntroId,
+    entry::{CfgExpr, Entry},
+    view::IrView,
+};
 use nudox_store::package::PackageView;
 
-use crate::wire::{CrumbRef, KindTag, Provenance, SharedStr, SymbolHead, SymbolKey};
+use crate::wire::{CrumbRef, KindTag, Provenance, SharedStr, SourceLocation, SymbolHead, SymbolKey};
 
 // ---------------------------------------------------------------------------
 // Source-location helpers
 // ---------------------------------------------------------------------------
 
-/// Convert `Symbol::source` and `Symbol::span` into the wire representation.
+/// Project an entry's source location onto the wire.
 ///
-/// Returns `(None, None)` when the producer did not supply a source path
-/// (i.e. `Symbol::source` is the empty path `""` or `.`).
+/// # What this used to be
 ///
-/// The path is carried as-is from the IR — it may be absolute, relative to the
-/// package root, or partially qualified depending on the producer.  No attempt
-/// is made to make it relative here because `PackageView` holds no package root
-/// path; that is a future producer concern.
+/// It used to read `Symbol::source` and `Symbol::span` directly and decide
+/// absence by testing the path against `""` and `"."`. That test was a *second*
+/// implementation of the sentinel decoding (the GUI had a third), it could not
+/// distinguish "producer records nothing" from "this entry is synthesized", and
+/// it published byte offsets under a name the GUI then had to label `bytes
+/// 8880–9435` because they were not navigable.
 ///
-/// The span is a **byte** range, not a line range.  Converting bytes to line
-/// numbers would require reading the file, which is outside the engine's doc
-/// path.  The GUI must not present these as line numbers.
-fn source_location(entry: &Entry) -> (Option<SharedStr>, Option<[u32; 2]>) {
-    let path = &entry.sym().source;
+/// The decoding now happens once, in `nudox_ir`, at the point the entry is
+/// built — so this function has no policy left in it, which is the point.
+fn source_location(entry: &Entry) -> SourceLocation {
+    SourceLocation::from_ir(entry.location())
+}
 
-    // An empty or trivially-relative path means "not recorded".
-    let path_str = path.to_string_lossy();
-    if path_str.is_empty() || path_str == "." {
-        return (None, None);
+// ---------------------------------------------------------------------------
+// Cfg rendering
+// ---------------------------------------------------------------------------
+
+/// Render `Symbol::cfg` into the exact badge text the GUI shows next to kind
+/// and visibility.
+///
+/// This is the one field that tells a reader "this API might not exist in
+/// *your* build" — docs.rs surfaces the same fact as a feature badge on
+/// cfg-gated items, and rendering nothing here would be a real regression
+/// against that bar. Wrapped in `cfg(...)` so the badge reads as the literal
+/// attribute a reader would write to enable the item themselves.
+fn cfg_badge(expr: &CfgExpr) -> SharedStr {
+    SharedStr::from(format!("cfg({})", render_cfg_predicate(expr)).as_str())
+}
+
+/// Render one `CfgExpr` node as Rust `#[cfg(...)]` surface syntax.
+///
+/// Recurses through `All`/`Any`/`Not` so a compound predicate like
+/// `all(feature = "std", not(windows))` reaches the reader whole, rather than
+/// being flattened or truncated to its first clause.
+fn render_cfg_predicate(expr: &CfgExpr) -> String {
+    match expr {
+        CfgExpr::All(inner) => format!("all({})", join_predicates(inner)),
+        CfgExpr::Any(inner) => format!("any({})", join_predicates(inner)),
+        CfgExpr::Not(inner) => format!("not({})", render_cfg_predicate(inner)),
+        CfgExpr::Feature(f) => format!("feature = \"{f}\""),
+        CfgExpr::TargetOs(os) => format!("target_os = \"{os}\""),
+        CfgExpr::TargetArch(arch) => format!("target_arch = \"{arch}\""),
+        CfgExpr::Other(raw) => raw.clone(),
+    }
+}
+
+fn join_predicates(inner: &[CfgExpr]) -> String {
+    inner
+        .iter()
+        .map(render_cfg_predicate)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+// ---------------------------------------------------------------------------
+// Breadcrumb: alias-preferred ancestor projection (L18)
+// ---------------------------------------------------------------------------
+
+/// Project `ancestors` (root-first, physical parent chain, excluding the
+/// entry itself) down to the shortest re-export alias in `aliases`, if one
+/// exists and is actually shorter than the physical chain.
+///
+/// Each alias is a `"::"`-joined path such as `"memchr::Memchr"`; the final
+/// segment names the item at the re-export site (not necessarily an
+/// ancestor — it may be a renamed `pub use foo as bar`), so it is dropped
+/// before matching. The remaining segments are matched *in order* against
+/// `ancestors`' labels to select a subsequence — this is why the result can
+/// only ever **omit** physical ancestors, never invent one: every returned
+/// `(IntroId, String)` pair is copied verbatim from `ancestors`, so its key
+/// still resolves to a real, navigable entry.
+///
+/// Returns `None` when no alias improves on the physical chain (including
+/// the common case of no aliases at all), in which case the caller keeps
+/// the physical breadcrumb unchanged.
+fn shortest_alias_module_path(
+    aliases: &[String],
+    ancestors: &[(IntroId, String)],
+) -> Option<Vec<(IntroId, String)>> {
+    let mut best: Option<Vec<&str>> = None;
+    for alias in aliases {
+        let mut segs: Vec<&str> = alias.split("::").collect();
+        // Drop the trailing segment: it names the item at the re-export
+        // site, not an ancestor module.
+        segs.pop();
+        if segs.is_empty() {
+            continue;
+        }
+        // Only a *strict* improvement over the physical chain is worth
+        // taking — otherwise we would replace a correct chain with an
+        // equally-long (or longer) one for no reason.
+        let is_shorter = match &best {
+            None => segs.len() < ancestors.len(),
+            Some(b) => segs.len() < b.len(),
+        };
+        if is_shorter {
+            best = Some(segs);
+        }
     }
 
-    let span = &entry.sym().span;
-    // `Range<usize>` → `[u32; 2]`.  Saturate rather than panic on producers
-    // that emit unrealistic offsets.
-    let wire_span = [
-        u32::try_from(span.start).unwrap_or(u32::MAX),
-        u32::try_from(span.end).unwrap_or(u32::MAX),
-    ];
+    let wanted = best?;
 
-    (Some(SharedStr::from(path_str.as_ref())), Some(wire_span))
+    // Match `wanted`'s segment names against `ancestors`, in order. Each
+    // match advances the cursor so segments are consumed once, preserving
+    // the physical ordering even when names repeat (e.g. the crate name
+    // appearing at both the root and a same-named private submodule).
+    let mut projected = Vec::with_capacity(wanted.len());
+    let mut cursor = ancestors.iter();
+    for seg in &wanted {
+        // If the alias names a module that is not actually on the physical
+        // path, do not fabricate a crumb for it — abandon the projection
+        // and let the caller fall back to the physical chain.
+        let found = cursor.by_ref().find(|(_, label)| label == seg)?;
+        projected.push(found.clone());
+    }
+    Some(projected)
 }
 
 /// Build the `SymbolHead` for `entry` at `intro`.
@@ -85,6 +198,14 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
         cursor = view.parent_of(parent_id);
     }
     ancestors.reverse(); // root-first
+
+    // L18: prefer the shortest re-export alias over the raw physical chain,
+    // when one exists and is actually shorter. See the module docs and
+    // `shortest_alias_module_path` for why this can only drop ancestors,
+    // never invent one.
+    if let Some(projected) = shortest_alias_module_path(&entry.sym().aliases, &ancestors) {
+        ancestors = projected;
+    }
 
     let breadcrumb: Vec<CrumbRef> = ancestors
         .into_iter()
@@ -130,6 +251,10 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
         }
     });
 
+    // ── Cfg ───────────────────────────────────────────────────────────────────
+
+    let cfg = entry.sym().cfg.as_ref().map(cfg_badge);
+
     // ── Section plan ──────────────────────────────────────────────────────────
     //
     // `plan::section_plan` calls `walk::walk_doc` — the same function that
@@ -140,7 +265,7 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
 
     // ── Source location ───────────────────────────────────────────────────────
 
-    let (source_path, source_span) = source_location(entry);
+    let source = source_location(entry);
 
     SymbolHead {
         key,
@@ -150,9 +275,9 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
         visibility,
         provenance,
         deprecation,
+        cfg,
         section_plan,
-        source_path,
-        source_span,
+        source,
     }
 }
 
@@ -255,6 +380,232 @@ mod tests {
         }
     }
 
+    /// Build a package shaped exactly like the real `memchr` bug (L18): a
+    /// crate-root module and a private submodule that share the crate's
+    /// name, with the target leaf declared inside the submodule.
+    ///
+    /// `reexport_alias` mirrors `Symbol::aliases` as the Rust producer would
+    /// populate it for a `pub use crate::memchr::Memchr;` re-export at the
+    /// crate root — pass `&[]` to get the *unfixed* physical shape (no
+    /// alias available) and `&["memchr::Memchr"]` to get the shape after a
+    /// producer resolves the re-export.
+    ///
+    /// Returns `(package, root_id, submodule_id, leaf_id)`.
+    fn package_with_private_reexport_submodule(
+        reexport_alias: &[&str],
+    ) -> (
+        nudox_store::package::PackageView,
+        nudox_ir::change::IntroId,
+        nudox_ir::change::IntroId,
+        nudox_ir::change::IntroId,
+    ) {
+        use nudox_ir::{
+            apply::PristineIntroTable,
+            change::{EcosystemId, IntroId, PackageLineageId, PackageName},
+            entry::{Node, Symbol, Visibility},
+            index::RawRef,
+            kind::Kind,
+            kinds::Module,
+        };
+
+        fn module_sym(name: &str, aliases: &[&str]) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::new(),
+                span: 0..0,
+                aliases: aliases
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let root_id = IntroId::from_raw([11u8; 32]);
+        let submod_id = IntroId::from_raw([12u8; 32]);
+        let leaf_id = IntroId::from_raw([13u8; 32]);
+
+        let mut table = PristineIntroTable::new();
+        table.insert_live(
+            root_id,
+            Entry::new(
+                module_sym("memchr", &[]),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
+            None,
+        );
+        table.insert_live(
+            submod_id,
+            Entry::new(
+                module_sym("memchr", &[]),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
+            Some(root_id),
+        );
+        table.insert_live(
+            leaf_id,
+            Entry::new(
+                module_sym("Memchr", reexport_alias),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
+            Some(submod_id),
+        );
+
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("memchr"));
+        let view = IrView::with_package(lineage, table);
+        (
+            PackageView::build(view, StoreProvenance::TrustedLocal),
+            root_id,
+            submod_id,
+            leaf_id,
+        )
+    }
+
+    /// L18: a private submodule that shares its name with the crate itself
+    /// must not leave the breadcrumb repeating that name — the shortest
+    /// re-export alias must win over the raw physical chain.
+    ///
+    /// This is the synthetic, deterministic counterpart to
+    /// `real_memchr_memchr_breadcrumb_has_no_repeated_segment` below: it
+    /// mirrors the real bug exactly (`memchr::Memchr` is declared inside the
+    /// private module `memchr::memchr`, source file `memchr.rs`, and
+    /// re-exported at the crate root), so it does not depend on a real
+    /// crate checkout being present to catch a regression.
+    #[test]
+    fn breadcrumb_prefers_shorter_alias_over_repeated_private_submodule() {
+        let (pkg, root_id, _submod_id, leaf_id) =
+            package_with_private_reexport_submodule(&["memchr::Memchr"]);
+        let entry = pkg.view().entry(leaf_id).expect("leaf entry must exist");
+
+        let h = head(leaf_id, entry, pkg.view(), &pkg);
+
+        let labels: Vec<String> = h.breadcrumb.iter().map(|c| c.label.to_string()).collect();
+        assert_eq!(
+            labels,
+            vec!["memchr".to_string()],
+            "alias-projected breadcrumb must collapse the repeated private \
+             submodule, got {labels:?}"
+        );
+        // The surviving crumb must still point at a real ancestor (the
+        // crate root), never a fabricated id.
+        assert_eq!(
+            h.breadcrumb[0].key.intro, root_id,
+            "surviving crumb must be the real crate-root IntroId"
+        );
+    }
+
+    /// Without an alias, the physical chain is all we have — the fix must
+    /// not touch it. This is the regression guard for the common case
+    /// (the overwhelming majority of entries carry no `aliases` at all):
+    /// `shortest_alias_module_path` must return `None` and leave the
+    /// physical ancestors exactly as `view.parent_of` produced them.
+    #[test]
+    fn breadcrumb_keeps_physical_chain_when_entry_has_no_alias() {
+        let (pkg, _root_id, submod_id, leaf_id) = package_with_private_reexport_submodule(&[]);
+        let entry = pkg.view().entry(leaf_id).expect("leaf entry must exist");
+
+        let h = head(leaf_id, entry, pkg.view(), &pkg);
+
+        let labels: Vec<String> = h.breadcrumb.iter().map(|c| c.label.to_string()).collect();
+        assert_eq!(
+            labels,
+            vec!["memchr".to_string(), "memchr".to_string()],
+            "with no alias, the physical two-level chain must be preserved \
+             unchanged, got {labels:?}"
+        );
+        assert_eq!(h.breadcrumb[1].key.intro, submod_id);
+    }
+
+    /// End-to-end regression against the **real** `memchr` crate (L18):
+    /// drives the actual Rust producer over `.real-crates/memchr-2.8.3`, the
+    /// exact case the limitations ledger used to demonstrate the bug, rather
+    /// than a fixture tailored to pass.
+    ///
+    /// `struct Memchr<'h>` is declared in the private module `memchr::memchr`
+    /// (`src/memchr.rs`) and re-exported at the crate root via
+    /// `pub use crate::memchr::{..., Memchr, ...};` (`src/lib.rs`). Before
+    /// the fix, `head()`'s physical-chain walk produced the breadcrumb
+    /// `["memchr", "memchr"]` — the crate name twice — which, combined with
+    /// the page title "Memchr", is exactly the L18 evidence's
+    /// `memchr › memchr › memchr`.
+    ///
+    /// # Running
+    ///
+    /// ```text
+    /// cargo test -p nudox-engine --lib \
+    ///   chunk::head::tests::real_memchr_memchr_breadcrumb_has_no_repeated_segment \
+    ///   -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "loads a real Cargo workspace through rust-analyzer; run with --ignored"]
+    fn real_memchr_memchr_breadcrumb_has_no_repeated_segment() {
+        use nudox_producer::produce;
+        use nudox_producer_rust::RustProducer;
+        use nudox_store::source::producer::PackageDescriptor;
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.real-crates/memchr-2.8.3")
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
+
+        if !root.join("Cargo.toml").is_file() {
+            eprintln!(
+                "SKIP: no memchr checkout at {}. \
+                 Run: scripts/fetch-real-crate.sh memchr 2.8.3",
+                root.display()
+            );
+            return;
+        }
+
+        // `direct_repo: false` matches `ProducerRegistry::with_rust_pilot`,
+        // the constructor the real app uses — the same settings that
+        // produced the L18 screenshot evidence.
+        let descriptor = PackageDescriptor::cargo(&root, "memchr", "2.8.3");
+        let table = produce(
+            &RustProducer { direct_repo: false },
+            &descriptor.source,
+            &descriptor.lineage,
+            &nudox_ir::foreign::Unlinked,
+        )
+        .expect("memchr must lower without error for a real checkout").table;
+
+        let view = IrView::with_package(descriptor.lineage, table);
+        let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
+
+        let memchr_struct = pkg
+            .view()
+            .entries()
+            .find(|(_, e)| e.sym().name == "Memchr")
+            .map(|(id, _)| id)
+            .expect("real memchr must declare a `Memchr` struct");
+        let entry = pkg.view().entry(memchr_struct).expect("entry must exist");
+
+        let h = head(memchr_struct, entry, pkg.view(), &pkg);
+        let labels: Vec<String> = h.breadcrumb.iter().map(|c| c.label.to_string()).collect();
+        eprintln!(
+            "Memchr breadcrumb: {labels:?} (aliases: {:?})",
+            entry.sym().aliases
+        );
+
+        let mut seen = std::collections::HashSet::new();
+        for label in &labels {
+            assert!(
+                seen.insert(label.clone()),
+                "breadcrumb must not repeat a segment — this is exactly the \
+                 L18 bug (`memchr › memchr`): {labels:?}"
+            );
+        }
+    }
+
     #[test]
     fn section_plan_matches_sections() {
         use super::super::sections::sections;
@@ -307,43 +658,139 @@ mod tests {
         nudox_ir::entry::Entry::new(sym, Node::build(None::<RawRef>, []), Kind::Module(Module))
     }
 
+    /// A single-entry package whose root symbol carries `cfg`, for exercising
+    /// `head()`'s cfg wiring without a real producer.
+    fn package_with_cfg(cfg: Option<CfgExpr>) -> nudox_store::package::PackageView {
+        use nudox_ir::{
+            apply::PristineIntroTable,
+            change::{EcosystemId, IntroId, PackageLineageId, PackageName},
+            entry::{Node, Symbol, Visibility},
+            index::RawRef,
+            kind::Kind,
+            kinds::Module,
+        };
+
+        let sym = Symbol {
+            name: "gated".to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg,
+        };
+        let entry =
+            nudox_ir::entry::Entry::new(sym, Node::build(None::<RawRef>, []), Kind::Module(Module));
+
+        let root_id = IntroId::from_raw([7u8; 32]);
+        let mut table = PristineIntroTable::new();
+        table.insert_live(root_id, entry, None);
+
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("cfg-pkg"));
+        let view = IrView::with_package(lineage, table);
+        PackageView::build(view, StoreProvenance::TrustedLocal)
+    }
+
+    /// A symbol carrying a `cfg` must reach `SymbolHead.cfg` populated, and
+    /// rendered as Rust `#[cfg(...)]` surface syntax — this is the entire
+    /// point of the field (LD-8-adjacent: "can I use this as I built my
+    /// crate?"). A recursive predicate is used so this cannot pass by
+    /// accidentally stringifying only the outermost variant.
     #[test]
-    fn source_location_roundtrips() {
+    fn head_cfg_carries_a_populated_predicate() {
+        let pkg = package_with_cfg(Some(CfgExpr::All(Box::new([
+            CfgExpr::Feature("std".to_owned()),
+            CfgExpr::Not(Box::new(CfgExpr::TargetOs("windows".to_owned()))),
+        ]))));
+        let root_id = IntroId::from_raw([7u8; 32]);
+        let entry = pkg.view().entry(root_id).expect("root entry must exist");
+
+        let h = head(root_id, entry, pkg.view(), &pkg);
+
+        assert_eq!(
+            h.cfg.as_deref(),
+            Some("cfg(all(feature = \"std\", not(target_os = \"windows\")))"),
+            "head.cfg must carry the full rendered predicate, not just a marker"
+        );
+    }
+
+    /// A symbol with no `cfg` must reach `SymbolHead.cfg` as `None` — this is
+    /// the round-trip counterpart to the test above: the field must not
+    /// fabricate a badge for unconditional items.
+    #[test]
+    fn head_cfg_is_none_when_symbol_has_none() {
+        let pkg = package_with_cfg(None);
+        let root_id = IntroId::from_raw([7u8; 32]);
+        let entry = pkg.view().entry(root_id).expect("root entry must exist");
+
+        let h = head(root_id, entry, pkg.view(), &pkg);
+
+        assert!(
+            h.cfg.is_none(),
+            "an unconditional symbol must not carry a fabricated cfg badge"
+        );
+    }
+
+    /// An entry built from the legacy `(source, span)` pair carries a file and
+    /// a byte range and **no line information** — so it reaches the wire as
+    /// `BytesOnly`, which the GUI must not render as a link. This is the
+    /// invariant that keeps `Declared` meaningful: it is unreachable from a
+    /// producer that has not computed lines.
+    #[test]
+    fn a_producer_that_records_only_bytes_cannot_produce_a_jump_target() {
         let entry = minimal_entry("src/lib.rs", 10..42);
-        let (path, span) = source_location(&entry);
-        assert!(path.is_some(), "non-empty source should produce a path");
-        assert_eq!(&**path.as_ref().unwrap(), "src/lib.rs");
-        assert_eq!(span, Some([10u32, 42u32]));
+        let loc = source_location(&entry);
+        assert_eq!(
+            loc,
+            SourceLocation::BytesOnly {
+                file: SharedStr::from("src/lib.rs"),
+                bytes: [10, 42],
+            }
+        );
+        assert_eq!(
+            loc.jump_target(),
+            None,
+            "byte offsets must never be formatted as a navigable location"
+        );
     }
 
+    /// The `0..0` sentinel must arrive at the GUI as a *named* absence, not as
+    /// "present at byte 0" and not as an untyped `None` the reader cannot act
+    /// on. Naming the reason is what turns a blank Source panel into a filed
+    /// bug against a specific producer.
     #[test]
-    fn source_location_empty_source_returns_none() {
+    fn the_zero_span_sentinel_reaches_the_wire_as_a_named_reason() {
         let entry = minimal_entry("", 0..0);
-        let (path, span) = source_location(&entry);
-        assert!(path.is_none(), "empty source path must yield None");
-        assert!(span.is_none());
+        assert_eq!(
+            source_location(&entry),
+            SourceLocation::Unlocated {
+                reason: crate::wire::UnlocatedReason::ProducerRecordsNoLocation,
+            }
+        );
     }
 
-    /// The rich fixture uses `PathBuf::new()` (empty) for all symbols, so every
-    /// head should carry `None` for the source fields — this confirms we are not
-    /// fabricating paths.
+    /// The rich fixture uses `PathBuf::new()` for every symbol, so every head
+    /// must report the producer-gap reason — confirming we neither fabricate a
+    /// path nor quietly downgrade the gap to a generic absence.
     #[test]
-    fn head_source_is_none_when_fixture_has_empty_paths() {
+    fn head_source_names_the_producer_gap_when_the_fixture_records_no_paths() {
         let view = build_rich_view();
         let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
 
         for (intro, entry) in pkg.view().entries() {
             let h = head(intro, entry, pkg.view(), &pkg);
-            assert!(
-                h.source_path.is_none(),
-                "fixture uses empty paths — source_path must be None for '{}'",
+            assert_eq!(
+                h.source,
+                SourceLocation::Unlocated {
+                    reason: crate::wire::UnlocatedReason::ProducerRecordsNoLocation,
+                },
+                "fixture records no paths — head for '{}' must say so by name",
                 entry.sym().name
             );
-            assert!(
-                h.source_span.is_none(),
-                "fixture uses empty paths — source_span must be None for '{}'",
-                entry.sym().name
-            );
+            assert_eq!(h.source.jump_target(), None);
         }
     }
 

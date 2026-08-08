@@ -169,6 +169,44 @@ pub struct Crumb {
     pub label: SharedString,
 }
 
+/// Drop breadcrumb segments that repeat the label of the segment before them.
+///
+/// # Why the engine is not wrong to send them
+///
+/// The trail `memchr › memchr › memchr` (`.shots/memchr/08-symbol-opened.png`,
+/// GUI-WORKORDER-2 F4 / LIMITATIONS.md L18) is three genuinely different
+/// entries: the *package* `memchr`, its root module `memchr`, and the module
+/// `src/memchr.rs` — a naming convention Rust encourages and that most crates
+/// follow. The ancestor chain is correct; what is wrong is drawing three
+/// identical tokens and calling it a trail. A breadcrumb exists to answer
+/// "where am I?", and a segment that repeats its parent verbatim answers
+/// nothing while costing a `›` and a click target.
+///
+/// # Which one survives
+///
+/// The **last** of each run. Crumbs are root-first, so the deepest entry is the
+/// one closest to the symbol, and keeping it means the crumb the reader clicks
+/// navigates to the nearest enclosing scope rather than jumping all the way out
+/// to the package. The dropped entries are ancestors of the kept one, so
+/// nothing becomes unreachable: one more click up the retained trail arrives at
+/// the same place.
+///
+/// Only *adjacent* repeats collapse. `a › b › a` is a real re-entry and stays.
+fn collapse_repeated_crumbs(breadcrumb: &[nudox_engine::wire::CrumbRef]) -> Vec<Crumb> {
+    let mut out: Vec<Crumb> = Vec::with_capacity(breadcrumb.len());
+    for c in breadcrumb {
+        let label = shared(&c.label);
+        if out.last().is_some_and(|prev: &Crumb| prev.label == label) {
+            out.pop();
+        }
+        out.push(Crumb {
+            key: c.key.clone(),
+            label,
+        });
+    }
+    out
+}
+
 /// One selectable version in the version picker.
 ///
 /// TODO(store): `SymbolDoc` carries no version list today (`set_version` takes
@@ -200,6 +238,11 @@ pub struct HeaderModel {
     pub kind: KindChip,
     /// Access modifier, when narrower than public.
     pub visibility: Option<SharedString>,
+    /// The `cfg(...)` predicate gating this symbol, when it is not
+    /// unconditionally compiled in. This is the one chip that tells the
+    /// reader "this API might not exist in your build" — docs.rs shows the
+    /// same fact as a feature badge, and we must not show less.
+    pub cfg: Option<SharedString>,
     /// Trust chrome (LD-8).
     pub provenance: Provenance,
     /// Deprecation note, when present.
@@ -225,6 +268,7 @@ impl HeaderModel {
             sig_links: Arc::from(Vec::new()),
             kind: KindChip::Unknown(SharedString::from("…")),
             visibility: None,
+            cfg: None,
             provenance: Provenance::TrustedLocal,
             deprecation: None,
             versions: Arc::from(Vec::new()),
@@ -234,14 +278,7 @@ impl HeaderModel {
 
     /// Project a `SymbolHead`. Call from an update, never from `render`.
     pub fn from_head(head: &SymbolHead) -> Self {
-        let crumbs: Vec<Crumb> = head
-            .breadcrumb
-            .iter()
-            .map(|c| Crumb {
-                key: c.key.clone(),
-                label: shared(&c.label),
-            })
-            .collect();
+        let crumbs = collapse_repeated_crumbs(&head.breadcrumb);
 
         let mut links: Vec<SymbolKey> = Vec::new();
         let signature = sig_tokens(&head.signature, &mut links);
@@ -268,6 +305,7 @@ impl HeaderModel {
             sig_links: Arc::from(links),
             kind: KindChip::from_tag(head.kind),
             visibility: visibility_label(head.visibility),
+            cfg: head.cfg.as_ref().map(shared),
             provenance: trust_of(&head.provenance),
             deprecation: head.deprecation.as_ref().map(shared),
             versions: Arc::from(Vec::new()),
@@ -468,6 +506,14 @@ impl RenderOnce for SymbolHeader {
                             colours.fg_muted,
                         ))
                     })
+                    .when_some(model.cfg.clone(), |el, cfg| {
+                        el.child(Badge::custom(
+                            "symbol.header.cfg",
+                            cfg,
+                            colours.bg_hover,
+                            colours.fg_muted,
+                        ))
+                    })
                     .children(version_chip),
             );
 
@@ -578,8 +624,23 @@ fn version_picker(
                 .with_size(gpui_component::Size::XSmall),
         );
 
+    // `deferred`, not a bare absolutely-positioned child.
+    //
+    // GPUI paints in tree order and has no `z-index`. This popover hangs below
+    // the header, over the version strip and the top of the document column —
+    // both of which are *later* siblings of the header in `SymbolPage`'s
+    // column, and both of which paint an opaque background. So the dropdown
+    // was drawn and then immediately painted over: `13-version-picker` came
+    // back byte-identical to the frame before it, indistinguishable from the
+    // popover never having been built at all, which is exactly how this
+    // survived every previous run of the shot suite.
+    //
+    // `deferred` keeps the element in this subtree for layout and hit-testing
+    // and defers only its *paint* until after every ancestor has finished,
+    // which is what "on top" means in a tree-ordered renderer.
     let dropdown = open.then(|| {
         let pick = on_pick.clone();
+        gpui::deferred(
         div()
             .absolute()
             .top(row_h + sp.space_1)
@@ -641,7 +702,8 @@ fn version_picker(
                     },
                 )
                 .h(list_h),
-            )
+            ),
+        )
     });
 
     Some(
@@ -694,6 +756,60 @@ mod tests {
     fn public_visibility_has_no_chip() {
         assert!(visibility_label(Visibility::Public).is_none());
         assert!(visibility_label(Visibility::Crate).is_some());
+    }
+
+    /// A minimal but complete `SymbolHead`, parameterised only on `cfg`, for
+    /// exercising [`HeaderModel::from_head`]'s cfg projection in isolation.
+    fn sample_head(cfg: Option<SharedStr>) -> SymbolHead {
+        use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
+
+        SymbolHead {
+            key: SymbolKey::new(
+                PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg")),
+                IntroId::from_raw([1u8; 32]),
+            ),
+            breadcrumb: Vec::new(),
+            signature: Vec::new(),
+            kind: KindTag::Unknown(0),
+            visibility: Visibility::Public,
+            provenance: WireProvenance::TrustedLocal,
+            deprecation: None,
+            cfg,
+            section_plan: Vec::new(),
+            // This fixture exercises the cfg projection, not the source
+            // panel; `Synthesized` is the honest value for a symbol that was
+            // never read out of a file.
+            source: nudox_engine::wire::SourceLocation::Unlocated {
+                reason: nudox_engine::wire::UnlocatedReason::Synthesized,
+            },
+        }
+    }
+
+    /// `SymbolHead.cfg` must project into `HeaderModel.cfg` unchanged — this
+    /// is the one chip that tells a reader an item might not exist in their
+    /// build (docs.rs shows the same fact as a feature badge). Losing it in
+    /// projection would silently recreate the gap this field exists to close.
+    #[test]
+    fn from_head_projects_cfg_into_header_model() {
+        let head = sample_head(Some(SharedStr::from("cfg(feature = \"std\")")));
+        let model = HeaderModel::from_head(&head);
+        assert_eq!(
+            model.cfg,
+            Some(SharedString::from("cfg(feature = \"std\")")),
+            "an unconditional-looking symbol must not lose its cfg badge in projection"
+        );
+    }
+
+    /// The round-trip counterpart: an unconditional symbol (`cfg: None` on
+    /// the wire) must not grow a fabricated chip during projection.
+    #[test]
+    fn from_head_with_no_cfg_has_no_chip() {
+        let head = sample_head(None);
+        let model = HeaderModel::from_head(&head);
+        assert!(
+            model.cfg.is_none(),
+            "an unconditional symbol must not be given a fabricated cfg chip"
+        );
     }
 
     /// The empty model must still be renderable — the header chassis paints

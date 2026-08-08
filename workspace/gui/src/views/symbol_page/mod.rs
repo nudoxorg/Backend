@@ -148,17 +148,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, App, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
-    Window, div, list, prelude::FluentBuilder as _,
+    AnyElement, App, ClipboardItem, Context, Entity, FocusHandle, Focusable,
+    InteractiveElement as _, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement as _, Styled, Subscription, Window, div, list,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, skeleton::Skeleton};
-use nudox_engine::wire::{SymbolKey, TimelineChange};
+use nudox_engine::wire::{SourceLocation as WireSourceLocation, SymbolKey, TimelineChange};
 
-use crate::app::actions::{
-    CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, GoToTimelineTab, NextInnerTab,
-    OpenVersionPicker, PrevInnerTab,
-};
+use crate::app::actions::{CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, OpenVersionPicker};
 use crate::bridge::slot::{Display as SlotDisplay, SlotError};
 use crate::motion::tokens::MotionTokens;
 use crate::stores::events::OpenDisposition;
@@ -176,9 +174,79 @@ use header::{HeaderModel, SymbolHeader, VersionOption};
 /// `motion/tokens.rs`, which is the vocabulary for things the *user* sees move.
 const HIGHLIGHT_PRIORITY_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long the "Copied" confirmation stays up after `CopySymbolUri` fires.
+///
+/// Not a spring — `copied_at` is a plain timestamp and this a plain
+/// threshold, matching the rest of this file's convention that motion tokens
+/// belong in `motion/tokens.rs` and time-based *visibility* windows (like the
+/// skeleton grace) live beside the state they gate.
+const COPY_FEEDBACK_DURATION: Duration = Duration::from_millis(1600);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Section collapse state
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// The largest implementations table that opens itself.
+///
+/// GUI-WORKORDER-2 F2: `Implementations 6` sat collapsed at the bottom of a
+/// page with ~600 px of empty background above it, while docs.rs had all six on
+/// screen. Six rows do not bury anything; thirty do, which is what the
+/// collapsed-by-default rule was written for (axum's `Router`). The rule was
+/// right and the constant was missing, so it was applied to every table
+/// regardless of size.
+///
+/// Chosen as "as many rows as fit under a screenful of prose without pushing
+/// References and Source off the bottom" — the reader should still be able to
+/// see that the sections below exist.
+const IMPLS_AUTO_EXPAND_MAX: u64 = 12;
+
+/// Whether a disclosure section is open, and whether the *reader* decided that.
+///
+/// # Why this is not a `bool`
+///
+/// The page wants to open small sections by itself once it knows how big they
+/// are (see [`IMPLS_AUTO_EXPAND_MAX`]), and counts arrive asynchronously — so
+/// "should this be open?" gets asked again on every page of impls that lands.
+/// With a bare `bool` there is no way to tell "closed because nobody has opened
+/// it" from "closed because the reader just closed it", and the second page of
+/// results re-opens a section the reader shut a moment ago. That bug is
+/// invisible in a screenshot and infuriating in use.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disclosure {
+    /// Nobody has touched it. The page may still open or close it as data
+    /// arrives.
+    Auto(bool),
+    /// The reader chose. Never overridden by anything the stream delivers.
+    Chosen(bool),
+}
+
+impl Disclosure {
+    /// Whether the section body is in the render tree.
+    pub fn is_open(self) -> bool {
+        match self {
+            Disclosure::Auto(open) | Disclosure::Chosen(open) => open,
+        }
+    }
+
+    /// The reader toggled the header.
+    pub fn toggled(self) -> Self {
+        Disclosure::Chosen(!self.is_open())
+    }
+
+    /// The reader asked for this section explicitly (`g s`, `g r`, an outline
+    /// row). Opening is as much a choice as toggling, so it latches too.
+    pub fn opened(self) -> Self {
+        Disclosure::Chosen(true)
+    }
+
+    /// The page's own suggestion, applied only while the reader is silent.
+    pub fn suggest(self, open: bool) -> Self {
+        match self {
+            Disclosure::Auto(_) => Disclosure::Auto(open),
+            chosen @ Disclosure::Chosen(_) => chosen,
+        }
+    }
+}
 
 /// Which sections of the single-document layout are currently expanded.
 ///
@@ -186,11 +254,10 @@ const HIGHLIGHT_PRIORITY_INTERVAL: Duration = Duration::from_millis(250);
 ///
 /// Documentation is always expanded — that is the whole point of the page.
 ///
-/// Implementations, References, and Source start *collapsed*. The user asked
-/// for "contract most of it by default" because axum-scale types have dozens of
-/// impls, and they buried the documentation when opened. The disclosure header
-/// shows the item count, so the reader knows what is there without seeing all of
-/// it.
+/// Implementations, References, and Source start closed, and Implementations
+/// opens itself once the stream reveals it is small ([`IMPLS_AUTO_EXPAND_MAX`]).
+/// The disclosure header shows the item count, so the reader knows what is
+/// there without seeing all of it.
 ///
 /// # Lifetime
 ///
@@ -205,22 +272,23 @@ const HIGHLIGHT_PRIORITY_INTERVAL: Duration = Duration::from_millis(250);
 pub struct CollapseState {
     /// Documentation body — always expanded; not user-togglable from here.
     pub docs: bool,
-    /// Implementations table — collapsed by default (can be huge).
-    pub impls: bool,
-    /// Cross-references table — collapsed by default.
-    pub refs: bool,
-    /// Source view — collapsed by default (stub until materialisation).
-    pub source: bool,
+    /// Implementations table.
+    pub impls: Disclosure,
+    /// Cross-references table.
+    pub refs: Disclosure,
+    /// Source location block.
+    pub source: Disclosure,
 }
 
 impl CollapseState {
-    /// The designed defaults: docs open, everything else closed.
+    /// The designed defaults: docs open, everything else closed and still the
+    /// page's to decide.
     pub fn default_open() -> Self {
         Self {
             docs: true,
-            impls: false,
-            refs: false,
-            source: false,
+            impls: Disclosure::Auto(false),
+            refs: Disclosure::Auto(false),
+            source: Disclosure::Auto(false),
         }
     }
 }
@@ -346,6 +414,14 @@ pub struct SymbolPage<E: SymbolEngine> {
     tab: TabId,
     store: Entity<SymbolStore<E>>,
 
+    /// L16: without this, and without `.track_focus` on the page's own root
+    /// div in `render`, none of this page's `.on_action` handlers can ever
+    /// fire — see `WorkspaceItem`'s doc comment in `workspace/item.rs` for the
+    /// full mechanism. `Pane::activate_ix` calls `focus_handle()` (via the
+    /// `WorkspaceItem: Focusable` supertrait) and focuses it every time this
+    /// page becomes the active tab.
+    focus: FocusHandle,
+
     /// Projected once per generation from `SymbolHead`.
     header: HeaderModel,
     /// Version picker contents — see the `TODO(store)` note in the module docs.
@@ -384,6 +460,11 @@ pub struct SymbolPage<E: SymbolEngine> {
     /// 4 Hz coalescing gate for `HighlightPriority` (§9.4.5).
     last_priority: Option<Instant>,
 
+    /// When `CopySymbolUri` last fired, so `render` can show a transient
+    /// "Copied" confirmation (L16 — the action previously gave no feedback at
+    /// all). `None` until the first copy.
+    copied_at: Option<Instant>,
+
     /// Version history strip, projected from `SymbolDoc::timeline` once per
     /// delivery (§1.1.4).  `None` means the timeline has not arrived yet —
     /// never "this symbol has no history" (see module docs).
@@ -392,15 +473,27 @@ pub struct SymbolPage<E: SymbolEngine> {
     /// Pre-formatted source path for the Source section.
     ///
     /// `None` means the head has not arrived or the producer did not record a
-    /// source location.  Projected once from `SymbolHead::source_path` in
+    /// source location.  Projected once from `SymbolHead::source` in
     /// `sync_from_store` (§1.1.4).
     source_path_text: Option<SharedString>,
 
-    /// Pre-formatted source span label, e.g. `"bytes 10–42"`.
+    /// Pre-formatted source range label — `"lines 5–35"` for a fully
+    /// `Declared` location, `"bytes 68–1134"` for a producer that records only
+    /// offsets.
     ///
-    /// `None` when `source_path_text` is `None`.  Byte offsets, not lines —
-    /// see `SymbolHead::source_span` docs.
+    /// `None` when `source_path_text` is `None`. The label states its own unit
+    /// because the two are not interchangeable and only one is navigable.
     source_span_text: Option<SharedString>,
+
+    /// The same location as one machine-shaped token, for the clipboard.
+    ///
+    /// `src/memchr.rs:5:1` when the producer records lines, or
+    /// `src/memchr.rs#bytes=68-1134` when it records only offsets. Separate
+    /// from `source_span_text` because the two have different
+    /// jobs: one is read by a person (`bytes 10–42`, with an en dash), the
+    /// other is pasted into a tool, and one string doing both does neither
+    /// well.
+    source_location: Option<SharedString>,
 
     _subs: Vec<Subscription>,
 }
@@ -452,6 +545,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
         let mut page = Self {
             tab,
             store,
+            focus: cx.focus_handle(),
             header: HeaderModel::empty(),
             versions: Arc::from(Vec::new()),
             active_version: 0,
@@ -471,9 +565,11 @@ impl<E: SymbolEngine> SymbolPage<E> {
             refs_streaming: false,
             impls_streaming: false,
             last_priority: None,
+            copied_at: None,
             timeline_rows: None,
             source_path_text: None,
             source_span_text: None,
+            source_location: None,
             _subs: subs,
         };
         // Pick up anything that landed between `open()` and this constructor.
@@ -498,6 +594,24 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// The symbol this page shows, once `Head` has landed.
     pub fn symbol_uri(&self) -> SharedString {
         self.header.uri.clone()
+    }
+
+    /// How many rows the table of contents currently has.
+    ///
+    /// Exposed for the screenshot suite: "the rail looks populated" is not
+    /// something a pixel diff can assert, and a one-entry table of contents
+    /// (GUI-WORKORDER-2 F3) is a defect that a frame check would sail past.
+    pub fn outline_len(&self) -> usize {
+        self.outline.len()
+    }
+
+    /// How many generations the version picker offers.
+    ///
+    /// Exposed for the same reason: the picker was drawn but empty in every
+    /// frame this project has ever captured, and an empty popover and an absent
+    /// one are the same picture.
+    pub fn version_count(&self) -> usize {
+        self.versions.len()
     }
 
     // ── Store synchronisation (all projection happens here, never in render) ─
@@ -539,18 +653,51 @@ impl<E: SymbolEngine> SymbolPage<E> {
 
                     // ── Source location ─────────────────────────────────────
                     //
-                    // Projected once per head (§1.1.4). The path is whatever the
-                    // producer recorded; the span is a byte range (not lines).
-                    self.source_path_text = head.source_path.as_ref().map(|p| {
-                        SharedString::from(String::from(&**p))
-                    });
-                    self.source_span_text = head.source_span.map(|[start, end]| {
-                        SharedString::from(format!("bytes {}–{}", start, end))
-                    });
+                    // Projected once per head (§1.1.4) from the single typed
+                    // `SourceLocation` the wire now carries. The three variants
+                    // render differently on purpose: only `Declared` produces a
+                    // `path:line:col` a reader can act on, and labelling a byte
+                    // range as anything but bytes is the mistake this type
+                    // exists to prevent.
+                    let (path_text, range_text, machine_text) = match &head.source {
+                        WireSourceLocation::Declared {
+                            file, start, end, ..
+                        } => (
+                            Some(SharedString::from(String::from(&**file))),
+                            Some(SharedString::from(format!(
+                                "lines {}–{}",
+                                start.line, end.line
+                            ))),
+                            Some(SharedString::from(format!(
+                                "{}:{}:{}",
+                                file, start.line, start.column
+                            ))),
+                        ),
+                        WireSourceLocation::BytesOnly { file, bytes } => (
+                            Some(SharedString::from(String::from(&**file))),
+                            Some(SharedString::from(format!(
+                                "bytes {}–{}",
+                                bytes[0], bytes[1]
+                            ))),
+                            Some(SharedString::from(format!(
+                                "{}#bytes={}-{}",
+                                file, bytes[0], bytes[1]
+                            ))),
+                        ),
+                        // `Unlocated` and any variant a future engine adds:
+                        // show the empty state rather than inventing a target.
+                        _ => (None, None, None),
+                    };
+                    self.source_path_text = path_text;
+                    self.source_span_text = range_text;
+                    self.source_location = machine_text;
 
                     // Clear stale timeline on head reset; it will be reprojected
                     // below when the new timeline arrives.
                     self.timeline_rows = None;
+                    // A "Copied" confirmation from the symbol just left must
+                    // not survive onto the one just opened.
+                    self.copied_at = None;
 
                     dirty = true;
                 }
@@ -570,6 +717,41 @@ impl<E: SymbolEngine> SymbolPage<E> {
                         .iter()
                         .map(TimelineRowView::from_wire)
                         .collect();
+
+                    // The version picker's contents *are* the timeline.
+                    //
+                    // The header has been able to render a version popover
+                    // since it was written, and nothing ever called
+                    // `set_versions`, so `OpenVersionPicker` toggled a flag
+                    // with nothing behind it — scene `13-version-picker` in the
+                    // shot suite was byte-identical to the frame before it in
+                    // every run this project has ever taken. The module docs
+                    // called this "no version list" and pointed at a store API
+                    // that does not exist.
+                    //
+                    // It was already here. `DocEvent::Timeline` carries one row
+                    // per *loaded generation* of this package, which is exactly
+                    // what a version dropdown offers; the strip below the
+                    // header has been drawing it all along. Projecting the same
+                    // rows into the picker costs one pass and needs no new
+                    // engine surface.
+                    self.versions = rows
+                        .iter()
+                        .map(|row| VersionOption {
+                            label: row.version.clone(),
+                            // Provenance is a property of the *package view*,
+                            // and every generation here came from the same
+                            // local producer run as the one on screen. Claiming
+                            // anything else per-row would be inventing trust
+                            // data (LD-8).
+                            provenance: self.header.provenance,
+                        })
+                        .collect();
+                    self.active_version =
+                        rows.iter().position(|r| r.is_current).unwrap_or(0);
+                    self.header.versions = self.versions.clone();
+                    self.header.active_version = self.active_version;
+
                     self.timeline_rows = Some(rows);
                     dirty = true;
                 }
@@ -628,7 +810,21 @@ impl<E: SymbolEngine> SymbolPage<E> {
             }
         }
 
-        dirty |= self.outline.sync(&self.docs);
+        // The page may open a small implementations table by itself; the reader
+        // always wins (see `Disclosure`).
+        if self.impls.total() > 0 {
+            let next = self
+                .collapse
+                .impls
+                .suggest(self.impls.total() <= IMPLS_AUTO_EXPAND_MAX);
+            if next != self.collapse.impls {
+                self.collapse.impls = next;
+                dirty = true;
+            }
+        }
+
+        let page_sections = self.page_section_entries();
+        dirty |= self.outline.sync(&self.docs, &page_sections);
 
         if dirty {
             cx.notify();
@@ -702,6 +898,75 @@ impl<E: SymbolEngine> SymbolPage<E> {
         self.docs.reveal(ix);
         self.outline.set_active(ix);
         cx.notify();
+    }
+
+    /// Act on an outline row.
+    ///
+    /// A page-level row *navigates by expanding*: the section is right there in
+    /// the column, so opening it is what "go to Implementations" means on a
+    /// single-document page. Expanding through [`Disclosure::opened`] rather
+    /// than by assignment is what stops a later auto-suggestion from closing
+    /// something the reader just asked to see.
+    fn on_outline_pick(&mut self, target: outline::OutlineTarget, cx: &mut Context<Self>) {
+        use outline::{OutlineTarget, PageSection};
+        match target {
+            OutlineTarget::DocsSection(ix) => self.reveal_section(ix, cx),
+            OutlineTarget::Page(section) | OutlineTarget::PageRow(section, _) => {
+                match section {
+                    PageSection::Implementations => {
+                        self.collapse.impls = self.collapse.impls.opened()
+                    }
+                    PageSection::References => self.collapse.refs = self.collapse.refs.opened(),
+                    PageSection::Source => self.collapse.source = self.collapse.source.opened(),
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    /// The page-level sections, as the outline should list them.
+    ///
+    /// Built here rather than in `Outline::sync` because the labels come from
+    /// three different tables this view owns, and because every string is
+    /// formatted once per change instead of once per frame (§1.1.4).
+    fn page_section_entries(&self) -> Vec<outline::PageSectionEntry> {
+        use outline::{PageSection, PageSectionEntry};
+
+        /// `"Implementations 6"`, or plain `"References"` while the count is
+        /// still zero — the same rule the disclosure headers use, so the rail
+        /// and the column never disagree about how much is in a section.
+        fn labelled(name: &str, count: u64) -> SharedString {
+            if count > 0 {
+                SharedString::from(format!("{name} {count}"))
+            } else {
+                SharedString::from(name.to_owned())
+            }
+        }
+
+        // All three, unconditionally, because the page draws all three
+        // unconditionally. A table of contents that lists a subset of the
+        // headings on screen sends the reader looking for the ones it left out.
+        //
+        // Implementations carries each impl nested beneath it: `Clone`,
+        // `Debug`, `Iterator` are what a reader scanning a type navigates by,
+        // and they are the part that makes the rail worth its width.
+        vec![
+            PageSectionEntry {
+                section: PageSection::Implementations,
+                label: labelled("Implementations", self.impls.total()),
+                children: self.impls.own_labels(),
+            },
+            PageSectionEntry {
+                section: PageSection::References,
+                label: labelled("References", self.refs.total()),
+                children: Arc::from(Vec::new()),
+            },
+            PageSectionEntry {
+                section: PageSection::Source,
+                label: SharedString::from("Source"),
+                children: Arc::from(Vec::new()),
+            },
+        ]
     }
 
     // ── Rendering ────────────────────────────────────────────────────────────
@@ -778,12 +1043,25 @@ impl<E: SymbolEngine> SymbolPage<E> {
             .into_any_element()
     }
 
-    /// The Documentation section: the streamed body plus the outline rail.
+    /// The Documentation body — the streamed prose list on its own.
     ///
-    /// This section has no disclosure toggle — it is always present. The outline
-    /// rail is placed here rather than at page level because it logically
-    /// annotates the documentation body, not the refs or impls sections.
-    fn render_docs_section(&self, show_skeleton: bool, cx: &mut Context<Self>) -> AnyElement {
+    /// # Why this no longer builds the row it sits in
+    ///
+    /// It used to return `[docs list | outline rail]` as a `size_full()` row,
+    /// which the page then gave `flex_1`. That made the documentation claim
+    /// *all* the vertical slack whether or not it had prose to put in it, and
+    /// pushed `Implementations` / `References` / `Source` to the very bottom of
+    /// the window with ~600 px of empty background between them and the text
+    /// they belong to (GUI-WORKORDER-2 F2, `.shots/memchr/08-symbol-opened.png`).
+    ///
+    /// The sections are now siblings of this list inside one column, and the
+    /// list sizes itself from its content (see the `Infer` note below), so the
+    /// column reads top-to-bottom the way docs.rs does: prose, then the
+    /// implementations of the thing the prose describes, then its references,
+    /// then where it lives. The outline rail is assembled beside that whole
+    /// column in [`SymbolPage::page_body`] — it annotates the page, and (F3) it
+    /// now lists the page's sections, not only the document's.
+    fn render_docs_body(&self, show_skeleton: bool, cx: &mut Context<Self>) -> AnyElement {
         let scale = cx.theme_ext().motion_scale;
 
         if !self.docs.has_plan() {
@@ -815,7 +1093,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
             .into_any_element();
         }
 
-        let body = list(
+        list(
             self.docs.list_state().clone(),
             cx.processor(
                 |page: &mut Self, ix: usize, window: &mut Window, cx: &mut Context<Self>| {
@@ -824,50 +1102,31 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 },
             ),
         )
-        // `size_full`, not `flex_1`.
+        .w_full()
+        // `Infer`, not `size_full()`.
         //
-        // A virtualized `list()` measures against a *definite* height. Given
-        // only a flex hint it resolved to a sliver: one clipped line of prose
-        // with empty space beneath it, which reads as "the docs are empty"
-        // rather than "the list has no height". The wrapper below owns the
-        // flex share; the list then fills it.
-        .size_full();
-
-        let entity = cx.entity().downgrade();
-        let outline = self.outline.render(
-            move |ix, _window, cx| {
-                let _ = entity.update(cx, |page, cx| page.reveal_section(ix, cx));
-            },
-            cx,
-        );
-
-        div()
-            .id("symbol.docs")
-            .flex()
-            .flex_row()
-            // `size_full` is load-bearing. This row's height would otherwise be
-            // *auto* — derived from its content — while the content is a
-            // `list()` sized `size_full`, i.e. derived from this row. That
-            // circularity resolves to a sliver: one clipped line of prose with
-            // empty space beneath it. Taking the height from the parent breaks
-            // the cycle, and the parent has a definite height because it owns
-            // the flex share of the document column.
-            .size_full()
-            // The column must be a flex container, not a bare `div`. GPUI's
-            // default display is `Block`, in which `flex_1()` on the list is
-            // inert and its height resolves to auto — i.e. zero. The outline
-            // beside it renders from the same plan, so the failure looks like
-            // "the document is empty" rather than "the list has no height".
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(body),
-            )
-            .when(!self.outline.is_empty(), |el| el.child(outline))
-            .into_any_element()
+        // The previous note here recorded a real trap: a virtualized `list()`
+        // measures against a *definite* height, and given only a flex hint in a
+        // parent with no definite height of its own it resolves to a sliver —
+        // one clipped line of prose with empty space beneath it. The fix at the
+        // time was `size_full()` plus a `flex_1` wrapper, which does give a
+        // definite height. It also makes the list exactly as tall as the
+        // window, forever, whether it has four paragraphs or four hundred —
+        // which is F2: the sections below were pushed to the bottom edge and
+        // the reader stared at ~600 px of background.
+        //
+        // `ListSizingBehavior::Infer` measures the list at
+        // `min(total content height, available height)`, so a short document
+        // occupies what it needs and the sections follow it immediately, while
+        // a long one still fills the column and scrolls internally exactly as
+        // before. The height is definite in both cases, so the sliver cannot
+        // come back.
+        //
+        // The zero-jump guarantee (§9.4) is untouched: it lives in
+        // `DocsBody`'s per-slot reserved heights, which are what
+        // `total content height` is summed from.
+        .with_sizing_behavior(gpui::ListSizingBehavior::Infer)
+        .into_any_element()
     }
 
     /// The Implementations section body.
@@ -943,7 +1202,11 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 .justify_between()
                 .w_full()
                 .gap(sp.space_2)
-                .px(sp.space_3)
+                // `space_4` — the reader's one gutter. Every full-width block
+                // in this column (documentation sections, disclosure headers,
+                // impl rows, the version strip, this bar) now starts at the
+                // same left edge.
+                .px(sp.space_4)
                 .py(sp.space_1)
                 .bg(colours.danger.opacity(0.08))
                 .border_t_1()
@@ -1078,17 +1341,150 @@ impl<E: SymbolEngine> SymbolPage<E> {
         )
     }
 
-    /// No-op stub for version selection.
+    /// The transient "Copied" confirmation shown after `CopySymbolUri` fires.
     ///
-    /// Called when the user clicks a version strip entry. Completing this requires
-    /// `SymbolStore::select_version(tab_id, version, cx)` — see the module-level
-    /// "Selecting a different version" note for the full list of required additions.
+    /// `None` once `COPY_FEEDBACK_DURATION` has elapsed, so a stale
+    /// confirmation never lingers on screen after the reader has moved on.
+    fn render_copy_feedback(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let fired_at = self.copied_at?;
+        if fired_at.elapsed() >= COPY_FEEDBACK_DURATION {
+            return None;
+        }
+
+        let (sp, ts, colours) = {
+            let ext = cx.theme_ext();
+            (ext.space, ext.type_scale, ext.colours)
+        };
+
+        Some(
+            div()
+                .id("symbol.copy_feedback")
+                .w_full()
+                .px(sp.space_4)
+                .py(sp.space_1 / 2.0)
+                .bg(colours.ok.opacity(0.08))
+                .border_b_1()
+                .border_color(colours.ok.opacity(0.3))
+                .text_size(ts.caption.size)
+                .line_height(ts.caption.line_height)
+                .text_color(colours.ok)
+                .child(SharedString::from("Symbol URI copied to clipboard"))
+                .into_any_element(),
+        )
+    }
+
+    /// Switch the corpus to the generation at `ix` and re-stream this symbol.
     ///
-    /// TODO: implement select_version on SymbolStore, add `select_version` to the
-    /// `SymbolEngine` trait, then call `self.store.update(cx, |store, cx|
-    /// store.select_version(self.tab, rows[ix].version.clone(), cx))` here.
-    fn select_version(&mut self, _ix: usize, _cx: &mut Context<Self>) {
-        // No-op until SymbolStore::select_version is implemented.
+    /// The old page stays on screen and dims while the new generation loads
+    /// (LD-15) — `SymbolStore::select_version` does not clear content.
+    ///
+    /// Selecting the generation that is already current is a deliberate no-op:
+    /// re-issuing the stream would dim a perfectly good page to arrive at the
+    /// same place.
+    fn select_version(&mut self, ix: usize, cx: &mut Context<Self>) {
+        let Some(rows) = self.timeline_rows.as_ref() else {
+            return;
+        };
+        let Some(row) = rows.get(ix) else { return };
+        if row.is_current && ix == self.active_version {
+            return;
+        }
+        let version = row.version.to_string();
+        self.active_version = ix;
+        self.header.active_version = ix;
+        self.picker_open = false;
+        let tab = self.tab;
+        self.store
+            .update(cx, |store, cx| store.select_version(tab, version, cx));
+        cx.notify();
+    }
+
+    /// The page's one and only root element (LIMITATIONS.md L22).
+    ///
+    /// # Why the chrome is built here and not in `render`
+    ///
+    /// `render` used to build **two** roots: the ordinary page, and — behind an
+    /// early `return` — a bare one for [`PageState::ColdError`]. Only the first
+    /// carried `key_context("SymbolPage")` and `track_focus`, so a page whose
+    /// stream failed before anything readable arrived rendered with its
+    /// `FocusHandle` attached to no element at all.
+    ///
+    /// That is not a local, cosmetic omission. [`crate::workspace::pane::Pane`]
+    /// focuses the active item's handle on *every* activation (L16). GPUI
+    /// resolves a keystroke by looking the focused handle up in the last
+    /// rendered frame's dispatch tree and, when it is not there, silently falls
+    /// back to the **window root** (`Window::focus_node_id_in_rendered_frame`
+    /// in `crates/gpui/src/window.rs`). The window root carries no key context,
+    /// so a single untracked page root erased every *ancestor* context too —
+    /// which is why `cmd-W` (`CloseTab`, bound in the `Pane` context, handled
+    /// on `Pane`'s own div two levels up) stopped working the moment a failing
+    /// document became the active tab.
+    ///
+    /// So the chrome — id, key context, focus attachment, and the whole
+    /// `.on_action` chain — is applied exactly once, here. Everything that
+    /// varies with [`PageState`] is a *child*, produced by
+    /// [`SymbolPage::page_body`], which is handed no root to modify and
+    /// therefore cannot drop the focus attachment for any state, present or
+    /// future.
+    fn page_root(&self, cx: &mut Context<Self>) -> gpui::Stateful<gpui::Div> {
+        div()
+            .id("symbol.page")
+            .key_context("SymbolPage")
+            .v_flex()
+            .size_full()
+            .bg(cx.theme_ext().colours.bg_base)
+            // L16: `Pane::activate_ix` focuses `self.focus` (via `Focusable`)
+            // whenever this page becomes the active tab, but that handle has to
+            // be attached to a real element in this render tree for GPUI to
+            // route `dispatch_action` through it — `track_focus` is that
+            // attachment, and the paragraph above is what happens without it.
+            .track_focus(&self.focus)
+            // GUI-PLAN §16 described inner Docs/Source/Refs/Timeline *tabs*.
+            // The shipped design replaced those with the collapsible sections
+            // in `page_body` (see the module doc's "Layout" section) — a
+            // deliberate, documented change, not a regression. Two of the six
+            // actions that survived from the tab design had no honest mapping
+            // onto sections and are handled by *not* being bound at all: see
+            // the keymap-side removal of `NextInnerTab` / `PrevInnerTab` /
+            // `GoToTimelineTab` in `app::keymaps` for why.
+            //
+            // The remaining four map onto real, section-shaped actions:
+            .on_action(cx.listener(|page, _: &GoToDocsTab, _window, cx| {
+                // Scroll the docs list back to the top — "go to docs" is
+                // meaningful even though Docs is not a tab, because the docs
+                // body is the one section that scrolls independently of the
+                // disclosure sections below it.
+                page.docs.reveal(0);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|page, _: &GoToSourceTab, _window, cx| {
+                // Expand the Source disclosure section — the reader asked to
+                // see it, and it is real, visible state (`CollapseState`).
+                page.collapse.source = page.collapse.source.opened();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|page, _: &GoToRefsTab, _window, cx| {
+                // Expand the References disclosure section, same reasoning.
+                page.collapse.refs = page.collapse.refs.opened();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|page, _: &OpenVersionPicker, _window, cx| {
+                page.picker_open = !page.picker_open;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|page, _: &CopySymbolUri, _window, cx| {
+                let uri = page.header.uri.to_string();
+                cx.write_to_clipboard(ClipboardItem::new_string(uri));
+                // Previously this wrote the clipboard and stopped: no repaint,
+                // no acknowledgement, nothing distinguishing "it worked" from
+                // "the keystroke went nowhere" (which, before the L16 focus
+                // fix, it usually did). `copied_at` drives a transient inline
+                // confirmation in the header (see `page_body`) — the clipboard
+                // write is a state change and deserves visible feedback the
+                // same way every other action on this page does.
+                page.copied_at = Some(Instant::now());
+                cx.notify();
+            }))
     }
 
     /// The Source section body.
@@ -1096,6 +1492,29 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// Renders the file path and byte range when the head carries a source
     /// location, or falls back to the empty state when no location was recorded
     /// (e.g. a declaration-only package, or a producer that omits source info).
+    ///
+    /// # Source jumping (F6): what changed, and what is still missing
+    ///
+    /// docs.rs links every item to an exact line range
+    /// (`src/memchr/memchr.rs.html#288-291`). The wire can now express that:
+    /// `SymbolHead::source` is a `wire::SourceLocation`, and its `Declared`
+    /// variant carries a package-relative path plus a 1-based line/column
+    /// range. For a package lowered by the Rust producer, `memchr` reports
+    /// `src/memchr.rs` lines 5–35 — a real target.
+    ///
+    /// Two things are still true and this function must keep honouring them:
+    ///
+    /// * **`BytesOnly` is not a jump target.** Six of the seven producers do
+    ///   not compute line numbers, and a byte offset rendered as `file:68`
+    ///   reads as a line and sends the reader to the wrong place. The label
+    ///   says "bytes" for exactly those, and "lines" only for `Declared`.
+    /// * **Resolving the path against the package root is not done here.** The
+    ///   path is relative by design (an absolute one would make the IR's
+    ///   content hashes machine-specific); opening it needs a root this view
+    ///   does not hold yet.
+    ///
+    /// `wire::ImplRow` now carries its own `source`, so the two-step detour
+    /// through each impl's symbol page is no longer forced by the protocol.
     fn render_source_body(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(path) = self.source_path_text.clone() else {
             // Producer did not record a source location — fall back to the stub.
@@ -1116,11 +1535,25 @@ impl<E: SymbolEngine> SymbolPage<E> {
             (ext.space, ext.type_scale, ext.colours)
         };
 
+        let location = self.source_location_text();
+
         div()
             .id("symbol.source.location")
             .v_flex()
             .gap(sp.space_1)
             .p(sp.space_4)
+            .cursor_pointer()
+            .hover(|s| s.bg(colours.bg_hover))
+            .on_click(cx.listener(move |page, _, _window, cx| {
+                if let Some(location) = page.source_location_text() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(location.to_string()));
+                    // Same confirmation strip as the URI copy: a clipboard
+                    // write with no acknowledgement is indistinguishable from
+                    // a click that went nowhere.
+                    page.copied_at = Some(Instant::now());
+                    cx.notify();
+                }
+            }))
             // Path — monospace so it aligns with how paths look in terminal output.
             .child(
                 div()
@@ -1130,7 +1563,8 @@ impl<E: SymbolEngine> SymbolPage<E> {
                     .text_color(colours.fg_default)
                     .child(path),
             )
-            // Byte range, when present — clearly labelled as bytes.
+            // Byte range, when present — clearly labelled as bytes, because
+            // they are byte offsets and not line numbers (see the note above).
             .when_some(self.source_span_text.clone(), |el, span| {
                 el.child(
                     div()
@@ -1141,7 +1575,27 @@ impl<E: SymbolEngine> SymbolPage<E> {
                         .child(span),
                 )
             })
+            .when_some(location, |el, _| {
+                el.child(
+                    div()
+                        .text_size(ts.caption.size)
+                        .line_height(ts.caption.line_height)
+                        .text_color(colours.fg_faint)
+                        .child(SharedString::from("Click to copy this location")),
+                )
+            })
             .into_any_element()
+    }
+
+    /// The symbol's source location as one copyable token, `path#bytes=a-b`.
+    ///
+    /// `None` when the producer recorded no path — the same condition that
+    /// makes the Source section fall back to its empty state, so the copy
+    /// affordance and the content it would copy cannot disagree.
+    ///
+    /// Pre-formatted in `sync_from_store` (§1.1.4); this is a clone.
+    fn source_location_text(&self) -> Option<SharedString> {
+        self.source_location.clone()
     }
 }
 
@@ -1173,6 +1627,13 @@ fn plan_placeholder(cx: &App) -> AnyElement {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl<E: SymbolEngine> Render for SymbolPage<E> {
+    /// Two lines on purpose — see [`SymbolPage::page_root`].
+    ///
+    /// The chrome (key context, focus attachment, action handlers) is applied
+    /// by `page_root`; every [`PageState`]-dependent decision lives in
+    /// `page_body`, which returns children and cannot reach the root. A new
+    /// page state therefore cannot render itself unfocusable, which is exactly
+    /// how L22 happened.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // §4.2 render-loop contract: advance any running `highlight.sweep`, and
         // ask for another frame only while one is actually moving. A settled
@@ -1182,6 +1643,20 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             window.request_animation_frame();
         }
 
+        let body = self.page_body(window, cx);
+        self.page_root(cx).children(body)
+    }
+}
+
+impl<E: SymbolEngine> SymbolPage<E> {
+    /// Everything inside [`SymbolPage::page_root`], for the current
+    /// [`PageState`].
+    ///
+    /// Returns the root's children rather than one wrapper element so the flex
+    /// column is unchanged from when this code lived inline in `render`: the
+    /// header, the copy confirmation, the version strip, the scrolling body,
+    /// and the retry bar are still direct siblings sharing the root's column.
+    fn page_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let colours = cx.theme_ext().colours;
         let stale = self.state.is_stale();
 
@@ -1196,21 +1671,25 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         };
 
         // ── Cold error: nothing readable, so the error *is* the page ─────────
+        //
+        // This is a *child* of the same root every other state uses. It used to
+        // be an early `return` of a second, bare root — see `page_root` for why
+        // that cost `cmd-W` (L22).
         if self.state == PageState::ColdError {
             let error = self.error.clone().unwrap_or(SlotError::Cancelled);
             let tab = self.tab;
             let store = self.store.clone();
-            return div()
-                .id("symbol.page")
-                .size_full()
-                .bg(colours.bg_base)
-                .child(ErrorState::new(
-                    error,
-                    Some(Box::new(move |_window, cx| {
-                        store.update(cx, |store, cx| store.reload(tab, cx));
-                    })),
-                ))
-                .into_any_element();
+            return vec![
+                div()
+                    .size_full()
+                    .child(ErrorState::new(
+                        error,
+                        Some(Box::new(move |_window, cx| {
+                            store.update(cx, |store, cx| store.reload(tab, cx));
+                        })),
+                    ))
+                    .into_any_element(),
+            ];
         }
 
         // ── Header — paints from `Head` alone, in one frame ──────────────────
@@ -1240,17 +1719,12 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
                     cx.notify();
                 });
             })
+            // One path for both affordances: the popover row and the version
+            // strip below the header are two ways to ask the same question, so
+            // they go through the same method rather than each carrying their
+            // own copy of "what does picking a version mean?".
             .on_version(move |ix, _window, cx| {
-                let _ = version_entity.update(cx, |page, cx| {
-                    page.active_version = ix;
-                    page.header.active_version = ix;
-                    page.picker_open = false;
-                    let tab = page.tab;
-                    // Stale-while-revalidate: the old generation stays on
-                    // screen and dims while the new one streams over it.
-                    page.store.update(cx, |store, cx| store.set_version(tab, cx));
-                    cx.notify();
-                });
+                let _ = version_entity.update(cx, |page, cx| page.select_version(ix, cx));
             });
 
         // ── Build the sections ────────────────────────────────────────────────
@@ -1263,7 +1737,19 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         // expanded, and adding a toggle would create a way to hide the primary
         // content with no clear way to find it again.
 
-        let docs_section = self.render_docs_section(show_skeleton, cx);
+        let docs_body = self.render_docs_body(show_skeleton, cx);
+
+        // The outline rail. Built here because it needs a weak handle to this
+        // entity for its click callback, and because it is a sibling of the
+        // whole document column now, not of the prose list alone (F3).
+        let outline_entity = cx.entity().downgrade();
+        let outline = self.outline.render(
+            move |target, _window, cx| {
+                let _ = outline_entity.update(cx, |page, cx| page.on_outline_pick(target, cx));
+            },
+            cx,
+        );
+        let has_outline = !self.outline.is_empty();
 
         // Implementations disclosure header.
         let impls_count = if self.impls_count_text.is_empty() {
@@ -1271,7 +1757,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         } else {
             Some(self.impls_count_text.clone())
         };
-        let impls_expanded = self.collapse.impls;
+        let impls_expanded = self.collapse.impls.is_open();
         let impls_header = self.render_disclosure_header(
             "symbol.impls.header",
             SharedString::from("Implementations"),
@@ -1279,7 +1765,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             self.impls_streaming,
             impls_expanded,
             |page, _window, cx| {
-                page.collapse.impls = !page.collapse.impls;
+                page.collapse.impls = page.collapse.impls.toggled();
                 cx.notify();
             },
             cx,
@@ -1291,7 +1777,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         } else {
             Some(self.refs_count_text.clone())
         };
-        let refs_expanded = self.collapse.refs;
+        let refs_expanded = self.collapse.refs.is_open();
         let refs_header = self.render_disclosure_header(
             "symbol.refs.header",
             SharedString::from("References"),
@@ -1299,14 +1785,14 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             self.refs_streaming,
             refs_expanded,
             |page, _window, cx| {
-                page.collapse.refs = !page.collapse.refs;
+                page.collapse.refs = page.collapse.refs.toggled();
                 cx.notify();
             },
             cx,
         );
 
         // Source disclosure header — stub until materialisation lands.
-        let source_expanded = self.collapse.source;
+        let source_expanded = self.collapse.source.is_open();
         let source_header = self.render_disclosure_header(
             "symbol.source.header",
             SharedString::from("Source"),
@@ -1314,7 +1800,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
             false,
             source_expanded,
             |page, _window, cx| {
-                page.collapse.source = !page.collapse.source;
+                page.collapse.source = page.collapse.source.toggled();
                 cx.notify();
             },
             cx,
@@ -1337,139 +1823,169 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
         let refs_body = self.render_refs_body(cx);
 
         let error_bar = self.render_error_bar(cx);
+        let copy_feedback = self.render_copy_feedback(cx);
+        // Keep repainting while the confirmation is up so it disappears on
+        // its own instead of waiting for the next unrelated notify (§4.2:
+        // request a frame only while something is actually still animating —
+        // here, "still within its visibility window").
+        if copy_feedback.is_some() {
+            window.request_animation_frame();
+        }
 
-        div()
-            .id("symbol.page")
-            .key_context("SymbolPage")
-            .v_flex()
-            .size_full()
-            .bg(colours.bg_base)
-            // Action handlers that previously navigated between inner tabs.
+        // The root's children, in column order. Built as a `Vec` rather than
+        // chained onto a root here, because the root is `page_root`'s job and
+        // this function is deliberately given no way to build one.
+        let mut children: Vec<AnyElement> = Vec::with_capacity(5);
+        children.push(header.into_any_element());
+        children.extend(copy_feedback);
+        // Version strip — sits between the header and the document body.
+        //
+        // Rendered outside `symbol.body` so that it does not participate in
+        // the `overflow_hidden` column and does not perturb the `flex_1` docs
+        // list (§9.4 zero-jump guarantee).  `None` until `DocEvent::Timeline`
+        // arrives; `Some` thereafter, even with a single-version corpus.
+        children.extend(self.render_versions_strip(cx));
+        // The main scrollable column.
+        //
+        // LD-15: a superseded generation dims to 70 %; it is never replaced
+        // by a skeleton while it is still readable. The dimming wraps the
+        // whole document column, so the disclosure headers also dim while
+        // stale — a consistent, honest signal.
+        // The document column, in reading order: prose, then the sections that
+        // describe the thing the prose is about.
+        //
+        // # F2 — why the sections are *inside* the column with the prose
+        //
+        // They used to be siblings of the whole `[prose | outline]` row, below
+        // it, while the prose row held `flex_1`. So the prose row was always a
+        // full viewport tall, the sections were always pinned to the window's
+        // bottom edge, and on a four-paragraph symbol the two were separated by
+        // ~600 px of nothing. Moving them into the column and letting the prose
+        // list size itself to its content (`ListSizingBehavior::Infer`, see
+        // `render_docs_body`) is what makes the page read continuously.
+        //
+        // The outline rail stays a sibling of the *column*, so it still spans
+        // the full height and can list the sections as well as the document.
+        let mut column = div()
+            .id("symbol.docs.column")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            // Not a scroll container.
             //
-            // These stubs keep the keyboard bindings inert rather than noisy.
-            // `GoToDocsTab` scrolls the docs body to the top, which is the closest
-            // meaningful equivalent now that there are no tabs. The others are no-ops
-            // until the binding declarations in `src/app/actions.rs` are cleaned up.
-            //
-            // TODO: remove GoToDocsTab / GoToRefsTab / GoToSourceTab /
-            //       GoToTimelineTab / NextInnerTab / PrevInnerTab bindings from
-            //       whichever keymap file wires them up, and then remove these
-            //       handlers too.
-            .on_action(cx.listener(|page, _: &NextInnerTab, _window, cx| {
-                // No inner tabs to cycle through. Scroll to top of docs instead.
-                page.docs.reveal(0);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &PrevInnerTab, _window, cx| {
-                page.docs.reveal(0);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &GoToDocsTab, _window, cx| {
-                // Scroll the docs list back to the top.
-                page.docs.reveal(0);
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &GoToSourceTab, _window, cx| {
-                // Expand source and notify — closest meaningful equivalent.
-                page.collapse.source = true;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &GoToRefsTab, _window, cx| {
-                // Expand refs — the reader is asking to see them.
-                page.collapse.refs = true;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &GoToTimelineTab, _window, cx| {
-                // The version strip is already visible below the header when
-                // timeline data has arrived; there is nothing to scroll to here.
-                let _ = page;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &OpenVersionPicker, _window, cx| {
-                page.picker_open = !page.picker_open;
-                cx.notify();
-            }))
-            .on_action(cx.listener(|page, _: &CopySymbolUri, _window, cx| {
-                let uri = page.header.uri.to_string();
-                cx.write_to_clipboard(ClipboardItem::new_string(uri));
-            }))
-            .child(header)
-            // Version strip — sits between the header and the document body.
-            //
-            // Rendered outside `symbol.body` so that it does not participate in
-            // the `overflow_hidden` column and does not perturb the `flex_1` docs
-            // list (§9.4 zero-jump guarantee).  `None` until `DocEvent::Timeline`
-            // arrives; `Some` thereafter, even with a single-version corpus.
-            .children(self.render_versions_strip(cx))
-            // The main scrollable column.
-            //
-            // LD-15: a superseded generation dims to 70 %; it is never replaced
-            // by a skeleton while it is still readable. The dimming wraps the
-            // whole document column, so the disclosure headers also dim while
-            // stale — a consistent, honest signal.
-            .child(
+            // The documentation is a virtualized `list()` that scrolls itself,
+            // and each disclosure body scrolls itself. Wrapping them in an
+            // *outer* scroller gave their heights no definite basis to resolve
+            // against, so the docs list collapsed to nothing and the first
+            // disclosure header painted over the one visible line of prose.
+            .overflow_hidden()
+            // 1. Documentation — always present, and now only as tall as it is.
+            .child(docs_body);
+
+        // 2. Implementations — opens itself while small (`IMPLS_AUTO_EXPAND_MAX`).
+        //
+        // `flex_shrink_0` on the headers: a header is one line of chrome and
+        // must not be squeezed to nothing when a long document competes for the
+        // column. The *bodies* are shrinkable, and the prose list is
+        // shrinkable, so those are what give.
+        column = column.child(div().flex_shrink_0().child(impls_header));
+        if impls_expanded {
+            column = column.child(
                 div()
-                    .id("symbol.body")
-                    .v_flex()
-                    .flex_1()
-                    // Not a scroll container.
-                    //
-                    // The documentation is a virtualized `list()` that scrolls
-                    // itself, and each disclosure body scrolls itself. Wrapping
-                    // them in an *outer* scroller gave their `flex_1` no
-                    // definite height to resolve against, so the docs list
-                    // collapsed to nothing and the first disclosure header
-                    // painted over the one visible line of prose.
-                    .overflow_hidden()
-                    .when(stale, |el| el.opacity(0.7))
-                    // 1. Documentation — always expanded, takes the slack.
-                    //
-                    // `min_h(0)` is what lets it *shrink* when a section below
-                    // expands; without it a flex item refuses to go below its
-                    // content height and pushes the sections off-screen.
-                    .child(div().flex().flex_col().flex_1().min_h(gpui::px(0.0)).child(docs_section))
-                    // 2. Implementations — collapsed by default.
-                    .child(impls_header)
-                    .when(impls_expanded, |el| {
-                        el.child(
-                            div()
-                                .id("symbol.impls.body")
-                                .w_full()
-                                .max_h(max_section_h)
-                                .overflow_y_scroll()
-                                .child(impls_body),
-                        )
-                    })
-                    // 3. References — collapsed by default.
-                    .child(refs_header)
-                    .when(refs_expanded, |el| {
-                        el.child(
-                            div()
-                                .id("symbol.refs.body")
-                                .w_full()
-                                .max_h(max_section_h)
-                                .overflow_y_scroll()
-                                .child(refs_body),
-                        )
-                    })
-                    // 4. Source — collapsed by default.
-                    //
-                    // `render_source_body` shows the path + byte range when the
-                    // head carried a location; the empty state otherwise. No
-                    // outer padding here — `render_source_body` owns its own
-                    // padding so that both branches look the same.
-                    .child(source_header)
-                    .when(source_expanded, |el| {
-                        el.child(
-                            div()
-                                .id("symbol.source.body")
-                                .w_full()
-                                .child(source_body),
-                        )
-                    }),
-            )
-            .children(error_bar)
-            .into_any_element()
+                    .id("symbol.impls.body")
+                    .w_full()
+                    .max_h(max_section_h)
+                    .overflow_y_scroll()
+                    .child(impls_body),
+            );
+        }
+        // 3. References.
+        column = column.child(div().flex_shrink_0().child(refs_header));
+        if refs_expanded {
+            column = column.child(
+                div()
+                    .id("symbol.refs.body")
+                    .w_full()
+                    .max_h(max_section_h)
+                    .overflow_y_scroll()
+                    .child(refs_body),
+            );
+        }
+        // 4. Source.
+        //
+        // `render_source_body` shows the path + byte range when the head
+        // carried a location; the empty state otherwise. No outer padding here
+        // — `render_source_body` owns its own padding so that both branches
+        // look the same.
+        column = column.child(div().flex_shrink_0().child(source_header));
+        if source_expanded {
+            column = column.child(
+                div()
+                    .id("symbol.source.body")
+                    .w_full()
+                    .flex_shrink_0()
+                    .child(source_body),
+            );
+        }
+
+        // The page's end.
+        //
+        // On a short document the column's children stop well above the
+        // window's bottom edge and the remainder paints as bare `bg_base` —
+        // the "dead space below Source" the craft pass called out. The space
+        // itself is not the defect (docs.rs ends short pages the same way);
+        // the defect is that nothing said the document had *ended*, so the
+        // stack of bordered strips read as floating in an unfinished layout
+        // rather than as a document that finished.
+        //
+        // This closes it: the remaining slack becomes an explicit, claimed
+        // element carrying the recessed page surface, so the section stack
+        // terminates against a visible edge instead of dissolving. It is
+        // `flex_1` and shrinkable, so on a long document it collapses to
+        // nothing and costs no layout — the terminus only appears when there
+        // is genuinely slack to close.
+        column = column.child(
+            div()
+                .id("symbol.page_end")
+                .w_full()
+                .flex_1()
+                .min_h(gpui::px(0.0))
+                .bg(colours.bg_raised),
+        );
+
+        // LD-15: a superseded generation dims to 70 %; it is never replaced
+        // by a skeleton while it is still readable. The dimming wraps the
+        // whole document area, so the disclosure headers and the outline dim
+        // with it — a consistent, honest signal.
+        children.push(
+            div()
+                .id("symbol.body")
+                .flex()
+                .flex_row()
+                .flex_1()
+                // `min_h(0)` is what lets the row shrink below its content
+                // height; without it a flex item refuses to and the row would
+                // push the error bar off the bottom of the page.
+                .min_h(gpui::px(0.0))
+                .overflow_hidden()
+                .when(stale, |el| el.opacity(0.7))
+                .child(column)
+                .when(has_outline, |el| el.child(outline))
+                .into_any_element(),
+        );
+        children.extend(error_bar);
+        children
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Focusable (L16 — required by the `WorkspaceItem: Focusable` supertrait)
+// ─────────────────────────────────────────────────────────────────────────────
+
+impl<E: SymbolEngine> Focusable for SymbolPage<E> {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
     }
 }
 
@@ -1560,9 +2076,9 @@ mod tests {
     fn default_collapse_state_docs_open_rest_closed() {
         let cs = CollapseState::default_open();
         assert!(cs.docs, "documentation must start expanded");
-        assert!(!cs.impls, "implementations must start collapsed");
-        assert!(!cs.refs, "references must start collapsed");
-        assert!(!cs.source, "source must start collapsed");
+        assert!(!cs.impls.is_open(), "implementations must start collapsed");
+        assert!(!cs.refs.is_open(), "references must start collapsed");
+        assert!(!cs.source.is_open(), "source must start collapsed");
     }
 
     /// Toggling the impls field flips exactly that field and touches nothing
@@ -1571,43 +2087,74 @@ mod tests {
     #[test]
     fn toggling_impls_only_changes_impls() {
         let mut cs = CollapseState::default_open();
-        cs.impls = !cs.impls;
-        assert!(cs.impls);
+        cs.impls = cs.impls.toggled();
+        assert!(cs.impls.is_open());
         assert!(cs.docs, "docs unchanged");
-        assert!(!cs.refs, "refs unchanged");
-        assert!(!cs.source, "source unchanged");
+        assert!(!cs.refs.is_open(), "refs unchanged");
+        assert!(!cs.source.is_open(), "source unchanged");
     }
 
     /// Toggling refs only changes refs.
     #[test]
     fn toggling_refs_only_changes_refs() {
         let mut cs = CollapseState::default_open();
-        cs.refs = !cs.refs;
-        assert!(cs.refs);
+        cs.refs = cs.refs.toggled();
+        assert!(cs.refs.is_open());
         assert!(cs.docs, "docs unchanged");
-        assert!(!cs.impls, "impls unchanged");
-        assert!(!cs.source, "source unchanged");
+        assert!(!cs.impls.is_open(), "impls unchanged");
+        assert!(!cs.source.is_open(), "source unchanged");
     }
 
     /// Toggling source only changes source.
     #[test]
     fn toggling_source_only_changes_source() {
         let mut cs = CollapseState::default_open();
-        cs.source = !cs.source;
-        assert!(cs.source);
+        cs.source = cs.source.toggled();
+        assert!(cs.source.is_open());
         assert!(cs.docs, "docs unchanged");
-        assert!(!cs.impls, "impls unchanged");
-        assert!(!cs.refs, "refs unchanged");
+        assert!(!cs.impls.is_open(), "impls unchanged");
+        assert!(!cs.refs.is_open(), "refs unchanged");
     }
 
     /// Round-tripping a toggle: collapsed → expanded → collapsed.
     #[test]
     fn collapse_toggle_round_trips() {
         let mut cs = CollapseState::default_open();
-        cs.impls = !cs.impls; // open
-        assert!(cs.impls);
-        cs.impls = !cs.impls; // close again
-        assert!(!cs.impls);
+        cs.impls = cs.impls.toggled(); // open
+        assert!(cs.impls.is_open());
+        cs.impls = cs.impls.toggled(); // close again
+        assert!(!cs.impls.is_open());
+    }
+
+    // ── Disclosure: the page suggests, the reader decides ─────────────────────
+
+    /// While nobody has touched a section, the page may open or close it as the
+    /// stream reveals how big it is.
+    #[test]
+    fn auto_disclosure_follows_the_pages_suggestion() {
+        let d = Disclosure::Auto(false);
+        assert!(d.suggest(true).is_open());
+        assert!(!d.suggest(true).suggest(false).is_open());
+    }
+
+    /// Once the reader has decided, no arriving page may undo it. This is the
+    /// whole reason `Disclosure` is not a `bool`: impl counts arrive
+    /// asynchronously, so the auto-open rule is re-evaluated on every page, and
+    /// a section the reader just closed would spring back open.
+    #[test]
+    fn a_readers_choice_survives_later_suggestions() {
+        let closed_by_reader = Disclosure::Auto(true).toggled();
+        assert_eq!(closed_by_reader, Disclosure::Chosen(false));
+        assert!(
+            !closed_by_reader.suggest(true).is_open(),
+            "a suggestion must never reopen a section the reader closed"
+        );
+
+        let opened_by_reader = Disclosure::Auto(false).opened();
+        assert!(
+            opened_by_reader.suggest(false).is_open(),
+            "a suggestion must never close a section the reader opened"
+        );
     }
 
     // ── PageState ──────────────────────────────────────────────────────────────
@@ -1771,8 +2318,8 @@ mod tests {
         // is therefore no height to reason about here — the absence of the child
         // is the height guarantee. This test asserts the intent.
         let cs = CollapseState::default_open();
-        assert!(!cs.impls, "impls is collapsed by default → zero height contribution");
-        assert!(!cs.refs, "refs is collapsed by default → zero height contribution");
-        assert!(!cs.source, "source is collapsed by default → zero height contribution");
+        assert!(!cs.impls.is_open(), "impls is collapsed by default → zero height contribution");
+        assert!(!cs.refs.is_open(), "refs is collapsed by default → zero height contribution");
+        assert!(!cs.source.is_open(), "source is collapsed by default → zero height contribution");
     }
 }

@@ -175,11 +175,34 @@ fn sample_head() -> Box<SymbolHead> {
         deprecation: Some(nudox_engine::wire::SharedStr::from(
             "use `from_str` instead",
         )),
+        // Populated rather than `None` on purpose: this fixture exists to prove
+        // the schema carries everything an MCP client needs, and a field that is
+        // always `None` in the only sample is a field whose serialisation nobody
+        // has ever actually checked.
+        cfg: Some(nudox_engine::wire::SharedStr::from(
+            "cfg(feature = \"std\")",
+        )),
         section_plan: vec![SectionPlan {
             id: SectionId(1),
             kind: SectionKind::Prose,
             size_hint: SizeHint::Lines(12),
         }],
+        // Source location: populated with the `Declared` variant on purpose.
+        // It is the only one an MCP client can turn into a jump, so a fixture
+        // that used `Unlocated` would leave the fields that actually matter —
+        // the line/column pair — unexercised by the round-trip below.
+        source: nudox_engine::wire::SourceLocation::Declared {
+            file: nudox_engine::wire::SharedStr::from("src/de/mod.rs"),
+            bytes: [120, 480],
+            start: nudox_engine::wire::LineCol {
+                line: std::num::NonZeroU32::new(7).expect("nonzero"),
+                column: std::num::NonZeroU32::new(1).expect("nonzero"),
+            },
+            end: nudox_engine::wire::LineCol {
+                line: std::num::NonZeroU32::new(19).expect("nonzero"),
+                column: std::num::NonZeroU32::new(2).expect("nonzero"),
+            },
+        },
     })
 }
 
@@ -284,6 +307,30 @@ fn symbol_doc_serialises() {
     assert!(
         json.contains("\"kind\":\"unknown\""),
         "unknown section must be tagged: {json}"
+    );
+
+    // The source location must reach the wire *as a jump target*, not merely as
+    // present. An MCP client cannot open `bytes 120–480`; it can open
+    // `src/de/mod.rs:7:1`. So this asserts the discriminant, the path, and the
+    // line/column pair — the three things without which "source jumping" is
+    // still just a rendered string.
+    assert!(
+        json.contains("\"source\":{\"kind\":\"declared\""),
+        "head.source must serialise its variant so a client can tell a jump \
+         target from a byte range: {json}"
+    );
+    assert!(
+        json.contains("\"file\":\"src/de/mod.rs\""),
+        "head.source must carry the package-relative path: {json}"
+    );
+    assert!(
+        json.contains("\"start\":{\"line\":7,\"column\":1}"),
+        "head.source must carry 1-based line/column, which is what an editor \
+         opens: {json}"
+    );
+    assert!(
+        json.contains("\"bytes\":[120,480]"),
+        "head.source must still carry the byte range for in-file slicing: {json}"
     );
 }
 

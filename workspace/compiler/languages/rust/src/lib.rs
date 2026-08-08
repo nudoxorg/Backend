@@ -240,12 +240,20 @@ pub fn produce_with_occurrences(
     let oracle = producer.invoke(src)?;
 
     let pkg_id = PackageId::path(src.root());
+    // The implicit root module wraps the whole package; it is a construct of
+    // this lowering, not a declaration in any file. `src.root` used to be
+    // written into `source` here with a `0..0` span — a directory path in a
+    // field that means "the file this was declared in", which is a category
+    // error dressed as data.
+    let (root_source, root_span) =
+        nudox_ir::entry::SourceLocation::Unlocated(nudox_ir::entry::Unlocated::Synthesized)
+            .legacy_pair();
     let root_sym = nudox_ir::entry::Symbol {
         name: src.name.as_str().to_owned(),
         visibility: nudox_ir::entry::Visibility::Public,
         documentation: String::new(),
-        source: src.root.clone(),
-        span: 0..0,
+        source: root_source,
+        span: root_span,
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),

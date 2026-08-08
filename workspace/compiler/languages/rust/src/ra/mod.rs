@@ -119,7 +119,14 @@ fn lower_workspace_inner(
     // to `Cancelled` and returns `RustProducerError::Cancelled` for it alone.
     // So the correct thing to do here is nothing at all.
     attach_db(&oracle.db, || {
-        lower_all_packages_into(&oracle.db, &package_names, oracle.document_private, out)
+        lower_all_packages_into(
+            &oracle.db,
+            &package_names,
+            oracle.document_private,
+            &oracle.vfs,
+            oracle.root.as_ref(),
+            out,
+        )
     })
 }
 
@@ -214,6 +221,8 @@ fn lower_all_packages_into(
     db: &ra_ap_ide_db::RootDatabase,
     package_names: &[String],
     document_private: bool,
+    vfs: &ra_ap_vfs::Vfs,
+    root: &ra_ap_paths::AbsPath,
     out: &mut Lowering<RaId>,
 ) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
     let crates = find_local_crates(db, package_names);
@@ -242,7 +251,12 @@ fn lower_all_packages_into(
         // occurrence_buf.  The workaround: store the ctx alongside the walk
         // result by returning both from the closure.
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut ctx = LowerCtx::new(db, krate, document_private);
+            let mut ctx = LowerCtx::new(
+                db,
+                krate,
+                document_private,
+                self::source::FileMap::new(vfs, root),
+            );
             ctx.collect_aliases();
             let walk_result = walk::lower_crate(&mut ctx, out);
             // Drain occurrence_buf before ctx is dropped.

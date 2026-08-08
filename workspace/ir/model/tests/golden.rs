@@ -379,7 +379,12 @@ f5d2bd6554182544e5ffb01f7f5300fe212c66b7c79b01339d45e74e5ca48780";
 /// postcard because postcard is not a workspace dependency. A digest is used
 /// rather than embedding kilobytes of JSON, which would make diffs unreadable.
 /// Protects: the on-wire encoding of every entry kind and every field value.
-const GOLDEN_ENTRIES_B3: &str = "ec166c07aba18016a059836e7056fff24617e92db8b8b4f1ba527e2e07e10663";
+// Regenerated 2026-08-08 with `change::FORMAT_VERSION` 1 → 2: `Entry` gained
+// `location: SourceLocation` (LIMITATIONS.md L31/L42), which is part of the
+// serde representation this digest pins. `GOLDEN_ALL_INTROS` and the impl/draw
+// digests are unchanged, which is the check that matters: identity did not
+// move, only the encoding grew a field.
+const GOLDEN_ENTRIES_B3: &str = "181e071a68d4cd52cba9a6199f6f1bba51acb011fc0072a9e50760ad167711f7";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run

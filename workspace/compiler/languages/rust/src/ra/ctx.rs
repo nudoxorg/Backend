@@ -102,6 +102,16 @@ pub(crate) struct LowerCtx<'db> {
     pub(crate) display: DisplayTarget,
     pub(crate) document_private: bool,
 
+    /// Resolves rust-analyzer `FileId`s to package-relative paths and line
+    /// indices.
+    ///
+    /// Held on the context because every item lowering needs it and the
+    /// alternative — threading `&Vfs` through a dozen `lower_*` signatures —
+    /// is what produced the `<file-id-N>` placeholder this field deletes
+    /// (`LIMITATIONS.md` L42.2). Owning it also gives the line-index cache the
+    /// same lifetime as the crate walk that fills it.
+    pub(crate) files: super::source::FileMap<'db>,
+
     /// Root module of some crate *other* than [`Self::krate`], used as a
     /// visibility anchor meaning "outside this crate".
     ///
@@ -245,7 +255,12 @@ fn lang_crate_name(lang: LangCrateOrigin) -> &'static str {
 }
 
 impl<'db> LowerCtx<'db> {
-    pub(crate) fn new(db: &'db RootDatabase, krate: Crate, document_private: bool) -> Self {
+    pub(crate) fn new(
+        db: &'db RootDatabase,
+        krate: Crate,
+        document_private: bool,
+        files: super::source::FileMap<'db>,
+    ) -> Self {
         let display = krate.to_display_target(db);
         // Prefer a direct dependency (always present in a sysroot-backed load —
         // `core` at minimum); fall back to any other crate in the graph.
@@ -271,6 +286,7 @@ impl<'db> LowerCtx<'db> {
             krate,
             display,
             document_private,
+            files,
             foreign_anchor,
             path_cache: FxHashMap::default(),
             alias_cache: FxHashMap::default(),
@@ -533,12 +549,19 @@ pub(crate) struct SymbolParts {
 }
 
 impl SymbolParts {
-    /// Assemble into a `nudox_ir::entry::Symbol` given `source` and `span`.
+    /// Assemble into a `nudox_ir::entry::Symbol` at `location`.
+    ///
+    /// Takes the typed location rather than a `(PathBuf, Range)` pair so that
+    /// the legacy `Symbol::source` / `Symbol::span` fields can only ever be
+    /// this producer's *projection* of a location it actually computed. There
+    /// is no way to reach them with a hand-written `PathBuf::new(), 0..0`
+    /// through this constructor, which is how all eight of this crate's
+    /// `span: 0..0` sites were removed rather than relocated.
     pub(crate) fn into_symbol(
         self,
-        source: std::path::PathBuf,
-        span: std::ops::Range<usize>,
+        location: &nudox_ir::entry::SourceLocation,
     ) -> nudox_ir::entry::Symbol {
+        let (source, span) = location.legacy_pair();
         nudox_ir::entry::Symbol {
             name: self.name,
             visibility: self.visibility,
