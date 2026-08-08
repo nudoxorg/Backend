@@ -6,7 +6,12 @@
 //! and transaction scoping. Dolt version-control operations live on the
 //! [`crate::DoltConnectionExtension`] trait implemented for this type.
 
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
+// Only the linked build reaches the C API; without an engine the helpers below
+// are compiled out along with it, so their imports go too.
+#[cfg(doltlite_engine_linked)]
+use core::ffi::c_char;
+#[cfg(doltlite_engine_linked)]
 use core::ptr;
 
 use crate::error::EngineError;
@@ -51,8 +56,45 @@ impl Connection {
         Self::open_with_flags(":memory:", flags)
     }
 
-    /// Shared open path: translate the filename to a C string and call open_v2.
+    /// The **only** constructor of a live engine handle.
+    ///
+    /// Everything else in this crate takes a `sqlite3 *` that came from here, so
+    /// the two guards below are the crate's complete admission control:
+    ///
+    /// 1. **Build-time.** Without the `doltlite_engine_linked` cfg — which
+    ///    `build.rs` emits only after compiling and archiving a real
+    ///    amalgamation — this returns
+    ///    [`EngineError::EngineNotLinked`] and never reaches the C API.
+    /// 2. **Runtime.** With the engine linked, the handle still has to *prove* it
+    ///    is DoltLite by answering `dolt_version()` before it is handed out
+    ///    ([`verify_engine_is_doltlite`](Connection::verify_engine_is_doltlite)).
+    ///
+    /// The second guard is not redundant. The first trusts the build; the second
+    /// interrogates the library that actually answered, and so survives link
+    /// order, a substituted archive, or an interposed symbol.
     fn open_with_flags(path: &str, flags: c_int) -> Result<Self, EngineError> {
+        Self::open_engine_handle(path, flags)
+    }
+
+    /// No amalgamation was compiled into this build, so there is nothing to open.
+    ///
+    /// This is deliberately a refusal rather than a fallback. Opening would
+    /// succeed — the process almost certainly contains a stock SQLite, since
+    /// `index` links `rusqlite` with feature `bundled` — and would produce a
+    /// catalog that reads and writes correctly while silently keeping no history
+    /// at all.
+    #[cfg(not(doltlite_engine_linked))]
+    fn open_engine_handle(path: &str, _flags: c_int) -> Result<Self, EngineError> {
+        Err(EngineError::EngineNotLinked {
+            path: path.to_owned(),
+            expected_amalgamation: env!("RUSQDOLTLITE_AMALGAMATION_PATH"),
+        })
+    }
+
+    /// Translate the filename to a C string, call `doltlite_open_v2`, and admit
+    /// the handle only once it has demonstrated DoltLite capabilities.
+    #[cfg(doltlite_engine_linked)]
+    fn open_engine_handle(path: &str, flags: c_int) -> Result<Self, EngineError> {
         let filename = c_string(path, "Connection::open path")?;
         let mut database: *mut sys::sqlite3 = ptr::null_mut();
         // SAFETY: `filename` is a valid NUL-terminated C string for the duration of
@@ -78,7 +120,58 @@ impl Connection {
                 message,
             });
         }
-        Ok(Self { database })
+        // Constructed before the probe so a rejected handle is closed by `Drop`
+        // rather than leaked on the error path.
+        let connection = Self { database };
+        connection.verify_engine_is_doltlite(path)?;
+        Ok(connection)
+    }
+
+    /// Require the freshly opened library to answer a DoltLite-only function.
+    ///
+    /// `dolt_version()` is registered by the prolly engine and by nothing in
+    /// stock SQLite, so a successful non-empty answer is *positive* evidence of
+    /// the right engine — as opposed to a build flag, which is only evidence
+    /// about the build. Stock SQLite answers `no such function: dolt_version`,
+    /// which becomes [`EngineError::NotDoltLite`] here, at open time, instead of
+    /// surfacing at the first `dolt_commit` an arbitrary distance downstream.
+    #[cfg(doltlite_engine_linked)]
+    fn verify_engine_is_doltlite(&self, path: &str) -> Result<(), EngineError> {
+        let reject = |detail: String| EngineError::NotDoltLite {
+            path: path.to_owned(),
+            library_version: self.library_version(),
+            detail,
+        };
+        match self.query_single_text("SELECT dolt_version()", &[]) {
+            Ok(Some(version)) if !version.is_empty() => Ok(()),
+            Ok(Some(_)) => Err(reject(
+                "`SELECT dolt_version()` returned an empty string".to_owned(),
+            )),
+            Ok(None) => Err(reject(
+                "`SELECT dolt_version()` returned NULL or no row".to_owned(),
+            )),
+            Err(error) => Err(reject(format!("`SELECT dolt_version()` failed: {error}"))),
+        }
+    }
+
+    /// The version string of the library actually answering this connection.
+    ///
+    /// Reported alongside a failed capability probe so the error identifies the
+    /// impostor (`3.46.0` is stock SQLite as bundled by `rusqlite`; DoltLite
+    /// 0.11.x reports `3.54.0`).
+    #[cfg(doltlite_engine_linked)]
+    fn library_version(&self) -> String {
+        // SAFETY: `sqlite3_libversion` takes no arguments and returns a pointer to
+        // a static, NUL-terminated string owned by the library.
+        unsafe {
+            let pointer = sys::sqlite3_libversion();
+            if pointer.is_null() {
+                return String::from("(unreported)");
+            }
+            core::ffi::CStr::from_ptr(pointer)
+                .to_string_lossy()
+                .into_owned()
+        }
     }
 
     /// Execute a non-query statement, returning the number of rows changed.
@@ -139,11 +232,16 @@ impl Drop for Connection {
 }
 
 /// Build a NUL-terminated C string, rejecting interior NUL bytes.
+///
+/// Reachable only when an engine is linked: otherwise `open_engine_handle`
+/// refuses before any string crosses the FFI boundary.
+#[cfg(doltlite_engine_linked)]
 fn c_string(value: &str, context: &'static str) -> Result<std::ffi::CString, EngineError> {
     std::ffi::CString::new(value).map_err(|_| EngineError::NulInterior { context })
 }
 
 /// The static English text for a SQLite primary result code.
+#[cfg(doltlite_engine_linked)]
 fn engine_result_text(result_code: c_int) -> String {
     // SAFETY: `sqlite3_errstr` accepts any integer and returns a static string.
     unsafe {
@@ -161,6 +259,7 @@ fn engine_result_text(result_code: c_int) -> String {
 ///
 /// # Safety
 /// `database` must be a live connection handle.
+#[cfg(doltlite_engine_linked)]
 unsafe fn last_error_message(database: *mut sys::sqlite3) -> String {
     // SAFETY: `database` is live per the contract; the returned pointer is owned by
     // the connection and valid until the next API call.

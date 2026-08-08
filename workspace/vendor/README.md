@@ -6,8 +6,8 @@ This directory contains vendored dependencies that require special handling due 
 |---------|-------------------|-------------|----------------------|----------------------|
 | `libpijul` | Yes | N/A (fork diff in `libpijul-fork.patch`) | Depth-1 structured record (DEPTH1 plan §2); all `libpijul` requirements resolve to this fork | Normal build |
 | `qdrant-edge` | **Yes** (restored 2026-08-07) | `curl -sSLO https://static.crates.io/crates/qdrant-edge/qdrant-edge-0.7.2.crate` — the published crate carries `cpp/`, `src/segment/spaces/metric_f16/cpp/` and `tokenizer/bccwj-suw_c1.0.model` verbatim | Was L7: the SIMD kernels are the *only* definitions of six symbols the Rust FFI declares, so their absence broke the final link of `driver` and 3 of its integration tests. Cargo patch resolves `qdrant-edge 0.7.2` to this vendored fork. | **Hard error** naming the missing file (see below) |
-| `doltlite` | No | Generate `doltlite.c` from upstream DoltLite source (~20 MB amalgamation) — see `doltlite/VENDORING.md` | ⚠️ **Does not break the build — it corrupts it silently.** See "The doltlite trap" below. | (No build script; linked via rusqdoltlite) |
-| `rusqdoltlite` | Yes | N/A (Rust wrapper only; needs doltlite.c via sibling doltlite/) | DoltLite C bindings for catalog storage backend (behind `index::dolt-engine` feature) | Warns and skips C compilation if `doltlite.c` missing — **the link still succeeds**, wrongly |
+| `doltlite` | No (`.gitignore`d, 12 MB generated C) | `nu workspace/vendor/doltlite/fetch.nu` — pinned + hash-verified against `doltlite/manifest.toml` | `index`'s versioned catalog has no engine. Since 2026-08-07 that is a **typed refusal at open**, not a silent substitution — see "The doltlite trap" below. | (No build script; compiled by rusqdoltlite) |
+| `rusqdoltlite` | Yes | N/A (Rust wrapper only; needs doltlite.c via sibling doltlite/) | DoltLite C bindings for catalog storage backend (behind `index::dolt-engine` feature) | Emits `cfg(doltlite_engine_linked)` only on a real compile; without it `Connection::open` returns `EngineError::EngineNotLinked` |
 
 ## Workspace Exclusion
 
@@ -53,25 +53,48 @@ When source files are missing:
   A build script that can prove its output will not link should say so, at the
   point it knows, in the vocabulary of the thing that is missing.
 
-### The doltlite trap (read before trusting `index`'s `dolt-engine`)
+### The doltlite trap (fixed 2026-08-07 — kept because the shape recurs)
 
-`doltlite.c` is **still absent**, and unlike qdrant-edge its absence does *not*
-produce a link error. `rusqdoltlite/sys.rs` declares the ordinary SQLite C API
-(`sqlite3_open_v2`, `sqlite3_prepare_v2`, …) — because DoltLite is SQLite,
-renamed — and declares it with no `#[link(name = …)]`. `index` separately
-hard-depends on `rusqlite` with feature `bundled`, which statically links a
-complete stock SQLite into the same binary.
+**What it was.** `doltlite.c` was absent, and unlike qdrant-edge its absence did
+*not* produce a link error. `rusqdoltlite/sys.rs` declared the ordinary SQLite C
+API (`sqlite3_open_v2`, `sqlite3_prepare_v2`, …) — because DoltLite is SQLite,
+renamed — with no `#[link(name = …)]`. `index` separately hard-depends on
+`rusqlite` with feature `bundled`, which statically links a complete stock SQLite
+into the same binary.
 
-So the externs resolve. The build is green. `index`'s `dolt-engine` feature runs
+So the externs resolved. The build was green. `index`'s `dolt-engine` feature ran
 **plain SQLite**: no prolly-tree pager, no content addressing, no `dolt_*`
-functions, no versioning. The only symptom is `dolt_commit` and friends failing
-at runtime as "no such function", nowhere near the cause.
+functions, no versioning. The only symptom was `dolt_commit` and friends failing
+at runtime as "no such function", nowhere near the cause. Confirmed in situ by
+`cargo test -p index --features dolt-engine`, which failed with
+`Versioning { operation: "dolt_branch", detail: "no such function: dolt_branch" }`.
 
-The fix is a typed guard, not a louder warning: `build.rs` should emit a cfg when
-the amalgamation is absent, and `Connection::open` should refuse to open rather
-than hand back a handle to the wrong engine. That changes `index`'s test surface,
-which is owned by another workstream, so it is recorded here and in
-`rusqdoltlite/build.rs` rather than done here.
+**Why it is now unconstructible, not merely detected.** Three layers, in
+increasing order of how much they can be trusted:
+
+1. `build.rs` emits `cfg(doltlite_engine_linked)` only after it has compiled the
+   amalgamation *and* read the resulting archive back with `nm` to confirm the
+   export set. Without the cfg, `sys.rs` declares no C externs at all and
+   `Connection::open` returns `EngineError::EngineNotLinked`, naming the absent
+   file. Nothing in the crate can produce a handle.
+2. The API entry points are compiled under a `doltlite_` prefix
+   (`-Dsqlite3_x=doltlite_x`) and every other global is localized by a partial
+   link, so the archive exports exactly the 25 symbols `sys.rs` declares.
+   `doltlite_open_v2` has one definition in the world; there is no stock SQLite
+   for it to fall through to. This is also what keeps DoltLite and `rusqlite`'s
+   bundled SQLite — which collide on **280 of 280** symbol names — in the same
+   binary at all.
+3. Every `Connection::open` runs `SELECT dolt_version()` and refuses with
+   `EngineError::NotDoltLite` if it fails. A build flag is evidence about the
+   build; this is evidence about the library that actually answered, so it
+   survives link order, a swapped archive, or an interposed symbol.
+
+**The general lesson.** A missing vendored source is only dangerous when
+something *else* in the binary can satisfy the same names. The qdrant-edge case
+was loud because its six NEON kernels are unique; this one was silent because
+`sqlite3_open_v2` is not. When vendoring a fork of a widely-linked library, give
+its symbols a namespace of their own — otherwise "is it linked?" and "is it the
+right one?" are not the same question, and only the first one gets asked.
 
 ### Divergence from upstream
 

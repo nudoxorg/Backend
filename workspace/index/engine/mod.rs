@@ -165,6 +165,25 @@ pub enum EngineError {
     /// that requires real history).
     #[error("unsupported engine operation: {0}")]
     Unsupported(String),
+    /// The build has no versioned catalog engine, so no catalog was opened.
+    ///
+    /// Distinct from [`Open`](EngineError::Open), which means a real DoltLite
+    /// engine could not open a particular file. This means there is no DoltLite
+    /// engine *at all* — the vendored amalgamation was absent at build time, or
+    /// the library that answered failed the `dolt_version()` capability probe.
+    ///
+    /// It is separate because the fix is categorically different: nothing a
+    /// running process can do resolves it. The vendored engine has to be
+    /// restored (`workspace/vendor/doltlite/fetch.nu`) and the binary rebuilt.
+    /// Folding it into `Open` is how this failure previously reached callers as
+    /// a generic "no such function: dolt_branch" at first use, an arbitrary
+    /// distance from the missing file that caused it.
+    #[error("no versioned catalog engine in this build: {detail}")]
+    WrongEngine {
+        /// The rejection as reported by the binding, naming the absent
+        /// amalgamation or the version the impostor library reported.
+        detail: String,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

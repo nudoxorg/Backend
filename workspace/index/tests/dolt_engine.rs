@@ -160,3 +160,69 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     let future = writer.at(&AsOf::Time(UnixMilliseconds(32_503_680_000_000)));
     assert!(future.is_ok(), "future time resolves to newest commit");
 }
+
+/// The regression test for the defect this whole engine wiring exists to make
+/// impossible: `index` links **two** SQLite implementations into every binary
+/// that enables `dolt-engine` — DoltLite for the versioned catalog, and the stock
+/// SQLite that `rusqlite`'s `bundled` feature statically embeds for the ephemeral
+/// scratch store (INDEX-PLAN ID-2).
+///
+/// They used to be indistinguishable at link time. `rusqdoltlite` declared bare
+/// `sqlite3_*` externs with no `#[link]`, and their 291 exported names overlap
+/// stock SQLite's 280 exactly, so the linker satisfied both crates from whichever
+/// archive it happened to scan first. When the DoltLite amalgamation was absent
+/// entirely, the catalog silently *became* the scratch store's engine: plain SQL
+/// worked, history did not exist, and the only symptom was `dolt_commit` failing
+/// as "no such function" somewhere else entirely.
+///
+/// Asserting on content, not on `is_ok()`: the two connections must report
+/// **different** SQLite versions, and `dolt_version()` must exist on exactly one
+/// of them. A build where one engine had been substituted for the other passes
+/// neither check.
+#[test]
+fn catalog_and_scratch_store_are_two_distinct_engines_in_the_same_binary() {
+    // The scratch store's engine: stock SQLite via rusqlite/bundled.
+    let scratch = rusqlite::Connection::open_in_memory().expect("open rusqlite scratch store");
+    let scratch_sqlite_version: String = scratch
+        .query_row("SELECT sqlite_version()", [], |row| row.get(0))
+        .expect("stock SQLite answers sqlite_version()");
+    let scratch_dolt = scratch.query_row("SELECT dolt_version()", [], |row| row.get::<_, String>(0));
+    assert!(
+        scratch_dolt.is_err(),
+        "the scratch store must be plain SQLite; it answered dolt_version() with {scratch_dolt:?}, \
+         which means DoltLite's symbols captured rusqlite's calls"
+    );
+
+    // The catalog's engine: DoltLite, live in the same process.
+    let catalog = DoltEngine::open_in_memory().expect("open DoltLite catalog");
+    let catalog_dolt: Vec<String> = catalog
+        .query_rows("SELECT dolt_version()", &[], &mut |row| row.get_text(0))
+        .expect("DoltLite answers dolt_version()");
+    assert_eq!(catalog_dolt.len(), 1);
+    assert!(
+        !catalog_dolt[0].is_empty(),
+        "dolt_version() returned an empty string"
+    );
+
+    let catalog_sqlite_version: Vec<String> = catalog
+        .query_rows("SELECT sqlite_version()", &[], &mut |row| row.get_text(0))
+        .expect("DoltLite answers sqlite_version()");
+    assert_ne!(
+        catalog_sqlite_version[0], scratch_sqlite_version,
+        "both connections reported SQLite {scratch_sqlite_version}, so one engine is serving \
+         both crates — the substitution this wiring exists to prevent"
+    );
+
+    // And the catalog really keeps history, not just a distinct version string.
+    catalog
+        .execute("CREATE TABLE probe(id INTEGER PRIMARY KEY)", &[])
+        .expect("create table on catalog");
+    catalog.dolt_add_all().expect("stage working set");
+    let head = catalog.dolt_commit("probe").expect("real dolt_commit");
+    assert!(
+        head.0.len() == 40 && head.0.chars().all(|c| c.is_ascii_hexdigit()),
+        "dolt_commit returned {:?}; a real commit is a 40-character hex content hash, and a stub \
+         or a substituted engine cannot produce one",
+        head.0
+    );
+}

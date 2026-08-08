@@ -72,6 +72,28 @@
 # unpinned network fetch in a build script, or the stub coming back.
 !/workspace/vendor/**/tokenizer/*.model
 
+# DoltLite vendoring: the pin and the fetcher, NOT the amalgamation.
+#
+# `manifest.toml` pins upstream v0.11.41 (commit e2be0af1…) plus the archive
+# and per-file sha256s; `fetch.nu` fetches, verifies **before** extracting, and
+# installs — the same verify-or-abort discipline as `corpus/fetch.nu`, so no
+# build script ever performs an unpinned network fetch. Without these two in
+# the tree the pin is unreproducible and `build.rs` finds no amalgamation, at
+# which point `sys.rs` emits no C externs and every `Connection::open` returns
+# `EngineError::EngineNotLinked` — i.e. the whole guard degrades to "no engine"
+# rather than to the silent wrong-engine bug it exists to prevent.
+#
+# Deliberately NOT allow-listed, and this is a policy choice rather than an
+# oversight: `doltlite.c` (11.7 MB), `doltlite.h` (695 KB), `doltliteext.h`
+# (39 KB). All three are *generated*, hash-pinned by the manifest above, and
+# restored by `nu workspace/vendor/doltlite/fetch.nu` in one command. Contrast
+# the Vaporetto tokenizer model below, which IS committed: that artifact has no
+# upstream fetcher and its absence produced a 4-byte `STUB` that compiled fine
+# and panicked at first use. Here the absence is typed and loud, so the 11.7 MB
+# buys nothing.
+!/workspace/vendor/doltlite/manifest.toml
+!/workspace/vendor/doltlite/fetch.nu
+
 # Nix
 !/flake.nix
 !/flake.lock

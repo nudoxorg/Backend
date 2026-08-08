@@ -141,6 +141,43 @@ pub enum EngineError {
         /// Human-readable description of the unexpected condition.
         message: String,
     },
+
+    /// This build has no DoltLite engine: `build.rs` found no amalgamation to
+    /// compile, so no connection can be opened.
+    ///
+    /// This variant exists because the alternative is worse than any error. The
+    /// crate used to declare bare `sqlite3_*` externs with no `#[link]`; with the
+    /// amalgamation absent they bound to whatever SQLite was already in the
+    /// binary — `rusqlite`'s bundled copy, in `index`'s case — and every call
+    /// succeeded against a database engine with no prolly-tree pager, no content
+    /// addressing, and no version control. Refusing to open is the only outcome a
+    /// caller can distinguish from working.
+    ///
+    /// Recovery is a build-time action, not a runtime one: obtain the
+    /// amalgamation (`workspace/vendor/doltlite/VENDORING.md`) and rebuild.
+    EngineNotLinked {
+        /// Filesystem path (or URI) the caller asked to open.
+        path: String,
+        /// Absolute path `build.rs` looked for the amalgamation at.
+        expected_amalgamation: &'static str,
+    },
+
+    /// A connection handle opened, but the library behind it failed the DoltLite
+    /// capability probe — it answers SQL without providing `dolt_version()`.
+    ///
+    /// The build-time [`EngineNotLinked`](EngineError::EngineNotLinked) guard
+    /// covers the "no engine" case; this one covers "an engine, but the wrong
+    /// one". It is a *positive* check — the engine has to demonstrate a DoltLite
+    /// function works, not merely fail to look like SQLite — so it still fires if
+    /// a future toolchain, link order, or `LD_PRELOAD` reroutes the calls.
+    NotDoltLite {
+        /// Filesystem path (or URI) that was opened before the probe rejected it.
+        path: String,
+        /// `sqlite3_libversion()` as reported by whatever library answered.
+        library_version: String,
+        /// The probe that failed, and how (e.g. the `no such function` message).
+        detail: String,
+    },
 }
 
 impl EngineError {
@@ -248,6 +285,34 @@ impl std::fmt::Display for EngineError {
                 write!(
                     formatter,
                     "internal engine error (misuse or unexpected result code): {message}"
+                )
+            }
+            EngineError::EngineNotLinked {
+                path,
+                expected_amalgamation,
+            } => {
+                write!(
+                    formatter,
+                    "refusing to open {path:?}: this build contains no DoltLite engine. \
+                     `build.rs` found no amalgamation at {expected_amalgamation}, so the \
+                     version-controlled engine was never compiled. Opening anyway would hand \
+                     back a handle to the stock SQLite that `rusqlite`'s `bundled` feature \
+                     links into the same binary — plain SQL would work, and every `dolt_*` \
+                     call would fail later as \"no such function\". \
+                     See workspace/vendor/doltlite/VENDORING.md to obtain the amalgamation."
+                )
+            }
+            EngineError::NotDoltLite {
+                path,
+                library_version,
+                detail,
+            } => {
+                write!(
+                    formatter,
+                    "refusing to use the connection to {path:?}: the linked library reports \
+                     version {library_version} but failed the DoltLite capability probe \
+                     ({detail}). It answers SQL without providing version control, which is \
+                     the signature of stock SQLite standing in for DoltLite."
                 )
             }
         }

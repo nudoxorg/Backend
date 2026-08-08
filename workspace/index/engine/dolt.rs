@@ -156,6 +156,18 @@ fn from_engine_error(error: engine::EngineError) -> EngineError {
         } => EngineError::Statement(format!(
             "value too large for {context}: {byte_length} bytes exceeds engine limit"
         )),
+        // Both of these mean "this binary has no versioned catalog engine", which
+        // is not an `Open` failure of a particular file — it is the absence of
+        // the product's storage engine. They are kept apart from `Open` so a
+        // caller can tell "the catalog file is unusable" from "this build cannot
+        // have a catalog at all"; the binding's `Display` already names the
+        // absent amalgamation or the impostor library's version, so it is carried
+        // through verbatim rather than re-worded here.
+        error @ (Engine::EngineNotLinked { .. } | Engine::NotDoltLite { .. }) => {
+            EngineError::WrongEngine {
+                detail: error.to_string(),
+            }
+        }
     }
 }
 
