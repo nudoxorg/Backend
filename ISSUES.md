@@ -772,3 +772,89 @@ that concurrent agents produced unsplittable commits**, and the earlier lesson �
 followed at the level of directories and still was not enough, because an
 uncommitted working tree is itself a shared mutable resource. The rule needs
 strengthening: parallel agents need a *clean* tree, not merely disjoint paths.
+
+---
+
+# 2026-08-08, later — HEAD did not compile, and "the files are present" was not the same claim
+
+Earlier this session I fixed a clean checkout of `canonical` **containing** every
+file it declares, and wrote that a clean checkout "can now compile". That was
+verified only as far as file *presence*. Checked properly — by cloning HEAD and
+building it — **it did not compile.** Eight separate blockers, none of which any
+check on this machine could see, because every one of them had its fix sitting in
+an uncommitted working tree.
+
+| # | commit | what a fresh clone hit |
+|---|---|---|
+| 1 | `5778691` | `registry`: `Ref::Foreign` matched as a tuple variant |
+| 2 | `31b0a50` | `typescript`: hand-written `From<ExtractError>` conflicting with the one `#[from]` generates |
+| 3 | `9c38fc5` | `nudox-store` importing `CSharpProducer`/`GoProducer` that HEAD did not export |
+| 4 | `c30d8bd` | `nudox-graph`: the second `Ref::Foreign` caller |
+| 5 | `887770d` | `nudox-engine`: the third `Ref::Foreign` caller, plus L46's mandatory `InlineRun.origin` at 9 sites, plus a non-exhaustive `ProducerLanguage` |
+| 6 | `e816f8f` | `clang` manifest deps; `index`'s half-committed `transport` module split |
+| 7 | `59a0a4c` | `ir-vcs`: `pijul_err` missing under 12 call sites |
+| 8 | `d68844b` | `driver`: triple imports from the other half of that split; `SyncError::InvalidEndpoint` missing |
+| 9 | `1118ee4` | `lindsey`: `views/mod.rs` never committed, so `command_overlay.rs` — committed in `e07a0b8` — was unreachable |
+
+**The single most instructive one is #6.** `clang/src/compile_commands.rs` was
+committed earlier today *because* `checkout_completeness` found it `mod`-declared
+and absent. Committing the file without its crate's uncommitted `Cargo.toml`
+moved the failure rather than fixing it: the file arrived and its `serde_json`
+dependency did not. So the guard I wrote this morning is **necessary and not
+sufficient** — it checks that declared files exist, and cannot see that a file
+needs a dependency the manifest does not declare. Only a build of the actual
+artifact a stranger receives can.
+
+**Three of the nine are one root cause.** L39 reshaped `Ref::Foreign` from
+`(StableRef)` into `{ target, .. }` and left *three* callers behind — registry,
+graph, engine. Each fix was written, none was committed. The behavioural point is
+worth keeping: `Some(sr.clone())` could not express "foreign, but unresolved", and
+the new arm returns `None` exactly then, so an unresolved cross-package edge
+yields no posting instead of a fabricated one.
+
+## Verified end state
+
+From a genuinely fresh clone with its own empty `target/` (no `CARGO_TARGET_DIR`,
+no `.cargo/config.toml` redirect — checked, because a shared target directory
+would have made the whole exercise circular):
+
+```
+git status --porcelain                                  0 lines
+cargo check --workspace --all-targets   (incl. driver)  0 errors
+cargo check --manifest-path workspace/gui/Cargo.toml    0 errors
+cargo test -p index -p registry -p ir-vcs -p heart      1,171 passed
+```
+
+The working tree and HEAD are now identical — 0 modified, 0 untracked. Every
+"green" this repository reports is, for the first time, a claim about the
+repository rather than about one machine.
+
+## `--exclude driver` is gone
+
+Doctrine's stated condition (`cargo build -p driver --all-targets` twice on a
+settled tree) is met and exceeded — it also builds from the fresh clone. The
+recorded root cause was wrong: "non-deterministic across a churning vendor tree"
+was noise on top of blockers #6 and #8, plain missing committed code.
+
+That is the **fourth** wrong explanation this flag has carried, and all four are
+now recorded in `.config/nextest.toml` rather than deleted:
+
+| explanation | reality |
+|---|---|
+| "index has never compiled" (L6) | resolved three days before the flag cited it; cost ~1,040 tests |
+| "duplicate symbol, libzstd_seekable vs libzstd_sys" | no diagnostic ever mentioned zstd |
+| "it compiles; the exclude list is a speed optimisation" | it produced no artifacts |
+| "non-deterministic vendor tree" | noise over missing committed code |
+
+Enumeration 2,378 → 2,580. I wrote in that commit that dropping the flag should
+be expected to *surface* failures rather than confirm none. It did not:
+`cargo test -p driver --all-targets` → **199 passed, 0 failed, 2 ignored**.
+Recording the prediction and its refutation together, because the prediction was
+the honest one to make and being wrong about it is the good outcome.
+
+## What this changes about the method
+
+`checkout_completeness.rs` is worth keeping and is not enough. The check that
+actually holds is: **clone HEAD into a fresh directory and build it.** Everything
+weaker — including four `#[test]`s written specifically to catch this class —
+measures the machine that has the bug.
