@@ -2272,13 +2272,74 @@ honest semantic result is the zero-hit state. **The alternative was fabricating
 matches**, which would have been a doctrine §6 weakening of the worst kind: a UI
 that looks like it works.
 
-**What it needs:** an embedding store in the engine and a mode on
-`SearchQuery`. `workspace/registry`'s vector plane exists and is heavily tested
-(`tests/vector/`, 15 files), but is wired to `driver`, not to `nudox-engine`.
+**What it needs:** re-scoped 2026-08-08 after an audit. The old text here said
+"an embedding store in the engine and a mode on `SearchQuery`", and cited
+"`workspace/registry`'s vector plane … heavily tested (`tests/vector/`, 15
+files)". Both were wrong in ways that made the work look far smaller than it is.
 
-**Status:** OPEN. Advertised in the UI, unimplemented in the engine — the gap
-should be closed in one direction or the other, and closing it by removing the
-pill is a legitimate option.
+Corrections first, because the citation supported the opposite of its use:
+
+- `tests/vector/` holds **16 test files + 2 support modules**, not 15 — and
+  until `e7b9e9a` none of them was in any build target, so none had ever
+  compiled (L48).
+- `SearchQuery` does **not** need a mode field to make the section real. All
+  three sections already fan out unconditionally per query (`search.rs:3-14`,
+  LR-10). A mode is a compute-skip optimisation, nothing more. The GUI says so
+  itself at `stores/search_model.rs:154-166`.
+- The GUI is not the unfinished half. `Section::Semantic`, the three-row
+  shimmer, the offline notice and the section-2 cursor rules are all built and
+  tested; they consume `SearchEvent::Section` generically and would render real
+  rows the day an engine sends them. **No GUI change is required.**
+
+### The two blockers, both decisive, both independent
+
+**1. Architecture.** There is no Cargo edge from `nudox-engine` to
+`workspace/registry` at any depth — `nudox-engine` depends on `nudox-ir`,
+`nudox-store`, `nudox-graph`, and neither store nor graph names `registry`.
+`AGENTS-DOCTRINE.md` §1's graph does not contain `registry` at all, and
+`workspace/driver/Cargo.toml:23` states that `driver` is the **only** place
+`index` + `registry` are composed. So this is not loose wiring to be tightened;
+adding the edge is a doctrine amendment.
+
+**2. Artifact.** There are **zero `.onnx` files in the tree**.
+`vector/embed/runtime.rs` `FastembedOrt` is genuine production code (fastembed
+5.17.3 / ort 2.0.0-rc.12), and it has no weights to load; `onnx` is not a
+default feature, and `driver` enables only `["local", "remote"]`, so that path
+is compiled into nothing. `vector/embed/weights.rs`'s sha256 pinning is real and
+guards a file that does not exist. The only embedder that runs unattended is
+`MockEmbedder`, which marks itself `durable_canonical: false` precisely so its
+vectors can never be published. Note the precedent before trusting any filename
+here: qdrant-edge's "817,859-byte Vaporetto model" was a 4-byte file containing
+the ASCII text `STUB`.
+
+### The decision, 2026-08-08: bridge to `driver`, do not reimplement
+
+The audit turned up something the old entry missed entirely: **`driver` already
+has working semantic search.** `driver/coordination/search.rs:111-171`
+`semantic_hits` embeds the query cache-first through `SemanticSurface::search`
+behind `registry::vector::SemanticGate`. It is real, and it is on the other
+plane. (Its *lexical* arm is the broken one — `precise_hits` at
+`search.rs:90-92` merges empty pages because the symbol tantivy plane was
+removed.)
+
+So the direction is a service boundary from the GUI to `driver`, not a second
+embedding pipeline inside the offline-first engine. Reimplementing would mean a
+new async model-call boundary in a crate whose search path today has no I/O at
+all, plus a per-symbol vector index co-located with `Corpus`.
+
+**Still required, and none of it is code:** a model artifact (a ~162 MB pinned
+JinaCodeV2 ONNX, or a Voyage API key plus secret management), a §1 amendment for
+the new edge, and an acceptance that one section of an offline-first product
+becomes online-dependent. `index/search/ranking/eval.rs`'s `ndcg_at_k` primitive
+is reusable for judging it; its `evaluate`/`GoldenQuery` are hard-wired to
+package-listing signals and are not, so symbol-level golden judgments would be
+new work.
+
+**Status:** OPEN, scoped and unblocked-by-decision but **blocked on an
+artifact**. The empty state stays: it is the only honest rendering, and the
+alternative — fabricating matches — is the doctrine §6 failure this entry was
+originally filed to avoid. Pinned by `semantic_section_is_empty_by_design`, so
+"reserved" cannot quietly decay into "broken" while the bridge is built.
 
 ---
 
