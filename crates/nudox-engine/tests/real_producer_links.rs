@@ -85,8 +85,9 @@ fn try_lower_axum(root: &PathBuf) -> Option<Arc<PackageView>> {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
-    .expect("axum must lower without error for a well-formed checkout");
+    .expect("axum must lower without error for a well-formed checkout").table;
 
     eprintln!(
         "lowered {} entries from axum in {:.1}s",
@@ -206,9 +207,14 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
                 ProseBlock::List { items, .. } => {
                     for item_runs in items {
                         for run in item_runs {
+                            // `..` is deliberate here: this test is about
+                            // resolution reaching real producer output, not
+                            // about spelling. The origin is pinned by
+                            // `tests/link_repair_audit.rs`.
                             if let InlineRun::Link {
                                 text,
                                 target: LinkTarget::Symbol { key },
+                                ..
                             } = run
                             {
                                 symbol_links
@@ -225,6 +231,7 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
                 if let InlineRun::Link {
                     text,
                     target: LinkTarget::Symbol { key },
+                    ..
                 } = run
                 {
                     symbol_links.push((text.to_string(), key.intro.to_hex()[..12].to_owned()));

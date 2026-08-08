@@ -340,7 +340,14 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
                     toks.push(SigToken::Ident(SharedStr::from("_")));
                 }
             }
-            _ => {
+            // Explicit, not a `_` wildcard. A `Ref<Param>` is same-package by
+            // construction, so these are unreachable today — but the wildcard
+            // they replace would have rendered a foreign param as a bare `_`,
+            // indistinguishable from a missing entry, the day one appeared.
+            Ref::Foreign { key, .. } => {
+                toks.push(SigToken::Ident(SharedStr::from(key.display.as_ref())));
+            }
+            Ref::Local(_) => {
                 toks.push(SigToken::Ident(SharedStr::from("_")));
             }
         }
@@ -766,22 +773,209 @@ fn resolve_nominal(
             let key = nudox_ir::change::StableRef::new(lineage, *id);
             // Use precomputed path when available, else fallback to hex
             let text = if let Some(path) = package.indexes().path_of(*id) {
-                SharedStr::from(path.as_ref())
+                display_path(path.as_ref(), *id, package)
             } else {
                 SharedStr::from(id.to_hex().as_str())
             };
             (text, Some(key))
         }
-        Ref::Foreign(sr) => {
-            // Cross-package reference — use Display of StableRef
-            let text = SharedStr::from(sr.to_string().as_str());
-            (text, Some(sr.clone()))
-        }
+        // Cross-package reference. The KEY supplies the text, always — never
+        // `StableRef`'s `Display`, which is `ecosystem:name#<64 hex>` and would
+        // turn `impl ? for Memchr` into `impl cargo:core#8f3a…{64 chars} for
+        // Memchr`: a regression in readability from the `?` it replaces.
+        //
+        // Rendering is therefore a pure function of one package: this function
+        // holds a single `PackageView` and no corpus, so the same signature
+        // renders the same text regardless of what else happens to be loaded.
+        // Only *clickability* varies with the corpus — `target` is `Some` only
+        // when a resolver actually placed the reference, so a token is never a
+        // hyperlink to nothing.
+        Ref::Foreign { key, target } => (
+            SharedStr::from(key.display.as_ref()),
+            target.clone(),
+        ),
         Ref::Local(_) => {
-            // Should not appear in a sealed table
+            // This comment used to say "Should not appear in a sealed table"
+            // while 35% of memchr's functions rendered `?`. It is true now:
+            // `refer_import` no longer returns a `Ref::Local` into an import
+            // arena that `seal` drops, and any residual local is reported in
+            // `SealReport::unmapped_local` rather than rendered.
             (SharedStr::from("?"), None)
         }
     }
+}
+
+/// Turn a same-package moniker path into the text a reader should see.
+///
+/// # The defect (LIMITATIONS.md L18, L39)
+///
+/// `path_of` (`nudox_store::package::PackageIndexes::path_of`) is the
+/// *physical* ancestor chain: every module `id` is nested under, root first,
+/// dot-joined. For `memchr::Memchr` that chain is `memchr.memchr.memchr.Memchr`
+/// — the package, its crate-root module (Rust names it after the crate), and
+/// its `src/memchr.rs` module are all three named `memchr`, ahead of the
+/// struct itself. The chain is correct; showing all three identical segments
+/// is not. `workspace/gui`'s `collapse_repeated_crumbs` already fixes this for
+/// the breadcrumb trail, which is a `Vec` of clickable crumbs a view can
+/// post-process. A signature token's text is not — `resolve_nominal` returns
+/// one flattened `SharedStr` that is already load-bearing by the time it
+/// reaches `wire::ImplRow::label`, `SigToken::Ty::text`, and every other
+/// surface `chunk::signature::tokens` feeds (LR-4). So the collapse has to
+/// happen here, the one place a path is rendered into a label, rather than in
+/// each of those call sites.
+///
+/// # What survives
+///
+/// 1. Adjacent duplicate segments collapse to one — the same rule
+///    `collapse_repeated_crumbs` applies to breadcrumbs, applied one layer
+///    lower, before the string is ever built. Only *adjacent* repeats
+///    collapse; `a.b.a` is a real re-entry into an ancestor and stays, same
+///    as the breadcrumb version.
+/// 2. If the leaf name (the last surviving segment) is unique among this
+///    package's declarations, the rest of the path drops entirely: a
+///    signature should read `Memchr`, matching docs.rs, not `memchr.Memchr`,
+///    when there is only one `Memchr` in the package to mean.
+/// 3. If the leaf collides with another declaration — two distinct types
+///    sharing a name in different modules, e.g. `io::Error` and `fmt::Error`
+///    (`nudox_store::index::name` module docs) — enough of the path survives
+///    to tell them apart. The rule for "enough" is the one
+///    `PreparedRow::prepare` already uses for colliding search rows
+///    (`workspace/gui/src/stores/search_model.rs::common_head_len`): elide
+///    only the head every namesake shares, keep the tail that actually
+///    differs, and never elide the *last* surviving segment of whichever
+///    namesake has the shortest path — that segment is the only thing
+///    standing between it and looking unqualified.
+///
+/// Because the comparison set is symmetric (every namesake's own render goes
+/// through this same function against the same set), two colliding leaves
+/// never come out textually identical unless their full moniker paths were
+/// identical to begin with — at which point no path-based label could have
+/// told them apart, docs.rs included.
+fn display_path(
+    path: &str,
+    self_id: nudox_ir::change::IntroId,
+    package: &PackageView,
+) -> SharedStr {
+    let collapsed = collapse_repeated_segments(path);
+    let Some((leaf, ancestors)) = collapsed.split_last() else {
+        // `str::split('.')` on a non-empty `path` always yields at least one
+        // element, so `collapsed` is never empty in practice. Fall back to
+        // the raw path rather than panic if a future producer ever manages
+        // an empty moniker.
+        return SharedStr::from(path);
+    };
+    let leaf = *leaf;
+
+    let indexes = package.indexes();
+
+    // Every OTHER declaration in this package whose name is exactly `leaf`
+    // (case-sensitive). `get_exact` folds case for its bucket lookup — that
+    // is right for search, where "vec" and "Vec" should compete for the same
+    // slot — but folding case here would make the `memchr` module and the
+    // `Memchr` struct "collide" when nothing about the rendered signature
+    // actually confuses them.
+    let namesake_ancestors: Vec<Vec<&str>> = indexes
+        .by_name
+        .get_exact(&leaf.to_lowercase())
+        .iter()
+        .filter(|entry| entry.intro != self_id && entry.display == leaf)
+        // A `pub use` re-export is a second *name* for the same item, not a
+        // second *type* that happens to share a name. Nearly every real
+        // crate re-exports its public surface at the crate root from an
+        // internal module — `memchr` does exactly this for `Memchr` itself
+        // (`src/lib.rs`: `pub use crate::memchr::{Memchr, …};`). Counting
+        // that root-level alias as a namesake would mean bullet 2 above
+        // almost never fires on a real package: the struct would never
+        // collapse to its bare name, because its own re-export is always
+        // sitting right there "colliding" with it.
+        .filter(|entry| !is_reexport(package.view(), entry.intro))
+        .filter_map(|entry| indexes.path_of(entry.intro))
+        .map(|namesake_path| {
+            let mut segs = collapse_repeated_segments(namesake_path.as_ref());
+            segs.pop(); // drop the namesake's own leaf; keep only its ancestors
+            segs
+        })
+        .collect();
+
+    if namesake_ancestors.is_empty() {
+        // Nothing else in the package shares this leaf name: it is already
+        // unambiguous on its own, so the ancestor chain adds nothing a
+        // reader needs (bullet 2 above).
+        return SharedStr::from(leaf);
+    }
+
+    // Elide only the ancestor prefix every namesake — and this entry — share,
+    // capped so the shallowest member of the group keeps at least one
+    // segment of its own. Mirrors `common_head_len` in
+    // `workspace/gui/src/stores/search_model.rs` exactly; see that function's
+    // doc comment for why the cap exists (a fully-elided member would read as
+    // "no path" and become indistinguishable from the unique case above).
+    let shortest = namesake_ancestors
+        .iter()
+        .map(Vec::len)
+        .chain(std::iter::once(ancestors.len()))
+        .min()
+        .unwrap_or(0);
+    let ceiling = shortest.saturating_sub(1);
+
+    let mut common = 0;
+    while common < ceiling
+        && namesake_ancestors
+            .iter()
+            .all(|other| other[common] == ancestors[common])
+    {
+        common += 1;
+    }
+
+    let kept = &ancestors[common..];
+    if kept.is_empty() {
+        SharedStr::from(leaf)
+    } else {
+        SharedStr::from(format!("{}.{leaf}", kept.join(".")))
+    }
+}
+
+/// True if `intro` denotes a re-export (`pub use …`) rather than a
+/// declaration with its own identity.
+///
+/// Mirrors the two shapes `chunk::signature::tokens` itself already treats as
+/// `pub use <name>` (top of this file): an [`nudox_ir::entry::EntryInner::Reference`]
+/// (`entry.kind().as_owned_kind()` is `None`), or an owned
+/// [`nudox_ir::kind::Kind::Reexport`]. Either way the entry names an existing
+/// item under a new path rather than introducing a new one, so it must not
+/// count as a namesake collision in [`display_path`]. An absent entry (should
+/// not happen — `intro` came from this same package's `by_name` index) is
+/// conservatively treated as "not a re-export", which only means it can still
+/// contribute to disambiguation, never that a real collision gets hidden.
+fn is_reexport(view: &nudox_ir::view::IrView, intro: nudox_ir::change::IntroId) -> bool {
+    match view.entry(intro) {
+        Some(entry) => match entry.kind().as_owned_kind() {
+            None => true,
+            Some(Kind::Reexport(_)) => true,
+            Some(_) => false,
+        },
+        None => false,
+    }
+}
+
+/// Collapse adjacent identical segments in a `.`-joined moniker path.
+///
+/// The one-level-lower sibling of `workspace/gui`'s `collapse_repeated_crumbs`
+/// (`workspace/gui/src/views/symbol_page/header.rs`): that function drops a
+/// breadcrumb whose label repeats the crumb before it, once the ancestor
+/// chain has already been split into clickable pieces. This drops the same
+/// kind of repeat one step earlier, on the raw dotted string, before it is
+/// ever turned into crumbs or signature text — which is what lets
+/// `display_path` fix the *label* rather than relying on every renderer to
+/// post-process it.
+fn collapse_repeated_segments(path: &str) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for seg in path.split('.') {
+        if out.last() != Some(&seg) {
+            out.push(seg);
+        }
+    }
+    out
 }
 
 /// Render a `Primitive` type to display text.
@@ -821,7 +1015,7 @@ fn primitive_text(prim: &Primitive, package: &PackageView) -> SharedStr {
             let inner_text = tokens_to_text(&inner_toks);
             let lt = lifetime
                 .as_deref()
-                .map(|l| format!("'{} ", l))
+                .map(|l| format!("{} ", nudox_ir::kinds::lifetime_label(l)))
                 .unwrap_or_default();
             let mut_kw = if *mutable { "mut " } else { "" };
             SharedStr::from(format!("&{}{}{}", lt, mut_kw, inner_text).as_str())
@@ -869,7 +1063,7 @@ fn push_generics(toks: &mut Vec<SigToken>, generics: &[GenericParam], package: &
         match gp {
             GenericParam::Lifetime { name } => {
                 toks.push(SigToken::Lifetime(SharedStr::from(
-                    format!("'{}", name).as_str(),
+                    nudox_ir::kinds::lifetime_label(name).as_ref(),
                 )));
             }
             GenericParam::Type { name, bounds, .. } => {
@@ -1412,5 +1606,166 @@ mod tests {
         let t = text_of(&toks);
         assert!(t.contains('<'), "generics should produce <: {}", t);
         assert!(t.contains('T'), "generic param T should be present: {}", t);
+    }
+
+    // -----------------------------------------------------------------------
+    // display_path (LIMITATIONS.md L18/L39: repeated-ancestor collapse)
+    // -----------------------------------------------------------------------
+
+    /// Pull the `text` of the one `SigToken::Ty` in `toks` whose `target` is
+    /// `Some` — i.e. the rendering of a same-package `Type::Nominal` ref.
+    fn resolved_ty_text(toks: &[SigToken]) -> String {
+        toks.iter()
+            .find_map(|t| match t {
+                SigToken::Ty {
+                    text,
+                    target: Some(_),
+                } => Some(text.to_string()),
+                _ => None,
+            })
+            .expect("field type must resolve to a same-package target")
+    }
+
+    #[test]
+    fn collapse_repeated_segments_drops_only_adjacent_runs() {
+        // The exact shape reported for real memchr (L18/L39): three adjacent
+        // `memchr` segments ahead of the leaf collapse to one.
+        assert_eq!(
+            collapse_repeated_segments("memchr.memchr.memchr.Memchr"),
+            vec!["memchr", "Memchr"],
+        );
+        // A non-adjacent repeat is a real re-entry into an ancestor and must
+        // survive — same rule `collapse_repeated_crumbs` applies to the
+        // breadcrumb trail (`workspace/gui/src/views/symbol_page/header.rs`).
+        assert_eq!(collapse_repeated_segments("a.b.a"), vec!["a", "b", "a"]);
+    }
+
+    #[test]
+    fn same_package_nominal_ref_collapses_repeated_ancestor_and_drops_unique_leaf() {
+        // Reproduces the real memchr ancestor chain: the package's root
+        // module, the crate's own root module, and the `mod memchr;`
+        // declared inside it are all named `memchr`, three deep, ahead of
+        // the `Memchr` struct — `path_of` reports exactly
+        // `memchr.memchr.memchr.Memchr` (asserted below as ground truth).
+        // Nothing else in the package is named `Memchr`, so the rendered
+        // text must collapse all the way to the bare leaf, matching what
+        // docs.rs shows.
+        let pkg = make_package(vec![
+            (id(1), raw_entry(sym("memchr"), Kind::Module(Module)), None),
+            (
+                id(2),
+                raw_entry(sym("memchr"), Kind::Module(Module)),
+                Some(id(1)),
+            ),
+            (
+                id(3),
+                raw_entry(sym("memchr"), Kind::Module(Module)),
+                Some(id(2)),
+            ),
+            (
+                id(4),
+                raw_entry(sym("Memchr"), Kind::Record(Record::builder().build())),
+                Some(id(3)),
+            ),
+            (
+                id(5),
+                raw_entry(
+                    sym("haystack"),
+                    Kind::Field(
+                        Field::builder()
+                            .key(FieldKey::Named)
+                            .ty(Type::Nominal(Ref::Intro(id(4))))
+                            .build(),
+                    ),
+                ),
+                Some(id(4)),
+            ),
+        ]);
+
+        assert_eq!(
+            pkg.indexes().path_of(id(4)).map(|p| p.as_ref()),
+            Some("memchr.memchr.memchr.Memchr"),
+            "test setup must reproduce the real memchr ancestor chain"
+        );
+
+        let e = pkg.view().entry(id(5)).unwrap();
+        let ty_text = resolved_ty_text(&tokens(e, &pkg));
+
+        assert_eq!(
+            ty_text, "Memchr",
+            "a unique leaf behind a repeated ancestor chain must collapse to \
+             the bare name — got {ty_text:?}"
+        );
+    }
+
+    #[test]
+    fn same_package_nominal_ref_keeps_disambiguating_tail_when_leaf_collides() {
+        // Two distinct `Error` types declared in different modules
+        // (`nudox_store::index::name` module docs use this exact example)
+        // must never render the same label. The precedent this mirrors is
+        // `PreparedRow::prepare`'s search-row disambiguation
+        // (`workspace/gui/src/stores/search_model.rs`): elide only the
+        // ancestor prefix every namesake shares (`root`), and keep the part
+        // that actually differs (`io` vs `fmt`).
+        let pkg = make_package(vec![
+            (id(1), raw_entry(sym("root"), Kind::Module(Module)), None),
+            (
+                id(2),
+                raw_entry(sym("io"), Kind::Module(Module)),
+                Some(id(1)),
+            ),
+            (
+                id(3),
+                raw_entry(sym("Error"), Kind::Record(Record::builder().build())),
+                Some(id(2)),
+            ),
+            (
+                id(4),
+                raw_entry(sym("fmt"), Kind::Module(Module)),
+                Some(id(1)),
+            ),
+            (
+                id(5),
+                raw_entry(sym("Error"), Kind::Record(Record::builder().build())),
+                Some(id(4)),
+            ),
+            (
+                id(6),
+                raw_entry(
+                    sym("io_err"),
+                    Kind::Field(
+                        Field::builder()
+                            .key(FieldKey::Named)
+                            .ty(Type::Nominal(Ref::Intro(id(3))))
+                            .build(),
+                    ),
+                ),
+                Some(id(3)),
+            ),
+            (
+                id(7),
+                raw_entry(
+                    sym("fmt_err"),
+                    Kind::Field(
+                        Field::builder()
+                            .key(FieldKey::Named)
+                            .ty(Type::Nominal(Ref::Intro(id(5))))
+                            .build(),
+                    ),
+                ),
+                Some(id(5)),
+            ),
+        ]);
+
+        let io_error = resolved_ty_text(&tokens(pkg.view().entry(id(6)).unwrap(), &pkg));
+        let fmt_error = resolved_ty_text(&tokens(pkg.view().entry(id(7)).unwrap(), &pkg));
+
+        assert_ne!(
+            io_error, fmt_error,
+            "two distinct types both named `Error` must never render the \
+             same label — got {io_error:?} for both"
+        );
+        assert_eq!(io_error, "io.Error");
+        assert_eq!(fmt_error, "fmt.Error");
     }
 }

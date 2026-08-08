@@ -46,7 +46,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, PackageLoadEvent, PackageSpec, ProducerLanguage};
+use nudox_engine::{
+    Engine, EngineConfig, PackageLoadEvent, PackageSpec, ProducerLanguage, SharedStr,
+};
 use nudox_mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
 use nudox_mcp::{NudoxTools, SymbolKeyDto};
 
@@ -54,7 +56,16 @@ use nudox_mcp::{NudoxTools, SymbolKeyDto};
 // Fixture path helpers
 // ---------------------------------------------------------------------------
 
-/// Where `scripts/fetch-real-crate.sh tokio <version>` puts the checkout.
+/// Where a tokio checkout would land if it were part of the corpus.
+///
+/// `scripts/fetch-real-crate.sh` does not exist in this repo — the real
+/// fetch tooling is `corpus/fetch.nu`, driven by `corpus/manifest.toml`
+/// (see `corpus/README.md`). As of this writing tokio is not an entry in
+/// that manifest (unlike memchr — see `tests/real_crate_memchr.rs`), so
+/// fetching it means adding a `{ version, hash }` block to
+/// `corpus/manifest.toml` under a `crates.io`/`tokio` package (hash via `nu
+/// corpus/fetch.nu hash-url crates.io tokio <version>`) and then running `nu
+/// corpus/fetch.nu` to materialize it.
 fn tokio_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../.real-crates/tokio")
@@ -77,7 +88,9 @@ macro_rules! skip_if_absent {
         if !tokio_available() {
             eprintln!(
                 "SKIP: no checkout at {}. \
-                 Fetch with: scripts/fetch-real-crate.sh tokio <version>",
+                 tokio is not in corpus/manifest.toml yet — add a {{ version, hash }} \
+                 entry (see corpus/README.md 'Adding a package') and run: \
+                 nu corpus/fetch.nu",
                 tokio_root().display()
             );
             return;
@@ -137,9 +150,13 @@ async fn wait_for_tokio_corpus(tools: &NudoxTools) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
-            Ok(Ok(PackageLoadEvent::Loaded { lineage, .. }))
-                if lineage.name.as_str() == "tokio" =>
-            {
+            // `PackageLoadEvent::Loaded` deliberately does not carry
+            // `nudox_ir::change::PackageLineageId` (see the type's doc
+            // comment in nudox-engine/src/lib.rs): the event is a GUI-facing
+            // projection, not a re-export of the store/IR shape. The name we
+            // actually need to identify "the tokio package arrived" is the
+            // `name: SharedStr` field.
+            Ok(Ok(PackageLoadEvent::Loaded { name, .. })) if name == SharedStr::from("tokio") => {
                 return;
             }
             Ok(Ok(PackageLoadEvent::Loaded { .. })) => continue,

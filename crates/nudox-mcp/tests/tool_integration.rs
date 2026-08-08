@@ -286,6 +286,24 @@ async fn search_symbols_kind_filter_restricts_results() {
             KindTag::Unknown(_) => {
                 panic!("all fixture symbols must have a known kind");
             }
+            // `KindTag` is `#[non_exhaustive]` (crates/nudox-engine/src/wire/mod.rs)
+            // so producers can add forward-compatible variants without breaking
+            // `lindsey`'s `match` arms. This test's corpus, however, is a
+            // hand-built fixture defined entirely in this crate: every symbol in
+            // it is emitted by the wire types visible right here, so any variant
+            // beyond `Known`/`Unknown` reaching this arm means either the wire
+            // enum grew a new case this test has not been updated for, or the
+            // fixture itself is misconfigured — either way that's a real defect
+            // this test exists to catch, not a case to silently pass through.
+            other => {
+                panic!(
+                    "search_symbols_kind_filter_restricts_results: fixture symbol \
+                     carried an unrecognised KindTag variant {other:?}; this test's \
+                     synthetic corpus should only ever produce Known/Unknown, so \
+                     either KindTag grew a new variant this test needs updating for, \
+                     or the fixture is broken"
+                );
+            }
         }
     }
 }
@@ -927,12 +945,24 @@ async fn graph_query_symbol_members_traversal_is_reachable() {
 
     // `Point` (Record, intro 3) has two fields: `x` and `y`.
     // We filter by name and walk to its members.
+    //
+    // The `kind` filter below used to compare against the bare literal
+    // `"Record"` (`value: ["Record"]`), which is not valid Trustfall: every
+    // `@filter` value must name a runtime parameter (`$foo`) or a tag
+    // (`%foo`), never an inline literal — see every other
+    // `@filter(op: "=", ...)` use in this crate and in
+    // `nudox-graph/src/queries/*.trustfall`, all of which pass a
+    // `$`-prefixed parameter. The query was therefore rejected at compile
+    // time with "Filter argument was expected to start with '$' or '%' but
+    // did not: Record". That is a stale test expectation about Trustfall's
+    // own filter syntax, not a defect in the adapter or engine — fixed by
+    // parameterizing `kind` the same way `name` already is.
     let result = tools
         .do_graph_query(GraphQueryArgs {
             query: r#"{
                 Symbols {
                     name @filter(op: "=", value: ["$name"]) @output(name: "parent_name")
-                    kind @filter(op: "=", value: ["Record"])
+                    kind @filter(op: "=", value: ["$kind"])
                     members {
                         name @output(name: "member_name")
                         kind @output(name: "member_kind")
@@ -941,9 +971,12 @@ async fn graph_query_symbol_members_traversal_is_reachable() {
             }"#
             .to_owned(),
             args: Some(
-                [("name".to_owned(), "Point".to_owned())]
-                    .into_iter()
-                    .collect(),
+                [
+                    ("name".to_owned(), "Point".to_owned()),
+                    ("kind".to_owned(), "Record".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
             ),
             limit: Some(20),
         })
@@ -1152,10 +1185,13 @@ async fn graph_query_package_members_traversal_is_reachable() {
 /// `graph_query` is safe to call concurrently from multiple tasks. This is
 /// the regression test for generation counter races in `NudoxTools`.
 ///
-/// We cannot prove absence of interference beyond "neither panics nor hangs",
-/// but that is the correct bar: the spec says concurrent calls must not
-/// interfere, and the simplest observable failure is a panic from a stale
-/// generation or a deadlock.
+/// Beyond "neither panics nor hangs", each call also asserts on its actual
+/// payload (the requested column is present, the fixture package is still
+/// found by name). A generation-counter race that swapped in a stale or
+/// half-built view would most plausibly show up as *wrong content* — an
+/// empty row set, a missing column, a package that vanished — not as a
+/// panic, so asserting only "it returned `Ok`" would let that race through
+/// silently.
 #[tokio::test]
 async fn graph_query_concurrent_calls_do_not_interfere() {
     let tools = std::sync::Arc::new(make_tools());
@@ -1164,24 +1200,41 @@ async fn graph_query_concurrent_calls_do_not_interfere() {
     let tools_clone = tools.clone();
     let t1 = tokio::spawn(async move {
         for _ in 0..3 {
-            tools_clone
+            let result = tools_clone
                 .do_graph_query(GraphQueryArgs {
                     query: "{ Symbols { name @output } }".to_owned(),
                     args: None,
                     limit: Some(5),
                 })
                 .await
-                .expect("concurrent call 1 must succeed")
+                .expect("concurrent call 1 must succeed");
+            assert!(
+                result.columns.contains(&"name".to_owned()),
+                "concurrent graph_query must still return the requested `name` \
+                 column, not a view corrupted by a racing call: {:?}",
+                result.columns
+            );
+            assert!(
+                !result.rows.is_empty(),
+                "fixture corpus has symbols; concurrent graph_query returning \
+                 zero rows would indicate the generation counter raced"
+            );
         }
     });
 
     let tools_clone = tools.clone();
     let t2 = tokio::spawn(async move {
         for _ in 0..3 {
-            tools_clone
+            let result = tools_clone
                 .do_list_packages()
                 .await
-                .expect("concurrent call 2 must succeed")
+                .expect("concurrent call 2 must succeed");
+            assert!(
+                result.packages.iter().any(|p| p.lineage == FIXTURE_LINEAGE),
+                "concurrent list_packages must still see the fixture package \
+                 {FIXTURE_LINEAGE}; got {:?}",
+                result.packages
+            );
         }
     });
 

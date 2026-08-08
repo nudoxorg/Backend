@@ -759,13 +759,16 @@ impl Engine {
     ///
     /// # Language selection
     ///
-    /// Only Rust is registered in the pilot registry
-    /// (`ProducerRegistry::with_rust_pilot`).  The `language` field of
-    /// `PackageSpec` is expressed as [`ProducerLanguage`] (re-exported from this
-    /// crate) so the caller can name it without depending on `nudox-ir`.
-    /// Passing `ProducerLanguage::Rust` is the only currently-effective choice;
-    /// other languages will surface a `LoadEvent::Failed` (toolchain missing)
-    /// until their producers are registered.
+    /// `start_with_versions` builds its registry from
+    /// `ProducerRegistry::with_all_available`, which registers Rust, Go,
+    /// Java, CSharp, TypeScript, and Cpp (C/C++, via `ClangProducer`) — plus
+    /// Python only under the `pyrefly` feature, since its producer is
+    /// otherwise inert.  The `language` field of `PackageSpec` is expressed
+    /// as [`ProducerLanguage`] (re-exported from this crate) so the caller
+    /// can name it without depending on `nudox-ir`.  Passing `Python`
+    /// without the `pyrefly` feature enabled surfaces a `LoadEvent::Failed`
+    /// (toolchain missing) rather than failing to compile — see
+    /// [`ProducerLanguage`]'s doc comment.
     ///
     /// # Production path
     ///
@@ -825,7 +828,7 @@ impl Engine {
     ) -> EngineHandle {
         use nudox_store::source::producer::{PackageDescriptor, ProducerRegistry, ProducerSource};
 
-        let registry = Arc::new(ProducerRegistry::with_rust_pilot());
+        let registry = Arc::new(ProducerRegistry::with_all_available());
         let descriptors: Vec<PackageDescriptor> = packages
             .into_iter()
             .flat_map(|history| {
@@ -838,9 +841,34 @@ impl Engine {
                     // point: the lineage is version-free, so the two
                     // generations are recognisably the same package and their
                     // `IntroId`s are comparable.
+                    //
+                    // One `PackageDescriptor` constructor per ecosystem, not
+                    // one `Language` for all of them: pairing the wrong
+                    // ecosystem id with a language here would build a
+                    // descriptor that no registered producer (or the wrong
+                    // one) ever answers, and this match is the one place that
+                    // pairing is decided.
                     match language {
                         ProducerLanguage::Rust => {
                             PackageDescriptor::cargo(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::Go => {
+                            PackageDescriptor::go(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::Java => {
+                            PackageDescriptor::maven(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::CSharp => {
+                            PackageDescriptor::nuget(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::Python => {
+                            PackageDescriptor::pypi(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::TypeScript => {
+                            PackageDescriptor::npm(v.root, name.clone(), v.version)
+                        }
+                        ProducerLanguage::Cpp => {
+                            PackageDescriptor::cpp(v.root, name.clone(), v.version)
                         }
                     }
                 })

@@ -29,6 +29,66 @@
 //!    label.  This ensures that `[Router::with_state]` (as the author wrote
 //!    it) resolves through the same key as
 //!    `"axum.routing.Router.with_state!m"` (as the producer stored it).
+//!
+//! # L17 case study — `memchr_iter` resolves, `memrchr_iter` doesn't
+//!
+//! `memchr-2.8.3`'s `struct Memchr` doc comment reads (verbatim, from
+//! `.real-crates/memchr-2.8.3/src/memchr.rs:282`):
+//!
+//! ```text
+//! This iterator is created by the [`memchr_iter`] or `[memrchr_iter`]
+//! functions.
+//! ```
+//!
+//! The second link has its backtick and bracket **swapped** — a typo in
+//! upstream memchr, not a bug on our side. That is *not* a resolution
+//! failure in this table: `rust-analyzer`'s own target extractor
+//! (`extract_doc_link_targets` in
+//! `workspace/compiler/languages/rust/src/ra/docs.rs`) is a byte-level
+//! bracket scanner that finds `memrchr_iter` and resolves it exactly like
+//! `memchr_iter` — both genuinely exist
+//! (`.real-crates/memchr-2.8.3/src/memchr.rs:216,223`), so both aliases end
+//! up in this table.
+//!
+//! The asymmetry is downstream, in `prose.rs`'s markdown *rendering* of the
+//! same doc comment. `` [`memchr_iter`] `` — brackets outside the backticks
+//! — tokenizes under CommonMark as `Text("[")`, `Code("memchr_iter")`,
+//! `Text("]")`: three events our shortcut-link scan recognises as a link
+//! attempt, so it reaches `resolve("memchr_iter")` and finds the entry this
+//! table built. `` `[memrchr_iter`] `` — backtick *before* the bracket —
+//! tokenizes completely differently: CommonMark gives code spans higher
+//! precedence than link brackets, so the stray `[` is swallowed into the
+//! code span itself (`Code("[memrchr_iter")`), followed by a bare
+//! `Text("]")`. That shape never reaches this table at all — `resolve` is
+//! never even called for it — because the two independent implementations
+//! (the producer's lenient byte-scanner vs. the renderer's strict CommonMark
+//! tokenizer) disagree about what counts as a link boundary on malformed
+//! input, and only the renderer's opinion is visible to the reader.
+//!
+//! This table's resolution algorithm was never the problem for this case;
+//! see `prose.rs`'s `consume_bracket_run` for the actual fix, which
+//! recognises the swapped-backtick shape as a link-attempt input too (so it
+//! benefits from whatever this table already resolved) and, independently,
+//! guarantees neither shape can ever leak a bare `[` or `]` to the reader.
+//!
+//! ## What that fix actually is, named
+//!
+//! Rendering a link from `` `[memrchr_iter`] `` is **not** the same act as
+//! rendering one from `` [`memchr_iter`] ``, and the paragraph above is
+//! incomplete if it leaves that implicit. The second is rustdoc's documented
+//! intra-doc-link syntax, which rustdoc and docs.rs both render as a link —
+//! producing a link there is *fidelity*. The first is a spelling rustdoc
+//! renders as literal text; producing a link there is a **repair**, and it is
+//! the one and only repair this engine performs:
+//! [`crate::wire::LinkRepairKind::TransposedOpenDelimiter`].
+//!
+//! That distinction is carried in the output, not just in this comment. Every
+//! `InlineRun::Link` carries a mandatory `LinkOrigin` saying whether the
+//! spelling was the author's (`Authored`) or ours (`Repaired`), the GUI paints
+//! the two differently, and `chunk::repair_audit::RepairTally` counts the
+//! repaired ones. See `wire/repair.rs` for the closed set and `LIMITATIONS.md`
+//! L46 for the ruling — including what a *second* repair would cost, which is
+//! five compile errors in five files.
 
 use std::collections::HashMap;
 
@@ -189,6 +249,18 @@ impl DocLinkTable {
 
     /// `true` when the symbol declared intra-doc links, whether or not any of
     /// them resolved locally.
+    ///
+    /// This gates shortcut-link scanning in `prose.rs`, and that is the whole
+    /// reason it exists. Brackets are only read as link syntax for a symbol
+    /// that declared at least one link; for a symbol that declared none,
+    /// `[NOTE]`, `arr[0]`, and a citation marker are all far likelier than a
+    /// link attempt, so its prose passes through verbatim. That mirrors
+    /// rustdoc, which renders an unresolved shortcut as literal text.
+    ///
+    /// The signal is per *symbol*, not per *link attempt* — see L27. A symbol
+    /// that declares any link has brackets stripped from unrelated literal
+    /// prose too. Narrowing that needs the producer to record byte spans of
+    /// the link attempts it saw, which it does not currently do.
     pub(crate) fn has_declared_links(&self) -> bool {
         self.declared
     }
