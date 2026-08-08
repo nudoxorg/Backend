@@ -281,6 +281,35 @@
 !/fuzz/Cargo.toml
 !/fuzz/fuzz_targets/**/*.rs
 .real-crates/
+# Same class as .real-crates/: the C# corpus checkouts (NuGet packages extracted
+# for nudox-producer-csharp's real-package tests). Fetched, not authored.
+.real-csharp/
+
+# LIMITATIONS.md L21 — the vendored `trustfall/` working copy.
+#
+# 21 MB carrying a nested `.git`, and the build does not use it. Root
+# `Cargo.toml:137` git-pins the fork by rev
+# (7e71e35715dfac561e3453c834b469a200330997), `Cargo.lock` resolves it from that
+# URL, and there is no `[patch]` entry redirecting the dependency to this path —
+# so cargo fetches its own copy and this directory is a developer's checkout of
+# the same rev, nothing more.
+#
+# It is denied explicitly rather than left to chance. The blanket `/**/*` at the
+# top of this file is followed by `!/**/*.rs` and `!/**/*.md`, which un-ignore
+# several thousand files inside it; a single `git add -A` would therefore commit
+# a foreign project's sources into this tree, and `git status` would keep
+# reporting `?? trustfall/` forever in the meantime. That is the "gitlink risk"
+# L21 names, and this rule is the whole fix — deliberately NOT deleting the
+# directory, because it is someone's working copy of the fork and not ours to
+# remove.
+#
+# If the fork ever needs to be built from this tree instead of fetched, the
+# change is a `[patch.crates-io]` entry pointing at it, at which point this rule
+# should be revisited in the same commit.
+/trustfall/
+
+# Scratch research notes; not build input, not evidence.
+/workspace/.research/
 # Captured frames from `cargo test --test screenshots` (workspace/gui). They are
 # evidence, not source: regenerable in one command, and byte-unstable across
 # machines because glyph rasterisation depends on the host font stack — so

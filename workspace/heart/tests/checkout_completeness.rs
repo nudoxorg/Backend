@@ -34,15 +34,26 @@
 //!
 //! # Scope
 //!
-//! Two properties, both about *packaging*, not about code:
+//! Three properties, all about *packaging*, not about code:
 //!
 //! 1. every `mod NAME;` in a tracked `.rs` resolves to a file git also tracks;
 //! 2. every `build.rs` sitting beside a `Cargo.toml` is tracked, because cargo
-//!    runs it on presence alone and reports nothing when it is absent.
+//!    runs it on presence alone and reports nothing when it is absent;
+//! 3. every integration test under a `tests/` directory is tracked, for exactly
+//!    the same reason — cargo *autodiscovers* `tests/*.rs`, so an untracked one
+//!    runs here and does not exist anywhere else.
 //!
-//! Untracked files that nothing declares are deliberately *not* failures. Scratch
-//! files, experiments and work in progress are normal; a file the build reaches
-//! for and cannot find is not.
+//! The third is the subtlest and has the longest history in this repository.
+//! LIMITATIONS.md L48 records the mirror-image bug: cargo's autodiscovery globs
+//! only `tests/*.rs` and `tests/*/main.rs`, so 18 files sitting at
+//! `tests/<dir>/<name>.rs` had no target, never compiled, and cargo said
+//! nothing. This is the same silence from the other side — the file is
+//! discovered and run *locally*, and is simply absent for everyone else. Both
+//! directions produce a suite whose size depends on who is looking at it.
+//!
+//! Untracked files that nothing declares and nothing discovers are deliberately
+//! *not* failures. Scratch files, experiments and work in progress are normal; a
+//! file the build reaches for and cannot find is not.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -204,6 +215,155 @@ fn every_declared_module_is_a_tracked_file() {
          files; the failure lands only on someone who clones. Fix with `git add` \
          on each path above. If a file is genuinely meant to be absent, delete \
          its `mod` declaration in the same commit.",
+        missing.join("\n")
+    );
+}
+
+/// Cargo autodiscovers integration tests; an untracked one is a test that runs
+/// for its author and does not exist for anyone else.
+///
+/// Scoped to the two shapes cargo actually globs — `tests/*.rs` and
+/// `tests/*/main.rs` — because those are the paths that become targets without
+/// a `[[test]]` stanza. A file at `tests/<dir>/<name>.rs` is *not* discovered
+/// (LIMITATIONS.md L48), so its absence from git changes nothing about what
+/// runs, and reporting it here would be noise.
+/// Every `include_str!`/`include_bytes!` target is tracked.
+///
+/// The third shape of the same defect, and the one with the most scar tissue in
+/// this repository. `include_*!` resolves relative to the containing file and is
+/// a *compile-time* read: if the target is missing the crate does not build at
+/// all. `workspace/index/ecosystem/cpp/alias.rs:65` pulls in a 66 KB
+/// `cpp_alias_seed.ron` this way, and `.gitignore:200` already carried a comment
+/// explaining that without it "the whole `index` crate fails to compile" — the
+/// allow-list rule was written and the file was still never added.
+///
+/// LIMITATIONS.md L7 is the same story with a worse ending: `japanese.rs`
+/// `include_bytes!`s a Vaporetto model, and what was on disk was a 4-byte file
+/// containing the ASCII text `STUB`. That compiled cleanly and panicked on first
+/// use. This test cannot judge *contents* — a stub of the right name still
+/// passes here — so it is not a substitute for the checksum `japanese.rs`
+/// declares. It only guarantees the file a stranger receives is the file the
+/// author had.
+#[test]
+fn every_compile_time_include_is_tracked() {
+    let root = repo_root();
+    let sources = tracked(&root, "*.rs");
+    // Every tracked path, not just the Rust ones — include targets are .ron,
+    // .graphql, .trustfall, .model, … and scoping this to `*.rs` would report
+    // every one of them as missing.
+    let all_tracked: Vec<String> = tracked(&root, ".");
+    let known: HashSet<&str> = all_tracked.iter().map(String::as_str).collect();
+    let mut missing = Vec::new();
+
+    for relative in &sources {
+        let Ok(text) = std::fs::read_to_string(root.join(relative)) else {
+            continue;
+        };
+        let dir = Path::new(relative).parent().unwrap_or(Path::new(""));
+
+        for macro_name in ["include_str!", "include_bytes!"] {
+            for (offset, _) in text.match_indices(macro_name) {
+                let after = &text[offset + macro_name.len()..];
+                // `include_str!("path")` — take the first string literal. A
+                // non-literal argument (a `concat!`, an env expansion) is skipped
+                // rather than guessed at; guessing would produce false positives
+                // that get this test deleted.
+                let Some(open) = after.find('"') else { continue };
+                if after[..open].chars().any(|c| !"( \t\r\n".contains(c)) {
+                    continue;
+                }
+                let Some(close) = after[open + 1..].find('"') else {
+                    continue;
+                };
+                let literal = &after[open + 1..open + 1 + close];
+                if literal.contains('$') || literal.is_empty() {
+                    continue;
+                }
+
+                // Normalise `../` and `./` against the including file's dir.
+                let dir_text = dir.to_string_lossy().into_owned();
+                let mut parts: Vec<&str> = Vec::new();
+                for segment in dir_text
+                    .split('/')
+                    .chain(literal.split('/'))
+                    .filter(|s| !s.is_empty() && *s != ".")
+                {
+                    if segment == ".." {
+                        parts.pop();
+                    } else {
+                        parts.push(segment);
+                    }
+                }
+                let resolved = parts.join("/");
+
+                if !known.contains(resolved.as_str()) && root.join(&resolved).is_file() {
+                    missing.push(format!("  {resolved} — included by {relative}"));
+                }
+            }
+        }
+    }
+
+    missing.sort();
+    missing.dedup();
+    assert!(
+        missing.is_empty(),
+        "These files are read at COMPILE TIME by include_str!/include_bytes! and \
+         are NOT in git:\n{}\n\n\
+         The including crate does not build without them, so this is a hard \
+         build failure for everyone who clones — not a degraded mode. `git add` \
+         each path, and if the blanket `/**/*` rule in .gitignore swallows it, \
+         add the allow-list negation in the same commit (writing the negation \
+         alone is not enough — that is exactly how cpp_alias_seed.ron stayed \
+         missing while .gitignore carried a comment explaining why it must not).",
+        missing.join("\n")
+    );
+}
+
+#[test]
+fn every_autodiscovered_integration_test_is_tracked() {
+    let root = repo_root();
+    let manifests = tracked(&root, "*Cargo.toml");
+    let known: HashSet<String> = tracked(&root, "*.rs").into_iter().collect();
+    let mut missing = Vec::new();
+
+    for manifest in &manifests {
+        let tests_dir = Path::new(manifest)
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join("tests");
+        let Ok(entries) = std::fs::read_dir(root.join(&tests_dir)) else {
+            continue;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let candidate = if path.is_file() && path.extension().is_some_and(|e| e == "rs") {
+                tests_dir.join(path.file_name().expect("read_dir yields named entries"))
+            } else if path.is_dir() && path.join("main.rs").is_file() {
+                tests_dir
+                    .join(path.file_name().expect("read_dir yields named entries"))
+                    .join("main.rs")
+            } else {
+                continue;
+            };
+
+            if !known.contains(candidate.to_string_lossy().as_ref()) {
+                missing.push(format!("  {}", candidate.display()));
+            }
+        }
+    }
+
+    missing.sort();
+    assert!(
+        missing.is_empty(),
+        "These integration tests exist here and are NOT in git:\n{}\n\n\
+         Cargo autodiscovers `tests/*.rs` and `tests/*/main.rs`, so each of \
+         these compiles and runs on this machine and does not exist for anyone \
+         who clones. The suite's size then depends on who is looking at it, and \
+         a green run here proves nothing about a green run there — which is how \
+         most of ISSUES.md's evidence came to rest on files that were never \
+         committed. `git add` each path, or move the file out of `tests/` if it \
+         is genuinely scratch work.",
         missing.join("\n")
     );
 }
