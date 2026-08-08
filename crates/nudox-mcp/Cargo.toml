@@ -35,7 +35,10 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros"] }
+# `time` is for `McpHost`'s bounded drain: shutdown runs on the host's main
+# thread, so waiting for an agent that is holding an SSE stream open must not be
+# able to stall a window close indefinitely.
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros", "time"] }
 # `CancellationToken` only — `McpEndpoint` keeps the token that
 # `StreamableHttpServerConfig` already owns rather than inventing a second
 # shutdown signal. Same pin and features as `nudox-engine`.
@@ -45,6 +48,10 @@ tracing = { workspace = true }
 [dev-dependencies]
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }
+# `measured()`, for the `cost case=` line doctrine §4 requires from every
+# integration test. Same path-dependency shape `nudox-engine` and
+# `nudox-store` already use for it.
+nudox-test-support = { path = "../nudox-test-support" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros", "io-util", "time"] }
 trustfall = { workspace = true }
 

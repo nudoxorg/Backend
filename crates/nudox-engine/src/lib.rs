@@ -38,18 +38,29 @@
 //! EngineHandle::packages()              -> Receiver<PackageLoadEvent>
 //! EngineHandle::versions(pkg)           -> VersionList                             // sync
 //! EngineHandle::select_version(pkg, v, gen) -> Receiver<VersionEvent>
-//! EngineHandle::resolve_project(root)   -> (StreamHandle, Receiver<ProjectEvent>)  // stub
-//! EngineHandle::sync()                  -> Receiver<SyncEvent>                     // stub
-//! EngineHandle::jobs()                  -> Receiver<JobEvent>                      // stub
-//! EngineHandle::command(cmd)            -> ()                                      // stub
+//! EngineHandle::resolve_project(root)   -> Result<(StreamHandle, Receiver<ProjectEvent>), Unimplemented>
+//! EngineHandle::sync()                  -> Result<Receiver<SyncEvent>, Unimplemented>
+//! EngineHandle::jobs()                  -> Result<Receiver<JobEvent>, Unimplemented>
+//! EngineHandle::command(cmd)            -> Result<(), Unimplemented>
 //! EngineHandle::query(q, gen)           -> (StreamHandle, Receiver<QueryEvent>)
 //! EngineHandle::schema()                -> &'static Schema
+//! EngineHandle::runtime_handle()        -> tokio::runtime::Handle                  // sync
 //! ```
 //!
 //! `versions` is the one synchronous query on the handle. The justification is
 //! in [`versions`]: it reads data that is already fully resident, cannot arrive
 //! partially, and has nothing for a `Gen` to guard, so a channel would buy a
 //! task hop and no correctness.
+//!
+//! # The four planes that do not exist yet
+//!
+//! `resolve_project`, `sync`, `jobs` and `command` all return
+//! [`Result<_, Unimplemented>`](Unimplemented). Until 2026-08-07 they returned
+//! an immediately-`Done` stream, or a receiver that closed on the spot, which a
+//! caller could not tell apart from "resolution succeeded and found nothing" or
+//! "there are no jobs right now". That is the exact shape doctrine §8 names —
+//! a failure converted into a success with the cause parked where nobody
+//! looked. See [`EngineCapability`] and LIMITATIONS.md L37.
 
 pub mod chunk;
 pub mod doc;
@@ -99,15 +110,57 @@ use std::path::PathBuf;
 /// `nudox_ir::body::Language` but is defined here at the seam (§L0) to keep
 /// the dependency law intact.
 ///
-/// Only `Rust` is currently effective: `ProducerRegistry::with_rust_pilot`
-/// registers only the Rust producer.  Passing any other variant causes a
-/// `PackageLoadEvent::LoadFailed { error: "toolchain missing … " }` for that
-/// package; the rest of the corpus is unaffected.
+/// One variant per `nudox-producer-*` crate that exists in the workspace
+/// (§LIMITATIONS.md L2). `#[non_exhaustive]` because an eighth producer crate
+/// arriving must not be a breaking change for `lindsey`'s `match` arms.
+///
+/// # Which variants actually run something
+///
+/// `Engine::start_with_versions` builds its registry from
+/// `ProducerRegistry::with_all_available`, which registers a runner for
+/// [`Rust`](Self::Rust), [`Go`](Self::Go), [`Java`](Self::Java),
+/// [`CSharp`](Self::CSharp), [`TypeScript`](Self::TypeScript), and
+/// [`Cpp`](Self::Cpp) (covering both C and C++, via `ClangProducer`) today.
+///
+/// [`Python`](Self::Python) is registered **only** when the `pyrefly` feature is
+/// enabled. Without it the producer's `invoke()` returns an empty oracle rather
+/// than an error, so registering it unconditionally made "we cannot document
+/// this" indistinguishable from "this package has no public API". Unregistered,
+/// a Python lookup correctly yields `ToolchainMissing`; passing it without the
+/// feature enabled produces a `PackageLoadEvent::LoadFailed { error: "toolchain
+/// missing … " }` for that package, and the rest of the corpus is unaffected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ProducerLanguage {
-    /// The Rust language, produced via `ra_ap_*` in-process.
+    /// Rust, via `nudox-producer-rust`. Oracle: rust-analyzer (`ra_ap_*`,
+    /// in-process). Manifest: `Cargo.toml`.
     Rust,
+    /// Go, via `nudox-producer-go`. Oracle: a vendored Go subprocess oracle
+    /// (`workspace/compiler/compile/go/oracle/`). Manifest: `go.mod`.
+    Go,
+    /// Java, via `nudox-producer-java`. Oracle: a Java oracle subprocess
+    /// (schema in `nudox_producer_java::schema`). Manifest: `pom.xml` or
+    /// `build.gradle`.
+    Java,
+    /// C#, via `nudox-producer-csharp`. Oracle: Roslyn, invoked as
+    /// `dotnet <publish>/oracle.dll`. Manifest: `*.csproj`.
+    CSharp,
+    /// Python, via `nudox-producer-python`. Oracle: pyrefly, in-process
+    /// (behind that crate's `pyrefly` feature; without it, an empty oracle).
+    /// Manifest: `pyproject.toml`.
+    Python,
+    /// TypeScript / JavaScript, via `nudox-producer-typescript`. Oracle: OXC,
+    /// in-process. Manifest: `package.json`.
+    TypeScript,
+    /// C and C++, via `nudox-producer-clang`. Oracle: libclang, loaded at
+    /// runtime via `dlopen`/`LoadLibrary` (no build-time libclang
+    /// dependency). Manifest: `CMakeLists.txt` or `compile_commands.json`.
+    ///
+    /// Named `Cpp` rather than `C` because the clang producer's own doc
+    /// comment says its single `Language::C` registration "also covers C++
+    /// files" — one variant, one producer, matching that crate's actual
+    /// coverage rather than the two-way split in `nudox_ir::body::Language`.
+    Cpp,
 }
 
 // ---------------------------------------------------------------------------
@@ -330,42 +383,203 @@ pub enum PackageEvent {
     Done { generation: Gen },
 }
 
-/// Placeholder project event — emitted by the `resolve_project` stub.
+/// Events emitted by project resolution once it exists.
+///
+/// **No value of this type is produced today.**
+/// [`EngineHandle::resolve_project`] returns `Err(Unimplemented)` rather than a
+/// stream, so this enum currently describes the shape M3 will fill in and
+/// nothing more. It is kept — rather than deleted — because
+/// [`EngineHandle::resolve_project`]'s `Ok` type has to name *something*, and a
+/// named type with a doc comment is a better placeholder than a type parameter
+/// nobody can read.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ProjectEvent {
-    /// Stub — project resolution not implemented yet (M3 work).
-    Done { generation: Gen },
+    /// Terminal — every package under the requested root has been reported.
+    Done {
+        /// The generation this stream was opened for.
+        generation: Gen,
+    },
 }
 
-/// Placeholder sync event — emitted by the `sync` stub.
+/// Events emitted by the sync plane once it exists.
+///
+/// **No value of this type is produced today** — see [`ProjectEvent`] for why
+/// the type still exists.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum SyncEvent {
-    /// Stub.
+    /// Nothing is being fetched or re-indexed.
     Idle,
 }
 
-/// Placeholder job event — emitted by the `jobs` stub.
+/// Events emitted by the job plane once it exists.
+///
+/// **No value of this type is produced today** — see [`ProjectEvent`] for why
+/// the type still exists.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum JobEvent {
-    /// Stub.
+    /// No job is running.
     Idle,
 }
 
-/// A fire-and-forget command to the engine (cancel job, pin, retry, etc.).
+/// A fire-and-forget command to the engine (cancel job, pin, retry, …).
+///
+/// The single [`Noop`](Self::Noop) variant is a placeholder, not a command the
+/// engine honours: there is no command channel into the runtime yet, so
+/// [`EngineHandle::command`] rejects every value of this type — including this
+/// one. Accepting `Noop` "because doing nothing succeeds" would make the plane
+/// look alive to the one caller most likely to probe it.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ClientCommand {
-    /// No-op stub.
+    /// Placeholder. See the type-level docs — this is *not* accepted.
     Noop,
+}
+
+// ---------------------------------------------------------------------------
+// Unbuilt capabilities (LIMITATIONS.md L37)
+// ---------------------------------------------------------------------------
+
+/// A milestone in GUI-LOCAL-PLAN §L10.
+///
+/// Carried by [`Unimplemented`] so a caller can say *when* rather than only
+/// *no*. An enum rather than a `&'static str` because a milestone is a domain
+/// value that crosses a crate boundary (§L7.1), and because a UI that wants to
+/// hide "M4" behind "a future release" must be able to match on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum Milestone {
+    /// M3 — the shell.
+    M3,
+    /// M4 — search, jobs, and the command channel.
+    M4,
+}
+
+impl std::fmt::Display for Milestone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::M3 => f.write_str("M3"),
+            Self::M4 => f.write_str("M4"),
+        }
+    }
+}
+
+/// A plane of the [`EngineHandle`] API whose signature exists but whose
+/// behaviour does not.
+///
+/// # Why this is an enum and not four separate error types
+///
+/// All four planes fail for the same *kind* of reason — the subsystem behind
+/// them has not been built — and a caller's response is the same in each case:
+/// render "unavailable", not "empty". One enum keeps that decision in one
+/// `match`, and adding a fifth plane (or deleting one as it lands) is a
+/// compile-time event at every call site rather than a silent behaviour change.
+///
+/// `#[non_exhaustive]` because this list shrinks as milestones land, and
+/// `lindsey` must not need a new release to keep compiling when it does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EngineCapability {
+    /// [`EngineHandle::resolve_project`] — discovering the packages under a
+    /// workspace root and watching them for changes.
+    ProjectResolution,
+    /// [`EngineHandle::sync`] — the long-lived fetch/re-index progress stream.
+    Sync,
+    /// [`EngineHandle::jobs`] — the long-lived producer-job stream.
+    Jobs,
+    /// [`EngineHandle::command`] — the client → engine command channel.
+    Commands,
+}
+
+impl EngineCapability {
+    /// The milestone that owns building this plane (GUI-LOCAL-PLAN §L10).
+    pub fn milestone(self) -> Milestone {
+        match self {
+            Self::ProjectResolution => Milestone::M3,
+            Self::Sync | Self::Jobs | Self::Commands => Milestone::M4,
+        }
+    }
+
+    /// The concrete thing that has to exist before this plane can.
+    ///
+    /// Recorded here rather than in a plan document because a caller reading
+    /// the error is the reader most likely to want it, and because a reason
+    /// that lives next to the `match` cannot drift out of step with the list
+    /// of capabilities the way a prose file can.
+    pub fn blocked_on(self) -> &'static str {
+        match self {
+            Self::ProjectResolution => {
+                "a filesystem walk in the engine plus an `EngineHandle` method that can add a \
+                 discovered package to a running corpus; today packages can only be supplied to \
+                 `Engine::start_with_producer`, so a resolved list could not be acted on"
+            }
+            Self::Sync => {
+                "a file-watching subsystem — no watcher dependency is present in this workspace \
+                 and packages are loaded once at `start*` time and never re-indexed"
+            }
+            Self::Jobs => {
+                "a job registry in `runtime.rs`; producer work is spawned there today but is \
+                 only observable as `PackageLoadEvent`, which carries no job identity"
+            }
+            Self::Commands => "a command channel into the engine runtime, and commands to put on it",
+        }
+    }
+}
+
+impl std::fmt::Display for EngineCapability {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ProjectResolution => "project resolution",
+            Self::Sync => "the sync plane",
+            Self::Jobs => "the job plane",
+            Self::Commands => "the command channel",
+        })
+    }
+}
+
+/// The engine was asked for a plane that this build does not have.
+///
+/// # Why a typed error and not an empty stream
+///
+/// This is the whole point of LIMITATIONS.md L37. An immediately-closed
+/// receiver and a receiver that is merely quiet are the same value to a caller,
+/// so a UI wired to one renders "no jobs" — a claim — where the truth is "we
+/// cannot answer". Returning `Err` moves the decision to the call site, where
+/// the caller has to choose between "unavailable" and "empty" in code a
+/// reviewer can see.
+///
+/// Only [`capability`](Self::capability) is stored; the milestone and the
+/// blocker are *derived* from it (doctrine §8: never accumulate alongside what
+/// you can compute), so the three can never disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]
+#[error(
+    "{capability} is not implemented in this build ({} work): blocked on {}",
+    .capability.milestone(),
+    .capability.blocked_on(),
+)]
+pub struct Unimplemented {
+    /// Which plane was asked for.
+    pub capability: EngineCapability,
+}
+
+impl Unimplemented {
+    /// The milestone that will make this call succeed.
+    pub fn milestone(&self) -> Milestone {
+        self.capability.milestone()
+    }
 }
 
 impl EngineHandle {
     /// Open a package's API surface as a streaming [`PackageEvent`] sequence.
     ///
     /// **Stub (M4).** Returns an immediately-`Done` stream.
+    ///
+    /// This carries the same defect the four planes below were fixed for
+    /// (LIMITATIONS.md L37) — a `Done` with no sections is indistinguishable
+    /// from a package with no API — and is left alone here only because it was
+    /// outside the assigned scope of that fix. It has no callers.
     pub fn open_package(
         &self,
         _id: nudox_ir::change::PackageLineageId,
@@ -380,36 +594,215 @@ impl EngineHandle {
 
     /// Resolve a project workspace and stream package discovery events.
     ///
-    /// **Stub (M3).** Returns an immediately-`Done` stream.
-    pub fn resolve_project(&self, _root: PathBuf) -> (StreamHandle, flume::Receiver<ProjectEvent>) {
-        let generation = Gen(0);
-        let (tx, rx) = flume::bounded::<ProjectEvent>(32);
-        let (_, cancel_fn) = Self::make_cancel();
-        let handle = StreamHandle::new(generation, cancel_fn);
-        let _ = tx.try_send(ProjectEvent::Done { generation });
-        (handle, rx)
+    /// **Always `Err`** ([`EngineCapability::ProjectResolution`]). The engine
+    /// has no filesystem walk, and — decisively — no way to add a discovered
+    /// package to a corpus that is already running, so even a correct list
+    /// could not be opened. Returning `Ok` with an empty stream would report
+    /// "this directory contains no packages" about a directory nobody looked
+    /// at.
+    pub fn resolve_project(
+        &self,
+        _root: PathBuf,
+    ) -> Result<(StreamHandle, flume::Receiver<ProjectEvent>), Unimplemented> {
+        Err(Unimplemented {
+            capability: EngineCapability::ProjectResolution,
+        })
     }
 
     /// Subscribe to the long-lived sync event stream.
     ///
-    /// **Stub (M4).** Returns a receiver that immediately closes.
-    pub fn sync(&self) -> flume::Receiver<SyncEvent> {
-        let (_, rx) = flume::bounded::<SyncEvent>(256);
-        rx
+    /// **Always `Err`** ([`EngineCapability::Sync`]). Nothing re-indexes after
+    /// `start*`, so a silent receiver would mean "everything is up to date"
+    /// when the truth is "nothing is being watched".
+    pub fn sync(&self) -> Result<flume::Receiver<SyncEvent>, Unimplemented> {
+        Err(Unimplemented {
+            capability: EngineCapability::Sync,
+        })
     }
 
     /// Subscribe to the long-lived job event stream.
     ///
-    /// **Stub (M4).** Returns a receiver that immediately closes.
-    pub fn jobs(&self) -> flume::Receiver<JobEvent> {
-        let (_, rx) = flume::bounded::<JobEvent>(256);
-        rx
+    /// **Always `Err`** ([`EngineCapability::Jobs`]). This is the root cause of
+    /// LIMITATIONS.md L29: the Jobs panel had nothing to render because this
+    /// method handed it a receiver that closed immediately, and an empty panel
+    /// read as "no jobs are running".
+    pub fn jobs(&self) -> Result<flume::Receiver<JobEvent>, Unimplemented> {
+        Err(Unimplemented {
+            capability: EngineCapability::Jobs,
+        })
     }
 
     /// Fire-and-forget a command to the engine (cancel job, pin, retry, …).
     ///
-    /// **Stub (M4).** Currently a no-op.
-    pub fn command(&self, _cmd: ClientCommand) {
-        // No-op until M4 wires up the command channel.
+    /// **Always `Err`** ([`EngineCapability::Commands`]). Every value of
+    /// [`ClientCommand`] is rejected, [`ClientCommand::Noop`] included — see
+    /// that type's docs.
+    pub fn command(&self, _cmd: ClientCommand) -> Result<(), Unimplemented> {
+        Err(Unimplemented {
+            capability: EngineCapability::Commands,
+        })
+    }
+
+    /// A handle to the one Tokio runtime in the process (LR-9).
+    ///
+    /// # Why the engine hands this out at all
+    ///
+    /// LR-9 says the engine owns every runtime and `lindsey` links none. That
+    /// rule is what keeps the GUI's foreground pure, but it also means a host
+    /// that must run *one* piece of async work — starting the MCP server
+    /// `lindsey` hosts (GUI-LOCAL-PLAN §L6) — has nowhere to run it. The two
+    /// alternatives are both worse: a second runtime inside `nudox-mcp` breaks
+    /// LR-9 outright and gives the process two thread pools competing for the
+    /// same cores, and moving the MCP server into this crate would invert the
+    /// dependency law (`nudox-mcp` already depends on `nudox-engine`).
+    ///
+    /// So: hosts borrow this runtime, they do not build one. Anything spawned
+    /// on it is bounded by the engine's own lifetime, because the returned
+    /// `Handle` keeps nothing alive — hold the [`EngineHandle`] for as long as
+    /// the spawned work must run.
+    pub fn runtime_handle(&self) -> tokio::runtime::Handle {
+        // `RuntimeGuard`'s inherent `handle()` yields the `&Runtime`; the
+        // second `handle()` is `Runtime::handle`, which yields the cheap
+        // cloneable `Handle`.
+        self.runtime.handle().handle().clone()
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use crate::runtime::{Engine, EngineConfig};
+    use crate::test_support::{StaticSource, lineage};
+
+    /// An engine over an empty corpus. None of the four planes below reads the
+    /// corpus, so a source with no generations is the honest input: it removes
+    /// the "maybe it was just empty" explanation from every failure here.
+    fn engine() -> EngineHandle {
+        engine_with(EngineConfig::default())
+    }
+
+    fn engine_with(config: EngineConfig) -> EngineHandle {
+        Engine::start(config, StaticSource::versions(&lineage("none"), Vec::new()))
+    }
+
+    /// The defect LIMITATIONS.md L37 records: each of the four planes used to
+    /// hand back a channel that a caller could not tell apart from a real,
+    /// empty answer. The invariant is that they now refuse *by type*.
+    #[test]
+    fn the_four_unbuilt_planes_refuse_with_a_named_capability() {
+        let engine = engine();
+
+        assert_eq!(
+            engine
+                .resolve_project(PathBuf::from("/nonexistent"))
+                .err()
+                .map(|e| e.capability),
+            Some(EngineCapability::ProjectResolution),
+        );
+        assert_eq!(
+            engine.sync().err().map(|e| e.capability),
+            Some(EngineCapability::Sync),
+        );
+        assert_eq!(
+            engine.jobs().err().map(|e| e.capability),
+            Some(EngineCapability::Jobs),
+        );
+        assert_eq!(
+            engine.command(ClientCommand::Noop).err().map(|e| e.capability),
+            Some(EngineCapability::Commands),
+        );
+
+        drop(engine);
+    }
+
+    /// `Noop` is the one command a reader would expect to be accepted "because
+    /// doing nothing always works". It is not, and that is deliberate: an
+    /// accepted command would make the plane look alive.
+    #[test]
+    fn even_the_noop_command_is_rejected() {
+        let engine = engine();
+        let err = engine
+            .command(ClientCommand::Noop)
+            .expect_err("no command channel exists, so no command can be delivered");
+        assert_eq!(err.capability, EngineCapability::Commands);
+        assert_eq!(err.milestone(), Milestone::M4);
+        drop(engine);
+    }
+
+    /// Each capability names a *distinct* blocker. A shared "not implemented"
+    /// string would be doctrine §3's `"failed"` message wearing four hats.
+    #[test]
+    fn every_capability_names_its_own_blocker_and_milestone() {
+        let all = [
+            EngineCapability::ProjectResolution,
+            EngineCapability::Sync,
+            EngineCapability::Jobs,
+            EngineCapability::Commands,
+        ];
+
+        let mut seen: Vec<&'static str> = Vec::new();
+        for capability in all {
+            let blocker = capability.blocked_on();
+            assert!(
+                !seen.contains(&blocker),
+                "{capability} reuses another capability's blocker: {blocker}",
+            );
+            seen.push(blocker);
+        }
+
+        assert_eq!(
+            EngineCapability::ProjectResolution.milestone(),
+            Milestone::M3,
+        );
+        for capability in [
+            EngineCapability::Sync,
+            EngineCapability::Jobs,
+            EngineCapability::Commands,
+        ] {
+            assert_eq!(capability.milestone(), Milestone::M4);
+        }
+    }
+
+    /// The message a caller renders has to say which plane and when — a
+    /// bare "unimplemented" would send the reader to the wrong subsystem.
+    #[test]
+    fn the_rendered_error_names_the_plane_the_milestone_and_the_blocker() {
+        let err = Unimplemented {
+            capability: EngineCapability::Jobs,
+        };
+        let text = err.to_string();
+        assert!(text.contains("the job plane"), "{text}");
+        assert!(text.contains("M4"), "{text}");
+        assert!(text.contains("job registry"), "{text}");
+    }
+
+    /// LR-9: the engine owns the process's only runtime, and a host that
+    /// borrows it must get *that* one, not a freshly built pool.
+    ///
+    /// The assertion is on the worker count the engine was configured with —
+    /// a value no default runtime would have — because "is this a live
+    /// runtime?" would pass against a `Runtime::new()` bolted on inside
+    /// `runtime_handle`, which is precisely the mistake this method exists to
+    /// prevent.
+    #[test]
+    fn the_borrowed_runtime_is_the_engines_own_configured_one() {
+        let engine = engine_with(EngineConfig {
+            worker_threads: Some(3),
+            ..EngineConfig::default()
+        });
+        let handle = engine.runtime_handle();
+
+        assert_eq!(
+            handle.metrics().num_workers(),
+            3,
+            "the handle must belong to the runtime `EngineConfig` built, not a new one",
+        );
+
+        // And it must actually drive work: a handle to a shut-down runtime
+        // reports the same worker count.
+        let ran = handle.block_on(async { tokio::spawn(async { 7_u8 }).await });
+        assert_eq!(ran.expect("spawned task must join"), 7);
+
+        drop(engine);
     }
 }

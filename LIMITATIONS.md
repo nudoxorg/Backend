@@ -1763,7 +1763,50 @@ crate, `nudox-engine`, annotated "The ONLY backend crate lindsey may name."
 Wiring MCP in must not breach that — the endpoint has to be started somewhere
 that is allowed to name both.
 
-**Status:** OPEN.
+**Status: RESOLVED, 2026-08-07.** The application starts it, and the doctrine
+tension this entry predicted was real and had to be settled rather than dodged.
+
+The blocker was structural, not a missing call: `McpEndpoint::start`/`stop` are
+`async` and `lindsey` links no runtime (LR-9, LD-2). So the seam was built
+rather than a runtime bolted into the GUI — `EngineHandle::runtime_handle()`
+lets a host *borrow* the engine's one runtime, and `McpHost` (synchronous
+`start`/`stop`) holds its own `EngineHandle` clone so the runtime provably
+outlives the server by **ownership**, not by documented startup ordering.
+
+**The status type is where the real defect was.** The status bar field was
+`Option<SharedString>`, in which one `None` meant four different things: not
+started, failed to bind, stopped, and "this process hosts no server". That
+conflation *is* the bug — a failed bind rendered identically to a process that
+never hosted one. `McpStatus` is now
+`Absent | Listening { url, client_config } | Failed { reason } | Stopped`, and a
+bind failure paints a warning-coloured "mcp unavailable" segment carrying the
+full `#[source]` chain. There is deliberately **no `Starting` variant**:
+`McpHost::start` returns only once the listener is bound, so "queried before
+startup completed" is unrepresentable rather than merely handled.
+
+**On §1:** hosting MCP requires `lindsey` to depend on a second backend crate,
+which §1's old text forbade. Settled by amending §1 rather than by exception —
+see AGENTS-DOCTRINE.md §1 and `workspace/gui/tests/dependency_law.rs`. The short
+version: `lindsey` always had a transitive edge to `nudox-ir`/`-store` at depth 2
+under `nudox-engine`, so the rule could never have meant "no edge"; it meant "no
+direct dependency, therefore no import". `nudox-mcp` sits *beside* lindsey as a
+second view of the same `EngineHandle` — the surface crossing the seam is
+`McpHost`/`McpStatus`, whose vocabulary is `EngineHandle`/`SocketAddr`/`String`.
+No IR type crosses it, and that is now machine-checked instead of reviewed.
+
+**Kept honest by** `workspace/gui/tests/mcp_endpoint.rs` (4 tests) and
+`crates/nudox-mcp/tests/host_lifecycle.rs` (7). The load-bearing one is
+`the_endpoint_the_status_bar_displays_answers_a_real_tools_call`: it starts the
+service the way `main.rs` does, builds the real `StatusBar`, then reads the URL
+*and the credential back out of the status bar* and dials **that string** over
+blocking `std::net` — real `initialize` → `notifications/initialized` →
+`tools/call` — asserting on the decoded JSON-RPC body. Reading the address back
+out of the widget is what makes it a reachability test rather than a test that
+some socket somewhere is open.
+
+Mutation-verified: pointing the displayed URL at a dead port turns 2 of 4 red
+with `Connection refused`; making `cancel()` a no-op turns 2 of 7
+`host_lifecycle` tests red.
 
 ---
 
@@ -1843,7 +1886,38 @@ DoltLite (**source absent** — `workspace/vendor/doltlite/` holds only
 `LICENSE.md` and `VENDORING.md`; its `dolt-engine` feature is off by default and
 would fail to link). Decide which one the brief meant before building to it.
 
-**Status:** OPEN.
+**Status: PARTIALLY RESOLVED, 2026-08-07 — the lying is fixed, the features are
+not built.** Read that distinction literally; it is the whole change.
+
+All four stubs returned an immediately-`Done` stream or a silent receiver, which
+is indistinguishable from "asked and the answer was nothing". Each now returns
+`Result<_, Unimplemented>` carrying an `EngineCapability` that *derives* its
+milestone and its distinct blocker (derived, never stored alongside — the two
+cannot drift). All four had **zero callers**, so this cost no ripple, which is
+also the strongest evidence they were never load-bearing.
+
+Per-method reasoning, because "not implemented" is not one decision made four
+times:
+
+- **`resolve_project`** — the decisive argument is not effort, it is that a
+  correct discovery list could not be acted on: `EngineHandle` has no "add a
+  package to a running corpus" method, and packages reach the engine only via
+  `Engine::start_with_producer`. Implementing the walk would have shipped half a
+  feature *and* a second dead API.
+- **`sync`** — needs a file-watching subsystem that does not exist. A silent
+  receiver claims "everything is up to date" when the truth is "nothing is
+  watched", which is the worse of the two failures.
+- **`jobs`** — the engine does spawn producer work, but it is observable only as
+  `PackageLoadEvent`, which carries no job identity. Projecting one onto the
+  other would invent semantics. This is the root cause of L29.
+- **`command`** — `ClientCommand::Noop` is rejected *too*, deliberately:
+  accepting "the command that does nothing" is exactly what would make the plane
+  look alive to the caller most likely to probe it.
+
+**Still open, and deliberately not fixed here:** `open_package` carries the
+identical immediately-`Done`-stream defect and was outside the assigned four. It
+has no callers, and its doc comment now says so. The daemon and file watching
+remain unbuilt; no `notify` dependency was added.
 
 ---
 
@@ -2349,6 +2423,68 @@ is `ProducerError::YieldContractOutgrown`'s reasoning applied one level up, at
 the corpus. Contrast `p-limit` 5.0.0, which ships one `.d.ts` and is a genuine
 `Expect::Declarations(3)`: the obstruction is the missing type declarations, not
 CommonJS as such.
+
+---
+
+## L48 — Cargo's test autodiscovery cannot see `tests/<dir>/<name>.rs`, and silently says nothing
+
+**Blast radius:** 18 test files across two crates, invisible for their entire
+existence. Not "failing" — never *compiled*, not once.
+
+Cargo's integration-test autodiscovery globs exactly two shapes: `tests/*.rs`
+and `tests/*/main.rs`. A file at `tests/<dir>/<name>.rs` matches neither. It
+gets no target, so it is never built, never run, and — the part that makes this
+a trap rather than an inconvenience — **produces no error**. The crate reports a
+clean suite. `registry` had exactly one target (`lib`) and looked healthy.
+
+Found in two places independently, which is what makes it structural rather
+than an accident:
+
+| crate | files | what they covered |
+|---|---:|---|
+| `registry` | 16 + 2 support modules | the whole vector plane: sharding, packing, hotset admission, scheduler gating, adversarial fanout |
+| `index` | 2 | `object_pack` adversarial + transport |
+
+**A second, independent reason `registry`'s 16 could not have compiled even
+with a target:** every one of them imported a crate named `vector`, which no
+longer exists — it was folded into `registry::vector`. 89 path references had
+gone stale with nothing to notice, because nothing ever type-checked them. Two
+unrelated causes of the same silence, stacked.
+
+**What it cost.** First-ever execution of `registry`'s 16: **102 tests, 97 pass,
+5 fail.** The 5 are real (`merge_hits` ordering and cross-shard tie-break;
+`AdmissionState` rejecting unknown fields from a newer writer; and two
+path-traversal defences that turn out to be **unexercised**, because the `tar`
+crate now refuses to *write* the hostile entry the fixture needs — a
+security-relevant gap where the guard has never actually been tested against a
+hostile archive). Separately, `cargo test -p registry --lib` fails 2 of 177,
+both pre-dating this work.
+
+**The fix, and why it is the right shape.** Explicit `[[test]]` entries naming
+each file, rather than flattening the directory. Flattening would break the two
+shared support modules (`mod common;` / `mod support;` resolve against the
+directory), and — more importantly — an explicit target means deleting or
+renaming a file fails the *manifest*, loudly, instead of silently dropping its
+coverage again. Restating the problem in a form that can recur is not a fix.
+
+**Kept honest by:** the manifest itself. There is no test for this, and there
+cannot usefully be one — the failure mode is a target that does not exist, so
+there is nothing to run. The audit is:
+
+```text
+find workspace crates -path '*/tests/*/*.rs' -not -path '*/vendor/*' \
+  -not -name 'main.rs' -not -name 'mod.rs'
+```
+
+Every result must appear as a `[[test]] path = …` in its crate's manifest.
+Re-run it when adding a test directory.
+
+**Adjacent, unrelated, and now contradicted:** `AGENTS-DOCTRINE.md` §7 states
+the `driver` duplicate-zstd-symbol claim was false and that "nothing in the real
+diagnostic mentions zstd". As of 2026-08-07 `driver` emits
+`ld: duplicate symbol '_ZSTD_*'` between `libzstd_seekable` and `libzstd_sys`
+— as a `warning: linker_messages`, so the link still succeeds. The doctrine's
+text was accurate when written and is not now.
 
 ---
 

@@ -24,6 +24,7 @@ use crate::wire::{
 pub(crate) mod doc_link_table;
 pub(crate) mod parse;
 pub(crate) mod prose;
+pub(crate) mod shortcut;
 
 // Re-export items needed by sibling modules.
 pub(crate) use doc_link_table::DocLinkTable;

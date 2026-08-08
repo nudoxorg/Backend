@@ -19,17 +19,40 @@ with working hyperlinks, real search, and real version lineage — and it must b
 
 ```
 lindsey (GUI, gpui)
-   └─→ nudox-engine
-          ├─→ nudox-graph ─┐
-          └─→ nudox-store ─┴─→ nudox-ir
-                 └─→ nudox-producer ─→ nudox-producer-{rust,go,java,python,typescript,clang,csharp}
-
-nudox-mcp ─→ {nudox-engine, nudox-graph}
+   ├─→ nudox-engine
+   │      ├─→ nudox-graph ─┐
+   │      └─→ nudox-store ─┴─→ nudox-ir
+   │             └─→ nudox-producer ─→ nudox-producer-{rust,go,java,python,typescript,clang,csharp}
+   └─→ nudox-mcp ─→ {nudox-engine, nudox-graph}
 ```
 
-- `lindsey` may name **`nudox-engine` and nothing else** from the backend. Reaching
-  past the engine to `nudox-ir`/`-store`/`-graph` is a review-blocking finding: it
-  would let a *view* depend on the shape of the *IR* instead of on the protocol.
+- `lindsey` may **depend on `nudox-engine` and `nudox-mcp`, and no other backend
+  crate**. Its *source* may `use` neither `nudox-ir`, `nudox-store`, nor
+  `nudox-graph`; doing so is a review-blocking finding, because it would let a
+  *view* depend on the shape of the *IR* instead of on the protocol.
+
+  **This rule previously read "may name `nudox-engine` and nothing else", and the
+  word "name" was doing work it could not support.** `lindsey` has always had a
+  transitive Cargo edge to `nudox-ir` and `nudox-store` — they sit at depth 2
+  under `nudox-engine`, which is unavoidable and was never the concern. So the
+  rule could never have meant "no edge in the dependency graph"; it only ever
+  meant "no direct dependency, therefore no import". Stated that way it is also
+  *checkable*, which the old phrasing was not.
+
+  `nudox-mcp` is admitted because it sits **beside** `lindsey` as a second view
+  of the same `EngineHandle`, not beneath it: the surface `lindsey` touches is
+  `McpHost`/`McpStatus`, whose vocabulary is `EngineHandle`/`SocketAddr`/`String`
+  — no IR type crosses the seam. It is what lets the application actually host
+  the MCP server (LIMITATIONS.md L35); without it that server exists and is never
+  started.
+
+  **Enforced by** `workspace/gui/tests/dependency_law.rs`, not by review. It
+  parses `workspace/gui/Cargo.toml` and fails if any dependency section names a
+  backend crate outside the allow-list, and separately scans every `.rs` under
+  `workspace/gui/src` — with comments stripped, because the GUI legitimately
+  *discusses* `nudox_ir` in doc comments where it mirrors a frozen wire enum —
+  for a real import. A prose rule that only a reviewer can apply is the shape
+  this codebase keeps finding rotted claims in (§8).
 - **None** of engine/graph/store/ir/producer may link `gpui`. The whole protocol
   must be testable without a window.
 - `workspace/gui` is a standalone package with its own lockfile. That is

@@ -20,6 +20,23 @@
 //!
 //! # Quick start
 //!
+//! From a synchronous host — which is what `lindsey` is, and what
+//! [`host::McpHost`] exists for (LIMITATIONS.md L35):
+//!
+//! ```no_run
+//! # fn run(engine: nudox_engine::EngineHandle) -> Result<(), nudox_mcp::McpError> {
+//! use nudox_mcp::McpHost;
+//!
+//! let mut host = McpHost::start(&engine)?;
+//! println!("listening on {:?}", host.url());                 // status bar
+//! println!("{:?}", host.client_config_snippet());            // Settings → Connection
+//! host.stop();                                               // window close
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! From async code, one layer lower:
+//!
 //! ```no_run
 //! # async fn run(engine: nudox_engine::EngineHandle) -> Result<(), nudox_mcp::McpError> {
 //! use nudox_mcp::{McpEndpoint, NudoxMcpServer};
@@ -55,6 +72,7 @@
 
 pub mod endpoint;
 pub mod error;
+pub mod host;
 pub mod key;
 pub mod server;
 pub mod session;
@@ -62,6 +80,7 @@ pub mod tools;
 
 pub use endpoint::{LOOPBACK_BIND, MCP_PATH, McpEndpoint};
 pub use error::McpError;
+pub use host::{DRAIN_TIMEOUT, McpHost, ShutdownOutcome};
 pub use key::SymbolKeyDto;
 pub use server::{NudoxMcpServer, PACKAGE_URI_PREFIX, SCHEMA_URI};
 pub use session::{Session, SessionToken, Unauthenticated};

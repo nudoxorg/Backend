@@ -37,6 +37,8 @@
 
 pub mod head;
 pub mod plan;
+/// Deriving the link-repair count from the rendered runs themselves.
+pub mod repair_audit;
 pub mod sections;
 pub mod signature;
 

@@ -176,6 +176,18 @@ impl McpEndpoint {
             .unwrap_or_else(|_| String::from("{\"error\":\"failed to render client config\"}"))
     }
 
+    /// Signal shutdown without waiting for the drain.
+    ///
+    /// Split out of [`stop`](Self::stop) because the two callers want different
+    /// halves of it: a host that is quitting wants the drain, and a `Drop` impl
+    /// wants only the guarantee that the socket closes — blocking in `Drop`
+    /// turns a forgotten `stop` into a hang. Cancelling twice is harmless
+    /// (`CancellationToken::cancel` is idempotent), so `stop` still calls this
+    /// path rather than duplicating it.
+    pub fn cancel(&self) {
+        self.shutdown.cancel();
+    }
+
     /// Stop the server and wait for in-flight requests to drain.
     ///
     /// Called on window close (§L6 lifecycle).

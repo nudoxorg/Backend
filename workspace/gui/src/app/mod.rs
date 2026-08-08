@@ -20,3 +20,4 @@
 pub mod actions;
 pub mod corpus;
 pub mod keymaps;
+pub mod mcp;

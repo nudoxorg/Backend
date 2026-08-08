@@ -21,6 +21,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberI
 
 use lindsey::app::corpus::{self, CorpusChoice};
 use lindsey::app::keymaps;
+use lindsey::app::mcp::McpService;
 use lindsey::highlight::TreeSitterHighlighter;
 use lindsey::motion::tokens::MotionTokens;
 use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
@@ -28,7 +29,7 @@ use lindsey::theme::ext::NudoxThemeExt;
 use lindsey::workspace::shell::Shell;
 
 use nudox_engine::runtime::{Engine, EngineConfig};
-use nudox_engine::{PackageSpec, ProducerLanguage};
+use nudox_engine::PackageSpec;
 
 fn main() {
     tracing_subscriber::registry()
@@ -75,6 +76,7 @@ fn main() {
             tracing::info!(
                 package = %pkg.name,
                 root = %pkg.root.display(),
+                language = ?pkg.language,
                 "corpus: live producer",
             );
             let requested = vec![pkg.name.clone()];
@@ -82,7 +84,7 @@ fn main() {
                 root: pkg.root,
                 name: pkg.name,
                 version: pkg.version,
-                language: ProducerLanguage::Rust,
+                language: pkg.language,
             };
             (Engine::start_with_producer(config, vec![spec]), requested)
         }
@@ -106,6 +108,39 @@ fn main() {
             // census (§5.4). Every animation helper reads it, so it must be
             // installed before the first frame renders.
             cx.set_global(MotionTokens::new(1.0));
+
+            // ── The hosted MCP server (GUI-LOCAL-PLAN §L6) ──────────────────
+            //
+            // "Started by lindsey after the engine, stopped on window close."
+            // Until 2026-08-07 that sentence described an integration that did
+            // not exist: the server was complete and tested and nothing ever
+            // called it (LIMITATIONS.md L35).
+            //
+            // Started *here*, before the window, for the same reason the engine
+            // is: the bind is a loopback `listen(2)` and completes in
+            // microseconds, so an agent can attach as soon as the app is up,
+            // and the very first frame already knows the port. A failure is not
+            // fatal — `McpService::start` turns it into a visible
+            // `McpStatus::Failed` in the status bar, because a documentation
+            // browser that cannot host an agent endpoint is still a working
+            // documentation browser.
+            //
+            // A GPUI global rather than shell state: §L6 is one endpoint per
+            // process, and the server must outlive any particular window.
+            cx.set_global(McpService::start(&engine));
+
+            // Stop it on quit. GPUI runs quit handlers with a bounded timeout
+            // before the process exits, which is the only hook that reliably
+            // fires — `Drop` on a global is not guaranteed to run when AppKit
+            // terminates the process. `McpHost::drop` still cancels the
+            // listener as a backstop, so the socket closes either way; this
+            // hook is what buys the clean drain of in-flight agent requests.
+            cx.on_app_quit(|cx| {
+                let outcome = cx.update_global::<McpService, _>(|service, _| service.stop());
+                tracing::info!(?outcome, "mcp server stopped");
+                async {}
+            })
+            .detach();
 
             // ── Keymap (Appendix B) ─────────────────────────────────────────
             //

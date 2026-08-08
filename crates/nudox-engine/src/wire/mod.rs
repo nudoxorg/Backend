@@ -42,6 +42,13 @@ pub use nudox_ir::change::{
 pub use nudox_ir::entry::Visibility;
 pub use nudox_ir::kind::KindDiscriminant;
 
+// The typed record of an intra-doc link whose spelling we corrected. It lives
+// in its own file because it is a *closed* vocabulary that several unrelated
+// consumers (the GUI legend, the corpus audit) must match exhaustively; see
+// its module docs for why a silent repair is the defect this exists to kill.
+pub mod repair;
+pub use repair::{LinkOrigin, LinkRepair, LinkRepairKind};
+
 // ---------------------------------------------------------------------------
 // Serialisation helpers
 // ---------------------------------------------------------------------------
@@ -572,7 +579,16 @@ pub enum InlineRun {
     /// Emphasis/italic text.
     Em { text: SharedStr },
     /// A hyperlink.
-    Link { text: SharedStr, target: LinkTarget },
+    ///
+    /// `origin` is **not** optional and has no `Default`: you cannot emit a
+    /// link into this protocol without answering whether its spelling was the
+    /// author's or ours. That is the whole mechanism by which a repair cannot
+    /// be silent — see [`repair`] for the reasoning.
+    Link {
+        text: SharedStr,
+        target: LinkTarget,
+        origin: LinkOrigin,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -754,6 +770,26 @@ pub struct SymbolHead {
     pub provenance: Provenance,
     /// Deprecation message, if any.
     pub deprecation: Option<SharedStr>,
+
+    // ── Cfg gating ─────────────────────────────────────────────────────────────
+    //
+    // Some symbols only exist under a particular feature flag or target — a
+    // reader who cannot see that is one `cargo build` away from a confusing
+    // "unresolved item" error. docs.rs renders this as a prominent "Available
+    // on crate feature `x` only" badge on the item page; a symbol page that
+    // renders nothing here is telling the reader less than the tool we claim
+    // to beat.
+    /// The `#[cfg(...)]` predicate gating this symbol, rendered exactly as
+    /// Rust surface syntax (`cfg(feature = "std")`, `cfg(target_os =
+    /// "windows")`, …) so a reader who knows Rust can read it directly, with
+    /// no producer-specific vocabulary to learn.
+    ///
+    /// `None` means the symbol is unconditionally compiled in, *or* the
+    /// producer did not analyse cfg attributes for this symbol — the two are
+    /// indistinguishable on the wire today, mirroring `Symbol::cfg` in
+    /// `nudox-ir`.
+    pub cfg: Option<SharedStr>,
+
     /// What will stream, in order, plus geometry hints for skeleton pre-layout
     /// (§9.4).  Computed by the same walk that emits the sections — not
     /// estimated — so the skeleton is *derived* geometry, not a guess.

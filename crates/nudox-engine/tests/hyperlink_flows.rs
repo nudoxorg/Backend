@@ -11,6 +11,11 @@
 //! exercises the full pipeline so that the regression is impossible at the
 //! call-site level.
 //!
+//! (`expand_shortcut_links` was deleted on 2026-08-06 — it was a second,
+//! live-compiling way to construct a resolved link with no spelling and no
+//! `LinkOrigin`, which is exactly the bypass the `shortcut_link` chokepoint
+//! exists to forbid. Its tests went with it; see `chunk/walk/tests.rs`.)
+//!
 //! `chunk::chunk` is the public function declared in `src/chunk/mod.rs`:
 //! ```
 //! pub fn chunk(intro, view, package) -> Option<(SymbolHead, Vec<RenderSection>)>
@@ -43,7 +48,9 @@ use nudox_ir::{
 use nudox_store::package::{PackageView, Provenance};
 
 use nudox_engine::chunk;
-use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
+use nudox_engine::wire::{
+    InlineRun, LinkOrigin, LinkRepairKind, LinkTarget, ProseBlock, RenderSection,
+};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -193,6 +200,7 @@ fn bare_shortcut_link_becomes_symbol_link_through_chunk() {
         InlineRun::Link {
             text,
             target: LinkTarget::Symbol { key },
+            origin,
         } => {
             assert_eq!(
                 &**text, "child_fn",
@@ -201,6 +209,12 @@ fn bare_shortcut_link_becomes_symbol_link_through_chunk() {
             assert_eq!(
                 key.intro, child_id,
                 "link must point at the child's IntroId"
+            );
+            assert_eq!(
+                *origin,
+                LinkOrigin::Authored,
+                "`[child_fn]` is rustdoc's documented intra-doc-link syntax, so \
+                 rendering a link from it is fidelity, not a repair"
             );
         }
         other => panic!("expected Link(Symbol), got {other:?}"),
@@ -238,10 +252,95 @@ fn backtick_shortcut_link_becomes_symbol_link_through_chunk() {
         InlineRun::Link {
             text,
             target: LinkTarget::Symbol { key },
+            origin,
         } => {
             // pulldown-cmark's `Code` event strips the backticks, so the text is bare.
             assert_eq!(&**text, "child_fn");
             assert_eq!(key.intro, child_id);
+            // `` [`child_fn`] `` opens with `Text("[")` — the *canonical*
+            // delimiter. The `Code` event this test is about is the run's
+            // *inner* content, not its opener, so this is rustdoc's own
+            // spelling and must be `Authored`. The transposed opener
+            // (`` `[child_fn`] ``) is a different shape entirely and is
+            // pinned by `transposed_backtick_shortcut_is_recorded_as_a_repair`
+            // below.
+            assert_eq!(*origin, LinkOrigin::Authored);
+        }
+        other => panic!("expected Link(Symbol), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transposed opener `` `[Foo`] `` → Symbol link, RECORDED as a repair
+// ---------------------------------------------------------------------------
+
+/// The one malformed spelling we repair, end-to-end through the public `chunk`
+/// API, asserted to arrive at the GUI seam **marked**.
+///
+/// # Why this test fails if the repair goes silent again
+///
+/// It does not merely check that `` `[child_fn`] `` becomes a link — the older
+/// tests already did that, and that is exactly the state in which the repair
+/// was invisible. It checks that the link carries
+/// `LinkOrigin::Repaired(TransposedOpenDelimiter)` with the author's bytes in
+/// `raw`. Deleting the record, or widening `shortcut_link` to hand back
+/// `Authored`, turns this red.
+///
+/// The source spelling is the real one from `memchr-2.8.3/src/memchr.rs:282`:
+/// backtick first, then bracket. CommonMark binds code spans tighter than link
+/// brackets, so pulldown-cmark emits `Code("[child_fn")` + `Text("] for …")`
+/// and rustdoc — and therefore docs.rs — renders it as literal text.
+#[test]
+fn transposed_backtick_shortcut_is_recorded_as_a_repair() {
+    let (pkg, root_id, child_id) = two_entry_pkg(
+        "See `[child_fn`] for details.",
+        vec![DocLink {
+            target: "child_fn".to_owned(),
+            label: Some("child_fn".to_owned()),
+        }],
+        "child_fn",
+    );
+
+    let runs = first_paragraph_runs(&pkg, root_id);
+
+    let link = runs
+        .iter()
+        .find(|r| matches!(r, InlineRun::Link { .. }))
+        .unwrap_or_else(|| {
+            panic!("the transposed spelling must still produce a Link; got: {runs:?}")
+        });
+
+    match link {
+        InlineRun::Link {
+            text,
+            target: LinkTarget::Symbol { key },
+            origin,
+        } => {
+            assert_eq!(&**text, "child_fn");
+            assert_eq!(key.intro, child_id);
+            match origin {
+                LinkOrigin::Repaired(repair) => {
+                    assert_eq!(repair.kind, LinkRepairKind::TransposedOpenDelimiter);
+                    assert_eq!(
+                        &*repair.raw, "`[child_fn`]",
+                        "the evidence must be the author's bytes — a \
+                         reconstruction of the canonical spelling would tell the \
+                         reader we changed nothing"
+                    );
+                    assert_eq!(&*repair.resolved, "child_fn");
+                    assert!(
+                        repair.note.contains("`[child_fn`]"),
+                        "the note the GUI shows verbatim must name the original \
+                         spelling; got {:?}",
+                        repair.note
+                    );
+                }
+                LinkOrigin::Authored => panic!(
+                    "SILENT REPAIR: `[child_fn`] is not rustdoc's syntax — \
+                     rustdoc and docs.rs render it as literal text. Rendering a \
+                     link from it is a repair and must be recorded as one."
+                ),
+            }
         }
         other => panic!("expected Link(Symbol), got {other:?}"),
     }
@@ -457,11 +556,17 @@ fn real_markdown_url_link_stays_url_link() {
         InlineRun::Link {
             text,
             target: LinkTarget::Url { url },
+            origin,
         } => {
             assert_eq!(&**text, "docs", "link text must be 'docs'");
             assert!(
                 url.contains("docs.rs"),
                 "URL must be preserved; got: {url:?}"
+            );
+            assert_eq!(
+                *origin,
+                LinkOrigin::Authored,
+                "an explicit CommonMark link is authored by definition"
             );
         }
         _ => unreachable!(),

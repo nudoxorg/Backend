@@ -24,6 +24,7 @@ use gpui::{
     Context, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
 };
 
+use crate::app::mcp::McpStatus;
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use crate::ui::ProvenanceDot;
 use gpui::prelude::*;
@@ -51,9 +52,17 @@ pub struct StatusBar {
     /// the render body allocates and re-shapes on every one of the 120 frames
     /// a second this bar is visible.
     diagnostics_label: SharedString,
-    /// The loopback endpoint of the hosted MCP server (GUI-LOCAL-PLAN §L6),
-    /// or `None` before it has bound its port.
-    mcp_endpoint: Option<SharedString>,
+    /// What the hosted MCP server is doing (GUI-LOCAL-PLAN §L6).
+    ///
+    /// A [`McpStatus`], not an `Option<SharedString>`. The old field could not
+    /// distinguish "not started", "failed to bind", "stopped" and "this
+    /// process hosts no server" — all four were `None`, so a server that had
+    /// crashed on start-up rendered identically to one that was never asked
+    /// for. That is LIMITATIONS.md L35's second half; see `app::mcp`.
+    mcp: McpStatus,
+    /// Pre-rendered MCP segment, refreshed on transition rather than per frame
+    /// (§1.1.4). `None` hides the segment.
+    mcp_label: Option<SharedString>,
     /// Rolling p95 frame time, debug builds only (§25.2).
     frame_p95_ms: Option<f32>,
     /// Cached rendering of `frame_p95_ms`, refreshed at 4 Hz by the HUD sampler.
@@ -72,7 +81,11 @@ impl StatusBar {
             sync_label: SharedString::from("idle"),
             diagnostics: None,
             diagnostics_label: SharedString::default(),
-            mcp_endpoint: None,
+            // Cold start hosts nothing. `main` replaces this the moment the
+            // service is installed; a test app never does, and `Absent` is the
+            // true statement in that case rather than a placeholder.
+            mcp: McpStatus::Absent,
+            mcp_label: None,
             frame_p95_ms: None,
             frame_label: SharedString::from("—"),
         }
@@ -101,14 +114,31 @@ impl StatusBar {
         cx.notify();
     }
 
-    /// Publish the MCP endpoint once the server has bound its ephemeral port.
-    pub fn set_mcp_endpoint(
-        &mut self,
-        endpoint: Option<SharedString>,
-        cx: &mut Context<Self>,
-    ) {
-        self.mcp_endpoint = endpoint;
+    /// Publish what the hosted MCP server is doing (GUI-LOCAL-PLAN §L6).
+    ///
+    /// Called by `Shell::new` from [`McpStatus::from_app`] and again on quit.
+    /// The label is derived here so the rendered text is a pure function of the
+    /// status — a segment that said "listening" while the status said `Stopped`
+    /// would be the same class of drift the status enum exists to remove.
+    pub fn set_mcp(&mut self, status: McpStatus, cx: &mut Context<Self>) {
+        self.mcp_label = status.label();
+        self.mcp = status;
         cx.notify();
+    }
+
+    /// What the status bar currently believes about the MCP server.
+    ///
+    /// Exposed for `tests/mcp_endpoint.rs`, which takes the URL out of *this*
+    /// value and opens a socket to it: the invariant under test is that the
+    /// endpoint the reader sees is one a client can reach, and that is only
+    /// testable if the test can read what the reader sees.
+    pub fn mcp(&self) -> &McpStatus {
+        &self.mcp
+    }
+
+    /// The exact text painted in the MCP segment, or `None` when it is hidden.
+    pub fn mcp_label(&self) -> Option<&SharedString> {
+        self.mcp_label.as_ref()
     }
 
     /// Update the frame-time readout. Called at 4 Hz, not per frame — the
@@ -194,15 +224,25 @@ impl Render for StatusBar {
         // Push the right-hand cluster to the far edge.
         bar = bar.child(div().flex_1());
 
-        if let Some(endpoint) = &self.mcp_endpoint {
+        // A failed server is painted in the warning colour, not hidden: §L6's
+        // whole promise is that an agent can reach this window, and silently
+        // dropping the segment is what made LIMITATIONS.md L35 invisible for
+        // as long as it was.
+        if let Some(label) = &self.mcp_label {
+            let mcp_colour = if self.mcp.is_failure() {
+                colours.warn
+            } else {
+                colours.fg_muted
+            };
             bar = bar.child(
                 div()
                     .id("status.mcp")
                     .px(space.space_2)
                     .rounded(space.r_sm)
+                    .text_color(mcp_colour)
                     .cursor_pointer()
                     .hover(|s| s.bg(colours.bg_hover).text_color(colours.fg_default))
-                    .child(endpoint.clone()),
+                    .child(label.clone()),
             );
         }
 

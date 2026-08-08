@@ -51,29 +51,34 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     Focusable, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
     prelude::FluentBuilder as _,
 };
+use gpui_component::IconName;
 use gpui_component::dock::{
         DockArea, DockEvent, DockItem, DockPlacement, Panel, PanelEvent, PanelState,
-        PanelView, PanelInfo, DockAreaState, register_panel,
+        PanelView, PanelInfo, DockAreaState, TitleStyle, register_panel,
     };
 use serde_json::Value as JsonValue;
 
-use crate::app::actions::{OpenOmniSearch, ToggleBottomDock, ToggleLeftDock};
+use crate::app::actions::{
+    OpenCommandPalette, OpenOmniSearch, ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
+};
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
 use crate::stores::symbol::TabId as DocTabId;
 use crate::stores::events::{PackageActivated, PackagesChanged};
 use crate::stores::{PackageStore, SearchStore, SymbolStore};
 use crate::views::project_panel::ProjectPanel;
+use crate::app::mcp::McpStatus;
 use crate::theme::ext::ThemeExtAccessor as _;
+use crate::views::command_overlay::{CommandOverlay, CommandOverlayEvent, CommandOverlayMode};
 use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
 use crate::views::symbol_page::SymbolPage;
 use crate::workspace::overlays::{OverlayKind, OverlayStack};
-use crate::workspace::pane::{Pane, PaneEvent, TabId as PaneTabId};
+use crate::workspace::pane::{Activation, Pane, PaneEvent, TabId as PaneTabId};
 use crate::workspace::status_bar::StatusBar;
 use gpui::prelude::*;
 
@@ -115,25 +120,57 @@ pub struct Banner {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Placeholder panel views (TODO(views))
+// Dock panels that have no data source yet
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Macro to generate a minimal placeholder panel with a fixed panel name.
+/// A dock panel whose data source does not exist yet, rendered as a designed
+/// empty state.
+///
+/// # What this used to say, and why that was a defect
+///
+/// The generated panels used to render their own `TODO(views):
+/// crate::views::jobs_panel` scaffolding note, centred, in the product's own
+/// type, in a user-visible dock (GUI-WORKORDER-2 F9,
+/// `.shots/memchr/17-bottom-dock-open.png`). A placeholder is a claim too: it
+/// is read by a user, not by the author who wrote it, and a Rust module path
+/// is not an answer to "what would be here?".
+///
+/// The empty states below therefore say what *the reader* would see once the
+/// surface is populated — the LD-9 / LD-16 rule that an empty state is a
+/// designed state, not an absence. They deliberately do not promise a date, a
+/// version, or a feature name.
+///
+/// # Why the tab label and the empty-state title are two parameters
+///
+/// They answer two different questions. The dock tab has to say what the
+/// surface *is* (`Jobs`) so the reader can find it again; the body has to say
+/// what the reader is looking at *right now* (`No running jobs`). Collapsing
+/// them is how a body ends up repeating its own tab label and then needing a
+/// second line to carry any content — which is the shape the `TODO(views)`
+/// line grew in.
+///
+/// # Why the `$icon` and `$caption` are macro parameters and not a default
+///
+/// So that adding a panel forces the author to answer "what does the reader see
+/// here when it works?" at the definition site. There is no fallback caption to
+/// inherit, which is what let one of these ship naming a module path.
 ///
 /// Each generated panel:
 /// - Implements `Panel` + `Focusable` + `EventEmitter<PanelEvent>` + `Render`.
-/// - Renders a designed empty state (LD-9/LD-16): centred label + caption.
+/// - Renders `ui::EmptyState` (icon, title, caption) — the same component every
+///   other empty surface in the app uses, so these do not become a second,
+///   divergent look.
 /// - Has `closable = false` so it cannot accidentally be removed from the dock.
 macro_rules! placeholder_panel {
     (
         $name:ident,
         $panel_name_str:literal,
-        $title:literal,
+        $tab_label:literal,
+        $empty_title:literal,
+        $icon:expr,
         $caption:literal
     ) => {
-        /// Placeholder for $title.
-        ///
-        /// TODO(views): replace with the real view module once authored.
+        /// A dock panel for $tab_label whose data source is not wired yet.
         pub struct $name {
             focus: FocusHandle,
         }
@@ -162,7 +199,17 @@ macro_rules! placeholder_panel {
                 _: &mut Window,
                 _: &mut Context<Self>,
             ) -> impl IntoElement {
-                div().child(SharedString::from($title))
+                div().child(SharedString::from($tab_label))
+            }
+
+            // Without this override, `TabPanel::render_title_bar` never calls
+            // `.text_color(..)` on the header row (it only does so `when_some`
+            // a `TitleStyle` is returned) and the title falls back to GPUI's
+            // unthemed black default — invisible on a dark base surface. See
+            // `NudoxThemeExt::panel_title_style` for why this is a role gap,
+            // not a wrong-colour pick.
+            fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+                Some(cx.theme_ext().panel_title_style())
             }
 
             fn closable(&self, _: &App) -> bool {
@@ -184,27 +231,15 @@ macro_rules! placeholder_panel {
                 _: &mut Window,
                 cx: &mut Context<Self>,
             ) -> impl IntoElement {
-                let theme = cx.theme_ext().clone();
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap(theme.space.space_2)
-                    .child(
-                        div()
-                            .text_size(theme.type_scale.ui.size)
-                            .text_color(theme.colours.fg_muted)
-                            // TODO(views): replace with EmptyState component.
-                            .child(SharedString::from($title)),
-                    )
-                    .child(
-                        div()
-                            .text_size(theme.type_scale.caption.size)
-                            .text_color(theme.colours.fg_faint)
-                            .child(SharedString::from($caption)),
-                    )
+                let motion = crate::motion::tokens::MotionTokens::new(
+                    cx.theme_ext().motion_scale,
+                );
+                div().size_full().child(crate::ui::EmptyState::new(
+                    $icon,
+                    SharedString::from($empty_title),
+                    SharedString::from($caption),
+                    motion,
+                ))
             }
         }
     };
@@ -219,22 +254,34 @@ placeholder_panel!(
     SearchPanel,
     "search-panel",
     "Search",
-    "TODO(views): crate::views::omni_search"
+    "Nothing searched yet",
+    IconName::Search,
+    "Press ⌘K to search symbols, signatures and prose across the loaded corpus."
 );
 
 // Bottom dock panels.
+//
+// `JobsPanel` has no data source to render even when the reader is loading a
+// package: `EngineHandle::jobs()` hands back an already-closed receiver
+// (LIMITATIONS.md L37), so the engine's job stream is a documented stub and
+// there is nothing here for `lindsey` to subscribe to. That is a backend gap;
+// what this crate owns is not lying about it.
 placeholder_panel!(
     JobsPanel,
     "jobs-panel",
     "Jobs",
-    "TODO(views): crate::views::jobs_panel"
+    "No running jobs",
+    IconName::LayoutDashboard,
+    "Package loads, re-indexing and version switches appear here while they run."
 );
 
 placeholder_panel!(
     LogsPanel,
     "logs-panel",
     "Logs",
-    "TODO(views): crate::views::log_panel"
+    "No log output",
+    IconName::SquareTerminal,
+    "Diagnostics from the engine and its producers appear here."
 );
 
 // Right dock panel.
@@ -242,7 +289,9 @@ placeholder_panel!(
     OutlinePanel,
     "outline-panel",
     "Outline",
-    "TODO(views): crate::views::outline_panel"
+    "No document open",
+    IconName::GalleryVerticalEnd,
+    "Open a symbol and its sections are listed here."
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -279,6 +328,12 @@ impl Panel for CenterPanel {
         div().child(SharedString::from("Editor"))
     }
 
+    // See the identical comment in `placeholder_panel!` — without this the
+    // "Editor" header renders unthemed black text on a near-black surface.
+    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+        Some(cx.theme_ext().panel_title_style())
+    }
+
     fn closable(&self, _: &App) -> bool {
         false
     }
@@ -296,6 +351,56 @@ impl Render for CenterPanel {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().size_full().overflow_hidden().child(self.pane.clone())
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PresentedOverlay — the one live overlay view (§13.5, L15)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The view behind a view-backed [`OverlayKind`].
+///
+/// An enum rather than an `AnyView` because the shell needs the view's
+/// `FocusHandle` at present time, and `AnyView` cannot produce one. Adding a
+/// fourth overlay surface breaks both `match`es below, which is the point: a
+/// surface that has no answer for "what do I focus?" cannot be presented.
+enum OverlayView {
+    /// `cmd-K` fused search (§15).
+    OmniSearch(Entity<OmniSearch<SearchStore>>),
+    /// `?` cheat sheet and `cmd-shift-P` palette — one view, two modes.
+    Command(Entity<CommandOverlay>),
+}
+
+impl OverlayView {
+    /// The element the overlay layer renders.
+    fn any_view(&self) -> AnyView {
+        match self {
+            Self::OmniSearch(view) => view.clone().into(),
+            Self::Command(view) => view.clone().into(),
+        }
+    }
+
+    /// Where keyboard focus goes while this overlay is up.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Self::OmniSearch(view) => view.read(cx).focus_handle(cx),
+            Self::Command(view) => view.read(cx).focus_handle(cx),
+        }
+    }
+}
+
+/// A live overlay: its kind, its view, and the subscriptions it owns.
+///
+/// **Structural guarantee:** dropping this closes the overlay completely — the
+/// view's reference count falls and every `Subscription` it registered is
+/// unregistered with it (LD-18, the same one-drop rule as
+/// [`crate::workspace::pane::ItemSlot`]). There is no manual teardown call to
+/// forget.
+struct PresentedOverlay {
+    /// Which stack entry this view belongs to, so dismissal pops the right one.
+    kind: OverlayKind,
+    view: OverlayView,
+    /// Dropped with the overlay — no `.detach()` is legal here (LD-18).
+    _subs: Vec<Subscription>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -339,12 +444,21 @@ pub struct Shell {
     // ── Overlays (§13.5) ─────────────────────────────────────────────────────
     /// Which overlays are open, innermost last.
     overlays: OverlayStack,
-    /// The live omni-search view, while `OverlayKind::OmniSearch` is on the
-    /// stack. Dropping it tears down the view; `omni_subs` goes with it.
-    omni: Option<Entity<OmniSearch<SearchStore>>>,
-    /// Subscriptions belonging to the current overlay. Cleared on close, so an
-    /// overlay's callbacks cannot outlive the overlay (LD-18).
-    omni_subs: Vec<Subscription>,
+    /// The one view-backed overlay currently on screen, if any (L15).
+    ///
+    /// One field rather than a pair of `Option<Entity<_>>` + `Vec<Subscription>`
+    /// per surface. Presenting an overlay is three things that have to happen
+    /// together — push the kind, hold the view and its subscriptions, and move
+    /// window focus onto it — and while they were three separate statements at
+    /// three call sites, two of the call sites got them wrong:
+    /// `open_command_palette` and `toggle_shortcuts_overlay` both built and
+    /// stored their view without ever focusing it, so the palette and the `?`
+    /// sheet rendered but answered none of the `Overlay`-context bindings
+    /// (escape / enter / up / down) — indistinguishable from not opening.
+    ///
+    /// [`Shell::present_overlay`] is now the only way to fill this field, and it
+    /// does all three.
+    presented: Option<PresentedOverlay>,
     /// Scrim opacity, 0 → 1 (§5.3 `overlay.in`, SNAPPY).
     scrim: Motion,
 
@@ -517,10 +631,16 @@ impl Shell {
         // `PackagesChanged` would show "no packages" for as long as the
         // producer takes — which on a real crate is half a minute of the app
         // looking broken.
+        // The MCP status is read from the process-wide service rather than
+        // passed in, so a window opened before — or entirely without — the
+        // service still renders something true (`McpStatus::Absent`). See
+        // `app::mcp` and LIMITATIONS.md L35.
         let initial_packages = packages.read(cx).summary_label();
+        let initial_mcp = McpStatus::from_app(cx);
         let status_bar = cx.new(|cx| {
             let mut bar = StatusBar::new(cx);
             bar.set_packages(initial_packages, cx);
+            bar.set_mcp(initial_mcp, cx);
             bar
         });
 
@@ -638,8 +758,7 @@ impl Shell {
             packages,
 
             overlays: OverlayStack::new(),
-            omni: None,
-            omni_subs: Vec::new(),
+            presented: None,
             scrim: Motion::new(0.0, Spring::SNAPPY),
 
             tabs: HashMap::new(),
@@ -664,6 +783,85 @@ impl Shell {
         }
     }
 
+    // ── Overlay presentation (§13.5) ─────────────────────────────────────────
+
+    /// Put a view-backed overlay on screen. The only way to do so.
+    ///
+    /// # Why this exists rather than three open methods doing the same steps
+    ///
+    /// Presenting an overlay is four things that are only correct together:
+    ///
+    /// 1. the outgoing view-backed overlay is torn down *and its stack entry
+    ///    popped* — `cmd-K` over `?` swaps surfaces, it does not layer them;
+    /// 2. the new kind goes on the stack;
+    /// 3. the view and its subscriptions are held (LD-18: dropping them later
+    ///    is the whole teardown);
+    /// 4. **window focus moves onto the view.**
+    ///
+    /// While those were four statements repeated at three call sites, two call
+    /// sites got them wrong in two different ways, and neither failure is
+    /// visible in a screenshot. `open_command_palette` and
+    /// `toggle_shortcuts_overlay` both skipped (4), so the palette and cheat
+    /// sheet painted correctly and then ignored `escape`, `enter`, `up` and
+    /// `down` — every binding in the `Overlay` key context, which only
+    /// dispatches through the focused element's ancestors. And the old
+    /// `dismiss_view_overlay` did the view half of (1) but not the stack half,
+    /// so each swap left an orphan entry behind: the depth grew by one, and the
+    /// first `escape` after a swap popped an entry whose view had already been
+    /// dropped instead of closing what was on screen.
+    ///
+    /// Both are now impossible to express: there is one field to fill and one
+    /// function that fills it.
+    fn present_overlay(
+        &mut self,
+        kind: OverlayKind,
+        view: OverlayView,
+        subs: Vec<Subscription>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // (1) Replace, don't stack — including the stack entry.
+        if self.presented.take().is_some() {
+            self.overlays.pop();
+        }
+        // (2)
+        self.overlays.push(kind.clone(), None);
+        // (4) is computed before (3) only because `focus_handle` borrows `cx`.
+        let focus = view.focus_handle(cx);
+        // (3)
+        self.presented = Some(PresentedOverlay {
+            kind,
+            view,
+            _subs: subs,
+        });
+        // (4) An overlay that renders but is not focused is not open: none of
+        // the `Overlay`-context bindings can reach it.
+        window.focus(&focus, cx);
+
+        if cx.theme_ext().reduced_motion() {
+            self.scrim.snap_to(1.0);
+        } else {
+            self.scrim.animate_to(1.0);
+        }
+        cx.notify();
+    }
+
+    /// Re-take focus for an overlay that is already the presented one.
+    ///
+    /// Returns `true` if there was one, so callers can early-return. Pressing
+    /// the same shortcut twice must not build a second view.
+    fn refocus_presented(&mut self, kind: &OverlayKind, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(presented) = self.presented.as_ref() else {
+            return false;
+        };
+        if &presented.kind != kind {
+            return false;
+        }
+        let focus = presented.view.focus_handle(cx);
+        window.focus(&focus, cx);
+        true
+    }
+
     // ── Omni-search overlay (§13.5, §15) ─────────────────────────────────────
 
     /// `cmd-K`: open the fused search overlay over whatever is on screen.
@@ -679,34 +877,97 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.overlays.contains(&OverlayKind::OmniSearch) {
-            // Already open: re-take focus rather than stacking a second one.
-            if let Some(omni) = &self.omni {
-                let focus = omni.read(cx).focus_handle(cx);
-                window.focus(&focus, cx);
-            }
+        if self.refocus_presented(&OverlayKind::OmniSearch, window, cx) {
             return;
         }
 
-        self.overlays.push(OverlayKind::OmniSearch, None);
-
         let search = self.search.clone();
         let omni = cx.new(|cx| OmniSearch::new(search, window, cx));
-        self.omni_subs = vec![cx.subscribe_in(
+        let subs = vec![cx.subscribe_in(
             &omni,
             window,
             |shell, _view, event: &OmniSearchEvent, window, cx| {
                 shell.on_omni_event(event, window, cx);
             },
         )];
-        self.omni = Some(omni);
+        self.present_overlay(
+            OverlayKind::OmniSearch,
+            OverlayView::OmniSearch(omni),
+            subs,
+            window,
+            cx,
+        );
+    }
 
-        if cx.theme_ext().reduced_motion() {
-            self.scrim.snap_to(1.0);
-        } else {
-            self.scrim.animate_to(1.0);
+    // ── Shortcuts cheat sheet / command palette (§13.5, §23.1/§23.3, L15) ────
+
+    /// `?`: toggle the read-only keyboard-shortcuts cheat sheet.
+    ///
+    /// Pressing `?` again while it is open closes it — that is what "toggle"
+    /// in the action's own name promises, and the binding's context
+    /// (`!InputFocused`, see `app::keymaps`) already keeps it from firing
+    /// while the reader is typing anywhere else.
+    fn toggle_shortcuts_overlay(
+        &mut self,
+        _: &ToggleShortcutsOverlay,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.overlays.contains(&OverlayKind::Shortcuts) {
+            self.close_overlay(window, cx);
+            return;
         }
-        cx.notify();
+
+        let view = cx.new(|cx| CommandOverlay::new(CommandOverlayMode::Shortcuts, cx));
+        let subs = vec![cx.subscribe_in(
+            &view,
+            window,
+            |shell, _view, _event: &CommandOverlayEvent, window, cx| {
+                // Shortcuts mode only ever emits `Dismiss` (see
+                // `CommandOverlay::confirm`) — nothing to match on.
+                shell.close_overlay(window, cx);
+            },
+        )];
+        self.present_overlay(
+            OverlayKind::Shortcuts,
+            OverlayView::Command(view),
+            subs,
+            window,
+            cx,
+        );
+    }
+
+    /// `cmd-shift-P`: open the command palette — every bound action, run by
+    /// dispatching its real `Action` (see `CommandOverlay::confirm`).
+    fn open_command_palette(
+        &mut self,
+        _: &OpenCommandPalette,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.refocus_presented(&OverlayKind::CommandPalette, window, cx) {
+            return;
+        }
+
+        let view = cx.new(|cx| CommandOverlay::new(CommandOverlayMode::Palette, cx));
+        let subs = vec![cx.subscribe_in(
+            &view,
+            window,
+            |shell, _view, _event: &CommandOverlayEvent, window, cx| {
+                // The view already dispatched the chosen `Action` (if any)
+                // onto this same window before emitting `Dismiss` — see
+                // `CommandOverlay::confirm`. Shell's only job here is the
+                // close/focus-restoration half, same as every other overlay.
+                shell.close_overlay(window, cx);
+            },
+        )];
+        self.present_overlay(
+            OverlayKind::CommandPalette,
+            OverlayView::Command(view),
+            subs,
+            window,
+            cx,
+        );
     }
 
     /// What the overlay reports upward (§15 — the view never closes itself).
@@ -744,9 +1005,11 @@ impl Shell {
         if self.overlays.pop().is_none() {
             return;
         }
-        self.omni = None;
-        // Dropping the subscriptions with the view is the whole teardown.
-        self.omni_subs.clear();
+        // Dropping `PresentedOverlay` is the whole teardown: the view's
+        // reference count falls and every `Subscription` it owns is
+        // unregistered with it (LD-18). There is nothing else to clear, and no
+        // way to clear "the wrong one" — there is only one.
+        self.presented = None;
 
         if cx.theme_ext().reduced_motion() {
             self.scrim.snap_to(0.0);
@@ -754,7 +1017,21 @@ impl Shell {
             self.scrim.animate_to(0.0);
         }
 
-        let focus = self.pane.read(cx).focus_handle(cx);
+        // Prefer the active document's own handle over `Pane`'s root.
+        //
+        // Both keep the app responsive, but only the first makes the *page's*
+        // bindings (`g s`, `g r`, `y`, the version picker) work in the frame
+        // after the overlay closes — `dispatch_action` walks the focused
+        // element's ancestors, and `Pane`'s root is an ancestor of the page,
+        // not the other way round (L16). Falling back to `Pane` matters for
+        // the case with no document open at all, where there is no page to
+        // hand the keyboard to and dropping it on the floor is the LD-13
+        // failure.
+        let focus = self
+            .pane
+            .read(cx)
+            .active_item_focus_handle(cx)
+            .unwrap_or_else(|| self.pane.read(cx).focus_handle(cx));
         window.focus(&focus, cx);
         cx.notify();
     }
@@ -788,10 +1065,17 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A background open must never move the keyboard: the omni-search
+        // overlay is deliberately still on screen and still owns it.
+        let activation = match disposition {
+            OpenDisposition::Background => Activation::Preserve,
+            _ => Activation::Focus,
+        };
+
         if let Some(&existing) = self.tabs.get(&doc) {
             if disposition != OpenDisposition::Background {
                 self.pane.update(cx, |pane, cx| {
-                    pane.activate_tab(existing, window, cx);
+                    pane.activate_tab(existing, activation, window, cx);
                     cx.notify();
                 });
             }
@@ -807,7 +1091,7 @@ impl Shell {
         let page = cx.new(|cx| SymbolPage::new(doc, symbols, window, cx));
 
         let opened = self.pane.update(cx, |pane, cx| {
-            let id = pane.open_item(page, Vec::new(), window, cx);
+            let id = pane.open_item(page, Vec::new(), activation, window, cx);
             cx.notify();
             id
         });
@@ -818,7 +1102,7 @@ impl Shell {
         if disposition == OpenDisposition::Background {
             if let Some(previous) = previously_active_pane_tab {
                 self.pane.update(cx, |pane, cx| {
-                    pane.activate_tab(previous, window, cx);
+                    pane.activate_tab(previous, Activation::Preserve, window, cx);
                     cx.notify();
                 });
             }
@@ -1037,7 +1321,11 @@ impl Render for Shell {
         // the dock area, so an overlay covers the docks and status bar too —
         // a search panel that a sidebar can occlude is not a modal surface.
         let scrim_opacity = self.scrim.value();
-        let overlay = self.omni.clone().map(|omni| {
+        // One field, so there is no priority order to get wrong between two
+        // live views — see `PresentedOverlay`.
+        let overlay_view: Option<AnyView> =
+            self.presented.as_ref().map(|p| p.view.any_view());
+        let overlay = overlay_view.map(|view| {
             let dismissable = self
                 .overlays
                 .top()
@@ -1079,7 +1367,7 @@ impl Render for Shell {
                         .top_0()
                         .left_0()
                         .size_full()
-                        .child(omni),
+                        .child(view),
                 )
         });
 
@@ -1092,6 +1380,8 @@ impl Render for Shell {
             // declare `global` explicitly — GPUI has no implicit root context.
             .key_context("Workspace global")
             .on_action(cx.listener(Self::open_omni_search))
+            .on_action(cx.listener(Self::toggle_shortcuts_overlay))
+            .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(|shell, _: &ToggleLeftDock, window, cx| {
                 shell.toggle_left_dock(window, cx);
             }))
@@ -1133,6 +1423,124 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opening a tab and closing a *different* one in the same synchronous
+    /// batch must leave `cmd-W` working.
+    ///
+    /// This is the shape `Shell::reveal_document` produces for
+    /// `OpenDisposition::Replace`: `Pane::open_item` activates the incoming
+    /// tab and then, with no frame in between, `Pane::close_tab` removes the
+    /// outgoing one. The test was written while hunting L22, on the theory
+    /// that the back-to-back activate-then-close was itself the trigger. It is
+    /// not — the cause was `SymbolPage` rendering a second, focus-untracked
+    /// root for its cold-error state (see
+    /// `views::symbol_page::SymbolPage::page_root`) — and this test passing
+    /// throughout is what ruled the batching out. Kept, because holding that
+    /// still is worth a test on its own.
+    #[gpui::test]
+    async fn open_then_close_in_one_batch_keeps_close_tab_working(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        cx.update(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx);
+            cx.set_global(crate::motion::tokens::MotionTokens::new(1.0));
+            cx.bind_keys(crate::app::keymaps::all_bindings());
+        });
+
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(nudox_engine::runtime::EngineConfig::default());
+        let search = cx.new(|_cx| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
+        let shell_cell_w = shell_cell.clone();
+        let (s2, y2, p2) = (search.clone(), symbols.clone(), packages.clone());
+        let window = cx
+            .update(|cx: &mut App| {
+                cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let entity = cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), window, cx));
+                    *shell_cell_w.lock().unwrap() = Some(entity.clone());
+                    entity
+                })
+            })
+            .expect("window must open");
+        let shell = shell_cell.lock().unwrap().take().expect("shell set");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        vcx.run_until_parked();
+
+        search.update(&mut vcx, |s, cx| {
+            use crate::stores::search_model::SearchAccess as _;
+            s.set_input("Point".into(), cx);
+        });
+        // `run_until_parked` alone does not wait for the corpus-seed future
+        // on its own thread (see `tests/shell_flow.rs`'s `wait_until`).
+        for _ in 0..100 {
+            vcx.run_until_parked();
+            let ready = search.read_with(&mut vcx, |s, _| {
+                use crate::stores::search_model::SearchAccess as _;
+                !s.snapshot().sections[0].rows.is_empty()
+            });
+            if ready {
+                break;
+            }
+            cx.background_executor.timer(std::time::Duration::from_millis(50)).await;
+        }
+
+        let rows = search.read_with(&mut vcx, |s, _| {
+            use crate::stores::search_model::SearchAccess as _;
+            s.snapshot().sections[0].rows[0..2].to_vec()
+        });
+        let key1 = rows[0].key.clone();
+        let key2 = rows[1].key.clone();
+
+        let _tab1 = symbols.update(&mut vcx, |s, cx| s.open(key1, OpenDisposition::Stay, cx));
+        let _tab2 = symbols.update(&mut vcx, |s, cx| s.open(key2, OpenDisposition::Stay, cx));
+        vcx.run_until_parked();
+        assert_eq!(
+            shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len()),
+            2,
+            "precondition: two open documents means two pane tabs"
+        );
+
+        vcx.simulate_keystrokes("cmd-1");
+        vcx.run_until_parked();
+
+        // Reproduce `reveal_document`'s Replace-cleanup shape by hand: open a
+        // third tab (which activates it), then — in a separate `pane.update`,
+        // back to back, with no `run_until_parked` between them — close the tab
+        // that held focus until this very block deactivated it. Doing it here
+        // rather than through `reveal_document` keeps the two halves visible:
+        // if `cmd-W` breaks after this, the batching is the cause; if it
+        // survives, the cause is in whatever the *content view* rendered.
+        let pane_entity = shell.read_with(&mut vcx, |s, _| s.pane().clone());
+        let tab1_pane_id = shell
+            .read_with(&mut vcx, |s, _| s.pane_tab_for_document(_tab1))
+            .expect("tab1 must have a pane tab");
+        let symbols_c = symbols.clone();
+        let tab1_docid = _tab1;
+        vcx.update(|window, cx| {
+            let page3 = cx.new(|cx| SymbolPage::new(tab1_docid, symbols_c.clone(), window, cx));
+            pane_entity.update(cx, |pane, cx| {
+                pane.open_item(page3, Vec::new(), Activation::Focus, window, cx);
+            });
+            pane_entity.update(cx, |pane, cx| {
+                pane.close_tab(tab1_pane_id, window, cx);
+            });
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len()),
+            2,
+            "one opened, one closed: the tab count is unchanged"
+        );
+
+        vcx.simulate_keystrokes("cmd-w");
+        vcx.run_until_parked();
+        let len_after_first_close = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
+        assert_eq!(len_after_first_close, 1, "cmd-w must close the newly-active tab");
+    }
 
     // ── Banner queue holds at most one ────────────────────────────────────────
 

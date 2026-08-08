@@ -37,6 +37,35 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # would let a view depend on the shape of the IR rather than on the protocol.
 nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
 
+# ── The MCP server lindsey hosts (GUI-LOCAL-PLAN §L6, LIMITATIONS.md L35) ────
+#
+# THIS IS A SECOND BACKEND CRATE, and AGENTS-DOCTRINE §1 says lindsey "may name
+# `nudox-engine` and nothing else from the backend". The exception is argued
+# here rather than assumed, because §1 is otherwise absolute:
+#
+#  * The harm §1 names is a *view* coupling to the shape of the *IR* — that is
+#    why the rule enumerates `nudox-ir`/`-store`/`-graph`, all of which sit
+#    BENEATH the engine, and why §L9's enforcement check is exactly
+#    "`lindsey` has no edge to nudox-ir/-store/-graph". `nudox-mcp` sits BESIDE
+#    lindsey, not beneath the engine: it is a second *view* of the same
+#    `EngineHandle` (LR-8), holds no corpus, no index and no IR, and names no
+#    `nudox-ir` type. Nothing about the IR's shape becomes visible here.
+#  * The surface used below is `McpHost` + `McpStatus`, whose entire vocabulary
+#    is `EngineHandle`, `SocketAddr`, `String` and `McpError`.
+#  * The plan this crate is built to says so directly: GUI-LOCAL-PLAN §L6
+#    ("Lifecycle: started by lindsey after the engine, stopped on window
+#    close"), §L10's M2.5 row ("`nudox-mcp` server, hosted by lindsey"), and
+#    nudox-mcp's own manifest header ("the MCP server lindsey hosts").
+#  * There is no alternative that shares the corpus. The server must observe
+#    the same live `EngineHandle` the window does (LR-8: "if a tool here ever
+#    answers a question the engine could not, that is a bug"), which rules out
+#    a separate process, and `nudox-engine` cannot host it without inverting
+#    the existing `nudox-mcp -> nudox-engine` edge into a cycle.
+#
+# If a reviewer disagrees, the fix is one line here plus deleting
+# `src/app/mcp.rs`; L35 then reverts to OPEN with the reason recorded.
+nudox-mcp = { path = "../../crates/nudox-mcp" }
+
 # ── Bridge & support ─────────────────────────────────────────────────────────
 # Syntax highlighting. Upstream tree-sitter rather than arborium because
 # gpui-component (pinned by rev) already owns links = "tree-sitter" in this
@@ -62,6 +91,21 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # incompatible `Entity` types.
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["test-support"] }
 
+# ── The screenshot plane ─────────────────────────────────────────────────────
+# `gpui_platform`'s `test-support` feature is what exposes
+# `current_headless_renderer()`, the `MetalHeadlessRenderer` on macOS. Combined
+# with `HeadlessAppContext::with_platform`, that is what turns a GPUI test into
+# a *pixel* test: `Window::render_to_image()` rasterises the real scene through
+# the real renderer and hands back an `RgbaImage`, with no display, no window
+# server, and no screen-recording permission involved.
+#
+# The real platform's text system comes along for the ride via
+# `Platform::text_system()` — without it glyph metrics are stubbed and every
+# screenshot would be a picture of a layout that no user will ever see.
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders", "test-support"] }
+# Same version gpui itself re-exports, so `RgbaImage` is one type, not two.
+image = "0.25"
+
 [[test]]
 name = "shell_flow"
 path = "tests/shell_flow.rs"
@@ -69,6 +113,34 @@ path = "tests/shell_flow.rs"
 [[test]]
 name = "adversarial"
 path = "tests/adversarial.rs"
+
+# Proves the endpoint the status bar displays is one a client actually reaches
+# (LIMITATIONS.md L35). Normal harness — it drives real loopback sockets, not
+# pixels.
+[[test]]
+name = "mcp_endpoint"
+path = "tests/mcp_endpoint.rs"
+
+# `harness = false` is required, not stylistic: libtest runs `#[test]` bodies on
+# spawned worker threads, and constructing the macOS platform off the main
+# thread aborts the process. With no harness the file is its own `fn main` and
+# runs where AppKit is legal.
+[[test]]
+name = "shot_probe"
+path = "tests/shot_probe.rs"
+harness = false
+
+[[test]]
+name = "screenshots"
+path = "tests/screenshots.rs"
+harness = false
+
+# Rasterises an authored link and a repaired link and asserts the frames
+# differ. Same `harness = false` reason as the two above.
+[[test]]
+name = "repair_paint"
+path = "tests/repair_paint.rs"
+harness = false
 
 [lints.rust]
 unused_imports = "warn"
