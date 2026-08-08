@@ -7,16 +7,36 @@ checkable evidence is recorded as `UNVERIFIED_CLAIM`, not RESOLVED.
 
 ---
 
+> ## ⚠️ Read this before the register below
+>
+> **Everything from "Answering the three questions" down to "Claims that are not
+> backed by evidence" is the register AS FIRST WRITTEN (2026-08-06) and is now
+> substantially superseded.** It is kept because the reasoning trail has value and
+> because several of its rows turned out to be wrong in instructive ways — but its
+> status column should not be quoted. The current state is the dated sections at
+> the end, most recently **§ 2026-08-08**, which supersede it wherever they
+> disagree.
+>
+> If you only read one thing: **the single largest defect in this document was not
+> any row in it.** A clean checkout of `canonical` could not compile, because six
+> `mod`-declared source files, a `build.rs`, and an `include_str!`'d 66 KB asset
+> had never been `git add`ed. The register recorded this as untracked *test*
+> evidence, under "housekeeping". It was a total build failure for every reader of
+> the repository. Fixed in `e07a0b8` / `bcc320c`, and now machine-checked by
+> `workspace/heart/tests/checkout_completeness.rs`.
+
 ## Answering the three questions
+
+*(As written 2026-08-06. Retained for the trail; superseded by the dated sections
+at the end. Struck-through text is now known to be false.)*
 
 **(a) What's left.** 34 issues are unresolved and unowned or open (5 `OPEN_UNOWNED`,
 29 `OPEN`), 12 are partially resolved, and 5 documented claims are not backed by
-evidence. The single most blocking item is not a bug: **the corpus has no authoritative
-entry count.** Three in-tree sources disagree three ways for the same memchr versions
-(1,322 / 1,347 / 1,835), and a stale hardcoded `EXPECTED_MEMCHR_2_8_3_ENTRIES = 11_329`
-blocks the real-crate proofs for two blocker-severity IR defects (L19, L23) before those
-tests reach their substantive assertion. Nothing measured at "scale" can be trusted until
-that is re-baselined.
+evidence. ~~The single most blocking item is not a bug: **the corpus has no authoritative
+entry count.**~~ **CLOSED** (`f42e762`) — `corpus/entry-baseline.toml` is now the single
+authoritative home, enforced by `corpus_contract.rs`, and two independent harnesses
+agree. The `EXPECTED_MEMCHR_2_8_3_ENTRIES = 11_329` constant is deleted; it ran *before*
+the assertion it was blocking, so removing it turned L19 green on the first run.
 
 **(b) Did the per-language suites pass.** No — not as a set, and two of the "greens" are
 hollow. Under the literal gate commands: C# green (58/58, genuinely real-package),
@@ -24,9 +44,11 @@ TypeScript red at audit and now fixed (32/32 after a verified product fix), Go /
 C++ red **only because of a nextest timeout-config gap** (all pass with an adequate
 timeout), Rust and Python green-but-hollow — Python is 43/43 green while extracting
 exactly 1 entry from each of 22 real packages, and nudox-producer-rust's only
-real-package test passes in 0.014 s having executed zero assertions. Java's "pass" is
+real-package test passes in 0.014 s having executed zero assertions. ~~Java's "pass" is
 also a floor-check: it asserts that 5 of 22 Maven packages keep working, and the other 17
-are still broken (L45, unfixed).
+are still broken (L45, unfixed).~~ Java is now 6/22 with a content-asserted floor
+(`5683571`), and the reason for the other 16 is finally correctly diagnosed — see the
+2026-08-08 section. Rust's hollowness is closed by the corpus sweep (`81571ab`).
 
 **(c) The register.** Below: 74 deduplicated issues, per-language suite results, status
 counts, the ordered open-work plan, and the unbacked-claim list.
@@ -421,3 +443,240 @@ dispatched concurrently into the same crate and both edited
 alone without leaving HEAD non-building. An attempt to isolate one by reverting
 three files broke the build immediately — its changes spanned further. Parallel
 agents need disjoint *files*, not merely disjoint *tasks*.
+
+---
+
+# 2026-08-08 — the packaging defect, the real index, and Java's third diagnosis
+
+This section supersedes the register above wherever they disagree. Every row names
+a commit so a reader can check the claim rather than trust it.
+
+## The thing that was wrong with this document
+
+The register's most consequential error was one of **classification, not fact**. It
+recorded, correctly, that ~27 test `.rs` files and all four `oracle/` directories
+were untracked, and it filed that under *"Housekeeping"*, item 9 of 9.
+
+It was not housekeeping. A clean checkout of `canonical` could not compile:
+
+| what | where declared | consequence |
+|---|---|---|
+| `clang/src/compile_commands.rs` | `clang/src/lib.rs:69` | `nudox-producer-clang` fails module resolution |
+| `clang/src/system_includes.rs` | `clang/src/lib.rs:74` | ″ |
+| `csharp/src/producer.rs` | `csharp/src/lib.rs:74` | `nudox-producer-csharp` ″ |
+| `java/src/producer.rs` | `java/src/lib.rs:45` | `nudox-producer-java` ″ |
+| `gui/src/views/command_overlay.rs` | `gui/src/views/mod.rs:24` | `lindsey` ″ |
+| `index/transport/mod.rs` | `index/lib.rs:31` | `index` ″ |
+| `java/build.rs` | cargo autodetect | **silent**: the javadoc doclet never compiles, so the Java oracle does not exist |
+| `index/ecosystem/assets/cpp_alias_seed.ron` | `ecosystem/cpp/alias.rs:65` `include_str!` | `index` fails to compile |
+
+None were `.gitignore`d — `git check-ignore -v` reports the `!/**/*.rs` negation for
+each. The allow-list was right and nobody ran `git add`. For the `.ron`,
+`.gitignore:200` even carried a comment explaining that without it "the whole `index`
+crate fails to compile"; **writing the rule was not the same as adding the file, and
+nothing checked the difference.**
+
+`java/build.rs` is the worst of the set and the least visible. Cargo autodetects
+`build.rs` by presence, with no manifest key pointing at it, so its absence is not an
+error — the step simply does not run. That is exactly the L50 failure shape
+(a build-script step that does not run and does not say so), reintroduced through
+packaging rather than through code.
+
+**Why nothing caught it.** Every check in this repository — `cargo check --workspace
+--all-targets`, the nextest gate, every `#[test]` — reads the *working tree*, and the
+working tree has the files. They pass here and fail for everyone else. The only
+observer that can see the difference is one that asks git what a stranger receives.
+
+**Fixed** in `e07a0b8` (six files + build.rs + three `oracle/` dirs), `bcc320c` (the
+`.ron`), `d72627d` (13 orphaned integration tests, 8 evidence documents).
+
+**Guarded** by `workspace/heart/tests/checkout_completeness.rs` (`6cd03d8`, `d72627d`),
+which asserts four properties against `git ls-files` rather than the filesystem:
+
+1. every `mod NAME;` in a tracked `.rs` resolves to a file git also tracks;
+2. every `build.rs` beside a `Cargo.toml` is tracked;
+3. every autodiscovered integration test (`tests/*.rs`, `tests/*/main.rs`) is tracked —
+   an untracked one runs for its author and does not exist for anyone else, so the
+   suite's size depends on who is looking at it;
+4. every `include_str!`/`include_bytes!` target is tracked.
+
+Verified by mutation, not by observing green: `git rm --cached` on
+`index/transport/mod.rs` and `java/build.rs` — reproducing the exact morning state —
+turned it red, each failure naming the offending path and the declaration reaching for
+it. It then went red *again*, unprompted, on two agents' in-flight work during this
+session, which is the strongest evidence it is load-bearing.
+
+Honest limits, stated because a check that overclaims gets deleted: property 4 cannot
+judge **contents**. LIMITATIONS L7's Vaporetto model was a 4-byte file containing the
+ASCII text `STUB` — right name, compiles clean, panics at first use. A checksum catches
+that; this does not.
+
+A real bug was found in the check while writing it: the first draft scoped its
+known-set to `git ls-files "*.rs"`, so every `.graphql`/`.trustfall`/`.ron` include
+reported as missing — ten false positives on `nudox-graph` before correction. Recorded
+because a check that cries wolf gets deleted, and this one nearly shipped that way.
+
+## Status changes
+
+### Closed
+
+| row | commit | what closed it |
+|---|---|---|
+| L48-ic (catalog clause) | `bcc320c` | `index` now defaults to `dolt-engine`, the real DoltLite engine, and `test-engine` is opt-in only. The comment justifying the fake — "does not compile yet" — had outlived its truth, and nothing re-checked it because `tests/dolt_engine.rs` was gated behind the non-default feature and had **never once been compiled**. 811 tests green, **up from 808**: the count rose, so nothing silently stopped compiling. Fixed per §2 with a `Configured` type alias — one place a build decides its engine — plus an `OpenCatalog` construction seam, because an alias alone sends every construction site back to naming a concrete engine. A `compile_error!` makes the engine-less configuration unrepresentable. |
+| L45 (Java) | `5683571` | 5/22 → 6/22, content-asserted. See "Java's third diagnosis" below. |
+| L21 (trustfall) | `d72627d` | The build does not use `trustfall/`: root `Cargo.toml` git-pins the fork by rev, `Cargo.lock` resolves it from that URL, and no `[patch]` redirects to the local path. So the 21 MB tree is a developer's checkout of the same rev. The real risk was narrower than recorded — the blanket `/**/*` is followed by `!/**/*.rs` and `!/**/*.md`, so one `git add -A` would commit a foreign project into this tree. An explicit `/trustfall/` deny closes it. **Deliberately not deleted**: it is someone's working copy and not ours to remove. |
+| TS-2 | (earlier) | The doc comment no longer overclaims: `is_real_identifier` is implemented and the per-entry identifier assertion the comment promised now exists. |
+| `storage-numbers` | `8a463b6` | Re-measured on the real engine, all figures moved, INDEX-CAPABILITY.md corrected. See below. |
+
+### Re-scoped rather than closed
+
+**L41 (semantic search)** — blocked two independent ways, and the register's own
+citations for it were wrong in the direction that made the work look smaller.
+
+* *Architecture*: there is no Cargo edge from `nudox-engine` to `workspace/registry` at
+  any depth, `AGENTS-DOCTRINE.md` §1's graph does not contain `registry` at all, and
+  `workspace/driver/Cargo.toml:23` declares `driver` the **only** place `index` +
+  `registry` are composed. Adding the edge is a doctrine amendment, not wiring.
+* *Artifact*: there are **zero `.onnx` files in the tree**. `FastembedOrt` is genuine
+  production code with no weights to load; `onnx` is not a default feature and `driver`
+  enables only `["local", "remote"]`, so that path compiles into nothing. The only
+  embedder that runs unattended is `MockEmbedder`, which marks itself
+  `durable_canonical: false` precisely so its vectors cannot be published.
+* Corrections to the old row: `tests/vector/` is **16 files + 2 support modules**, not
+  15; and `SearchQuery` does **not** need a mode field — all three sections already fan
+  out unconditionally, so a mode is only a compute-skip optimisation. The GUI is not
+  the unfinished half either: it consumes `SearchEvent::Section` generically and would
+  render real rows today.
+* What the audit found that the row missed: **`driver` already has working semantic
+  search** (`coordination/search.rs:111-171`). Its *lexical* arm is the broken one.
+
+**Decision taken**: bridge the GUI to `driver` rather than build a second embedding
+pipeline inside the offline-first engine. Still gated on a model artifact (~162 MB
+pinned ONNX, or a Voyage key plus secret management) and a §1 amendment. Pinned in the
+meantime by `semantic_section_contract.rs` (`cc5c72f`), which asserts the *conjunction*
+— sections 0 and 1 return hits for a matching query, AND section 2 is still emitted, AND
+is still empty — because asserting emptiness alone passes against a search that is
+simply broken.
+
+**L48-ic (the rest)** — the heading "**Every** measurable subsystem's default
+configuration is a fake" is no longer true. Three of five rows closed (catalog engine,
+local vector store, semantic search re-scoped). Two stand, unchanged and verified this
+session: `FixtureTransport` is still the only non-test `impl FeedTransport`, and
+`MemoryWatermarkStore` is still the only `impl WatermarkStore` **anywhere**. Corrected
+per row rather than deleted — a claim that is 80% true is more dangerous than one that
+is false, because it survives spot-checks.
+
+A correction the register got backwards: it implied the embedder situation was the same
+class of fake. It is not. `Embedder` has **five** impls — `FastembedOrt` (real ONNX
+runtime), `VoyageEmbedder` (real REST client), `HttpEmbedder`, `GatedEmbedder`, and
+`MockEmbedder`. The problem is a missing *artifact*, not a missing implementation, and
+using `MockEmbedder` in the vector tests is the honest choice while no model ships.
+
+## Java's third diagnosis (L45)
+
+Worth reading in full because **the first two diagnoses were both wrong, and the second
+was wrong in a way that looked like careful skepticism.**
+
+| | claim | verdict |
+|---|---|---|
+| 1 | "just add `-classpath`; highest ratio of packages-fixed to lines-changed on the list" | Half right. A flag cannot resolve a dependency whose *source* was never fetched. |
+| 2 | "the packages aren't provisioned — `.real-crates` entries are source-only, `~/.m2` does not exist, `mvn` is not on PATH" | **Factually wrong.** All 20 manifest packages / 22 versions are on disk and hash-verified. (`mvn` is indeed absent; that was the true part being generalised from.) |
+| 3 | there is no single cause | Correct, and obtained by re-running every failure under `javadoc -Xmaxerrs 100000` and diffing the missing-package set against every other corpus artifact's top-level packages. |
+
+16 of the 17 failures each need a **different** absent Maven artifact — guava wants
+errorprone/checkerframework, junit wants hamcrest, jackson-databind wants jackson-core
+and -annotations, logback and junit-jupiter-api need module-path handling beyond a
+sourcepath, and so on. Two (lombok, vavr) additionally fail at *parse* level under the
+default `--release 21` — lombok's `public @interface var`, vavr's no-arg `yield()` —
+which **masked** their real dependency errors until they were re-run at `--release 8/9`.
+
+rxjava was the single case where the missing dependency was small and self-contained:
+every one of its ~2,200 javac errors traced to `org.reactivestreams` and nothing else.
+Fixed by provisioning that one artifact and giving javadoc a `-sourcepath` built from
+the package root plus every sibling corpus directory that does **not** carry its own
+`module-info.java` — both constraints established empirically, not assumed (including
+module-bearing siblings breaks JPMS resolution on unrelated modules; excluding the
+target's own module-info root breaks gson and jakarta.validation, which already passed).
+
+Verified by mutation twice, independently of the agent that wrote it: a nonexistent
+symbol added to the content floor turns it red naming the symbol; reverting the
+`-sourcepath` change drops it to 5/22 and fails the known-good floor. So the floor
+catches both a fabricated expectation and the product fix regressing.
+
+**Harness correction:** `corpus_sweep` is a plain `#[test]`, not `#[ignore]`d — so
+`-- --ignored` filters it **out** rather than in. The register's instruction to run it
+that way could never have worked.
+
+"Diagnostic, not a pass/fail gate" is deliberately kept: the remaining 16 each need a
+specific, different, absent artifact, so `failures.is_empty()` would turn a diagnosed
+non-regressing limitation into a false red. What changed is that `known_good` is now an
+honest floor of 6, one of them content-asserted.
+
+## Storage numbers: every published figure was measured against a fake
+
+`INDEX-CAPABILITY.md` §2.2/§2.3 and the `storage-numbers` row quoted figures taken
+against `MemoryEngine`, a rusqlite-backed fake, because `index` defaulted to
+`test-engine`. **They described stock SQLite — a storage engine this product does not
+ship.** Re-measured on the real engine (`8a463b6`):
+
+| | was | is |
+|---|---:|---:|
+| catalog, migration only | 208,896 B | **238,172 B** |
+| catalog, cumulative | 45,056 B | **160,602 B** |
+| bytes per package | 292.6 | **1,036.1** |
+| `symbols_proj`, memchr 2.8.3 | 40,960 B | **1,481,075 B** |
+| `symbols_proj`, syn 1.0.109 | 200,704 B | **10,628,633 B** |
+| NDPK pack, memchr / syn | 106,536 / 187,515 | **unchanged** |
+
+**The unchanged row is the load-bearing one.** The pack layer never touches the catalog
+engine, so had its bytes moved alongside the projection bytes, this would have been
+measurement drift rather than the engine swap. They did not move, so the change is
+attributable.
+
+Reported as costs rather than explained away: the catalog is ~3.6× larger and the
+projection ~36× larger per row. A versioned content-addressed store keeps history a
+plain SQLite file does not. Whether that is acceptable at corpus scale is **left open**.
+
+The four leading 0-byte checkpoints are gone. Those were a SQLite page-allocation
+artifact, and their absence changes the *shape*, not just the magnitude: per-package
+cost now **falls** as the catalog grows (chunk sharing) instead of rising off a page
+floor.
+
+Two defects surfaced the moment the fake stopped being load-bearing, both fixed rather
+than worked around: `store_apply.rs`'s AsOf test drove `stage_commit_time`, a hook that
+existed **only on the fake** — so the test could never have run against the product —
+and then asserted nothing (`let _ =` on all three cases); and `MemoryEngine` stamped a
+logical counter into the field `resolve_as_of_time` compares against unix milliseconds,
+two units in one field, so any real-instant query matched every commit.
+
+## Still open, honestly
+
+| row | status |
+|---|---|
+| L43-ic | No delta/changeset representation anywhere in ingest → store → search. Untouched. |
+| L48-ic (2 clauses) | `FixtureTransport` and `MemoryWatermarkStore` remain the sole impls of their traits. |
+| L45 (16 packages) | Corpus-provisioning work, one specific artifact at a time, each verifiable exactly as rxjava's was. Two also need module-path handling. |
+| L41 | Scoped and decided; blocked on a model artifact and a §1 amendment. |
+| L5 | serde_json still times out (>300 s); still no diagnosis anywhere in the tree. |
+| L8 | No remote/upstream package store. |
+| L3 | 9 hardcoded `cfg: None` sites in `ra/item.rs` — count re-confirmed this session. |
+| L26 | sandbox real-VM tests still unrunnable here: `smolvm`/`libkrun` absent, `NUDOX_GUEST_ROOTFS` unset. Environmental, not a code defect. |
+| L49 (mutants) | `cargo mutants` is wired into `full-check.nu:102` and has still never been run. Note that this session ran **four** targeted mutations by hand (checkout guard ×2, Java ×2, index engine ×1) — hand-mutation is now the working practice; the automated sweep is not. |
+| L27, L32, L34, L46-prop, DOCSRS-5-streaming | Unchanged. |
+| L31 / L42 | Source-location work in flight this session; see the section below when it lands. |
+
+## Method note
+
+Four mutations were run by hand this session, and every one of them was run *by the
+reviewer*, not only by the agent that wrote the code — twice reproducing an agent's
+claimed result, twice testing something no agent had. In two cases my own premise was
+what failed, not the code:
+
+* `SECTION_TYPE` emits nothing unless the query carries a kind, so my first
+  "both real sections return hits" assertion was unsatisfiable by construction;
+* `SECTION_TYPE` is a kind *facet*, not a text search — given a kind filter it returns
+  every symbol of that kind whatever the text says — so my "a nonsense query returns
+  nothing anywhere" assertion was asserting against the design.
+
+Both are now written into the test's module doc, because the next reader will assume
+exactly the same two things.
