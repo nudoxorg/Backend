@@ -337,3 +337,48 @@ collide with real entries. **New ids must start at L47.**
 `storage-numbers` remains NEEDS-EXECUTION: the three `storage_*` tests compute
 `disk_delta_bytes` dynamically via `measured()` and the quoted byte figures are
 not hardcoded in the source, so reproducing them requires a run, not a read.
+
+---
+
+## Implementation pass — 2026-08-07
+
+Status deltas from working the register. Every row below names the commit, so a
+reader can check the claim rather than trust it. The register's own table above
+is **not** rewritten in place: these supersede it where they disagree.
+
+### Resolved
+
+| row | commit | what actually closed it |
+|---|---|---|
+| L50-cs | `f42e762`, `74ebbe7` | `corpus/entry-baseline.toml` is now the single authoritative home for entry counts, enforced by `nudox-store`'s `corpus_contract.rs`. memchr 2.7.6/2.8.0/2.8.3 = 1825/1835/1835. The Rust sweep independently re-measured all 23 crates.io entries and agreed with the baseline exactly — two harnesses converging, not one asserting. |
+| L19 | `f42e762` | Passes. The stale `EXPECTED_MEMCHR_2_8_3_ENTRIES = 11_329` assert ran *before* the test's real claim, so the `Option<..>` check it existed for never executed. Deleting it turned the test green on the first run. |
+| L44-ic | `622c13e` | Three determinism hazards that mask each other; only the combined revert reproduces. `corpus.rs` `HashMap`→`BTreeMap`, `index/name.rs` ordered insert (its doc *claimed* sorted-by-`IntroId` and the code never sorted), and `search.rs` gained a real total order ending in `StableRef`. |
+| L7 | `9aa0ae6` | Vendored SIMD kernels and the 817,859-byte tokenizer model restored (what was on disk was a 4-byte file containing `STUB`). `require_vendored_source` makes a missing vendored source a hard build error instead of a warn-and-skip that surfaced 200 lines later as six undefined symbols. |
+| L45-cs | `60c0c6f`, `74ebbe7` | `YieldContract` + `NoDeclarationsContributed`/`YieldContractOutgrown`, enforced from **both** pipelines (`produce()` and `produce_with_occurrences` — the brief claimed one choke point; there were two). 22 true positives, 0 false positives across 6 producers. |
+| L35 | `5c0b168` | The application hosts it. See LIMITATIONS.md L35 for the `McpStatus` redesign and the §1 amendment this required. |
+
+### Newly filed, because the work found them
+
+| id | commit | one line |
+|---|---|---|
+| L47 | `74ebbe7` | TypeScript extracts ~nothing from CommonJS packages without bundled `.d.ts` — `lodash` yields 1 declaration for ~300 public functions. Now pinned as exact-equality stubs so the claim cannot outlive the obstruction. |
+| L48 | `e7b9e9a` | Cargo autodiscovery cannot see `tests/<dir>/<name>.rs` and says nothing. 18 test files across `registry` and `index` had never compiled. 279 tests now run. |
+| L49 | `e7b9e9a` | REPORTED, NOT REPRODUCED: a qdrant-edge `Drop`-path panic seen twice in ~11 contended runs; 8/8 clean on a quiet machine. Filed at the confidence the evidence supports. |
+| L50 | `81571ab` | ROOT CAUSE: a failed `run_build_scripts` is swallowed by an unsubscribed `warn!`, so every `build.rs`-set `cfg` evaluates false and `#[cfg]`-gated public API is deleted from the lowering. `log 0.4.17` loses `set_logger`; `nom 5.1.3` loses 8 parsers. |
+
+### Downgraded
+
+`L48-ic` ("every measurable subsystem's default configuration is a fake") is no
+longer true as written. Its `dolt-engine`-cannot-build clause is falsified by
+`e952ee4`: the real version-controlled engine builds, links, and passes 19+2
+tests. The row's other clauses (`SECTION_SEMANTIC` empty, `FixtureTransport` the
+sole `impl`) stand. A row that is 80% true is more dangerous than one that is
+false, because it survives spot-checks — re-scope it rather than closing it.
+
+### The one trap worth reading twice
+
+`corpus/entry-baseline.toml` records `log 0.4.17 = 1255` and `nom 5.1.3 = 3260`.
+Both are **honest measurements of a broken lowering** (L50). When L50 is fixed
+they must go UP and `corpus_entry_counts_match_the_recorded_baseline` will go
+red. That is the test working. Both rows are annotated in the file itself; do
+not "fix" the failure by editing the number down.
