@@ -12,24 +12,54 @@
 //! - [`lower`]   — One-pass lowering of a flat `Extraction` into
 //!   `Lowering<String>`, where `String` is the Roslyn DocumentationCommentId
 //!   (`T:Ns.Type` / `M:…`).
-//! - [`error`]   — `ProducerError` type.
-//! - [`producer`] — `CSharpProducer` implementing the (not-yet-published)
-//!   `nudox-producer` trait contract. Coded against the published contract
-//!   signature; compiles standalone without the `nudox-producer` crate.
+//! - [`error`]   — `ProducerError` type for this crate's own entry points.
+//! - [`producer`] — [`CSharpProducer`], the [`nudox_producer::Producer`]
+//!   implementation: locate the oracle, run it, lower its output.
 //!
-//! # Oracle command contract
+//! Two entry points exist and they are not redundant.
+//! [`CSharpProducer`] is the one the registry drives, and it runs the oracle
+//! itself. [`parse_extraction`] and [`lower`] take oracle JSON that already
+//! exists, so a test can exercise the lowering without a .NET toolchain; they
+//! return this crate's own [`ProducerError`] rather than
+//! [`nudox_producer::ProducerError`].
+//!
+//! # The oracle
+//!
+//! The oracle is a C# program under `oracle/` in this crate, built with the
+//! .NET SDK and Roslyn. It is not committed as a binary; publish it with:
 //!
 //! ```text
-//! dotnet <publish>/oracle.dll \
-//!     --mode source \
-//!     --root <dir>... \
-//!     --out <outfile.json>
+//! cd workspace/compiler/languages/csharp/oracle
+//! dotnet publish -c Release --no-self-contained -o publish
 //! ```
 //!
-//! `DOTNET_CLI_HOME`, `DOTNET_NOLOGO`, `DOTNET_CLI_TELEMETRY_OPTOUT`, and
-//! `DOTNET_SKIP_FIRST_TIME_EXPERIENCE` must be set in the environment.  The
-//! oracle writes its output to `--out` (not stdout); on success exits 0; on
-//! failure exits non-zero with diagnostics on stderr.
+//! ## Command contract
+//!
+//! ```text
+//! dotnet <publish>/oracle.dll --mode source --root <dir> [--root <dir>...]
+//! ```
+//!
+//! The document is written to **stdout**; every diagnostic goes to stderr; a
+//! non-zero exit means no document was produced. `--out FILE` selects a file
+//! sink instead, for debugging.
+//!
+//! ### Why stdout, and not the `--out` file this once documented
+//!
+//! [`nudox_producer::oracle::run_json`] is the shared subprocess helper the
+//! [`Producer`] docs point Go, Java and C# at, and it reads the child's stdout.
+//! Honouring an `--out`-only contract would have meant hand-rolling
+//! `std::process::Command` here and diverging from the other two subprocess
+//! producers for no gain. `--out` is kept as an option, not as the contract.
+//!
+//! This module previously also documented `DOTNET_CLI_HOME`, `DOTNET_NOLOGO`,
+//! `DOTNET_CLI_TELEMETRY_OPTOUT` and `DOTNET_SKIP_FIRST_TIME_EXPERIENCE` as
+//! required. They are not: `dotnet <app>.dll` is the app host, not the SDK CLI,
+//! and it prints no first-run banner and writes nothing to `HOME`. Verified by
+//! running the published oracle with an empty `HOME` and none of the four set —
+//! stdout began with `{"` and parsed clean. Setting them is still reasonable
+//! hardening in a sandbox; it is not a precondition.
+//!
+//! [`Producer`]: nudox_producer::Producer
 //!
 //! # Id choice
 //!
@@ -41,11 +71,13 @@
 
 pub mod error;
 pub mod lower;
+pub mod producer;
 pub mod schema;
 pub mod types;
 pub mod xmldoc;
 
 pub use error::ProducerError;
+pub use producer::CSharpProducer;
 
 use nudox_ir::{
     build::{Symbol, Visibility},

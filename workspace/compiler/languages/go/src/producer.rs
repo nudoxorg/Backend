@@ -1,18 +1,23 @@
-//! Go [`Producer`] implementation.
+//! `GoProducer` — oracle invocation and lowering, and its
+//! `nudox_producer::Producer` implementation.
 //!
-//! This module provides the glue that satisfies the `nudox_producer::Producer`
-//! trait contract (described in the mission brief; the actual trait crate is
-//! being authored by the prodcore agent in parallel).
+//! `GoProducer` implements [`nudox_producer::Producer`] below (see the `impl
+//! Producer for GoProducer` block): `invoke` runs the compiled
+//! `nudox-go-oracle` subprocess via [`nudox_producer::oracle::run_json`] and
+//! `lower` feeds its deserialized output through [`crate::lower::lower_into`].
+//! Registering it with `ProducerRegistry` (`crates/nudox-store/src/source/producer.rs`)
+//! is out of scope for this crate — see that file's `ProducerRegistry::with_all_available`
+//! doc comment for the current registration state.
 //!
-//! **Compilation gate:** This module contains `#[cfg(feature =
-//! "producer-trait")]` guards so the crate compiles even before
-//! `nudox-producer` (the trait crate) lands.  Once `nudox-producer` is stable,
-//! add it as a dependency and remove the `cfg` guards.
+//! The inherent methods below (`lower_bytes`, `invoke_oracle`, `produce`)
+//! predate the trait impl and stay for the tests and call sites that use
+//! them directly without going through `nudox_producer::produce`; they run
+//! the identical `invoke -> lower` shape.
 //!
 //! ## Oracle invocation contract
 //!
 //! The oracle binary lives at
-//! `workspace/compiler/compile/go/oracle/` (a Go module).  It must be compiled
+//! `workspace/compiler/languages/go/oracle/` (a Go module).  It must be compiled
 //! separately (`go build -o nudox-go-oracle ./...` from that directory) before
 //! being usable.  The expected command contract:
 //!
@@ -24,21 +29,31 @@
 //! stderr: diagnostics (non-fatal); logged as warnings.
 //! exit code: 0 on success, non-zero on fatal error.
 //!
-//! The core `nudox-producer` crate is expected to provide an
-//! `oracle_subprocess` helper that runs a command and deserializes stdout as
-//! JSON, turning a non-zero exit into a typed error carrying stderr.  We note
-//! that requirement here rather than hand-rolling `std::process::Command`.
+//! Both the `Producer::invoke` impl and the inherent `invoke_oracle` method
+//! locate the binary the same way: the `NUDOX_GO_ORACLE_BIN` environment
+//! variable if set, else the bare name `nudox-go-oracle` resolved against
+//! `PATH`.
 
 use nudox_ir::{
+    body::Language,
     change::PackageLineageId,
+    lower::Lowering,
     package::{IrPackage, PackageId},
 };
+use nudox_producer::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::{
     error::{self, Result},
-    lower::{GoId, lower_output},
+    lower::{GoId, lower_into, lower_output},
     oracle,
 };
+
+/// Resolve the oracle binary: `$NUDOX_GO_ORACLE_BIN` if set, else the bare
+/// name `nudox-go-oracle` resolved against `PATH`. Shared by `Producer::invoke`
+/// and the inherent `invoke_oracle` so the two paths cannot drift apart.
+fn oracle_binary() -> String {
+    std::env::var("NUDOX_GO_ORACLE_BIN").unwrap_or_else(|_| "nudox-go-oracle".to_string())
+}
 
 /// Identifies the Go oracle producer in the registry.
 pub const PRODUCER_ID: &str = "go-oracle/1";
@@ -68,21 +83,13 @@ impl GoProducer {
 
     /// Run the oracle binary and deserialize its output.
     ///
-    /// **NOTE:** This calls `std::process::Command` directly because the
-    /// `nudox-producer` crate (which will provide `oracle_subprocess`) does not
-    /// yet exist as a Cargo dependency.  Once it does, replace this body with a
-    /// call to `nudox_producer::oracle_subprocess(oracle_bin, &[module_root])`.
-    ///
-    /// UNCERTAINTY: The `oracle_subprocess` helper's exact signature is
-    /// unknown. The brief says it "runs a command and deserializes stdout
-    /// as JSON, turning a non-zero exit into a typed error carrying
-    /// stderr."  This implementation matches that description but may need
-    /// adjustment when the real helper lands.
+    /// This is the pre-trait entry point, kept for direct callers that want
+    /// `crate::error::Error` rather than `nudox_producer::ProducerError` (the
+    /// error type `Producer::invoke` below must return). Both resolve the
+    /// binary via the shared [`oracle_binary`] helper, so they cannot name
+    /// two different binaries.
     pub fn invoke_oracle(&self, module_root: &std::path::Path) -> Result<oracle::Output> {
-        // Locate the oracle binary.  In a real build this would come from the
-        // sandbox/ExecPlan machinery.
-        let oracle_bin =
-            std::env::var("NUDOX_GO_ORACLE_BIN").unwrap_or_else(|_| "nudox-go-oracle".to_string());
+        let oracle_bin = oracle_binary();
 
         let output = std::process::Command::new(&oracle_bin)
             .arg(module_root)
@@ -114,5 +121,46 @@ impl GoProducer {
             eprintln!("[go-oracle] diagnostic: {err}");
         }
         lower_output(&output, pkg_id, lineage)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Producer
+// ---------------------------------------------------------------------------
+
+impl Producer for GoProducer {
+    type Id = GoId;
+    type Oracle = oracle::Output;
+
+    const ID: ProducerId = ProducerId(PRODUCER_ID);
+    const LANGUAGE: Language = Language::Go;
+
+    fn invoke(&self, src: &PackageSource) -> std::result::Result<oracle::Output, ProducerError> {
+        let oracle_bin = oracle_binary();
+        nudox_producer::oracle::run_json(Self::ID.0, oracle_bin, [src.root()])
+    }
+
+    fn lower(
+        &self,
+        oracle: &oracle::Output,
+        out: &mut Lowering<GoId>,
+    ) -> std::result::Result<(), ProducerError> {
+        for err in oracle.errors.iter() {
+            // In production code this would go through tracing::warn!.
+            eprintln!("[go-oracle] diagnostic: {err}");
+        }
+        // `lower_into` cannot name a single failing package up front (it
+        // walks every package in the oracle output before any error can
+        // surface); the module path is the closest thing to a package label
+        // this crate's `Error` carries at this boundary.
+        let package = oracle
+            .module
+            .as_ref()
+            .map(|m| m.path.clone())
+            .unwrap_or_default();
+        lower_into(oracle, out).map_err(|e| ProducerError::LoweringFailed {
+            package,
+            source: Box::new(e),
+        })
     }
 }

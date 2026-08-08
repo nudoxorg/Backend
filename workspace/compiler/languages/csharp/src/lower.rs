@@ -432,12 +432,19 @@ fn lower_class_like(
         }
     }
     for p in &decl.members.properties {
-        let field_id = member_id(&type_doc_id, "P", &p.name);
+        // Must match the id `lower_property` actually declares below, or
+        // `Lowering::finish` rejects this as a referred-but-never-declared id.
+        let field_id = property_doc_id(p, &type_doc_id, "P");
         let r: Ref<Field> = out.refer(field_id);
         field_refs.push(r);
     }
     for idx in &decl.members.indexers {
-        let field_id = member_id(&type_doc_id, "IDX", &idx.name);
+        // Same requirement as above, and the reason it matters more here:
+        // `idx.name` is the same literal ("this[]") for every indexer
+        // overload on the type, so the pre-`property_doc_id` synthetic key
+        // was not just mismatched with `lower_indexer` below but also
+        // collapsed every overload onto one forward-ref.
+        let field_id = property_doc_id(idx, &type_doc_id, "IDX");
         let r: Ref<Field> = out.refer(field_id);
         field_refs.push(r);
     }
@@ -802,7 +809,7 @@ fn lower_property(
     name_to_doc_id: &HashMap<String, String>,
     out: &mut Lowering<String>,
 ) {
-    let field_id = member_id(parent_id, "P", &p.name);
+    let field_id = property_doc_id(p, parent_id, "P");
     let parsed = xmldoc::parse_opt(p.doc.as_deref());
 
     let mut extra: Vec<String> = Vec::new();
@@ -855,7 +862,12 @@ fn lower_indexer(
 ) {
     // Indexers share the same member_id space as properties, but get a
     // distinct prefix to avoid collisions with a property of the same name.
-    let field_id = member_id(parent_id, "IDX", &p.name);
+    // `p.name` alone is not enough to key an indexer: C# indexers are always
+    // named "this[]"/"Item" regardless of parameter list, so a type with more
+    // than one indexer overload needs the oracle's own doc_id (which already
+    // disambiguates by parameter types) or every overload after the first
+    // collides — see `property_doc_id`.
+    let field_id = property_doc_id(p, parent_id, "IDX");
     let parsed = xmldoc::parse_opt(p.doc.as_deref());
 
     let params_note: Vec<String> = p
@@ -1320,6 +1332,31 @@ fn method_doc_id(m: &schema::Method, parent_id: &str) -> String {
         m.doc_id.clone()
     } else {
         member_id(parent_id, "M", &m.name)
+    }
+}
+
+/// Use the oracle's `doc_id` for a property/indexer if non-empty; otherwise
+/// fall back to a synthetic key built from `kind` and `p.name`.
+///
+/// This mirrors [`method_doc_id`] and exists for the same reason: `p.name` is
+/// not unique on its own. It collides in two real shapes, both hit by real
+/// packages in the corpus rather than a synthetic fixture — `IDataRecord`
+/// implementers (Dapper's `DbWrappedReader`) declare *two* indexers,
+/// `this[int]` and `this[string]`, which both carry `p.name == "this[]"`; and
+/// `CsvHelper`'s `IReaderRow` declares four. Every one of those overloads
+/// synthesized to the identical `{type}#IDX:this[]` key under the old
+/// name-only scheme, so `Lowering::finish` rejected the whole package with
+/// `LoweringError::Duplicate` on real-corpus lowering (never on the
+/// hand-written fixture, which has no overloaded indexer). Roslyn's own
+/// `DocumentationCommentId` already disambiguates indexer overloads by
+/// parameter list — `P:Ns.Type.Item(System.Int32)` vs
+/// `P:Ns.Type.Item(System.String)` — exactly like it does for methods, so
+/// preferring it here is the same fix as `method_doc_id`, not a new one.
+fn property_doc_id(p: &schema::Property, parent_id: &str, kind: &str) -> String {
+    if !p.doc_id.is_empty() {
+        p.doc_id.clone()
+    } else {
+        member_id(parent_id, kind, &p.name)
     }
 }
 

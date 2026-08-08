@@ -4,6 +4,8 @@
 //! creates the type entry and delegates to [`super::lower_methods`] for
 //! associated methods.
 
+use std::collections::HashSet;
+
 use nudox_ir::build::*;
 
 use super::{GoId, Result, lower_methods, lower_sig_params_into_lowering, sym_for};
@@ -17,6 +19,7 @@ pub(super) fn lower_struct(
     item_id: GoId,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
@@ -38,14 +41,14 @@ pub(super) fn lower_struct(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     // Item 3: Populate super_types from the oracle's `implements` list.
     let super_types: Vec<Type> = decl
         .implements
         .iter()
-        .map(|iface_ty| types::lower_type_with_lowering(iface_ty, low))
+        .map(|iface_ty| types::lower_type_with_lowering(iface_ty, low, local))
         .collect();
 
     let record = Record::builder()
@@ -95,7 +98,7 @@ pub(super) fn lower_struct(
         let fty = f
             .r#type
             .as_ref()
-            .map(|t| types::lower_type_with_lowering(t, low));
+            .map(|t| types::lower_type_with_lowering(t, low, local));
 
         let field_kind = Field::builder()
             .key(FieldKey::Named)
@@ -106,7 +109,7 @@ pub(super) fn lower_struct(
         low.declare(fid, Some(item_id.clone()), fsym, field_kind);
     }
 
-    lower_methods(pkg, decl, &item_id, low)
+    lower_methods(pkg, decl, &item_id, low, local)
 }
 
 // ── Interface ─────────────────────────────────────────────────────────────────
@@ -117,13 +120,14 @@ pub(super) fn lower_interface(
     item_id: GoId,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     // Item 7a: surface IsComparable as an AttrTok.
@@ -146,7 +150,7 @@ pub(super) fn lower_interface(
         .map(|u| {
             u.embeddeds
                 .iter()
-                .map(|emb| types::lower_type_with_lowering(emb, low))
+                .map(|emb| types::lower_type_with_lowering(emb, low, local))
                 .collect()
         })
         .unwrap_or_default();
@@ -190,6 +194,7 @@ pub(super) fn lower_interface(
                 &sig.name,
                 sig.signature.as_ref(),
                 low,
+                local,
             );
 
             let fn_kind = Function::builder()
@@ -214,6 +219,7 @@ pub(super) fn lower_newtype(
     item_id: GoId,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
@@ -227,7 +233,7 @@ pub(super) fn lower_newtype(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     let record = Record::builder()
@@ -241,7 +247,7 @@ pub(super) fn lower_newtype(
     let underlying_ty = decl
         .underlying
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low));
+        .map(|t| types::lower_type_with_lowering(t, low, local));
     let inner_sym = sym_for("(inner)", "(underlying type field)", decl.exported, None);
     let inner_field = Field::builder()
         .key(FieldKey::Positional(0))
@@ -249,7 +255,7 @@ pub(super) fn lower_newtype(
         .build();
     low.declare(inner_id, Some(item_id.clone()), inner_sym, inner_field);
 
-    lower_methods(pkg, decl, &item_id, low)
+    lower_methods(pkg, decl, &item_id, low, local)
 }
 
 // ── Iota enum ─────────────────────────────────────────────────────────────────
@@ -261,6 +267,7 @@ pub(super) fn lower_iota_enum(
     item_id: GoId,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
@@ -277,7 +284,7 @@ pub(super) fn lower_iota_enum(
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     let enum_kind = Enum::builder()
@@ -305,5 +312,5 @@ pub(super) fn lower_iota_enum(
         low.declare(vid, Some(item_id.clone()), vsym, variant_kind);
     }
 
-    lower_methods(pkg, decl, &item_id, low)
+    lower_methods(pkg, decl, &item_id, low, local)
 }

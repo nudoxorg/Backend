@@ -5,7 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-nudox-ir = { path = "../../../ir/model" }
+nudox-ir  = { path = "../../../ir/model" }
+nudox-producer = { path = "../../producer" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
@@ -15,3 +16,4 @@ workspace = true
 
 [dev-dependencies]
 insta = "1.43.2"
+nudox-test-support = { path = "../../../../crates/nudox-test-support" }

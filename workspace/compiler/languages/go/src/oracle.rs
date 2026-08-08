@@ -1,7 +1,7 @@
 //! Serde mirror of the Go oracle's JSON schema.
 //!
 //! These structs deserialize — field for field — the document emitted by the
-//! vendored extractor at `workspace/compiler/compile/go/oracle/` (see
+//! vendored extractor at `workspace/compiler/languages/go/oracle/` (see
 //! `oracle/serialize.go` for the authoritative Go-side definitions).
 //!
 //! ## Changes from the old `workspace/compiler/compile/go/oracle.rs`

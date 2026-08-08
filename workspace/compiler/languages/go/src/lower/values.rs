@@ -3,6 +3,8 @@
 //! Called from [`super::lower_decl`] in the dispatch layer. These are the
 //! non-type top-level declarations.
 
+use std::collections::HashSet;
+
 use nudox_ir::build::*;
 
 use super::{GoId, Result, lower_sig_params_into_lowering, sym_for};
@@ -15,6 +17,7 @@ pub(super) fn lower_alias(
     decl: &oracle::Decl,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
@@ -25,11 +28,11 @@ pub(super) fn lower_alias(
     let target = decl
         .target
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low));
+        .map(|t| types::lower_type_with_lowering(t, low, local));
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     let alias_kind = Alias::builder()
@@ -47,6 +50,7 @@ pub(super) fn lower_func(
     decl: &oracle::Decl,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
@@ -55,12 +59,12 @@ pub(super) fn lower_func(
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
 
     let (input_refs, output_refs) =
-        lower_sig_params_into_lowering(pkg, "", &decl.name, decl.signature.as_ref(), low);
+        lower_sig_params_into_lowering(pkg, "", &decl.name, decl.signature.as_ref(), low, local);
 
     let generics: Vec<GenericParam> = decl
         .type_params
         .iter()
-        .map(|tp| types::lower_type_param_decl(tp, low))
+        .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
     let fn_kind = Function::builder()
@@ -81,6 +85,7 @@ pub(super) fn lower_const(
     decl: &oracle::Decl,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
@@ -91,7 +96,7 @@ pub(super) fn lower_const(
     let ty = decl
         .r#type
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low))
+        .map(|t| types::lower_type_with_lowering(t, low, local))
         .unwrap_or(Type::Any);
     let value = if decl.value.is_empty() {
         None
@@ -111,6 +116,7 @@ pub(super) fn lower_var(
     decl: &oracle::Decl,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
@@ -121,7 +127,7 @@ pub(super) fn lower_var(
     let ty = decl
         .r#type
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low))
+        .map(|t| types::lower_type_with_lowering(t, low, local))
         .unwrap_or(Type::Any);
 
     let static_kind = Static::builder().ty(ty).mutable(true).build();

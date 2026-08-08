@@ -9,7 +9,7 @@
 mod types;
 mod values;
 
-use std::path::PathBuf;
+use std::{collections::HashSet, path::PathBuf};
 
 use nudox_ir::build::*;
 
@@ -278,6 +278,40 @@ fn method_aliases(import_path: &str, type_name: &str, method_name: &str) -> Box<
 // Public entry point
 // ---------------------------------------------------------------------------
 
+/// Lower every package in an oracle `Output` into an already-constructed
+/// [`Lowering`] sink.
+///
+/// This is the shape [`nudox_producer::Producer::lower`] needs: the caller
+/// (`nudox_producer::produce`, via `GoProducer`'s `Producer` impl) builds the
+/// root-wrapped `Lowering` itself and hands it in, so this function neither
+/// constructs a root symbol nor calls `finish`. [`lower_output`] is the
+/// standalone counterpart that does both, for callers (tests, the inherent
+/// `GoProducer::lower_bytes`/`produce` methods) that want a self-contained
+/// entry point instead.
+///
+/// # Local vs. foreign named types
+///
+/// Before dispatching to each package, this computes `local`: the set of
+/// import paths this oracle invocation actually loaded (and will therefore
+/// emit `decls` for). Every named/alias type reference is checked against
+/// it (see `crate::types::lower_type_with_lowering`) so that a reference to
+/// a package outside this set — the Go standard library, or a dependency —
+/// routes through `Lowering::refer_import` instead of `Lowering::refer`.
+/// Skipping this check made `Lowering::finish` fail with
+/// `LoweringError::Undeclared` on any real Go package that imports so much
+/// as `sync` or `time`, i.e. nearly all of them; see `tests/real_package.rs`.
+pub fn lower_into(output: &oracle::Output, low: &mut Lowering<GoId>) -> Result<()> {
+    let local: HashSet<String> = output
+        .packages
+        .iter()
+        .map(|pkg| pkg.import_path.clone())
+        .collect();
+    for pkg in output.packages.iter() {
+        lower_package(pkg, low, &local)?;
+    }
+    Ok(())
+}
+
 /// Lower all packages in an oracle `Output` into one [`IrPackage`].
 ///
 /// The returned package's root module wraps every Go package as a sub-module.
@@ -291,16 +325,14 @@ pub fn lower_output(
     let root_sym = sym_for("(root)", "", true, None);
     let mut low: Lowering<GoId> = Lowering::new(pkg_id, root_sym);
 
-    for pkg in output.packages.iter() {
-        lower_package(pkg, &mut low)?;
-    }
+    lower_into(output, &mut low)?;
 
     low.finish()
         .map_err(|e| error::Error::Lowering(Box::new(e)))
 }
 
 /// Lower a single oracle package into the `Lowering` sink.
-fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>) -> Result<()> {
+fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSet<String>) -> Result<()> {
     let pkg_id = GoId::Package {
         import_path: pkg.import_path.clone(),
     };
@@ -312,7 +344,7 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>) -> Result<()> 
     let enums = detect_iota_enums(pkg);
 
     for decl in pkg.decls.iter() {
-        lower_decl(pkg, decl, &enums, low)?;
+        lower_decl(pkg, decl, &enums, low, local)?;
     }
 
     Ok(())
@@ -324,23 +356,24 @@ fn lower_decl(
     decl: &oracle::Decl,
     enums: &IotaEnums<'_>,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let parent_pkg = GoId::Package {
         import_path: pkg.import_path.clone(),
     };
 
     match decl.kind {
-        DeclKind::Type => lower_type_decl(pkg, decl, enums, parent_pkg, low),
-        DeclKind::Alias => values::lower_alias(pkg, decl, parent_pkg, low),
-        DeclKind::Func => values::lower_func(pkg, decl, parent_pkg, low),
+        DeclKind::Type => lower_type_decl(pkg, decl, enums, parent_pkg, low, local),
+        DeclKind::Alias => values::lower_alias(pkg, decl, parent_pkg, low, local),
+        DeclKind::Func => values::lower_func(pkg, decl, parent_pkg, low, local),
         DeclKind::Const => {
             // Skip constants that were consumed as enum variants.
             if !enums.variant_names.contains(decl.name.as_str()) {
-                values::lower_const(pkg, decl, parent_pkg, low)?;
+                values::lower_const(pkg, decl, parent_pkg, low, local)?;
             }
             Ok(())
         }
-        DeclKind::Var => values::lower_var(pkg, decl, parent_pkg, low),
+        DeclKind::Var => values::lower_var(pkg, decl, parent_pkg, low, local),
     }
 }
 
@@ -354,6 +387,7 @@ fn lower_type_decl(
     enums: &IotaEnums<'_>,
     parent: GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
@@ -362,14 +396,14 @@ fn lower_type_decl(
 
     // ── iota enum ────────────────────────────────────────────────────────────
     if let Some(variants) = enums.variants_by_type.get(decl.name.as_str()) {
-        return types::lower_iota_enum(pkg, decl, variants, item_id, parent, low);
+        return types::lower_iota_enum(pkg, decl, variants, item_id, parent, low, local);
     }
 
     // ── struct ───────────────────────────────────────────────────────────────
     match decl.underlying.as_ref().map(|u| u.kind) {
-        Some(TypeKind::Struct) => types::lower_struct(pkg, decl, item_id, parent, low),
-        Some(TypeKind::Interface) => types::lower_interface(pkg, decl, item_id, parent, low),
-        _ => types::lower_newtype(pkg, decl, item_id, parent, low),
+        Some(TypeKind::Struct) => types::lower_struct(pkg, decl, item_id, parent, low, local),
+        Some(TypeKind::Interface) => types::lower_interface(pkg, decl, item_id, parent, low, local),
+        _ => types::lower_newtype(pkg, decl, item_id, parent, low, local),
     }
 }
 
@@ -382,12 +416,13 @@ fn lower_methods(
     decl: &oracle::Decl,
     parent: &GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     for method in decl.methods.iter() {
-        lower_one_method(pkg, decl, method, false, parent, low)?;
+        lower_one_method(pkg, decl, method, false, parent, low, local)?;
     }
     for method in decl.promoted_methods.iter() {
-        lower_one_method(pkg, decl, method, true, parent, low)?;
+        lower_one_method(pkg, decl, method, true, parent, low, local)?;
     }
     Ok(())
 }
@@ -399,6 +434,7 @@ fn lower_one_method(
     is_promoted: bool,
     parent: &GoId,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> Result<()> {
     let mid = GoId::Member {
         import_path: pkg.import_path.clone(),
@@ -433,6 +469,7 @@ fn lower_one_method(
         &method.name,
         method.signature.as_ref(),
         low,
+        local,
     );
 
     let fn_kind = Function::builder()
@@ -459,6 +496,7 @@ fn lower_sig_params_into_lowering(
     fn_name: &str,
     sig: Option<&oracle::Type>,
     low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
 ) -> (Vec<Ref<Param>>, Vec<Ref<Param>>) {
     let (params, results, variadic) = sig
         .map(|s| (s.params.as_ref(), s.results.as_ref(), s.variadic))
@@ -480,17 +518,23 @@ fn lower_sig_params_into_lowering(
     let last_param = params.len().saturating_sub(1);
     let mut input_refs: Vec<Ref<Param>> = Vec::with_capacity(params.len());
     for (i, p) in params.iter().enumerate() {
+        // Go's blank identifier `_` is a legal, non-unique parameter name —
+        // `func (h) Handle(_ Context, _ Record) error` is ordinary Go, and a
+        // signature may repeat `_` any number of times because none of them
+        // bind. Treating it as distinct from "no name at all" (the
+        // `is_empty()` branch below) is what let two blank params collide
+        // under the identical id `Member{.., member_name: "param:_"}` and
+        // fail `Lowering::finish` as a duplicate declare on real signatures
+        // (github.com/spf13/viper's `discardHandler.Handle`,
+        // github.com/redis/go-redis/v9's `cscEvictOnRemoveHook.OnGet`,
+        // github.com/google/go-cmp's `filter` methods all declare `_` two or
+        // more times). Both "" and "_" mean "unnamed" in Go, so both must
+        // fall back to the positional index for id uniqueness.
+        let is_blank = p.name.is_empty() || p.name == "_";
         let param_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!(
-                "param:{}",
-                if p.name.is_empty() {
-                    i.to_string()
-                } else {
-                    p.name.clone()
-                }
-            ),
+            member_name: format!("param:{}", if is_blank { i.to_string() } else { p.name.clone() }),
         };
         let is_last_variadic = variadic && i == last_param;
         let attrs: Vec<ParamAttribute> = if is_last_variadic {
@@ -502,12 +546,8 @@ fn lower_sig_params_into_lowering(
         let ty = p
             .r#type
             .as_ref()
-            .map(|t| go_types::lower_type_with_lowering(t, low));
-        let pname = if p.name.is_empty() {
-            format!("_{i}")
-        } else {
-            p.name.clone()
-        };
+            .map(|t| go_types::lower_type_with_lowering(t, low, local));
+        let pname = if is_blank { format!("_{i}") } else { p.name.clone() };
         let psym = sym_for(&pname, "", true, None);
         let param_kind = Param::builder().maybe_ty(ty).attributes(attrs).build();
         input_refs.push(low.refer(param_id.clone()));
@@ -516,28 +556,20 @@ fn lower_sig_params_into_lowering(
 
     let mut output_refs: Vec<Ref<Param>> = Vec::with_capacity(results.len());
     for (i, r) in results.iter().enumerate() {
+        // Same "_ is not a name" reasoning as the param loop above — a named
+        // return list can repeat `_` too (`func f() (_ int, _ error)`).
+        let is_blank = r.name.is_empty() || r.name == "_";
         let result_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!(
-                "result:{}",
-                if r.name.is_empty() {
-                    i.to_string()
-                } else {
-                    r.name.clone()
-                }
-            ),
+            member_name: format!("result:{}", if is_blank { i.to_string() } else { r.name.clone() }),
         };
         // Use lower_type_with_lowering so named result types produce Nominal refs.
         let ty = r
             .r#type
             .as_ref()
-            .map(|t| go_types::lower_type_with_lowering(t, low));
-        let rname = if r.name.is_empty() {
-            format!("_{i}")
-        } else {
-            r.name.clone()
-        };
+            .map(|t| go_types::lower_type_with_lowering(t, low, local));
+        let rname = if is_blank { format!("_{i}") } else { r.name.clone() };
         let rsym = sym_for(&rname, "", true, None);
         let result_kind = Param::builder().maybe_ty(ty).build();
         output_refs.push(low.refer(result_id.clone()));

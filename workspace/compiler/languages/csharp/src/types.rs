@@ -30,7 +30,9 @@ use std::collections::HashMap;
 
 use nudox_ir::{
     build::{GenericParam, Primitive, TupleElement, Type, WherePred, Width},
+    change::EcosystemId,
     entry::AttrTok,
+    foreign::ForeignKey,
     index::{RawRef, Ref},
     kinds::{Record, ty::Variance},
     lower::Lowering,
@@ -264,31 +266,34 @@ fn lower_named(
         };
     }
 
-    // Attempt to resolve the FQN to a doc-id from within the current extraction.
-    // Cross-package named types (e.g. `System.IO.Stream` when not in the
-    // extraction) stay `Any`.
-    let raw_ref: Option<RawRef> = name_to_doc_id.get(name).map(|doc_id| -> RawRef {
-        let r: Ref<Record> = out.refer(doc_id.clone());
-        r.into_raw()
-    });
+    // Resolve the FQN to a doc-id from within the current extraction; anything
+    // else is a cross-package target and is *named* rather than erased.
+    let raw_ref: RawRef = match name_to_doc_id.get(name) {
+        Some(doc_id) => {
+            let r: Ref<Record> = out.refer(doc_id.clone());
+            r.into_raw()
+        }
+        // Cross-package reference: no doc-id in this extraction.
+        //
+        // This used to be `Type::Any`, under a comment saying resolving it
+        // "would need `Lowering::refer_import` with a `UniqueId` from a
+        // registry". That is no longer true: `refer_import` takes a
+        // `ForeignKey`, which a producer builds from what it already holds, and
+        // needs no registry handle. Erasing here was also actively harmful —
+        // `Skeleton` encodes `Type::Any` as one byte, so two overloads whose
+        // parameters differ only in cross-package types produced byte-identical
+        // signature skeletons and collapsed onto one `IntroId`.
+        None => out
+            .refer_import::<Record>(csharp_foreign_key(name))
+            .into_raw(),
+    };
 
     if args.is_empty() {
         // Bare named type reference.
-        match raw_ref {
-            Some(r) => Type::Nominal(r),
-            // Cross-package reference: no doc-id in this extraction.
-            // KNOWN GAP: to resolve cross-package nominal types we would need
-            // `Lowering::refer_import` with a `UniqueId` from a registry;
-            // that requires the caller to supply a package-registry handle.
-            None => Type::Any,
-        }
+        Type::Nominal(raw_ref)
     } else {
         // Generic application: `List<T>`, `IEnumerable<string>`, etc.
-        // The base is Nominal if known, else Any (cross-package).
-        let base = match raw_ref {
-            Some(r) => Type::Nominal(r),
-            None => Type::Any,
-        };
+        let base = Type::Nominal(raw_ref);
         let type_args: Box<[Type]> = args
             .iter()
             .map(|a| lower_type_depth(a, name_to_doc_id, out, depth + 1))
@@ -298,6 +303,40 @@ fn lower_named(
             args: type_args,
         }
     }
+}
+
+/// The cross-package key for a C# type outside the current extraction.
+///
+/// # What C# can and cannot state
+///
+/// The metadata fully-qualified name — arity backticks and all, e.g.
+/// `System.Collections.Generic.List\`1` — is globally stable and identifies the
+/// type exactly, so it is the join key. What is **not** derivable is the NuGet
+/// package id: it is not in general the assembly name (the
+/// `Microsoft.Extensions.*` assemblies split across several packages), and
+/// `Extraction.assembly` describes only the assembly being extracted, never the
+/// one a referenced type came from.
+///
+/// So this emits [`ForeignOrigin::Namespace`] over the type's namespace rather
+/// than fabricating a `nuget:` lineage. A guessed lineage would render as a
+/// working hyperlink to a symbol that does not exist, which is strictly worse
+/// than an honest un-linked name.
+///
+/// [`ForeignOrigin::Namespace`]: nudox_ir::foreign::ForeignOrigin::Namespace
+fn csharp_foreign_key(fqn: &str) -> ForeignKey {
+    let bare = strip_arity(fqn);
+    let namespace = match bare.rfind('.') {
+        Some(i) => &bare[..i],
+        None => "",
+    };
+    ForeignKey::in_namespace(
+        EcosystemId::new("nuget"),
+        namespace,
+        fqn,
+        // The display name drops the namespace and the arity marker: a reader
+        // wants `List`, not ``System.Collections.Generic.List`1``.
+        simple_name(fqn),
+    )
 }
 
 /// The primitive mapping from C# metadata name to nudox-ir `Type::Primitive`.
@@ -613,6 +652,89 @@ mod tests {
     ///
     /// C# nested types of generic outer types (e.g.
     /// `Dictionary<K,V>.KeyCollection`) carry an `owner` in the oracle. That
+    /// A type outside the extraction names itself instead of erasing to `Any`.
+    ///
+    /// `Type::Any` here was the root cause of a whole class of identity loss:
+    /// `Skeleton` encodes it as a single byte, so two overloads differing only
+    /// in cross-package parameter types produced byte-identical signature
+    /// skeletons and collapsed onto one `IntroId`. Asserting on the rendered
+    /// display name rather than on "not Any" is deliberate — a `Ref::Foreign`
+    /// carrying an empty or wrong label would satisfy the weaker check and
+    /// still render a useless row.
+    #[test]
+    fn a_type_outside_the_extraction_names_itself_rather_than_erasing() {
+        let mut sink = make_sink();
+        // Deliberately empty: nothing is in this extraction, so every named
+        // type below is cross-package.
+        let names = HashMap::new();
+
+        let sig = TypeSig::Named {
+            name: "System.IO.Stream".to_owned(),
+            args: vec![],
+            owner: None,
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let Type::Nominal(raw) = lower_type(&sig, &names, &mut sink) else {
+            panic!("a cross-package named type must lower to a nominal reference");
+        };
+        let (key, target) = raw
+            .as_foreign()
+            .expect("a type outside the extraction must be a cross-package reference");
+        assert_eq!(
+            key.display.as_ref(),
+            "Stream",
+            "the display name is what renders when the ref is not linked"
+        );
+        assert_eq!(
+            key.path.as_ref(),
+            "System.IO.Stream",
+            "the metadata FQN is the join key a resolver matches on"
+        );
+        assert!(
+            target.is_none(),
+            "nothing was sealed alongside this package, so it must be named but unlinked"
+        );
+
+        // Arity backticks belong to the join key, never to the label.
+        let generic = TypeSig::Named {
+            name: "System.Collections.Generic.List`1".to_owned(),
+            args: vec![TypeSig::Named {
+                name: "System.String".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            }],
+            owner: None,
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+        let Type::Apply { base, args } = lower_type(&generic, &names, &mut sink) else {
+            panic!("a generic application must stay an application");
+        };
+        let Type::Nominal(base_raw) = base.as_ref() else {
+            panic!("the base of `List<string>` must be nominal, not erased");
+        };
+        let (base_key, _) = base_raw
+            .as_foreign()
+            .expect("the generic base is cross-package");
+        assert_eq!(
+            base_key.display.as_ref(),
+            "List",
+            "`List`1` must render as `List`, not with its arity marker"
+        );
+        assert_eq!(args.len(), 1, "the type argument must survive");
+
+        // Two distinct cross-package types must stay distinguishable — that is
+        // exactly what `Type::Any` destroyed.
+        assert_ne!(
+            key.path, base_key.path,
+            "distinct cross-package types must carry distinct keys"
+        );
+    }
+
     /// owner used to be discarded and the whole type degraded to `Type::Any`.
     /// `Type::QualifiedPath { self_ty, trait_ref: None, assoc }` now preserves
     /// both the outer type and the inner member name. `trait_ref` is `None`

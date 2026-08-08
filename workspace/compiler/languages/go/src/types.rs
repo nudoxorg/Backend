@@ -37,8 +37,11 @@
 //! * **TypeParam** → `Type::TypeVar(name)` — a use of a generic parameter.
 //! * **Basic** types → `Type::Primitive(...)` or `Type::Primitive(Str)` etc.
 
+use std::collections::HashSet;
+
 use nudox_ir::{
     build::*,
+    foreign::ForeignKey,
     kinds::{
         function::Receiver,
         generics::GenericParam,
@@ -54,6 +57,39 @@ use crate::{
 /// Defensive recursion bound.  Anonymous Go types cannot cycle, so this only
 /// guards against malformed oracle output.
 const MAX_DEPTH: usize = 64;
+
+/// The cross-package key for a Go type outside the loaded module.
+///
+/// # What Go can and cannot state
+///
+/// `oracle::Type::pkg` is the canonical **import path** and is globally stable —
+/// `sync.Mutex` produces byte-identical bytes in every package that names it,
+/// which is the best raw material any producer in this workspace has.
+///
+/// What it is *not* is the **module path**, which is what
+/// `PackageDescriptor::go` uses as the lineage name. `go.uber.org/zap/zapcore`
+/// cannot be split into module + subpath without a go.mod answer the oracle does
+/// not currently produce. Emitting `ForeignOrigin::Namespace` states exactly
+/// that, and upgrades to `Package` the day the oracle reports module paths —
+/// whereas the code this replaces synthesised `PackageId::path(import_path)`,
+/// which reads like a resolved package identity and is not one.
+fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
+    let ecosystem = EcosystemId::new("go");
+    if import_path.is_empty() {
+        // Universe scope: `error`, `comparable`, `any`. These are declared by
+        // the language, not by a package. The previous encoding was
+        // `PackageId::path("")`, which collapsed every predeclared identifier
+        // into one empty pseudo-package.
+        ForeignKey::in_universe(ecosystem, name, name)
+    } else {
+        ForeignKey::in_namespace(
+            ecosystem,
+            import_path,
+            format!("{import_path}.{name}"),
+            name,
+        )
+    }
+}
 
 /// Qualify a Go identifier as `pkg.Name`.  Universe-scope names (`error`,
 /// `comparable`, `any`) have no package and stay bare.
@@ -71,17 +107,42 @@ pub fn qualify(pkg: &str, name: &str) -> String {
 
 /// Lower an oracle type node, emitting nominal refs via `low`.
 ///
-/// Every named/alias type produces a `Type::Nominal(RawRef)` via
-/// `low.refer(GoId::Item { ... })`, so the type graph is fully connected.
+/// Every named/alias type produces a `Type::Nominal(RawRef)`, but the two
+/// named/alias branches below emit that `RawRef` from two different arenas
+/// depending on `local`:
+///
+/// * A package present in `local` (i.e. one this oracle invocation actually
+///   loaded and will emit `decls` for) uses `low.refer(GoId::Item { ... })`
+///   — a same-package forward reference that [`Lowering::finish`] requires
+///   to be `declare`d before the pass ends.
+/// * Everything else — the Go standard library (`sync`, `io`, `time`, …),
+///   universe-scope predeclared identifiers (`error`, `comparable`; the
+///   oracle marks these with an empty `pkg`), or a dependency from a
+///   different Go module entirely — uses `low.refer_import` into a separate
+///   *import* arena that `finish` does not validate.
+///
+/// Treating every named type as local (the previous behavior) crashes
+/// [`Lowering::finish`] with `LoweringError::Undeclared` on essentially
+/// every real-world Go package: the oracle only emits `decls` for packages
+/// *within the loaded module* (see `oracle/main.go`'s `extract`), so a
+/// same-package-style `refer()` on `sync.Mutex` or even the bare `error`
+/// interface can never be satisfied. This is not a hypothetical — it is
+/// exactly what running the real oracle over `go.uber.org/zap` produced
+/// before this fix (see `tests/real_package.rs`).
 ///
 /// `low` and the oracle data are disjoint borrows; the borrow checker can
 /// verify this at each call site (oracle `Type` lives in the oracle output,
 /// `Lowering` owns only its internal index).
-pub fn lower_type_with_lowering(t: &oracle::Type, low: &mut Lowering<GoId>) -> Type {
-    lower_type_depth_low(t, low, 0)
+pub fn lower_type_with_lowering(t: &oracle::Type, low: &mut Lowering<GoId>, local: &HashSet<String>) -> Type {
+    lower_type_depth_low(t, low, local, 0)
 }
 
-fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize) -> Type {
+fn lower_type_depth_low(
+    t: &oracle::Type,
+    low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
+    depth: usize,
+) -> Type {
     if depth >= MAX_DEPTH {
         return Type::Any;
     }
@@ -99,7 +160,20 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                 import_path: t.pkg.clone(),
                 name: t.name.clone(),
             };
-            let raw: RawRef = low.refer::<nudox_ir::kinds::Record>(go_id).into_raw();
+            let raw: RawRef = if local.contains(&t.pkg) {
+                // Same-package (or same-module, different-package) reference:
+                // the oracle will emit a `decls` entry for it, so a
+                // same-arena forward reference is correct and `finish` will
+                // resolve it.
+                low.refer::<nudox_ir::kinds::Record>(go_id).into_raw()
+            } else {
+                // Foreign: stdlib, a universe-scope predeclared identifier
+                // (empty `pkg`), or a dependency the oracle never loaded.
+                // See this function's doc comment for why `refer` would
+                // crash `finish` here.
+                low.refer_import::<nudox_ir::kinds::Record>(go_foreign_key(&t.pkg, &t.name))
+                    .into_raw()
+            };
             let base = Type::Nominal(raw);
             if t.type_args.is_empty() {
                 base
@@ -107,7 +181,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                 let args: Box<[Type]> = t
                     .type_args
                     .iter()
-                    .map(|a| lower_type_depth_low(a, low, depth + 1))
+                    .map(|a| lower_type_depth_low(a, low, local, depth + 1))
                     .collect();
                 Type::Apply {
                     base: Box::new(base),
@@ -125,7 +199,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Primitive(Primitive::MutPointer(Box::new(elem)))
         }
@@ -134,7 +208,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Slice(Box::new(elem))
         }
@@ -143,7 +217,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Array {
                 ty: Box::new(elem),
@@ -158,12 +232,12 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let key = t
                 .key
                 .as_deref()
-                .map(|k| lower_type_depth_low(k, low, depth + 1))
+                .map(|k| lower_type_depth_low(k, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             let val = t
                 .value
                 .as_deref()
-                .map(|v| lower_type_depth_low(v, low, depth + 1))
+                .map(|v| lower_type_depth_low(v, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Apply {
                 base: Box::new(Type::TypeVar("map".to_string())),
@@ -178,7 +252,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, depth + 1))
+                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
                 .unwrap_or(Type::Any);
             Type::Apply {
                 base: Box::new(Type::TypeVar(op)),
@@ -212,7 +286,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                 .map(|p| {
                     p.r#type
                         .as_ref()
-                        .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                        .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
                         .unwrap_or(Type::Any)
                 })
                 .collect();
@@ -224,7 +298,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                     let ty = r
                         .r#type
                         .as_ref()
-                        .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                        .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
                         .unwrap_or(Type::Any);
                     Some(Box::new(ty))
                 }
@@ -237,7 +311,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                             let ty = r
                                 .r#type
                                 .as_ref()
-                                .map(|ty| lower_type_depth_low(ty, low, depth + 1))
+                                .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
                                 .unwrap_or(Type::Any);
                             TupleElement::Positional(ty)
                         })
@@ -268,7 +342,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                     ty: f
                         .r#type
                         .as_ref()
-                        .map(|ft| lower_type_depth_low(ft, low, depth + 1))
+                        .map(|ft| lower_type_depth_low(ft, low, local, depth + 1))
                         .unwrap_or(Type::Any),
                     optional: false,
                     readonly: false,
@@ -299,7 +373,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                         let ty = m
                             .signature
                             .as_ref()
-                            .map(|sig| lower_type_depth_low(sig, low, depth + 1))
+                            .map(|sig| lower_type_depth_low(sig, low, local, depth + 1))
                             .unwrap_or(Type::Any);
                         AnonField {
                             name: m.name.clone(),
@@ -329,7 +403,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
                     let inner = term
                         .r#type
                         .as_ref()
-                        .map(|inner| lower_type_depth_low(inner, low, depth + 1))
+                        .map(|inner| lower_type_depth_low(inner, low, local, depth + 1))
                         .unwrap_or(Type::Any);
                     if term.tilde {
                         // Encode tilde-approximation: ~T ≠ T
@@ -349,7 +423,7 @@ fn lower_type_depth_low(t: &oracle::Type, low: &mut Lowering<GoId>, depth: usize
             let parts: Box<[TupleElement]> = t
                 .types
                 .iter()
-                .map(|inner| TupleElement::Positional(lower_type_depth_low(inner, low, depth + 1)))
+                .map(|inner| TupleElement::Positional(lower_type_depth_low(inner, low, local, depth + 1)))
                 .collect();
             Type::Tuple(parts)
         }
@@ -449,7 +523,11 @@ pub fn lower_receiver(pointer_recv: bool) -> Receiver {
 ///
 /// Constraint bounds call back into `lower_type_with_lowering` so that named
 /// constraint interfaces produce `Type::Nominal(RawRef)` rather than `Any`.
-pub fn lower_type_param_decl(tp: &oracle::TypeParamDecl, low: &mut Lowering<GoId>) -> GenericParam {
+pub fn lower_type_param_decl(
+    tp: &oracle::TypeParamDecl,
+    low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
+) -> GenericParam {
     let bounds: Box<[Type]> = tp
         .constraint
         .as_ref()
@@ -458,7 +536,7 @@ pub fn lower_type_param_decl(tp: &oracle::TypeParamDecl, low: &mut Lowering<GoId
                 // `any` constraint = unconstrained
                 Vec::<Type>::new().into_boxed_slice()
             } else {
-                let t = lower_type_with_lowering(c, low);
+                let t = lower_type_with_lowering(c, low, local);
                 vec![t].into_boxed_slice()
             }
         })
@@ -554,7 +632,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            lower_type_with_lowering(&t, &mut low),
+            lower_type_with_lowering(&t, &mut low, &HashSet::new()),
             Type::Slice(_)
         ));
     }
@@ -572,7 +650,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Array { length, .. } => assert_eq!(length, 8),
             other => panic!("expected Array, got {other:?}"),
         }
@@ -591,7 +669,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            lower_type_with_lowering(&t, &mut low),
+            lower_type_with_lowering(&t, &mut low, &HashSet::new()),
             Type::Primitive(Primitive::MutPointer(_))
         ));
     }
@@ -607,7 +685,7 @@ mod tests {
             name: "Rect".to_string(),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Nominal(_) => {}
             other => panic!("named type must lower to Nominal, got {other:?}"),
         }
@@ -622,7 +700,7 @@ mod tests {
             name: "any".to_string(),
             ..Default::default()
         };
-        assert!(matches!(lower_type_with_lowering(&t, &mut low), Type::Any));
+        assert!(matches!(lower_type_with_lowering(&t, &mut low, &HashSet::new()), Type::Any));
     }
 
     #[test]
@@ -639,7 +717,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Apply { base, args } => {
                 assert!(matches!(*base, Type::Nominal(_)), "base must be Nominal");
                 assert_eq!(args.len(), 1);
@@ -659,7 +737,7 @@ mod tests {
             name: "T".to_string(),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::TypeVar(n) => assert_eq!(n, "T"),
             other => panic!("TypeParam must lower to TypeVar, got {other:?}"),
         }
@@ -693,7 +771,7 @@ mod tests {
             ]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Union(parts) => {
                 assert_eq!(parts.len(), 2);
                 // First term is tilde: must be Apply { base: TypeVar("~"), args: [int] }
@@ -743,7 +821,7 @@ mod tests {
             ]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Union(parts) => assert_eq!(parts.len(), 2),
             other => panic!("expected Union, got {other:?}"),
         }
@@ -768,7 +846,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Apply { base, args } => {
                 assert!(
                     matches!(*base, Type::TypeVar(ref n) if n == "map"),
@@ -798,7 +876,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::Apply { base, args } => {
                 assert!(
                     matches!(*base, Type::TypeVar(ref n) if n == "chan<-"),
@@ -837,7 +915,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::FunctionPointer { params, ret, abi } => {
                 assert_eq!(params.len(), 1, "func(string) must have 1 param");
                 assert!(
@@ -903,7 +981,7 @@ mod tests {
             ]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::FunctionPointer { params, ret, .. } => {
                 assert_eq!(params.len(), 2, "2 input params");
                 let ret_ty = ret.expect("multi-return func must have ret");
@@ -935,7 +1013,7 @@ mod tests {
             kind: TypeKind::Func,
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::FunctionPointer { params, ret, abi } => {
                 assert!(params.is_empty(), "func() must have 0 params");
                 assert!(ret.is_none(), "func() must have no return type");
@@ -967,7 +1045,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&t, &mut low) {
+        match lower_type_with_lowering(&t, &mut low, &HashSet::new()) {
             Type::AnonymousRecord { form, members } => {
                 assert_eq!(
                     form,
@@ -997,7 +1075,7 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            matches!(lower_type_with_lowering(&empty, &mut low), Type::Any),
+            matches!(lower_type_with_lowering(&empty, &mut low, &HashSet::new()), Type::Any),
             "empty interface must remain Type::Any"
         );
 
@@ -1026,7 +1104,7 @@ mod tests {
             all_methods: Box::new([]),
             ..Default::default()
         };
-        match lower_type_with_lowering(&non_empty, &mut low) {
+        match lower_type_with_lowering(&non_empty, &mut low, &HashSet::new()) {
             Type::AnonymousRecord { form, members } => {
                 assert_eq!(
                     form,
