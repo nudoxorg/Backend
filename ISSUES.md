@@ -382,3 +382,42 @@ Both are **honest measurements of a broken lowering** (L50). When L50 is fixed
 they must go UP and `corpus_entry_counts_match_the_recorded_baseline` will go
 red. That is the test working. Both rows are annotated in the file itself; do
 not "fix" the failure by editing the number down.
+
+### Root causes closed — 2026-08-08
+
+| row | commit | outcome |
+|---|---|---|
+| L50 | `341e9a0` | **Fixed properly**, not worked around: all 23 crates.io entries lower correctly. Two claims in the original write-up were wrong — `--all-targets` came from `ra_ap_project_model`, not from us, and the swallowing site was upstream returning `Ok(scripts)` with the diagnostics in an `Option` nobody must read, which is what makes it the same defect as L39 rather than merely similar. |
+| L23 | `341e9a0` | **Root cause removed.** Params are now declared under their owning function, so the collision never forms. The escalation pass had been *masking* it, which is why the guard test was already green. |
+
+Both are worth reading for the same reason: **the number lied in each case, in
+opposite directions.**
+
+L50's fix made `log 0.4.17` go DOWN (1255 → 1251), against the prediction
+written into the baseline. Restoring `set_logger`/`set_boxed_logger` also
+deletes the private `#[cfg(not(has_atomics))]` shim that had been lowered as
+public structure — more counterfeit items removed than real ones added. The
+broken table was never a subset of the correct one, so no entry count in either
+direction could have adjudicated the defect. `nom 5.1.3` moved the other way
+(3260 → 3288) from the identical root cause.
+
+L23's fix changed no counts at all, and was invisible to the test written to
+catch it: `real_memchr_generic_return` passed before AND after, because ordinal
+escalation was quietly re-minting the collided ids. Only
+`a_new_unrelated_sibling_does_not_change_existing_functions_param_ids`
+separates the two states — an ordinal cannot survive a sibling being inserted
+ahead of it. Verified in both directions: escalation disabled → memchr still
+passes at the same `IntroId`; fix reverted with escalation intact → only that
+one test fails.
+
+**Still open underneath L23:** with escalation disabled memchr drops 1835 →
+1794. Those 41 entries are other collision sources — `Field` entries carry the
+identical module-parenting shape — still relying on the backstop. Recorded so
+the escalation pass is not mistaken for dead code.
+
+**Coordination note, recorded because it cost real time:** L50 and L23 were
+dispatched concurrently into the same crate and both edited
+`workspace/compiler/producer/src/lib.rs`, so neither half could be committed
+alone without leaving HEAD non-building. An attempt to isolate one by reverting
+three files broke the build immediately — its changes spanned further. Parallel
+agents need disjoint *files*, not merely disjoint *tasks*.
