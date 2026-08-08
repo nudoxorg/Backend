@@ -343,7 +343,19 @@
               testrust = {
                 enable = true;
                 name = "testrust";
-                entry = "cargo nextest run";
+                # A bare `cargo nextest run` fails at the build step on this
+                # repo before any nextest.toml filter runs: `workspace/index`
+                # has never compiled, and `driver`/`ir-vcs` both depend on it
+                # (LIMITATIONS.md L6) — `--exclude` for those three is
+                # required on every invocation, and `nudox-ir` needs
+                # RUSTC_BOOTSTRAP=1 (unstable macro decls). This entry was
+                # broken (would fail on every commit) before this fix.
+                # `nextest-suite.nu` bakes both requirements in and runs the
+                # `default` profile (root-workspace unit + integration only,
+                # high concurrency, no real-crate/GUI cost) — the right size
+                # for a per-commit gate; `nu .config/scripts/nextest-suite.nu
+                # --all` is the full end-to-end suite for CI, not this hook.
+                entry = "${nixPackages.nushell}/bin/nu .config/scripts/nextest-suite.nu";
                 language = "system";
                 pass_filenames = false;
                 stages = [ "pre-merge-commit" ];
@@ -468,6 +480,17 @@
 
             RUSTC_BOOTSTRAP = "1";
             LIBRARY_PATH = "${nixPackages.libiconv}/lib";
+            # `nudox-producer-clang` (workspace/compiler/languages/clang) links
+            # `clang-sys` with its `runtime` feature: libclang is `dlopen`'d at
+            # first use, not linked at build time, so no binary that merely
+            # links the crate can abort at process load — see that crate's
+            # Cargo.toml. `LIBCLANG_PATH` still governs *which* libclang the
+            # dlopen finds; pinning it to the flake's own nixpkgs derivation
+            # (rather than leaving discovery to fall back to whatever Xcode
+            # Command Line Tools / system package manager happens to be
+            # installed) is what makes that discovery reproducible across
+            # machines instead of an unstated assumption about the host.
+            LIBCLANG_PATH = "${nixPackages.libclang.lib}/lib";
             MAIN_PACKAGE = "nudox";
             OUTPUT_DIRECTORY = "dist";
             OPENSSL_DIR = "${nixPackages.openssl.dev}";
@@ -498,6 +521,7 @@
                 taplo
                 cargo-nextest
                 libiconv
+                libclang.lib
                 nil
                 jsonfmt
                 dotacat
