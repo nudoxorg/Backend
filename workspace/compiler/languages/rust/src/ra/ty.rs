@@ -35,16 +35,83 @@
 //! is zero-cost static dispatch, `dyn Trait` is a vtable fat pointer. Unifying
 //! them behind a flag would erase that distinction.
 //!
-//! Because `Nominal` carries a `RawRef` that must be resolved against the
-//! `Lowering` arena, this module does **not** return `Type::Nominal` for
-//! external types (those outside the current package).  External references are
-//! rendered as `Type::Any` — this is a known limitation.  Local references use
-//! `Type::Nominal` via the caller-supplied `ref_for` callback.
+//! `Nominal` carries a `RawRef` that the caller-supplied `ref_for` callback
+//! resolves against the `Lowering` arena. For a **local** path this is a
+//! forward reference (`Ref::Local`, rewritten to `Ref::Intro` at seal time).
+//! For a **foreign** (cross-crate) path, `ref_for` (see
+//! `item.rs::make_ref_for!`) calls `Lowering::refer_import`, which *also*
+//! returns `Ref::Local` — a forward reference into a separate "import" arena
+//! slot, meant to be resolved to `Ref::Foreign` later. Either way `ref_for`
+//! returns `Some`, so a generic application of an external type —
+//! `Option<usize>`, `Vec<T>`, `HashMap<K, V>`, … — lowers to `Type::Apply {
+//! base: Nominal(ref), args }` exactly like a local one; `ref_for` returning
+//! `None` (falling back to `Type::Any`) is reached only when a path fails to
+//! *resolve* at all (unknown macro-generated code, a broken `cfg`, …), not
+//! merely because the type is external.
+//!
+//! **If a rendered signature is missing a generic wrapper (LIMITATIONS.md
+//! L19), the defect is not in this module — this module's `Type::Apply`
+//! construction is correct.** Verified directly (2026-08-05) two ways: (a)
+//! instrumenting `lower_path_type` while lowering `.real-crates/memchr-2.8.3`
+//! showed every one of `memchr`'s ~150 uses of `Option<T>` — including the
+//! public `memchr()` function's own return type — resolves through
+//! `PathResolution::Def` and builds `Type::Apply` correctly; (b)
+//! `crates/nudox-engine/tests/generic_signature_shapes.rs`'s
+//! `apply_nesting_is_correct_not_collapsed_to_inner_arg` asserts the built
+//! `Type::Apply` structure directly (arity + nesting, bypassing rendering)
+//! for `Option<T>`, `Result<T, E>`, `Vec<T>`, `HashMap<K, V>`, `Box<dyn
+//! Trait>`, and a three-deep `Option<Vec<Result<T, E>>>` — the exact shape
+//! the L19 ticket describes collapsing — and passes.
+//!
+//! The rendered *text* is nonetheless broken today, for two reasons, both
+//! entirely outside `ty.rs` and `crates/nudox-engine/src/chunk/signature.rs`:
+//!
+//! 1. **Cross-package `Ref::Local` is never resolved to `Ref::Foreign`.**
+//!    `workspace/ir/model/src/package/seal.rs`'s `Ref::Local` → `Ref::Intro`
+//!    rewrite only walks the package's own declared entries and has no
+//!    knowledge of the import arena; a repo-wide grep confirms `Ref::Foreign(`
+//!    is never *constructed* anywhere in `workspace/ir/model/src` (only
+//!    matched, in `index.rs`'s trait impls). So every foreign generic's
+//!    `Ref::Local` survives into the sealed table, where
+//!    `signature.rs::resolve_nominal` — whose own comment says a bare
+//!    `Ref::Local` "should not appear in a sealed table" — renders it `"?"`.
+//!    Measured on real `memchr`: 147/420 functions render a bare `?` for a
+//!    foreign generic base, and zero functions in the whole crate correctly
+//!    render `Option<`, `Result<`, `Vec<`, `Box<`, or `HashMap<`.
+//! 2. **A separate identity-collision bug** in `item.rs`: every function's
+//!    parameter/return `Param` entry is declared under the function's
+//!    *enclosing* `parent` (module or impl) instead of under the function's
+//!    own id (`declare_params`, and the `output_refs` closure in
+//!    `lower_free_function_with_id`, both do `out.declare(param_id,
+//!    parent.clone(), …)` where `parent` is the caller-supplied enclosing
+//!    scope, not `Some(fn_id.clone())`). Combined with `seal.rs`'s collision
+//!    disambiguator falling back to `Disambiguator::Span` for any
+//!    non-Function/Impl kind, and `item.rs::plain_sym` always setting `span:
+//!    0..0` for producer-synthesized param symbols, every same-named
+//!    parameter declared directly in the same module (in particular *every*
+//!    function's `return` param) collides onto one shared `IntroId` and
+//!    silently overwrites its siblings in `PristineIntroTable`. Measured on
+//!    real `memchr`: 58 collision groups; 416 functions with a return type
+//!    reduce to 188 distinct identities. `memchr`'s own `return` Param is
+//!    overwritten by one of 18 sibling free functions (`memchr2`, `memchr3`,
+//!    `memrchr`, `memrchr2`, `memrchr3`, and their `_raw`/`_iter` variants)
+//!    declared in the same module — whichever of those legitimately returns
+//!    a bare `usize` (most plausibly `count_raw`) is what actually renders
+//!    for `memchr`, which is the literal `usize` text the ticket reports
+//!    (this bug alone explains the *exact* wording; bug (1) alone would have
+//!    produced `?<usize>` instead).
+//!
+//! Neither file is in this crate's edit scope: `item.rs` is under active
+//! concurrent edit by another agent, and `workspace/ir/model/src/{lower,
+//! package/seal}.rs` belong to `nudox-ir`, a crate this task never
+//! authorized touching. See the L19 task report's REMAINING section for the
+//! full evidence trail.
 //!
 //! # Remaining `Type::Any` fallbacks (accurate as of the current IR)
 //!
-//! - **External types** — `ref_for` returns `None`; no `RawRef` to embed.
-//!   This is an acquisition-boundary issue, not an IR gap.
+//! - **Unresolvable paths** — `resolve_path_opt` returns `None` (macro
+//!   expansion the producer could not follow, a `cfg`'d-out branch, etc.),
+//!   *not* merely "the type lives in another crate" — see above.
 //! - **Lifetime / const generic args in `Apply.args`** — `Apply.args` is
 //!   `List<Type>`; there is no position for lifetime or const arguments.
 //! - **Lifetime-only bounds on `dyn Trait`** — `dyn Trait + 'static` lifetime
@@ -61,9 +128,8 @@
 //!
 //! 1. AST shape is the source of truth for lifetimes, mutability, and arg order.
 //! 2. `Semantics::resolve_path` resolves `PathType` → `ModuleDef` so we can
-//!    emit `Nominal(RawRef)` for local types.
-//! 3. For external (non-local) types or unresolvable paths we fall back to
-//!    `Type::Any`.
+//!    emit `Nominal(RawRef)` for both local *and* foreign types (see above).
+//! 3. Only an unresolvable path falls back to `Type::Any`.
 //! 4. `lower_hir_type_fallback` covers the no-AST case (macro-expanded items).
 
 use std::panic::{self, AssertUnwindSafe};
@@ -90,9 +156,11 @@ use super::item::id_of;
 
 /// Lower a written AST type.
 ///
-/// `ref_for` maps a local canonical path to a `RawRef` (obtained from
-/// `Lowering::refer(id)`).  It returns `None` for external types so the caller
-/// can substitute `Type::Any`.
+/// `ref_for` maps a resolved canonical path (local *or* foreign — see the
+/// module doc) to a `RawRef` via `Lowering::refer`/`refer_import`. It returns
+/// `None` only when the path could not be resolved at all, so the caller can
+/// substitute `Type::Any`; a resolved foreign path still yields a real
+/// `RawRef` and participates in `Type::Apply` normally.
 pub(crate) fn lower_ast_type(
     ctx: &mut LowerCtx<'_>,
     node: &ast::Type,

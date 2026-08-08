@@ -42,12 +42,15 @@
 //! refs. Phase 2 reads only the phase-1 output (the `path_ids` map). There
 //! is no backward edge; the computation terminates by construction.
 
-use std::{collections::HashMap, hash::Hash};
+use std::{cell::RefCell, collections::HashMap, hash::Hash};
+
+use triomphe::Arc;
 
 use crate::{
-    apply::PristineIntroTable,
-    change::{IntroId, PackageLineageId},
+    apply::{IntroCollision, PristineIntroTable},
+    change::{IntroId, PackageLineageId, StableRef},
     entry::{Entry, EntryInner},
+    foreign::{ForeignKey, ForeignResolver, Resolution},
     index::{Ref, UntypedEntryIndex},
     intro::{Disambiguator, bootstrap_intro_id},
     kind::{Kind, KindDiscriminant},
@@ -62,6 +65,93 @@ use super::IrPackage;
 /// need a disambiguator to stay distinct.
 type BaseKey = (u16, Vec<String>, String);
 
+/// A sealed package plus everything `seal` observed while sealing it.
+///
+/// The report is a **returned field**, not a log line, because a `warn!` stops
+/// no caller — and the whole class of defect this type exists to surface is
+/// "the pipeline silently did the wrong thing and shipped green".
+#[derive(Debug)]
+pub struct SealOutcome {
+    /// The materialized table.
+    pub table: PristineIntroTable,
+    /// What sealing observed. See [`SealReport`].
+    pub report: SealReport,
+}
+
+/// Facts a caller must be able to see after sealing.
+///
+/// None of these is an error: unloaded dependencies are the normal case, and a
+/// forced disambiguation is a producer-quality signal rather than a failure.
+/// `seal` stays infallible on purpose — a package that cannot be sealed cannot
+/// be *shown*, and degrading to "this reference is named but not linked" is
+/// strictly better for a documentation product than degrading to a blank page.
+#[derive(Debug, Default)]
+pub struct SealReport {
+    /// Distinct cross-package keys no resolver could place, with the reason.
+    ///
+    /// Split by [`Resolution`] rather than collapsed to a count so that
+    /// "the dependency is not loaded" (normal) is distinguishable from
+    /// "the path names nothing in a package that *is* loaded" (a producer bug —
+    /// the referring producer's path grammar and the target's disagree). The
+    /// second is the only interesting one and the only one worth chasing.
+    pub unlinked: Vec<(Arc<ForeignKey>, Resolution)>,
+
+    /// Cross-package keys that were successfully linked to a `StableRef`.
+    pub linked: Vec<(Arc<ForeignKey>, StableRef)>,
+
+    /// Entries whose structural disambiguator proved degenerate and had to be
+    /// escalated. Non-empty means the producer erased something load-bearing —
+    /// typically parameter types lowered to `Type::Any`, which makes distinct
+    /// overloads encode to identical skeletons.
+    pub forced: Vec<ForcedDisambiguation>,
+
+    /// Arena-local references that had no minted `IntroId` and therefore
+    /// survived sealing as `Ref::Local`.
+    ///
+    /// Since the import arena no longer exists, this is provably a bug in
+    /// `Lowering`/`seal` rather than a cross-package reference — the case three
+    /// separate downstream files each documented as impossible while it shipped
+    /// on every real package. Non-empty is always a defect.
+    pub unmapped_local: Vec<UntypedEntryIndex>,
+
+    /// Declarations that still collided after every escalation tier and were
+    /// therefore **not** inserted. Always a defect; empty in every case the
+    /// escalation ladder can reach.
+    pub collisions: Vec<IntroCollision>,
+}
+
+impl SealReport {
+    /// `true` when sealing observed nothing that needs a human.
+    ///
+    /// Deliberately excludes `unlinked`: a package sealed without its
+    /// dependencies is the normal local-first case, not a problem.
+    pub fn is_clean(&self) -> bool {
+        self.forced.is_empty() && self.unmapped_local.is_empty() && self.collisions.is_empty()
+    }
+}
+
+/// One declaration group whose structural identity was degenerate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForcedDisambiguation {
+    pub kind: KindDiscriminant,
+    pub segments: Vec<String>,
+    pub name: String,
+    /// How many declarations shared one minted `IntroId` before escalation.
+    pub group: usize,
+    /// The tier the group had to be escalated to.
+    pub escalated_to: Escalation,
+}
+
+/// Which fallback tier a colliding group needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Escalation {
+    /// The declaration's source span separated the group.
+    Span,
+    /// Spans were identical too (a line-granular oracle, or several
+    /// declarations on one line); the ordinal is the terminal guard.
+    Ordinal,
+}
+
 impl<Id: Eq + Hash> IrPackage<Id> {
     /// Seal this package under `lineage`, minting an [`IntroId`] for every
     /// entry and returning the materialized [`PristineIntroTable`].
@@ -70,7 +160,18 @@ impl<Id: Eq + Hash> IrPackage<Id> {
     /// `lineage` is the production package identity (ecosystem + name); it is a
     /// parameter for now — the arena's internal `PackageId` is dev-only and
     /// will be replaced by the lineage id when the registry is rewired.
-    pub fn seal(self, lineage: &PackageLineageId) -> PristineIntroTable {
+    ///
+    /// `imports` places this package's cross-package references. It is a
+    /// **required** parameter, not a defaulted one, because an omission is
+    /// exactly how the original defect stayed invisible: pass
+    /// [`Unlinked`](crate::foreign::Unlinked) to state "nothing has been sealed
+    /// alongside this package", and the decision is on the record at the call
+    /// site rather than absent from it.
+    pub fn seal(
+        self,
+        lineage: &PackageLineageId,
+        imports: &dyn ForeignResolver,
+    ) -> SealOutcome {
         // Resolution indices over the arena's export-addressed entries.
         let by_idx: HashMap<UntypedEntryIndex, &Entry> =
             self.entries.iter().map(|(idx, e)| (*idx, e)).collect();
@@ -146,6 +247,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         // encodes byte-identically to `Ref::Intro(path_id)`.
         let resolver = |idx: UntypedEntryIndex| path_ids.get(&idx).copied();
 
+        let mut report = SealReport::default();
         let mut intros: Vec<IntroId> = Vec::with_capacity(n);
         for i in 0..n {
             let (_, e) = &self.entries[i];
@@ -197,6 +299,109 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             ));
         }
 
+        // ── Pass 2.5: escalate any group that *actually* minted one id ───────
+        //
+        // Two declarations minting one `IntroId` is an identity failure, not an
+        // update: the second is unreachable and the first is gone. That is 28
+        // real Gson methods disappearing between `finish` and the GUI.
+        //
+        // The structural disambiguators above can be degenerate. A `Function`
+        // skeleton over parameters that all erased to `Type::Any` carries no
+        // discriminating bytes — and, unlike *every other* collision (the
+        // `_ if count >= 2` arm), that branch has no fallthrough to `Span`.
+        //
+        // Escalating **here**, over the ids that were actually minted, is
+        // strictly better than adding a blanket `Span` fallthrough to the
+        // Function branch: a fallthrough would change the id of every
+        // legitimately-distinguished overload set in the corpus for no benefit,
+        // while this touches only entries that genuinely collided.
+        //
+        // Whole groups are re-minted, never just the losers. Keeping the first
+        // member at its old id would make identity declaration-order dependent,
+        // which this module's contract forbids.
+        {
+            // 0 = structural (as minted above), 1 = Span, 2 = Ordinal.
+            let mut tier: Vec<u8> = vec![0; n];
+            // Termination: each round strictly raises the tier of every
+            // colliding member, and tier 2 makes preimages distinct within a
+            // group by construction (the ordinal differs). The bound guards
+            // against a genuine blake3 collision rather than a design gap; it
+            // is reported, never silently ignored.
+            const MAX_ROUNDS: usize = 8;
+            // One report row per colliding *group*, carrying the tier it
+            // finally needed — not one row per escalation round. A group whose
+            // spans are also identical passes through `Span` on its way to
+            // `Ordinal`, and reporting that intermediate step as a separate
+            // finding would make the report count escalations instead of
+            // defects.
+            let mut forced_by_group: HashMap<BaseKey, ForcedDisambiguation> = HashMap::new();
+            for _ in 0..MAX_ROUNDS {
+                let mut groups: HashMap<IntroId, Vec<usize>> = HashMap::new();
+                for (i, id) in intros.iter().enumerate() {
+                    groups.entry(*id).or_default().push(i);
+                }
+                // Deterministic order: group by first member's arena position.
+                let mut colliding: Vec<Vec<usize>> =
+                    groups.into_values().filter(|m| m.len() >= 2).collect();
+                if colliding.is_empty() {
+                    break;
+                }
+                colliding.sort_by_key(|m| m[0]);
+
+                for members in colliding {
+                    let next_tier = members.iter().map(|&i| tier[i]).max().unwrap_or(0) + 1;
+                    let escalated_to = if next_tier == 1 {
+                        Escalation::Span
+                    } else {
+                        Escalation::Ordinal
+                    };
+                    let head = members[0];
+                    forced_by_group.insert(
+                        (discs[head].as_u16(), segs[head].clone(), names[head].clone()),
+                        ForcedDisambiguation {
+                            kind: discs[head],
+                            segments: segs[head].clone(),
+                            name: names[head].clone(),
+                            group: members.len(),
+                            escalated_to,
+                        },
+                    );
+
+                    for (ordinal, &i) in members.iter().enumerate() {
+                        tier[i] = next_tier;
+                        let span = &self.entries[i].1.sym().span;
+                        let disamb = if next_tier == 1 {
+                            Disambiguator::Span {
+                                start: span.start,
+                                end: span.end,
+                            }
+                        } else {
+                            Disambiguator::Ordinal {
+                                span_start: span.start,
+                                span_end: span.end,
+                                index: ordinal as u32,
+                            }
+                        };
+                        let seg_refs: Vec<&str> =
+                            segs[i].iter().map(String::as_str).collect();
+                        intros[i] = bootstrap_intro_id(
+                            lineage, discs[i], &seg_refs, &names[i], &disamb,
+                        );
+                    }
+                }
+            }
+            report.forced = forced_by_group.into_values().collect();
+            // Deterministic reporting order: a report that reorders between
+            // runs is not comparable across generations.
+            report
+                .forced
+                .sort_by(|a, b| (a.kind.as_u16(), &a.segments, &a.name).cmp(&(
+                    b.kind.as_u16(),
+                    &b.segments,
+                    &b.name,
+                )));
+        }
+
         // Resolve parent IntroIds from the captured parent indices (owned data —
         // no borrow of `self.entries`, so pass 3 may consume it).
         let parents: Vec<Option<IntroId>> = parent_idxs
@@ -217,18 +422,73 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         // One `visit_mut` per entry rewrites EVERY reference at once — kind-body
         // refs (fields/params/variants), `Type` nominals, and the `Node` tree
         // edges — making the table fully content-addressed (self-contained).
+        //
+        // Cross-package refs are *linked* here rather than rewritten: their key
+        // is already complete, so this only fills in the resolved target. The
+        // resolver is consulted once per **distinct key**, not once per
+        // reference — memchr names `core::clone::Clone` 147 times.
+        //
+        // `visit_mut` takes a plain `&impl Fn`, so the cache and the report need
+        // interior mutability. A `FnMut` visitor would make this a compile-time
+        // invariant instead of a runtime one; widening it touches the derive
+        // macro and is deliberately left as separate work.
+        let cache: RefCell<HashMap<Arc<ForeignKey>, Resolution>> = RefCell::new(HashMap::new());
+        let unmapped: RefCell<Vec<UntypedEntryIndex>> = RefCell::new(Vec::new());
+
         let mut table = PristineIntroTable::new();
+        let mut pending: Vec<(IntroId, Entry, Option<IntroId>)> = Vec::with_capacity(n);
         for (i, (_, mut entry)) in self.entries.into_iter().enumerate() {
-            entry.visit_mut(&|r| {
-                if let Ref::Local(idx) = r
-                    && let Some(&intro) = intro_of.get(idx)
-                {
-                    *r = Ref::Intro(intro);
+            entry.visit_mut(&|r| match r {
+                Ref::Local(idx) => match intro_of.get(idx) {
+                    Some(&intro) => *r = Ref::Intro(intro),
+                    // Every export index is in `intro_of` by construction — it
+                    // is built from the same `self.entries`. A miss is a
+                    // `Lowering`/`seal` bug, and since the import arena is gone
+                    // it can no longer be a cross-package reference in disguise.
+                    None => unmapped.borrow_mut().push(*idx),
+                },
+                Ref::Foreign { key, target } => {
+                    if target.is_none() {
+                        let mut cache = cache.borrow_mut();
+                        let resolution = cache
+                            .entry(key.clone())
+                            .or_insert_with(|| imports.resolve(key))
+                            .clone();
+                        if let Resolution::Resolved(sr) = resolution {
+                            *target = Some(sr);
+                        }
+                    }
                 }
+                Ref::Intro(_) => {}
             });
-            table.insert_live(intros[i], entry, parents[i]);
+            pending.push((intros[i], entry, parents[i]));
         }
-        table
+
+        report.unmapped_local = unmapped.into_inner();
+        for (key, resolution) in cache.into_inner() {
+            match resolution {
+                Resolution::Resolved(sr) => report.linked.push((key, sr)),
+                other => report.unlinked.push((key, other)),
+            }
+        }
+        // Deterministic reporting order — a report that reorders between runs
+        // is not comparable across generations.
+        report.linked.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+        report.unlinked.sort_by(|a, b| a.0.path.cmp(&b.0.path));
+
+        for (intro, entry, parent) in pending {
+            // Pass 2.5 escalates until every minted id is distinct, so this
+            // cannot fail by design. It is `try_` rather than the panicking
+            // form because "cannot fail by design" is exactly the claim the
+            // previous version of this code made and got wrong — a residual
+            // collision is recorded and the package still loads, minus the one
+            // declaration, which is what shipped before but is now *visible*.
+            if let Err(collision) = table.try_insert_live(intro, entry, parent) {
+                report.collisions.push(collision);
+            }
+        }
+
+        SealOutcome { table, report }
     }
 }
 
@@ -255,6 +515,7 @@ fn resolve_param_tys(
 mod tests {
     use crate::{
         build::*,
+        foreign::Unlinked,
         change::{EcosystemId, PackageName},
         entry::EntryInner,
         kind::Kind,
@@ -279,7 +540,7 @@ mod tests {
             });
         });
 
-        let table = pkg.seal(&lineage());
+        let table = pkg.seal(&lineage(), &Unlinked).table;
         // root module + Point record + x field = 3 entries.
         assert_eq!(table.len(), 3);
         let roots = table
@@ -310,7 +571,7 @@ mod tests {
             }
         });
 
-        let table = pkg.seal(&lineage());
+        let table = pkg.seal(&lineage(), &Unlinked).table;
         // 1 module + 2 functions = 3 unique intros (no collision).
         assert_eq!(table.len(), 3, "no IntroId collision among the overloads");
     }
@@ -327,7 +588,7 @@ mod tests {
                     Function::builder().output_params([p]).build()
                 });
             });
-            let table = pkg.seal(&lineage());
+            let table = pkg.seal(&lineage(), &Unlinked).table;
             table
                 .iter()
                 .find(|(_, e)| e.sym().name == "solo")
@@ -356,7 +617,7 @@ mod tests {
             });
         });
 
-        let table = pkg.seal(&lineage());
+        let table = pkg.seal(&lineage(), &Unlinked).table;
         let (_, rec) = table.iter().find(|(_, e)| e.sym().name == "Point").unwrap();
 
         match rec.kind() {
@@ -401,7 +662,7 @@ mod tests {
             });
         });
 
-        let table = pkg.seal(&lineage());
+        let table = pkg.seal(&lineage(), &Unlinked).table;
         // 1 module + Bar + Baz + 2 impls = 5 unique intros.
         assert_eq!(
             table.len(),
@@ -433,12 +694,12 @@ mod tests {
         };
 
         let mut ids_a: Vec<IntroId> = build_pkg()
-            .seal(&lineage())
+            .seal(&lineage(), &Unlinked).table
             .iter()
             .map(|(i, _)| i)
             .collect();
         let mut ids_b: Vec<IntroId> = build_pkg()
-            .seal(&lineage())
+            .seal(&lineage(), &Unlinked).table
             .iter()
             .map(|(i, _)| i)
             .collect();

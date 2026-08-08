@@ -1147,12 +1147,17 @@ fn encode_ref(out: &mut Vec<u8>, r: &RawRef) {
             out.push(0x01);
             out.extend_from_slice(id.as_bytes());
         }
-        Ref::Foreign(s) => {
+        // The cross-package KEY, never the resolved target.
+        //
+        // `entry_content_hash` is folded over every entry by
+        // `manifest::generation_stamp`. Hashing the target instead would make a
+        // package's generation stamp a function of which *other* packages
+        // happened to be loaded — so the change plane would see a phantom
+        // generation every time the corpus warmed up, in a direction that
+        // depends on load order.
+        Ref::Foreign { key, .. } => {
             out.push(0x02);
-            // StableRef::canonical_bytes() = encode_str(ecosystem) ||
-            // encode_str(name) || 32 intro bytes — deterministic and
-            // endian-stable.
-            out.extend_from_slice(&s.canonical_bytes());
+            out.extend_from_slice(&key.canonical_bytes());
         }
     }
 }

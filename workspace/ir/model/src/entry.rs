@@ -63,6 +63,30 @@ impl Entry {
         &self.kind
     }
 
+    /// Visit every reference this entry holds — kind body, `Type` nominals,
+    /// and both `Node` tree edges.
+    ///
+    /// # Why this is public
+    ///
+    /// The `Visitor` machinery is crate-private, so from outside `nudox-ir` the
+    /// only auditable reference surfaces were `parent()` and `children()` — the
+    /// tree edges, which `seal` has always rewritten correctly. That is exactly
+    /// where `nudox-store`'s `no_dangling_local_refs_after_seal` looked, so it
+    /// asserted the invariant in its own name against the one place it could
+    /// not fail, while dangling references sat in the kind bodies and rendered
+    /// as `?` for every foreign type in every package.
+    ///
+    /// A crate that wants an invariant upheld must let its callers check it.
+    ///
+    /// This walks a clone (`Visitor` exposes only `visit_mut`), so it is for
+    /// audits and tests, not for a hot path.
+    pub fn for_each_ref(&self, mut f: impl FnMut(&RawRef)) {
+        use crate::visitor::Visitor;
+        let sink = core::cell::RefCell::new(&mut f);
+        let mut probe = self.clone();
+        probe.visit_mut(&|r| (sink.borrow_mut())(r));
+    }
+
     /// Construct an owned entry from its symbol, node, and kind.
     ///
     /// The `node` encodes the parent/children structural edges. For tests that

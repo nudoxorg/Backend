@@ -1362,6 +1362,7 @@ checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
 dependencies = [
  "glob",
  "libc",
+ "libloading",
 ]
 
 [[package]]
@@ -4362,6 +4363,7 @@ dependencies = [
  "moka",
  "nonempty",
  "nudox-ir",
+ "nudox-test-support",
  "object_store",
  "postcard",
  "proptest",
@@ -4392,6 +4394,7 @@ dependencies = [
  "url",
  "uuid",
  "uv-pep440",
+ "zip 2.4.2",
  "zstd",
 ]
 
@@ -4608,6 +4611,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "triomphe",
  "uuid",
  "yoke",
  "zerocopy",
@@ -6418,6 +6422,7 @@ dependencies = [
  "nudox-engine",
  "nudox-graph",
  "nudox-store",
+ "nudox-test-support",
  "rand 0.10.2",
  "rmcp",
  "schemars 1.2.2",
@@ -6447,6 +6452,9 @@ dependencies = [
  "clang",
  "nudox-ir",
  "nudox-producer",
+ "nudox-test-support",
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 
@@ -6456,6 +6464,8 @@ version = "0.1.0"
 dependencies = [
  "bon",
  "nudox-ir",
+ "nudox-producer",
+ "nudox-test-support",
  "quick-xml 0.37.5",
  "rustc-hash 2.1.3",
  "serde",
@@ -6469,6 +6479,8 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "nudox-ir",
+ "nudox-producer",
+ "nudox-test-support",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
@@ -6479,9 +6491,10 @@ name = "nudox-producer-java"
 version = "0.1.0"
 dependencies = [
  "nudox-ir",
+ "nudox-producer",
+ "nudox-test-support",
  "serde",
  "serde_json",
- "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -6490,6 +6503,7 @@ version = "0.1.0"
 dependencies = [
  "nudox-ir",
  "nudox-producer",
+ "nudox-test-support",
 ]
 
 [[package]]
@@ -6498,6 +6512,7 @@ version = "0.1.0"
 dependencies = [
  "nudox-ir",
  "nudox-producer",
+ "nudox-test-support",
  "ra_ap_base_db",
  "ra_ap_cfg",
  "ra_ap_hir",
@@ -6509,10 +6524,12 @@ dependencies = [
  "ra_ap_project_model",
  "ra_ap_span",
  "ra_ap_syntax",
+ "ra_ap_toolchain",
  "ra_ap_vfs",
  "rustc-hash 2.1.3",
  "serde_json",
  "smol_str 0.3.6",
+ "thiserror 2.0.19",
  "tracing",
 ]
 
@@ -6522,6 +6539,7 @@ version = "0.1.0"
 dependencies = [
  "nudox-ir",
  "nudox-producer",
+ "nudox-test-support",
  "oxc_allocator",
  "oxc_ast",
  "oxc_jsdoc",
@@ -6549,10 +6567,19 @@ dependencies = [
  "indexmap 2.14.0",
  "nudox-ir",
  "nudox-producer",
+ "nudox-producer-clang",
+ "nudox-producer-csharp",
+ "nudox-producer-go",
+ "nudox-producer-java",
+ "nudox-producer-python",
  "nudox-producer-rust",
+ "nudox-producer-typescript",
+ "nudox-test-support",
  "rustc-hash 2.1.3",
+ "serde",
  "thiserror 2.0.19",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "triomphe",
 ]

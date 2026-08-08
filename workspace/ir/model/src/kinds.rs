@@ -24,7 +24,7 @@ pub use self::{
     const_::Const,
     facts::{AutoFact, AutoState, AutoTrait, Sealed, TriState},
     function::{FnModifier, Function, Receiver},
-    generics::{GenericParam, WherePred},
+    generics::{GenericParam, WherePred, lifetime_label},
     impl_::{Impl, ImplFlags},
     param::{Param, ParamAttribute},
     record::{Field, FieldAttribute, FieldKey, Record, RecordForm},

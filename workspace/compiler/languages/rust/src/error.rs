@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-use crate::ra::loaded::NoDepsFallback;
+use crate::ra::loaded::{BuildScriptFailure, NoDepsFallback};
 
 /// Why a load that succeeded still has nothing for the walk to lower.
 ///
@@ -92,6 +92,43 @@ pub enum Error {
         /// The `cargo metadata` failure upstream demoted into a tuple field.
         #[source]
         cause: NoDepsFallback,
+    },
+
+    /// The workspace loaded, but its build scripts did not deliver their
+    /// `cargo:rustc-cfg` output, and the caller did not accept that.
+    ///
+    /// [`Self::DependenciesUnresolved`]'s sibling, one layer down, and with a
+    /// nastier failure mode. A missing dependency graph makes items *disappear*;
+    /// a missing `cargo:rustc-cfg` makes items disappear **and replaces them
+    /// with their `#[cfg(not(...))]` counterparts**, so the table does not merely
+    /// shrink — it describes a different crate. `log 0.4.17` lowered its private
+    /// `#[cfg(not(has_atomics))]` `AtomicUsize` shim as public structure while
+    /// `set_logger` and `set_boxed_logger` were absent; `nom 5.1.3` lost eight
+    /// public parsers. See LIMITATIONS.md L50.
+    ///
+    /// Recover by making the build-script `cargo check` succeed — which for a
+    /// crates.io tarball usually means not asking cargo to resolve targets the
+    /// tarball excluded — or, if a lowering with no build-script cfgs is
+    /// genuinely what you want, by calling
+    /// [`LoadedWorkspace::accept_missing_build_script_cfgs`].
+    ///
+    /// [`LoadedWorkspace::accept_missing_build_script_cfgs`]:
+    ///     crate::LoadedWorkspace::accept_missing_build_script_cfgs
+    #[error(
+        "build scripts did not run for `{package}`: no `cargo:rustc-cfg` this package's \
+         `build.rs` emits reached the crate graph, so every `#[cfg(...)]` item behind one \
+         evaluates false and its `#[cfg(not(...))]` counterpart is lowered in its place. The \
+         resulting table is not a smaller description of this crate, it is a description of a \
+         different one. Fix the build-script `cargo check`, or call \
+         `LoadedWorkspace::accept_missing_build_script_cfgs` to lower it anyway"
+    )]
+    BuildScriptsFailed {
+        /// The package whose build-script output is missing.
+        package: String,
+        /// Why the output is missing — the cargo diagnostic upstream demoted
+        /// into an `Option<&str>` field.
+        #[source]
+        cause: BuildScriptFailure,
     },
 
     /// The workspace loaded and its dependencies resolved, but there is

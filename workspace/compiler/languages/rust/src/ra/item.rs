@@ -62,7 +62,6 @@ use ra_ap_syntax::{
 };
 
 use nudox_ir::{
-    id::UniqueId,
     index::Ref,
     kinds::{
         Alias, AutoFact, Const, Enum, Field, FieldAttribute, FieldKey, Function, Impl as IrImpl,
@@ -70,7 +69,6 @@ use nudox_ir::{
         Trait as IrTrait, TraitFlags, TriState, Variant, VariantForm,
     },
     lower::Lowering,
-    package::PackageId,
     vocab::{ReferenceKind, RelSpan},
 };
 
@@ -197,6 +195,11 @@ macro_rules! make_ref_for {
         // is dropped (at end of each call site's scope), `$lowering` is usable again
         // — e.g. for `out.declare(...)` calls that follow.
         let local_crate: String = super::ctx::crate_name($ctx.db, $ctx.krate);
+        // Snapshot the foreign-lineage map: the closure cannot borrow `$ctx`
+        // (the caller keeps using it) but needs the real Cargo.toml names, not
+        // the underscored rustc ones a path string carries.
+        let foreign_lineages: rustc_hash::FxHashMap<String, nudox_ir::change::PackageLineageId> =
+            $ctx.foreign_lineages.clone();
         let _lowering_reborrow = &mut *$lowering;
         move |key: &crate::ra::ctx::PathKey| -> Option<nudox_ir::index::RawRef> {
             // Decide whether `key` belongs to the local crate.
@@ -210,12 +213,14 @@ macro_rules! make_ref_for {
                 let typed: Ref<IrModule> = _lowering_reborrow.refer(key.clone());
                 Some(typed.into_raw())
             } else {
-                // Foreign package: use the first `::` segment as the crate
-                // name and synthesise a `PackageId` from it.
-                let foreign_crate = key.split("::").next().unwrap_or("_");
-                let pkg_id = PackageId::path(foreign_crate);
-                let uid = UniqueId::new(pkg_id, key.clone());
-                let typed: Ref<IrModule> = _lowering_reborrow.refer_import(uid);
+                // Foreign package: a self-describing cross-package reference.
+                // It carries the target's real lineage (when the crate graph
+                // knows it), its canonical path, and the leaf name to render —
+                // so `impl ? for Memchr` becomes `impl Clone for Memchr` with no
+                // corpus, and the reference can be linked later.
+                let typed: Ref<IrModule> = _lowering_reborrow.refer_import(
+                    crate::ra::ctx::foreign_key_from(&foreign_lineages, key.as_str()),
+                );
                 Some(typed.into_raw())
             }
         }
@@ -288,21 +293,57 @@ pub(crate) fn lower_module(
     // look like a re-export because its tagged scope path ≠ untagged canon key).
     let module_segs: Option<Vec<String>> = ctx.path_segments(ModuleDef::Module(module));
 
+    // ── Which names in scope are actually re-exported ─────────────────────────
+    //
+    // `Module::scope` returns every name *bindable inside* the module, which
+    // includes the module's own private `use` statements. Those are not
+    // re-exports — they are the module body's implementation detail, no more
+    // part of the package's API than a local variable is.
+    //
+    // The filter that used to live here asked the wrong object. It took the
+    // visibility of the *imported item* (`child.visibility`), and an item
+    // imported from another crate is essentially always `pub` there, so every
+    // private import of a public foreign item was recorded as a re-export of
+    // this package. That is not a rounding error: `memchr/src/vector.rs:294`
+    // holds `use core::arch::aarch64::*;` inside a private module inside a
+    // private module, and it alone produced 10 014 `Reexport` entries naming
+    // NEON/SVE intrinsics — 88% of memchr's entire lowered IR was `core`'s API
+    // wearing memchr's name.
+    //
+    // The right question is about the *binding*, not the item: is this name
+    // visible outside the module that declares it? `Module::scope`'s
+    // `visible_from` parameter answers precisely that, because it filters on the
+    // scope entry's visibility, which for an import is the visibility of the
+    // `use` itself.
+    //
+    //   * nested module     → anchor is its parent. `pub use` and `pub(crate)
+    //                         use` survive; a plain `use` does not.
+    //   * crate root module → "outside this module" *is* "outside the crate",
+    //                         so the anchor must be foreign
+    //                         (`LowerCtx::foreign_anchor`, which is an exact
+    //                         `Visibility::Public` test — see its doc comment).
+    //                         This is what stops a bare `use std::…;` in
+    //                         `lib.rs` from becoming a re-export.
+    //
+    // `document_private` keeps its documented meaning — whether *non-public*
+    // re-exports are emitted — by choosing between those two anchors rather
+    // than by disabling the check. With it off, the foreign anchor is used
+    // everywhere, so only genuinely public re-exports are recorded.
+    let anchor = if ctx.document_private {
+        module.parent(ctx.db).or(ctx.foreign_anchor)
+    } else {
+        ctx.foreign_anchor
+    };
+
     // Collect (scope_name, child_def) pairs for re-exports, to avoid holding
     // an immutable borrow on `ctx` while mutating `out`.
     let scope_items: Vec<(smol_str::SmolStr, ModuleDef)> = module
-        .scope(ctx.db, None)
+        .scope(ctx.db, anchor)
         .into_iter()
         .filter_map(|(name, scope_def)| {
             let ScopeDef::ModuleDef(child) = scope_def else {
                 return None;
             };
-            // Only public re-exports.
-            if !ctx.document_private
-                && !matches!(child.visibility(ctx.db), ra_ap_hir::Visibility::Public)
-            {
-                return None;
-            }
             Some((smol_str::SmolStr::from(name.as_str()), child))
         })
         .collect();
@@ -358,15 +399,26 @@ pub(crate) fn lower_module(
             let raw: nudox_ir::index::RawRef = if is_local_key {
                 out.refer::<IrModule>(tagged_key).into_raw()
             } else {
-                let foreign_crate = tagged_key.split("::").next().unwrap_or("_");
-                let pkg_id = PackageId::path(foreign_crate);
-                let uid = UniqueId::new(pkg_id, tagged_key.clone());
-                out.refer_import::<IrModule>(uid).into_raw()
+                out.refer_import::<IrModule>(ctx.foreign_key(tagged_key.as_str()))
+                    .into_raw()
             };
-            match raw.as_local() {
-                Some(untyped_idx) => nudox_ir::index::Ref::Local(untyped_idx.typed()),
-                // Import refs also come back as Local in the import index.
-                None => continue,
+            // Exhaustive on purpose. This used to be `match raw.as_local() { …,
+            // None => continue }`, which was load-bearing only because
+            // `refer_import` returned a `Ref::Local` into the import arena. The
+            // moment a foreign reference stops being `Local`, that `continue`
+            // silently drops **every** `pub use core::fmt::Debug;`-shaped
+            // re-export from the IR — no error, no warning, just fewer entries,
+            // which is precisely the failure class this whole change exists to
+            // kill.
+            match raw {
+                nudox_ir::index::Ref::Local(untyped_idx) => {
+                    nudox_ir::index::Ref::Local(untyped_idx.typed())
+                }
+                nudox_ir::index::Ref::Foreign { key, target } => {
+                    nudox_ir::index::Ref::Foreign { key, target }
+                }
+                // `refer`/`refer_import` never mint an `Intro`; sealing does.
+                nudox_ir::index::Ref::Intro(id) => nudox_ir::index::Ref::Intro(id),
             }
         };
 
@@ -423,14 +475,15 @@ pub(crate) fn lower(
         ModuleDef::Function(f) => {
             // Value namespace: tag with `!v` so `fn serve` does not collide
             // with `mod serve` or `struct Serve`.
+            //
+            // Id comes from `id_of` — the single authority also used by every
+            // reference site (`ty.rs`, `generics.rs`) — rather than from the
+            // walk-supplied `parent`. For ordinary items the two agree (the
+            // module a function is declared in is always the module RA's
+            // `declarations()` found it under), but see the `ModuleDef::Macro`
+            // arm below for the case where they do not.
             let fn_name = f.name(ctx.db).as_str().to_owned();
-            let fn_id = parent
-                .as_ref()
-                .map(|p| ctx.child_id(p, &format!("{fn_name}!v")))
-                .unwrap_or_else(|| {
-                    ctx.ra_id(def)
-                        .unwrap_or_else(|| RaId::from(fn_name.as_str()))
-                });
+            let fn_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(fn_name.as_str()));
             lower_free_function_with_id(ctx, f, fn_id, parent, out)?;
         }
         ModuleDef::Adt(Adt::Struct(s)) => {
@@ -466,39 +519,54 @@ pub(crate) fn lower(
             let Some(name) = c.name(ctx.db) else {
                 return Ok(());
             };
-            // Value namespace: tag with `!v`.
+            // Value namespace: tag with `!v`.  Id via `id_of` — see the
+            // `ModuleDef::Function` arm above for why.
             let const_name = name.as_str().to_owned();
-            let const_id = parent
-                .as_ref()
-                .map(|p| ctx.child_id(p, &format!("{const_name}!v")))
-                .unwrap_or_else(|| {
-                    ctx.ra_id(def)
-                        .unwrap_or_else(|| RaId::from(const_name.as_str()))
-                });
+            let const_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(const_name.as_str()));
             lower_const_with_id(ctx, c, const_id, parent, out)?;
         }
         ModuleDef::Static(s) => {
-            // Value namespace: tag with `!v`.
+            // Value namespace: tag with `!v`.  Id via `id_of` — see the
+            // `ModuleDef::Function` arm above for why.
             let static_name = s.name(ctx.db).as_str().to_owned();
-            let static_id = parent
-                .as_ref()
-                .map(|p| ctx.child_id(p, &format!("{static_name}!v")))
-                .unwrap_or_else(|| {
-                    ctx.ra_id(def)
-                        .unwrap_or_else(|| RaId::from(static_name.as_str()))
-                });
+            let static_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(static_name.as_str()));
             lower_static_with_id(ctx, s, static_id, parent, out)?;
         }
         ModuleDef::Macro(m) => {
             // Macro namespace: tag with `!m`.  No Macro kind in new IR — emit as Module.
+            //
+            // This is the case `id_of` exists for. A `#[macro_export]`
+            // `macro_rules!` item is *declared* (per `Module::declarations`,
+            // which drives the walk in `walk.rs`) at the **crate root**,
+            // unconditionally, regardless of which module it is textually
+            // written in — that is what `#[macro_export]` means. But its
+            // *canonical path* (`def.module(db)`, which `id_of`/`canonical`
+            // read) is still its **defining** module.
+            //
+            // The walk-supplied `parent` here is therefore the crate root,
+            // not the defining module. Keying the declaration off `parent`
+            // (as every other arm above used to, and as this arm used to)
+            // computes `{root}::{name}!m` — but `lower_module`'s re-export
+            // scan (which walks `Module::scope`, where the macro is also
+            // visible at the root through the very same `#[macro_export]`
+            // visibility) independently computes a *reference* to this same
+            // item as `{defining_module}::{name}!m` via `ctx.canonical`. Two
+            // formulas, two answers for one item: the declare call collides
+            // with the reexport's own id at the root path, while the
+            // reexport's target reference points at a defining-module path
+            // that nothing ever declares.
+            //
+            // Routing the declaration through `id_of` (the defining-module
+            // path) instead makes both sides agree by construction: the real
+            // declaration lands where every reference expects it, and
+            // `lower_module`'s scan legitimately emits a `Reexport` at the
+            // root path pointing to it (that reexport *is* the correct model
+            // of `#[macro_export]`'s crate-root visibility — the macro is
+            // simultaneously "declared in its home module" and "re-exported
+            // at the crate root", exactly like a `pub use` would be).
             let macro_name = m.name(ctx.db).as_str().to_owned();
-            let macro_id = parent
-                .as_ref()
-                .map(|p| ctx.child_id(p, &format!("{macro_name}!m")))
-                .unwrap_or_else(|| {
-                    ctx.ra_id(ModuleDef::Macro(m))
-                        .unwrap_or_else(|| RaId::from(macro_name.as_str()))
-                });
+            let macro_id =
+                id_of(ctx, ModuleDef::Macro(m)).unwrap_or_else(|| RaId::from(macro_name.as_str()));
             let parts = ctx
                 .symbol_parts(ModuleDef::Macro(m))
                 .unwrap_or_else(default_parts);
@@ -554,8 +622,13 @@ fn lower_free_function_with_id(
         return Ok(());
     };
 
-    // Declare Param entries first, then build Refs for the Function body.
-    let input_refs = declare_params(ctx, &fn_id, &fd.input_params, parent.clone(), out);
+    // Declare Param entries under the *function's own* id, not its enclosing
+    // module/impl — see `declare_params` and this closure's inline comment for
+    // why: the seal pass (`workspace/ir/model/src/package/seal.rs`) derives a
+    // param's collision identity purely from its declared-parent chain, and a
+    // param parented on the module cannot be told apart from the same-named
+    // param of any sibling function in that module.
+    let input_refs = declare_params(ctx, &fn_id, &fd.input_params, out);
     let output_refs = fd.output_param.as_ref().map(|pd| {
         let param_id = RaId::from(format!("{fn_id}::param::return").as_str());
         let param_sym = plain_sym(&pd.name);
@@ -564,7 +637,11 @@ fn lower_free_function_with_id(
             .attributes(pd.attributes.iter().copied())
             .build();
         ctx.check_unique(&param_id);
-        out.declare(param_id.clone(), parent.clone(), param_sym, param_body);
+        // Parent on `fn_id`, not `parent` (the module/impl): a `return` Param's
+        // ancestor-path must include the owning function's name so that two
+        // sibling functions' return params seal to distinct IntroIds without
+        // relying on the ordinal-escalation backstop.
+        out.declare(param_id.clone(), Some(fn_id.clone()), param_sym, param_body);
         let r: Ref<Param> = out.refer(param_id);
         r
     });
@@ -1536,7 +1613,7 @@ fn impl_display_name(ctx: &mut LowerCtx<'_>, imp: Impl) -> String {
     let self_ty = attach_db(ctx.db, || {
         imp.self_ty(ctx.db).display(ctx.db, ctx.display).to_string()
     });
-    match attach_db(ctx.db, || imp.trait_ref(ctx.db)) {
+    let name = match attach_db(ctx.db, || imp.trait_ref(ctx.db)) {
         Some(trait_ref) => {
             // Use the bare trait name (e.g. "Debug") to avoid
             // fully-qualified paths like "core::fmt::Debug" in names.
@@ -1554,7 +1631,80 @@ fn impl_display_name(ctx: &mut LowerCtx<'_>, imp: Impl) -> String {
             format!("impl {short_name}{args} for {self_ty}")
         }
         None => format!("impl {self_ty}"),
+    };
+    // `short_name` above only strips qualification from the *trait path*
+    // itself. It does nothing about a qualified associated-type path
+    // (`<T as IntoParallelIterator>::Item`) sitting inside a generic
+    // argument of the trait's `args` or of `self_ty` — and that is not rare:
+    // any combinator over a generic parameter's associated type writes
+    // exactly this (rayon's `impl Folder<T> for FlattenFolder<C, <C as
+    // Consumer<<T as IntoParallelIterator>::Item>>::Result>` is where this
+    // was found). That syntax is legal Rust and rust-analyzer's `Display`
+    // renders it faithfully, but it embeds a `::` inside a `<...>` — the
+    // exact shape the doc comment above already fixed once for the trait
+    // path, recurring through a route that fix didn't cover. `Symbol.name`
+    // must never contain `::` (see `crates/nudox-store/tests/real_package.rs`:
+    // the name index treats it as a path separator), so collapse every such
+    // qualifier to its bare trailing segment before returning.
+    strip_qualified_path_qualifiers(name)
+}
+
+/// Collapse every `<Type as Trait>::Assoc` qualified-path segment in `s` down
+/// to its bare trailing identifier (`Assoc`).
+///
+/// This exists for [`impl_display_name`]: a *display* string built from
+/// rust-analyzer's `Display` impl is correct Rust syntax, but correct Rust
+/// syntax is not an identifier, and `Symbol.name` is contractually required
+/// to be one. Qualified-path syntax is the one construct that can smuggle a
+/// `::` into an otherwise plain `Name<Args>` string. Nesting
+/// (`<C as Consumer<<T as X>::Item>>::Result`) is handled by repeating to a
+/// fixpoint: each pass collapses the innermost qualifier, which can expose
+/// an outer one that was only a qualifier once its own inner `<...>` shrank.
+fn strip_qualified_path_qualifiers(mut s: String) -> String {
+    while let Some(next) = strip_one_qualifier(&s) {
+        s = next;
     }
+    s
+}
+
+/// Collapse the single innermost `<... as ...>::Ident` qualifier in `s`, or
+/// return `None` if `s` contains none.
+///
+/// "Innermost" is found with a bracket-depth stack rather than a regex
+/// because the qualifier's own generic arguments can themselves contain
+/// unrelated `<...>` pairs (`Consumer<Item>` has one with no `as` in it) —
+/// only a bracket-matched scan tells a qualifying `<X as Y>` apart from a
+/// plain generic-argument list that merely contains one deeper in the tree.
+///
+/// A `>` with an empty stack is not a bracket close at all — `Fn(i32) ->
+/// bool`-shaped `Fn`-trait sugar puts a bare `->` right in the same display
+/// string, with no preceding unmatched `<`. That is skipped, not treated as
+/// malformed input: an early `return None` there would abort the scan and
+/// leave a real qualifier later in the string unstripped.
+fn strip_one_qualifier(s: &str) -> Option<String> {
+    let mut open_stack: Vec<usize> = Vec::new();
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => open_stack.push(i),
+            '>' => {
+                let Some(open) = open_stack.pop() else {
+                    continue;
+                };
+                let inner = &s[open + 1..i];
+                if inner.contains(" as ") {
+                    // `s[..open]` + whatever follows `<...>`, with a
+                    // qualifier's leading `::` also dropped so the result
+                    // reads as a plain trailing identifier rather than
+                    // `Consumer::Result`.
+                    let after = &s[i + 1..];
+                    let tail = after.strip_prefix("::").unwrap_or(after);
+                    return Some(format!("{}{}", &s[..open], tail));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// **No counter** — the key is purely structural and deterministic.
@@ -2034,11 +2184,23 @@ fn declare_hir_fields(
 // ── Param declaration helper ──────────────────────────────────────────────────
 
 /// Declare all input params and return their `Ref<Param>` list.
+///
+/// Parented on `fn_id` — the owning function — rather than the function's
+/// enclosing module/impl. The seal pass
+/// (`workspace/ir/model/src/package/seal.rs`) computes a param's collision
+/// key from `(kind, ancestor-path, leaf-name)`, walking declared-parent
+/// pointers; a param parented on the module produces an ancestor-path with no
+/// trace of which function declared it, so same-named params of sibling
+/// functions in one module are indistinguishable at that key and fall through
+/// to `Disambiguator::Span` — which is *also* useless here because every
+/// producer-synthesized param (`plain_sym`) carries `span: 0..0`. Parenting on
+/// `fn_id` puts the function's name in the ancestor-path itself, so siblings'
+/// params are distinct by construction and never need the escalation
+/// backstop (`Disambiguator::Ordinal`) to be told apart.
 pub(crate) fn declare_params(
     ctx: &mut LowerCtx<'_>,
     fn_id: &RaId,
     params: &[function::ParamData],
-    parent: Option<RaId>,
     out: &mut Lowering<RaId>,
 ) -> Vec<Ref<Param>> {
     params
@@ -2051,7 +2213,7 @@ pub(crate) fn declare_params(
                 .build();
             let param_sym = plain_sym(&pd.name);
             ctx.check_unique(&param_id);
-            out.declare(param_id.clone(), parent.clone(), param_sym, param_body);
+            out.declare(param_id.clone(), Some(fn_id.clone()), param_sym, param_body);
             out.refer::<Param>(param_id)
         })
         .collect()
@@ -2153,6 +2315,7 @@ fn default_parts() -> super::ctx::SymbolParts {
 
 #[cfg(test)]
 mod tests {
+    use super::strip_qualified_path_qualifiers;
     use nudox_ir::{
         change::{EcosystemId, PackageLineageId, PackageName},
         entry::EntryInner,
@@ -2209,7 +2372,7 @@ mod tests {
         );
 
         let pkg = low.finish().expect("finish must succeed");
-        let sealed = pkg.seal(&lineage());
+        let sealed = pkg.seal(&lineage(), &nudox_ir::foreign::Unlinked).table;
 
         // Find MyUnion entry.
         let found = sealed.iter().find(|(_, e)| e.sym().name == "MyUnion");
@@ -2249,7 +2412,7 @@ mod tests {
         low.declare_ref::<Reexport>(2, None, sym("pub_alias"), reexport_ref);
 
         let pkg = low.finish().expect("finish must succeed");
-        let sealed = pkg.seal(&lineage());
+        let sealed = pkg.seal(&lineage(), &nudox_ir::foreign::Unlinked).table;
 
         let alias = sealed
             .iter()
@@ -2293,5 +2456,59 @@ mod tests {
             }
             other => panic!("expected Apply, got {other:?}"),
         }
+    }
+
+    // ── Fix 4: qualified-path syntax never survives into an impl's name ──────
+    //
+    // Found lowering `rayon-1.9.0` for real: `impl_display_name` produced
+    // `impl Folder<T> for FlattenFolder<C, <C as
+    // Consumer<<T as IntoParallelIterator>::Item>>::Result>`, which fails the
+    // corpus harness's "names are identifiers" invariant
+    // (`crates/nudox-store/tests/real_package.rs`).
+
+    /// A single, non-nested qualified path collapses to its trailing segment.
+    #[test]
+    fn strip_qualified_path_qualifiers_collapses_a_single_qualifier() {
+        assert_eq!(
+            strip_qualified_path_qualifiers(
+                "FlattenFolder<T, <T as IntoParallelIterator>::Item>".to_owned()
+            ),
+            "FlattenFolder<T, Item>",
+        );
+    }
+
+    /// The exact nested shape rayon 1.9.0 produced must fully collapse — both
+    /// qualifiers, not just the innermost one.
+    #[test]
+    fn strip_qualified_path_qualifiers_handles_nesting() {
+        assert_eq!(
+            strip_qualified_path_qualifiers(
+                "impl Folder<T> for FlattenFolder<C, \
+                 <C as Consumer<<T as IntoParallelIterator>::Item>>::Result>"
+                    .to_owned()
+            ),
+            "impl Folder<T> for FlattenFolder<C, Result>",
+        );
+    }
+
+    /// A plain generic type with no qualified path is returned unchanged
+    /// (this is the overwhelming common case and must stay a no-op).
+    #[test]
+    fn strip_qualified_path_qualifiers_is_a_no_op_without_a_qualifier() {
+        let plain = "HashMap<K, V>".to_owned();
+        assert_eq!(strip_qualified_path_qualifiers(plain.clone()), plain);
+    }
+
+    /// `Fn`-trait arrow sugar (`Fn(i32) -> bool`) puts a bare, unmatched `>`
+    /// in the string with no preceding `<`. That must not abort the scan
+    /// before it reaches a real qualifier later in the same string.
+    #[test]
+    fn strip_qualified_path_qualifiers_tolerates_fn_trait_arrows() {
+        assert_eq!(
+            strip_qualified_path_qualifiers(
+                "impl Foo<dyn Fn(i32) -> bool> for <T as Bar>::Baz".to_owned()
+            ),
+            "impl Foo<dyn Fn(i32) -> bool> for Baz",
+        );
     }
 }

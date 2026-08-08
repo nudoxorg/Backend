@@ -20,14 +20,15 @@
 //! [`IrPackage::build`] is **not replaced** — it remains the right API for
 //! hand-written IR and every existing test.
 
-use std::{fmt, hash::Hash};
+use std::{collections::HashSet, fmt, hash::Hash};
 
 use indexmap::IndexMap;
+use triomphe::Arc;
 
 use crate::{
     List,
     entry::{Entry, Node, Symbol},
-    id::UniqueId,
+    foreign::ForeignKey,
     index::{RawRef, Ref, UntypedEntryIndex},
     kind::{EntryKind, Kind},
     kinds::{Module, Type},
@@ -145,6 +146,11 @@ pub struct Lowering<Id: Eq + Hash> {
 
     /// Symbol for the implicit root module entry.
     root_sym: Symbol,
+
+    /// Interned cross-package keys, so the 147 references to
+    /// `core::clone::Clone` in one crate share one allocation and one later
+    /// resolver lookup.
+    foreign: HashSet<Arc<ForeignKey>>,
 }
 
 impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
@@ -156,6 +162,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             slots: IndexMap::new(),
             duplicates: Vec::new(),
             root_sym: root,
+            foreign: HashSet::new(),
         }
     }
 
@@ -267,9 +274,32 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
 
     /// Return a typed [`Ref`] to an entry in a **different** package.
     ///
-    /// The flat equivalent of [`EntryBuilder::index_of_import`].
-    pub fn refer_import<T: EntryKind>(&mut self, id: UniqueId<Id>) -> Ref<T> {
-        Ref::Local(self.info.create_import(id).typed())
+    /// Unlike [`refer`](Self::refer) this creates **no declaration slot**, so
+    /// [`finish`](Self::finish) will not demand a declaration for it. That is
+    /// why every producer that hit `LoweringError::Undeclared` on stdlib types
+    /// belongs here — the Go producer's `refer()`-everything crash (doctrine §4's
+    /// worked example) was fixed by routing to this method.
+    ///
+    /// The returned ref **names** its target rather than indexing an arena
+    /// `seal` discards, so it is meaningful in a sealed table. The previous
+    /// implementation returned `Ref::Local(import_index)` "to be resolved
+    /// later"; nothing ever resolved it, and every consumer rendered it as `?`.
+    pub fn refer_import<T: EntryKind>(&mut self, key: ForeignKey) -> Ref<T> {
+        Ref::Foreign {
+            key: self.intern_foreign(key),
+            target: None,
+        }
+    }
+
+    /// Intern a foreign key so that N references to `core::clone::Clone` share
+    /// one allocation and, later, one resolver lookup.
+    fn intern_foreign(&mut self, key: ForeignKey) -> Arc<ForeignKey> {
+        if let Some(existing) = self.foreign.get(&key) {
+            return existing.clone();
+        }
+        let arc = Arc::new(key);
+        self.foreign.insert(arc.clone());
+        arc
     }
 
     // ── Type construction ─────────────────────────────────────────────────────
@@ -294,8 +324,32 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     }
 
     /// A nominal reference to a type in a **different** package.
-    pub fn nominal_import<T: EntryKind>(&mut self, id: UniqueId<Id>) -> Type {
-        Type::Nominal(self.refer_import::<T>(id).into_raw())
+    ///
+    /// There is no kind marker: the old `refer_import::<T>` marker was consumed
+    /// by `.typed()` and thrown away on the next line, so producers passed
+    /// placeholders (`IrModule` for every Rust target, `Record` for every Go
+    /// target) and nothing noticed. [`ForeignKey::kind`] is the honest field —
+    /// state it when you know it, omit it when you do not.
+    pub fn nominal_import(&mut self, key: ForeignKey) -> Type {
+        Type::Nominal(self.refer_import::<Module>(key).into_raw())
+    }
+
+    /// `Foo<A, B>` where `Foo` lives in another package.
+    ///
+    /// With no arguments this is exactly [`nominal_import`](Self::nominal_import),
+    /// so a producer lowering a possibly-generic foreign type can call it
+    /// unconditionally.
+    pub fn apply_import(&mut self, key: ForeignKey, args: impl IntoIterator<Item = Type>) -> Type {
+        let args: List<Type> = args.into_iter().collect();
+        let base = self.nominal_import(key);
+        if args.is_empty() {
+            base
+        } else {
+            Type::Apply {
+                base: Box::new(base),
+                args,
+            }
+        }
     }
 
     /// A generic application of a declared type: `Foo<A, B>`.
@@ -339,6 +393,10 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             slots,
             duplicates,
             root_sym,
+            // Interning is a build-time allocation optimisation only: every
+            // `Ref::Foreign` already owns an `Arc` to its key, so the set has
+            // no readers after this point.
+            foreign: _,
         } = self;
 
         // ── Validate: duplicates ──────────────────────────────────────────────
@@ -489,6 +547,7 @@ mod tests {
     };
 
     use super::{Lowering, LoweringError};
+    use crate::foreign::Unlinked;
 
     fn lineage() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("test-lower"))
@@ -575,8 +634,8 @@ mod tests {
 
         // ── Compare via seal ──────────────────────────────────────────────────
         let lin = lineage();
-        let table_nested = pkg_nested.seal(&lin);
-        let table_flat = pkg_flat.seal(&lin);
+        let table_nested = pkg_nested.seal(&lin, &Unlinked).table;
+        let table_flat = pkg_flat.seal(&lin, &Unlinked).table;
 
         assert_eq!(
             table_nested.len(),
@@ -622,7 +681,7 @@ mod tests {
         let table = low
             .finish()
             .expect("forward-referenced nominal must resolve")
-            .seal(&lineage());
+            .seal(&lineage(), &Unlinked).table;
 
         let (_, value) = table
             .iter()

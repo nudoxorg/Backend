@@ -31,6 +31,8 @@
 
 use std::path::PathBuf;
 
+use triomphe::Arc;
+
 use nudox_ir::{
     apply::PristineIntroTable,
     build::{
@@ -39,6 +41,7 @@ use nudox_ir::{
     },
     change::{IntroId, StableRef},
     entry::{AttrTok, CfgExpr, Deprecation, DocLink, Symbol},
+    foreign::{ForeignKey, Unlinked},
     index::Ref,
     kinds::{
         Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, Impl, Module, Param,
@@ -301,11 +304,19 @@ fn build_fixture() -> PristineIntroTable {
             // A re-export entry (EntryInner::Reference). We point at a
             // Foreign ref with a deterministic sentinel intro so the fixture
             // does not depend on the insertion order of the `draw` entries.
+            //
+            // The key is what is hashed; the resolved target deliberately is
+            // not, so this pin also witnesses that a linked and an unlinked
+            // reference to the same target hash identically.
             {
-                let foreign_ref = Ref::<Function>::Foreign(StableRef::new(
-                    lineage(),
-                    IntroId::from_raw([0xd4; 32]),
-                ));
+                let foreign_ref: Ref<Function> = Ref::Foreign {
+                    key: Arc::new(ForeignKey::in_package(
+                        lineage(),
+                        "demo::render",
+                        "render",
+                    )),
+                    target: Some(StableRef::new(lineage(), IntroId::from_raw([0xd4; 32]))),
+                };
                 root.create_ref(id(), sym("render"), foreign_ref);
             }
 
@@ -320,7 +331,7 @@ fn build_fixture() -> PristineIntroTable {
         },
     );
 
-    pkg.seal(&lineage())
+    pkg.seal(&lineage(), &Unlinked).table
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -338,59 +349,60 @@ fn build_fixture() -> PristineIntroTable {
 /// inherent `impl<T>` block's TraitImpl skeleton now includes the `0x00`
 /// variance byte, shifting its IntroId from `392cad...` to `b590aea5...`.
 /// All `draw` overload and non-generic-parametric entry IntroIds are unchanged.
-const GOLDEN_ALL_INTROS: &str = "180f88881f2936e77ab58068891192cf787b4b042e0b7026fd64b11cf2642ab3
-1e32f087e4f66330f1893215e4875394b646d4f7fa1087e3e89a5c4e1dca23c7
-288eb4ea598beae88b9583ee3178aa391e746b98dd6de3ea7c846de60dffd12d
-40e2154e4707fb09d85e85da085213030bd2716a8dc50b6e6fd8143207389380
-65a9b7a7d5d6c742650dd2af7b82b732cf5c512efdc94b8b829154bfb4b76fd6
-677e51b6218d2f908d3c0bcf6f140dd29fdff379904703c68d884578adc22322
-7fd445c95d9eeb125e2619c6e183342a7e6c87d71a00a47e66c94c4090de14ea
-8010fb61a1e8be835748a320cd008624f5665d3747abefe4f63ebdc661b4ed81
-902dac52dd8901e064006e9bf51c0cfd76208caa4d00f9c35cd18088b7325808
-97dd77abd83754862615cf82cfe7061f963af6520e300938105d339c7f4c7bb8
-9a194e0f26f40d66125f6b269e58a199d25d6aad9d7f92fc34ea9c0a3395fa3c
-b2606e8c9f8c87ff06900a1caa6771061e0de130a83b859bf3c4393115abe48b
-b590aea5f628727931faa120fca7896703b9a13ab395b2d77f0f2514d4dcf57f
-b7cb8642b7d21884265deb2bf6695d4447590c8e9f371b051657f2b0fafd81eb
-c083bfa3cb3b50fa89c7741f90a057a57e054d79707abf54c093c5828a9e4721
-cedcd1c892a2c7e1e5d2c3e2cfd2ab8d565f3f946265952ad5ea159ee7c53271
-d8cce1af76cf84a6fb25f3442313d30466afb084099f3202291ca0b1b3cf8bf4
-dcdd1a3cca0febfa3fd75c8d2bd742a0ca74b3c51f1c448561cf1962e5acecd4
-e53f0223fca9d00f3432d446d419fcd053fca2c328c2729ad92b015cfcb4c99d
-e6afd0c0cf28d6684ef9aedb3b4f42ea3cefe0f22ddfa77191370ea5a638e9ac
-ede99697a70044b8d535ad11e6c5c31c66e74a6b6122229b38a08754e4fc9097
-ef4d3d2f6c0997c042cfa993518e766efab2a352b7892b0283d5e18ab72d9fa6
-f31fad1178c5fff29493c908322618c6c24d15c76f00f2cae539f5a322c0e677";
+const GOLDEN_ALL_INTROS: &str = "0db8e8727ceffd1424c3656928bc328d45ad4e676151a98af72d92d51a6aa234
+1ecafde6ce9a38a6b9f81fac9818d0fc1394f8a86bce38915a4d9da4ded3f13a
+31d07cc13bc7b9c954a36f3272d16f278cbaa084dd74fea8f570483bcf4437bd
+34ad74b14409309951ec1beb0cf7ef83dcb19d4729c7bb8c19ed7130ae52e8fd
+415ff0ee5aebafd620c63bddf6b3c93fdec19047be64c2dfdffb8ac5c0942e26
+464aa98d0046ff2d7925ae908b3d96d81caf45eb6dfcbfcbe55841c56429b930
+5637e6cdce5893c15e0570432bd8feb18a4168e580fdfab0b5e4b427180b56d5
+595f509906af9691d389991c85ad317aba7e804030bd9382cdcc20531234806c
+5bd0258a2cde2c68306a8e5f45cfa24f306923392a2d0046f2fbb37ab6c3e457
+673e9f36f04000791f0949523f1eedc37366895d72135a410ecfb966c253d71f
+7900e5fbf119f34766b266cc766ab2e2127d1bf17896160086c83c84a0adfafc
+79521b7add8030ace46e0681f07b377c7e0ad76a7e219decb1c58259f67e4f00
+7d7c21a284d5c46d76253816a2d79b8ff147d52bb88af729dbbc9ac9902c3933
+80c6f136155f3a506215f6ed9ad915721109e5d4e48a7b8b83d4990f9fbcb359
+81b7b7ffbc5a4aef2bdc91032294ed56e2a32ac60d1a4bcf21d2ca7aa4da558d
+87d7416585b01f74750fdb030a7f74c05abe2c245b090f89d28e08467a8275d9
+89f0c4ea5f7e3449cbb07048f29f9c2a03d1367c284b87eff54f78c3ac1c9259
+8ce16cd5acd2174ab0e6c81d626362a32560d4b3f2e86fe8633af7fe005c7eb2
+9d41eb994a7d4e5813007bc72c27611a6ba4a6713a0aad197a53e2b0ee47c226
+a0290c53b52d20c7eb692a6c099b32c0f903515c1e7cd2f8d792a664635e3c16
+b0d0aa9008b66d2a518cf7fd336e4118cf0b0530555b60973d78bc1a53f619fe
+c8c41dd8c8c41ee6ae105535793b90f7a30a397c56719095f2574beee870466b
+cb1d5e986b78efe73097f556612a0a097b071cd8379f1ca761f4efc9ee3a9e5d
+f5d2bd6554182544e5ffb01f7f5300fe212c66b7c79b01339d45e74e5ca48780";
 
 /// BLAKE3 hex of the JSON serialization of the sorted (intro_hex, entry_json)
 /// pairs. We use JSON (via the existing `serde_json` dev-dep) rather than
 /// postcard because postcard is not a workspace dependency. A digest is used
 /// rather than embedding kilobytes of JSON, which would make diffs unreadable.
 /// Protects: the on-wire encoding of every entry kind and every field value.
-const GOLDEN_ENTRIES_B3: &str = "2a354a579edc1ff02635cadd5be3719647067c2a5204de6dcc981a1a85fc0c54";
+const GOLDEN_ENTRIES_B3: &str = "ec166c07aba18016a059836e7056fff24617e92db8b8b4f1ba527e2e07e10663";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run
 /// UPDATE_GOLDEN=1 to find out. What matters is that both pins are stable.
 /// Protects: the FnOverload disambiguator for one of the two i32/i64 overloads.
-const GOLDEN_DRAW_FIRST: &str = "902dac52dd8901e064006e9bf51c0cfd76208caa4d00f9c35cd18088b7325808";
+const GOLDEN_DRAW_FIRST: &str = "5bd0258a2cde2c68306a8e5f45cfa24f306923392a2d0046f2fbb37ab6c3e457";
 
 /// IntroId of the sorted-second `draw` overload.
 /// Protects: the FnOverload disambiguator for the other i32/i64 overload.
-const GOLDEN_DRAW_SECOND: &str = "e53f0223fca9d00f3432d446d419fcd053fca2c328c2729ad92b015cfcb4c99d";
+const GOLDEN_DRAW_SECOND: &str = "8ce16cd5acd2174ab0e6c81d626362a32560d4b3f2e86fe8633af7fe005c7eb2";
 
 /// IntroId of the sorted-first `impl` entry.
 /// Protects: the TraitImpl disambiguator for one of the two impl variants.
 /// Regenerated: the inherent impl's skeleton changed (variance byte added to
 /// GenericParam::Type encoding), producing a new IntroId `b590aea5...`. The
 /// negative blanket impl has no generics so its IntroId `8010fb61...` is stable.
-const GOLDEN_IMPL_FIRST: &str = "8010fb61a1e8be835748a320cd008624f5665d3747abefe4f63ebdc661b4ed81";
+const GOLDEN_IMPL_FIRST: &str = "673e9f36f04000791f0949523f1eedc37366895d72135a410ecfb966c253d71f";
 
 /// IntroId of the sorted-second `impl` entry.
 /// Protects: the TraitImpl disambiguator — specifically that `negative=true`
 /// and `blanket=true` produce a distinct skeleton from the inherent impl.
 /// Regenerated: see GOLDEN_IMPL_FIRST note above.
-const GOLDEN_IMPL_SECOND: &str = "b590aea5f628727931faa120fca7896703b9a13ab395b2d77f0f2514d4dcf57f";
+const GOLDEN_IMPL_SECOND: &str = "80c6f136155f3a506215f6ed9ad915721109e5d4e48a7b8b83d4990f9fbcb359";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helpers shared by the regeneration path and the assertion path
@@ -642,7 +654,7 @@ fn fixture_entry_count() {
     let table = build_fixture();
     assert_eq!(
         table.len(),
-        23,
+        24,
         "fixture entry count changed — update the inventory comment above, \
          then regenerate: UPDATE_GOLDEN=1 cargo test -p nudox-ir --test golden"
     );

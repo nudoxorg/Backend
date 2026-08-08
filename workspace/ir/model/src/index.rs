@@ -1,7 +1,10 @@
 use std::{fmt, hash, marker::PhantomData, num::NonZeroUsize};
 
+use triomphe::Arc;
+
 use crate::{
     change::{IntroId, StableRef},
+    foreign::ForeignKey,
     kind::EntryKind,
 };
 
@@ -98,15 +101,12 @@ impl<T: Indexable> EntryIndex<T> {
         Self::build(index | IS_SERIALIZED_MASK)
     }
 
-    pub(super) fn import(index: usize) -> Self {
-        debug_assert_eq!(
-            index & INDEX_SER_AVAILABLE_MASK,
-            index,
-            "creating import index with unavailable bits"
-        );
-
-        Self::build(index | IS_SERIALIZED_MASK | IS_IMPORT_MASK)
-    }
+    // There is deliberately no `import` constructor. A cross-package reference
+    // is a self-describing `Ref::Foreign` (see `crate::foreign`), not an index
+    // into an arena `seal` drops. Without a way to mint one, `is_import` is
+    // permanently false and `Ref::Local` names exactly one thing: an export
+    // index that `seal` rewrites. Re-adding it would make the original defect
+    // representable again.
 
     fn build(index: usize) -> Self {
         assert_ne!(index, usize::MAX);
@@ -290,11 +290,33 @@ impl<T: Indexable> hash::Hash for EntryIndex<T> {
 #[serde(bound = "")]
 pub enum Ref<T: Indexable> {
     /// Arena-local, build-time only.
+    ///
+    /// Post-seal this variant names exactly one thing — an export index that
+    /// `seal` rewrote — so a `Local` surviving into a sealed table is provably
+    /// a seal bug and is reported as [`SealReport::unmapped_local`]. It used to
+    /// name *two* things, the second being an index into an import arena `seal`
+    /// dropped; that ambiguity is what shipped `?` to the GUI for three years
+    /// of language frontends.
+    ///
+    /// [`SealReport::unmapped_local`]: crate::package::SealReport::unmapped_local
     Local(EntryIndex<T>),
     /// Same-package, content-addressed (post-seal).
     Intro(IntroId),
-    /// Cross-package target.
-    Foreign(StableRef),
+    /// A cross-package target: always **named**, sometimes **linked**.
+    ///
+    /// `key` is always present — that is what makes the reference renderable
+    /// without a corpus and re-linkable later, and it is what identity and
+    /// content hashing encode. `target` is `Some` once some
+    /// [`ForeignResolver`](crate::foreign::ForeignResolver) supplied the sealed
+    /// identity; `None` means "named but not linked", which the GUI shows as
+    /// un-clickable text rather than a dead hyperlink.
+    ///
+    /// Neither state is dangling — which is the whole point, since the
+    /// `Local(import_index)` it replaces was.
+    Foreign {
+        key: Arc<ForeignKey>,
+        target: Option<StableRef>,
+    },
 }
 
 /// A kind-erased [`Ref`] — the currency of the [`crate::visitor::Visitor`].
@@ -309,12 +331,24 @@ impl<T: Indexable> Ref<T> {
         }
     }
 
+    /// The cross-package key and its resolved target, if this names another
+    /// package.
+    ///
+    /// Exists so consumers stop re-deriving the same `match` (and stop writing
+    /// `_ =>` arms that silently swallow the case — three separate files did).
+    pub fn as_foreign(&self) -> Option<(&ForeignKey, Option<&StableRef>)> {
+        match self {
+            Ref::Foreign { key, target } => Some((key, target.as_ref())),
+            Ref::Local(_) | Ref::Intro(_) => None,
+        }
+    }
+
     /// Erase the kind marker, by value.
     pub fn into_raw(self) -> RawRef {
         match self {
             Ref::Local(i) => Ref::Local(i.raw()),
             Ref::Intro(i) => Ref::Intro(i),
-            Ref::Foreign(s) => Ref::Foreign(s),
+            Ref::Foreign { key, target } => Ref::Foreign { key, target },
         }
     }
 
@@ -336,7 +370,10 @@ impl<T: Indexable> Clone for Ref<T> {
         match self {
             Ref::Local(i) => Ref::Local(*i),
             Ref::Intro(i) => Ref::Intro(*i),
-            Ref::Foreign(s) => Ref::Foreign(s.clone()),
+            Ref::Foreign { key, target } => Ref::Foreign {
+                key: key.clone(),
+                target: target.clone(),
+            },
         }
     }
 }
@@ -346,7 +383,9 @@ impl<T: Indexable> PartialEq for Ref<T> {
         match (self, other) {
             (Ref::Local(a), Ref::Local(b)) => a == b,
             (Ref::Intro(a), Ref::Intro(b)) => a == b,
-            (Ref::Foreign(a), Ref::Foreign(b)) => a == b,
+            (Ref::Foreign { key: ka, target: ta }, Ref::Foreign { key: kb, target: tb }) => {
+                ka == kb && ta == tb
+            }
             _ => false,
         }
     }
@@ -360,7 +399,10 @@ impl<T: Indexable> hash::Hash for Ref<T> {
         match self {
             Ref::Local(i) => i.hash(state),
             Ref::Intro(i) => i.hash(state),
-            Ref::Foreign(s) => s.hash(state),
+            Ref::Foreign { key, target } => {
+                key.hash(state);
+                target.hash(state);
+            }
         }
     }
 }
@@ -370,7 +412,11 @@ impl<T: Indexable> fmt::Debug for Ref<T> {
         match self {
             Ref::Local(i) => f.debug_tuple("Local").field(i).finish(),
             Ref::Intro(i) => f.debug_tuple("Intro").field(i).finish(),
-            Ref::Foreign(s) => f.debug_tuple("Foreign").field(s).finish(),
+            Ref::Foreign { key, target } => f
+                .debug_struct("Foreign")
+                .field("key", key)
+                .field("target", target)
+                .finish(),
         }
     }
 }

@@ -342,6 +342,35 @@ pub enum ProducerError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
+    /// The oracle was built without the output of the package's own build
+    /// scripts, so every conditionally-compiled item in it is wrong.
+    ///
+    /// [`ProducerError::DependenciesUnresolved`]'s sibling, and deliberately
+    /// not folded into it: an unresolved dependency graph makes declarations
+    /// *missing*, which a reader can at least recognise as a gap, while a
+    /// missing build-script `cfg` makes them **wrong** — the gated item vanishes
+    /// and whatever the package wrote behind `#[cfg(not(...))]` is presented in
+    /// its place as though the author had chosen it. Merging the two would mean
+    /// a caller who decided how to handle a partial table had silently also
+    /// decided how to handle a counterfeit one.
+    ///
+    /// Like `DependenciesUnresolved` this is an *environment* outcome, not a
+    /// producer bug: the producer's walk is fine and would happily lower the
+    /// wrong graph it was handed. Recover by fixing whatever stopped the build
+    /// scripts running, or — if a lowering with no build-script cfgs is
+    /// genuinely wanted — by opting in through whatever the producer offers for
+    /// that (the Rust producer uses
+    /// `LoadedWorkspace::accept_missing_build_script_cfgs`).
+    #[error("build scripts did not run")]
+    BuildScriptsFailed {
+        /// Package whose build-script output is missing.
+        package: String,
+        /// The producer-specific failure, kept whole so callers can walk it —
+        /// this is the only thing that says what the build tool actually said.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// The producer promised declarations ([`YieldContract::Declarations`]) and
     /// contributed none: the lowering holds nothing but the root module
     /// [`produce`] synthesized for it.

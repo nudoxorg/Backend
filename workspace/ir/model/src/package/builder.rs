@@ -1,8 +1,10 @@
 use std::hash::Hash;
 
+use triomphe::Arc;
+
 use crate::{
     entry::{Entry, Node, Symbol},
-    id::UniqueId,
+    foreign::ForeignKey,
     index::{Ref, UntypedEntryIndex},
     kind::EntryKind,
 };
@@ -90,15 +92,22 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
         Ref::Local(self.ir.info.create_export(id).typed())
     }
 
-    /// Get an import index for a cross-package entry reference.
+    /// Reference an entry in a **different** package.
     ///
-    /// Passing a `UniqueId` that is not actually existant will result in an
-    /// error when trying to resolve the `Ref`.
-    pub fn index_of_import<T>(&mut self, id: UniqueId<Id>) -> Ref<T>
+    /// The returned ref is a complete, self-describing [`Ref::Foreign`]: it
+    /// names its target and can be linked later by a
+    /// [`ForeignResolver`](crate::foreign::ForeignResolver). It is deliberately
+    /// **not** an index — this method used to mint `Ref::Local(import_index)`
+    /// into an arena `seal` drops, which is the exact defect this API now makes
+    /// unrepresentable.
+    pub fn index_of_import<T>(&mut self, key: ForeignKey) -> Ref<T>
     where
         T: EntryKind,
     {
-        Ref::Local(self.ir.info.create_import(id).typed())
+        Ref::Foreign {
+            key: Arc::new(key),
+            target: None,
+        }
     }
 
     pub(super) fn build<T>(

@@ -387,9 +387,21 @@ impl<'a> Skeleton<'a> {
                 self.out.push(0x01);
                 self.out.extend_from_slice(i.as_bytes());
             }
-            Ref::Foreign(s) => {
+            // The cross-package KEY, never the resolved target. Linking a
+            // reference must not change any skeleton, or an entry's `IntroId`
+            // would depend on which *other* packages happened to be sealed
+            // alongside it.
+            //
+            // This is also what structurally separates `impl Clone for Memchr`
+            // from `impl Debug for Memchr`: both used to encode their foreign
+            // trait as the single placeholder byte `0x00`, so their `TraitImpl`
+            // skeletons were byte-identical. Rust survived that only because
+            // `impl_display_name` bakes the trait name into `Symbol::name` —
+            // a naming convention, not an invariant, and one that Java and C#
+            // do not share.
+            Ref::Foreign { key, .. } => {
                 self.out.push(0x02);
-                self.out.extend_from_slice(&s.canonical_bytes());
+                self.out.extend_from_slice(&key.canonical_bytes());
             }
         }
     }

@@ -328,6 +328,21 @@ impl ProducerRegistry {
                 package: lineage.clone(),
                 detail: chain(&err),
             },
+            // The build tool could not tell the producer which `cfg`s hold, so
+            // any table it produced would not merely be partial — it would carry
+            // the `#[cfg(not(...))]` side of every gate as though the author had
+            // written it unconditionally. `OracleFailed` alongside
+            // `DependenciesUnresolved`, and for the same reason: nothing is wrong
+            // with the lowering code, the environment did not hand it a usable
+            // graph.
+            //
+            // `chain` rather than `to_string()` for the same reason as its
+            // neighbour above — this variant's own `Display` describes the
+            // consequence, and only the cause carries what cargo actually said.
+            ProducerError::BuildScriptsFailed { .. } => SourceError::OracleFailed {
+                package: lineage.clone(),
+                detail: chain(&err),
+            },
             // The producer said it would contribute declarations and did not:
             // the lowering that came back holds nothing but the root module
             // `produce` synthesized. That is an *oracle-side* outcome — the

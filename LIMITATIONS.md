@@ -2551,22 +2551,26 @@ reproduces, it is a teardown-ordering bug in vendored code and belongs in the
 
 ---
 
-## L50 — ROOT CAUSE: a failed build-script step silently deletes every `#[cfg]`-gated public API
+## L50 — RESOLVED: a failed build-script step silently deleted every `#[cfg]`-gated public API
 
-**Blast radius:** any crates.io package whose `build.rs` emits `cargo:rustc-cfg`
-and whose published tarball omits a file its own `Cargo.toml` declares as a
-target. Two confirmed in a 23-entry corpus; the class is much larger, and the
-lowering is **wrong without being marked wrong**, which is the property that
-makes it worse than a failure.
+**Status: FIXED 2026-08-07.** Both confirmed instances now load correctly, and
+the failure mode is a typed refusal rather than a `warn!`. What follows keeps
+the original diagnosis because it is the evidence, and marks the two places
+where the original text was **wrong** — both in ways that mattered.
 
-### The chain, every link reproduced 2026-08-07
+**Blast radius (historical):** any crates.io package whose `build.rs` emits
+`cargo:rustc-cfg` and whose published tarball omits a file its own `Cargo.toml`
+declares as a target. Two confirmed in a 23-entry corpus; the class is much
+larger, and the lowering was **wrong without being marked wrong**, which is the
+property that made it worse than a failure.
+
+### The chain, every link reproduced 2026-08-07 (re-reproduced before the fix)
 
 1. `.real-crates/log-0.4.17` is a `cargo package` tarball extraction. Its
    `Cargo.toml` declares `[[test]] name = "filters"` and `[[test]] name =
    "macros"` — and `tests/` was **excluded from the published tarball**.
-2. `ra::loaded::load` calls `ws.run_build_scripts(...)`
-   (`workspace/compiler/languages/rust/src/ra/loaded.rs:397`), which shells out
-   to `cargo check … --all-targets`. Reproduced directly in that checkout:
+2. `ra::loaded::load` calls `ws.run_build_scripts(...)`, which shells out to
+   `cargo check`. Reproduced directly in that checkout:
 
    ```text
    $ cargo check --all-targets
@@ -2575,77 +2579,210 @@ makes it worse than a failure.
    error: could not compile due to 2 previous target resolution errors
    ```
 
-   Cargo fails at **target resolution**, before compiling anything — which is
-   why the sweep's own log shows `ra_load phase=build_scripts elapsed_ms=74.8`,
-   three orders of magnitude too fast to be a real check. That number was
-   visible all along and read as "fast", not as "did not happen".
-3. The failure is swallowed: `warn!(error = %e, "build scripts failed;
-   continuing without OUT_DIR")` (`loaded.rs:406-408`). **Nothing in this crate
-   or its tests installs a `tracing` subscriber**, so the warning goes nowhere.
-4. `cargo:rustc-cfg=atomic_cas` and `cargo:rustc-cfg=has_atomics` never reach
-   the crate graph.
-5. Every item behind those cfgs is absent from the lowering.
+   Cargo fails at **target resolution**, before compiling anything.
 
-### Instance A — `log 0.4.17` loses two public functions and is analysed as a different target
+   **CORRECTION 0 — the timing was NOT the tell, and citing it was a mistake.**
+   The original text argued from `ra_load phase=build_scripts elapsed_ms=74.8`,
+   calling it "three orders of magnitude too fast to be a real check". That
+   reasoning does not hold: measured on the **fixed** build, the same phase
+   takes **70.8 ms** and the cfgs arrive correctly. A warm cargo cache and a
+   trivial `build.rs` make a successful run just as fast as a failed one, so
+   this number never distinguished the two states. It is a plausible-looking
+   signal that happens to be worthless, which is worse than no signal — anyone
+   re-deriving this bug from the timing would have concluded the fix had not
+   worked.
 
-| symbol | gate (verified in `src/lib.rs`) | entries in table |
-|---|---|---:|
-| `set_logger` (`:1465`) | `#[cfg(atomic_cas)]` | **0** |
-| `set_boxed_logger` (`:1407`) | `#[cfg(all(feature = "std", atomic_cas))]` | **0** |
-| `set_logger_racy`, `logger` | ungated | 1, 2 |
+   The invariant is the **symbols**, never the duration. On the fixed build,
+   from `module_census` over the real checkout:
 
-It is worse than two missing functions. The table contains
+   ```text
+   census total=1251
+   set_logger        3 occurrences   (was 0)
+   set_boxed_logger  3 occurrences   (was 0)
+   AtomicUsize       0 occurrences   (was present — the counterfeit shim)
+   set_logger_racy   3 occurrences   (ungated control, unchanged)
+   ```
+
+   **CORRECTION 1 — where `--all-targets` came from.** The original text implied
+   this crate asked for it. It did not: `build_cargo_config` has always set
+   `CargoConfig::all_targets = false`. `ra_ap_project_model` 0.0.341 adds the
+   flag **unconditionally**, ignoring that field, whenever the toolchain is new
+   enough for `--compile-time-deps` (`build_dependencies.rs:530-535`):
+
+   ```rust
+   if cargo_comp_time_deps_available {
+       cmd.arg("--compile-time-deps");
+       // we can pass this unconditionally, because we won't actually build the
+       // binaries, and as such, this will succeed even on targets without libtest
+       cmd.arg("--all-targets");
+   }
+   ```
+
+   That comment is true of *compilation* and false of *target resolution*,
+   which happens first and is fatal. Chasing our own config field would have
+   found nothing.
+3. The failure was swallowed by a `warn!`, and **nothing in this crate or its
+   tests installs a `tracing` subscriber**, so the warning went nowhere.
+
+   **CORRECTION 2 — which `warn!`.** The original text named
+   `warn!(error = %e, "build scripts failed; continuing without OUT_DIR")` at
+   `loaded.rs:406-408` — the `Err` arm. That arm never fired. Upstream reports a
+   `cargo check` that exited non-zero as **`Ok(scripts)`**, parking the
+   diagnostics in `WorkspaceBuildScripts::error() -> Option<&str>`
+   (`build_dependencies.rs:423-429`). The arm that actually fired was
+   `warn!(error = %err, "build scripts reported errors; OUT_DIR items may be
+   missing")` — and `ws.set_build_scripts(scripts)` ran immediately after it, so
+   the load carried on with an empty build-script table. The distinction is not
+   pedantry: it is the same `Option`-field-nobody-must-read shape as
+   `ProjectWorkspaceKind::Cargo::error`, which is what makes this the *same*
+   defect as L39 rather than merely a similar one.
+4. `cargo:rustc-cfg=atomic_cas` and `has_atomics` never reached the crate graph.
+5. Every item behind those cfgs was absent from the lowering — and every item
+   behind their `#[cfg(not(...))]` counterparts was lowered in their place.
+
+### Instance A — `log 0.4.17` lost two public functions and was analysed as a different target
+
+| symbol | gate (verified in `src/lib.rs`) | before | after |
+|---|---|---:|---:|
+| `set_logger` (`:1465`) | `#[cfg(atomic_cas)]` | **0** | present |
+| `set_boxed_logger` (`:1407`) | `#[cfg(all(feature = "std", atomic_cas))]` | **0** | present |
+| `set_logger_racy`, `logger` | ungated | 1, 2 | unchanged |
+
+It was worse than two missing functions. The table contained
 `Record log::log::AtomicUsize` with `impl Sync` and `impl AtomicUsize::{new,
-load, store}` — that is log's private `#[cfg(not(has_atomics))]` **fallback
-shim**, lowered as though it were part of log's public structure, while the
-`atomic_cas`-gated `compare_exchange` is absent. On aarch64-apple-darwin both
-cfgs are true. **The lowering describes a crate that does not exist on this
-target.**
+load, store}` — log's private `#[cfg(not(has_atomics))]` **fallback shim**
+(`src/lib.rs:350-392`), lowered as though it were part of log's public
+structure. On aarch64-apple-darwin both cfgs are true. **The lowering described
+a crate that does not exist on this target.**
 
-`log 0.4.33` passes all seven expectations, because it deleted its build script
-and uses the built-in `#[cfg(target_has_atomic = "ptr")]`. That is the A/B: two
-adjacent versions of one crate, same public API, one correct and one silently
-gutted — **invisible to any single-version fixture**, and the entire reason the
-corpus carries two `log` versions.
+`log 0.4.33` passed all seven expectations throughout, because it deleted its
+build script and uses the built-in `#[cfg(target_has_atomic = "ptr")]`. That is
+the A/B: two adjacent versions of one crate, same public API, one correct and
+one silently gutted — **invisible to any single-version fixture**, and the
+entire reason the corpus carries two `log` versions.
 
-### Instance B — `nom 5.1.3` loses eight public parsers
+### Instance B — `nom 5.1.3` lost eight public parsers
 
 `build.rs` emits `cargo:rustc-cfg=stable_i128` on any compiler ≥ 1.28. Same
 tarball defect (`can't find bench 'arithmetic' at …/benches/arithmetic.rs`, ×5),
 `build_scripts elapsed_ms=114.8`. `be_u128`, `be_i128`, `le_u128`, `le_i128` →
-**0 hits each**, in both `complete` and `streaming` (8 functions). The ungated
-`be_u64`/`be_u32` → 2 each. All eight are part of nom 5's API on every toolchain
-this repo can build with.
+**0 hits each**, in both `complete` and `streaming` (8 functions). All eight are
+back.
 
-**`libc 0.2.161` is the control:** same code path, `build_scripts
-elapsed_ms=26.7`, but its declared test targets *are* present in the tarball, so
-its `cargo check --all-targets` succeeds — and it lowers 18,864 entries with
-every expectation satisfied. The trigger is the tarball's missing files, not
-build scripts as such.
+**`libc 0.2.161` was the control:** same code path, but its declared test
+targets *are* present in the tarball, so its `cargo check --all-targets`
+succeeded — 18,864 entries, every expectation satisfied, before and after. The
+trigger was the tarball's missing files, not build scripts as such.
 
-### Why this is the same bug as L39/`DependencyResolution`, one layer down
+### The fix, in two halves
 
-`DependencyResolution{Full,NoDeps}` exists precisely because an `Ok`-looking
-load whose table is silently wrong is the worst failure this system can produce,
-and it makes that state *typed* and unignorable. A failed `run_build_scripts` is
-at least as consequential — it deletes public API rather than degrading
-resolution — and it has **no typestate at all**, only a `warn!` nobody can see.
-The fix is the same shape: make it a value the caller must handle, not a log
-line. See `require_resolved_dependencies()` for the pattern.
+Both were needed. The first makes the two packages load *correctly*; the second
+guarantees that any future package this does not save fails **loudly** instead
+of quietly.
 
-### The trap this leaves in the baseline — read before "fixing" it
+**Half 1 — narrow the request (`ra::loaded::narrowed_build_script_config`).**
+`run_build_script_command` is rust-analyzer's own supported override for the
+build-script `cargo check` (`rust-analyzer.cargo.buildScripts.overrideCommand`).
+`load` now sets it to the command upstream would have assembled, minus
+`--all-targets`. Nothing this engine does needs those targets: a build script's
+output is a property of the *package*, not of which of its targets cargo was
+asked to check, and the only thing `--all-targets` adds is dev-dependency build
+scripts, whose `OUT_DIR` and cfgs are irrelevant to documenting a public API.
+`--compile-time-deps` is kept and is load-bearing beyond speed — it stops cargo
+compiling `value-bag 1.0.0-alpha.9`, a `log 0.4.17` dependency that no longer
+builds on a modern rustc and would otherwise fail the check for an unrelated
+reason.
 
-`corpus/entry-baseline.toml` records `log 0.4.17 = 1255` and `nom 5.1.3 = 3260`.
-Both counts are **correct measurements of a broken lowering**. When L50 is
-fixed, both must go **UP**, and `nudox-store`'s
-`corpus_entry_counts_match_the_recorded_baseline` will go red. That is the test
-working, not a regression. Do not edit the baseline back down.
+Measured directly, the identical command minus the flag exits 0 and delivers
+`atomic_cas`+`has_atomics` (log 0.4.17), `stable_i128` (nom 5.1.3), and libc's
+fifteen.
 
-**Kept honest by** `workspace/compiler/languages/rust/tests/corpus_sweep.rs`,
-which fails on both today. It asserts on `(name, KindDiscriminant)` pairs read
-out of each checkout's own source — never on counts, and never on `is_ok()` —
-because a count is satisfied by a producer that emits one entry named `""`, and
-`memchr` is simultaneously a function, a private module, and the crate root.
+**Half 2 — make the degraded state a value (`ra::loaded`).** This is the same
+shape `DependencyResolution` already had, one layer down:
+
+- `BuildScriptExecution::{NotDeclared, Ran, Failed(BuildScriptFailure)}` — the
+  axis, on the loaded workspace, private and reachable only through a
+  projection, so no caller can pattern-match past it.
+- `BuildScriptFailure::{NotRun, CargoRefusedTheWorkspace,
+  DisabledByConfiguration}` — carries what cargo actually said, in a `#[source]`
+  slot, reachable by walking `std::error::Error::source` (doctrine §8).
+- `LoadCompleteness { dependencies, build_scripts }` — **one** type describing
+  how complete a load is, with **one** choke point, `require_complete`, which is
+  now the only function in the crate that turns "degraded but unaccepted" into a
+  typed error on either axis. `require_resolved_dependencies` is gone; its check
+  is the first arm of that function.
+- `LoadedWorkspace::accept_missing_build_script_cfgs` — a consuming `#[must_use]`
+  opt-in, deliberately *separate* from `accept_degraded_dependencies` because
+  the two license different lies about the output.
+- `RustProducerError::BuildScriptsFailed` → `ProducerError::BuildScriptsFailed`,
+  which — `ProducerError` being exhaustive by design (§3) — broke
+  `nudox-store`'s mapping until it decided what the new failure means.
+
+The two axes stay separately representable rather than being folded into one
+enum because they are not mutually exclusive: a `--no-deps` load makes upstream's
+`run_build_scripts` a silent no-op, so a package can be degraded on both at once
+and a sum type would have forced the load to report whichever was checked first.
+The argument is written out on `LoadCompleteness` itself.
+
+### What the entry counts did — and why the old prediction here was wrong
+
+The note that used to sit in `corpus/entry-baseline.toml` said both numbers
+"MUST GO UP" when L50 was fixed. One did. The other went **down**:
+
+| package | before | after | direction |
+|---|---:|---:|---|
+| `log 0.4.17` | 1255 | **1251** | **down 4** |
+| `nom 5.1.3` | 3260 | **3288** | up 28 |
+
+`nom`'s `stable_i128` gate has no `#[cfg(not(...))]` counterpart, so restoring
+it only adds. `log`'s does: fixing it restores `set_logger` and
+`set_boxed_logger` and **deletes the whole `#[cfg(not(has_atomics))]` shim** —
+struct, four methods, and an `unsafe impl Sync` — which is more items than it
+gains. The broken table was never a subset of the correct one; it contained
+things the correct one does not.
+
+That is the strongest single argument in this file for doctrine §4's rule
+against count-based assertions. No entry count, moving in any direction, could
+have told anyone which of these two tables was the right one. The 21 unaffected
+packages' counts are byte-identical before and after, which is the other half of
+the evidence.
+
+### Kept honest by
+
+- `workspace/compiler/languages/rust/tests/corpus_sweep.rs` — **23 lowered, 0
+  unresolved, 0 failed, of 23 entries** (2026-08-07, 783.84 s). It asserts on
+  `(name, KindDiscriminant)` pairs read out of each checkout's own source —
+  never on counts, and never on `is_ok()`.
+- `workspace/compiler/languages/rust/tests/build_script_cfgs.rs` — four
+  hermetic cases (62.10 s for the whole file, against the sweep's 783.84 s)
+  that isolate the mechanism without a real crate.
+  `a_phantom_test_target_does_not_stop_the_build_script` synthesizes the exact
+  published-tarball shape (a `[[test]]` entry pointing at a file that is not
+  there) and is the regression test proper.
+  `accepting_a_failed_build_script_yields_a_table_describing_a_different_crate`
+  asserts the counterfeit item *is* present once the caller opts in, which is
+  what makes the refusal legible rather than merely cautious.
+
+Verified by mutation, not inspection. Restoring `--all-targets` turns
+`a_phantom_test_target_does_not_stop_the_build_script` red with
+`Failed(CargoRefusedTheWorkspace { … "can't find integration-test `phantom`" })`
+— note that it *refuses* rather than mis-lowering, which is half 2 catching what
+half 1 missed. Restoring the old `warn!` in place of the typestate turns
+`a_failed_build_script_is_refused_and_carries_the_cargo_diagnostic` red with
+"must be recorded as a failure, not as `Ran`; got Ran". Deleting the
+`nudox-store` match arm fails to compile with
+`E0004: non-exhaustive patterns: ProducerError::BuildScriptsFailed not covered`.
+
+### Still true, and not fixed by this
+
+`--all-targets` remains hard-coded upstream; this repo routes around it for its
+own build-script step only. Any other `ra_ap_project_model` consumer on a
+tarball with phantom targets has the same defect, and an `ra_ap_*` bump could
+change the command shape under us. That is bounded rather than dangerous: any
+override that stops delivering cfgs makes cargo exit non-zero, and
+`BuildScriptExecution::Failed` then refuses the whole load. There is no
+arrangement of those flags that produces a quietly-wrong table — which is
+exactly the property the old code lacked.
 
 ---
 

@@ -64,13 +64,16 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
         }
     }
 
-    // Widened to pub(crate) so that `lower::Lowering::declare_import_ref` can
-    // register cross-package import slots.
-    pub(crate) fn create_import(&mut self, id: UniqueId<Id>) -> UntypedEntryIndex {
-        let (idx, _) = self.imports.insert_full(id);
-
-        UntypedEntryIndex::import(idx)
-    }
+    // `create_import` is deliberately gone. A cross-package reference is now a
+    // self-describing `Ref::Foreign` (see `crate::foreign`), so nothing mints an
+    // import index any more and `Ref::Local` names exactly one thing: an export
+    // index that `seal` rewrites.
+    //
+    // The `imports` field and `iters()` are retained, permanently empty, for the
+    // `crate::registry` resolution plane — a second, fully unused import-resolution
+    // design that `nudox-{store,engine,graph}` and every producer ignore. Deleting
+    // that plane is the correct follow-up and is deliberately not folded into this
+    // change; see the note on `Ref::Foreign`.
 
     #[cfg(test)]
     pub(crate) fn export_id_to_idx(&self, id: &Id) -> Option<UntypedEntryIndex> {

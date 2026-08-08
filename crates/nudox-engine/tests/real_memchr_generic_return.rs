@@ -51,11 +51,11 @@
 //! `_raw`/`_iter` variants) declared in the same module — all of whose
 //! `return` Param entries collided onto one `IntroId` because:
 //!
-//! 1. `workspace/compiler/languages/rust/src/ra/item.rs` declares every
+//! 1. `workspace/compiler/languages/rust/src/ra/item.rs` declared every
 //!    parameter (`declare_params`, and the `output_refs` closure inside
 //!    `lower_free_function_with_id`) under the *function's enclosing*
 //!    `parent` (its module or impl), not under the function's own id — so a
-//!    `return` Param's ancestor-path, as seen by the seal pass, does not
+//!    `return` Param's ancestor-path, as seen by the seal pass, did not
 //!    include the owning function's name at all.
 //! 2. `workspace/ir/model/src/package/seal.rs`'s collision disambiguator
 //!    special-cased only `Kind::Function` and `Kind::Impl`; every other kind
@@ -64,13 +64,31 @@
 //!    (`item.rs::plain_sym`), so the "disambiguator" was identical for every
 //!    colliding param and resolved nothing.
 //!
-//! Both named mechanisms are still present verbatim in those two files
-//! (`item.rs:626-636`, `item.rs:2265-2278`). What makes this test pass is
-//! `seal.rs`'s general escalation pass, which re-mints collided `IntroId`s
-//! (`Disambiguator::Span` → `Ordinal`), plus the `ForeignKey`/`ForeignResolver`
-//! rebuild that lets `signature.rs` render a foreign `Option` by its key. So
-//! the *underlying* declaration shape is unchanged and this guard remains
-//! load-bearing: a regression in the escalation pass would land here.
+//! **FIXED 2026-08-08 (L23), at the declaration site named in (1), not the
+//! disambiguator named in (2).** `declare_params` and the `output_refs`
+//! closure inside `lower_free_function_with_id` now parent every `Param` —
+//! inputs and the synthetic `return` output — on `fn_id`, the owning
+//! function's own id, instead of on the function's enclosing module/impl
+//! (`item.rs:631` and `item.rs:644`, with the shared helper at
+//! `item.rs:2200`). That puts the owning function's name into the param's
+//! ancestor-path itself, so sibling functions' same-named params are
+//! distinct at the `(kind, ancestor-path, leaf-name)` key `seal.rs` uses
+//! *before* any disambiguator is chosen — mechanism (2) above is untouched
+//! and irrelevant now, because the collision it used to fail to break never
+//! forms. Verified by mutation: with `seal.rs`'s escalation pass
+//! (`Disambiguator::Span` → `Ordinal`) forced to a no-op, this test still
+//! passes — proof the fix removed the collision rather than adding another
+//! layer for escalation to rescue. `workspace/compiler/languages/rust/tests/param_identity.rs`
+//! carries the stronger, non-real-crate regression guard for the identity
+//! property itself: a param's `IntroId` is unchanged by inserting an
+//! unrelated sibling function earlier in the same module (escalation cannot
+//! promise that — an ordinal is a declaration-order position, not an
+//! identity), and two independent lowerings of the same source mint the same
+//! `IntroId` for the same param.
+//!
+//! The escalation pass described above is unchanged and remains a legitimate
+//! backstop for *other* collision sources — this fix closes one source of
+//! them, not the mechanism itself.
 //!
 //! # What this test deliberately does NOT check
 //!

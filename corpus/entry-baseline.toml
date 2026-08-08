@@ -78,24 +78,33 @@ versions = [
 [[packages]]
 ecosystem = "crates.io"
 name = "log"
-# 0.4.17 IS A BASELINE OF A BROKEN LOWERING (LIMITATIONS.md L50). The number is
-# an honest measurement; what it measures is wrong. This tarball omits the
-# `tests/` files its own Cargo.toml declares as `[[test]]` targets, so
-# `run_build_scripts`' `cargo check --all-targets` dies at target resolution,
-# `cargo:rustc-cfg=atomic_cas` is never emitted, and every item behind that cfg
-# — including `pub fn set_logger` and `pub fn set_boxed_logger` — is deleted
-# from the table. The failure is swallowed by a `warn!` with no subscriber
-# installed, so nothing surfaced it.
+# LIMITATIONS.md L50 — FIXED 2026-08-07, and the prediction that used to stand
+# here was WRONG IN THE INTERESTING DIRECTION. It read "WHEN L50 IS FIXED THIS
+# NUMBER MUST GO UP". It went DOWN: 1255 -> 1251.
 #
-# WHEN L50 IS FIXED THIS NUMBER MUST GO UP and this test will go red. That is
-# the test working. Re-measure and raise it; do not edit it back down.
+# That is not a regression, it is the sharpest available evidence for what L50
+# actually was. The broken lowering was not a subset of the correct one. With
+# `cargo:rustc-cfg=has_atomics` missing, `src/lib.rs:350-392`'s
+# `#[cfg(not(has_atomics))]` fallback — a private `struct AtomicUsize`, its
+# `new`/`load`/`store`/`compare_exchange`, and an `unsafe impl Sync` — was
+# lowered as though it were log's public structure, while
+# `#[cfg(atomic_cas)] pub fn set_logger` (:1465) and
+# `#[cfg(all(feature = "std", atomic_cas))] pub fn set_boxed_logger` (:1407)
+# were absent. Fixing it deletes more counterfeit items than it restores real
+# ones. A count could never have caught this defect in either direction, which
+# is why `corpus_sweep.rs` asserts on (name, kind) pairs and this file is a
+# drift alarm rather than a correctness test.
 #
-# 0.4.33 is the control and is correct: it deleted its build script and uses the
-# built-in `#[cfg(target_has_atomic = "ptr")]`. Same public API, 169 more
-# entries. The pair is why this corpus carries two `log` versions at all — the
-# defect is invisible to any single-version fixture.
+# The two functions are present now, asserted by name and kind — not by count —
+# in `workspace/compiler/languages/rust/tests/common/mod.rs`'s `log-0.4.17`
+# entry, all 7 expectations green in the 2026-08-07 sweep.
+#
+# 0.4.33 is unchanged at 1424 and remains the control: it deleted its build
+# script and uses the built-in `#[cfg(target_has_atomic = "ptr")]`, so it was
+# never affected. The pair is why this corpus carries two `log` versions at all
+# — the defect was invisible to any single-version fixture, and so was its fix.
 versions = [
-  { version = "0.4.17", entries = 1255 },
+  { version = "0.4.17", entries = 1251 },
   { version = "0.4.33", entries = 1424 },
 ]
 
@@ -111,15 +120,18 @@ versions = [
 [[packages]]
 ecosystem = "crates.io"
 name = "nom"
-# ALSO A BASELINE OF A BROKEN LOWERING (LIMITATIONS.md L50) — same root cause as
-# `log` 0.4.17 above, different missing files: this tarball omits five `benches/`
-# files its Cargo.toml declares, so `cargo:rustc-cfg=stable_i128` never reaches
-# the crate graph and eight public parsers (`be_u128`, `be_i128`, `le_u128`,
-# `le_i128`, in both `complete` and `streaming`) are absent from the table.
+# LIMITATIONS.md L50 — FIXED 2026-08-07. 3260 -> 3288, and here the old
+# prediction ("this number must go up") held: nom's `stable_i128` gate has no
+# `#[cfg(not(...))]` counterpart, so restoring it only adds. `be_u128`,
+# `be_i128`, `le_u128` and `le_i128` are back in both `complete` and
+# `streaming`; the entry expectations in
+# `workspace/compiler/languages/rust/tests/common/mod.rs` assert them by name
+# and kind, all 5 green in the 2026-08-07 sweep.
 #
-# WHEN L50 IS FIXED THIS NUMBER MUST GO UP. Re-measure; do not edit it down.
+# Read alongside `log` above: same root cause, same fix, opposite direction of
+# count change. Two packages is enough to show the number carries no verdict.
 versions = [
-  { version = "5.1.3", entries = 3260 },
+  { version = "5.1.3", entries = 3288 },
 ]
 
 [[packages]]

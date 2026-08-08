@@ -1,9 +1,47 @@
+use std::borrow::Cow;
+
 use crate::{List, kinds::Type, kinds::ty::Variance, visitor::Visitor};
+
+/// Render a lifetime's stored name with exactly one leading `'`.
+///
+/// # Why this exists
+///
+/// Lifetime names are stored as bare `String`s in two places
+/// ([`GenericParam::Lifetime`] and
+/// [`Primitive::Reference`](crate::kinds::ty::Primitive::Reference)) and
+/// nothing in either type says whether the `'` sigil is part of the stored
+/// value. The Rust producer stores the **source spelling**, sigil included
+/// (`ra::generics` takes `lp.lifetime().text()`, which yields `'h`), while
+/// every renderer assumed the sigil was absent and prepended its own. The
+/// result shipped as `impl<''h> Iterator for …` — two apostrophes — in the
+/// Implementations list.
+///
+/// Both conventions look correct at their own call site, which is why the
+/// disagreement survived. Normalising here makes the doubled sigil
+/// unrepresentable no matter which convention a producer picked, instead of
+/// requiring every current and future rendering site to guess the same way.
+///
+/// Storage is deliberately left alone: `content::encode_generic_param` hashes
+/// the name verbatim, so rewriting what producers store would churn every
+/// content hash in the corpus to fix a display bug.
+pub fn lifetime_label(name: &str) -> Cow<'_, str> {
+    match name.strip_prefix('\'') {
+        // Already the source spelling — the Rust producer's convention.
+        Some(_) => Cow::Borrowed(name),
+        None => Cow::Owned(format!("'{name}")),
+    }
+}
 
 /// A single generic parameter on a declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
 pub enum GenericParam {
-    /// A lifetime parameter, e.g. `'a`.
+    /// A lifetime parameter.
+    ///
+    /// `name` holds whatever the producer emitted; the `'` sigil may or may
+    /// not be included (the Rust producer includes it, because it stores the
+    /// source spelling). Never render this field directly — call
+    /// [`lifetime_label`], which normalises both conventions to exactly one
+    /// leading `'`.
     Lifetime { name: String },
 
     /// A type parameter with zero or more bounds, an optional default, and an
@@ -65,6 +103,28 @@ mod tests {
         kinds::ty::{Type, Variance},
         skeleton::trait_impl_skeleton,
     };
+
+    /// Both storage conventions render to exactly one leading `'`.
+    ///
+    /// The Rust producer stores the source spelling (`'h`) and every renderer
+    /// prepended a second sigil, shipping `impl<''h> Iterator for …` to the
+    /// Implementations list. Asserting on the rendered text (not on
+    /// `is_some()`) is the point: the bug was a string that looked fine to
+    /// both sides of the boundary.
+    #[test]
+    fn a_lifetime_label_carries_exactly_one_sigil_whichever_way_it_was_stored() {
+        // The Rust producer's convention: `lp.lifetime().text()` == "'h".
+        assert_eq!(lifetime_label("'h"), "'h");
+        // The convention every renderer assumed.
+        assert_eq!(lifetime_label("h"), "'h");
+        // Both spellings of the same lifetime must converge, or the same
+        // signature renders differently depending on which producer emitted it.
+        assert_eq!(lifetime_label("'static"), lifetime_label("static"));
+        // Degenerate input must not panic or silently produce a bare sigil
+        // pair; an empty name is a producer bug, not a rendering one.
+        assert_eq!(lifetime_label(""), "'");
+        assert_eq!(lifetime_label("'"), "'");
+    }
 
     /// GenericParam::Type with variance=None round-trips through serde.
     #[test]

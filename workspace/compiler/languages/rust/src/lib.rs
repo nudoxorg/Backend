@@ -70,7 +70,10 @@ use nudox_producer::{PackageSource, Producer, ProducerError, ProducerId};
 use crate::ra::ctx::{PendingOcc, PendingTarget};
 
 pub use self::error::Error as RustProducerError;
-pub use self::ra::loaded::{DependencyResolution, LoadedWorkspace, NoDepsFallback};
+pub use self::ra::loaded::{
+    BuildScriptExecution, BuildScriptFailure, DependencyResolution, LoadCompleteness,
+    LoadedWorkspace, NoDepsFallback,
+};
 
 // ── RaId — producer-local item identity ──────────────────────────────────────
 
@@ -158,6 +161,13 @@ impl Producer for RustProducer {
 /// flattens its cause into a `description` and ends the chain, nor
 /// `LoweringFailed`, whose contract is "the producer has a bug".
 ///
+/// [`RustProducerError::BuildScriptsFailed`] maps to
+/// [`ProducerError::BuildScriptsFailed`] on the same principle and for a
+/// stronger reason: its cause is the only place the build tool's own words
+/// survive, and the catch-all below would render it with `to_string()`, whose
+/// output for this variant is deliberately about consequences and names no
+/// diagnostic at all.
+///
 /// [`RustProducerError::NothingToDocument`] maps to
 /// [`ProducerError::NoDeclarationsContributed`] for the same reason in the
 /// other direction: that is the *generic* variant `produce`'s yield-contract
@@ -176,6 +186,10 @@ fn producer_error_for(package: &str, err: RustProducerError) -> ProducerError {
                 source: Box::new(e),
             }
         }
+        e @ RustProducerError::BuildScriptsFailed { .. } => ProducerError::BuildScriptsFailed {
+            package: package.to_owned(),
+            source: Box::new(e),
+        },
         e @ RustProducerError::NothingToDocument { .. } => {
             ProducerError::NoDeclarationsContributed {
                 package: package.to_owned(),

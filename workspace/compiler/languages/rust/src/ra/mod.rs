@@ -78,11 +78,13 @@ fn lower_workspace_inner(
     out: &mut Lowering<RaId>,
 ) -> Result<Vec<ctx::PendingOcc>, RustProducerError> {
     // The single choke point both public entry points pass through, so there is
-    // no way to obtain a lowering from a `--no-deps` workspace without either
-    // fixing the resolution failure or calling
-    // `LoadedWorkspace::accept_degraded_dependencies`. Checked before any walk
-    // work so the failure costs nothing and names its own cause.
-    oracle.require_resolved_dependencies()?;
+    // no way to obtain a lowering from an incomplete workspace — `--no-deps`
+    // metadata, or build scripts whose `cargo:rustc-cfg` output never arrived —
+    // without either fixing the cause or saying so out loud with
+    // `LoadedWorkspace::accept_degraded_dependencies` /
+    // `accept_missing_build_script_cfgs`. Checked before any walk work so the
+    // failure costs nothing and names its own cause.
+    oracle.require_complete_load()?;
 
     let package_names =
         documented_package_names(&oracle.ws, root_package_name, oracle.document_private);

@@ -56,6 +56,41 @@ pub(crate) fn lower_crate(
     ctx: &mut LowerCtx<'_>,
     out: &mut Lowering<RaId>,
 ) -> Result<(), RustProducerError> {
+    // ── Same-display-name guard ───────────────────────────────────────────────
+    //
+    // Cargo lets a `[[bench]]`, `[[test]]`, or `[[example]]` target share its
+    // package's crate name — `bytes-1.11.0` names its `benches/bytes.rs`
+    // target `"bytes"`, identical to its `[lib]` target. rust-analyzer's crate
+    // graph therefore contains two distinct `Crate`s that both answer `"bytes"`
+    // to `display_name`. The caller (`ra::mod::lower_all_packages_into`)
+    // selects crates to walk by matching that display name against the
+    // requested package, so it walks *both* — and both declare a root module
+    // at the same id (`"bytes"`), and both attempt a `Reexport` for `Bytes` at
+    // `"bytes::Bytes"` (the library via its genuine `pub use crate::bytes::Bytes`,
+    // the bench crate because its plain `use bytes::Bytes;` resolves to a
+    // public item and gets swept up by `lower_module`'s scope scan). Every
+    // `out.declare`/`declare_ref` call in `item.rs` *is* already routed through
+    // `id_of`/`check_unique`, so this is not a missing call to that authority —
+    // it is a second, entirely distinct `Crate` being fed through the walk at
+    // all, upstream of any single id computation.
+    //
+    // The general, order-independent signal for "this crate is not the
+    // canonical crate for its own name" is structural rather than name-based:
+    // Rust forbids a crate from depending on itself, so a crate that has a
+    // *dependency* sharing its own display name cannot be the library that
+    // name denotes — it can only be a bench/test/example target that Cargo
+    // auto-injected `extern crate <lib>` into. Skip walking such a crate
+    // entirely (rather than letting individual items collide downstream): a
+    // bench/test file contributes no API surface of its own, it only calls
+    // into the library, so there is nothing here to lose.
+    if let Some(own_name) = ctx.krate.display_name(ctx.db).map(|n| n.to_string())
+        && ctx.krate.dependencies(ctx.db).iter().any(|dep| {
+            dep.krate.display_name(ctx.db).map(|n| n.to_string()).as_deref() == Some(own_name.as_str())
+        })
+    {
+        return Ok(());
+    }
+
     // Collect all modules in BFS order.
     let root = ctx.krate.root_module(ctx.db);
     let mut modules: Vec<Module> = Vec::new();

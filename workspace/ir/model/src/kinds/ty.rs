@@ -462,6 +462,11 @@ pub enum Primitive {
 
     /// A managed reference with optional lifetime/mutability tracking.
     /// Ex: `&'a mut T`.
+    ///
+    /// `lifetime` carries the producer's spelling and may or may not include
+    /// the `'` sigil; render it through
+    /// [`lifetime_label`](crate::kinds::lifetime_label) rather than prepending
+    /// one, or a producer that stores the source spelling renders `&''a T`.
     Reference {
         lifetime: Option<String>,
         mutable: bool,

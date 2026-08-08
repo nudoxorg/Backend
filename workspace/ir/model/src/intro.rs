@@ -19,12 +19,25 @@ use crate::{
 
 /// Domain tag for the IntroId preimage.
 ///
-/// `v3` — nudox-ir's own, bug-fixed successor to `workspace/ir`'s
-/// `nudox.intro.v2`. The disambiguator now folds in generics/wheres/negativity,
-/// so the preimage (and therefore the digest) differs from v2 for overloads and
-/// impls; a distinct domain makes that a clean, explicit version boundary
-/// rather than a silent divergence.
-pub const INTRO_DOMAIN: &str = "nudox.intro.v3";
+/// `v4` — the cross-package-reference boundary.
+///
+/// Two changes move digests relative to `v3`, and the bump exists so that
+/// divergence is an explicit version boundary rather than a silent one:
+///
+/// 1. [`skeleton::ref_`](crate::skeleton) used to encode *every* cross-package
+///    reference as the single placeholder byte `0x00` (it had no way to name
+///    one). It now encodes `0x02` plus the reference's canonical key bytes. The
+///    `TraitImpl` disambiguator is applied to **every** impl unconditionally, so
+///    this moves the `IntroId` of every impl whose trait or self type mentions a
+///    foreign type — in practice, most trait impls in the corpus.
+/// 2. [`Disambiguator::Ordinal`] is a new tag. Existing tags `0..=3` are
+///    untouched, so an entry that neither collides nor names a foreign type
+///    keeps a v3-shaped preimage — but it is hashed under a new domain and its
+///    digest still moves.
+///
+/// **Every persisted `IntroId` in the corpus is invalidated by this bump.**
+/// Manifest stamps, archives and any stored table must be re-derived once.
+pub const INTRO_DOMAIN: &str = "nudox.intro.v4";
 
 /// Collision-scoped disambiguator selected per §4.3: `None` for the common
 /// unique case (so a unique name's id is signature-stable), a signature
@@ -43,6 +56,32 @@ pub enum Disambiguator {
     /// A non-function collision with no better key: the declaration's byte
     /// span.
     Span { start: usize, end: usize },
+
+    /// Last resort: the entry's ordinal among declarations that minted the
+    /// *same* id under every structural rule above, plus its span.
+    ///
+    /// # Why this exists
+    ///
+    /// Every other disambiguator is a function of the declaration's own
+    /// content, and this one is not — so its use is *reported*
+    /// (`SealReport::forced`) rather than silent, and it is only ever reached
+    /// after `Span` has already failed.
+    ///
+    /// It exists because losing the declaration is strictly worse. Java's
+    /// oracle reports `span: 0..line` (a line number, not byte offsets), so two
+    /// overloads declared on one line — routine in C# and TypeScript, and
+    /// possible in Java — are identical under `Span`. Without a terminal tier
+    /// the escalation ladder ends in either a silent overwrite (what shipped) or
+    /// a hard failure that takes the whole package offline.
+    ///
+    /// The cost, stated plainly: an `Ordinal` id is not stable across a
+    /// producer reordering its output. A report is the mitigation; it is not
+    /// stability.
+    Ordinal {
+        span_start: usize,
+        span_end: usize,
+        index: u32,
+    },
 }
 
 impl Disambiguator {
@@ -66,6 +105,16 @@ impl Disambiguator {
                 out.push(3);
                 write_u64le(&mut out, *start as u64);
                 write_u64le(&mut out, *end as u64);
+            }
+            Disambiguator::Ordinal {
+                span_start,
+                span_end,
+                index,
+            } => {
+                out.push(4);
+                write_u64le(&mut out, *span_start as u64);
+                write_u64le(&mut out, *span_end as u64);
+                write_u32le(&mut out, *index);
             }
         }
         out
@@ -162,7 +211,7 @@ mod tests {
     }
 
     /// GOLDEN: freeze the exact preimage layout. Independently reproducible as
-    /// blake3("nudox.intro.v3" ‖ encode_str("cargo") ‖ encode_str("demo") ‖
+    /// blake3("nudox.intro.v4" ‖ encode_str("cargo") ‖ encode_str("demo") ‖
     /// u16le(4) ‖ u32le(1) ‖ encode_str("m") ‖ encode_str("f") ‖ 0x00).
     #[test]
     fn bootstrap_golden() {
@@ -175,7 +224,7 @@ mod tests {
         );
         assert_eq!(
             id.to_hex(),
-            "973eee7597d063c75231ee760a2239d58a761660098a2b589f524ab6a994f962",
+            "ebb5afd66f97c25b9dbf60c3deade5fd27a67438a5981ba482f8c153b47a0618",
             "IntroId preimage layout regression (update only with a FORMAT_VERSION bump)"
         );
     }

@@ -38,6 +38,10 @@
 //! which destroys the IR-VCS version history.  The scheme above is purely
 //! structural and deterministic.
 
+// `CrateOrigin`/`LangCrateOrigin` are re-exported by `ra_ap_hir` only
+// privately; `ra_ap_base_db` is where they are public, and it is already a
+// direct dependency of this crate.
+use ra_ap_base_db::{CrateOrigin, LangCrateOrigin};
 use ra_ap_hir::{
     Crate, DisplayTarget, HasVisibility, Module, ModuleDef, ScopeDef, Semantics, Visibility,
 };
@@ -46,7 +50,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use smol_str::SmolStr;
 
 use nudox_ir::{
+    change::{EcosystemId, PackageLineageId, PackageName},
     entry::{Deprecation, DocLink, Visibility as IrVisibility},
+    foreign::ForeignKey,
     vocab::{ReferenceKind, RelSpan},
 };
 
@@ -96,6 +102,22 @@ pub(crate) struct LowerCtx<'db> {
     pub(crate) display: DisplayTarget,
     pub(crate) document_private: bool,
 
+    /// Root module of some crate *other* than [`Self::krate`], used as a
+    /// visibility anchor meaning "outside this crate".
+    ///
+    /// `Visibility::is_visible_from` short-circuits to `false` for every
+    /// `Visibility::Module`/`PubCrate` whose crate differs from the querying
+    /// module's (`ra_ap_hir_def::visibility`, 0.0.341), and to `true` for
+    /// `Visibility::Public`. So filtering a module scope against a *foreign*
+    /// module is an exact test for "this binding is `pub`" — which is the
+    /// question `item::lower_module` has to answer about a `use` statement, and
+    /// which no `HasVisibility` call on the imported *item* can answer.
+    ///
+    /// `None` only when the crate graph holds no other crate at all. In that
+    /// case nothing foreign can be in scope to leak, so the re-export scan
+    /// falls back to unfiltered behaviour without changing any result.
+    pub(crate) foreign_anchor: Option<Module>,
+
     /// Canonical path string → `RaId` (same string; kept for cache hit test).
     pub(crate) path_cache: FxHashMap<PathKey, RaId>,
 
@@ -109,6 +131,25 @@ pub(crate) struct LowerCtx<'db> {
     /// caller (see `ra::mod::lower_workspace_with_occurrences`).
     pub(crate) occurrence_buf: Vec<PendingOcc>,
 
+    /// Rustc display name → the referenced crate's production lineage.
+    ///
+    /// # Why this exists
+    ///
+    /// A cross-package reference needs the target's `PackageLineageId` as *its
+    /// own* lineage spells it. The code this replaces derived a package
+    /// identity from `key.split("::").next()` — a rustc display name, which is
+    /// underscored, so a dependency on the cargo package `odd-duck` produced
+    /// `odd_duck` while that package's own lineage is `cargo:odd-duck`. The two
+    /// could never join.
+    ///
+    /// rust-analyzer has the real answer at every reference site
+    /// (`CrateDisplayName::canonical_name` is documented upstream as "the name
+    /// as specified in Cargo.toml (with `-`)"), but the reference sites hold
+    /// only a path string. Building the map once, keyed by exactly the string
+    /// `key.split("::").next()` yields, gets the correct lineage to those sites
+    /// without threading a `Crate` handle through twelve macro expansions.
+    pub(crate) foreign_lineages: FxHashMap<String, PackageLineageId>,
+
     /// Debug-assertion set: every `RaId` emitted via `check_unique` is
     /// recorded here.  This is a *check* only — it is never used as input to
     /// id construction (that would introduce order-dependency).  The set is
@@ -117,21 +158,138 @@ pub(crate) struct LowerCtx<'db> {
     emitted: FxHashSet<RaId>,
 }
 
+/// The lineage of `krate` as the package registry that publishes it would spell
+/// it.
+///
+/// `None` when rust-analyzer cannot name the crate at all — the honest answer,
+/// which routes the reference to `ForeignOrigin::Namespace` rather than
+/// inventing an identity that will never join.
+pub(crate) fn crate_lineage(db: &RootDatabase, krate: Crate) -> Option<PackageLineageId> {
+    // `canonical_name` is the Cargo.toml spelling, hyphens intact. `crate_name`
+    // / `display_name.to_string()` are the underscored rustc form and are what
+    // the old code used — that is the bug.
+    let cargo_name = krate
+        .display_name(db)
+        .map(|n| n.canonical_name().as_str().to_owned());
+
+    match krate.origin(db) {
+        // core / std / alloc / proc_macro are shipped with the toolchain, not
+        // published on crates.io. They get their own ecosystem so a future
+        // resolver cannot confuse `cargo:core` with a crates.io package called
+        // `core`.
+        CrateOrigin::Lang(lang) => Some(PackageLineageId::new(
+            EcosystemId::new("rust-sysroot"),
+            PackageName::new(lang_crate_name(lang)),
+        )),
+        CrateOrigin::Rustc { name } => Some(PackageLineageId::new(
+            EcosystemId::new("rust-sysroot"),
+            PackageName::new(name.as_str()),
+        )),
+        // `name` here is `pkg_data.name` — the Cargo.toml package name.
+        CrateOrigin::Library { name, .. } => Some(PackageLineageId::new(
+            EcosystemId::new("cargo"),
+            PackageName::new(name.as_str()),
+        )),
+        CrateOrigin::Local { name, .. } => {
+            let n = name.map(|s| s.as_str().to_owned()).or(cargo_name)?;
+            Some(PackageLineageId::new(
+                EcosystemId::new("cargo"),
+                PackageName::new(n),
+            ))
+        }
+    }
+}
+
+/// Build the cross-package key for a canonical path outside the crate being
+/// lowered.
+///
+/// A free function taking the map by reference because `make_ref_for!`'s closure
+/// cannot borrow the `LowerCtx` — the caller keeps using it — but must produce
+/// exactly the same key the ctx method would.
+pub(crate) fn foreign_key_from(
+    lineages: &FxHashMap<String, PackageLineageId>,
+    key: &str,
+) -> ForeignKey {
+    let crate_seg = key.split("::").next().unwrap_or("_");
+    // The last `::` segment: what renders when the reference is not linked.
+    let display = key.rsplit("::").next().unwrap_or(key);
+    match lineages.get(crate_seg) {
+        Some(lineage) => ForeignKey::in_package(lineage.clone(), key, display),
+        // The crate is not in this graph (a `cfg`-disabled dependency, or a
+        // path rust-analyzer resolved without one). Naming a namespace is
+        // honest; fabricating `cargo:<rustc_name>` would produce a key that
+        // renders as a working hyperlink and never resolves.
+        None => ForeignKey::in_namespace(
+            EcosystemId::new("rust-unresolved-crate"),
+            crate_seg,
+            key,
+            display,
+        ),
+    }
+}
+
+/// The published name of a toolchain crate.
+///
+/// Exhaustive on purpose: a new `LangCrateOrigin` upstream should break this
+/// and force a decision, not fall into a bucket.
+fn lang_crate_name(lang: LangCrateOrigin) -> &'static str {
+    match lang {
+        LangCrateOrigin::Alloc => "alloc",
+        LangCrateOrigin::Core => "core",
+        LangCrateOrigin::ProcMacro => "proc_macro",
+        LangCrateOrigin::Std => "std",
+        LangCrateOrigin::Test => "test",
+        LangCrateOrigin::Dependency => "dependency",
+        LangCrateOrigin::Other => "other",
+    }
+}
+
 impl<'db> LowerCtx<'db> {
     pub(crate) fn new(db: &'db RootDatabase, krate: Crate, document_private: bool) -> Self {
         let display = krate.to_display_target(db);
+        // Prefer a direct dependency (always present in a sysroot-backed load —
+        // `core` at minimum); fall back to any other crate in the graph.
+        let foreign_anchor = krate
+            .dependencies(db)
+            .into_iter()
+            .map(|dep| dep.krate)
+            .chain(Crate::all(db))
+            .find(|other| *other != krate)
+            .map(|other| other.root_module(db));
+
+        // Keyed by the rustc display name, because that is exactly the string a
+        // reference site recovers from `key.split("::").next()`.
+        let foreign_lineages: FxHashMap<String, PackageLineageId> = Crate::all(db)
+            .into_iter()
+            .filter(|other| *other != krate)
+            .filter_map(|other| Some((crate_name(db, other), crate_lineage(db, other)?)))
+            .collect();
+
         LowerCtx {
             sema: Semantics::new(db),
             db,
             krate,
             display,
             document_private,
+            foreign_anchor,
             path_cache: FxHashMap::default(),
             alias_cache: FxHashMap::default(),
             occurrence_buf: Vec::new(),
+            foreign_lineages,
             #[cfg(debug_assertions)]
             emitted: FxHashSet::default(),
         }
+    }
+
+    /// Build the cross-package key for a canonical path that is **not** in this
+    /// crate.
+    ///
+    /// `display` is the last `::` segment — what the Implementations list and
+    /// every signature render when the reference is not linked. That string is
+    /// the only reason `impl ? for …` can become `impl Clone for …` without a
+    /// corpus.
+    pub(crate) fn foreign_key(&self, key: &str) -> ForeignKey {
+        foreign_key_from(&self.foreign_lineages, key)
     }
 
     // ── Path / ID helpers ─────────────────────────────────────────────────────
