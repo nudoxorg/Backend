@@ -65,7 +65,9 @@ pub struct ReverseIndexKey {
 /// The extraction rules follow the design brief:
 ///
 /// * [`Type::Nominal`] with a [`Ref::Intro`] → same-package `StableRef`.
-/// * [`Type::Nominal`] with a [`Ref::Foreign`] → the `StableRef` directly.
+/// * [`Type::Nominal`] with a [`Ref::Foreign`] → its resolved `target`, when the
+///   seal's `ForeignResolver` produced one; an unresolved foreign ref yields
+///   `None` and emits no posting.
 /// * [`Type::Apply`] → recurse into `base` (a generic trait application such
 ///   as `impl Iterator<Item = u32>` appears here; the old flat wire form
 ///   silently dropped this case).
@@ -92,13 +94,17 @@ fn type_to_stable_ref(ty: &Type, package: &PackageLineageId) -> Option<StableRef
 /// Convert a [`RawRef`] (= [`Ref<UntypedMarker>`]) to a [`StableRef`].
 ///
 /// `Ref::Intro(id)` → same-package reference using the given `package`.
-/// `Ref::Foreign(sr)` → used directly.
+/// `Ref::Foreign { target, .. }` → the resolved `StableRef` when the seal's
+/// `ForeignResolver` supplied one; `None` when it did not. A foreign reference
+/// carries a `ForeignKey` always and a target only if resolution succeeded, so
+/// an unresolved cross-package edge yields no posting rather than a fabricated
+/// one.
 /// `Ref::Local(_)` → `None` (must not appear post-seal; logged as a comment).
 #[inline]
 fn raw_ref_to_stable(raw: &RawRef, package: &PackageLineageId) -> Option<StableRef> {
     match raw {
         Ref::Intro(id) => Some(StableRef::new(package.clone(), *id)),
-        Ref::Foreign(sr) => Some(sr.clone()),
+        Ref::Foreign { target, .. } => target.clone(),
         // Ref::Local must not appear in a sealed table — seal lowers every
         // Local to Intro/Foreign in one pass.  Treat as None: no posting.
         Ref::Local(_) => None,
