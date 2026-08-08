@@ -62,9 +62,9 @@ impl RemoteTarget {
         let Some(hex) = config.sync_endpoint.as_ref() else {
             return Ok(None);
         };
-        let endpoint: EndpointId = hex.parse().map_err(|source| SyncError::InvalidEndpoint {
-            value: hex.clone(),
-            source,
+        let endpoint: EndpointId = hex.parse::<EndpointId>().map_err(|err| SyncError::InvalidEndpoint {
+            value: hex.to_string(),
+            reason: err.to_string(),
         })?;
         Ok(Some(Self {
             source: config.source_id(),

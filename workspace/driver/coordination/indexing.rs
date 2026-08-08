@@ -26,8 +26,6 @@ use index::ingest::archive::{EntryAllowlist, ExtractionLimits, ingest_archive};
 use registry::vector::EmbeddingModel;
 
 use crate::error::{BadRequestReason, InternalError, ServerError, ServerResult};
-use crate::registry::blob::creation::PendingSection;
-use crate::registry::blob::{BlobManifest, FileEntry};
 use crate::registry::metadata::SearchFacets;
 use crate::{Server, SourceStores};
 

@@ -84,7 +84,7 @@ fn record_search_metrics(query_id: uuid::Uuid, hits: usize, target: &str) {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct SymbolQuery {
+pub struct SymbolQuery {
     query_id: Option<uuid::Uuid>,
 }
 

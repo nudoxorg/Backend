@@ -143,4 +143,16 @@ pub enum SyncError {
     /// causal error (the seamless transport-agnostic contract).
     #[error("sync error")]
     Other(String),
+
+    /// A sync endpoint specification could not be parsed (e.g. malformed hex in
+    /// the configured endpoint address). Carries the unparseable value and the
+    /// reason parsing failed, allowing the caller to correct the configuration.
+    #[error("invalid endpoint '{value}': {reason}")]
+    InvalidEndpoint {
+        /// The unparseable endpoint spec (typically a hex-encoded string).
+        value: String,
+        /// The reason parsing failed (e.g., "invalid hex character").
+        /// Stored as a String to keep heart transport-agnostic.
+        reason: String,
+    },
 }

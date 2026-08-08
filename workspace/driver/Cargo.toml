@@ -131,7 +131,7 @@ data-encoding = "2.11"
 flate2            = "1.1"
 tar               = "0.4"
 zstd              = "0.13"
-zip               = { version = "2", default-features = false, features = ["deflate"] }
+zip               = { workspace = true }
 async-compression = "0.4"
 
 # ── Tree-sitter (blob parsing) ────────────────────────────────────────────────

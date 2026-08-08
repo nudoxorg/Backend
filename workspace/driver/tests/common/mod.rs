@@ -156,8 +156,8 @@ pub async fn required_assembled_server(test: &str) -> (Arc<Server<TestModel>>, T
     if !std::env::var_os("SERVER_TEST_BACKENDS").is_some_and(|value| !value.as_os_str().is_empty())
     {
         panic!(
-            "{test} requires live backends: set SERVER_TEST_BACKENDS=1 and make the "
-                "catalog/qdrant/object-store dependencies reachable"
+            "{test} requires live backends: set SERVER_TEST_BACKENDS=1 and make the \
+             catalog/qdrant/object-store dependencies reachable"
         );
     }
 
