@@ -104,8 +104,9 @@ fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
-    .expect("producer must not return an error for a well-formed crate");
+    .expect("producer must not return an error for a well-formed crate").table;
 
     let elapsed = started.elapsed();
     let entry_count = table.len();
@@ -159,8 +160,9 @@ fn lowers_a_real_crate() {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
-    .expect("axum must lower without error");
+    .expect("axum must lower without error").table;
     let elapsed = started.elapsed();
 
     let view = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
@@ -217,8 +219,8 @@ fn the_lowered_package_is_named_after_its_source() {
     let source = PackageSource::new(&root, "axum", "0.8.9");
     let lineage = PackageDescriptor::cargo(&root, "axum", "0.8.9").lineage;
 
-    let table = produce(&RustProducer { direct_repo: false }, &source, &lineage)
-        .expect("axum must lower without error");
+    let table = produce(&RustProducer { direct_repo: false }, &source, &lineage, &nudox_ir::foreign::Unlinked)
+        .expect("axum must lower without error").table;
     let view = nudox_ir::view::IrView::with_package(lineage.clone(), table);
 
     assert_eq!(
@@ -300,8 +302,9 @@ fn ids_are_deterministic_across_runs() {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
-    .expect("first lowering must succeed");
+    .expect("first lowering must succeed").table;
     eprintln!(
         "run 1: {} entries in {:.1}s",
         table1.len(),
@@ -314,8 +317,9 @@ fn ids_are_deterministic_across_runs() {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
-    .expect("second lowering must succeed");
+    .expect("second lowering must succeed").table;
     eprintln!(
         "run 2: {} entries in {:.1}s",
         table2.len(),
@@ -533,27 +537,29 @@ fn no_dangling_local_refs_after_seal() {
     let mut dangling: Vec<String> = Vec::new();
 
     for (id, entry) in view.entries() {
-        // Walk the kind's type references looking for Local variants.
-        // We check the children refs recorded in the entry's node, and the
-        // kind's own type references indirectly by checking the Entry tree.
-        // The primary surface is the children list on the Node:
-        for child_ref in entry.children() {
-            if child_ref.as_local().is_some() {
-                dangling.push(format!(
-                    "entry «{}» (id {}…) has a Local child ref — seal did not rewrite it",
-                    entry.sym().name,
-                    &id.to_hex()[..12]
-                ));
+        // Walk EVERY reference the entry holds, through the `Visitor` — not
+        // just the `Node` tree.
+        //
+        // This test used to check only `entry.children()` and
+        // `entry.parent()`, which is the single surface where the invariant
+        // already held: `seal` always rewrote the tree edges. The dangling
+        // references lived in the *kind bodies* — `Type::Nominal`, field /
+        // param / variant handles, an impl's `of` — so the test asserted the
+        // invariant in its own name against the one place it could not fail,
+        // and 35% of memchr's functions shipped rendering `?`.
+        //
+        let mut locals = 0usize;
+        entry.for_each_ref(|r| {
+            if matches!(r, nudox_ir::index::Ref::Local(_)) {
+                locals += 1;
             }
-        }
-        if let Some(parent_ref) = entry.parent() {
-            if parent_ref.as_local().is_some() {
-                dangling.push(format!(
-                    "entry «{}» (id {}…) has a Local parent ref — seal did not rewrite it",
-                    entry.sym().name,
-                    &id.to_hex()[..12]
-                ));
-            }
+        });
+        if locals > 0 {
+            dangling.push(format!(
+                "entry «{}» (id {}…) holds {locals} Local ref(s) — seal did not rewrite them",
+                entry.sym().name,
+                &id.to_hex()[..12]
+            ));
         }
     }
 
@@ -1109,7 +1115,7 @@ fn occurrences_are_recorded_for_axum_functions() {
         return;
     }
 
-    use nudox_ir::{change::PackageLineageId, view::IrView, vocab::Confidence};
+    use nudox_ir::{view::IrView, vocab::Confidence};
 
     let descriptor = PackageDescriptor::cargo(&root, "axum", "0.8.9");
     let started = std::time::Instant::now();
@@ -1118,6 +1124,7 @@ fn occurrences_are_recorded_for_axum_functions() {
         &RustProducer { direct_repo: false },
         &descriptor.source,
         &descriptor.lineage,
+        &nudox_ir::foreign::Unlinked,
     )
     .expect("produce_with_occurrences must not error for a well-formed crate");
 
