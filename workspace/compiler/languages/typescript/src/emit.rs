@@ -43,8 +43,10 @@ use nudox_ir::{
 };
 
 use nudox_ir::lower::Lowering;
+use oxc_resolver::Resolver;
 
 use crate::{
+    entry::{is_ts_module_path, make_resolver},
     extract::{
         Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody, FunctionBody,
         GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers, ModuleFacts,
@@ -71,6 +73,13 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
         .iter()
         .map(|m| (m.path.as_path(), &m.exports))
         .collect();
+
+    // The same `.d.ts`-first, `extension_alias`-aware resolver `graph.rs` used
+    // to walk import edges (and therefore to decide what actually got
+    // `declare()`d). Re-export resolution must use the identical resolver, not
+    // a second, independent one — see `resolve_module_path`'s doc comment for
+    // the real-package failure this fixes.
+    let resolver = make_resolver();
 
     for module in modules {
         let module_id = module_ts_id(module);
@@ -102,18 +111,66 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 out,
                 &module_index,
                 &export_index,
+                &resolver,
             );
         }
 
         // Emit re-exports from the export table.
-        emit_reexports(module, Some(module_id.clone()), out, &export_index);
+        emit_reexports(module, Some(module_id.clone()), out, &export_index, &resolver);
     }
 }
 
 // ── Module root TsId ──────────────────────────────────────────────────────────
 
+/// Sentinel name marking a `TsId` as a module root (`module_ts_id`), never a
+/// real declaration. `decl_ts_id` compares against this to tell "my parent is
+/// the module itself" (no qualification needed) apart from "my parent is a
+/// real enclosing namespace" (qualify).
+const MODULE_ROOT_NAME: &str = "$module";
+
 fn module_ts_id(module: &ModuleFacts) -> TsId {
-    TsId::new(module.path.clone(), "$module", 0)
+    TsId::new(module.path.clone(), MODULE_ROOT_NAME, 0)
+}
+
+/// Build the `TsId` for one declaration, qualified by its enclosing
+/// *namespace* chain (never by its enclosing module).
+///
+/// TypeScript scopes a name to its immediate namespace, not to the whole
+/// file: two sibling namespaces (or namespaces nested at any depth) may each
+/// declare a member with the same local name without colliding. Two real
+/// examples hit by the npm corpus sweep:
+/// - `zod`'s `lib/helpers/util.d.ts` declares both `namespace objectUtil {
+///   type identity = ... }` and `namespace util { type identity = ... }` —
+///   distinct types that happen to share the name `identity`.
+/// - `@types/node`'s `fs.d.ts` declares `namespace readFile { function
+///   __promisify__(...) }`, `namespace writeFile { function __promisify__(...) }`,
+///   … one `__promisify__` per overloaded top-level function, by Node's own
+///   `util.promisify` typing convention (dozens of these per file).
+///
+/// Before this function existed, `emit_decl` built every id as
+/// `TsId::new(decl.module, decl.name, decl.decl_index)` regardless of
+/// nesting, so every one of those same-named siblings collapsed onto the
+/// identical `(module, name, discriminant)` triple and `Lowering::finish`
+/// rejected the whole package as "declared more than once" — the single
+/// largest cause of real `.d.ts`-heavy npm packages failing to lower at all.
+///
+/// Top-level declarations are deliberately unaffected: their `parent` is the
+/// module root (`module_ts_id`, sentinel name `MODULE_ROOT_NAME`), so
+/// `id.name` stays exactly `decl.name` for them. That has to hold, because
+/// re-export resolution (`emit_reexports`/`emit_inline_reexport`)
+/// independently constructs `TsId::new(module, export_name, 0)` for a
+/// top-level export and needs it to match exactly what got declared here —
+/// qualifying top-level ids too would silently break every re-export lookup
+/// in the 17 fixtures that already lower cleanly.
+fn decl_ts_id(decl: &DeclFact, parent: Option<&TsId>) -> TsId {
+    match parent {
+        Some(p) if p.name != MODULE_ROOT_NAME => TsId::new(
+            decl.module.clone(),
+            format!("{}::{}", p.name, decl.name),
+            decl.decl_index,
+        ),
+        _ => TsId::new(decl.module.clone(), decl.name.clone(), decl.decl_index),
+    }
 }
 
 // ── Per-declaration emission ──────────────────────────────────────────────────
@@ -124,8 +181,9 @@ fn emit_decl(
     out: &mut Lowering<TsId>,
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::extract::ExportTable>,
+    resolver: &Resolver,
 ) {
-    let id = TsId::new(decl.module.clone(), &decl.name, decl.decl_index);
+    let id = decl_ts_id(decl, parent.as_ref());
     let sym = make_sym(decl);
 
     match &decl.body {
@@ -134,7 +192,7 @@ fn emit_decl(
         DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
-            emit_namespace(id, parent, sym, body, out, module_index, export_index)
+            emit_namespace(id, parent, sym, body, out, module_index, export_index, resolver)
         }
         DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
         DeclBody::Const(body) => emit_const(id, parent, sym, body, out),
@@ -152,6 +210,7 @@ fn emit_decl(
                 import_name,
                 out,
                 module_index,
+                resolver,
             );
         }
     }
@@ -177,11 +236,23 @@ fn emit_interface(
     );
 
     // Emit methods as child Function entries.
-    for method in &body.methods {
+    //
+    // `idx` (not a hardcoded 0) is the discriminant: an interface signature
+    // list can declare the same method name more than once — TypeScript
+    // overload signatures (e.g. `refine(check): this; refine(check, msg):
+    // this;`) each become their own `MethodFact` with an identical `name`.
+    // A shared discriminant made every overload's `method_id` compare equal,
+    // which `Lowering::finish` then rejected wholesale as "declared more
+    // than once" — this was the majority cause of real `.d.ts`-heavy npm
+    // packages (zod, commander, class-validator, reflect-metadata, dayjs)
+    // failing to lower at all. `emit_class`'s sibling loop already avoids
+    // this (it multiplies member index by overload index); interfaces need
+    // the same treatment.
+    for (idx, method) in body.methods.iter().enumerate() {
         let method_id = TsId::new(
             id.module.clone(),
             format!("{}::{}", id.name, method.name),
-            0,
+            idx as u32,
         );
         let method_sym = Symbol {
             name: method.name.clone(),
@@ -536,11 +607,12 @@ fn emit_namespace(
     out: &mut Lowering<TsId>,
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::extract::ExportTable>,
+    resolver: &Resolver,
 ) {
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
     for child in &body.children {
-        emit_decl(child, Some(id.clone()), out, module_index, export_index);
+        emit_decl(child, Some(id.clone()), out, module_index, export_index, resolver);
     }
 }
 
@@ -574,10 +646,20 @@ fn emit_function(
     let mut param_ids: Vec<(TsId, Param)> = Vec::with_capacity(body.params.len());
 
     for (idx, p) in body.params.iter().enumerate() {
+        // The discriminant must fold in `id.discriminant`, not just the
+        // local param index: `id.discriminant` is how the caller
+        // distinguishes sibling overloads that share `id.name` (e.g.
+        // `emit_class`'s `idx*1000+overload_idx`, or this function's own
+        // caller when `id` came from a module-level overload group via
+        // `decl.decl_index`). Two overloads whose first parameter happens
+        // to share a name would otherwise both mint
+        // `TsId(module, "<name>::param::<param>", idx)` and collide in
+        // `Lowering::finish` as "declared more than once" even though the
+        // functions themselves were correctly disambiguated.
         let param_id = TsId::new(
             id.module.clone(),
             format!("{}::param::{}", id.name, p.name),
-            idx as u32,
+            id.discriminant.saturating_mul(1000).saturating_add(idx as u32),
         );
         let pref: Ref<Param> = out.refer(param_id.clone());
         param_refs.push(pref);
@@ -601,7 +683,18 @@ fn emit_function(
     // Output parameter: return type, if any.
     let mut output_refs: Vec<Ref<Param>> = Vec::new();
     if let Some(ret) = &body.return_type {
-        let ret_id = TsId::new(id.module.clone(), format!("{}::return", id.name), 0);
+        // Fold `id.discriminant` in rather than hardcoding 0, for the same
+        // reason as the param loop above: two overloads sharing `id.name`
+        // both have a return type, so a shared discriminant made every
+        // overload's `<name>::return` collide as "declared more than once"
+        // (observed on real fixtures: `axios`'s `AxiosHeaders::set`,
+        // `commander`'s `Command::version`, and every overloaded interface
+        // method once the `emit_interface` fix above stopped masking it).
+        let ret_id = TsId::new(
+            id.module.clone(),
+            format!("{}::return", id.name),
+            id.discriminant,
+        );
         let rref: Ref<Param> = out.refer(ret_id.clone());
         output_refs.push(rref);
         let param_sym = Symbol {
@@ -698,24 +791,97 @@ fn emit_static(
 
 // ── Re-exports ─────────────────────────────────────────────────────────────────
 
+/// Resolve `name`, as exported *without* a `from` clause by the module at
+/// `table_path` (whose export surface is `table`), to the `TsId` a
+/// `refer()` elsewhere should target.
+///
+/// Both re-export paths below (`export { x } from "m"` and `export * from
+/// "m"`) used to build `TsId::new(table_path, name, 0)` directly — correct
+/// only when the target module's externally-visible name and its own
+/// `declare()`d name coincide. Real packages break that assumption two
+/// ways; see [`crate::extract::LocalExport`]'s doc comment. This is the one
+/// place both paths resolve through, so a package that reaches the same
+/// renamed or namespace-import export via either form resolves identically
+/// instead of one path working and the other dangling.
+///
+/// Returns `None` when nothing should be referred at all: either `name`
+/// resolves to a value with no identifier
+/// (`LocalExport::Unresolvable` — e.g. `export default "literal";`), or the
+/// target module's own re-export chain (`resolve_module_path`) doesn't
+/// resolve. When `name` is absent from `table.locals` entirely, it is a
+/// genuine indirect re-export (`export { x } from "m2"` inside the target
+/// module) — using `name` unchanged is *correct* there, not a fallback
+/// guess, because the target module's own `emit_reexports` call declares
+/// it under that exact alias via `declare_ref`.
+fn resolve_export_target(
+    resolver: &Resolver,
+    table_path: &Path,
+    table: &crate::extract::ExportTable,
+    name: &str,
+) -> Option<TsId> {
+    use crate::extract::LocalExport;
+
+    match table.locals.get(name) {
+        Some(LocalExport::Named(local_name)) => {
+            Some(TsId::new(table_path.to_path_buf(), local_name.clone(), 0))
+        }
+        Some(LocalExport::NamespaceOf(module_request)) => {
+            resolve_module_path(resolver, table_path, module_request)
+                .map(|ns_path| TsId::new(ns_path, MODULE_ROOT_NAME, 0))
+        }
+        Some(LocalExport::Unresolvable) => None,
+        None => Some(TsId::new(table_path.to_path_buf(), name.to_string(), 0)),
+    }
+}
+
 fn emit_reexports(
     module: &ModuleFacts,
     parent: Option<TsId>,
     out: &mut Lowering<TsId>,
     export_index: &HashMap<&Path, &crate::extract::ExportTable>,
+    resolver: &Resolver,
 ) {
+    // One module can only ever declare one `TsId::new(module.path, name, 0)`
+    // for its own re-export surface — both loops below write into that same
+    // namespace — so a name already fanned out (by either loop) must not be
+    // declared a second time. Real packages hit this: `date-fns`'s
+    // `format.d.mts` AND `parse.d.mts` each independently `import {
+    // longFormatters } from "./_lib/format/longFormatters.js"; export {
+    // longFormatters };`, and `index.d.mts` star-exports both `format.js`
+    // *and* `parse.js` — so `longFormatters` is a genuinely reachable name via
+    // two convergent barrels pointing at the exact same underlying
+    // declaration. Without dedup, the second `declare_ref` for the identical
+    // `(module, "longFormatters", 0)` id is rejected by `Lowering::finish` as
+    // "declared more than once", failing the whole package over a re-export
+    // that is not actually ambiguous — both paths name the same target.
+    let mut reexported: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     // Named re-exports: `export { Foo } from "m"`.
     for indirect in &module.exports.indirect {
-        let target_path = resolve_module_path(&module.path, &indirect.module_request);
+        let target_path = resolve_module_path(resolver, &module.path, &indirect.module_request);
         let target_name = &indirect.import_name;
         let export_name = &indirect.export_name;
 
+        if !reexported.insert(export_name.clone()) {
+            continue;
+        }
+
         // The reexport ID in the current module.
         let reexport_id = TsId::new(module.path.clone(), export_name, 0);
-        // The target ID in the source module.
-        let target_id = target_path
-            .as_ref()
-            .map(|p| TsId::new(p.clone(), target_name, 0));
+        // The target ID in the source module — resolved against *its own*
+        // export surface (`resolve_export_target`), since `target_name` is
+        // the name `m` exports this under, not necessarily what `m` itself
+        // `declare()`d it as (a bare rename or namespace-import passthrough
+        // inside `m`; see that function's doc comment). `uuid`'s
+        // `dist/esm-node/index.js` hits this directly: `export { default as
+        // v1 } from "./v1.js"` needs `v1.js`'s "default" resolved to the
+        // `v1` function it actually declares.
+        let target_id = target_path.as_ref().and_then(|p| {
+            match export_index.get(p.as_path()) {
+                Some(target_table) => resolve_export_target(resolver, p, target_table, target_name),
+                None => Some(TsId::new(p.clone(), target_name, 0)),
+            }
+        });
 
         let sym = Symbol {
             name: export_name.clone(),
@@ -738,14 +904,28 @@ fn emit_reexports(
 
     // Star re-exports: `export * from "m"`.
     for star in &module.exports.star {
-        let target_path = resolve_module_path(&module.path, &star.module_request);
+        let target_path = resolve_module_path(resolver, &module.path, &star.module_request);
         let Some(tp) = target_path else { continue };
 
-        // Fan out to all names the target module exports.
+        // Fan out to all names the target module exports. Each name is
+        // resolved against the target's own export surface
+        // (`resolve_export_target`) rather than assumed to be its own
+        // `declare()`d name — zod's `types.d.ts` fans through
+        // `export { anyType as any, ..., voidType as void }` and date-fns's
+        // `format.d.ts` fans through `export { format as formatDate }`,
+        // both bare local renames the target module itself declares under
+        // the *pre*-rename name.
         if let Some(target_table) = export_index.get(tp.as_path()) {
             for export_name in &target_table.exported_names {
+                if !reexported.insert(export_name.clone()) {
+                    continue;
+                }
+                let Some(target_id) =
+                    resolve_export_target(resolver, tp.as_path(), target_table, export_name)
+                else {
+                    continue;
+                };
                 let reexport_id = TsId::new(module.path.clone(), export_name, 0);
-                let target_id = TsId::new(tp.clone(), export_name, 0);
                 let sym = Symbol {
                     name: export_name.clone(),
                     visibility: Visibility::Public,
@@ -773,8 +953,9 @@ fn emit_inline_reexport(
     import_name: &str,
     out: &mut Lowering<TsId>,
     _module_index: &HashMap<&Path, &str>,
+    resolver: &Resolver,
 ) {
-    let target_path = resolve_module_path(&id.module, module_request);
+    let target_path = resolve_module_path(resolver, &id.module, module_request);
     if let Some(tp) = target_path {
         let target_id = TsId::new(tp, import_name, 0);
         let target_ref: Ref<Module> = out.refer(target_id);
@@ -782,32 +963,45 @@ fn emit_inline_reexport(
     }
 }
 
-/// Best-effort: given the current module's absolute path and an import
-/// specifier, return the absolute path of the target module.
-fn resolve_module_path(current: &Path, specifier: &str) -> Option<PathBuf> {
-    if specifier.starts_with('.') {
-        let parent = current.parent()?;
-        let candidate = parent.join(specifier);
-        // Try common extensions.
-        for ext in &[".ts", ".tsx", ".d.ts", ".js", "/index.ts", "/index.d.ts"] {
-            let path = if specifier.contains('.') {
-                candidate.clone()
-            } else {
-                PathBuf::from(format!("{}{}", candidate.display(), ext))
-            };
-            if path.is_file() {
-                return Some(path);
-            }
-        }
-        // Bare directory-style specifier without extension.
-        for name in &["index.d.ts", "index.ts", "index.js"] {
-            let idx = candidate.join(name);
-            if idx.is_file() {
-                return Some(idx);
-            }
-        }
+/// Given the current module's absolute path and a re-export specifier,
+/// return the absolute path of the target module — via the *same* resolver
+/// `graph.rs` uses to walk import edges, not an independent one.
+///
+/// # Why this used to be a hand-rolled extension guesser, and why that broke
+///
+/// This function used to probe the filesystem directly with a fixed
+/// extension-priority list (`.ts`, `.tsx`, `.d.ts`, `.js`, …), *except* when
+/// the specifier already contained a literal extension (e.g.
+/// `'./vendor/ansi-styles/index.js'`) — in that case it returned the literal
+/// path unchanged the moment `path.is_file()` was true, without ever
+/// considering a co-located `.d.ts` twin.
+///
+/// That is backwards from both TypeScript's own resolution and from what
+/// `graph.rs`'s resolver (`entry::make_resolver`, `extension_alias: ".js" ->
+/// [".d.ts", ".ts", ".js"]`) actually does when it walks the same edge as an
+/// `import`. Two real npm packages hit the mismatch: `chalk`'s
+/// `source/index.d.ts` re-exports `ModifierName` etc. `from
+/// './vendor/ansi-styles/index.js'`, and `date-fns`'s internal modules
+/// re-export `formatters` etc. `from './formatters.js'` — both packages ship
+/// a twin `index.d.ts`/`formatters.d.ts` right next to the `.js` file, and
+/// *that* is where the real declaration lives; `graph.rs` correctly walked
+/// there and declared it, while the naive resolver here kept literally
+/// returning the `.js` path. Every `refer()` built from its result therefore
+/// pointed at a `TsId` nothing had ever `declare()`d, and `Lowering::finish`
+/// rejected the whole package as "referred but never declared". Reusing the
+/// one resolver both call sites need makes the mismatch structurally
+/// impossible instead of a fact both files had to independently get right.
+fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> Option<PathBuf> {
+    if !specifier.starts_with('.') {
+        return None;
     }
-    None
+    let parent_dir = current.parent()?;
+    let resolved = resolver.resolve(parent_dir, specifier).ok()?.into_path_buf();
+    if resolved.is_file() && is_ts_module_path(&resolved) {
+        Some(resolved)
+    } else {
+        None
+    }
 }
 
 // ── Type lowering: TypeOwned → IR Type ────────────────────────────────────────

@@ -4,7 +4,7 @@
 //! `ModuleFacts` contains no arena references. This is how the OXC lifetime
 //! problem is solved: all data is owned before the arena is dropped.
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 pub mod decl;
 pub mod jsdoc;
@@ -39,12 +39,6 @@ pub enum PackageError {
     EntryPointDiscoveryFailed { path: PathBuf },
     #[error("parse failed")]
     ParseFailed { path: PathBuf, detail: String },
-}
-
-impl From<ExtractError> for PackageError {
-    fn from(e: ExtractError) -> Self {
-        PackageError::Extract(e)
-    }
 }
 
 pub type Result<T> = std::result::Result<T, ExtractError>;
@@ -143,6 +137,43 @@ pub struct StarExport {
     pub module_request: String,
 }
 
+/// How an externally-visible export name — one this module exports without
+/// a `from` clause — resolves to something the emitter actually produced.
+///
+/// A module's export surface and what it `declare()`d as `TsId`s can diverge
+/// in two ways real npm packages both exercise:
+///
+/// - A bare rename (`export { anyType as any }` — zod's `types.d.ts`;
+///   `export { format as formatDate }` — date-fns's `format.d.ts`) declares
+///   under the local name (`anyType`, `format`), never under the alias.
+/// - A re-exported namespace import (`import * as z from "./external"; export
+///   { z };` — zod's `index.d.ts`) has no `DeclFact` at all: `z` is only ever
+///   an import binding, and `extract_statement` has no dispatch arm for
+///   `Statement::ImportDeclaration`.
+///
+/// Any code that turns an export name into a `refer()`'d `TsId` — the named
+/// indirect re-export path and the star-export fan-out, both in `emit.rs` —
+/// must resolve through this first. Building the `TsId` directly from the
+/// export name, as both paths used to, points at whatever nothing ever
+/// `declare()`d and `Lowering::finish` rejects the whole package as
+/// "referred but never declared".
+#[derive(Debug, Clone)]
+pub enum LocalExport {
+    /// Target `TsId::new(<this module>, local_name, 0)` — this module's own
+    /// emitter declared something under `local_name`.
+    Named(String),
+    /// Target the *root* of the module reached from this module by the
+    /// specifier `module_request` — the namespace object itself has no
+    /// per-symbol `TsId`.
+    NamespaceOf(String),
+    /// This module exports something under this name with no nameable
+    /// target at all (e.g. `export default "a literal";` — no identifier,
+    /// so no `DeclFact`, so nothing to point a `TsId` at). Callers must skip
+    /// emitting any reference for this name rather than falling back to the
+    /// export name itself, which is exactly as undeclared.
+    Unresolvable,
+}
+
 /// Export surface extracted from the module record.
 #[derive(Debug, Clone, Default)]
 pub struct ExportTable {
@@ -150,6 +181,16 @@ pub struct ExportTable {
     pub indirect: Vec<IndirectExport>,
     pub star: Vec<StarExport>,
     pub default_local_name: Option<String>,
+    /// Resolution for every name this module exports *without* a `from`
+    /// clause (`export { x }`, `export { x as y }`, `export default ...`),
+    /// keyed by the externally-visible name. A name reachable through this
+    /// module (present in `exported_names`, or usable as an indirect
+    /// re-export's source name elsewhere) but absent here is a genuine
+    /// indirect re-export (`export { x } from "m"`) — already correctly
+    /// targetable by name unchanged, because the *owning* module's own
+    /// `emit_reexports` call declares it under that exact alias via
+    /// `declare_ref`. See [`LocalExport`].
+    pub locals: HashMap<String, LocalExport>,
 }
 
 // ── One lowered declaration ────────────────────────────────────────────────────

@@ -74,3 +74,7 @@ oxc_span = { version = "=0.139.0" }
 tempfile = "3"
 # Needed for nudox_ir::kinds::ty::MappedModifier in test assertions.
 nudox-ir = { path = "../../../ir/model" }
+# Used by tests/real_npm_packages.rs, which lowers the real npm corpus
+# (.real-crates/) through the actual Producer pipeline and emits the
+# `cost case=…` benchmark lines AGENTS-DOCTRINE.md §4 requires.
+nudox-test-support = { path = "../../../../crates/nudox-test-support" }

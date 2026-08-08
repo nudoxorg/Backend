@@ -127,6 +127,43 @@ pub fn build_and_extract(
                 }
             }
 
+            // ── Enqueue `/// <reference path="..." />` targets ─────────────────
+            // A `.d.ts` file that composes its API purely through triple-slash
+            // reference directives (the classic ambient-declaration authoring
+            // style — every file in `@types/node` does this; nothing in that
+            // package uses `import`/`export from`) is otherwise invisible to
+            // this walker: OXC's `module_record` only tracks ES import/export
+            // edges, and a `///` reference directive is, syntactically, just a
+            // line comment. Without this, `@types/node` measured as 108 real
+            // `.d.ts` files on disk but only 1 ever reached (its `index.d.ts`,
+            // itself containing zero declarations of its own) — a "success"
+            // with 2 stub entries that is functionally indistinguishable from
+            // an empty package. `path=` is a literal relative file path per the
+            // TypeScript spec, not a resolver specifier, so it is joined
+            // directly rather than run through `main_fields`/`exports`
+            // resolution. `lib=`/`types=` directives are deliberately not
+            // followed here: `lib=` names one of the TypeScript compiler's own
+            // bundled `lib.*.d.ts` files, which does not exist anywhere in the
+            // package's source tree, and no `types=` directive appears in the
+            // npm corpus this producer has been swept against (see
+            // `graph::tests` and the corpus sweep report) — both are left as a
+            // documented gap rather than guessed at.
+            for target in triple_slash_path_refs(&source) {
+                let resolved = parent_dir.join(&target);
+                if resolved.is_file()
+                    && is_ts_module_path(&resolved)
+                    && visited.insert(resolved.clone())
+                {
+                    queue.push_back(resolved);
+                } else if !resolved.is_file() {
+                    tracing::debug!(
+                        module = %module_path.display(),
+                        target = %target,
+                        "triple-slash reference path did not resolve to a file; skipping edge"
+                    );
+                }
+            }
+
             // ── Extract to owned ──────────────────────────────────────────────
             let module_name = path_to_module_name(&module_path, root);
             extract_module(
@@ -174,6 +211,40 @@ fn path_to_module_name(path: &Path, root: &Path) -> String {
     specifier_to_module_name(&s)
 }
 
+/// Pull every `path="..."` target out of the file's `/// <reference .../>`
+/// directives.
+///
+/// No XML/HTML parser: the directive is a fixed one-line TypeScript syntax
+/// (never nested, never multi-line — the compiler itself only recognizes it
+/// inside a single-line `///` comment), so a line-oriented scan is both
+/// sufficient and exactly as permissive as `tsc`'s own recognizer. Directives
+/// are conventionally the first lines of a file, but nothing here assumes
+/// that; every line is checked.
+fn triple_slash_path_refs(source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix("///") else {
+            continue;
+        };
+        if !rest.contains("<reference") {
+            continue;
+        }
+        if let Some(path) = reference_attr(rest, "path") {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Extract `name="value"` from one `/// <reference .../>` directive's body.
+fn reference_attr(directive_text: &str, name: &str) -> Option<String> {
+    let needle = format!("{name}=\"");
+    let start = directive_text.find(&needle)? + needle.len();
+    let end = directive_text[start..].find('"')?;
+    Some(directive_text[start..start + end].to_string())
+}
+
 fn is_node_builtin(specifier: &str) -> bool {
     // Node built-ins start with `node:` or are well-known bare specifiers.
     if specifier.starts_with("node:") {
@@ -184,4 +255,40 @@ fn is_node_builtin(specifier: &str) -> bool {
     // that's logged at debug level and we skip. Builtins are filtered here by
     // the `node:` prefix check above.
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::triple_slash_path_refs;
+
+    #[test]
+    fn path_directive_yields_its_target() {
+        let src = "/// <reference path=\"./globals.d.ts\" />\nexport {};\n";
+        assert_eq!(triple_slash_path_refs(src), vec!["./globals.d.ts"]);
+    }
+
+    #[test]
+    fn lib_and_types_directives_are_not_treated_as_path_targets() {
+        let src = concat!(
+            "/// <reference lib=\"es2020\" />\n",
+            "/// <reference types=\"node\" />\n",
+            "export {};\n",
+        );
+        assert!(triple_slash_path_refs(src).is_empty());
+    }
+
+    #[test]
+    fn multiple_path_directives_are_all_collected_in_order() {
+        let src = concat!(
+            "/// <reference path=\"a.d.ts\" />\n",
+            "/// <reference path=\"b/c.d.ts\" />\n",
+        );
+        assert_eq!(triple_slash_path_refs(src), vec!["a.d.ts", "b/c.d.ts"]);
+    }
+
+    #[test]
+    fn ordinary_comments_and_code_produce_no_targets() {
+        let src = "// just a comment\n/** jsdoc */\nexport const x = 1;\n";
+        assert!(triple_slash_path_refs(src).is_empty());
+    }
 }

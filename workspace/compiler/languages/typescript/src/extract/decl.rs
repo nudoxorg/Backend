@@ -35,9 +35,9 @@ use oxc_syntax::module_record::{
 use super::{
     Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, DocFacts, EnumBody,
     ExportTable, FunctionBody, ImportFact, ImportName, IndexSignatureFact, IndirectExport,
-    InterfaceBody, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts, NamespaceBody,
-    ParamFact, PropertyFact, ReceiverKind, StarExport, StaticBody, TypeAliasBody, VariantFact,
-    jsdoc,
+    InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
+    NamespaceBody, ParamFact, PropertyFact, ReceiverKind, StarExport, StaticBody, TypeAliasBody,
+    VariantFact, jsdoc,
     types::{lower_ts_type, lower_type_params},
 };
 
@@ -90,7 +90,8 @@ pub fn extract_module<'a>(
     }
 
     // ── Export table ──────────────────────────────────────────────────────────
-    let exports = build_export_table(module_record, &exported_names, &default_local_name);
+    let exports =
+        build_export_table(module_record, &exported_names, &default_local_name, &declarations);
 
     // ── Import table ──────────────────────────────────────────────────────────
     let imports = build_import_table(module_record);
@@ -1255,17 +1256,43 @@ fn build_export_table<'a>(
     module_record: &ModuleRecord<'a>,
     exported_names: &std::collections::HashSet<String>,
     default_local_name: &Option<String>,
+    declarations: &[DeclFact],
 ) -> ExportTable {
     let exported_names_list: Vec<String> = exported_names.iter().cloned().collect();
 
     let mut indirect: Vec<IndirectExport> = Vec::new();
     let mut star: Vec<StarExport> = Vec::new();
 
+    // Statement spans of default-import declarations (`import D from "m"`).
+    // oxc_parser's `resolve_export_entries` (module_record.rs step
+    // 10.a.ii.3) synthesizes an indirect export entry for `export { D };`
+    // re-exporting one of these, and — per its own comment,
+    // "`import d from "mod"` / `export { d }` / ^ this is local_name of ie"
+    // — sets that entry's `import_name` to `D`, the LOCAL alias *this* file
+    // chose, not the string `"default"` that actually names the binding
+    // inside `m`. `zod`'s `errors.d.ts` hits this directly: `import
+    // defaultErrorMap from "./locales/en"; export { defaultErrorMap };`
+    // produces an indirect entry naming `en.d.ts`'s target "defaultErrorMap"
+    // — a name `en.d.ts` never declares — instead of "default", which it
+    // does. The synthesized entry's `statement_span` is copied from the
+    // *import* statement (`ie.statement_span`), unchanged from the original
+    // import — matching on it (not on the local name, which could
+    // coincidentally collide with an unrelated real named export) is exact.
+    let default_import_spans: std::collections::HashSet<oxc_span::Span> = module_record
+        .import_entries
+        .iter()
+        .filter(|e| e.import_name.is_default())
+        .map(|e| e.statement_span)
+        .collect();
+
     for e in module_record.indirect_export_entries.iter() {
         let Some(module_request) = e.module_request.as_ref().map(|n| n.name.to_string()) else {
             continue;
         };
         let import_name = match &e.import_name {
+            ExportImportName::Name(_) if default_import_spans.contains(&e.statement_span) => {
+                "default".to_string()
+            }
             ExportImportName::Name(ns) => ns.name.to_string(),
             ExportImportName::All | ExportImportName::AllButDefault => "*".to_string(),
             ExportImportName::Null => continue,
@@ -1289,12 +1316,85 @@ fn build_export_table<'a>(
         star.push(StarExport { module_request });
     }
 
+    let locals = build_local_export_map(module_record, declarations);
+
     ExportTable {
         exported_names: exported_names_list,
         indirect,
         star,
         default_local_name: default_local_name.clone(),
+        locals,
     }
+}
+
+/// Build the `export name -> LocalExport` resolution map for every export
+/// this module produces *without* a `from` clause. See [`LocalExport`]'s doc
+/// comment for why an export's externally-visible name and the `TsId` this
+/// module's own emitter declares for it can differ.
+fn build_local_export_map<'a>(
+    module_record: &ModuleRecord<'a>,
+    declarations: &[DeclFact],
+) -> std::collections::HashMap<String, LocalExport> {
+    // Namespace-object imports, keyed by their local binding name
+    // (`import * as z from "m"` -> "z" -> "m"). `local_export_entries`
+    // conflates a plain local declaration with a re-exported namespace
+    // import -- both land there per oxc_parser's `resolve_export_entries`
+    // (module_record.rs, step 10.a.ii.2: "this is a re-export of an
+    // imported module namespace object" appends to `localExportEntries`,
+    // same as an ordinary declaration) -- so this is how we tell them apart.
+    let namespace_imports: std::collections::HashMap<&str, &str> = module_record
+        .import_entries
+        .iter()
+        .filter(|e| e.import_name.is_namespace_object())
+        .map(|e| (e.local_name.name.as_str(), e.module_request.name.as_str()))
+        .collect();
+
+    // Top-level names this module's own emitter actually declares a `TsId`
+    // for (see `decl_ts_id` in emit.rs: unqualified for a module-root
+    // parent, which is exactly what every entry in `declarations` has here).
+    // Used below to tell an anonymous default export backed by a real
+    // declaration (`export default function() {}` / `export default class
+    // {}` -- `extract_default_export` itself falls back to naming these
+    // "default") apart from one backed by nothing nameable at all
+    // (`export default "a literal";` / `export default 42;`), which
+    // `ExportLocalName::Null` alone cannot distinguish.
+    let declared_names: std::collections::HashSet<&str> =
+        declarations.iter().map(|d| d.name.as_str()).collect();
+
+    let mut locals = std::collections::HashMap::new();
+
+    for e in module_record.local_export_entries.iter() {
+        let export_name = match &e.export_name {
+            ExportExportName::Name(ns) => ns.name.to_string(),
+            ExportExportName::Default(_) => "default".to_string(),
+            ExportExportName::Null => continue,
+        };
+
+        let local_name: Option<&str> = match &e.local_name {
+            ExportLocalName::Name(ns) => Some(ns.name.as_str()),
+            ExportLocalName::Default(ns) => Some(ns.name.as_str()),
+            ExportLocalName::Null => None,
+        };
+
+        let resolution = match local_name {
+            Some(name) => match namespace_imports.get(name) {
+                Some(&module_request) => LocalExport::NamespaceOf(module_request.to_string()),
+                None => LocalExport::Named(name.to_string()),
+            },
+            // Identifier and named-declaration defaults are covered by the
+            // `Some` arm above (their `local_name` names the declaration);
+            // this is `export default <expression>;` with no attached
+            // identifier at all.
+            None if declared_names.contains("default") => {
+                LocalExport::Named("default".to_string())
+            }
+            None => LocalExport::Unresolvable,
+        };
+
+        locals.insert(export_name, resolution);
+    }
+
+    locals
 }
 
 fn build_import_table<'a>(module_record: &ModuleRecord<'a>) -> Vec<ImportFact> {
