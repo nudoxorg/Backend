@@ -48,9 +48,23 @@ fn upsert_version(stem_seed: u8, version_seed: u8) -> CatalogOp {
 #[test]
 fn apply_ops_persists_package_and_fans_out_outbox() {
     let writer = migrated_writer();
-    let report = writer
-        .apply_ops(&[upsert_package(1), upsert_version(1, 1)])
-        .expect("batch applies");
+    // Doctrine §4: the measured region is one atomic catalog batch. Note the
+    // `disk_delta_bytes` on this line is 0 *by construction* — `migrated_writer`
+    // opens a catalog with no file behind it, so there is nothing on disk to
+    // grow. That is a property of this constructor, not of the engine: the
+    // storage suite (`tests/storage_catalog_scaling.rs`) takes the real numbers
+    // through `migrated_disk_writer` on the same real engine. The reliable
+    // figures *here* are the applied/outbox row counts asserted below.
+    // The measured directory is a scratch tempdir, not the repo root: `measured`
+    // walks the directory recursively, and pointing it at `.` would stat the
+    // whole `target/` tree and report build output as this test's cost.
+    let scratch = tempfile::tempdir().expect("tempdir");
+    let (report, _cost) = nudox_test_support::measured(
+        "store/apply_ops_batch",
+        scratch.path(),
+        || writer.apply_ops(&[upsert_package(1), upsert_version(1, 1)]),
+    );
+    let report = report.expect("batch applies");
     assert_eq!(report.applied, 2);
     // Only the version upsert fans out to the text sink.
     assert_eq!(report.outbox_rows, 1);
@@ -127,10 +141,9 @@ fn a_failing_op_after_an_outbox_producing_op_leaves_zero_outbox_rows() {
 
 #[test]
 fn as_of_time_on_empty_history_is_typed_error_not_panic() {
-    // A freshly migrated catalog whose commits were never time-stamped: an
-    // AsOf::Time before any commit must be MetaError::NoCommitAtInstant, never a
-    // panic (the memory engine's log starts empty).
-    let engine = index::engine::memory::MemoryEngine::open_in_memory().expect("open");
+    // A freshly migrated catalog that has never been committed: an AsOf::Time
+    // before any commit must be MetaError::NoCommitAtInstant, never a panic.
+    let engine = index::engine::Configured::open_in_memory().expect("open");
     index::migrations::runner::migrate_to_v4(&engine).expect("migrate");
     let writer = index::store::writer::CatalogWriter::new(engine);
     let before = writer.at(&AsOf::Time(UnixMilliseconds(0)));
@@ -223,37 +236,85 @@ fn set_listing_and_ir_status_apply() {
         .expect("listing + ir status apply");
 }
 
+/// The current wall-clock instant in unix milliseconds — the same scale
+/// `AsOf::Time` speaks, and the only scale a real engine's own commit clock can
+/// be compared against.
+fn now_unix_milliseconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is after the unix epoch")
+        .as_millis() as i64
+}
+
+/// Apply one package op and commit it, returning the resulting commit hash.
+fn apply_and_commit(
+    writer: &index::store::writer::CatalogWriter<index::engine::Configured>,
+    seed: u8,
+    message: &str,
+) -> String {
+    writer.apply_ops(&[upsert_package(seed)]).expect("stage");
+    writer.commit_batch(message).expect("commit").0
+}
+
 #[test]
-fn as_of_time_boundary_cases() {
+fn as_of_time_resolves_each_instant_to_the_newest_commit_at_or_before_it() {
     let writer = migrated_writer();
 
-    // Commit at t=100.
-    writer.apply_ops(&[upsert_package(1)]).expect("stage");
-    writer.engine().stage_commit_time(100);
-    writer.commit_batch("first batch").expect("commit one");
+    // The real engine stamps a commit from *its own* clock; an instant cannot be
+    // dictated to it, only observed. (The previous form of this test called
+    // `MemoryEngine::stage_commit_time(100)` — a hook that exists on the fake
+    // and nowhere else, which is precisely why this test had never met the
+    // engine it is about.) It also asserted nothing about *which* commit came
+    // back: three `let _ = at_…;` bindings, all of which a resolver returning
+    // any arbitrary commit would have satisfied. Both are fixed here.
+    let first = apply_and_commit(&writer, 1, "first batch");
+    let after_first = now_unix_milliseconds();
 
-    // Commit at t=200.
-    writer.apply_ops(&[upsert_package(2)]).expect("stage");
-    writer.engine().stage_commit_time(200);
-    writer.commit_batch("second batch").expect("commit two");
+    // DoltLite's `dolt_log.date` is whole-second text (`YYYY-MM-DD HH:MM:SS`),
+    // so two commits inside one clock second are indistinguishable to the
+    // resolver and "between them" would not be an expressible instant. This
+    // sleep buys a distinguishable boundary; it is the test's subject, not
+    // padding.
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
 
-    // Exact timestamp resolves to that commit.
-    let at_200 = writer
-        .at(&AsOf::Time(UnixMilliseconds(200)))
-        .expect("resolve exact");
-    let _ = at_200;
+    let second = apply_and_commit(&writer, 2, "second batch");
+    let after_second = now_unix_milliseconds();
 
-    // Between commits resolves to the earlier commit.
-    let at_150 = writer
-        .at(&AsOf::Time(UnixMilliseconds(150)))
-        .expect("resolve between");
-    let _ = at_150;
+    assert_ne!(first, second, "two batches must mint two distinct commits");
 
-    // Far future resolves to the latest commit.
-    let at_future = writer
-        .at(&AsOf::Time(UnixMilliseconds(1_000_000)))
-        .expect("resolve future");
-    let _ = at_future;
+    // An instant at or after the newest commit resolves to the newest commit.
+    assert_eq!(
+        writer
+            .at(&AsOf::Time(UnixMilliseconds(after_second)))
+            .expect("resolve newest")
+            .commit
+            .0,
+        second,
+        "an instant after the second commit must pin the second commit"
+    );
+
+    // An instant *between* the two resolves to the earlier one — the case that
+    // distinguishes a real newest-at-or-before search from `return head`.
+    assert_eq!(
+        writer
+            .at(&AsOf::Time(UnixMilliseconds(after_first)))
+            .expect("resolve between")
+            .commit
+            .0,
+        first,
+        "an instant between the two commits must pin the FIRST, not the head"
+    );
+
+    // Far future still resolves to the newest commit rather than failing.
+    assert_eq!(
+        writer
+            .at(&AsOf::Time(UnixMilliseconds(32_503_680_000_000)))
+            .expect("resolve future")
+            .commit
+            .0,
+        second,
+        "an instant past every commit must pin the newest, not error"
+    );
 
     // Before the first commit is a typed NoCommitAtInstant error, not a panic.
     let before = writer.at(&AsOf::Time(UnixMilliseconds(1)));

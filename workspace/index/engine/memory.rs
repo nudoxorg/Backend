@@ -1,18 +1,27 @@
-//! A test-only in-memory implementation of the engine facade, backed by
-//! rusqlite (INDEX-PLAN ID-20).
+//! A rusqlite-backed fake of the engine facade (INDEX-PLAN ID-20).
 //!
-//! **This is never a product mode.** rusqdoltlite (the real versioned engine)
-//! is built by another workstream and may not compile yet; this fake lets the
-//! catalog's unit and property tests run without it. The versioning calls are
-//! *honest fakes*: `dolt_commit` appends to an in-memory commit log (a real hash
-//! over the message + parent + a monotonic clock), `head`/`resolve_as_of_time`
-//! read that log, and `dolt_branch_create`/`dolt_checkout` track a branch map.
-//! No prolly tree, no real time-travel of table state — enough to exercise the
-//! catalog's control flow, never enough to ship.
+//! **This is never a product mode, and as of 2026-08-08 it is no longer the
+//! default one either.** The versioning calls are *honest fakes*: `dolt_commit`
+//! appends to an in-memory commit log (a real hash over the message + parent + a
+//! monotonic clock), `head`/`resolve_as_of_time` read that log, and
+//! `dolt_branch_create`/`dolt_checkout` track a branch map. No prolly tree, no
+//! real time-travel of table state — enough to exercise the catalog's control
+//! flow, never enough to ship, and *never* enough to justify a measurement.
 //!
-//! Gated on `feature = "test-engine"` (default in this crate) so it is compiled
-//! for tests but is trivial to exclude from a hardened build.
-#![cfg(feature = "test-engine")]
+//! The reason it existed — "rusqdoltlite is built by another workstream and may
+//! not compile yet" — stopped being true when the vendored DoltLite amalgamation
+//! landed. Keeping the fake as the default outlived that reason by long enough
+//! that every `index` test was silently running against it. `dolt-engine` is now
+//! the default and [`super::Configured`] resolves to
+//! [`DoltEngine`](super::dolt::DoltEngine); this module is reachable only from a
+//! build that passes `--no-default-features --features test-engine`.
+//!
+//! What it is still *for*: a build that must exclude the vendored C amalgamation
+//! entirely (no `doltlite.c`, no `cc`, no partial link) and still type-check and
+//! exercise the catalog's SQL surface. That is a real configuration; it is not a
+//! configuration anything measures or ships.
+//!
+//! Gated on `feature = "test-engine"`, which is **opt-in**.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -25,20 +34,46 @@ use sea_orm::sea_query::Query;
 
 use super::stmt;
 use super::{
-    BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, Row, Value, VersioningEngine,
+    BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, OpenCatalog, Row, Value,
+    VersioningEngine,
 };
 
-/// A monotonic logical clock so `resolve_as_of_time` has a total order even when
-/// several fake commits share a wall-clock millisecond.
+/// A monotonic counter mixed into each fake commit hash so two commits with the
+/// same branch, message and parent still get distinct hashes.
+///
+/// It is deliberately **not** a timestamp. It used to double as one — see
+/// [`FakeCommit::at_unix_milliseconds`].
 static LOGICAL_CLOCK: AtomicI64 = AtomicI64::new(0);
+
+/// The instant to stamp on a commit: the real wall clock, in the same unit
+/// [`heart::query::AsOf::Time`] speaks.
+///
+/// The real engine reads its own clock and cannot be told what time it is, so
+/// neither can this. That symmetry is the point: a fake that accepts a dictated
+/// timestamp lets a test be written that the product could never run, which is
+/// exactly what happened to `store_apply.rs`'s `AsOf` boundary test.
+fn now_unix_milliseconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_millis() as i64)
+        // A clock before 1970 is not a recoverable situation for a commit log and
+        // is not worth a variant on every versioning call; 0 sorts before every
+        // real commit, which is the behaviour a caller would want anyway.
+        .unwrap_or(0)
+}
 
 /// One entry in the honest fake commit log.
 #[derive(Debug, Clone)]
 struct FakeCommit {
     hash: CommitHash,
-    /// The `unix_milliseconds` the writer stamped this commit with. The writer
-    /// passes it via the last `SET @commit_time` convention below; when absent
-    /// we fall back to the logical clock so ordering is still total.
+    /// When this commit was made, in unix milliseconds.
+    ///
+    /// This field previously held [`LOGICAL_CLOCK`]'s counter (0, 1, 2, …)
+    /// whenever no explicit time had been staged — a **different unit** in the
+    /// same field that `resolve_as_of_time` compares against a caller's
+    /// `AsOf::Time`. Any query about a real instant therefore matched every
+    /// commit, and the only tests that passed were ones which had first staged a
+    /// fabricated instant on the same scale. It is now always a real instant.
     at_unix_milliseconds: i64,
 }
 
@@ -59,10 +94,6 @@ pub struct MemoryEngine {
     connection: Mutex<SqliteConnection>,
     branches: Mutex<HashMap<String, BranchHistory>>,
     current_branch: Mutex<String>,
-    /// The `unix_milliseconds` the next `dolt_commit` should stamp, if the
-    /// writer set one via [`MemoryEngine::stage_commit_time`]. Honest-fake stand-in
-    /// for the engine reading the transaction's commit timestamp.
-    pending_commit_time: Mutex<Option<i64>>,
 }
 
 impl MemoryEngine {
@@ -70,6 +101,35 @@ impl MemoryEngine {
     pub fn open_in_memory() -> Result<Self, EngineError> {
         let connection = SqliteConnection::open_in_memory()
             .map_err(|error| EngineError::Open(error.to_string()))?;
+        Self::from_connection(connection)
+    }
+
+    /// Open a fresh catalog backed by a real file at `path`.
+    ///
+    /// This is **not** a product mode — it is the same honest-fake versioning
+    /// log as [`Self::open_in_memory`], only with rusqlite's storage backend
+    /// pointed at a file instead of `:memory:`.
+    ///
+    /// It was introduced so storage tests would stop reporting zero bytes *by
+    /// construction* (`:memory:` writes nothing to disk). That was the right fix
+    /// to the wrong problem: the bytes it produced were real SQLite bytes, but
+    /// they were **stock SQLite's** bytes, and the product's catalog is a
+    /// content-addressed prolly tree that stores the same rows completely
+    /// differently. Numbers taken here were never the product's storage
+    /// characteristics and must not be quoted as such — the storage suite now
+    /// runs on [`super::Configured`], i.e. the real engine.
+    ///
+    /// What remains: a `test-engine`-only build still needs a constructor with
+    /// a file behind it so [`super::OpenCatalog`] has two honest arms.
+    pub fn open_at_path(path: &std::path::Path) -> Result<Self, EngineError> {
+        let connection =
+            SqliteConnection::open(path).map_err(|error| EngineError::Open(error.to_string()))?;
+        Self::from_connection(connection)
+    }
+
+    /// Shared setup for both constructors: enable foreign keys and seed the
+    /// empty `main` branch history.
+    fn from_connection(connection: SqliteConnection) -> Result<Self, EngineError> {
         connection
             .pragma_update(None, "foreign_keys", true)
             .map_err(|error| EngineError::Open(error.to_string()))?;
@@ -79,20 +139,7 @@ impl MemoryEngine {
             connection: Mutex::new(connection),
             branches: Mutex::new(branches),
             current_branch: Mutex::new("main".to_owned()),
-            pending_commit_time: Mutex::new(None),
         })
-    }
-
-    /// Test hook: stamp the next `dolt_commit` with an explicit instant so
-    /// `resolve_as_of_time` boundary cases are deterministic.
-    pub fn stage_commit_time(&self, unix_milliseconds: i64) {
-        *self.locked_pending_commit_time() = Some(unix_milliseconds);
-    }
-
-    fn locked_pending_commit_time(&self) -> std::sync::MutexGuard<'_, Option<i64>> {
-        self.pending_commit_time
-            .lock()
-            .expect("pending_commit_time mutex poisoned")
     }
 
     fn next_logical(&self) -> i64 {
@@ -114,6 +161,16 @@ impl MemoryEngine {
             operation,
             detail: "branches mutex poisoned".to_owned(),
         })
+    }
+}
+
+impl OpenCatalog for MemoryEngine {
+    fn open_in_memory() -> Result<Self, EngineError> {
+        MemoryEngine::open_in_memory()
+    }
+
+    fn open_at_path(path: &std::path::Path) -> Result<Self, EngineError> {
+        MemoryEngine::open_at_path(path)
     }
 }
 
@@ -291,7 +348,7 @@ impl VersioningEngine for MemoryEngine {
     fn dolt_commit(&self, message: &str) -> Result<CommitHash, EngineError> {
         let branch_name = self.current_branch_name();
         let logical = self.next_logical();
-        let at = self.locked_pending_commit_time().take().unwrap_or(logical);
+        let at = now_unix_milliseconds();
         let mut branches = self
             .branches
             .lock()

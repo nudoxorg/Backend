@@ -5,13 +5,12 @@ mod common;
 
 use common::migrated_writer;
 
-use index::engine::memory::MemoryEngine;
-use index::engine::{BranchName, VersioningEngine};
+use index::engine::{BranchName, Configured, VersioningEngine};
 use index::migrations::runner::{current_user_version, migrate_to_v4};
 
 #[test]
 fn migrate_sets_user_version_to_schema_version() {
-    let engine = MemoryEngine::open_in_memory().expect("open");
+    let engine = Configured::open_in_memory().expect("open");
     migrate_to_v4(&engine).expect("migrate");
     assert_eq!(
         current_user_version(&engine).expect("read version"),
@@ -21,7 +20,7 @@ fn migrate_sets_user_version_to_schema_version() {
 
 #[test]
 fn migration_is_idempotent() {
-    let engine = MemoryEngine::open_in_memory().expect("open");
+    let engine = Configured::open_in_memory().expect("open");
     migrate_to_v4(&engine).expect("first migrate");
     // Running again must be a clean no-op (user_version check + IF NOT EXISTS).
     migrate_to_v4(&engine).expect("second migrate is a no-op");
@@ -35,7 +34,7 @@ fn migration_is_idempotent() {
 
 #[test]
 fn fresh_engine_reports_user_version_zero() {
-    let engine = MemoryEngine::open_in_memory().expect("open");
+    let engine = Configured::open_in_memory().expect("open");
     // Before migration, no schema_meta table exists; must report 0, not panic.
     assert_eq!(current_user_version(&engine).expect("version"), 0);
 }
@@ -45,7 +44,7 @@ fn migration_creates_the_pre_migrate_branch() {
     // §13: the runner creates a `pre-migrate-v<N>` snapshot branch before running
     // DDL, kept as a durable rollback point (rollback = checkout). Prove the
     // branch exists by checking it out after a successful migration.
-    let engine = MemoryEngine::open_in_memory().expect("open");
+    let engine = Configured::open_in_memory().expect("open");
     migrate_to_v4(&engine).expect("migrate");
     let branch = BranchName(format!("pre-migrate-v{}", index::SCHEMA_VERSION));
     engine

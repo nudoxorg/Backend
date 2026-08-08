@@ -14,21 +14,46 @@ path = "lib.rs"
 name = "ingest"
 path = "ingest/main.rs"
 
+# Cargo's integration-test autodiscovery globs `tests/*.rs` and `tests/*/main.rs`
+# ONLY. `tests/object_pack/{adversarial,transport}.rs` matches neither, so both
+# files were silently invisible: no target, no build, no run, and — the reason
+# this went unnoticed — no error either. They are declared explicitly so the
+# manifest names them; if either file is moved or deleted, cargo now fails
+# loudly instead of quietly dropping the coverage.
+[[test]]
+name = "object_pack_adversarial"
+path = "tests/object_pack/adversarial.rs"
+
+[[test]]
+name = "object_pack_transport"
+path = "tests/object_pack/transport.rs"
+
 [features]
-# A test-only in-memory implementation of the engine facade, backed by rusqlite,
-# so the catalog's unit/property tests run without the (still-building)
-# rusqdoltlite engine (INDEX-PLAN ID-20). NEVER a product mode: its versioning
-# calls are honest fakes (a recorded commit log), documented as test-only.
-# rusqlite is already a hard dependency (scratch store), so this feature only
-# flips on the extra facade module.
-test-engine = []
-# The real DoltLite-backed facade implementation. OFF by default because
-# rusqdoltlite is being built by another workstream and does not compile yet
-# (INDEX-PLAN ID-20). Turn on once WS1 lands rusqdoltlite. The rest of the crate
-# — schema, MetaStore, scratch, migrations — compiles and is tested against the
-# in-memory facade without this feature.
+# The real DoltLite-backed facade implementation (INDEX-PLAN ID-20): the
+# vendored, hash-pinned prolly-tree engine behind `workspace/vendor/rusqdoltlite`.
+# ON by default, and the only product mode. `engine::Configured` resolves to
+# `DoltEngine` whenever this is enabled, so a default `cargo test -p index` runs
+# every test against the real versioned catalog.
 dolt-engine = ["dep:rusqdoltlite"]
-default = ["test-engine"]
+# A rusqlite-backed fake of the same facade. OPT-IN ONLY, and unreachable in a
+# default build: `engine::Configured` prefers `dolt-engine` whenever both are
+# enabled, so Cargo's feature unification cannot silently route anything here.
+# NEVER a product mode — its versioning calls are honest fakes (a recorded commit
+# log) and its storage is stock SQLite, not a prolly tree, so no measurement
+# taken against it describes the product.
+#
+# It exists for one configuration: a build that must exclude the vendored C
+# amalgamation entirely and still type-check and exercise the catalog's SQL
+# surface (`--no-default-features --features test-engine`).
+#
+# HISTORY, because the comment that used to live here is the reason this went
+# unnoticed for so long: this was the default, justified by "rusqdoltlite is
+# being built by another workstream and does not compile yet". That stopped being
+# true when the vendored DoltLite landed, and the justification outlived it —
+# every `index` test was running against the fake, and `tests/dolt_engine.rs`,
+# gated on the non-default feature, had never once been compiled.
+test-engine = []
+default = ["dolt-engine"]
 
 [dependencies]
 heart = { path = "../heart" }
@@ -124,6 +149,7 @@ anyhow   = "1.0"
 # Archive handling for untrusted-source ingest extraction.
 flate2            = "1.1"
 tar               = "0.4"
+zip               = { workspace = true }
 async-compression = "0.4"
 # Tree-sitter blob parsing (metadata/facet extraction over source blobs).
 arborium-tree-sitter = "2.18"
@@ -136,3 +162,8 @@ csv  = "1.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 proptest = "1"
+# Doctrine §4: every integration test is also a benchmark. `measured` emits the
+# `cost case=` line the perf report parses. For this crate the load-bearing
+# figure is `disk_delta_bytes` — the pack/catalog bytes a case actually wrote —
+# because wall time on a shared build host is not a usable signal.
+nudox-test-support = { path = "../../crates/nudox-test-support" }

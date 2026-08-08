@@ -72,7 +72,7 @@ fn resolved_stem_for<E: CatalogEngine>(
 
 /// Seed a consumer package + version whose edges name `ZLIB` (find_package) and
 /// `Threads` (find_package), plus an unresolvable `ObscureLib`.
-fn ingest_consumer(writer: &CatalogWriter<index::engine::memory::MemoryEngine>) {
+fn ingest_consumer(writer: &CatalogWriter<index::engine::Configured>) {
     writer
         .apply_ops(&[
             CatalogOp::UpsertPackage {

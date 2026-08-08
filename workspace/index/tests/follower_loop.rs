@@ -67,7 +67,7 @@ impl SinkFollower for RecordingFollower {
 
 /// Seed some version upserts so the outbox has Text-sink rows to drain.
 fn seed_versions(
-    writer: &index::store::writer::CatalogWriter<index::engine::memory::MemoryEngine>,
+    writer: &index::store::writer::CatalogWriter<index::engine::Configured>,
     count: u8,
 ) {
     let mut ops = vec![CatalogOp::UpsertPackage {

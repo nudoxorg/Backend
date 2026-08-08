@@ -16,8 +16,10 @@
 //!    does the driver persist `next_watermark`. A crash between commit and
 //!    watermark-persist re-delivers one batch — safe, because the ops upsert.
 //!
-//! The driver is generic over the versioning engine `E` so the same code runs
-//! against the real DoltLite writer and the in-memory `test-engine` fake.
+//! The driver is generic over the versioning engine `E` rather than naming
+//! [`crate::engine::Configured`], so it is written against the *contract* and
+//! not against whichever engine a build selected. Every build and every test
+//! instantiates it with the real DoltLite writer.
 
 use crate::engine::VersioningEngine;
 use crate::store::MetaStore;

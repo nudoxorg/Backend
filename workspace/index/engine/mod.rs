@@ -2,29 +2,94 @@
 //!
 //! Every access to the versioned catalog engine — plain SQL *and* the `dolt_*`
 //! versioning calls — funnels through the [`CatalogEngine`] trait defined here.
-//! rusqdoltlite is being built by another workstream and may not compile yet;
-//! wrapping it behind one trait makes surface drift a one-file fix, and lets the
-//! whole catalog (schema, [`MetaStore`](crate::store::MetaStore), migrations)
-//! compile and be tested against an in-memory fake.
+//! Wrapping the vendored binding behind one trait makes surface drift a one-file
+//! fix, and lets the whole catalog (schema,
+//! [`MetaStore`](crate::store::MetaStore), migrations) be written once against a
+//! vocabulary that outlives any one engine.
 //!
 //! The facade owns its **own** value/row/error vocabulary ([`Value`], [`Row`],
 //! [`EngineError`]) rather than re-exporting the engine's, so a change in the
 //! upstream binding never ripples past this directory.
 //!
 //! Implementations:
-//! - [`dolt::DoltEngine`] — the real DoltLite binding (feature `dolt-engine`).
-//! - [`memory::MemoryEngine`] — a test-only rusqlite-backed fake with an honest
-//!   recorded commit log (feature `test-engine`). **Never a product mode.**
+//! - [`dolt::DoltEngine`] — the real DoltLite binding (feature `dolt-engine`,
+//!   **on by default**). This is what every build and every test runs.
+//! - [`memory::MemoryEngine`] — a rusqlite-backed fake with an honest recorded
+//!   commit log (feature `test-engine`, **off by default, opt-in only**).
+//!   **Never a product mode**, and no longer the mode anything runs by accident.
+//!
+//! Which of the two a build uses is decided exactly once, by [`Configured`].
+//! Callers name that alias, never a concrete engine, so the decision cannot be
+//! re-made — differently — at each construction site.
 
 use std::fmt;
 
-pub mod memory;
 pub mod stmt;
+
+#[cfg(feature = "test-engine")]
+pub mod memory;
 
 #[cfg(feature = "dolt-engine")]
 pub mod dolt;
 
 pub use stmt::{exec, query};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Which engine this build runs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The catalog engine **this build** uses.
+///
+/// This alias exists so that "which engine runs" is one decision in one file
+/// rather than a naming convention every caller has to remember. Before it, nine
+/// test files each spelled out `engine::memory::MemoryEngine`, which meant the
+/// fake was the engine under test *by import*, invisibly, in files whose subject
+/// was the catalog rather than the engine. Nothing announced that; nothing could.
+///
+/// `dolt-engine` wins whenever it is enabled, including when Cargo's feature
+/// unification turns both on (`driver` requests `dolt-engine` while another
+/// member takes `index`'s defaults). The fake is therefore reachable only in a
+/// build that has *deliberately* turned the real engine off — never by
+/// unification, and never by default.
+#[cfg(feature = "dolt-engine")]
+pub type Configured = dolt::DoltEngine;
+
+/// The catalog engine **this build** uses — see the `dolt-engine` variant of
+/// this alias for the full contract. Selecting the fake here requires
+/// `--no-default-features --features test-engine`.
+#[cfg(all(feature = "test-engine", not(feature = "dolt-engine")))]
+pub type Configured = memory::MemoryEngine;
+
+#[cfg(not(any(feature = "dolt-engine", feature = "test-engine")))]
+compile_error!(
+    "`index` has no catalog engine: enable `dolt-engine` (the default, and the only \
+     product mode) or, for a build that deliberately excludes the vendored DoltLite \
+     amalgamation, `test-engine`. There is no engine-less configuration of this crate — \
+     the catalog is the crate."
+);
+
+/// How a catalog engine is brought into existence.
+///
+/// Deliberately *not* part of [`CatalogEngine`]: a caller holding an engine never
+/// needs it, and object-safe facade code must not be able to conjure a second
+/// engine. It is a separate trait so that [`Configured`] is usable generically —
+/// an alias alone lets a caller name the type but not construct one, which would
+/// have pushed every construction site straight back to naming a concrete engine
+/// and re-deciding what [`Configured`] exists to decide once.
+///
+/// The two constructors are the two ways a catalog can exist, and both engines
+/// answer both: an ephemeral catalog with no file behind it, and one whose bytes
+/// are at a path. Anything measuring storage needs the second; anything that only
+/// needs correctness should take the first.
+pub trait OpenCatalog: VersioningEngine + Sized {
+    /// Open a private, process-local catalog with no file backing it. Nothing it
+    /// writes is measurable on disk — use [`open_at_path`](Self::open_at_path)
+    /// when bytes are the subject.
+    fn open_in_memory() -> Result<Self, EngineError>;
+
+    /// Open (creating if absent) the catalog whose bytes live at `path`.
+    fn open_at_path(path: &std::path::Path) -> Result<Self, EngineError>;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Values

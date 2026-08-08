@@ -29,7 +29,8 @@ use sea_orm::sea_query::{Alias, Expr, Func, Query};
 
 use super::stmt;
 use super::{
-    BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, Row, Value, VersioningEngine,
+    BranchName, CatalogEngine, CommitHash, EngineError, MergeOutcome, OpenCatalog, Row, Value,
+    VersioningEngine,
 };
 
 use engine::DoltConnectionExtension;
@@ -66,6 +67,16 @@ impl DoltEngine {
         self.connection
             .lock()
             .map_err(|_| EngineError::Statement("catalog connection mutex poisoned".to_owned()))
+    }
+}
+
+impl OpenCatalog for DoltEngine {
+    fn open_in_memory() -> Result<Self, EngineError> {
+        DoltEngine::open_in_memory()
+    }
+
+    fn open_at_path(path: &std::path::Path) -> Result<Self, EngineError> {
+        DoltEngine::open(path)
     }
 }
 

@@ -8,6 +8,8 @@
 //! commit through the `dolt_at_<table>` time-travel path.
 #![cfg(feature = "dolt-engine")]
 
+mod common;
+
 use heart::query::{AsOf, UnixMilliseconds};
 use index::engine::dolt::DoltEngine;
 use index::engine::{CatalogEngine, VersioningEngine};
@@ -224,5 +226,64 @@ fn catalog_and_scratch_store_are_two_distinct_engines_in_the_same_binary() {
         "dolt_commit returned {:?}; a real commit is a 40-character hex content hash, and a stub \
          or a substituted engine cannot produce one",
         head.0
+    );
+}
+
+/// The guard on the mechanism this file's existence depends on.
+///
+/// Everything above proves `DoltEngine` works. Nothing above proves the *rest of
+/// the suite* runs on it — and for the whole life of this file, it did not.
+/// `default = ["test-engine"]` routed every other test binary through
+/// `MemoryEngine`, whose `dolt_commit` appends to a `Vec`, and this file was
+/// gated behind a non-default feature so it never compiled to say otherwise. The
+/// suite was uniformly green and uniformly measuring a fake.
+///
+/// So this asserts on the shared harness, not on a locally-opened engine:
+/// `common::migrated_writer` is the constructor the other eight test binaries
+/// call, and a commit taken through it must be a real DoltLite content hash —
+/// 40 hex characters. The fake cannot produce one; its hashes are 64-character
+/// BLAKE3 hex, so the assertion fails on length before it can fail on content.
+/// Flipping the default back, or making [`index::engine::Configured`] prefer the
+/// fake when Cargo unifies both features on, fails here and nowhere else.
+#[test]
+fn the_shared_test_harness_runs_on_the_real_versioned_engine() {
+    let writer = common::migrated_writer();
+    writer
+        .apply_ops(&[CatalogOp::UpsertPackage {
+            stem: PackageStemWire {
+                stem_id: stem(3),
+                ecosystem: heart::Language::Rust,
+                name_struct: "pkg:cargo/serde".to_owned(),
+                name_canonical: "serde".to_owned(),
+                name_original: "serde".to_owned(),
+            },
+            repo_url: None,
+        }])
+        .expect("harness writer applies");
+
+    let commit = writer
+        .commit_batch("harness engine identity probe")
+        .expect("the harness engine must be able to commit");
+
+    assert!(
+        commit.0.len() == 40 && commit.0.chars().all(|c| c.is_ascii_hexdigit()),
+        "`common::migrated_writer` committed {:?} ({} chars). A real DoltLite \
+         commit is a 40-character hex content hash; the 64-character value the \
+         MemoryEngine fake produces means the shared harness — and therefore \
+         every other test binary in this crate — is running against the fake \
+         again.",
+        commit.0,
+        commit.0.len()
+    );
+
+    // And the engine type itself is the real one, stated directly rather than
+    // inferred from the hash shape, so a future engine with 40-hex hashes cannot
+    // satisfy this test by coincidence.
+    assert_eq!(
+        std::any::TypeId::of::<index::engine::Configured>(),
+        std::any::TypeId::of::<DoltEngine>(),
+        "`index::engine::Configured` must resolve to DoltEngine whenever the \
+         `dolt-engine` feature is on, including when feature unification also \
+         turns `test-engine` on"
     );
 }
