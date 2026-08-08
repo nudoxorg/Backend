@@ -151,93 +151,57 @@
 # colliding binary unqualified, unless matching all of them is stated intent" —
 # not "no collisions may exist". A duplicate that nothing here names is fine.
 #
-# KNOWN BLOCKER — `--exclude driver`, and ONLY `driver` (LIMITATIONS.md L7).
+# RESOLVED 2026-08-08 — `--exclude driver` is gone, and `driver`'s tests are
+# now measured for the first time.
 #
-# This block used to name L6 and exclude THREE packages
-# (`index`, `driver`, `ir-vcs`). That was stale in both directions and cost
-# roughly a thousand tests. LIMITATIONS.md:736 has recorded L6 as RESOLVED
-# since 2026-08-05 — `index` compiles and `ir-vcs` compiles — while this file,
-# TESTING.md, and `nextest-suite.nu` all went on asserting it did not. Doctrine
-# §7's own warning applies to the exclude list itself: "a crate outside the
-# gate stops being measured".
+# History, because this flag survived three wrong explanations. It once excluded
+# THREE packages (`index`, `driver`, `ir-vcs`) citing L6, which had been RESOLVED
+# since 2026-08-05 — that cost roughly a thousand tests (731 in `index`, 216 in
+# `ir-vcs`). It was then narrowed to `driver` alone, on the grounds that this
+# package's build was "non-deterministic across a churning vendor tree": three
+# runs of `cargo build -p driver --all-targets` inside 25 minutes on 2026-08-07
+# gave three different answers (a mid-edit qdrant-edge build script; success; a
+# rusqdoltlite cc-rs failure once `doltlite.c` was restored). Two other
+# explanations were in circulation and both were false as stated — a "duplicate
+# symbol between libzstd_seekable and libzstd_sys" (nothing in any diagnostic
+# ever mentioned zstd) and "it compiles, the exclude list is just a speed
+# optimisation" (it did not produce artifacts).
 #
-# Re-measured 2026-08-07: `RUSTC_BOOTSTRAP=1 cargo check --workspace
-# --all-targets` exits 0 with zero errors, and
-# `cargo nextest list -P default --workspace --exclude driver` enumerates the
-# whole suite including 731 `index` and 216 `ir-vcs` tests that the old
-# three-package exclusion was hiding. Those tests build and run today.
+# What actually kept it failing, discovered 2026-08-08: `driver` was missing
+# committed source. `heart::SyncError::InvalidEndpoint` did not exist at HEAD and
+# `driver/sync.rs` called it, and index's `transport` module split had landed
+# only halfway, so `driver` imported `PendingSection`/`BlobManifest`/`FileEntry`
+# twice each. Both were fixed in the working tree and neither was committed, so
+# the failure was invisible on this machine and total everywhere else. The vendor
+# churn was real but it was noise on top of a plain missing-code bug.
 #
-# `driver` is the one package that does not reliably BUILD here, and the
-# reason is not what any previous revision of this comment said. Two claims
-# are in circulation and BOTH are wrong as stated: "duplicate symbol between
-# libzstd_seekable and libzstd_sys" (nothing in any diagnostic mentions zstd)
-# and "it compiles, the exclude list is just a speed optimisation" (it does
-# not produce artifacts). What is true is narrower and less tidy.
+# The condition this block itself set for dropping the flag has been met and
+# then exceeded:
 #
-# Root cause class: LIMITATIONS.md **L7**, vendored C sources under
-# `workspace/vendor/` that `driver` transitively needs — `qdrant-edge`'s
-# hand-written SIMD kernels and `doltlite`'s generated ~20 MB amalgamation.
-# Their presence is the variable, and while this was being written it was
-# LITERALLY a variable: a concurrent track was restoring them. Three runs of
-# `cargo build -p driver --all-targets` inside 25 minutes on 2026-08-07 gave
-# three different answers, each recorded here rather than averaged into a
-# claim:
+#   `cargo build -p driver --all-targets` twice in a row on a settled tree  ✓
+#   the same, from a FRESH CLONE of HEAD with its own empty target/         ✓
+#   `cargo check --workspace --all-targets` (no --exclude) from that clone  ✓
 #
-#   16:14  FAILS, build script won't compile —
-#          error[E0433]: cannot find type `Path` in this scope
-#            --> workspace/vendor/qdrant-edge/build_segment.rs:22
-#          (a mid-edit tree; transient, not a property of the package)
-#   16:34  SUCCEEDS, exit 0, produces target/debug/driver. A bare
-#          `cargo nextest list -P default --workspace` — NO --exclude at all —
-#          also exits 0 and enumerates 2470 tests, 199 of them in `driver`.
-#   16:37  FAILS again, now in a THIRD place: `rusqdoltlite`'s build script,
-#          because `workspace/vendor/doltlite/doltlite.c` had meanwhile been
-#          restored and cc-rs cannot compile it under this nix toolchain —
-#            cargo:warning=Warning: supplying the --target arm64-apple-macosx
-#              != arm64-apple-darwin argument to a nix-wrapped compiler may
-#              not work correctly ...
-#            cargo:warning=error: unable to create target: 'Unable to find
-#              target for this triple (no targets are registered)'
-#          i.e. an L7 mitigation that unblocks the build by REMOVING a source
-#          stops working the moment the source comes back.
+# The last of those is the one that matters, and it is stricter than what this
+# comment originally asked for: a build on this machine cannot distinguish
+# "committed" from "present in someone's working tree", which is precisely how
+# the bug survived. See `workspace/heart/tests/checkout_completeness.rs`.
 #
-# The previously-reported link diagnostic — undefined `_dotProduct_half_4x4`,
-# `_euclideanDist_half_4x4`, `_impl_score_dot_neon`, `_impl_score_l1_neon`,
-# `_impl_xor_popcnt_neon_uint128`, `_manhattanDist_half_4x4` from
-# libqdrant_edge, hitting bin `driver` and tests `live_download`,
-# `live_socket`, `pipeline_end_to_end` — is consistent with the same L7 cause
-# and with `build_segment.rs`'s own text, which names those exact f16 kernels.
-# It is recorded here as a REPORTED diagnostic; it was not reproduced by the
-# work that wrote this comment, because by then the failure had moved.
+# Dropping the flag adds **202 previously-unmeasured `driver` tests**
+# (2,378 -> 2,580 enumerated). That is a decision to start measuring them, not a
+# no-op; expect this to surface `driver` failures that were simply never run.
 #
-# So `--exclude driver` stays, and its justification is "this package's build
-# is currently non-deterministic across a churning vendor tree", not a
-# specific symbol list. Build errors — compile OR link OR build-script —
-# happen at the `cargo build` step before any filterset in this file runs, so
-# this must remain a `cargo`/CLI package-selection flag (nextest has no
-# "which packages to build" knob, only "which tests, among those built, to
-# select"). `.config/scripts/nextest-suite.nu` bakes in exactly
-# `--exclude driver`.
-#
-# DROP THE FLAG when this passes twice in a row on a settled tree:
-#   cargo build -p driver --all-targets
-# NOT `cargo check -p driver --lib`. `check` never links (doctrine §8 says
-# this about FFI in general) and `--lib` cannot see failing bin/test targets —
-# that exact combination is what let the old "everything compiles" claim
-# survive. Note also that `driver`'s 199 tests have never been run here, so
-# dropping the flag is a decision to start measuring them, not a no-op.
-#
-# ALSO REQUIRED ON THIS HOST (TESTING.md): `nudox-producer-clang` (and
-# anything that links it, e.g. `nudox-engine`'s test binaries) dynamically
-# links libclang without an embedded rpath. `cargo nextest list`/`run` aborts
-# with `Library not loaded: @rpath/libclang.dylib` unless `DYLD_LIBRARY_PATH`
-# points at a `libclang.dylib` directory at *run* time (a build-time
-# `LIBCLANG_PATH` alone is not enough). `.config/scripts/nextest-suite.nu`
-# locates and exports both automatically.
+# STILL REQUIRED ON THIS HOST (TESTING.md): `nudox-producer-clang` (and anything
+# that links it, e.g. `nudox-engine`'s test binaries) dynamically links libclang
+# without an embedded rpath. `cargo nextest list`/`run` aborts with
+# `Library not loaded: @rpath/libclang.dylib` unless `DYLD_LIBRARY_PATH` points
+# at a `libclang.dylib` directory at *run* time (a build-time `LIBCLANG_PATH`
+# alone is not enough). `.config/scripts/nextest-suite.nu` locates and exports
+# both automatically.
 #
 # Validate any edit with:
-#   RUSTC_BOOTSTRAP=1 cargo nextest list -P <profile> --workspace --exclude driver
-#   cargo nextest show-config test-groups --workspace --exclude driver
+#   RUSTC_BOOTSTRAP=1 cargo nextest list -P <profile> --workspace
+#   cargo nextest show-config test-groups --workspace
 # 0.9.131 is the precise floor: `profile.ci.flaky-result` (below) was
 # introduced in 0.9.131. (`group()` in the CLI examples throughout this
 # file's comments needs 0.9.133, but `group()` can only be used on the
@@ -441,7 +405,7 @@ max-threads = 2
 # below, and the `slow`/`real-crate-serial` group doc comments above all name
 # the same tests independently. Adding a new real-crate/slow test means
 # re-running the two grep commands in the file header and updating all three
-# places — `cargo nextest list -P default --workspace --exclude driver`
+# places — `cargo nextest list -P default --workspace`
 # after the edit is the check (a new
 # rust-analyzer-driving test that shows up in `-P default`'s list is the
 # failure mode this note exists to catch).

@@ -133,7 +133,7 @@ def main [
         }
     }
 
-    # LIMITATIONS.md L7: `--exclude driver`, and ONLY `driver`.
+    # No package exclusions. This block records why there used to be.
     #
     # This used to read `--exclude index --exclude driver --exclude ir-vcs`
     # and cite L6 ("index has never compiled"). L6 has been RESOLVED since
@@ -146,27 +146,23 @@ def main [
     # TESTING.md's "Newly-visible red tests" section rather than re-hidden.
     # Doctrine §7: "a crate outside the gate stops being measured".
     #
-    # `driver` is the one package left, and its build is NON-DETERMINISTIC on
-    # this checkout rather than failing one fixed way. Root cause class is
-    # LIMITATIONS.md L7 (vendored C sources under `workspace/vendor/` that
-    # `driver` transitively needs). Measured 2026-08-07, three runs of
-    # `cargo build -p driver --all-targets` in 25 minutes, three answers:
-    # qdrant-edge's build script failing to compile; then exit 0 with a real
-    # `target/debug/driver` and a bare `cargo nextest list --workspace`
-    # enumerating 2470 tests; then failing again in `rusqdoltlite`'s build
-    # script, because restoring `workspace/vendor/doltlite/doltlite.c` made
-    # cc-rs try to compile it and this nix toolchain rejected the target
-    # triple ("unable to create target: 'Unable to find target for this
-    # triple'"). See `.config/nextest.toml`'s header for the full record,
-    # including the previously-reported libqdrant_edge undefined-symbol
-    # diagnostic, which is consistent with L7 but was NOT reproduced here.
+    # `driver` is NO LONGER EXCLUDED as of 2026-08-08, and its 202 tests are
+    # now measured for the first time (enumeration 2,378 -> 2,580).
     #
-    # Build errors — compile, link, or build-script — kill `cargo build`
-    # before any nextest.toml filterset runs, so this stays a cargo/CLI flag.
-    # Recheck with `cargo build -p driver --all-targets` on a settled tree —
-    # NOT `cargo check -p driver --lib`, which neither links nor sees the
-    # failing bin/test targets. Dropping the flag also starts running
-    # `driver`'s 199 never-yet-executed tests; that is a decision, not a no-op.
+    # The old note here said its build was "non-deterministic on this checkout
+    # rather than failing one fixed way", citing three runs in 25 minutes that
+    # gave three answers. The churn was real; it was noise on top of a plain
+    # missing-code bug. `driver` was missing committed source:
+    # `heart::SyncError::InvalidEndpoint` did not exist at HEAD while
+    # `driver/sync.rs` called it, and index's `transport` module split had
+    # landed only halfway, so `driver` imported PendingSection/BlobManifest/
+    # FileEntry twice each. Both fixes sat uncommitted in a working tree, so the
+    # failure was invisible here and total for everyone else.
+    #
+    # Verified from a FRESH CLONE of HEAD with its own empty target/, which is
+    # stricter than the "settled tree" recheck this comment used to ask for — a
+    # build on this machine cannot tell "committed" from "present in someone's
+    # working tree", and that is exactly how the bug survived.
     #
     # `--no-fail-fast` on ci/perf (never on `default`): those two profiles
     # exist to produce a complete picture (a JUnit report, a perf table) —
@@ -175,7 +171,7 @@ def main [
     # own fail-fast default on purpose: it is the fast local loop, and the
     # first failure is usually the one to look at right now.
     let root_args = (
-        [nextest run -P $profile --workspace --exclude driver]
+        [nextest run -P $profile --workspace]
         ++ (if $run_ignored { [--run-ignored all --no-fail-fast] } else { [] })
     )
     print $"==> root workspace: cargo ($root_args | str join ' ')"
