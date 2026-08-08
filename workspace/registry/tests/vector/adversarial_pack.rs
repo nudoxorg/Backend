@@ -6,7 +6,7 @@
 mod common;
 
 use heart::ContentHash;
-use vector::local::{PackError, pack_shard, unpack_shard};
+use registry::vector::local::{PackError, pack_shard, unpack_shard};
 
 // ─── Area 7: pack/unpack hardening ───────────────────────────────────────────
 

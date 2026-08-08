@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use heart::{ContentHash, SymbolId};
 use support::*;
-use vector::JinaCodeV2;
-use vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, StoreError, VectorPoint, VectorStore};
-use vector::embed::mock::MockEmbedder;
-use vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
-use vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore, VectorCas};
+use registry::vector::JinaCodeV2;
+use registry::vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, StoreError, VectorPoint, VectorStore};
+use registry::vector::embed::mock::MockEmbedder;
+use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
+use registry::vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore, VectorCas};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,7 +78,7 @@ impl VectorStore<JinaCodeV2> for FailingStore {
 		self.inner.delete(ids).await
 	}
 
-	async fn search(&self, _req: vector::store::SearchRequest<JinaCodeV2>) -> Result<Vec<SearchHit>, StoreError> {
+	async fn search(&self, _req: registry::vector::store::SearchRequest<JinaCodeV2>) -> Result<Vec<SearchHit>, StoreError> {
 		Ok(vec![])
 	}
 
@@ -163,11 +163,11 @@ async fn all_trace_hit_zero_work() {
 /// EmbedError::DimensionMismatch and leave NO trace row.
 #[tokio::test(start_paused = true)]
 async fn cas_wrong_dim_gives_dimension_mismatch_no_trace() {
-	use vector::EmbeddingModel;
-	use vector::embed::stage::StageConfig;
-	use vector::key as vkey;
-	use vector::recipe::VectorName;
-	use vector::model::Metric;
+	use registry::vector::EmbeddingModel;
+	use registry::vector::embed::stage::StageConfig;
+	use registry::vector::key as vkey;
+	use registry::vector::recipe::VectorName;
+	use registry::vector::model::Metric;
 
 	let mock = Arc::new(MockEmbedder::new());
 	let traces = MemTraces::new();
@@ -206,7 +206,7 @@ async fn cas_wrong_dim_gives_dimension_mismatch_no_trace() {
 	// Must fail with an embed (dimension mismatch) error.
 	assert!(result.is_err(), "wrong-dim CAS blob must cause stage failure");
 	match result.unwrap_err() {
-		StageError::Embed(vector::EmbedError::DimensionMismatch { expected, got }) => {
+		StageError::Embed(registry::vector::EmbedError::DimensionMismatch { expected, got }) => {
 			assert_eq!(expected, JinaCodeV2::DIMENSIONS);
 			assert_eq!(got, 3);
 		}
@@ -228,8 +228,8 @@ async fn cas_wrong_dim_gives_dimension_mismatch_no_trace() {
 /// it just does the double work.
 #[tokio::test(start_paused = true)]
 async fn symbol_in_added_and_changed_pinned_behavior() {
-	use vector::key::ChangedSymbol;
-	use vector::key::SymbolDelta;
+	use registry::vector::key::ChangedSymbol;
+	use registry::vector::key::SymbolDelta;
 
 	let h = harness();
 	let sym = symbol(0);
@@ -264,7 +264,7 @@ async fn symbol_in_added_and_changed_pinned_behavior() {
 /// 2·MAX_BATCH symbols so we get at least two chunks.
 #[tokio::test(start_paused = true)]
 async fn cancellation_mid_run_no_traces_for_tail() {
-	use vector::embed::MAX_BATCH;
+	use registry::vector::embed::MAX_BATCH;
 
 	// Use 2×MAX_BATCH so we get two chunks.
 	let n = MAX_BATCH * 2;
@@ -347,7 +347,7 @@ async fn removed_ids_never_reach_facets_for() {
 	let panic_lookup = |_id: &SymbolId| -> Option<_> {
 		panic!("facets_for must NEVER be called for removed symbols");
 		#[allow(unreachable_code)]
-		None::<vector::recipe::EmbedFacetsBuf>
+		None::<registry::vector::recipe::EmbedFacetsBuf>
 	};
 
 	let report = h.stage.run(&delta, &panic_lookup, CancelGroup::new()).await.unwrap();

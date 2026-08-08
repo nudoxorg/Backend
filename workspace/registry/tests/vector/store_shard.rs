@@ -8,8 +8,8 @@ mod common;
 use std::io::ErrorKind;
 
 use common::*;
-use vector::{JinaCodeV2, ModelId, StoreError, VectorStore};
-use vector::local::LocalShardStore;
+use registry::vector::{JinaCodeV2, ModelId, StoreError, VectorStore};
+use registry::vector::local::LocalShardStore;
 
 /// 100 branded vectors go in; a keyword-filtered search never returns a
 /// point of the wrong language, and the unfiltered order is the exact
@@ -43,7 +43,7 @@ async fn upsert_100_and_filtered_search_excludes_wrong_language() {
 		let language = hit.payload.get("language").expect("payload rides along");
 		assert_eq!(
 			language,
-			&vector::PayloadValue::Str("rust".into()),
+			&registry::vector::PayloadValue::Str("rust".into()),
 			"filter must exclude every wrong-language point"
 		);
 	}
@@ -104,7 +104,7 @@ async fn drop_and_reload_preserves_points() {
 	assert_eq!(hits[0].id, pid(0));
 	assert_eq!(
 		hits[0].payload.get("package"),
-		Some(&vector::PayloadValue::Str("acme".into())),
+		Some(&registry::vector::PayloadValue::Str("acme".into())),
 		"payload must survive the reload"
 	);
 }

@@ -2,7 +2,7 @@
 //! Pinned-artifact policy: sha verification and graceful missing-weights.
 
 use sha2::{Digest, Sha256};
-use vector::embed::weights::{WeightsError, WeightsSpec};
+use registry::vector::embed::weights::{WeightsError, WeightsSpec};
 
 const FAKE_ONNX: &[u8] = b"definitely not a real onnx graph, but stable bytes";
 

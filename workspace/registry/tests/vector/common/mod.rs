@@ -10,12 +10,12 @@ use std::time::Duration;
 
 use smol_str::SmolStr;
 use uuid::Uuid;
-pub use vector::VectorStore;
-use vector::{
+pub use registry::vector::VectorStore;
+use registry::vector::{
 	Embedding, FilterClause, JinaCodeV2, Payload, PayloadValue, PointId, QP1, QuantProfile,
 	SearchFilter, SearchRequest, ShardSchema, VectorPoint,
 };
-use vector::local::{LocalShardStore, schema_for};
+use registry::vector::local::{LocalShardStore, schema_for};
 
 /// JinaCodeV2 dimensionality (the only local-plane model).
 pub const DIM: usize = 768;
@@ -108,8 +108,8 @@ pub async fn settle() {
 
 /// Wrap a `LocalShardStore` into a `SharedWorkingSet` for tests that need
 /// the shared read/write lock around the working set.
-pub async fn settle_and_wrap(project: LocalShardStore) -> vector::local::SharedWorkingSet {
+pub async fn settle_and_wrap(project: LocalShardStore) -> registry::vector::local::SharedWorkingSet {
 	use std::sync::Arc;
-	use vector::local::WorkingSet;
+	use registry::vector::local::WorkingSet;
 	WorkingSet::new(Arc::new(project)).into_shared()
 }

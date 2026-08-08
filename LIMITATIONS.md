@@ -2452,13 +2452,44 @@ gone stale with nothing to notice, because nothing ever type-checked them. Two
 unrelated causes of the same silence, stacked.
 
 **What it cost.** First-ever execution of `registry`'s 16: **102 tests, 97 pass,
-5 fail.** The 5 are real (`merge_hits` ordering and cross-shard tie-break;
-`AdmissionState` rejecting unknown fields from a newer writer; and two
-path-traversal defences that turn out to be **unexercised**, because the `tar`
-crate now refuses to *write* the hostile entry the fixture needs — a
-security-relevant gap where the guard has never actually been tested against a
-hostile archive). Separately, `cargo test -p registry --lib` fails 2 of 177,
-both pre-dating this work.
+5 fail**, plus 2 pre-existing failures in `--lib`. All 7 are now fixed; the
+interesting part is that they were **not** 7 product bugs. The split matters,
+because "the test was wrong" is the answer that needs the most evidence:
+
+| # | verdict | what it actually was |
+|---|---|---|
+| 2 | **product** | `merge_hits` sorted on a bare `b.score.total_cmp(&a.score)`. Under IEEE-754 totalOrder a positive-signed NaN is the *maximum* — above `+Infinity` — so a NaN score won top rank. Fixed with a `compare_hits` total order that sinks NaN to worst before the existing ascending-`id` tiebreak. |
+| 1 | **product** | `PayloadValue` was declared `Str, Int, Bool`, so `#[derive(Ord)]` gave `Str < Int < Str`-order — contradicting the documented `Bool < Int < Str`. Reordered. Safe because `registry` uses only self-describing codecs, which tag enums by variant *name*: no positional wire format depends on the discriminant. |
+| 4 | **test/fixture** | one unsatisfiable assertion, two wrong fixtures, one wrong expectation. Each derived, not asserted — see below. |
+
+The unsatisfiable one is worth keeping. `merge_hits_non_finite_scores_do_not_panic`
+demanded both "NaN ranks worst" *and* a generic loop asserting every adjacent
+pair satisfies raw `total_cmp() != Less`. Since NaN is `total_cmp`'s unique
+maximum, nothing but another NaN can precede it without violating that loop —
+the two clauses cannot both hold. Replaced with an exact pinned order
+(`[Infinity, 0.5, -Infinity, NaN]`), which is strictly stronger than the loop it
+replaced.
+
+**The security-relevant one, in full**, because it is the only finding here that
+was a *missing* defence rather than a broken one: `absolute_path_artifact_rejected`
+and `parent_dir_traversal_artifact_rejected` were failing inside their own
+fixture. The `tar` crate now rejects `..` and absolute paths at *write* time, so
+the fixture could not build the hostile archive, and the traversal guard had
+therefore **never been exercised against a hostile input**. Fixed by writing the
+raw path bytes straight into the GNU header's `name` field and calling the
+validation-free `Builder::append` with a hand-fixed checksum — and then
+re-parsing the built archive inside the fixture to assert the raw header bytes
+equal the hostile string verbatim, so a future regression to a benign fixture
+fails loudly instead of passing for the wrong reason.
+
+**Where it landed:** 279 tests pass, 0 fail, under
+`cargo test -p registry --features local,embed --tests`.
+
+**Feature-gated coverage, stated so it is not mistaken for completeness.** Under
+`--features local` alone, six of the sixteen targets report **zero** tests: five
+are `#![cfg(feature = "embed")]` and one is `#![cfg(feature = "onnx")]`. `embed`
+costs only `dep:sha2`, so it is nearly free and adds 29 tests — run it. `onnx`
+pulls `fastembed` + `tokenizers` and `onnx_live` remains unrun here.
 
 **The fix, and why it is the right shape.** Explicit `[[test]]` entries naming
 each file, rather than flattening the directory. Flattening would break the two
@@ -2485,6 +2516,38 @@ diagnostic mentions zstd". As of 2026-08-07 `driver` emits
 `ld: duplicate symbol '_ZSTD_*'` between `libzstd_seekable` and `libzstd_sys`
 — as a `warning: linker_messages`, so the link still succeeds. The doctrine's
 text was accurate when written and is not now.
+
+---
+
+## L49 — REPORTED, NOT REPRODUCED: qdrant-edge segment flush panics on `Drop` under load
+
+**Status: unconfirmed.** Recorded at the confidence the evidence supports, not
+promoted to a finding. Treat it as a lead.
+
+**What was seen.** During the L48 work,
+`vector_depshard_install::install_registers_searchable_shard_and_evict_removes_it`
+failed **2 times in ~11 runs** with a panic inside vendored qdrant-edge —
+`workspace/vendor/qdrant-edge/src/edge/mod.rs:181`, segment flush on `Drop`,
+`IO Error: No such file or directory`. Every one of those runs was under heavy
+concurrent-cargo contention (three agents building against the shared `target/`).
+
+**What was not seen.** Re-run 8 times on a quieter machine: **8 passes, 0
+failures.** The reproduction attempt is recorded because a failed reproduction is
+evidence too, and because promoting an unreproduced observation to a "known
+flake" is how a real bug gets an excuse attached to it.
+
+**Why it is still worth writing down.** The failure is on a `Drop` path in
+vendored C++-backed code, which is the one place where "it only happens under
+load" is a plausible *description of a real race* rather than a synonym for
+"noise" — a flush racing teardown of the directory it writes into would look
+exactly like this and would be invisible at low concurrency. It is also
+adjacent to L7, the other vendored-qdrant-edge defect.
+
+**To settle it:** run that target in a loop under deliberate load (a concurrent
+`cargo build -p driver` is the cheapest way to reproduce the original
+conditions) and capture the full panic with `RUST_BACKTRACE=1`. If it
+reproduces, it is a teardown-ordering bug in vendored code and belongs in the
+`vendor/` tracking, not here.
 
 ---
 

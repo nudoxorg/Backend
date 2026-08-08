@@ -5,8 +5,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use vector::embed::gate::{EmbedGate, GateConfig, LoadState};
-use vector::embed::mock::MockEmbedder;
+use registry::vector::embed::gate::{EmbedGate, GateConfig, LoadState};
+use registry::vector::embed::mock::MockEmbedder;
 
 fn mock_gate(unload_idle: Duration) -> Arc<EmbedGate<MockEmbedder>> {
 	EmbedGate::new(

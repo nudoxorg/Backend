@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use common::*;
 use heart::{ContentHash, PackageId};
-use vector::NAMESPACE_NUDOX;
-use vector::local::{
+use registry::vector::NAMESPACE_NUDOX;
+use registry::vector::local::{
     ArtifactFetcher, DepManifestEntry, FetchError, InstallOutcome, WorkingSet, evict, install,
     pack_shard,
 };
@@ -68,7 +68,7 @@ fn entry_with_ram(
     }
 }
 
-async fn empty_working_set(project_dir: &Path) -> vector::local::SharedWorkingSet {
+async fn empty_working_set(project_dir: &Path) -> registry::vector::local::SharedWorkingSet {
     let project = open_mutable_f32(project_dir).await;
     WorkingSet::new(Arc::new(project)).into_shared()
 }

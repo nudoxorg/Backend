@@ -8,16 +8,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use heart::ContentHash;
-use vector::EmbedRole;
-use vector::embed::gate::{EmbedGate, GateConfig, GatedEmbedder, LoadState};
-use vector::embed::mock::MockEmbedder;
-use vector::embed::scheduler::{
+use registry::vector::EmbedRole;
+use registry::vector::embed::gate::{EmbedGate, GateConfig, GatedEmbedder, LoadState};
+use registry::vector::embed::mock::MockEmbedder;
+use registry::vector::embed::scheduler::{
 	CancelGroup, EmbedHandle, EmbedScheduler, Priority, SchedulerConfig, SchedulerError,
 };
 
 fn key(label: &str) -> ContentHash { ContentHash::of_bytes(label.as_bytes()) }
 
-fn spawn_mock() -> (Arc<MockEmbedder>, EmbedHandle<vector::JinaCodeV2>) {
+fn spawn_mock() -> (Arc<MockEmbedder>, EmbedHandle<registry::vector::JinaCodeV2>) {
 	let mock = Arc::new(MockEmbedder::new());
 	let handle = EmbedScheduler::spawn(Arc::clone(&mock), SchedulerConfig::default());
 	(mock, handle)
@@ -153,7 +153,7 @@ async fn cancelled_group_all_reply_cancelled_never_hits_embedder() {
 /// 32; this test confirms the constraint over a large burst.
 #[tokio::test(start_paused = true)]
 async fn no_batch_exceeds_max_batch() {
-	use vector::embed::MAX_BATCH;
+	use registry::vector::embed::MAX_BATCH;
 
 	let (mock, handle) = spawn_mock();
 
@@ -200,7 +200,7 @@ async fn no_batch_exceeds_max_batch() {
 /// This test verifies that the fallback does not cause a panic or a load.
 #[tokio::test(start_paused = true)]
 async fn runtime_while_idle_no_load() {
-	use vector::{Embedder, EmbeddingModel};
+	use registry::vector::{Embedder, EmbeddingModel};
 
 	let gate = EmbedGate::new(
 		GateConfig { max_sessions: 1, unload_idle: Duration::from_secs(120) },
@@ -221,7 +221,7 @@ async fn runtime_while_idle_no_load() {
 	assert_eq!(gate.state(), LoadState::Idle, "gate must remain idle after runtime()");
 
 	// The returned info must be self-consistent: model_id matches the brand.
-	let expected_model = vector::JinaCodeV2::id();
+	let expected_model = registry::vector::JinaCodeV2::id();
 	assert_eq!(
 		info.model_id, expected_model,
 		"runtime() while idle must return brand-static model_id"

@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use heart::PackageId;
-use vector::{AdmissionBudget, StoreError, VectorStore, NAMESPACE_NUDOX};
-use vector::local::{
+use registry::vector::{AdmissionBudget, StoreError, VectorStore, NAMESPACE_NUDOX};
+use registry::vector::local::{
     AdmissionState, HotSetManager, InstallPlan, LocalShardStore, PackageStats,
     COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, ShardLock,
     diff_plan,
@@ -119,7 +119,7 @@ fn hotset_state_file_with_unknown_fields_loads_gracefully() {
                     "ram_estimate": 400,
                     "is_direct": true,
                     "ref_density": 0.5,
-                    "query_hit_ema": {{"last_update_secs": {now}, "value": 0.1}},
+                    "query_hit_ema": {{"at_secs": {now}, "value": 0.1}},
                     "pinned": false,
                     "UNKNOWN_FUTURE_FIELD": "value from newer version",
                     "ANOTHER_UNKNOWN": 42
@@ -151,7 +151,7 @@ fn hotset_state_file_with_unknown_fields_loads_gracefully() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_plan_empty_plan_is_noop() {
     use std::collections::BTreeMap;
-    use vector::local::{InstallPlan, apply_plan};
+    use registry::vector::local::{InstallPlan, apply_plan};
 
     let project_dir = tempfile::tempdir().unwrap();
     let project = open_mutable_f32(project_dir.path()).await;
@@ -175,9 +175,9 @@ async fn apply_plan_empty_plan_is_noop() {
 
 struct NoopFetcher;
 #[async_trait::async_trait]
-impl vector::local::ArtifactFetcher for NoopFetcher {
-    async fn fetch(&self, h: &heart::ContentHash) -> Result<Vec<u8>, vector::local::FetchError> {
-        Err(vector::local::FetchError::NotFound(*h))
+impl registry::vector::local::ArtifactFetcher for NoopFetcher {
+    async fn fetch(&self, h: &heart::ContentHash) -> Result<Vec<u8>, registry::vector::local::FetchError> {
+        Err(registry::vector::local::FetchError::NotFound(*h))
     }
 }
 
@@ -247,7 +247,7 @@ fn lock_held_error_is_io_would_block_with_path() {
 /// directory but must be absent from a packed artifact.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lock_file_excluded_from_packed_artifact() {
-    use vector::local::{LOCK_FILE, pack_shard};
+    use registry::vector::local::{LOCK_FILE, pack_shard};
 
     let dir = tempfile::tempdir().unwrap();
     let store = open_mutable_f32(dir.path()).await;
@@ -264,7 +264,7 @@ async fn lock_file_excluded_from_packed_artifact() {
     let (artifact, hash) = pack_shard(dir.path()).unwrap();
     let root = tempfile::tempdir().unwrap();
     let dest = root.path().join("baked");
-    vector::local::unpack_shard(&artifact, &hash, &dest).unwrap();
+    registry::vector::local::unpack_shard(&artifact, &hash, &dest).unwrap();
 
     assert!(
         !dest.join(LOCK_FILE).exists(),

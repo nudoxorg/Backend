@@ -8,10 +8,10 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
-use vector::{JinaCodeV2, Payload, PayloadValue, SearchHit, SourceTag, VectorStore};
-use vector::local::{LocalShardStore, WorkingSet, merge_hits};
+use registry::vector::{JinaCodeV2, Payload, PayloadValue, SearchHit, SourceTag, VectorStore};
+use registry::vector::local::{LocalShardStore, WorkingSet, merge_hits};
 use heart::PackageId;
-use vector::NAMESPACE_NUDOX;
+use registry::vector::NAMESPACE_NUDOX;
 
 fn pkg(name: &str) -> PackageId {
     PackageId::from_name(&NAMESPACE_NUDOX, name.as_bytes())
@@ -55,8 +55,8 @@ async fn fanout_partial_failure_propagates_not_narrows() {
     let err = working_set.search_all(request(basis(0), 10)).await.unwrap_err();
     // The error must be a backend error (propagated Closed from the actor).
     assert!(
-        matches!(err, vector::StoreError::Closed)
-            || matches!(err, vector::StoreError::Backend(_)),
+        matches!(err, registry::vector::StoreError::Closed)
+            || matches!(err, registry::vector::StoreError::Backend(_)),
         "partial failure must propagate as Closed or Backend, not silently narrow; got {err:?}"
     );
 
@@ -104,17 +104,33 @@ async fn fanout_partial_failure_propagates_not_narrows() {
 /// natural boundary between groups.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fanout_3_shards_exact_global_order_with_cross_shard_tie() {
-    // Shard A: project — graded 0..10.
+    // Shard A: project — pid(0) is an exact match (basis(0)), so it ties
+    // with dep2's pid(9999) below; pid(1..10) are graded (scores strictly
+    // decreasing, per `graded`'s doc — no internal ties). `corpus(10, ..)`
+    // is deliberately NOT used here: it drives every point (including 0)
+    // through `graded`, whose own formula (`e0 + (i+1)·0.05·e_{i+1}`) gives
+    // `graded(0)` a nonzero weight — score ≈0.99875, not the exact 1.0 this
+    // test's tie requires.
     let proj_dir = tempfile::tempdir().unwrap();
     let project = open_mutable_f32(proj_dir.path()).await;
-    project.upsert(corpus(10, "proj")).await.unwrap();
+    let mut proj_points = vec![registry::vector::VectorPoint {
+        id: pid(0),
+        vector: basis(0),
+        payload: payload("rust", "proj"),
+    }];
+    proj_points.extend((1..10u128).map(|i| registry::vector::VectorPoint {
+        id: pid(i),
+        vector: graded(i as usize),
+        payload: payload(if i % 2 == 0 { "rust" } else { "python" }, "proj"),
+    }));
+    project.upsert(proj_points).await.unwrap();
 
     // Shard B: dep1 — graded 20..30 (weaker than A's 0..10).
     let dep1_dir = tempfile::tempdir().unwrap();
     {
         let builder = open_mutable_f32(dep1_dir.path()).await;
         let points: Vec<_> = (100..110u128)
-            .map(|i| vector::VectorPoint {
+            .map(|i| registry::vector::VectorPoint {
                 id: pid(i),
                 vector: graded((i - 100 + 20) as usize),
                 payload: payload("rust", "dep1"),
@@ -130,12 +146,12 @@ async fn fanout_3_shards_exact_global_order_with_cross_shard_tie() {
     let dep2_dir = tempfile::tempdir().unwrap();
     {
         let builder = open_mutable_f32(dep2_dir.path()).await;
-        let mut points = vec![vector::VectorPoint {
+        let mut points = vec![registry::vector::VectorPoint {
             id: pid(9999),
             vector: basis(0), // Exact match → score 1.0, ties with proj's pid(0).
             payload: payload("rust", "dep2-tie"),
         }];
-        points.extend((200..205u128).map(|i| vector::VectorPoint {
+        points.extend((200..205u128).map(|i| registry::vector::VectorPoint {
             id: pid(i),
             vector: graded((i - 200 + 30) as usize),
             payload: payload("rust", "dep2"),
@@ -268,8 +284,18 @@ fn merge_hits_all_same_score_sorted_by_id() {
     );
 }
 
-/// Score-merge with non-finite scores (NaN / ±inf): total_cmp must never panic
-/// and must order consistently (NaN sorts in a defined position under total_cmp).
+/// Score-merge with non-finite scores (NaN / ±inf) must never panic, and a
+/// NaN score — which carries no similarity information — must never
+/// outrank a legitimate one, however extreme. This is deliberately NOT "sort
+/// by raw `f32::total_cmp` end to end": IEEE total order places a
+/// positive-signed NaN *above* `+Infinity`, so a bare `total_cmp` sort would
+/// let a broken score win the top rank over a real, if extreme, match. Note
+/// this also means a single "every adjacent pair satisfies raw
+/// `total_cmp() != Less`" loop cannot express this invariant — that
+/// property and "NaN ranks worst" are mutually exclusive whenever a NaN and
+/// a non-NaN score are both present (nothing but another top-ranked NaN can
+/// legally precede a NaN under raw `total_cmp`, since NaN is that order's
+/// maximum element), so the full order is pinned exactly instead.
 #[test]
 fn merge_hits_non_finite_scores_do_not_panic() {
     let shard_a: Vec<SearchHit> = vec![
@@ -279,20 +305,17 @@ fn merge_hits_non_finite_scores_do_not_panic() {
     ];
     let shard_b: Vec<SearchHit> = vec![hit(4, 0.5)];
 
-    // Must not panic — total_cmp handles all f32 values.
+    // Must not panic — the comparator handles all f32 values, including NaN.
     let merged = merge_hits(vec![shard_a, shard_b], 10);
     assert_eq!(merged.len(), 4, "non-finite scores must not be silently dropped");
 
-    // INFINITY must come first (highest under total_cmp descending).
-    assert_eq!(merged[0].id, pid(2), "INFINITY must rank first under total_cmp descending");
-
-    // Scores must be in total_cmp descending order (not panic or undefined).
-    for pair in merged.windows(2) {
-        assert!(
-            pair[0].score.total_cmp(&pair[1].score) != std::cmp::Ordering::Less,
-            "merged non-finite scores must be in total_cmp descending order: {} then {}",
-            pair[0].score,
-            pair[1].score
-        );
-    }
+    // INFINITY must come first (highest legitimate score); NaN sinks to the
+    // worst rank instead of floating to the top. Exact order, pinned:
+    // +Infinity, then 0.5, then -Infinity, then NaN last.
+    let ids: Vec<_> = merged.iter().map(|h| h.id).collect();
+    assert_eq!(
+        ids,
+        vec![pid(2), pid(4), pid(3), pid(1)],
+        "NaN must rank worst; the remaining scores must be total_cmp descending"
+    );
 }

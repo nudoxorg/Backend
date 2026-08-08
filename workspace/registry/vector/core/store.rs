@@ -46,11 +46,19 @@ impl std::fmt::Display for PointId {
 
 /// A typed payload value — the only value shapes the payload schema admits
 /// (no stringly floats/nested blobs; filters stay index-friendly).
+///
+/// Variant declaration order is deliberate, not incidental: `#[derive(Ord)]`
+/// orders by discriminant (declaration order), and this type is sometimes
+/// used as a `BTreeMap`/`BTreeSet` key (see `payload_value_ordering_stability_
+/// btreemap_determinism`), where the order must be fixed and reasoned-about
+/// rather than an accident of edit history. `Bool < Int < Str` — primitive
+/// simplicity, not JSON's or serde's tagging (unaffected by this order; the
+/// wire format is externally tagged by variant name).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum PayloadValue {
-    Str(SmolStr),
-    Int(i64),
     Bool(bool),
+    Int(i64),
+    Str(SmolStr),
 }
 
 impl From<&str> for PayloadValue {

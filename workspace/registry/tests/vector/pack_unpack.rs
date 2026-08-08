@@ -7,8 +7,8 @@ mod common;
 
 use common::*;
 use heart::ContentHash;
-use vector::{JinaCodeV2, StoreError, VectorStore};
-use vector::local::{LOCK_FILE, LocalShardStore, PackError, pack_shard, unpack_shard};
+use registry::vector::{JinaCodeV2, StoreError, VectorStore};
+use registry::vector::local::{LOCK_FILE, LocalShardStore, PackError, pack_shard, unpack_shard};
 
 /// Pack a live shard, unpack it elsewhere, load read-only: identical
 /// search results (ids, order, and exact scores), payload included; the
@@ -193,13 +193,56 @@ async fn unpacked_shard_still_validates_schema() {
 /// Build a `tar.zst` artifact containing one regular-file entry at an
 /// attacker-chosen path, correctly hashed (the hash gate must not be what
 /// saves us here).
+///
+/// This deliberately does NOT go through `Header::set_path` /
+/// `Builder::append_data`: as of this `tar` version both validate the path
+/// and refuse to write an absolute path or one containing `..` ("paths in
+/// archives must be relative" / "must not have `..`") — which would make
+/// this fixture unable to construct the very attack the unpacker is being
+/// tested against. A real attacker is not bound by this crate's writer-side
+/// niceties (a hand-crafted archive, or one from an older/different tar
+/// implementation, can carry any bytes in the name field), so the fixture
+/// writes the hostile name directly into the header and appends the raw
+/// header + body with `Builder::append`, which performs no path validation
+/// at all — exercising the same read path (`unpack_shard` → `entry.path()`
+/// → `validate_safe_path`) a genuine hostile archive would.
 fn hostile_artifact(entry_path: &str, contents: &[u8]) -> (Vec<u8>, ContentHash) {
 	let mut builder = tar::Builder::new(Vec::new());
 	let mut header = tar::Header::new_gnu();
 	header.set_size(contents.len() as u64);
 	header.set_mode(0o644);
-	builder.append_data(&mut header, entry_path, contents).unwrap();
+	{
+		let name_bytes = entry_path.as_bytes();
+		let gnu = header.as_gnu_mut().expect("new_gnu() header is always GNU");
+		assert!(
+			name_bytes.len() < gnu.name.len(),
+			"fixture path {entry_path:?} does not fit in the 100-byte GNU name field"
+		);
+		gnu.name = [0u8; 100];
+		gnu.name[..name_bytes.len()].copy_from_slice(name_bytes);
+	}
+	header.set_cksum();
+	builder.append(&header, contents).unwrap();
 	let tar_bytes = builder.into_inner().unwrap();
+
+	// The fixture is only as hostile as the bytes it actually wrote — verify
+	// the archive really carries the attacker-chosen path before trusting a
+	// green test against it (a benign fixture would pass for the wrong
+	// reason).
+	let mut check = tar::Archive::new(tar_bytes.as_slice());
+	let mut saw_hostile_entry = false;
+	for entry in check.entries().unwrap() {
+		let entry = entry.unwrap();
+		let raw_path = entry.header().path_bytes();
+		assert_eq!(
+			&*raw_path,
+			entry_path.as_bytes(),
+			"fixture archive entry must carry the raw hostile path unmodified"
+		);
+		saw_hostile_entry = true;
+	}
+	assert!(saw_hostile_entry, "fixture archive must contain exactly the hostile entry");
+
 	let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
 	let hash = ContentHash::of_bytes(&artifact);
 	(artifact, hash)

@@ -122,13 +122,35 @@ impl WorkingSet {
 /// Merge per-shard result lists into one best-first list of at most `limit`
 /// hits.
 ///
-/// Ordering is fully deterministic: score **descending** (`f32::total_cmp`,
-/// so even pathological non-finite scores order consistently), ties broken
-/// by [`PointId`] **ascending**. No dedup is performed — point ids are
-/// UUIDv5 of symbol ids and a symbol lives in exactly one shard.
+/// Ordering is fully deterministic: score **descending**, ties broken by
+/// [`PointId`] **ascending**. No dedup is performed — point ids are UUIDv5
+/// of symbol ids and a symbol lives in exactly one shard.
+///
+/// Non-finite scores are handled by [`compare_hits`] rather than a bare
+/// `f32::total_cmp`: a real embedding backend never emits NaN, but a
+/// poisoned or malformed shard could, and `total_cmp`'s IEEE total order
+/// places a positive-signed NaN *above* `+Infinity` — meaning a raw
+/// `total_cmp` sort would let a broken score win the top rank over a
+/// legitimate, if extreme, one. NaN carries no similarity information at
+/// all, so it sinks to the worst rank instead.
 pub fn merge_hits(per_shard: Vec<Vec<SearchHit>>, limit: usize) -> Vec<SearchHit> {
     let mut merged: Vec<SearchHit> = per_shard.into_iter().flatten().collect();
-    merged.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.id.cmp(&b.id)));
+    merged.sort_by(compare_hits);
     merged.truncate(limit);
     merged
+}
+
+/// Total order over [`SearchHit`]s: score descending, NaN scores sunk to
+/// the worst rank (see [`merge_hits`]), [`PointId`] ascending as the final
+/// tiebreak so no two distinct hits ever compare `Equal`.
+fn compare_hits(a: &SearchHit, b: &SearchHit) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+
+    match (a.score.is_nan(), b.score.is_nan()) {
+        (false, false) => b.score.total_cmp(&a.score),
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater, // a is NaN → a ranks worse → sorts after b
+        (false, true) => Ordering::Less,    // b is NaN → b ranks worse → a sorts before b
+    }
+    .then_with(|| a.id.cmp(&b.id))
 }

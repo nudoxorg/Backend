@@ -10,11 +10,11 @@ use std::sync::Arc;
 
 use common::*;
 use heart::PackageId;
-use vector::{
+use registry::vector::{
 	AdmissionBudget, JinaCodeV2, NAMESPACE_NUDOX, Payload, PayloadValue, SearchHit, SourceTag,
 	VectorPoint, VectorStore,
 };
-use vector::local::{HotSetManager, LocalShardStore, WorkingSet, merge_hits};
+use registry::vector::local::{HotSetManager, LocalShardStore, WorkingSet, merge_hits};
 
 fn pkg(name: &str) -> PackageId {
 	PackageId::from_name(&NAMESPACE_NUDOX, name.as_bytes())

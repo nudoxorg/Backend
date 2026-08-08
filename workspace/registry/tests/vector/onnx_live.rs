@@ -14,11 +14,11 @@
 
 #![cfg(feature = "onnx")]
 
-use vector::recipe::TokenCounter;
-use vector::{EmbedRole, Embedder, JinaCodeV2};
-use vector::embed::runtime::{FastembedOrt, RuntimeConfig};
-use vector::embed::tokens::HfTokenCounter;
-use vector::embed::weights::WeightsSpec;
+use registry::vector::recipe::TokenCounter;
+use registry::vector::{EmbedRole, Embedder, JinaCodeV2};
+use registry::vector::embed::runtime::{FastembedOrt, RuntimeConfig};
+use registry::vector::embed::tokens::HfTokenCounter;
+use registry::vector::embed::weights::WeightsSpec;
 
 const ENV_DIR: &str = "NUDOX_EMBED_MODEL_DIR";
 

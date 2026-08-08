@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use vector::{JinaCodeV2, StoreError, VectorStore};
-use vector::local::{LocalShardStore, SCHEMA_FILE, open_or_create, upsert_raw};
+use registry::vector::{JinaCodeV2, StoreError, VectorStore};
+use registry::vector::local::{LocalShardStore, SCHEMA_FILE, open_or_create, upsert_raw};
 
 // ─── Area 1: Kill-9 shaped durability ────────────────────────────────────────
 
@@ -76,7 +76,7 @@ async fn abrupt_drop_unflushed_second_batch_wal_semantics() {
         store.flush().await.unwrap();
         // Second batch: NOT flushed — WAL only; then abrupt drop.
         let extra: Vec<_> = (N..N + M)
-            .map(|i| vector::VectorPoint {
+            .map(|i| registry::vector::VectorPoint {
                 id: pid(i as u128),
                 vector: graded(i),
                 payload: payload("rust", "batch2"),
@@ -284,7 +284,7 @@ async fn schema_deleted_with_edge_data_present_recovers() {
 /// Search results must be identical: same ids, same order, exact f32 scores.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upsert_raw_and_upsert_give_identical_search_results() {
-    use vector::VectorPoint;
+    use registry::vector::VectorPoint;
 
     let dir_actor = tempfile::tempdir().unwrap();
     let dir_raw = tempfile::tempdir().unwrap();

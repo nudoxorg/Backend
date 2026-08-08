@@ -6,13 +6,13 @@ mod support;
 use std::sync::Arc;
 
 use support::*;
-use vector::{EmbeddingModel, JinaCodeV2, Metric};
-use vector::key as vkey;
-use vector::recipe::VectorName;
-use vector::embed::mock::{MockEmbedder, deterministic_unit_vector};
-use vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
-use vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore};
-use vector::embed::stage;
+use registry::vector::{EmbeddingModel, JinaCodeV2, Metric};
+use registry::vector::key as vkey;
+use registry::vector::recipe::VectorName;
+use registry::vector::embed::mock::{MockEmbedder, deterministic_unit_vector};
+use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
+use registry::vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore};
+use registry::vector::embed::stage;
 
 struct Harness {
 	mock: Arc<MockEmbedder>,

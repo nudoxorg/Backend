@@ -445,29 +445,50 @@ mod tests {
         assert_eq!(chunks[1].len(), 1, "second chunk: 1");
     }
 
-    /// Token-cap boundary math: texts of 400 chars each cost 400/4 + 1 = 101
-    /// approx tokens per the `voyage.rs` formula. With MAX_APPROX_TOKENS = 120_000:
+    /// Token-cap boundary math, isolated from the text-count cap.
     ///
-    ///   floor(120_000 / 101) = 1188 texts fit (1188 × 101 = 119_988 ≤ 120_000).
-    ///   1189 texts (1189 × 101 = 120_089 > 120_000) → must split.
+    /// `chunk_texts`'s own contract (see its doc comment) is that BOTH limits
+    /// bind simultaneously: ≤ [`MAX_TEXTS_PER_REQUEST`] (1000) texts AND ≤
+    /// [`MAX_APPROX_TOKENS_PER_REQUEST`] (120_000) approx tokens. A batch of
+    /// 400-char texts costs `400/4+1 = 101` tokens each, and
+    /// `floor(120_000/101) = 1188` of them fit the *token* budget — but 1188
+    /// exceeds the 1000-text cap, so a batch that size can never land in one
+    /// chunk regardless of token math: the text-count cap forces a split at
+    /// 1000, then again to catch the remaining 188. (This was this test's
+    /// original bug: it asserted "1188 texts → 1 chunk" without accounting
+    /// for the text-count cap that binds first — the chunker was correct,
+    /// producing 2 chunks, and the test's expectation was wrong.)
     ///
-    /// Pin: 1188 texts of 400 chars → 1 chunk. 1189 → ≥ 2 chunks.
+    /// To exercise the token cap on its own, texts must cost enough tokens
+    /// that the token cap binds *before* 1000 texts are reached. 796-char
+    /// texts cost `796/4+1 = 200` tokens each: `floor(120_000/200) = 600`
+    /// texts fit exactly (`600 × 200 = 120_000 ≤ 120_000`), and 600 < 1000
+    /// keeps the text-count cap out of play. 601 texts
+    /// (`601 × 200 = 120_200 > 120_000`) must split.
     #[test]
-    fn token_cap_exact_boundary_math_1188_fits() {
-        const LEN: usize = 400;
-        const COST: usize = LEN / 4 + 1; // = 101
-        const MAX_FIT: usize = MAX_APPROX_TOKENS_PER_REQUEST / COST; // = 1188
+    fn token_cap_exact_boundary_math_600_fits() {
+        const LEN: usize = 796;
+        const COST: usize = LEN / 4 + 1; // = 200
+        const MAX_FIT: usize = MAX_APPROX_TOKENS_PER_REQUEST / COST; // = 600
 
         // Sanity-check the constants so the test fails loudly if the formula changes.
-        assert_eq!(COST, 101, "cost formula: 400/4+1=101");
-        assert_eq!(MAX_FIT, 1188, "floor(120000/101)=1188");
+        assert_eq!(COST, 200, "cost formula: 796/4+1=200");
+        assert_eq!(MAX_FIT, 600, "floor(120000/200)=600");
         assert!(
             MAX_FIT * COST <= MAX_APPROX_TOKENS_PER_REQUEST,
-            "1188 texts must fit: {} * {} = {} ≤ {}",
+            "600 texts must fit: {} * {} = {} ≤ {}",
             MAX_FIT,
             COST,
             MAX_FIT * COST,
             MAX_APPROX_TOKENS_PER_REQUEST,
+        );
+        // The whole point of this test is the TOKEN cap; guard against the
+        // TEXT-count cap silently taking over again (which is exactly how
+        // this test broke the first time).
+        assert!(
+            MAX_FIT < MAX_TEXTS_PER_REQUEST,
+            "MAX_FIT ({MAX_FIT}) must stay under MAX_TEXTS_PER_REQUEST \
+             ({MAX_TEXTS_PER_REQUEST}), or this test stops isolating the token cap"
         );
 
         let text = "B".repeat(LEN);
@@ -476,7 +497,7 @@ mod tests {
         assert_eq!(
             chunks.len(),
             1,
-            "1188 texts of 400 chars (101 tokens each) must fit in 1 chunk"
+            "600 texts of 796 chars (200 tokens each) must fit in 1 chunk"
         );
         assert_eq!(chunks[0].len(), MAX_FIT);
     }

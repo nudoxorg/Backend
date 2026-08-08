@@ -5,15 +5,15 @@
 use std::sync::Arc;
 
 use heart::ContentHash;
-use vector::EmbedRole;
-use vector::embed::mock::MockEmbedder;
-use vector::embed::scheduler::{
+use registry::vector::EmbedRole;
+use registry::vector::embed::mock::MockEmbedder;
+use registry::vector::embed::scheduler::{
 	CancelGroup, EmbedHandle, EmbedScheduler, Priority, SchedulerConfig, SchedulerError,
 };
 
 fn key(label: &str) -> ContentHash { ContentHash::of_bytes(label.as_bytes()) }
 
-fn spawn_mock() -> (Arc<MockEmbedder>, EmbedHandle<vector::JinaCodeV2>) {
+fn spawn_mock() -> (Arc<MockEmbedder>, EmbedHandle<registry::vector::JinaCodeV2>) {
 	let mock = Arc::new(MockEmbedder::new());
 	let handle = EmbedScheduler::spawn(Arc::clone(&mock), SchedulerConfig::default());
 	(mock, handle)

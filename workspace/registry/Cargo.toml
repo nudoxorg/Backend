@@ -10,6 +10,88 @@ workspace = true
 [lib]
 path = "lib.rs"
 
+# ── Integration tests ─────────────────────────────────────────────────────────
+# Cargo's autodiscovery globs `tests/*.rs` and `tests/*/main.rs` only. Every
+# vector test lives at `tests/vector/<name>.rs`, which matches neither, so all 16
+# were invisible: no target, no build, no run — and no error either. `registry`
+# had exactly one target (`lib`) and reported a clean suite while these had never
+# been compiled once.
+#
+# They are declared explicitly rather than moved up a directory so that the two
+# shared support modules keep working (`tests/vector/common/mod.rs` and
+# `tests/vector/support/mod.rs` resolve as `mod common;` / `mod support;` from any
+# crate root in the same directory), and so that deleting or renaming a file
+# fails the manifest loudly instead of silently dropping its coverage. This is
+# the same treatment `index` gives `tests/object_pack/*.rs` for the same reason.
+#
+# Each file carries its own `#![cfg(feature = "…")]`, so the target still builds
+# (as an empty crate) when its plane is disabled; no `required-features` here to
+# avoid stating that gate in two places.
+
+[[test]]
+name = "vector_store_shard"
+path = "tests/vector/store_shard.rs"
+
+[[test]]
+name = "vector_pack_unpack"
+path = "tests/vector/pack_unpack.rs"
+
+[[test]]
+name = "vector_depshard_install"
+path = "tests/vector/depshard_install.rs"
+
+[[test]]
+name = "vector_fanout_hotset"
+path = "tests/vector/fanout_hotset.rs"
+
+[[test]]
+name = "vector_gate"
+path = "tests/vector/gate_tests.rs"
+
+[[test]]
+name = "vector_scheduler"
+path = "tests/vector/scheduler_tests.rs"
+
+[[test]]
+name = "vector_stage"
+path = "tests/vector/stage_tests.rs"
+
+[[test]]
+name = "vector_weights"
+path = "tests/vector/weights_tests.rs"
+
+[[test]]
+name = "vector_onnx_live"
+path = "tests/vector/onnx_live.rs"
+
+[[test]]
+name = "vector_adversarial_depshard"
+path = "tests/vector/adversarial_depshard.rs"
+
+[[test]]
+name = "vector_adversarial_durability"
+path = "tests/vector/adversarial_durability.rs"
+
+[[test]]
+name = "vector_adversarial_fanout"
+path = "tests/vector/adversarial_fanout.rs"
+
+[[test]]
+name = "vector_adversarial_hotset_lock_compact"
+path = "tests/vector/adversarial_hotset_lock_compact.rs"
+
+[[test]]
+name = "vector_adversarial_pack"
+path = "tests/vector/adversarial_pack.rs"
+
+[[test]]
+name = "vector_adversarial_scheduler_gate"
+path = "tests/vector/adversarial_scheduler_gate.rs"
+
+[[test]]
+name = "vector_adversarial_stage"
+path = "tests/vector/adversarial_stage.rs"
+
 # ── Vector-plane features (folded-in `vector` crate) ──────────────────────────
 # `core` (always-on) is the pure shared vector vocabulary. The impl planes are
 # gated: `remote` (qdrant-client + Voyage/rerank) is ON BY DEFAULT since the
@@ -79,7 +161,13 @@ fastembed   = { version = "5.17.3", optional = true }
 tokenizers  = { version = "0.22.2", optional = true }
 
 [dev-dependencies]
-tokio      = { version = "1.52", features = ["full"] }
+# `test-util` is NOT part of `full`, and without it `#[tokio::test(start_paused =
+# true)]` expands to a `Builder::start_paused` call that does not exist — 17
+# errors across the gate/scheduler/stage suites, all reported against unrelated
+# lines because the macro's span points at the test body. Every paused-clock test
+# in tests/vector/ needs it; they had never been compiled, so nothing had ever
+# demanded it.
+tokio      = { version = "1.52", features = ["full", "test-util"] }
 tempfile   = "3.27"
 serde_json = "1.0"
 smol_str   = "0.2"
