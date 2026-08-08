@@ -71,6 +71,28 @@ pub struct SpaceTokens {
     pub border_width: Pixels,
     /// 2 px — focus ring only (§10.3 `ring`)
     pub focus_ring_width: Pixels,
+
+    /// 640 px — the **measure**: the widest a run of prose is allowed to get.
+    ///
+    /// This is a typographic constraint, not a layout preference. A line of
+    /// text longer than roughly 75 characters costs the reader the return
+    /// sweep: the eye loses which line it came from and re-reads or skips.
+    /// The reader column is ~1150 px wide on a maximised window, which at the
+    /// `prose` size is ~140 characters — nearly twice the usable limit, and
+    /// the reason our prose scanned worse than docs.rs despite carrying the
+    /// same words.
+    ///
+    /// 640 px at the 15 px `prose` size is ~85 characters — the wide end of
+    /// the comfortable band, chosen over a tighter 65 because documentation
+    /// carries inline code and fully-qualified paths that read badly once
+    /// wrapped. It is also exactly `omni_search::OVERLAY_WIDTH`, so the
+    /// reading column and the search overlay present the same width of text.
+    ///
+    /// It lives on `SpaceTokens` rather than in the view because *every*
+    /// surface that sets prose (documentation blocks, callouts, empty-state
+    /// descriptions) has to agree on it, and a number retyped per view is a
+    /// number that drifts.
+    pub measure: Pixels,
 }
 
 impl SpaceTokens {
@@ -93,6 +115,8 @@ impl SpaceTokens {
 
         border_width: px(1.0),
         focus_ring_width: px(2.0),
+
+        measure: px(640.0),
     };
 }
 
@@ -129,6 +153,23 @@ pub struct TypeScale {
     pub title: TypeToken,
     /// 13/20 regular — default chrome.
     pub ui: TypeToken,
+    /// 15/24 regular — **reading** text: documentation prose, callout bodies.
+    ///
+    /// # Why prose is not `ui`
+    ///
+    /// It used to be. Documentation paragraphs were set in `ui` — the token
+    /// designed for buttons, labels and table chrome — and inherited its
+    /// 13 px size and 1.54 leading. Chrome type is tuned to be *compact and
+    /// dismissable*; reading type is tuned to be *followed for minutes*. They
+    /// want opposite things from leading, and sharing one token meant prose
+    /// silently got the chrome answer.
+    ///
+    /// The concrete symptom was a flat page: with body, inline code and links
+    /// all within two points of each other and all on the same 20 px rhythm,
+    /// nothing in a paragraph had rank. Giving reading text its own size and a
+    /// 1.6 leading re-opens the gap between prose and the `dense`/`caption`
+    /// metadata around it, which is what makes hierarchy visible.
+    pub prose: TypeToken,
     /// 12/16 regular — table rows, logs, refs.
     pub dense: TypeToken,
     /// 11/16 medium, +0.2 tracking — overlines, section labels, shortcuts.
@@ -139,8 +180,13 @@ pub struct TypeScale {
 
 impl TypeScale {
     /// The canonical type scale.  Font-size ordering (smallest → largest):
-    /// `caption` (11) < `dense` (12) < `mono` (12.5) < `ui` (13) < `title` (15) < `display` (20).
-    /// Every `line_height` > its `size`, ensuring legibility and consistent rhythm.
+    /// `caption` (11) < `dense` (12) < `mono` (12.5) < `ui` (13) <
+    /// `prose` (15) = `title` (15) < `display` (20).
+    ///
+    /// `prose` and `title` deliberately share a size and are told apart by
+    /// weight (400 vs 600) and leading (24 vs 22): a heading immediately above
+    /// a paragraph should read as the *same voice speaking louder*, not as a
+    /// different size of text. Every `line_height` > its `size`.
     pub const STANDARD: TypeScale = TypeScale {
         display: TypeToken {
             size: px(20.0),
@@ -157,6 +203,12 @@ impl TypeScale {
         ui: TypeToken {
             size: px(13.0),
             line_height: px(20.0),
+            weight: 400,
+            tracking: 0.0,
+        },
+        prose: TypeToken {
+            size: px(15.0),
+            line_height: px(24.0),
             weight: 400,
             tracking: 0.0,
         },

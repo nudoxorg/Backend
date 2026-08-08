@@ -23,6 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
+use nudox_engine::ProducerLanguage;
+
 // ---------------------------------------------------------------------------
 // Variable names
 // ---------------------------------------------------------------------------
@@ -35,6 +37,8 @@ pub const ENV_PACKAGE_ROOT: &str = "NUDOX_PACKAGE_ROOT";
 pub const ENV_PACKAGE_NAME: &str = "NUDOX_PACKAGE_NAME";
 /// Optional version hint for that package.
 pub const ENV_PACKAGE_VERSION: &str = "NUDOX_PACKAGE_VERSION";
+/// Optional source-language hint for that package. Defaults to `rust`.
+pub const ENV_PACKAGE_LANGUAGE: &str = "NUDOX_PACKAGE_LANGUAGE";
 
 // ---------------------------------------------------------------------------
 // Choice
@@ -55,6 +59,13 @@ pub struct PackageChoice {
     pub name: String,
     /// Version hint, same caveat as [`PackageChoice::name`].
     pub version: String,
+    /// Which producer should lower this package.
+    ///
+    /// Defaults to [`ProducerLanguage::Rust`] when `NUDOX_PACKAGE_LANGUAGE` is
+    /// unset — every fixture and every real corpus run before this variable
+    /// existed was Rust, so an unset variable must keep meaning exactly that,
+    /// not silently start meaning "whichever language happens to be first".
+    pub language: ProducerLanguage,
 }
 
 /// What lindsey should load at startup.
@@ -75,6 +86,9 @@ pub enum CorpusError {
     MissingRoot,
     /// The root was given but is not a directory we can read.
     RootNotADirectory { root: PathBuf },
+    /// `NUDOX_PACKAGE_LANGUAGE` held something [`parse_language`] does not
+    /// recognise.
+    UnknownLanguage { value: String },
 }
 
 impl std::fmt::Display for CorpusError {
@@ -92,6 +106,11 @@ impl std::fmt::Display for CorpusError {
                 f,
                 "{ENV_PACKAGE_ROOT}={} is not a readable directory",
                 root.display(),
+            ),
+            CorpusError::UnknownLanguage { value } => write!(
+                f,
+                "{ENV_PACKAGE_LANGUAGE}={value:?} is not a known language; expected one of \
+                 \"rust\", \"go\", \"java\", \"csharp\", \"python\", \"typescript\", \"cpp\"",
             ),
         }
     }
@@ -148,13 +167,40 @@ pub fn select(
             let name = lookup(ENV_PACKAGE_NAME).unwrap_or_else(|| default_name(&root));
             let version =
                 lookup(ENV_PACKAGE_VERSION).unwrap_or_else(|| "0.0.0".to_owned());
+            let language = match lookup(ENV_PACKAGE_LANGUAGE) {
+                Some(v) => parse_language(&v)?,
+                None => ProducerLanguage::Rust,
+            };
             Ok(CorpusChoice::Package(PackageChoice {
                 root,
                 name,
                 version,
+                language,
             }))
         }
         _ => Err(CorpusError::UnknownKind { value: kind }),
+    }
+}
+
+/// Parse a [`ProducerLanguage`] from `NUDOX_PACKAGE_LANGUAGE`.
+///
+/// Case- and padding-insensitive, matching [`select`]'s handling of
+/// `NUDOX_CORPUS`. An unrecognised value is a loud [`CorpusError`], for the
+/// same reason a mistyped corpus kind is: a language that silently falls back
+/// to Rust would document one producer, load a different one, and look like a
+/// search or lowering bug rather than a typo.
+fn parse_language(value: &str) -> Result<ProducerLanguage, CorpusError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "rust" => Ok(ProducerLanguage::Rust),
+        "go" => Ok(ProducerLanguage::Go),
+        "java" => Ok(ProducerLanguage::Java),
+        "csharp" | "c#" => Ok(ProducerLanguage::CSharp),
+        "python" => Ok(ProducerLanguage::Python),
+        "typescript" | "ts" => Ok(ProducerLanguage::TypeScript),
+        "cpp" | "c++" | "c" => Ok(ProducerLanguage::Cpp),
+        _ => Err(CorpusError::UnknownLanguage {
+            value: value.to_owned(),
+        }),
     }
 }
 
@@ -221,6 +267,7 @@ mod tests {
                 root: PathBuf::from("/tmp/axum"),
                 name: "axum".to_owned(),
                 version: "0.0.0".to_owned(),
+                language: ProducerLanguage::Rust,
             }),
         );
     }
@@ -299,5 +346,81 @@ mod tests {
             panic!("expected a package choice");
         };
         assert_eq!(p.name, "axum");
+    }
+
+    // -----------------------------------------------------------------
+    // NUDOX_PACKAGE_LANGUAGE
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn an_unset_language_defaults_to_rust() {
+        let choice = select(env(&[(ENV_PACKAGE_ROOT, "/tmp/axum")]), any_dir).unwrap();
+        let CorpusChoice::Package(p) = choice else {
+            panic!("expected a package choice");
+        };
+        assert_eq!(p.language, ProducerLanguage::Rust);
+    }
+
+    #[test]
+    fn a_named_language_is_parsed() {
+        let choice = select(
+            env(&[
+                (ENV_PACKAGE_ROOT, "/tmp/oxc-project"),
+                (ENV_PACKAGE_LANGUAGE, "typescript"),
+            ]),
+            any_dir,
+        )
+        .unwrap();
+        let CorpusChoice::Package(p) = choice else {
+            panic!("expected a package choice");
+        };
+        assert_eq!(p.language, ProducerLanguage::TypeScript);
+    }
+
+    #[test]
+    fn language_parsing_tolerates_case_padding_and_aliases() {
+        for (raw, expected) in [
+            ("  Rust ", ProducerLanguage::Rust),
+            ("GO", ProducerLanguage::Go),
+            ("Java", ProducerLanguage::Java),
+            ("csharp", ProducerLanguage::CSharp),
+            ("C#", ProducerLanguage::CSharp),
+            ("Python", ProducerLanguage::Python),
+            ("TypeScript", ProducerLanguage::TypeScript),
+            ("ts", ProducerLanguage::TypeScript),
+            ("cpp", ProducerLanguage::Cpp),
+            ("C++", ProducerLanguage::Cpp),
+        ] {
+            let choice = select(
+                env(&[(ENV_PACKAGE_ROOT, "/tmp/pkg"), (ENV_PACKAGE_LANGUAGE, raw)]),
+                any_dir,
+            )
+            .unwrap();
+            let CorpusChoice::Package(p) = choice else {
+                panic!("expected a package choice for {raw:?}");
+            };
+            assert_eq!(p.language, expected, "parsing {raw:?}");
+        }
+    }
+
+    /// Same principle as `an_unknown_kind_is_loud`: a mistyped language must
+    /// not silently become Rust and quietly document/lower the wrong thing.
+    #[test]
+    fn an_unknown_language_is_loud() {
+        let err = select(
+            env(&[
+                (ENV_PACKAGE_ROOT, "/tmp/pkg"),
+                (ENV_PACKAGE_LANGUAGE, "rustlang"),
+            ]),
+            any_dir,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            CorpusError::UnknownLanguage {
+                value: "rustlang".to_owned(),
+            },
+        );
+        assert!(err.to_string().contains("expected"));
     }
 }

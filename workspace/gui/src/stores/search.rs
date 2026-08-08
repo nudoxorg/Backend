@@ -820,7 +820,7 @@ mod tests {
         assert_eq!(prepared.len(), 2);
     }
 
-    /// `PreparedRow::from_hit` splits qualified names correctly.
+    /// `PreparedRow::prepare` splits qualified names correctly.
     #[test]
     fn prepared_row_splits_qualified_name() {
         use nudox_engine::wire::{HitRow, KindTag, Provenance, SharedStr};
@@ -832,12 +832,12 @@ mod tests {
             provenance: Provenance::TrustedLocal,
             score: 1.0,
         };
-        let row = PreparedRow::from_hit(&hit);
+        let row = &PreparedRow::prepare(std::slice::from_ref(&hit))[0];
         assert_eq!(row.path.as_ref(), "serde_json::value::");
         assert_eq!(row.leaf.as_ref(), "Value");
     }
 
-    /// `PreparedRow::from_hit` handles a bare name (no `::` separator).
+    /// `PreparedRow::prepare` handles a bare name (no separator).
     #[test]
     fn prepared_row_bare_name_has_empty_path() {
         use nudox_engine::wire::{HitRow, KindTag, Provenance, SharedStr};
@@ -849,7 +849,7 @@ mod tests {
             provenance: Provenance::TrustedLocal,
             score: 1.0,
         };
-        let row = PreparedRow::from_hit(&hit);
+        let row = &PreparedRow::prepare(std::slice::from_ref(&hit))[0];
         assert!(row.path.is_empty());
         assert_eq!(row.leaf.as_ref(), "Value");
     }

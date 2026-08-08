@@ -150,6 +150,31 @@ impl SearchMode {
             SearchMode::Semantic => "Semantic",
         }
     }
+
+    /// Whether `section` is shown while this mode is selected.
+    ///
+    /// # Why the mode is a *presentation* filter and not a query parameter
+    ///
+    /// It would be better if it were a query parameter, and it is not one:
+    /// `nudox_engine::SearchQuery` carries `{ text, kinds, limit }` and no mode
+    /// field, so `SearchStore`'s bridge has nowhere to put it (see the `_mode`
+    /// argument on `SearchEngine::search`). The engine always fans out to all
+    /// three sections and always answers the semantic one with an empty batch.
+    ///
+    /// Given that, the chips had exactly two possible honest meanings: do
+    /// nothing at all (what they did — four chips, drawn since the first
+    /// screenshot run, that no frame ever showed doing anything), or scope
+    /// which of the three fused sections the reader is looking at. This is the
+    /// second. It is real, it is visible, and it does not pretend the engine
+    /// was asked a different question than it was.
+    pub fn shows(self, section: Section) -> bool {
+        match self {
+            SearchMode::Auto => true,
+            SearchMode::Name => section == Section::Name,
+            SearchMode::Type => section == Section::Type,
+            SearchMode::Semantic => section == Section::Semantic,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -171,6 +196,69 @@ pub struct ScopeChip {
 // PreparedRow — the render-ready hit
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RowQualifier — the reason a row shows (or does not show) a module path
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Why a rendered hit row shows the module path it shows.
+///
+/// # Why this is a field and not a rendering decision
+///
+/// Seven consecutive search rows once rendered as exactly `memchr` over
+/// `mod memchr`, with identical badges, because the row template drew only the
+/// leaf name and the leaf name was all the row carried
+/// (GUI-WORKORDER-2 F1 / LIMITATIONS.md L20). Adding "also draw the path" to
+/// the template would have fixed that frame and left the *type* able to
+/// express an ambiguous row, so the next section, the next mode, and the next
+/// view would each have to remember. Instead a row cannot be built at all
+/// except through [`PreparedRow::prepare`], which sees the whole delivered
+/// batch and therefore is the only thing in the program that *can* answer
+/// "is this leaf name enough?".
+///
+/// AGENTS-DOCTRINE §3: the illegal state — a row that does not know whether it
+/// is ambiguous — is now unrepresentable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RowQualifier {
+    /// The leaf name is unique among the rows delivered with it, so the leaf
+    /// already identifies this row and a path would be noise.
+    UniqueLeaf,
+    /// The leaf collides with at least one sibling row.
+    ///
+    /// `tail` is the part of the module path that actually differs between the
+    /// namesakes, already terminated with the producer's own separator.
+    /// `elided_head` records that a prefix every namesake shared was dropped —
+    /// the disambiguating segment is the valuable one, so `…/avx2/` beats a
+    /// truncated `memchr::arch::x8…`. Empty `tail` means the collision is with
+    /// a row that has no path segments at all (a package root, or a producer
+    /// that recorded no path); the row then relies on the *absence* of a path
+    /// tier to distinguish it, which is still a visible difference.
+    Disambiguated {
+        /// The differing tail of the path, with its trailing separator.
+        tail: SharedString,
+        /// Whether a shared head was elided (renders as a leading `…`).
+        elided_head: bool,
+    },
+}
+
+impl RowQualifier {
+    /// The extra text the row draws below its signature, if any.
+    ///
+    /// Pre-formatted at prepare time; the render path only clones the
+    /// `SharedString` (§1.1.4).
+    pub fn text(&self) -> Option<SharedString> {
+        match self {
+            RowQualifier::UniqueLeaf => None,
+            RowQualifier::Disambiguated { tail, .. } if tail.is_empty() => None,
+            RowQualifier::Disambiguated { tail, elided_head } => Some(if *elided_head {
+                SharedString::from(format!("…{tail}"))
+            } else {
+                tail.clone()
+            }),
+        }
+    }
+}
+
 /// A [`HitRow`] converted once, at ingest, into exactly what `render` draws.
 ///
 /// The wire type is render-*ready* in the sense that it needs no I/O, but it is
@@ -180,14 +268,27 @@ pub struct ScopeChip {
 /// name carries its module path inline. Doing any of that per frame would
 /// defeat GPUI's shaped-text cache, so it happens here instead — once per hit,
 /// on the generation that produced it.
+///
+/// # Construction
+///
+/// There is deliberately no public single-row constructor: see
+/// [`RowQualifier`]. [`PreparedRow::prepare`] is the only way in.
 #[derive(Clone, Debug)]
 pub struct PreparedRow {
     /// Stable identity, emitted on open.
     pub key: SymbolKey,
     /// The symbol's own name, without its path prefix.
     pub leaf: SharedString,
-    /// The module path prefix, or empty when the name had none.
+    /// The full module path prefix, with its trailing separator, or empty when
+    /// the producer's display name carried none.
+    ///
+    /// This is the *whole* path, kept because the leading segment is the
+    /// package name that the cross-package label reads. What the row draws as
+    /// its disambiguating tier is [`PreparedRow::qualifier`], which may be
+    /// shorter.
     pub path: SharedString,
+    /// Whether — and with what — this row is distinguished from its namesakes.
+    pub qualifier: RowQualifier,
     /// Signature preview, already in the component's token vocabulary.
     pub sig: Vec<UiSigToken>,
     /// Resolved kind, or `None` for a discriminant this binary does not know
@@ -200,8 +301,11 @@ pub struct PreparedRow {
 }
 
 impl PreparedRow {
-    /// Convert one wire hit.
-    pub fn from_hit(hit: &HitRow) -> PreparedRow {
+    /// Convert one wire hit, before the batch-wide disambiguation pass.
+    ///
+    /// Private on purpose — a row built alone cannot know whether its leaf
+    /// name is unique, so it would have to guess, and guessing is what F1 was.
+    fn ingest(hit: &HitRow) -> PreparedRow {
         let (path, leaf) = split_qualified_name(&hit.display_name);
         let kind = match hit.kind {
             KindTag::Known(d) => LocalKindDiscriminant::from_u16(d.as_u16()),
@@ -218,6 +322,8 @@ impl PreparedRow {
             key: hit.key.clone(),
             leaf,
             path,
+            // Overwritten by `prepare`, which is the only caller.
+            qualifier: RowQualifier::UniqueLeaf,
             sig: hit.sig_preview.iter().map(prepare_sig_token).collect(),
             kind,
             unknown_kind_label,
@@ -225,25 +331,184 @@ impl PreparedRow {
         }
     }
 
-    /// Convert a whole section's worth of hits.
+    /// Convert a whole section's worth of hits, and make them tell each other
+    /// apart.
     ///
     /// This is the call `SearchStore` makes in `apply_search_event`, so that
     /// the cost lands on the arriving generation rather than on every frame.
+    ///
+    /// # The invariant
+    ///
+    /// **No two rows in the returned batch render the same text**, whenever
+    /// the engine gave us anything at all to tell them apart with. See
+    /// [`PreparedRow::render_identity`] for the exact text compared, and
+    /// `tests/screenshots.rs` for the assertion over the real corpus.
     pub fn prepare(hits: &[HitRow]) -> Arc<[PreparedRow]> {
-        hits.iter().map(PreparedRow::from_hit).collect()
+        let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest).collect();
+
+        // Segment every row's path once. `segments[i]` is the *path* only; the
+        // leaf lives in `rows[i].leaf`.
+        let segmented: Vec<(Vec<String>, &'static str)> = hits
+            .iter()
+            .map(|h| path_segments(&h.display_name))
+            .collect();
+
+        // Group row indices by leaf name. Only groups larger than one need a
+        // qualifier at all.
+        let mut by_leaf: std::collections::HashMap<SharedString, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (ix, row) in rows.iter().enumerate() {
+            by_leaf.entry(row.leaf.clone()).or_default().push(ix);
+        }
+
+        for (_leaf, group) in by_leaf {
+            if group.len() < 2 {
+                continue;
+            }
+            // Elide only the head that *every namesake with a path* shares,
+            // and never so much that one of them is left with nothing: the
+            // disambiguating segment is precisely the one that must survive.
+            let with_path: Vec<usize> = group
+                .iter()
+                .copied()
+                .filter(|&ix| !segmented[ix].0.is_empty())
+                .collect();
+            let common = common_head_len(&segmented, &with_path);
+
+            for &ix in &group {
+                let (segs, sep) = &segmented[ix];
+                let keep = &segs[common.min(segs.len())..];
+                let tail = if keep.is_empty() {
+                    SharedString::default()
+                } else {
+                    SharedString::from(format!("{}{sep}", keep.join(sep)))
+                };
+                rows[ix].qualifier = RowQualifier::Disambiguated {
+                    tail,
+                    elided_head: common > 0 && !segs.is_empty(),
+                };
+            }
+        }
+
+        rows.into()
+    }
+
+    /// Exactly the text this row draws, joined with a separator no symbol name
+    /// can contain.
+    ///
+    /// This is the value the "no two rendered rows are textually identical"
+    /// assertion compares. It exists as a method rather than being rebuilt in
+    /// the test so that the test cannot drift from the template: adding a tier
+    /// to [`crate::views::omni_search`]'s row without adding it here is the one
+    /// way this guard could quietly stop guarding, and that is a review-visible
+    /// edit in this file rather than an invisible one in a view.
+    pub fn render_identity(&self) -> String {
+        let mut out = String::with_capacity(64);
+        out.push_str(&self.leaf);
+        out.push('\u{1}');
+        if let Some(q) = self.qualifier.text() {
+            out.push_str(&q);
+        }
+        out.push('\u{1}');
+        for token in &self.sig {
+            match token {
+                UiSigToken::Kw(s) | UiSigToken::Punct(s) => out.push_str(s),
+                UiSigToken::Ident(s) | UiSigToken::Generic(s) => out.push_str(s),
+                UiSigToken::Ty { text, .. } => out.push_str(text),
+                UiSigToken::Ws => out.push(' '),
+                // `SigToken` is `#[non_exhaustive]`; an unmatched token still
+                // has to contribute *something*, or a future variant could
+                // make two different signatures compare equal and silently
+                // weaken this guard.
+                other => out.push_str(&format!("{other:?}")),
+            }
+        }
+        out.push('\u{1}');
+        match self.kind {
+            Some(k) => out.push_str(k.short_label()),
+            None => out.push_str(&self.unknown_kind_label),
+        }
+        out
     }
 }
 
-/// Split `a::b::c` into (`"a::b::"`, `"c"`).
+/// Length of the path prefix shared by every listed row, capped so that each
+/// of them keeps at least one segment.
+///
+/// Returns `0` for fewer than two rows: with nothing to compare against there
+/// is no "shared" head, and eliding one row's own path would delete the only
+/// thing it has to say.
+fn common_head_len(segmented: &[(Vec<String>, &'static str)], group: &[usize]) -> usize {
+    if group.len() < 2 {
+        return 0;
+    }
+    let shortest = group
+        .iter()
+        .map(|&ix| segmented[ix].0.len())
+        .min()
+        .unwrap_or(0);
+    // `shortest - 1`: the shortest member must retain a segment, otherwise it
+    // renders as "no path" and reads like the unqualified case.
+    let ceiling = shortest.saturating_sub(1);
+    let first = &segmented[group[0]].0;
+    let mut common = 0;
+    while common < ceiling
+        && group
+            .iter()
+            .all(|&ix| segmented[ix].0[common] == first[common])
+    {
+        common += 1;
+    }
+    common
+}
+
+/// Split a display name into its path segments and the separator the producer
+/// used, discarding the leaf.
+///
+/// # Why two separators
+///
+/// `nudox-engine`'s `qualified_display_name` builds the qualified form from
+/// `PackageIndexes::path_of`, whose monikers are **dot**-separated
+/// (`memchr.arch.x86_64.avx2.memchr`), while a hand-built or cross-package
+/// name is `::`-separated. Splitting on only `::` is why a fully-qualified
+/// name arrived, was not recognised as qualified, and rendered as one enormous
+/// leaf with an empty path tier — visible in `.shots/memchr/04-search-hits.png`
+/// before this change.
+///
+/// The separator that was found is returned rather than normalised, because
+/// rewriting `.` to `::` would be a claim about the language that this layer
+/// has no way to check — lindsey documents seven of them.
+fn path_segments(name: &str) -> (Vec<String>, &'static str) {
+    let (sep, split): (&'static str, Vec<&str>) = if name.contains("::") {
+        ("::", name.split("::").collect())
+    } else if name.contains('.') {
+        (".", name.split('.').collect())
+    } else {
+        ("::", vec![name])
+    };
+    let mut segments: Vec<String> = split.into_iter().map(|s| s.to_owned()).collect();
+    // The last piece is the leaf, which lives on `PreparedRow::leaf`.
+    segments.pop();
+    (segments, sep)
+}
+
+/// Split `a::b::c` into (`"a::b::"`, `"c"`), understanding both the `::` and
+/// the `.` conventions — see [`path_segments`].
 ///
 /// `HitRow::display_name` "may include path prefix for disambiguation" and the
 /// wire carries no separate path field, so the split happens here. Done at
 /// ingest, never in render.
 pub fn split_qualified_name(name: &str) -> (SharedString, SharedString) {
-    match name.rfind("::") {
-        Some(ix) => (
+    if let Some(ix) = name.rfind("::") {
+        return (
             SharedString::from(name[..ix + 2].to_owned()),
             SharedString::from(name[ix + 2..].to_owned()),
+        );
+    }
+    match name.rfind('.') {
+        Some(ix) => (
+            SharedString::from(name[..ix + 1].to_owned()),
+            SharedString::from(name[ix + 1..].to_owned()),
         ),
         None => (SharedString::default(), SharedString::from(name.to_owned())),
     }
@@ -473,11 +738,123 @@ pub trait SearchAccess: 'static + Sized {
 mod tests {
     use super::*;
 
+    use nudox_engine::wire::{
+        EcosystemId, IntroId, KindDiscriminant, PackageLineageId, PackageName, SharedStr,
+    };
+
+    /// A hit whose display name is `name` and whose signature is one keyword,
+    /// i.e. the shape a `mod` hit really has.
+    ///
+    /// Every hit shares one `IntroId`: the point of these cases is that the
+    /// *rendered text* must differ, and a key the row never draws cannot be
+    /// what makes it differ.
+    fn hit(name: &str) -> HitRow {
+        HitRow {
+            key: SymbolKey::new(
+                PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("memchr")),
+                IntroId::from_raw([0u8; 32]),
+            ),
+            display_name: SharedStr::from(name),
+            sig_preview: vec![WireSigToken::Kw("mod")],
+            kind: KindTag::Known(KindDiscriminant::Module),
+            provenance: WireProvenance::TrustedLocal,
+            score: 1.0,
+        }
+    }
+
+    /// Every rendered row in a batch must be textually distinct. This is the
+    /// assertion that would have caught GUI-WORKORDER-2 F1 — seven consecutive
+    /// `mod memchr` rows — and did not exist.
+    fn assert_rows_distinct(rows: &[PreparedRow]) {
+        let mut seen: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (ix, row) in rows.iter().enumerate() {
+            if let Some(first) = seen.insert(row.render_identity(), ix) {
+                panic!(
+                    "rows {first} and {ix} render identically as {:?} — a user \
+                     has no way to choose between them",
+                    row.render_identity()
+                );
+            }
+        }
+    }
+
     #[test]
     fn qualified_names_split_into_path_and_leaf() {
         let (path, leaf) = split_qualified_name("serde_json::value::Value");
         assert_eq!(path.as_ref(), "serde_json::value::");
         assert_eq!(leaf.as_ref(), "Value");
+    }
+
+    /// `nudox-engine` builds its qualified display names from dot-separated
+    /// monikers. Recognising only `::` is why `memchr.arch.x86_64.avx2.memchr`
+    /// rendered as one giant leaf with an empty path tier (F1).
+    #[test]
+    fn dot_separated_monikers_split_into_path_and_leaf() {
+        let (path, leaf) = split_qualified_name("memchr.arch.x86_64.avx2.memchr");
+        assert_eq!(path.as_ref(), "memchr.arch.x86_64.avx2.");
+        assert_eq!(leaf.as_ref(), "memchr");
+    }
+
+    /// The F1 case, in miniature: several modules that share a leaf name must
+    /// come out of `prepare` distinguishable, and the segment that actually
+    /// differs is the one shown.
+    #[test]
+    fn colliding_leaves_are_disambiguated_by_their_differing_segment() {
+        let rows = PreparedRow::prepare(&[
+            hit("memchr.arch.all.memchr"),
+            hit("memchr.arch.x86_64.avx2.memchr"),
+            hit("memchr.arch.wasm32.simd128.memchr"),
+        ]);
+        assert_rows_distinct(&rows);
+        let tails: Vec<String> = rows
+            .iter()
+            .map(|r| r.qualifier.text().map(|t| t.to_string()).unwrap_or_default())
+            .collect();
+        assert_eq!(
+            tails,
+            vec!["…all.", "…x86_64.avx2.", "…wasm32.simd128."],
+            "the shared `memchr.arch.` head must be elided and the differing \
+             tail kept — truncating the tail instead throws away the only \
+             informative part"
+        );
+    }
+
+    /// A leaf that appears once needs no path: adding one would be noise on
+    /// every row to serve none.
+    #[test]
+    fn unique_leaves_carry_no_qualifier() {
+        let rows = PreparedRow::prepare(&[hit("memchr.Memchr"), hit("memchr.arch.all.memchr")]);
+        assert_rows_distinct(&rows);
+        for row in rows.iter() {
+            assert_eq!(row.qualifier, RowQualifier::UniqueLeaf);
+            assert!(row.qualifier.text().is_none());
+        }
+    }
+
+    /// Elision must never consume a namesake's last segment: a row left with
+    /// no path renders exactly like the unqualified case and the collision is
+    /// back.
+    #[test]
+    fn elision_never_empties_a_namesake() {
+        let rows = PreparedRow::prepare(&[hit("memchr.memchr"), hit("memchr.arch.all.memchr")]);
+        assert_rows_distinct(&rows);
+        let tails: Vec<String> = rows
+            .iter()
+            .map(|r| r.qualifier.text().map(|t| t.to_string()).unwrap_or_default())
+            .collect();
+        assert_eq!(tails, vec!["memchr.", "memchr.arch.all."]);
+    }
+
+    /// A namesake with no path at all (a package root, or a producer that
+    /// recorded none) is still distinguishable — by the *absence* of the path
+    /// tier its namesakes have.
+    #[test]
+    fn pathless_namesake_still_renders_distinctly() {
+        let rows = PreparedRow::prepare(&[hit("memchr"), hit("memchr.arch.all.memchr")]);
+        assert_rows_distinct(&rows);
+        assert!(rows[0].qualifier.text().is_none());
+        assert_eq!(rows[1].qualifier.text().unwrap().as_ref(), "memchr.arch.all.");
     }
 
     #[test]

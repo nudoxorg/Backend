@@ -34,6 +34,7 @@
 
 use gpui::{App, Global};
 use gpui_component::ActiveTheme as _;
+use gpui_component::dock::TitleStyle;
 
 use crate::theme::tokens::{
     ColourRoles, ElevTokens, KindColours, SpaceTokens, SyntaxColours, TrustStyle, TrustTokens,
@@ -150,6 +151,58 @@ impl NudoxThemeExt {
             Provenance::Remote => self.trust.remote,
             Provenance::Stale => self.trust.stale,
         }
+    }
+
+    // ── Panel chrome ──────────────────────────────────────────────────────────
+
+    /// The colour pairing for a docked panel's header bar (the "Project" /
+    /// "Editor" / "Outline" row at the top of a single-panel dock).
+    ///
+    /// `gpui_component::dock::Panel::title_style` defaults to `None` when a
+    /// panel does not override it. `TabPanel::render_title_bar` only calls
+    /// `.text_color(..)` on the header when a `TitleStyle` is actually
+    /// returned — with `None` the header text is left at GPUI's own
+    /// `TextStyle::default()`, which is opaque black
+    /// (`gpui::style::TextStyle::default().color == black()`), regardless of
+    /// theme. That is a *missing* role, not a mis-picked colour: nothing in
+    /// this crate had ever named "panel header foreground" as a thing that
+    /// needed a themed value, so every single-panel dock header rendered
+    /// unthemed black text on a near-black base surface.
+    ///
+    /// Every `Panel::title_style` override in this crate must return this
+    /// value (never hand-roll `TitleStyle { .. }` at the call site) so the
+    /// header text always matches the same base-surface/default-foreground
+    /// pairing used everywhere else, in both themes.
+    pub fn panel_title_style(&self) -> TitleStyle {
+        TitleStyle {
+            background: self.colours.bg_base,
+            foreground: self.colours.fg_default,
+        }
+    }
+
+    // ── Derived geometry ─────────────────────────────────────────────────────
+
+    /// The height of one row in a virtualized list whose text is set in
+    /// `token`.
+    ///
+    /// # Why this is a method and not five copies of an expression
+    ///
+    /// `uniform_list` requires every row to be exactly the same height, and it
+    /// is told the list's total extent separately (`count * row_height`). Those
+    /// two numbers are computed in different scopes — the outer one before the
+    /// closure, the inner one inside it — so the formula was being written out
+    /// twice per table, four times in `refs.rs` alone, plus variants in the
+    /// project panel and the symbol header. Any two of them drifting clips rows
+    /// and desynchronises the scrollbar from the content, and nothing catches
+    /// it but a screenshot.
+    ///
+    /// Parameterising by the type token is what makes one definition serve all
+    /// of them: a row is one line of its own text plus a `space_2` of vertical
+    /// breathing room, whether that text is `dense` chrome or a `mono`
+    /// signature. Changing the rhythm is now one edit rather than a search.
+    #[inline]
+    pub fn row_height(&self, token: crate::theme::tokens::TypeToken) -> gpui::Pixels {
+        token.line_height + self.space.space_2
     }
 
     // ── Motion helpers (§6.1) ────────────────────────────────────────────────

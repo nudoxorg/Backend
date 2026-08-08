@@ -32,14 +32,15 @@ use gpui::prelude::*;
 use crate::app::actions::{
     ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
     ActivateTab7, ActivateTab8, ActivateTab9, CloseTab, CollapseTreeNode, ConfirmOverlay,
-    Copy, CopySymbolUri, Cut, DeepLinkLine, DiffAgainstPrevious, DismissOverlay,
-    ExpandNeighbors, ExpandRow, ExpandTreeNode, FitGraphToView, GoToDocsTab, GoToRefsTab,
-    GoToSourceTab, GoToTimelineTab, JumpToSection1, JumpToSection2, JumpToSection3,
-    MoveSelectionDown, MoveSelectionUp, NavigateBack, NavigateForward, NextInnerTab,
+    Copy, CopySymbolUri, Cut, DiffAgainstPrevious, DismissOverlay,
+    ExpandNeighbors, ExpandRow, ExpandTreeNode, FilterAuto, FilterName, FilterSemantic,
+    FilterType, FitGraphToView, GoToDocsTab, GoToRefsTab,
+    GoToSourceTab, JumpToSection1, JumpToSection2, JumpToSection3,
+    MoveSelectionDown, MoveSelectionUp,
     NextSection, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenProject,
-    OpenSettings, OpenVersionPicker, OpenWithoutClosing, Paste, PinGraphNode, PrevInnerTab,
+    OpenSettings, OpenVersionPicker, OpenWithoutClosing, Paste, PinGraphNode,
     PrevSection, Redo, SelectAll, SwitchFocusTreeTable, SyncSelected, ToggleBottomDock,
-    ToggleHud, ToggleLeftDock, ToggleShortcutsOverlay, Undo,
+    ToggleLeftDock, ToggleShortcutsOverlay, Undo,
 };
 
 // ── KeymapEntry ───────────────────────────────────────────────────────────────
@@ -67,7 +68,14 @@ pub struct KeymapEntry {
     /// GPUI context predicate string (matched against `KeyContext`).
     ///
     /// Examples: `"global"`, `"Pane"`, `"Overlay"`, `"SymbolPage"`,
-    /// `"!InputFocused"`, `"DebugMode"`.
+    /// `"!InputFocused"`.
+    ///
+    /// The string must name a context some element actually declares with
+    /// `key_context`, or the entry is decoration: GPUI matches the predicate
+    /// against the focused element's ancestor context stack, so a context that
+    /// is never pushed can never match. Two entries have been removed from this
+    /// registry for exactly that reason (`"DebugMode"`,
+    /// `"SymbolPage > SourceTab"`) — see the comments at their old positions.
     pub context: &'static str,
 
     /// Human-readable description shown in the `?` overlay and palette.
@@ -119,34 +127,16 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         description: "Open command palette (Linux/Windows)",
         binding: || KeyBinding::new("ctrl-shift-p", OpenCommandPalette, Some("global")),
     },
-    KeymapEntry {
-        keystroke: "cmd-[",
-        linux_keystroke: Some("ctrl-["),
-        context: "global",
-        description: "Navigate back",
-        binding: || KeyBinding::new("cmd-[", NavigateBack, Some("global")),
-    },
-    KeymapEntry {
-        keystroke: "ctrl-[",
-        linux_keystroke: None,
-        context: "global",
-        description: "Navigate back (Linux/Windows)",
-        binding: || KeyBinding::new("ctrl-[", NavigateBack, Some("global")),
-    },
-    KeymapEntry {
-        keystroke: "cmd-]",
-        linux_keystroke: Some("ctrl-]"),
-        context: "global",
-        description: "Navigate forward",
-        binding: || KeyBinding::new("cmd-]", NavigateForward, Some("global")),
-    },
-    KeymapEntry {
-        keystroke: "ctrl-]",
-        linux_keystroke: None,
-        context: "global",
-        description: "Navigate forward (Linux/Windows)",
-        binding: || KeyBinding::new("ctrl-]", NavigateForward, Some("global")),
-    },
+    // `NavigateBack` / `NavigateForward` (`cmd-[` / `cmd-]`, plus their `ctrl-`
+    // alternates) were removed here and in `app::actions`. §12.8's
+    // `stores::nav::NavHistory` is a finished, tested stack that nothing in the
+    // app constructs, pushes to, or subscribes to: `Shell` holds no history,
+    // `SymbolStore::open` records no entry, and the `Navigated` event has no
+    // listener. There is therefore no sequence for "back" to walk, and the only
+    // available implementations were a no-op or an invented one (e.g. "activate
+    // the previously active tab") wearing back/forward's name. Rebind these in
+    // the same change that wires `NavHistory` into `Shell` — the registry is
+    // what `?` and the palette teach from, so a row here is a promise.
     KeymapEntry {
         keystroke: "cmd-b",
         linux_keystroke: Some("ctrl-b"),
@@ -211,14 +201,12 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         description: "Show keyboard shortcuts",
         binding: || KeyBinding::new("?", ToggleShortcutsOverlay, Some("!InputFocused")),
     },
-    // ── HUD — debug builds only ───────────────────────────────────────────────
-    KeymapEntry {
-        keystroke: "f12",
-        linux_keystroke: None,
-        context: "DebugMode",
-        description: "Toggle performance HUD",
-        binding: || KeyBinding::new("f12", ToggleHud, Some("DebugMode")),
-    },
+    // `ToggleHud` (`f12`) was removed here and in `app::actions`. `crate::perf`
+    // is a one-line module skeleton — there is no performance HUD to toggle
+    // (GUI-PLAN §26, "filled by its milestone"). The binding was additionally
+    // scoped to a `"DebugMode"` key context that no element in the tree has
+    // ever declared (`grep -rn 'key_context' src/`), so it could not have
+    // dispatched even once a handler existed.
     // ── Pane ──────────────────────────────────────────────────────────────────
     KeymapEntry {
         keystroke: "cmd-w",
@@ -560,35 +548,53 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         description: "Jump to Semantic results section (Linux/Windows)",
         binding: || KeyBinding::new("ctrl-3", JumpToSection3, Some("OmniSearch")),
     },
+    // Mode chips. `alt-`, not `cmd-`, because `cmd-1..3` above already *jump*
+    // between sections and these *filter* to one — two similar-sounding verbs
+    // on the same digits would be a trap.
+    KeymapEntry {
+        keystroke: "alt-0",
+        linux_keystroke: None,
+        context: "OmniSearch",
+        description: "Search mode: Auto (all sections)",
+        binding: || KeyBinding::new("alt-0", FilterAuto, Some("OmniSearch")),
+    },
+    KeymapEntry {
+        keystroke: "alt-1",
+        linux_keystroke: None,
+        context: "OmniSearch",
+        description: "Search mode: Name only",
+        binding: || KeyBinding::new("alt-1", FilterName, Some("OmniSearch")),
+    },
+    KeymapEntry {
+        keystroke: "alt-2",
+        linux_keystroke: None,
+        context: "OmniSearch",
+        description: "Search mode: Type only",
+        binding: || KeyBinding::new("alt-2", FilterType, Some("OmniSearch")),
+    },
+    KeymapEntry {
+        keystroke: "alt-3",
+        linux_keystroke: None,
+        context: "OmniSearch",
+        description: "Search mode: Semantic only",
+        binding: || KeyBinding::new("alt-3", FilterSemantic, Some("OmniSearch")),
+    },
     // ── SymbolPage ────────────────────────────────────────────────────────────
-    KeymapEntry {
-        keystroke: "cmd-shift-[",
-        linux_keystroke: Some("ctrl-shift-["),
-        context: "SymbolPage",
-        description: "Previous inner tab",
-        binding: || KeyBinding::new("cmd-shift-[", PrevInnerTab, Some("SymbolPage")),
-    },
-    KeymapEntry {
-        keystroke: "ctrl-shift-[",
-        linux_keystroke: None,
-        context: "SymbolPage",
-        description: "Previous inner tab (Linux/Windows)",
-        binding: || KeyBinding::new("ctrl-shift-[", PrevInnerTab, Some("SymbolPage")),
-    },
-    KeymapEntry {
-        keystroke: "cmd-shift-]",
-        linux_keystroke: Some("ctrl-shift-]"),
-        context: "SymbolPage",
-        description: "Next inner tab",
-        binding: || KeyBinding::new("cmd-shift-]", NextInnerTab, Some("SymbolPage")),
-    },
-    KeymapEntry {
-        keystroke: "ctrl-shift-]",
-        linux_keystroke: None,
-        context: "SymbolPage",
-        description: "Next inner tab (Linux/Windows)",
-        binding: || KeyBinding::new("ctrl-shift-]", NextInnerTab, Some("SymbolPage")),
-    },
+    //
+    // L16/GUI-PLAN §16: the symbol page renders Implementations / References /
+    // Source as collapsible sections below one continuous document, not as an
+    // inner tab strip. `PrevInnerTab` / `NextInnerTab` / `GoToTimelineTab` were
+    // bound here for a tab strip that was never built this way — the version
+    // strip they'd have jumped to has no expand/collapse state and is already
+    // permanently visible below the header, so there was nothing for
+    // "go to timeline" to do that opening the page doesn't already do, and
+    // "next/previous tab" has no referent at all. Removed rather than kept as
+    // handlers that discard their argument (see `views::symbol_page` for the
+    // one place `SymbolPage` still had exactly that shape before this fix).
+    //
+    // `y` / `v` / `g d` / `g s` / `g r` survive because each maps onto a real,
+    // observable state change: clipboard + confirmation, the version picker
+    // popover, and the three named sections respectively.
     KeymapEntry {
         keystroke: "y",
         linux_keystroke: None,
@@ -607,38 +613,34 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         keystroke: "g d",
         linux_keystroke: None,
         context: "SymbolPage",
-        description: "Go to Docs tab",
+        description: "Scroll to Documentation",
         binding: || KeyBinding::new("g d", GoToDocsTab, Some("SymbolPage")),
     },
     KeymapEntry {
         keystroke: "g s",
         linux_keystroke: None,
         context: "SymbolPage",
-        description: "Go to Source tab",
+        description: "Expand Source section",
         binding: || KeyBinding::new("g s", GoToSourceTab, Some("SymbolPage")),
     },
     KeymapEntry {
         keystroke: "g r",
         linux_keystroke: None,
         context: "SymbolPage",
-        description: "Go to Refs tab",
+        description: "Expand References section",
         binding: || KeyBinding::new("g r", GoToRefsTab, Some("SymbolPage")),
     },
-    KeymapEntry {
-        keystroke: "g t",
-        linux_keystroke: None,
-        context: "SymbolPage",
-        description: "Go to Timeline tab",
-        binding: || KeyBinding::new("g t", GoToTimelineTab, Some("SymbolPage")),
-    },
-    // ── SymbolPage > SourceTab ────────────────────────────────────────────────
-    KeymapEntry {
-        keystroke: "shift-l",
-        linux_keystroke: None,
-        context: "SymbolPage > SourceTab",
-        description: "Deep-link to current line",
-        binding: || KeyBinding::new("shift-l", DeepLinkLine, Some("SymbolPage > SourceTab")),
-    },
+    // `DeepLinkLine` (`shift-l`) was bound to context `"SymbolPage > SourceTab"`
+    // — a context that has never once existed at runtime (`grep -rn
+    // 'key_context' src/` finds only `"SymbolPage"`, never a nested
+    // `"SourceTab"`). It is a source-view line-permalink feature that was
+    // designed for the old inner-tab source view and never built for the
+    // section-based one; there is no `SourceTab` to scope it to and no source
+    // line selection state anywhere in `SymbolPage` for it to act on (the
+    // Source section renders a static path + byte range, not a line list —
+    // see `SymbolPage::render_source_body`). Removed rather than invented: a
+    // real per-line deep link needs a line-addressable source view first,
+    // which does not exist yet.
     // ── GraphView ─────────────────────────────────────────────────────────────
     KeymapEntry {
         keystroke: "f",
@@ -732,6 +734,13 @@ mod tests {
     use std::collections::HashMap;
 
     /// Every Appendix B description keyword must appear in at least one entry.
+    ///
+    /// "back" and "forward" were dropped from this list when the
+    /// `NavigateBack` / `NavigateForward` bindings were removed (see the
+    /// comment where they used to live). They are not silently gone: the
+    /// removal is pinned in the opposite direction by
+    /// [`unimplemented_features_stay_unbound`], so re-adding a row for either
+    /// one without the store wiring behind it fails the build.
     #[test]
     fn all_appendix_b_rows_present() {
         let descriptions: Vec<&str> = KEYMAP_REGISTRY.iter().map(|e| e.description).collect();
@@ -739,8 +748,6 @@ mod tests {
         let keywords = [
             "omni-search",
             "command palette",
-            "back",
-            "forward",
             "left sidebar",
             "bottom dock",
             "settings",
@@ -800,6 +807,88 @@ mod tests {
                 !entry.description.is_empty(),
                 "Entry {} (keystroke {:?} in context {:?}) has an empty description",
                 ix,
+                entry.keystroke,
+                entry.context
+            );
+        }
+    }
+
+    /// Features with no implementation behind them must have no binding.
+    ///
+    /// This is the guard that makes the L15 removals a decision rather than an
+    /// omission. A row in this registry is a promise to the reader twice over:
+    /// `?` teaches it and the command palette runs it, both directly from here.
+    /// Adding one back for nav history or the perf HUD before
+    /// `stores::nav::NavHistory` is wired into `Shell` / before `crate::perf`
+    /// exists puts an inert key in front of the user with a description that
+    /// says it works.
+    #[test]
+    fn unimplemented_features_stay_unbound() {
+        for entry in KEYMAP_REGISTRY.iter() {
+            let d = entry.description.to_lowercase();
+            assert!(
+                !d.contains("navigate back") && !d.contains("navigate forward"),
+                "binding {:?} promises nav history, but nothing constructs, \
+                 pushes to, or subscribes to `stores::nav::NavHistory` — wire \
+                 it into `Shell` in the same change that adds this row",
+                entry.keystroke
+            );
+            assert!(
+                !d.contains("hud"),
+                "binding {:?} promises the performance HUD, but `crate::perf` \
+                 is still an empty module skeleton (GUI-PLAN §26)",
+                entry.keystroke
+            );
+        }
+    }
+
+    /// Every entry's context must be one an element in the tree really declares.
+    ///
+    /// GPUI matches a binding's predicate against the *focused* element's
+    /// ancestor context stack. A context string nothing ever pushes therefore
+    /// makes the binding unreachable while it still renders in `?` as though it
+    /// worked — the exact failure `"DebugMode"` (`f12`) and
+    /// `"SymbolPage > SourceTab"` (`shift-l`) both had.
+    #[test]
+    fn every_context_is_declared_somewhere_in_the_view_tree() {
+        // Every `key_context(..)` token that exists in `src/` today
+        // (`grep -rn 'key_context' src/`), plus `global`, which `Shell`'s root
+        // declares alongside `Workspace`.
+        const DECLARED: &[&str] = &[
+            "global",
+            "Workspace",
+            "Pane",
+            "SymbolPage",
+            "Overlay",
+            "OmniSearch",
+            "Shortcuts",
+            "CommandPalette",
+            "ProjectPanel",
+        ];
+
+        // Contexts whose owning view has not been authored yet, so their
+        // bindings are inert today exactly like `"DebugMode"` was.
+        //
+        // This list is a *disclosure*, not an exemption: every entry in it is a
+        // key the `?` sheet currently teaches and the palette currently offers
+        // that does nothing when pressed. It shrinks when the view lands
+        // (`views::graph`, `views::package_browser`) or when the bindings are
+        // removed the way `f12` and `shift-l` were. It must never grow: a new
+        // binding for a view that does not exist is the same bug again.
+        const PENDING_VIEWS: &[&str] = &["GraphView", "PackageBrowser"];
+
+        for entry in KEYMAP_REGISTRY.iter() {
+            // `!Foo` is a negation: it matches whenever `Foo` is *absent*, so
+            // it needs no declaring element to be reachable.
+            if entry.context.starts_with('!') || PENDING_VIEWS.contains(&entry.context) {
+                continue;
+            }
+            assert!(
+                DECLARED.contains(&entry.context),
+                "binding {:?} is scoped to context {:?}, which no element \
+                 declares with `key_context` — it can never dispatch. Either \
+                 declare the context on the view that owns the action, or \
+                 remove the binding.",
                 entry.keystroke,
                 entry.context
             );

@@ -42,6 +42,7 @@ use nudox_engine::wire::{ImplsPage, RefRow, RefsPage, SymbolKey};
 use crate::motion::declarative::{entrance_id, row_enter};
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
 use crate::theme::ext::ThemeExtAccessor as _;
+use crate::theme::kind::LocalKindDiscriminant;
 use crate::theme::tokens::ColourRoles;
 use crate::ui::{Badge, EmptyState};
 
@@ -385,7 +386,7 @@ impl RefsTable {
         // Pre-compute list height — must match the `.h(row_h)` on each row element.
         let sp = ext.space;
         let ts = ext.type_scale;
-        let row_h = ts.dense.line_height + sp.space_2;
+        let row_h = ext.row_height(ts.dense);
         let list_h = gpui::px(count as f32 * f32::from(row_h));
 
         div()
@@ -398,7 +399,7 @@ impl RefsTable {
                     let ts = ext.type_scale;
                     let colours = ext.colours;
                     let motion = MotionTokens::new(ext.motion_scale);
-                    let row_h = ts.dense.line_height + sp.space_2;
+                    let row_h = ext.row_height(ts.dense);
 
                     range
                         .map(|ix| {
@@ -566,6 +567,77 @@ struct ImplRowView {
     trait_label: Option<SharedString>,
     /// Generic count on the self type — used for arity-family detection.
     self_generic_count: u32,
+
+    // ── Display decomposition (built by `ImplRowView::new`, never by hand) ────
+    //
+    // The row used to render `label` as one flat run of monospace text: no
+    // chip, no weight change, nothing separating the trait from the type it is
+    // implemented for. Six of those stacked read as an undifferentiated block,
+    // while the *search* rows one keystroke away showed the same class of
+    // information with a kind chip and three styled tiers. One app, two
+    // answers.
+    //
+    // These two fields are what let the row be styled like a search row. They
+    // are derived — see `new` — precisely so that no construction site can
+    // produce a row whose parts disagree with its label. Three sites build
+    // `ImplRowView` (streaming projection, variadic-family collapse, and the
+    // test helper); when the split lived in the template each would have
+    // needed to get it right independently, which is the shape of defect
+    // doctrine §2 is about.
+    /// What the reader scans for: the trait name, or the self type for an
+    /// inherent impl. Never empty — falls back to the whole label.
+    primary: SharedString,
+    /// The type the trait is implemented *for*, when the label named one.
+    /// `None` for an inherent impl, where `primary` already is the type.
+    self_type: Option<SharedString>,
+}
+
+impl ImplRowView {
+    /// The only way to build a row: the display split is derived here, once.
+    fn new(
+        key: SymbolKey,
+        label: SharedString,
+        is_blanket: bool,
+        trait_label: Option<SharedString>,
+        self_generic_count: u32,
+    ) -> Self {
+        let (head, tail) = split_impl_label(&label);
+        // Prefer the wire's own `trait_label` over anything parsed out of the
+        // rendered label — it is the engine's structured answer to the same
+        // question, and it stays right when the label formatting changes.
+        let primary: SharedString = match trait_label.as_ref() {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => {
+                let stripped = strip_impl_keyword(head);
+                if !stripped.is_empty() {
+                    SharedString::from(stripped.to_owned())
+                } else if !label.is_empty() {
+                    label.clone()
+                } else {
+                    // A producer that sends an empty label would otherwise
+                    // paint a blank row — an implementation the reader can see
+                    // a chip for, click on, and not read. Same rule as LD-7's
+                    // unknown-kind chip: the unknown is *shown*, never left as
+                    // a gap, because a gap is indistinguishable from a
+                    // rendering bug.
+                    SharedString::from("unnamed impl")
+                }
+            }
+        };
+        let self_type = tail
+            .filter(|t| !t.is_empty())
+            .map(|t| SharedString::from(t.to_owned()));
+
+        Self {
+            key,
+            label,
+            is_blanket,
+            trait_label,
+            self_generic_count,
+            primary,
+            self_type,
+        }
+    }
 }
 
 /// A flat entry in the impls list — either a row or a section subheading.
@@ -579,6 +651,88 @@ enum ImplFlatRow {
         count: SharedString,
         collapsed: bool,
     },
+}
+
+// ── Impl label decomposition ──────────────────────────────────────────────────
+
+/// Split an impl label at the ` for ` that separates the trait from the type.
+///
+/// `"impl<'h> Iterator for memchr.memchr.Memchr"`
+///   → `("impl<'h> Iterator", Some("memchr.memchr.Memchr"))`
+///
+/// An inherent impl has no ` for `, and yields `(whole, None)`.
+///
+/// The first occurrence is the separator: everything after it is the self
+/// type, however long. This is deliberately total — any string splits, and a
+/// malformed one simply lands in the left half. Row *styling* must not depend
+/// on the label being well-formed, because it currently is not: the
+/// `impl ? for …` placeholder in `.shots/memchr/` is a live backend defect
+/// (L39) and the row has to look right both before and after it is fixed.
+fn split_impl_label(label: &str) -> (&str, Option<&str>) {
+    const SEP: &str = " for ";
+    match label.find(SEP) {
+        Some(ix) => (&label[..ix], Some(&label[ix + SEP.len()..])),
+        None => (label, None),
+    }
+}
+
+/// Drop a leading `impl` keyword and the generic list that binds it.
+///
+/// `"impl<'h> Iterator"` → `"Iterator"`; `"impl Clone"` → `"Clone"`.
+///
+/// The row carries an `impl` kind chip, so repeating the keyword in the text
+/// beside it spends horizontal space to say what the chip already says. Only a
+/// *bare leading* `impl` is removed, and only with a balanced generic list; if
+/// the text does not have that exact shape it is returned untouched, because a
+/// half-stripped label is worse than an unstripped one.
+fn strip_impl_keyword(head: &str) -> &str {
+    let Some(rest) = head.trim_start().strip_prefix("impl") else {
+        return head;
+    };
+    // `implFoo` is not the keyword — require a delimiter after it.
+    let rest = match rest.chars().next() {
+        None => return "",
+        Some('<') => match balanced_angle_end(rest) {
+            Some(end) => &rest[end..],
+            // Unbalanced generics: leave the whole thing alone.
+            None => return head,
+        },
+        Some(c) if c.is_whitespace() => rest,
+        // Something like `impls`, not the keyword.
+        Some(_) => return head,
+    };
+    rest.trim()
+}
+
+/// Byte index one past the `>` that closes the `<` at the start of `s`.
+///
+/// Counts nesting so `<Vec<T>>` closes at the outer `>`, and returns `None`
+/// when the list never closes — or when `s` does not open one at all.
+///
+/// That last clause is the function's own guard, not the caller's
+/// responsibility. Without it, `depth -= 1` on a leading `>` underflows a
+/// `usize` and panics in debug builds. The one current call site happens to
+/// check `starts_with('<')` first, but a precondition that lives only in the
+/// caller is one refactor away from being forgotten (§2: fix the thing that
+/// let the bug be expressible, not the site that happens to avoid it).
+fn balanced_angle_end(s: &str) -> Option<usize> {
+    if !s.starts_with('<') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (ix, ch) in s.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(ix + ch.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 // ── Variadic family detection ─────────────────────────────────────────────────
@@ -614,13 +768,13 @@ fn collapse_family(rows: &[ImplRowView]) -> ImplRowView {
     let summary = SharedString::from(
         [base_label, "  (arities ", &min.to_string(), "–", &max.to_string(), ")"].concat(),
     );
-    ImplRowView {
-        key: first.key.clone(),
-        label: summary,
-        is_blanket: first.is_blanket,
-        trait_label: first.trait_label.clone(),
-        self_generic_count: first.self_generic_count,
-    }
+    ImplRowView::new(
+        first.key.clone(),
+        summary,
+        first.is_blanket,
+        first.trait_label.clone(),
+        first.self_generic_count,
+    )
 }
 
 /// Project a slice of `ImplRowView`s through variadic-family detection.
@@ -777,6 +931,20 @@ impl ImplsTable {
         self.flat.is_empty()
     }
 
+    /// The non-blanket impls' labels, in display order.
+    ///
+    /// The page's table of contents nests these under `Implementations`
+    /// (GUI-WORKORDER-2 F3): `Clone`, `Debug`, `Iterator` — the landmarks a
+    /// reader scanning a type actually navigates by. Blanket impls are
+    /// deliberately excluded, for the same reason they are collapsed in the
+    /// table itself: they describe the ecosystem, not this type.
+    ///
+    /// Cloned `SharedString`s, built at projection time; this is a refcount
+    /// bump per row and no formatting (§1.1.4).
+    pub fn own_labels(&self) -> Arc<[SharedString]> {
+        self.own_rows.iter().map(|r| r.label.clone()).collect()
+    }
+
     /// Toggle the "Blanket Implementations" collapsed section.
     ///
     /// Returns `true` if the flat list changed (i.e. there were blanket rows).
@@ -807,13 +975,13 @@ impl ImplsTable {
                 self.total_text = SharedString::from(page.total.to_string());
             }
             for r in page.impls.iter() {
-                let view = ImplRowView {
-                    key: r.key.clone(),
-                    label: shared(&r.label),
-                    is_blanket: r.is_blanket,
-                    trait_label: r.trait_label.as_ref().map(|t| shared(t)),
-                    self_generic_count: r.self_generic_count,
-                };
+                let view = ImplRowView::new(
+                    r.key.clone(),
+                    shared(&r.label),
+                    r.is_blanket,
+                    r.trait_label.as_ref().map(|t| shared(t)),
+                    r.self_generic_count,
+                );
                 if r.is_blanket {
                     raw_blanket.push(view);
                 } else {
@@ -895,7 +1063,11 @@ impl ImplsTable {
         // — if they diverge the list measures at the wrong height and clips rows.
         let sp = ext.space;
         let ts = ext.type_scale;
-        let row_h = ts.dense.line_height + sp.space_2;
+        // Impl rows are set in `mono`, so a row is one mono line tall — taller
+        // than the `dense` rows of the references table beside it. Both come
+        // from the one `row_height` definition rather than a formula retyped
+        // per table (see `NudoxThemeExt::row_height`).
+        let row_h = ext.row_height(ts.mono);
         // The total natural height of all rows.  `uniform_list` uses this as its
         // scroll extent; the outer `max_h + overflow_y_scroll` wrapper clips it.
         let list_h = gpui::px(count as f32 * f32::from(row_h));
@@ -910,36 +1082,146 @@ impl ImplsTable {
                     let ts = ext.type_scale;
                     let colours = ext.colours;
                     let motion = MotionTokens::new(ext.motion_scale);
-                    let row_h = ts.dense.line_height + sp.space_2;
+                    let row_h = ext.row_height(ts.mono);
 
                     range
                         .map(|ix| {
                             let element = match &flat[ix] {
+                                // One implementation, styled to the same
+                                // vocabulary as a search hit: a kind chip on
+                                // the left, the scannable name in the primary
+                                // foreground, and the supporting detail
+                                // recessed beside it.
+                                //
+                                // Before this, the row was a single flat run of
+                                // `label` in monospace `fg_default` — no chip,
+                                // no weight change, no separation between the
+                                // trait and the type. The information was
+                                // identical to what a search row shows and the
+                                // two were styled nothing alike, which is the
+                                // consistency failure the craft pass named
+                                // first.
+                                //
+                                // The row stays exactly one line tall in every
+                                // branch. `uniform_list` measures every item at
+                                // the `row_h` computed above and the list is
+                                // given an explicit `count * row_h` height, so
+                                // a two-line branch here would not wrap — it
+                                // would silently clip and desynchronise the
+                                // scroll extent.
                                 ImplFlatRow::Row(row) => {
                                     let key = row.key.clone();
                                     let open = open.clone();
+                                    // `for <type>` — two elements, present only
+                                    // when the label actually named a self
+                                    // type, so an inherent impl does not render
+                                    // a dangling preposition. Built as a list
+                                    // rather than chained conditionally so the
+                                    // row keeps one concrete element type.
+                                    let tail: Vec<gpui::AnyElement> = match row.self_type.clone() {
+                                        None => Vec::new(),
+                                        Some(self_type) => vec![
+                                            div()
+                                                .flex_shrink_0()
+                                                // `caption` size on the `mono`
+                                                // leading, deliberately: the
+                                                // three runs on this row have
+                                                // to sit on one baseline, and
+                                                // `for` is grammar rather than
+                                                // content, so it is set a step
+                                                // down and in the faintest
+                                                // foreground. Pairing a size
+                                                // with another token's leading
+                                                // is drift everywhere it is
+                                                // not doing exactly this.
+                                                .text_size(ts.caption.size)
+                                                .line_height(ts.mono.line_height)
+                                                .text_color(colours.fg_faint)
+                                                .child(SharedString::from("for"))
+                                                .into_any_element(),
+                                            div()
+                                                // The self type is the run
+                                                // allowed to grow and the first
+                                                // to be truncated: `min_w_0` is
+                                                // what lets it shrink below its
+                                                // content width so `truncate()`
+                                                // fires instead of the text
+                                                // overrunning the panel. These
+                                                // labels are long and fully
+                                                // qualified — the row must not
+                                                // assume short ones.
+                                                .flex_1()
+                                                .min_w_0()
+                                                .overflow_hidden()
+                                                .truncate()
+                                                .font_family("monospace")
+                                                .text_size(ts.mono.size)
+                                                .line_height(ts.mono.line_height)
+                                                .text_color(colours.fg_muted)
+                                                .child(self_type)
+                                                .into_any_element(),
+                                        ],
+                                    };
                                     div()
                                         .id(("symbol.impls.row", ix))
                                         .flex()
                                         .flex_row()
                                         .items_center()
+                                        .gap(sp.space_2)
+                                        // `w_full` + `overflow_hidden` for the
+                                        // same reason the outline row needs
+                                        // them: a flex child can only be
+                                        // truncated against a parent that has
+                                        // a definite width. Without this the
+                                        // row grows to fit its longest label,
+                                        // the `flex_1` self type finds all the
+                                        // space it asked for, `truncate()`
+                                        // never fires, and a fully-qualified
+                                        // impl runs out of the panel. memchr's
+                                        // labels are short enough to hide it;
+                                        // a real trait-heavy type is not.
+                                        .w_full()
+                                        .overflow_hidden()
                                         .h(row_h)
-                                        .px(sp.space_3)
+                                        // `space_4`, matching the disclosure
+                                        // header directly above and the
+                                        // documentation blocks directly above
+                                        // that. It was `space_3`, so the impl
+                                        // rows sat 4 px inboard of every other
+                                        // block in the reader and the column
+                                        // had two left edges.
+                                        .px(sp.space_4)
                                         .cursor_pointer()
                                         .hover(|s| s.bg(colours.bg_hover))
                                         .active(|s| s.bg(colours.bg_active))
                                         .on_click(move |_, window, cx| open(&key, window, cx))
                                         .child(
+                                            Badge::for_kind(
+                                                ("symbol.impls.kind", ix),
+                                                LocalKindDiscriminant::Impl,
+                                                cx,
+                                            )
+                                            .flex_shrink_0(),
+                                        )
+                                        // The trait (or, for an inherent impl,
+                                        // the type): what the eye is looking
+                                        // for when scanning a list of impls.
+                                        .child(
                                             div()
-                                                .flex_1()
+                                                // Shrinkable, but yields to the
+                                                // self type only after it has
+                                                // taken what it needs.
+                                                .min_w_0()
                                                 .overflow_hidden()
                                                 .truncate()
                                                 .font_family("monospace")
                                                 .text_size(ts.mono.size)
-                                                .line_height(ts.dense.line_height)
+                                                .line_height(ts.mono.line_height)
+                                                .font_weight(gpui::FontWeight::MEDIUM)
                                                 .text_color(colours.fg_default)
-                                                .child(row.label.clone()),
+                                                .child(row.primary.clone()),
                                         )
+                                        .children(tail)
                                 }
                                 ImplFlatRow::Subheading { label, count, collapsed } => {
                                     let toggle = toggle_blanket.clone();
@@ -950,7 +1232,11 @@ impl ImplsTable {
                                         .items_center()
                                         .gap(sp.space_1)
                                         .h(row_h)
-                                        .px(sp.space_2)
+                                        // Same `space_4` gutter as the rows it
+                                        // heads and the disclosure header above
+                                        // it — it was `space_2`, which put a
+                                        // third left edge in one column.
+                                        .px(sp.space_4)
                                         .bg(colours.bg_raised)
                                         .cursor_pointer()
                                         .hover(|s| s.bg(colours.bg_hover))
@@ -1138,6 +1424,116 @@ mod tests {
         assert_eq!((count as f32) * row_h, 120.0);
     }
 
+    // ── Impl label decomposition ──────────────────────────────────────────────
+
+    /// A trait impl splits into the trait side and the type it is for.
+    #[test]
+    fn trait_impl_splits_at_for() {
+        assert_eq!(
+            split_impl_label("impl<'h> Iterator for memchr.memchr.Memchr"),
+            ("impl<'h> Iterator", Some("memchr.memchr.Memchr"))
+        );
+    }
+
+    /// An inherent impl has no ` for `, and must not invent one.
+    #[test]
+    fn inherent_impl_has_no_self_type() {
+        assert_eq!(
+            split_impl_label("impl<'h> memchr.memchr.Memchr"),
+            ("impl<'h> memchr.memchr.Memchr", None)
+        );
+    }
+
+    /// The `impl ? for …` placeholder still decomposes.
+    ///
+    /// That text is a live backend defect (L39) being fixed elsewhere. The row
+    /// styling must not depend on it being fixed, and must not degrade when it
+    /// is — so the split is asserted against the broken form deliberately.
+    #[test]
+    fn placeholder_trait_label_still_splits() {
+        assert_eq!(
+            split_impl_label("impl ? for memchr.memchr.memchr.Memchr"),
+            ("impl ?", Some("memchr.memchr.memchr.Memchr"))
+        );
+    }
+
+    /// The `impl` keyword and its own generics are dropped; the chip says it.
+    #[test]
+    fn impl_keyword_and_its_generics_are_stripped() {
+        assert_eq!(strip_impl_keyword("impl<'h> Iterator"), "Iterator");
+        assert_eq!(strip_impl_keyword("impl Clone"), "Clone");
+        assert_eq!(strip_impl_keyword("impl<T: Into<String>> Foo"), "Foo");
+    }
+
+    /// A stray `>` must not underflow the nesting counter.
+    ///
+    /// `balanced_angle_end` counts with a `usize`; a leading `>` used to reach
+    /// `depth -= 1` at zero and panic in debug. The guard lives in the
+    /// function now, so this holds no matter who calls it.
+    #[test]
+    fn unopened_angle_list_does_not_underflow() {
+        assert_eq!(balanced_angle_end(">"), None);
+        assert_eq!(balanced_angle_end(">>>"), None);
+        assert_eq!(balanced_angle_end(""), None);
+        assert_eq!(balanced_angle_end("Iterator"), None);
+        assert_eq!(balanced_angle_end("<T>rest"), Some(3));
+        assert_eq!(balanced_angle_end("<Vec<T>>"), Some(8));
+    }
+
+    /// Text that merely starts with the letters `impl` is left alone.
+    ///
+    /// A half-stripped label is worse than an unstripped one, so anything not
+    /// matching the exact keyword shape passes through untouched.
+    #[test]
+    fn strip_is_conservative_about_non_keyword_text() {
+        assert_eq!(strip_impl_keyword("implementation detail"), "implementation detail");
+        // Unbalanced generics: leave it entirely alone rather than guess.
+        assert_eq!(strip_impl_keyword("impl<'h Iterator"), "impl<'h Iterator");
+        assert_eq!(strip_impl_keyword("Memchr"), "Memchr");
+    }
+
+    /// Every row carries a non-empty `primary`, whatever the label looks like.
+    ///
+    /// `primary` is what the row renders in the foreground colour; an empty one
+    /// would paint a blank line where an implementation should be. The three
+    /// construction sites all route through `ImplRowView::new`, so asserting it
+    /// here covers all of them.
+    #[test]
+    fn every_row_has_a_non_empty_primary() {
+        for (label, trait_label) in [
+            ("impl<'h> Iterator for memchr.Memchr", Some("Iterator")),
+            ("impl ? for memchr.Memchr", None),
+            ("impl<'h> memchr.Memchr", None),
+            ("impl", None),
+            ("", None),
+        ] {
+            let row = fake_row(label, false, trait_label, 0);
+            assert!(
+                !row.primary.is_empty(),
+                "row for {label:?} produced an empty primary label"
+            );
+        }
+    }
+
+    /// The wire's `trait_label` wins over anything parsed out of the label.
+    ///
+    /// It is the engine's structured answer to the same question and stays
+    /// correct when the rendered label's formatting changes.
+    #[test]
+    fn wire_trait_label_is_preferred_over_parsing() {
+        let row = fake_row("impl ? for memchr.Memchr", false, Some("Iterator"), 0);
+        assert_eq!(row.primary.as_ref(), "Iterator");
+        assert_eq!(row.self_type.as_ref().map(|s| s.as_ref()), Some("memchr.Memchr"));
+    }
+
+    /// An inherent impl renders its type and no `for` clause.
+    #[test]
+    fn inherent_impl_row_has_no_tail() {
+        let row = fake_row("impl<'h> memchr.memchr.Memchr", false, None, 0);
+        assert_eq!(row.primary.as_ref(), "memchr.memchr.Memchr");
+        assert!(row.self_type.is_none(), "inherent impl must not render a `for` clause");
+    }
+
     // ── Blanket / variadic grouping ───────────────────────────────────────────
 
     fn fake_row(
@@ -1149,13 +1545,13 @@ mod tests {
         use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName, SymbolKey};
         let lid = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("t"));
         let key = SymbolKey::new(lid, IntroId::from_raw([0u8; 32]));
-        ImplRowView {
+        ImplRowView::new(
             key,
-            label: SharedString::from(label.to_owned()),
+            SharedString::from(label.to_owned()),
             is_blanket,
-            trait_label: trait_label.map(|t| SharedString::from(t.to_owned())),
+            trait_label.map(|t| SharedString::from(t.to_owned())),
             self_generic_count,
-        }
+        )
     }
 
     /// Blanket partition: blanket rows must be separated from own impls.

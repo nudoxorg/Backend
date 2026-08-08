@@ -129,6 +129,15 @@ pub trait TabItem: 'static {
 
     /// Trust chrome for this tab's content (LD-8).
     fn provenance(&self, cx: &App) -> Provenance;
+
+    /// The item's own `FocusHandle` (L16 — see `WorkspaceItem`'s doc comment).
+    ///
+    /// `Pane::activate_ix` calls this on every activation (open, click,
+    /// `ActivateTabN`) and hands the result to `window.focus`, so a tab's own
+    /// `.on_action` handlers are reachable the moment it becomes active — the
+    /// same mechanism that already made `ActivateTab2` reachable on `Pane`
+    /// itself, extended one level down to the content it switches to.
+    fn focus_handle(&self, cx: &App) -> FocusHandle;
 }
 
 impl<V> TabItem for Entity<V>
@@ -149,6 +158,14 @@ where
 
     fn provenance(&self, cx: &App) -> Provenance {
         self.read(cx).provenance()
+    }
+
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        // `WorkspaceItem: Focusable` and GPUI provides a blanket
+        // `impl<V: Focusable> Focusable for Entity<V>` — fully qualified so
+        // this does not recurse into `TabItem::focus_handle` itself (both
+        // methods share a name).
+        Focusable::focus_handle(self, cx)
     }
 }
 
@@ -230,6 +247,43 @@ struct DragState {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Activation
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Whether activating a tab should also move the keyboard into it.
+///
+/// # Why this is not a `bool`, and not implicit
+///
+/// Window focus is a *window*-wide resource with exactly one holder, so
+/// "activate this tab" and "take the keyboard" are two different requests that
+/// happened to be spelled the same way. `Pane::activate_ix` used to make both
+/// unconditionally, which is right for a keybinding and wrong for every
+/// activation the user did not ask for:
+///
+/// * `Shell::reveal_document` activates twice for a background open (alt-Enter)
+///   while the omni-search overlay is still up on purpose. Seizing focus there
+///   sent the next `Escape` to a `SymbolPage` that had no handler for it, and
+///   the overlay became unclosable from the keyboard — the exact LD-13 failure
+///   ("an overlay that opens and cannot be closed is worse than one that never
+///   opened"), reached from the other direction.
+/// * Restoring the previously-active tab after such an open is pure
+///   bookkeeping; there is no user intent in it at all.
+///
+/// Naming the two cases makes the choice appear at every call site, so a new
+/// activation path cannot inherit the wrong one by default — AGENTS-DOCTRINE §3.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activation {
+    /// The user asked for this tab (a keybinding, a click on the strip, a hit
+    /// committed with Enter). Move the keyboard into its content, so the page's
+    /// own `.on_action` handlers are reachable (L16).
+    Focus,
+    /// The tab set changed underneath the user — a background open, or putting
+    /// the previously-active tab back after one. Leave the keyboard exactly
+    /// where it is.
+    Preserve,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Pane
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -286,13 +340,16 @@ impl Pane {
     /// comes from the item itself — see [`TabItem`] for why that is a type-level
     /// concern and not a convenience.
     ///
+    /// `activation` decides whether the keyboard follows; see [`Activation`].
+    ///
     /// Returns the stable [`TabId`] for the new tab.
     pub fn open_item<V>(
         &mut self,
         item: Entity<V>,
         subs: Vec<Subscription>,
-        _: &mut Window,
-        _: &mut Context<Self>,
+        activation: Activation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> TabId
     where
         V: WorkspaceItem + Render,
@@ -304,7 +361,12 @@ impl Pane {
             _subs: subs,
         });
         self.tab_springs.push(Motion::new(0.0, Spring::DEFAULT));
-        self.active_ix = self.slots.len() - 1;
+        let ix = self.slots.len() - 1;
+        // Routed through `activate_ix` rather than setting `self.active_ix`
+        // directly: that is the one place activation also moves window focus
+        // onto the new item (L16), and a newly opened tab is exactly the case
+        // that bug was found in.
+        self.activate_ix(ix, activation, window, cx);
         id
     }
 
@@ -318,7 +380,7 @@ impl Pane {
     /// - if there was a tab to the left of the closed one, that becomes active;
     /// - otherwise the tab to the right (which now occupies the same index);
     /// - otherwise the pane is empty.
-    pub fn close_tab(&mut self, id: TabId, _: &mut Window, _: &mut Context<Self>) {
+    pub fn close_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.slots.iter().position(|s| s.id == id) else {
             return;
         };
@@ -327,25 +389,89 @@ impl Pane {
         self.tab_springs.remove(ix);
 
         self.active_ix = active_ix_after_close(ix, self.active_ix, self.slots.len());
+        // Re-focus the resulting active tab (L16). Closing a tab can change
+        // *which* tab is active without going through `activate_ix` — most
+        // often a no-op (closing the tab that was itself just focused, whose
+        // neighbour now occupies the same window focus target it already
+        // had), but not always: `Shell::reveal_document`'s Replace-disposition
+        // cleanup closes the *outgoing* tab, at an index left of the newly
+        // active one, which shifts the active tab's *index* without ever
+        // calling `activate_ix` for it. Leaving focus wherever it happened to
+        // be would be exactly the kind of implicit-and-therefore-wrong state
+        // this file's whole `activate_ix` doc comment exists to rule out.
+        if let Some(slot) = self.slots.get(self.active_ix) {
+            let focus = slot.item.focus_handle(cx);
+            window.focus(&focus, cx);
+        }
     }
 
     /// Activate the tab at the given slot index.
-    pub fn activate_ix(&mut self, ix: usize, _: &mut Window, _: &mut Context<Self>) {
-        if ix < self.slots.len() {
+    ///
+    /// # Focus, not just index (L16)
+    ///
+    /// Setting `active_ix` alone used to be the whole method. That left the
+    /// window's focused element wherever it was before — usually `Pane`'s own
+    /// root, from the last time nothing more specific had focus — so any
+    /// `.on_action` handler the newly active item registered on its own root
+    /// div was structurally unreachable: GPUI's `dispatch_action` only walks
+    /// the ancestor chain of the *focused* element, and an unfocused
+    /// descendant is not on that chain.
+    ///
+    /// Every activation path — `open_item`, `activate_tab`, `activate_action`
+    /// (the `ActivateTabN` bindings), and the tab-strip click handler in
+    /// `render` — funnels through here, so fixing it once here fixes all of
+    /// them. `Pane`'s own actions (`ActivateTabN`, `CloseTab`) keep working
+    /// after this, because they are registered on `Pane`'s root div, an
+    /// *ancestor* of the newly focused item — `dispatch_action` walks the
+    /// whole chain upward, not just the leaf.
+    ///
+    /// # …and not *always* focus, either
+    ///
+    /// The L16 fix then took the opposite thing for granted: that every
+    /// activation is one the user asked for. `Shell::reveal_document` activates
+    /// a tab twice for a background open (once implicitly via `open_item`, once
+    /// to put the reader back), while the omni-search overlay is deliberately
+    /// still on screen — so alt-Enter silently moved the keyboard out of the
+    /// overlay and the next `Escape` reached nothing at all. The screenshot
+    /// suite caught it as `23-escape-clears-query-first: only 0 of 5184000
+    /// pixels changed`.
+    ///
+    /// [`Activation`] is why that is now a decision a caller has to make rather
+    /// than a property of which method it happened to reach.
+    pub fn activate_ix(
+        &mut self,
+        ix: usize,
+        activation: Activation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(slot) = self.slots.get(ix) {
             self.active_ix = ix;
+            if activation == Activation::Focus {
+                let focus = slot.item.focus_handle(cx);
+                window.focus(&focus, cx);
+            }
         }
     }
 
     /// Activate the tab with the given id.
-    pub fn activate_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn activate_tab(
+        &mut self,
+        id: TabId,
+        activation: Activation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(ix) = self.slots.iter().position(|s| s.id == id) {
-            self.activate_ix(ix, window, cx);
+            self.activate_ix(ix, activation, window, cx);
         }
     }
 
     fn activate_action(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         let previous = self.active_id();
-        self.activate_ix(ix, window, cx);
+        // A keybinding or a tab click: the user is asking to read this tab, so
+        // the keyboard goes with it.
+        self.activate_ix(ix, Activation::Focus, window, cx);
         if self.active_id() != previous {
             cx.emit(PaneEvent::ActiveTabChanged {
                 id: self.active_id(),
@@ -372,6 +498,24 @@ impl Pane {
     /// The id of the currently active tab.
     pub fn active_id(&self) -> Option<TabId> {
         self.slots.get(self.active_ix).map(|s| s.id)
+    }
+
+    /// The `FocusHandle` of the active tab's *content*, if a tab is open.
+    ///
+    /// Exposed because "did activating this tab really move window focus into
+    /// its content?" is otherwise unanswerable from outside the pane, and the
+    /// answer is load-bearing. `activate_ix` focuses this handle; if the item
+    /// then renders without attaching it (`track_focus`), GPUI cannot find it
+    /// in the rendered dispatch tree and silently falls back to the *window
+    /// root*, which carries no key context — so every ancestor binding,
+    /// including this pane's own `CloseTab` / `ActivateTabN`, stops resolving.
+    /// That failure is invisible in a screenshot and silent at the keystroke;
+    /// asserting on the handle is the only way to catch it. See
+    /// `views::symbol_page::SymbolPage::page_root` (LIMITATIONS.md L22).
+    pub fn active_item_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
+        self.slots
+            .get(self.active_ix)
+            .map(|slot| slot.item.focus_handle(cx))
     }
 
     /// Number of open tabs.
@@ -545,7 +689,14 @@ impl Render for Pane {
                                     let entity = entity.clone();
                                     move |_: &MouseDownEvent, window, cx| {
                                         entity.update(cx, |pane, cx| {
-                                            pane.activate_ix(ix, window, cx);
+                                            // A direct click on the strip is
+                                            // the user asking to read this tab.
+                                            pane.activate_ix(
+                                                ix,
+                                                Activation::Focus,
+                                                window,
+                                                cx,
+                                            );
                                             cx.emit(PaneEvent::ActiveTabChanged {
                                                 id: pane.active_id(),
                                             });

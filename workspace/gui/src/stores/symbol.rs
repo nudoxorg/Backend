@@ -80,6 +80,24 @@ pub trait SymbolEngine: 'static {
     ///
     /// Best-effort; no-ops on engines that do not support it.
     fn highlight_priority(&self, _tab_id: TabId, _visible: &[SectionId]) {}
+
+    /// Make `version` of `key`'s package the generation the corpus serves.
+    ///
+    /// # Why the store needs this at all
+    ///
+    /// `Corpus` holds one resident `PackageView` per lineage, so every
+    /// version-free path — `open_symbol`, `search`, `query` — answers from
+    /// whichever generation is current. Re-opening a symbol without switching
+    /// that first therefore re-streams the *same* version, which is what
+    /// `set_version` did: the version strip and picker changed their highlight
+    /// and the document underneath never moved. `IntroId` is stable across
+    /// generations, so the very same `SymbolKey` opens the corresponding symbol
+    /// in the newly selected one — that stability is what makes a version
+    /// dropdown a version switch rather than a navigation reset.
+    ///
+    /// Default is a no-op so a test double is not forced to model the version
+    /// registry to compile; `EngineHandle` below implements it for real.
+    fn select_version(&self, _key: &SymbolKey, _version: &str) {}
 }
 
 /// The real engine satisfies the capability directly.
@@ -100,6 +118,28 @@ impl SymbolEngine for nudox_engine::EngineHandle {
     // `highlight_priority` keeps the default no-op: the engine highlights every
     // code section as it chunks, so there is no queue to reorder yet. When the
     // tree-sitter plane lands it becomes a real command (§9.4.5).
+
+    fn select_version(&self, key: &SymbolKey, version: &str) {
+        // The registry is updated *synchronously* inside `select_version`, so
+        // the caller may re-open the symbol immediately after this returns and
+        // be sure it is asking the newly selected generation. The corpus write
+        // is async and announces itself on the returned receiver; we do not
+        // need that announcement, because the re-opened stream carries the new
+        // `SymbolHead` and the page is driven by heads, not by version events.
+        //
+        // Dropping the receiver is therefore deliberate and not a lost result:
+        // the only thing on it we could act on is `NotLoaded`, and a version
+        // the picker offered came from this package's own timeline, so it is
+        // by construction loaded. `Gen(0)` because this store's generations
+        // count *document* streams; the version stream has no reader to
+        // correlate.
+        let _ = nudox_engine::EngineHandle::select_version(
+            self,
+            key.package.clone(),
+            version.to_owned(),
+            nudox_engine::wire::Gen(0),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -366,9 +406,34 @@ impl<E: SymbolEngine> SymbolStore<E> {
         self.start_stream(tab_id, key, cx);
     }
 
-    /// Switch to a different symbol version (new gen stream into same tab).
+    /// Switch the corpus to `version` and re-stream this tab's symbol from it.
     ///
-    /// Semantics: stale content dims (LD-15), new content streams over it.
+    /// Two steps, and the order matters: the version registry is updated
+    /// synchronously by [`SymbolEngine::select_version`], so by the time
+    /// `start_stream` issues `open_symbol` the corpus is already resolving
+    /// against the newly selected generation.
+    ///
+    /// Semantics: stale content dims and stays readable (LD-15); the new
+    /// generation streams over it.
+    pub fn select_version(
+        &mut self,
+        tab_id: TabId,
+        version: String,
+        cx: &mut Context<Self>,
+    ) {
+        let key = match self.docs.get(&tab_id) {
+            Some(doc) => doc.key.clone(),
+            None => return,
+        };
+        self.engine.select_version(&key, &version);
+        self.start_stream(tab_id, key, cx);
+    }
+
+    /// Re-stream this tab's symbol without changing which version is current.
+    ///
+    /// Kept distinct from [`SymbolStore::select_version`]: this is what the
+    /// header's *refresh* affordance means, and conflating the two is how
+    /// "switch version" shipped as "re-open the same version".
     pub fn set_version(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
         let key = match self.docs.get(&tab_id) {
             Some(doc) => doc.key.clone(),

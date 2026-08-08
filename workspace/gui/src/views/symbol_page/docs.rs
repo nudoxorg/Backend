@@ -57,10 +57,10 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, StyledText, Window, div,
     prelude::FluentBuilder as _,
 };
-use gpui_component::{StyledExt as _, skeleton::Skeleton};
+use gpui_component::{StyledExt as _, skeleton::Skeleton, tooltip::Tooltip};
 use nudox_engine::wire::{
-    CalloutLevel, FieldRow, HighlightSpan, InlineRun, LinkTarget, MemberRow, ProseBlock,
-    RenderSection, SectionId, SectionKind, SectionPlan, SizeHint, SymbolKey,
+    CalloutLevel, FieldRow, HighlightSpan, InlineRun, LinkOrigin, LinkRepairKind, LinkTarget,
+    MemberRow, ProseBlock, RenderSection, SectionId, SectionKind, SectionPlan, SizeHint, SymbolKey,
 };
 
 use crate::motion::color::MotionColor;
@@ -112,7 +112,14 @@ impl Metrics {
         let ts = ext.type_scale;
         let sp = ext.space;
         Self {
-            prose_line: ts.ui.line_height,
+            // Reading text is set in `prose`, not `ui`. §10.2 notes these line
+            // heights are locked into the arithmetic below — which is exactly
+            // why the token swap has to happen *here* as well as in the
+            // template. Reserve a section at the chrome leading and render it
+            // at the reading leading and every section is short by
+            // `(24 − 20) × lines`, which is the zero-jump guarantee failing
+            // silently on every paragraph.
+            prose_line: ts.prose.line_height,
             mono_line: ts.mono.line_height,
             // A member/field row is one dense line plus a hairline of padding
             // above and below — the docs.rs table rhythm.
@@ -162,15 +169,130 @@ fn kind_label(kind: SectionKind) -> SharedString {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// How one byte range of a paragraph is painted.
+///
+/// `pub` because it is half of the render-ready projection: `RichText` says
+/// *which* bytes, this says *how*, and `run_highlight_style` turns it into a
+/// `HighlightStyle`. The screenshot plane needs all three to rasterise a real
+/// paragraph without re-deriving any of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RunStyle {
+pub enum RunStyle {
     Text,
     Code,
     Strong,
     Em,
     Link,
+    /// A link whose spelling we repaired (`LinkOrigin::Repaired`). Same accent
+    /// hue as a real link — it *is* a real link — but a wavy `warn` underline,
+    /// so a reader can tell at a glance which links the crate author wrote and
+    /// which ones we inferred.
+    RepairedLink,
     /// A run variant this binary does not understand (LD-7).
     Unknown,
+}
+
+/// The reader-facing name of a link repair, for the legend beside a marked
+/// link.
+///
+/// # Why this function exists in the GUI at all
+///
+/// It is the fifth compile error a new `LinkRepairKind` costs, and the only one
+/// that lands in *this* package. `LinkRepairKind` is deliberately exhaustive
+/// (see its docs in `nudox-engine`), so the match below does not compile until
+/// a new repair has been given a name a reader can understand. A repair that
+/// ships without a reader affordance is a silent repair, which is the whole
+/// thing this design exists to prevent.
+///
+/// The *sentence* a reader sees is still `LinkRepair::note`, rendered in the
+/// chunker (LR-3). This is only the short label, and it does no string work —
+/// every arm returns a `&'static str`.
+pub(crate) fn repair_legend_label(kind: LinkRepairKind) -> SharedString {
+    match kind {
+        LinkRepairKind::TransposedOpenDelimiter => {
+            SharedString::new_static("repaired link — transposed backtick and bracket")
+        }
+    }
+}
+
+/// The paint for one run style, given the current theme.
+///
+/// # Why this is a free function and not an inline closure
+///
+/// It used to be a `match` buried inside `render_rich`'s style-mapping
+/// closure, which meant the only way to observe what a run style *looks like*
+/// was to render a whole document. That made the one thing worth asserting
+/// about `RunStyle::RepairedLink` — that it is visibly different from
+/// `RunStyle::Link` in real pixels — untestable without duplicating the match,
+/// and a duplicated style map is a claim that rots (doctrine §8).
+///
+/// Lifting it out costs nothing at the call site and gives the screenshot
+/// plane something real to rasterise. There is exactly one definition of what
+/// a run looks like, and both the app and the evidence read it.
+pub fn run_highlight_style(
+    style: RunStyle,
+    colours: &ColourRoles,
+    border_width: Pixels,
+) -> HighlightStyle {
+    match style {
+        // Plain body text carries the primary foreground: it is
+        // the thing the reader came for. Everything else in the
+        // run vocabulary is now positioned *relative to this*
+        // rather than above it.
+        RunStyle::Text => HighlightStyle {
+            color: Some(colours.fg_default),
+            ..Default::default()
+        },
+        // Inline code differentiates by *surface*, not by
+        // luminance. It used to be the only run brighter than the
+        // sentence around it, which inverted the hierarchy — a
+        // type name mentioned in passing read as more important
+        // than the sentence explaining it. The tinted chip already
+        // says "this is code"; it does not also need to shout.
+        RunStyle::Code => HighlightStyle {
+            color: Some(colours.fg_default),
+            background_color: Some(colours.bg_hover),
+            ..Default::default()
+        },
+        // Strong is now the *only* run that can go heavier than
+        // body, so bold means something again.
+        RunStyle::Strong => HighlightStyle {
+            color: Some(colours.fg_default),
+            font_weight: Some(gpui::FontWeight::BOLD),
+            ..Default::default()
+        },
+        RunStyle::Em => HighlightStyle {
+            color: Some(colours.fg_default),
+            font_style: Some(gpui::FontStyle::Italic),
+            ..Default::default()
+        },
+        RunStyle::Link => HighlightStyle {
+            color: Some(colours.accent),
+            underline: Some(gpui::UnderlineStyle {
+                thickness: border_width,
+                color: Some(colours.accent),
+                wavy: false,
+            }),
+            ..Default::default()
+        },
+        // Same accent hue as `Link` — a repaired link is a real,
+        // working link and must not be demoted. The difference is
+        // the underline: wavy, in `warn`, which is the
+        // spell-checker idiom for "this is not how the source
+        // spells it". The marker never touches the *text*, so
+        // selection, copy, and every text assertion stay honest.
+        RunStyle::RepairedLink => HighlightStyle {
+            color: Some(colours.accent),
+            underline: Some(gpui::UnderlineStyle {
+                thickness: border_width,
+                color: Some(colours.warn),
+                wavy: true,
+            }),
+            ..Default::default()
+        },
+        RunStyle::Unknown => HighlightStyle {
+            color: Some(colours.warn),
+            ..Default::default()
+        },
+    }
 }
 
 /// Where a clickable range in a paragraph goes.
@@ -181,21 +303,45 @@ enum LinkDest {
 }
 
 /// One paragraph, heading, or list item: a single string plus styling.
+///
+/// `pub` for the same reason as [`RunStyle`]: this is the projection the
+/// renderer consumes, so it is also the projection the evidence must consume.
+/// The fields stay private — [`RichText::text`] and [`RichText::styles`] are
+/// the read-only view, so nothing outside can build a `RichText` whose ranges
+/// do not address its own string.
 #[derive(Clone, Debug)]
-struct RichText {
+pub struct RichText {
     text: SharedString,
     styles: Arc<[(Range<usize>, RunStyle)]>,
     link_ranges: Arc<[Range<usize>]>,
     links: Arc<[LinkDest]>,
+    /// Tooltip text per repaired-link range, keyed by the same byte ranges
+    /// `link_ranges` uses. Empty when the page has no repairs.
+    ///
+    /// The strings are the engine's `LinkRepair::note` **verbatim** — lindsey
+    /// does no string work (LR-3), so what a reader is told about a repair is
+    /// authored in exactly one place.
+    repair_notes: Arc<[(Range<usize>, SharedString)]>,
 }
 
 impl RichText {
+    /// The shaped string every range in [`Self::styles`] addresses.
+    pub fn text(&self) -> &SharedString {
+        &self.text
+    }
+
+    /// The `(byte range, style)` pairs, contiguous and in order.
+    pub fn styles(&self) -> &[(Range<usize>, RunStyle)] {
+        &self.styles
+    }
+
     /// Flatten inline runs into one shaped string. Projection time only.
-    fn from_runs(runs: &[InlineRun]) -> Self {
+    pub fn from_runs(runs: &[InlineRun]) -> Self {
         let mut text = String::new();
         let mut styles: Vec<(Range<usize>, RunStyle)> = Vec::new();
         let mut link_ranges: Vec<Range<usize>> = Vec::new();
         let mut links: Vec<LinkDest> = Vec::new();
+        let mut repair_notes: Vec<(Range<usize>, SharedString)> = Vec::new();
 
         for run in runs {
             let start = text.len();
@@ -216,7 +362,11 @@ impl RichText {
                     text.push_str(s);
                     RunStyle::Em
                 }
-                InlineRun::Link { text: t, target } => {
+                InlineRun::Link {
+                    text: t,
+                    target,
+                    origin,
+                } => {
                     text.push_str(t);
                     links.push(match target {
                         LinkTarget::Symbol { key } => LinkDest::Symbol(key.clone()),
@@ -226,7 +376,20 @@ impl RichText {
                         _ => LinkDest::Url(SharedString::from("")),
                     });
                     link_ranges.push(start..text.len());
-                    RunStyle::Link
+                    // No wildcard arm, unlike every other match in this file:
+                    // `LinkOrigin` is deliberately *not* `#[non_exhaustive]`
+                    // and has exactly two states by construction (see its docs
+                    // in `nudox-engine`). A `_` here would be dead code today
+                    // and, if the type ever did grow, would silently paint a
+                    // new kind of repair as an ordinary link — the exact
+                    // silence this whole feature exists to remove.
+                    match origin {
+                        LinkOrigin::Authored => RunStyle::Link,
+                        LinkOrigin::Repaired(repair) => {
+                            repair_notes.push((start..text.len(), shared(&repair.note)));
+                            RunStyle::RepairedLink
+                        }
+                    }
                 }
                 // LD-7: an unrecognised run becomes a visible chip, never a gap.
                 _ => {
@@ -245,6 +408,7 @@ impl RichText {
             styles: Arc::from(styles),
             link_ranges: Arc::from(link_ranges),
             links: Arc::from(links),
+            repair_notes: Arc::from(repair_notes),
         }
     }
 }
@@ -756,7 +920,11 @@ impl DocsBody {
             SectionView::Blocks(blocks) => div()
                 .v_flex()
                 .w_full()
-                .gap(sp.space_3)
+                // Paragraph spacing scales with leading. At the old 20 px
+                // chrome leading a 12 px gap read as a paragraph break; at the
+                // 24 px reading leading it reads as a slightly loose line, and
+                // the blocks run together. `space_4` restores the break.
+                .gap(sp.space_4)
                 .children(
                     blocks
                         .iter()
@@ -864,16 +1032,53 @@ impl DocsBody {
         };
 
         match block {
+            // The paragraph is the primary content of this page, and is now
+            // set as such.
+            //
+            // It used to be `ui` type at `fg_muted` — chrome size, secondary
+            // colour — while inline code inside it was `fg_default`. So the
+            // code fragments *outranked* the sentences containing them, and
+            // body, code and links all sat within two points and one step of
+            // each other. That is what "flat" meant: nothing in a paragraph
+            // had rank. Body now takes the primary foreground and the reading
+            // token; code and links are told apart by their background chip
+            // and their hue rather than by being brighter than the prose.
+            // NOTE — the measure (`sp.measure`) is deliberately NOT applied
+            // here, and this is a finding rather than an oversight.
+            //
+            // Constraining a paragraph to 640 px is the correct typography and
+            // it was implemented, shot, and backed out on the evidence.
+            // §9.4's zero-jump guarantee reserves each section's height ahead
+            // of arrival as `SizeHint::Lines(n) × prose_line`, and that `n`
+            // comes from the engine, which does not know the width the text
+            // will be laid out at. At the full column width memchr's
+            // paragraphs are one line each and the reservation is exact — the
+            // shots measured a uniform 44 device px between them. Adding the
+            // measure wrapped them to two and three lines, the reservations
+            // then under- and over-shot by different amounts per section, and
+            // the *rhythm* went to 39 / 25 / 15 logical px — visibly worse
+            // than the flat-but-even page it replaced.
+            //
+            // The measure cannot land until `reserved_height` is computed from
+            // the width the text is actually laid out at rather than from a
+            // count supplied before layout. That is a §9.4 change, not a view
+            // change, and doing it here by widening the slack would trade a
+            // visible defect for an invisible one.
             BlockView::Paragraph(rich) => div()
                 .w_full()
-                .text_size(ts.ui.size)
-                .line_height(ts.ui.line_height)
-                .text_color(colours.fg_muted)
+                .text_size(ts.prose.size)
+                .line_height(ts.prose.line_height)
+                .text_color(colours.fg_default)
                 .child(self.render_rich(section_ix, block_ix, rich, cx))
                 .into_any_element(),
 
             BlockView::Heading { level, text } => {
-                let scale = if *level <= 1 { ts.title } else { ts.ui };
+                // A top-level heading is the one place `display` earns its
+                // 20 px: it has to out-rank body text that is now itself
+                // 15 px. Sub-headings drop to `title`, which shares the body
+                // size and separates on weight alone — the same voice louder,
+                // per the `TypeScale` note.
+                let scale = if *level <= 1 { ts.display } else { ts.title };
                 div()
                     .w_full()
                     .pt(sp.space_2)
@@ -885,6 +1090,7 @@ impl DocsBody {
                     .into_any_element()
             }
 
+            // No measure here either, for the reason given on `Paragraph`.
             BlockView::List { items } => div()
                 .v_flex()
                 .w_full()
@@ -896,9 +1102,12 @@ impl DocsBody {
                         .flex_row()
                         .items_start()
                         .gap(sp.space_2)
-                        .text_size(ts.ui.size)
-                        .line_height(ts.ui.line_height)
-                        .text_color(colours.fg_muted)
+                        // Same reading type as a paragraph: a bulleted list is
+                        // prose that happens to be enumerated, and setting it
+                        // one step smaller was a second, unstated type scale.
+                        .text_size(ts.prose.size)
+                        .line_height(ts.prose.line_height)
+                        .text_color(colours.fg_default)
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -951,43 +1160,7 @@ impl DocsBody {
         let styles: Vec<(Range<usize>, HighlightStyle)> = rich
             .styles
             .iter()
-            .map(|(range, style)| {
-                let hs = match style {
-                    RunStyle::Text => HighlightStyle {
-                        color: Some(colours.fg_muted),
-                        ..Default::default()
-                    },
-                    RunStyle::Code => HighlightStyle {
-                        color: Some(colours.fg_default),
-                        background_color: Some(colours.bg_hover),
-                        ..Default::default()
-                    },
-                    RunStyle::Strong => HighlightStyle {
-                        color: Some(colours.fg_default),
-                        font_weight: Some(gpui::FontWeight::BOLD),
-                        ..Default::default()
-                    },
-                    RunStyle::Em => HighlightStyle {
-                        color: Some(colours.fg_muted),
-                        font_style: Some(gpui::FontStyle::Italic),
-                        ..Default::default()
-                    },
-                    RunStyle::Link => HighlightStyle {
-                        color: Some(colours.accent),
-                        underline: Some(gpui::UnderlineStyle {
-                            thickness: border_width,
-                            color: Some(colours.accent),
-                            wavy: false,
-                        }),
-                        ..Default::default()
-                    },
-                    RunStyle::Unknown => HighlightStyle {
-                        color: Some(colours.warn),
-                        ..Default::default()
-                    },
-                };
-                (range.clone(), hs)
-            })
+            .map(|(range, style)| (range.clone(), run_highlight_style(*style, &colours, border_width)))
             .collect();
 
         let text = StyledText::new(rich.text.clone()).with_highlights(styles);
@@ -999,6 +1172,11 @@ impl DocsBody {
 
         let links = rich.links.clone();
         let on_open = self.on_open.clone();
+        // The reader's way of asking "what did you change?". The string is the
+        // engine's `LinkRepair::note` verbatim — there is no `format!` here,
+        // which is what the LR-3 lint enforces and what keeps the explanation
+        // authored in one place.
+        let notes = rich.repair_notes.clone();
         InteractiveText::new(id, text)
             .on_click(
                 rich.link_ranges.to_vec(),
@@ -1016,6 +1194,12 @@ impl DocsBody {
                     None => {}
                 },
             )
+            .tooltip(move |char_ix, window, cx| {
+                notes
+                    .iter()
+                    .find(|(range, _)| range.contains(&char_ix))
+                    .map(|(_, note)| Tooltip::new(note.clone()).build(window, cx))
+            })
             .into_any_element()
     }
 
@@ -1405,6 +1589,7 @@ mod tests {
             InlineRun::Link {
                 text: "HashMap".into(),
                 target: LinkTarget::Url { url: "https://example.invalid".into() },
+                origin: LinkOrigin::Authored,
             },
         ];
         let rich = RichText::from_runs(&runs);
@@ -1428,6 +1613,7 @@ mod tests {
             InlineRun::Link {
                 text: "Result".into(),
                 target: LinkTarget::Url { url: "https://example.invalid".into() },
+                origin: LinkOrigin::Authored,
             },
             InlineRun::Text { text: " now".into() },
         ];
@@ -1436,6 +1622,91 @@ mod tests {
         let r = rich.link_ranges[0].clone();
         assert_eq!(&rich.text[r], "Result");
         assert_eq!(rich.links.len(), 1);
+        assert!(
+            rich.repair_notes.is_empty(),
+            "an authored link must carry no repair note — a note on every link \
+             would make the mark meaningless"
+        );
+    }
+
+    /// A repaired link must project to its own paint *and* its own note, keyed
+    /// to exactly the link's byte range, with the engine's sentence unchanged.
+    ///
+    /// # What each assertion is for
+    ///
+    /// * `RunStyle::RepairedLink`, not `RunStyle::Link` — the reader can see
+    ///   which links the crate author wrote and which we inferred.
+    /// * The note's range equals the link's `link_ranges` entry — the tooltip
+    ///   fires over the link and nowhere else. A drifting range would put the
+    ///   explanation on the wrong words.
+    /// * The note text is **`==` the engine's `note`** — that equality is the
+    ///   proof that lindsey did no string work (LR-3). A `format!` here would
+    ///   put half the explanation in the view layer where nothing tests it.
+    #[test]
+    fn repaired_link_projects_to_its_own_run_style_and_note() {
+        let note = "Repaired link — the source reads `[memrchr_iter`] \
+                    (transposed backtick and bracket); we linked memrchr_iter.";
+        let runs = vec![
+            InlineRun::Text { text: "see ".into() },
+            InlineRun::Link {
+                text: "memrchr_iter".into(),
+                target: LinkTarget::Url { url: "https://example.invalid".into() },
+                origin: LinkOrigin::Repaired(nudox_engine::wire::LinkRepair {
+                    kind: LinkRepairKind::TransposedOpenDelimiter,
+                    raw: "`[memrchr_iter`]".into(),
+                    resolved: "memrchr_iter".into(),
+                    note: note.into(),
+                }),
+            },
+        ];
+        let rich = RichText::from_runs(&runs);
+
+        let link_style = rich
+            .styles
+            .iter()
+            .find(|(_, s)| matches!(s, RunStyle::RepairedLink | RunStyle::Link))
+            .expect("the link run must contribute a style range");
+        assert_eq!(
+            link_style.1,
+            RunStyle::RepairedLink,
+            "a repaired link must not paint as an ordinary link"
+        );
+
+        assert_eq!(rich.link_ranges.len(), 1);
+        assert_eq!(rich.repair_notes.len(), 1);
+        assert_eq!(
+            rich.repair_notes[0].0, rich.link_ranges[0],
+            "the note must cover exactly the link's own text"
+        );
+        assert_eq!(
+            &rich.text[rich.repair_notes[0].0.clone()],
+            "memrchr_iter"
+        );
+        assert_eq!(
+            rich.repair_notes[0].1.as_ref(),
+            note,
+            "the note must be the engine's sentence verbatim — any difference \
+             means lindsey did string work the chunker owns (LR-3)"
+        );
+    }
+
+    /// The legend must name every repair kind. `LinkRepairKind` is exhaustive,
+    /// so `repair_legend_label` does not compile until a new repair has a
+    /// reader-facing name — this test additionally proves the names are real
+    /// and distinct rather than a placeholder repeated.
+    #[test]
+    fn every_repair_kind_has_a_distinct_reader_facing_label() {
+        let mut seen: Vec<SharedString> = Vec::new();
+        for &kind in LinkRepairKind::ALL {
+            let label = repair_legend_label(kind);
+            assert!(!label.is_empty(), "{kind:?} has an empty legend label");
+            assert!(
+                !seen.contains(&label),
+                "two repair kinds share the legend label {label:?}"
+            );
+            seen.push(label);
+        }
+        assert_eq!(seen.len(), LinkRepairKind::ALL.len());
     }
 
     /// An empty run contributes no style range — an empty `(0..0, Text)` pair

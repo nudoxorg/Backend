@@ -37,6 +37,64 @@
 //! Views that need both call `cx.theme()` **and** `cx.theme_ext()`.  They never
 //! reach into raw HSL values — every value a view could need has a name here.
 //!
+//! # The scales — read this before adding a number to a view
+//!
+//! Consistency here is not achieved by everyone being careful; it is achieved
+//! by there being nowhere else to get a number from. Every value below has
+//! exactly one definition, and a view that needs something not on a scale is
+//! reporting a gap in the scale, not licence to write a literal.
+//!
+//! **Space** — one 4 px grid, `SpaceTokens::STANDARD`:
+//! `space_1`..`space_8` = 4, 8, 12, 16, 20, 24, 32, 40 px.
+//!
+//! The reader has **one horizontal gutter: `space_4`**. Documentation
+//! sections, disclosure headers, impl rows, the blanket subheading, the
+//! version strip and the error bar all start at that left edge. They used to
+//! use `space_4`, `space_3` and `space_2` respectively, which put three left
+//! edges in one column. Narrow chrome (the outline rail) keeps its own tighter
+//! `space_2` gutter — a 200 px rail and a 1150 px column should not share a
+//! gutter — but it is internally consistent.
+//!
+//! **Radius** — `r_sm` 4 (chips, badges), `r_md` 6 (buttons, inputs, rows),
+//! `r_lg` 10 (cards, panels), `r_xl` 14 (overlays, dialogs).
+//!
+//! **Type** — `TypeScale::STANDARD`, seven tokens, size/leading/weight:
+//!
+//! | token     | size | leading | weight | used for |
+//! |-----------|------|---------|--------|----------|
+//! | `display` | 20   | 28      | 600    | top-level doc headings |
+//! | `title`   | 15   | 22      | 600    | panel headers, sub-headings |
+//! | `prose`   | 15   | 24      | 400    | **reading text** |
+//! | `ui`      | 13   | 20      | 400    | chrome, labels, buttons |
+//! | `mono`    | 12.5 | 19      | 400    | code, signatures, paths |
+//! | `dense`   | 12   | 16      | 400    | table rows, logs |
+//! | `caption` | 11   | 16      | 500    | overlines, counts, hints |
+//!
+//! The split that matters is `prose` vs `ui`. Chrome type is tuned to be
+//! compact and dismissable; reading type is tuned to be followed for minutes.
+//! They want opposite things from leading, and while they shared one token the
+//! documentation silently got the chrome answer — which is what "the prose
+//! reads flat" meant.
+//!
+//! **Foreground rank in prose** — body is `fg_default`. Inline code
+//! differentiates by *surface* (`bg_hover` chip), links by *hue* (`accent`)
+//! plus an underline, emphasis by weight or slant. Nothing in a paragraph is
+//! brighter than the sentence containing it. Before this, body was `fg_muted`
+//! and inline code was `fg_default`, so a type name mentioned in passing
+//! outranked the prose explaining it.
+//!
+//! **Rows** — one definition, [`NudoxThemeExt::row_height`]: a list row is one
+//! line of its own type plus `space_2`. Never retype the expression; the two
+//! places that need it per table (the outer extent and the inner item) must
+//! agree or `uniform_list` clips.
+//!
+//! **Motion** — every duration is a named constant in `crate::motion::tokens`;
+//! views never write `Duration::from_millis`. One-shot animations are capped at
+//! 240 ms by a `const` assertion, springs settle in ≤ 700 ms, and at most three
+//! infinite loops run at once (`LoopCensus`). Scaling is centralised:
+//! `motion_scale == 0.0` turns every helper into an instant cut, so no call
+//! site branches on reduced motion.
+//!
 //! # Initialisation (in `main.rs`)
 //!
 //! ```rust,ignore
@@ -180,6 +238,7 @@ mod tests {
             ("display", ts.display),
             ("title", ts.title),
             ("ui", ts.ui),
+            ("prose", ts.prose),
             ("dense", ts.dense),
             ("caption", ts.caption),
             ("mono", ts.mono),
@@ -197,10 +256,11 @@ mod tests {
     fn type_scale_display_is_largest_caption_is_smallest() {
         let ts = TypeScale::STANDARD;
         // PartialOrd on Pixels supports comparison operators directly.
-        let sizes: [(&str, Pixels); 6] = [
+        let sizes: [(&str, Pixels); 7] = [
             ("display", ts.display.size),
             ("title", ts.title.size),
             ("ui", ts.ui.size),
+            ("prose", ts.prose.size),
             ("dense", ts.dense.size),
             ("mono", ts.mono.size),
             ("caption", ts.caption.size),
@@ -213,6 +273,59 @@ mod tests {
             .unwrap().0;
         assert_eq!(max_name, "display", "display should be the largest token");
         assert_eq!(min_name, "caption", "caption should be the smallest token");
+    }
+
+    /// Reading text must be set looser than chrome text.
+    ///
+    /// This is the invariant that item 3 of the craft pass was about: prose and
+    /// UI chrome shared one token, so paragraphs inherited chrome's tight
+    /// 1.54 leading and the page read flat. Encoding "prose leads looser than
+    /// `ui`" as a test means a future tidy-up that collapses the two tokens
+    /// back together fails here, with a reason, instead of quietly regressing
+    /// every documentation page.
+    #[test]
+    fn prose_is_set_looser_than_chrome() {
+        let ts = TypeScale::STANDARD;
+        let prose_ratio = f32::from(ts.prose.line_height) / f32::from(ts.prose.size);
+        let ui_ratio = f32::from(ts.ui.line_height) / f32::from(ts.ui.size);
+
+        assert!(
+            prose_ratio > ui_ratio,
+            "prose leading ({prose_ratio:.2}) must exceed chrome leading ({ui_ratio:.2})"
+        );
+        assert!(
+            prose_ratio >= 1.5,
+            "prose leading ({prose_ratio:.2}) is below the 1.5 reading floor"
+        );
+        assert!(
+            ts.prose.size > ts.ui.size,
+            "reading text must not be smaller than chrome text"
+        );
+    }
+
+    /// The measure has to be a real constraint, not a number that never binds.
+    ///
+    /// A `measure` wider than the window it lives in is indistinguishable from
+    /// no measure at all — the constraint silently never applies, which is the
+    /// same class of failure as doctrine §8's dropped `relative()`. 720 px at
+    /// the 15 px prose size is ~75 characters, the top of the readable band.
+    #[test]
+    fn prose_measure_binds_within_a_reasonable_reader_column() {
+        let sp = SpaceTokens::STANDARD;
+        let ts = TypeScale::STANDARD;
+
+        // A conservative average advance for a proportional face is ~0.5 em.
+        let approx_chars = f32::from(sp.measure) / (f32::from(ts.prose.size) * 0.5);
+        assert!(
+            (55.0..=90.0).contains(&approx_chars),
+            "measure yields ~{approx_chars:.0} characters per line, outside the 55–90 readable band"
+        );
+        // It must actually bind on the reader column the shots are taken at
+        // (2880 physical / 2 = 1440 logical, less docks and the outline rail).
+        assert!(
+            sp.measure < px(1_000.0),
+            "measure must be narrower than the reader column or it never applies"
+        );
     }
 
     // ── §10.3 KindColours — all 13 pairwise distinct hues + luminance band ───

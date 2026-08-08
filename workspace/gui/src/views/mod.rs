@@ -17,3 +17,8 @@ pub use omni_search::{
 
 /// The streamed symbol page (§16) — the documentation centrepiece.
 pub mod symbol_page;
+
+/// The `?` shortcuts cheat sheet and the `cmd-shift-P` command palette (§23.1,
+/// §23.3) — one view, two modes, both rendering from `app::keymaps`'s
+/// registry (LIMITATIONS.md L15).
+pub mod command_overlay;

@@ -1055,6 +1055,66 @@ async fn scrim_click_dismisses_omni_search(cx: &mut TestAppContext) {
     );
 }
 
+/// The scrim must still be clickable once the search panel has *finished*
+/// revealing — not only during the fraction of a second while it is growing.
+///
+/// `scrim_click_dismisses_omni_search` above clicks as soon as the executor
+/// parks, which races the reveal spring. That made it pass about four times in
+/// five and hid a real bug: the panel's height cap was written
+/// `max_h(relative(0.60))`, and a percentage max-height has no definite basis
+/// inside an auto-height wrapper, so the clamp was dropped and the spring's
+/// 9999 px sentinel became the panel's real layout height. `overflow_hidden`
+/// meant it still *looked* correct, but the panel carries `.occlude()`, so its
+/// hitbox covered the whole window and there was no scrim left to click
+/// anywhere on screen.
+///
+/// This test settles the reveal first, so it asserts the state a reader is
+/// actually in when they click away from a search they have been looking at.
+#[gpui::test]
+async fn scrim_click_dismisses_omni_search_after_the_panel_has_fully_revealed(
+    cx: &mut TestAppContext,
+) {
+    let (shell, mut vcx, _window, _search, _symbols, _packages) = boot_shell!(cx);
+
+    vcx.simulate_keystrokes("cmd-k");
+    vcx.run_until_parked();
+
+    // The reveal spring takes its phase from wall-clock time, so both clocks
+    // have to move: real time for the spring, `run_until_parked` for the frames
+    // it schedules (see AGENTS-DOCTRINE §8, "Two clocks have to move").
+    for _ in 0..20 {
+        cx.background_executor
+            .timer(Duration::from_millis(25))
+            .await;
+        vcx.run_until_parked();
+    }
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        Some(OverlayKind::OmniSearch),
+        "precondition: the overlay must still be open after the reveal settles"
+    );
+
+    let scrim_bounds = vcx
+        .debug_bounds("overlay.scrim")
+        .expect("the scrim must be painted while the overlay is open");
+    let below_panel = gpui::Point {
+        x: scrim_bounds.center().x,
+        y: scrim_bounds.bottom() - gpui::px(8.0),
+    };
+    vcx.simulate_click(below_panel, Modifiers::default());
+    vcx.run_until_parked();
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        None,
+        "clicking the scrim below a fully-revealed search panel must dismiss \
+         it. Still open means the panel's occluding hitbox has grown over the \
+         whole window again — check that its height cap is a definite length \
+         and not a percentage",
+    );
+}
+
 /// `Escape` on a non-empty input must clear the input first, not close the
 /// overlay. Only a second `Escape` on an empty input closes the overlay.
 ///
@@ -1269,4 +1329,465 @@ async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContex
         assert!(!s.is_open(&key3), "closing a pane tab must close its SymbolDoc");
         assert!(s.is_open(&key2), "the surviving pane tab must keep its SymbolDoc");
     });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §I — Focus attachment (L16 / L22)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `Pane::activate_ix` focuses the active item's `FocusHandle` on every
+// activation. GPUI resolves a keystroke by looking that handle up in the last
+// rendered frame's dispatch tree and, when it is absent, silently falls back to
+// the *window root* — which carries no key context, so every ancestor binding
+// dies with it. These two tests pin both halves: that the handle really is
+// focused, and that a page which renders a degenerate state still attaches it.
+
+/// Activating a tab must move window focus onto that tab's own content, not
+/// leave it on the pane — otherwise the item's `.on_action` handlers are
+/// structurally unreachable (LIMITATIONS.md L16).
+///
+/// Asserted twice over, because "some handle is focused" is not the claim:
+/// first that the focused handle is *the active item's*, then that a
+/// `SymbolPage`-scoped binding actually fires, observed through content
+/// (the clipboard holds the symbol's URI) rather than through a repaint.
+#[gpui::test]
+async fn activating_a_tab_focuses_the_symbol_page_not_the_pane(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, search, symbols, _packages) = boot_shell!(cx);
+
+    search.update(cx, |s, cx| s.set_input(REAL_QUERY.into(), cx));
+    wait_until(cx, "Name section has hits", |cx| {
+        search.read_with(cx, |s, _| !s.snapshot().sections[0].rows.is_empty())
+    })
+    .await;
+
+    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    // `SymbolHeader`'s URI is the key's own rendering (see
+    // `HeaderModel::from_head`), so this is the exact string a correct
+    // `CopySymbolUri` must produce for *this* symbol and no other.
+    let expected_uri = format!("{:?}", key);
+    let tab = symbols.update(cx, |s, cx| s.open(key, OpenDisposition::Replace, cx));
+    wait_until(cx, "the document head arrives", |cx| {
+        symbols.read_with(cx, |s, _| {
+            s.doc(tab).and_then(|d| d.head.as_ref()).is_some()
+        })
+    })
+    .await;
+    vcx.run_until_parked();
+
+    // 1. The window's focused element is the page's handle, not the pane's.
+    let (item_focused, pane_focused) = vcx.update(|window, cx| {
+        use gpui::Focusable as _;
+        let pane = shell.read(cx).pane().clone();
+        let item = pane
+            .read(cx)
+            .active_item_focus_handle(cx)
+            .expect("a tab is open, so it has a content focus handle");
+        let own = pane.focus_handle(cx);
+        (item.is_focused(window), own.is_focused(window))
+    });
+    assert!(
+        item_focused,
+        "the active tab's own FocusHandle must hold window focus after \
+         activation — if it does not, every SymbolPage `.on_action` handler is \
+         unreachable and so is dispatch through it (L16)"
+    );
+    assert!(
+        !pane_focused,
+        "focus must have moved off Pane's own root and onto the item"
+    );
+
+    // 2. …and that focus is *attached*, so a SymbolPage-context binding really
+    //    dispatches. `y` → `CopySymbolUri`, observed as clipboard content.
+    let sentinel = "adversarial-sentinel-before-copy-symbol-uri";
+    let original = vcx.update(|_, cx| cx.read_from_clipboard());
+    vcx.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(sentinel.to_owned()))
+    });
+
+    vcx.simulate_keystrokes("y");
+    vcx.run_until_parked();
+
+    let copied = vcx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    if let Some(original) = original {
+        vcx.update(|_, cx| cx.write_to_clipboard(original));
+    }
+    let copied = copied.expect("clipboard must hold something");
+    assert_ne!(
+        copied, sentinel,
+        "`y` (CopySymbolUri, bound in the SymbolPage context) left the \
+         sentinel in place — the keystroke never reached SymbolPage, which \
+         means its focus handle is focused but not attached to any element in \
+         the rendered dispatch tree"
+    );
+    assert_eq!(
+        copied, expected_uri,
+        "CopySymbolUri must copy *this* symbol's URI, not some other page's"
+    );
+}
+
+/// A document whose stream fails before anything is readable must not take the
+/// pane's keyboard bindings down with it (LIMITATIONS.md L22).
+///
+/// `SymbolPage` renders a whole-page error for that state. When that error page
+/// was built as a *second* root — without `key_context` or `track_focus` —
+/// GPUI could not find the focused handle in the rendered frame and fell back
+/// to the window root, so `cmd-W` (bound in the `Pane` context, handled two
+/// levels up on `Pane`'s own div) silently stopped working. Nothing about the
+/// pane changed; a leaf view's render branch disabled it.
+#[gpui::test]
+async fn a_failed_document_does_not_disable_pane_bindings(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, _search, symbols, _packages) = boot_shell!(cx);
+
+    // A key for a package the corpus does not contain: the stream fails with
+    // nothing readable, which is exactly `PageState::ColdError`.
+    let doomed = synthetic_key(99);
+    symbols.update(cx, |s, cx| {
+        s.open(doomed.clone(), OpenDisposition::Replace, cx)
+    });
+    vcx.run_until_parked();
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len()),
+        1,
+        "precondition: the failing document still gets a pane tab"
+    );
+
+    // The failing page must still be the focused element — a page that renders
+    // an error is still the active tab and still owns the keyboard.
+    let focused = vcx.update(|window, cx| {
+        shell
+            .read(cx)
+            .pane()
+            .read(cx)
+            .active_item_focus_handle(cx)
+            .expect("the failing tab still has a content focus handle")
+            .is_focused(window)
+    });
+    assert!(
+        focused,
+        "the error page's FocusHandle must still hold window focus; if it does \
+         not, dispatch has already collapsed to the window root"
+    );
+
+    vcx.simulate_keystrokes("cmd-w");
+    vcx.run_until_parked();
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len()),
+        0,
+        "cmd-W must close the tab even when its content rendered as a \
+         cold-error page — a leaf view's render branch must not be able to \
+         unbind a Pane-level keystroke (L22)"
+    );
+    symbols.read_with(cx, |s, _| {
+        assert!(
+            !s.is_open(&doomed),
+            "closing the pane tab must close the SymbolDoc behind it"
+        );
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §J — Overlay bindings that used to be bound-and-inert (L15)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `cmd-shift-P` must put the command palette on the overlay stack.
+///
+/// Asserted on the shell's overlay state, not on "the action dispatched": a
+/// dispatch that nothing listens for is precisely the failure this guards
+/// (L15 — the action was bound with zero `.on_action` handlers anywhere).
+#[gpui::test]
+async fn cmd_shift_p_opens_the_command_palette(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, _search, _symbols, _packages) = boot_shell!(cx);
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        None,
+        "precondition: no overlay before the keystroke"
+    );
+
+    vcx.simulate_keystrokes("cmd-shift-p");
+    vcx.run_until_parked();
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        Some(OverlayKind::CommandPalette),
+        "cmd-shift-P must push CommandPalette onto the overlay stack"
+    );
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_depth()),
+        1,
+        "exactly one overlay — the palette must not stack on itself"
+    );
+
+    // Escape must take it back off again, or the reader is trapped.
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        None,
+        "escape must dismiss the command palette"
+    );
+}
+
+/// `?` must toggle the shortcuts cheat sheet: open on the first press, closed
+/// on the second. "Toggle" is in the action's name, so a press that only ever
+/// opens is a half-implemented binding, not a working one.
+#[gpui::test]
+async fn question_mark_toggles_the_shortcuts_overlay(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, _search, _symbols, _packages) = boot_shell!(cx);
+
+    vcx.simulate_keystrokes("?");
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        Some(OverlayKind::Shortcuts),
+        "`?` must push the shortcuts cheat sheet onto the overlay stack"
+    );
+
+    vcx.simulate_keystrokes("?");
+    vcx.run_until_parked();
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        None,
+        "a second `?` must close the cheat sheet again — the action is a toggle"
+    );
+}
+
+/// Opening the palette while the cheat sheet is up must *replace* it, not
+/// stack a second modal over it. Two live overlay views at once would leave
+/// one of them rendering underneath with its subscriptions still armed.
+#[gpui::test]
+async fn opening_the_palette_over_the_cheat_sheet_replaces_it(cx: &mut TestAppContext) {
+    let (shell, mut vcx, _window, _search, _symbols, _packages) = boot_shell!(cx);
+
+    vcx.simulate_keystrokes("?");
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("cmd-shift-p");
+    vcx.run_until_parked();
+
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned()),
+        Some(OverlayKind::CommandPalette),
+        "the palette must be on top after cmd-shift-P"
+    );
+    assert_eq!(
+        shell.read_with(&mut vcx, |s, _| s.overlay_depth()),
+        1,
+        "the cheat sheet must have been replaced, not layered under the palette"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Developer scaffolding must not reach a rendered surface (GUI-WORKORDER-2 F9)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Markers that mean "a developer left this here for another developer".
+///
+/// `TODO(` rather than `TODO` so that prose containing the word in a *comment*
+/// — which this scan never looks at anyway — could not be mistaken for the
+/// tagged form the crate actually uses (`TODO(views)`, `TODO(store)`,
+/// `TODO(wire)`).
+const SCAFFOLDING_MARKERS: [&str; 2] = ["TODO(", "FIXME"];
+
+/// Strip comments from a Rust source file and return every string literal in
+/// what remains.
+///
+/// # Why a lexer and not a `grep`
+///
+/// The interesting question is "can a user read this?", and in Rust that means
+/// "is it a string literal?". Doc comments and `//` notes are *supposed* to say
+/// `TODO(store)` — that is the whole point of a tracking comment — so a plain
+/// grep for the marker would fail on a healthy crate and force the guard to be
+/// deleted. This walks the file character by character, drops line and block
+/// comments, and yields the contents of every `"…"` and `r#"…"#` literal.
+fn string_literals(src: &str) -> Vec<String> {
+    let b: Vec<char> = src.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        // Line comment.
+        if b[i] == '/' && i + 1 < b.len() && b[i + 1] == '/' {
+            while i < b.len() && b[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment (Rust nests them).
+        if b[i] == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+            let mut depth = 1usize;
+            i += 2;
+            while i < b.len() && depth > 0 {
+                if b[i] == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == '*' && i + 1 < b.len() && b[i + 1] == '/' {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            continue;
+        }
+        // Raw string: r"…", r#"…"#, r##"…"##
+        if b[i] == 'r' && i + 1 < b.len() && (b[i + 1] == '"' || b[i + 1] == '#') {
+            let mut j = i + 1;
+            let mut hashes = 0usize;
+            while j < b.len() && b[j] == '#' {
+                hashes += 1;
+                j += 1;
+            }
+            if j < b.len() && b[j] == '"' {
+                j += 1;
+                let start = j;
+                let closing: String =
+                    std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+                let rest: String = b[j..].iter().collect();
+                match rest.find(&closing) {
+                    Some(rel) => {
+                        let end = start + rest[..rel].chars().count();
+                        out.push(b[start..end].iter().collect());
+                        i = end + closing.chars().count();
+                    }
+                    None => break,
+                }
+                continue;
+            }
+        }
+        // Char literal — skipped so `'"'` does not open a phantom string.
+        if b[i] == '\'' {
+            let mut j = i + 1;
+            while j < b.len() && b[j] != '\'' {
+                if b[j] == '\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            // A lifetime (`'a`) has no closing quote on the same construct; in
+            // either case advancing past what we scanned is safe, because
+            // nothing between here and there can start a string.
+            i = (j + 1).min(b.len()).max(i + 1);
+            continue;
+        }
+        // Ordinary string literal.
+        if b[i] == '"' {
+            let start = i + 1;
+            let mut j = start;
+            while j < b.len() && b[j] != '"' {
+                if b[j] == '\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            out.push(b[start..j.min(b.len())].iter().collect());
+            i = j + 1;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Every `.rs` file under `src/`.
+fn crate_sources() -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let entries = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut out = Vec::new();
+    walk(&root, &mut out);
+    assert!(
+        out.len() > 20,
+        "the source walk found only {} files — it is not scanning the crate",
+        out.len()
+    );
+    out
+}
+
+/// No string the app can put on screen may contain developer scaffolding.
+///
+/// # The bug this closes
+///
+/// The Jobs panel rendered, centred and in the product's own type, the text
+/// `TODO(views): crate::views::jobs_panel` — in a dock a user opens with ⌘J
+/// (`.shots/memchr/17-bottom-dock-open.png`, GUI-WORKORDER-2 F9). The Logs,
+/// Search and Outline panels each carried the same shape. A placeholder is a
+/// claim like any other: it is read by the person using the program, not by the
+/// author who wrote it, and a Rust module path answers nothing they asked.
+///
+/// # What this can and cannot prove
+///
+/// It is a *static* check over string literals, not an inspection of the
+/// rendered scene, because GPUI's element tree is opaque once built — there is
+/// no way to enumerate the text nodes of a painted frame. It is therefore
+/// broader than the rule it enforces (it also covers strings that never reach a
+/// view) and, in exchange, it cannot be evaded by a formatting expression that
+/// assembles the marker at runtime. Nothing in this crate does that, and a
+/// change that started to would be doing something conspicuous.
+///
+/// Comments are deliberately exempt: `TODO(store)` in a doc comment is a
+/// tracking note doing its job. Only literals count.
+#[test]
+fn no_rendered_string_carries_developer_scaffolding() {
+    let mut offences: Vec<String> = Vec::new();
+    for path in crate_sources() {
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for literal in string_literals(&src) {
+            for marker in SCAFFOLDING_MARKERS {
+                if literal.contains(marker) {
+                    offences.push(format!("{}: {literal:?}", path.display()));
+                }
+            }
+        }
+    }
+    assert!(
+        offences.is_empty(),
+        "developer scaffolding in user-visible strings — an empty state must \
+         say what the *reader* would see here, not name a module at them:\n{}",
+        offences.join("\n"),
+    );
+}
+
+/// The lexer this guard depends on has to actually tell the two apart, or the
+/// guard is decoration: a scanner that saw nothing would pass on a crate full
+/// of offences.
+#[test]
+fn scaffolding_scan_reads_literals_and_ignores_comments() {
+    let src = r####"
+        // TODO(views): this is a comment and must be ignored
+        /// TODO(store): so is this
+        /* TODO(wire): and this */
+        fn f() {
+            let quote = '"';
+            let a = "TODO(views): crate::views::jobs_panel";
+            let b = r#"FIXME: raw"#;
+            let c = "harmless";
+        }
+    "####;
+    let literals = string_literals(src);
+    assert!(
+        literals.iter().any(|l| l == "harmless"),
+        "the scan must find ordinary literals; got {literals:?}"
+    );
+    let flagged: Vec<&String> = literals
+        .iter()
+        .filter(|l| SCAFFOLDING_MARKERS.iter().any(|m| l.contains(m)))
+        .collect();
+    assert_eq!(
+        flagged.len(),
+        2,
+        "exactly the two literals carry a marker — the three comments must not \
+         be counted and the two literals must not be missed; got {literals:?}"
+    );
 }

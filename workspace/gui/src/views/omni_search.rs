@@ -61,7 +61,8 @@ use gpui::{
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 
 use crate::app::actions::{
-    ConfirmOverlay, Copy, Cut, DismissOverlay, JumpToSection1, JumpToSection2, JumpToSection3,
+    ConfirmOverlay, Copy, Cut, DismissOverlay, FilterAuto, FilterName, FilterSemantic, FilterType,
+    JumpToSection1, JumpToSection2, JumpToSection3,
     MoveSelectionDown, MoveSelectionUp, NextSection, OpenInBackgroundTab, OpenWithoutClosing,
     Paste, PrevSection, Redo, SelectAll, Undo,
 };
@@ -1077,6 +1078,40 @@ impl<S: SearchAccess> OmniSearch<S> {
         self.jump(Section::Semantic, cx);
     }
 
+    fn on_filter_auto(&mut self, _: &FilterAuto, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(SearchMode::Auto, cx);
+    }
+
+    fn on_filter_name(&mut self, _: &FilterName, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(SearchMode::Name, cx);
+    }
+
+    fn on_filter_type(&mut self, _: &FilterType, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(SearchMode::Type, cx);
+    }
+
+    fn on_filter_semantic(&mut self, _: &FilterSemantic, _: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(SearchMode::Semantic, cx);
+    }
+
+    /// Change the mode chip, and drop a selection the new mode no longer shows.
+    ///
+    /// Keeping the cursor would leave the selection bar riding a section that
+    /// is not on screen: Enter would then open a row the reader cannot see,
+    /// which is the worst kind of "it did something".
+    fn set_mode(&mut self, mode: SearchMode, cx: &mut Context<Self>) {
+        let store = self.store.clone();
+        store.update(cx, |s, cx| s.set_mode(mode, cx));
+        let selection = self.store.read(cx).snapshot().selection;
+        if let Some(cursor) = selection {
+            let hidden = Section::from_index(cursor.section).is_some_and(|s| !mode.shows(s));
+            if hidden {
+                self.apply_cursor(None, cx);
+            }
+        }
+        cx.notify();
+    }
+
     fn jump(&mut self, section: Section, cx: &mut Context<Self>) {
         let counts = self.counts(cx);
         let next = jump_to_section_cursor(section, &counts);
@@ -1334,8 +1369,10 @@ impl<S: SearchAccess> OmniSearch<S> {
         // Drive the reveal-height spring toward its target.
         let height_target = if self.reveal.is_revealed() {
             // Unconstrained — the panel grows to its natural content height.
-            // We use a large sentinel value; the element's `max_h(relative(…))`
-            // clamps the actual rendered height so the spring overshoots cleanly.
+            // We use a large sentinel value; the element's `max_h(..)` clamps
+            // the actual rendered height so the spring overshoots cleanly. That
+            // clamp must be a *definite* length, not a percentage: see
+            // `max_panel_h` in `render` for what a percentage cost here.
             9999.0_f32
         } else {
             RESTING_BAR_H
@@ -1421,19 +1458,26 @@ impl<S: SearchAccess> OmniSearch<S> {
     /// larger token lets the eye jump straight to it when scanning and drop to
     /// the signature only when comparing.
     ///
-    /// # Why the path tier is not counted here
+    /// # Why the path tier *is* counted here now
     ///
-    /// The row *renders* a third tier — the module path — but only when
-    /// `HitRow::display_name` carried a prefix, which today happens solely to
-    /// disambiguate across packages. `uniform_list` requires one fixed height
-    /// for every row, so reserving a line that is usually empty buys dead space
-    /// on every result to serve a minority. When the wire carries a real module
-    /// path per hit, this becomes three tiers and the reservation pays for
-    /// itself.
+    /// This used to reserve two tiers, on the reasoning that the third — the
+    /// module path — appeared "solely to disambiguate across packages" and so
+    /// reserving a line for it bought dead space on every result to serve a
+    /// minority.
+    ///
+    /// That reasoning was measured against a corpus where nothing collided. On
+    /// a real single-crate lowering the majority case is the *other* one:
+    /// `.shots/memchr/04-search-hits.png` shows six of eight rows needing a
+    /// path (F1). `uniform_list` demands one fixed height for every row, so an
+    /// unreserved third tier is not a smaller row — it is a **clipped** one,
+    /// and the clipped thing is exactly the text that makes the row
+    /// identifiable. Reserving it is the only option that keeps the guarantee
+    /// `PreparedRow::prepare` makes.
     fn row_height(cx: &App) -> f32 {
         let ext = cx.theme_ext();
         f32::from(ext.type_scale.title.line_height)
             + f32::from(ext.type_scale.mono.line_height)
+            + f32::from(ext.type_scale.caption.line_height)
             + f32::from(ext.space.space_2)
     }
 
@@ -1695,10 +1739,17 @@ impl<S: SearchAccess> OmniSearch<S> {
                             row.sig.clone(),
                         )),
                     )
-                    // Tier 3 — the full module path within the package, at
-                    // `caption`. Quietest: the tie-breaker when two hits in
-                    // the same package share a leaf name.
-                    .when(!row.path.is_empty(), |el| {
+                    // Tier 3 — the module path that tells this row apart from
+                    // its namesakes, at `caption`. Quietest of the three.
+                    //
+                    // Drawn from `row.qualifier`, not `row.path`: the qualifier
+                    // is the store's answer to "does this row need a path at
+                    // all, and if so which part of it?", decided once over the
+                    // whole delivered batch. Reading `row.path` here instead
+                    // would put that judgement back in the template, where it
+                    // cannot see the sibling rows — which is how seven
+                    // identical `mod memchr` rows shipped (F1 / L20).
+                    .when_some(row.qualifier.text(), |el, tail| {
                         el.child(
                             div()
                                 .text_size(ts.caption.size)
@@ -1707,7 +1758,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                                 .opacity(PATH_OPACITY)
                                 .overflow_hidden()
                                 .whitespace_nowrap()
-                                .child(row.path.clone()),
+                                .child(tail),
                         )
                     }),
             )
@@ -1749,11 +1800,34 @@ impl<S: SearchAccess> OmniSearch<S> {
         // action slot as a `CountLabel` driven by this section's spring rather
         // than in `SectionHeader`'s static `count` slot — two counts in one
         // header would disagree with each other mid-roll.
+        // F5 — the header's count and the rows on screen must be reconcilable.
+        //
+        // The band below is `VISIBLE_ROWS_PER_SECTION` rows tall and the panel
+        // clips it further, so a header reading `21` above six visible rows
+        // reads as a bug in *our* search rather than as a viewport limit. The
+        // list has always been scrollable (`track_scroll` below); it just never
+        // said so, and a virtualized list offers no scrollbar to notice.
+        //
+        // This lives in the sticky header, not under the list, because the
+        // panel's max-height clips anything below the last visible row — an
+        // affordance the reader cannot see is not an affordance.
+        let more_hint: Option<SharedString> = (count > VISIBLE_ROWS_PER_SECTION)
+            .then(|| SharedString::from("scroll for more"));
+
         let header = SectionHeader::new(section.caption()).action(
             h_flex()
                 .gap(sp.space_2)
                 .items_center()
                 .child(CountLabel::new(self.sections[index].count_label.clone()))
+                .when_some(more_hint, |el, text| {
+                    el.child(
+                        div()
+                            .text_size(ts.caption.size)
+                            .line_height(ts.caption.line_height)
+                            .text_color(colours.fg_faint)
+                            .child(text),
+                    )
+                })
                 .when(!data.latency.is_empty(), |el| {
                     el.child(
                         div()
@@ -1878,6 +1952,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         };
 
         let visible = count.min(VISIBLE_ROWS_PER_SECTION);
+
         v_flex()
             .w_full()
             .child(header)
@@ -2172,7 +2247,17 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
         let rise = self.enter_rise.value();
 
         let showing_recents = snapshot.input.is_empty();
-        let no_hits = !showing_recents && snapshot.total_hits() == 0;
+        // Count only the sections this mode shows. Under `Auto` that is all
+        // three and this is `total_hits()` exactly; under a single-section mode
+        // it is the difference between the honest "no matches here" state and a
+        // panel that paints nothing at all because the one section on display
+        // happens to be empty.
+        let visible_hits: usize = Section::ALL
+            .iter()
+            .filter(|s| snapshot.mode.shows(**s))
+            .map(|s| snapshot.sections[s.index()].rows.len())
+            .sum();
+        let no_hits = !showing_recents && visible_hits == 0;
 
         let body: AnyElement = if showing_recents {
             self.render_recents(&snapshot, cx)
@@ -2181,6 +2266,9 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
         } else {
             let mut column = v_flex().w_full();
             for section in Section::ALL {
+                if !snapshot.mode.shows(section) {
+                    continue;
+                }
                 column = column.child(self.render_section(section, &snapshot, scale, cx));
             }
             column.into_any_element()
@@ -2188,11 +2276,33 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
 
         // Height of the panel driven by the reveal spring.  When resting the
         // spring targets `RESTING_BAR_H`; when revealed it targets a large
-        // sentinel that lets the panel reach `max_h(relative(…))`.  The
+        // sentinel that lets the panel reach its `max_h` cap.  The
         // `overflow_hidden` on the panel ensures the spring value acts as a
         // hard clip while the content itself stays unchanged.
         let panel_height = self.reveal_height.value();
         let is_resting = self.reveal.is_resting() && panel_height <= RESTING_BAR_H + 1.0;
+
+        // The reveal cap, in *pixels*, taken from the viewport.
+        //
+        // This used to be `max_h(relative(OVERLAY_MAX_HEIGHT_FRACTION))`, which
+        // silently did nothing. A percentage max-height resolves against the
+        // containing block's height, and this panel's containing block is
+        // `div().mt(px(rise))` — a plain auto-height wrapper — so the percentage
+        // had no definite basis and the clamp was dropped. The height the spring
+        // actually requested therefore stood: the 9999 px sentinel from
+        // `tick`, `overflow_hidden`-clipped so it *looked* right.
+        //
+        // It was not right. The panel carries `.occlude()` (deliberately — a
+        // click inside the search must not fall through to the scrim), and an
+        // occluding hitbox 9999 px tall covers the entire window. Once the panel
+        // finished revealing there was no scrim left to hit anywhere on screen,
+        // so "click outside to dismiss" stopped working — for the reader as well
+        // as for `scrim_click_dismisses_omni_search`, which only passed when it
+        // got its click in before the spring had grown past the click point.
+        //
+        // A definite pixel cap clamps in layout, so the hitbox is the size the
+        // panel looks.
+        let max_panel_h = window.viewport_size().height * OVERLAY_MAX_HEIGHT_FRACTION;
 
         let panel = if is_resting {
             // In the fully-contracted resting state, render the slim pill
@@ -2207,13 +2317,14 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
             v_flex()
                 .w(OVERLAY_WIDTH)
                 // `h` is set to the spring value so the panel grows/shrinks
-                // smoothly.  The `max_h(relative(…))` rule clamps the value to
-                // 60 % of the window height — the same cap as the original
-                // modal overlay.  `overflow_hidden` clips the content during
-                // the spring's approach so no content peeks outside the
-                // animated boundary.
+                // smoothly.  `max_h` clamps that value to 60 % of the window
+                // height — the same cap as the original modal overlay.
+                // `overflow_hidden` clips the content during the spring's
+                // approach so no content peeks outside the animated boundary.
                 .h(px(panel_height))
-                .max_h(relative(OVERLAY_MAX_HEIGHT_FRACTION))
+                // Definite, not `relative(..)` — see `max_panel_h` above for
+                // why the percentage form clamped nothing and what that cost.
+                .max_h(max_panel_h)
                 // See long comment above: `.occlude()` makes the panel modal
                 // in the mouse sense.  Do NOT remove this.
                 .occlude()
@@ -2252,6 +2363,10 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
             .on_action(cx.listener(Self::on_jump_1))
             .on_action(cx.listener(Self::on_jump_2))
             .on_action(cx.listener(Self::on_jump_3))
+            .on_action(cx.listener(Self::on_filter_auto))
+            .on_action(cx.listener(Self::on_filter_name))
+            .on_action(cx.listener(Self::on_filter_type))
+            .on_action(cx.listener(Self::on_filter_semantic))
             // Text-editing actions — bound in keymaps under `OmniSearch`.
             .on_action(cx.listener(Self::on_select_all))
             .on_action(cx.listener(Self::on_copy))

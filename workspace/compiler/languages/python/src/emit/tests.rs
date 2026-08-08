@@ -3,6 +3,7 @@
 use super::*;
 use crate::oracle::{ConstData, FunctionData, ReceiverKind};
 use nudox_ir::kinds::ty::Type;
+use nudox_ir::kinds::Param;
 use nudox_ir::package::PackageId;
 
 fn root_sym() -> Symbol {
@@ -413,4 +414,107 @@ fn same_package_class_in_generic_apply_is_nominal() {
         }
         other => panic!("expected Apply target, got {other:?}"),
     }
+}
+
+/// A keyword-only parameter (`def f(a, *, b)`) must carry
+/// `ParamAttribute::KeywordOnly` — this attribute exists in `nudox-ir`
+/// precisely for Python's bare-`*` calling convention (its own doc comment
+/// cites `def f(a, *, b)`); the emit layer previously left it unset under a
+/// stale comment claiming no such attribute existed.
+#[test]
+fn keyword_only_param_carries_keyword_only_attribute() {
+    use crate::oracle::{ParamData, TypeData};
+    use nudox_ir::kinds::ParamAttribute;
+
+    let func_item = ItemData {
+        id: PythonId::new("my_module.configure"),
+        parent: None,
+        name: "configure".to_owned(),
+        is_private: false,
+        documentation: None,
+        deprecation: None,
+        decorators: vec![],
+        body: ItemBody::Function(FunctionData {
+            overload_index: 0,
+            receiver: ReceiverKind::None,
+            params: vec![ParamData {
+                name: "timeout".to_owned(),
+                ty: Some(TypeData::Nominal("int".to_owned())),
+                kind: ParamKind::KeywordOnly,
+                has_default: false,
+                doc_description: None,
+            }],
+            return_ty: None,
+            generics: vec![],
+            is_async: false,
+            is_abstract: false,
+            is_stub: false,
+        }),
+    };
+
+    let oracle = PythonOracle { modules: vec![simple_module("my_module", vec![func_item])] };
+    let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
+    emit_package(&oracle, &mut sink);
+    let pkg = sink.finish().expect("finish must succeed");
+
+    let timeout = pkg.iter().find(|(_, e)| e.sym().name == "timeout").expect("timeout param not found");
+    let param_body = timeout.1.downcast::<Param>().expect("timeout must be a Param");
+    assert!(
+        param_body.body().attributes.contains(&ParamAttribute::KeywordOnly),
+        "keyword-only param must carry ParamAttribute::KeywordOnly, got {:?}",
+        param_body.body().attributes
+    );
+}
+
+/// A positional-only parameter (before Python's `/` marker) must NOT carry
+/// `ParamAttribute::Inout` — that attribute means pass-by-mutable-reference
+/// (Swift `inout` / C++ `&`), a concept Python does not have. The emit layer
+/// previously reused `Inout` as "closest available", which actively
+/// misreports the parameter's semantics rather than merely omitting them.
+/// `nudox-ir` has no positional-only-specific `ParamAttribute` yet, so the
+/// correct behaviour today is to emit no calling-convention attribute at all.
+#[test]
+fn positional_only_param_does_not_carry_inout() {
+    use crate::oracle::{ParamData, TypeData};
+    use nudox_ir::kinds::ParamAttribute;
+
+    let func_item = ItemData {
+        id: PythonId::new("my_module.build"),
+        parent: None,
+        name: "build".to_owned(),
+        is_private: false,
+        documentation: None,
+        deprecation: None,
+        decorators: vec![],
+        body: ItemBody::Function(FunctionData {
+            overload_index: 0,
+            receiver: ReceiverKind::None,
+            params: vec![ParamData {
+                name: "raw".to_owned(),
+                ty: Some(TypeData::Nominal("str".to_owned())),
+                kind: ParamKind::PositionalOnly,
+                has_default: false,
+                doc_description: None,
+            }],
+            return_ty: None,
+            generics: vec![],
+            is_async: false,
+            is_abstract: false,
+            is_stub: false,
+        }),
+    };
+
+    let oracle = PythonOracle { modules: vec![simple_module("my_module", vec![func_item])] };
+    let mut sink: Lowering<PythonId> = Lowering::new(PackageId::path("pkg"), root_sym());
+    emit_package(&oracle, &mut sink);
+    let pkg = sink.finish().expect("finish must succeed");
+
+    let raw = pkg.iter().find(|(_, e)| e.sym().name == "raw").expect("raw param not found");
+    let param_body = raw.1.downcast::<Param>().expect("raw must be a Param");
+    assert!(
+        !param_body.body().attributes.contains(&ParamAttribute::Inout),
+        "positional-only param must NOT be mislabeled Inout (pass-by-reference is not a Python \
+         concept), got {:?}",
+        param_body.body().attributes
+    );
 }

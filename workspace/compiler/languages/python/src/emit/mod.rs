@@ -9,13 +9,15 @@
 //!
 //! # Design decisions
 //!
-//! ## @property → Field + Function (dual emission)
+//! ## @property → Function only (see `lib.rs` for the "@property decision")
 //!
-//! A `@property` method is emitted as BOTH a `Field` (so consumers that walk
-//! fields see it with its return type) AND a `Function` (so the full method
-//! signature is preserved). The `Field` carries `FieldAttribute::Mutable` only
-//! when a corresponding setter is present (not yet tracked; left as not mutable
-//! for now). The `Function` has `receiver = Some(Receiver::SharedRef)`.
+//! A `@property` method is emitted as a single `Function` child of its class,
+//! carrying `AttrTok { token: "property", .. }` like any other decorator. No
+//! dual `Field` is emitted — `lib.rs`'s module docs record why. (An earlier
+//! version of this comment described a dual `Field` + `Function` emission
+//! that was never implemented; this file's actual dispatch in `emit_item`
+//! routes every class method, `@property` included, through the single
+//! `emit_function` path below with no property-specific branch.)
 //!
 //! ## @classmethod → receiver = None, decorator "classmethod"
 //!
@@ -368,8 +370,22 @@ fn emit_function(
         let ty = param.ty.as_ref().map(|t| types::lower_type(t, out, known_ids));
         let mut attrs = Vec::new();
         match param.kind {
-            ParamKind::PositionalOnly => attrs.push(ParamAttribute::Inout), // closest available
-            ParamKind::KeywordOnly => {} // no ParamAttribute for keyword-only yet; noted below
+            // `nudox_ir::kinds::ParamAttribute` has no positional-only
+            // counterpart to `KeywordOnly` (it models Swift/C++-style
+            // reference passing, not Python's `/`-marker calling-convention
+            // restriction). Previously this pushed `ParamAttribute::Inout`
+            // as "closest available", which actively misreports a Python
+            // positional-only parameter as pass-by-mutable-reference — a
+            // concept Python does not have. Emitting no attribute is more
+            // honest than emitting a wrong one. See `lib.rs`'s "Constructs
+            // not yet representable" for the upstream `nudox-ir` gap this
+            // depends on (out of this crate's scope to add).
+            ParamKind::PositionalOnly => {}
+            // `ParamAttribute::KeywordOnly` exists precisely for this case
+            // (its own doc comment cites Python's `def f(a, *, b)`) — it was
+            // previously left unused here under a comment claiming no such
+            // attribute existed.
+            ParamKind::KeywordOnly => attrs.push(ParamAttribute::KeywordOnly),
             ParamKind::Varargs => attrs.push(ParamAttribute::Variadic),
             ParamKind::Kwargs => attrs.push(ParamAttribute::Variadic),
             ParamKind::Normal => {}

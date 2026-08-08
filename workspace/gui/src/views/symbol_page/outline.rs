@@ -40,7 +40,44 @@ use crate::ui::SectionHeader;
 
 use super::docs::DocsBody;
 
-/// One row in the outline. Mirrors one entry of `section_plan`, permanently.
+/// One of the page's disclosure sections, below the documentation body.
+///
+/// These are page structure, not document structure: they are not in
+/// `section_plan` because the engine does not know the page has them. The
+/// outline nevertheless has to list them, because from the reader's side they
+/// are sections of the page they are looking at — a table of contents that
+/// listed only `Documentation` while the page demonstrably had four headings
+/// occupied a whole rail to say nothing (GUI-WORKORDER-2 F3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageSection {
+    /// The implementations table.
+    Implementations,
+    /// The cross-reference table.
+    References,
+    /// The source location block.
+    Source,
+}
+
+/// What activating an outline row navigates to.
+///
+/// Two cases, and they are genuinely different operations: a documentation
+/// entry scrolls a virtualized list, a page entry expands a disclosure. The
+/// old callback took a bare `usize` — a `section_plan` index — which is why the
+/// page sections could not be in the outline at all: there was no index to give
+/// them that did not collide with a real plan entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineTarget {
+    /// An index into `section_plan`, i.e. a position in the documentation body.
+    DocsSection(usize),
+    /// A page-level disclosure section.
+    Page(PageSection),
+    /// One row inside a page-level section — an impl, say. Expanding the
+    /// section is the navigation; the ordinal is kept so the row can be
+    /// revealed once the section body scrolls.
+    PageRow(PageSection, usize),
+}
+
+/// One row in the outline.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutlineEntry {
     /// Current label: the kind name, or the section's heading once known.
@@ -49,6 +86,24 @@ pub struct OutlineEntry {
     pub pending: bool,
     /// Nested one level under the preceding entry.
     pub indented: bool,
+    /// Where activating this row goes.
+    pub target: OutlineTarget,
+}
+
+/// A page-level section as the outline should show it.
+///
+/// Built in `SymbolPage::sync_from_store` — never in `render` (§1.1.4) — so the
+/// outline never reaches back into the tables it is describing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageSectionEntry {
+    /// Which section this is.
+    pub section: PageSection,
+    /// Pre-formatted label, count included (`"Implementations 6"`).
+    pub label: SharedString,
+    /// Pre-formatted labels of the rows inside it, nested one level under it.
+    /// Empty when the section has no enumerable contents (Source) or has not
+    /// streamed yet.
+    pub children: Arc<[SharedString]>,
 }
 
 /// Sections that read as subordinate to the prose around them.
@@ -95,20 +150,48 @@ impl Outline {
         self.entries.len()
     }
 
-    /// Rebuild from the body's slots. Returns `true` if anything changed.
+    /// Rebuild from the body's slots and the page's own sections. Returns
+    /// `true` if anything changed.
     ///
     /// Called from the store observation, never from `render` — every
     /// `SharedString` below is built here and merely cloned per frame.
-    pub fn sync(&mut self, docs: &DocsBody) -> bool {
+    ///
+    /// `page` is what turns this from a document outline into a *page* table of
+    /// contents. A symbol page with one documentation section used to render a
+    /// one-item rail, which is worse than no rail: it occupied the space a
+    /// table of contents costs and answered none of the questions one is for.
+    pub fn sync(&mut self, docs: &DocsBody, page: &[PageSectionEntry]) -> bool {
         let slots = docs.slots();
-        let next: Vec<OutlineEntry> = slots
+        let mut next: Vec<OutlineEntry> = slots
             .iter()
-            .map(|slot| OutlineEntry {
+            .enumerate()
+            .map(|(ix, slot)| OutlineEntry {
                 label: slot.label.clone(),
                 pending: slot.is_pending(),
                 indented: is_nested(slot.kind),
+                target: OutlineTarget::DocsSection(ix),
             })
             .collect();
+
+        for entry in page {
+            next.push(OutlineEntry {
+                label: entry.label.clone(),
+                // A page section is structure that exists whether or not its
+                // contents have streamed; marking it pending would make the
+                // rail flicker between two greys for no information.
+                pending: false,
+                indented: false,
+                target: OutlineTarget::Page(entry.section),
+            });
+            for (ix, child) in entry.children.iter().enumerate() {
+                next.push(OutlineEntry {
+                    label: child.clone(),
+                    pending: false,
+                    indented: true,
+                    target: OutlineTarget::PageRow(entry.section, ix),
+                });
+            }
+        }
 
         let arrived = docs.arrived_count().min(slots.len());
         let progress = if slots.is_empty() || arrived >= slots.len() {
@@ -148,10 +231,10 @@ impl Outline {
         self.active
     }
 
-    /// Render the sidebar. `on_pick` receives a `section_plan` index.
+    /// Render the sidebar. `on_pick` receives the row's [`OutlineTarget`].
     pub fn render(
         &self,
-        on_pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+        on_pick: impl Fn(OutlineTarget, &mut Window, &mut App) + 'static,
         cx: &App,
     ) -> AnyElement {
         // Both tokens are `Copy`, so the theme borrow ends here and nothing
@@ -164,7 +247,7 @@ impl Outline {
         let entries = self.entries.clone();
         let count = entries.len();
         let active = self.active;
-        let pick: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_pick);
+        let pick: Rc<dyn Fn(OutlineTarget, &mut Window, &mut App)> = Rc::new(on_pick);
 
         let header = {
             let mut h = SectionHeader::new(SharedString::from("ON THIS PAGE"));
@@ -201,6 +284,7 @@ impl Outline {
                                 let entry = &entries[ix];
                                 let is_active = ix == active;
                                 let pick = pick.clone();
+                                let target = entry.target;
                                 let colour = if is_active {
                                     colours.fg_default
                                 } else if entry.pending {
@@ -215,11 +299,27 @@ impl Outline {
                                     .flex()
                                     .flex_row()
                                     .items_center()
+                                    // The row must be exactly the rail's width
+                                    // and clip at its own edge.
+                                    //
+                                    // Without `w_full` the row is sized by its
+                                    // content, so a long label makes the *row*
+                                    // wider than the 200 px rail. The label's
+                                    // `flex_1 + min_w_0 + truncate` then
+                                    // resolves against that oversized row,
+                                    // finds it has all the space it needs, and
+                                    // never truncates — the text simply runs
+                                    // out of the panel and is clipped by the
+                                    // window instead. Fixing the flex child
+                                    // alone was not enough; the containing
+                                    // block is what had no definite width.
+                                    .w_full()
+                                    .overflow_hidden()
                                     .h(ts.dense.line_height + sp.space_2)
                                     .pr(sp.space_2)
                                     .cursor_pointer()
                                     .hover(|s| s.bg(colours.bg_hover))
-                                    .on_click(move |_, window, cx| pick(ix, window, cx))
+                                    .on_click(move |_, window, cx| pick(target, window, cx))
                                     // A 2 px accent rail marks the section you
                                     // are reading; every row reserves the rail
                                     // so nothing shifts as it moves.
@@ -233,6 +333,29 @@ impl Outline {
                                     .child(
                                         div()
                                             .flex_1()
+                                            // `min_w_0` is what makes the
+                                            // `truncate()` below actually fire.
+                                            //
+                                            // A flex item's automatic minimum
+                                            // size is its *content* size, so
+                                            // `flex_1` alone cannot shrink a
+                                            // row narrower than its longest
+                                            // label: the item stays content-
+                                            // width, overflows the 200 px rail,
+                                            // and `overflow_hidden` clips it at
+                                            // the panel edge with no ellipsis.
+                                            // That is why `impl ? for
+                                            // memchr.memchr.mem` ran out of the
+                                            // rail in `08-symbol-opened.png`
+                                            // despite `truncate()` being set
+                                            // here all along — the truncation
+                                            // was correct and simply never had
+                                            // a box narrow enough to apply to.
+                                            // Same class as doctrine §8's
+                                            // dropped `relative()`: a
+                                            // constraint that silently does not
+                                            // bind.
+                                            .min_w_0()
                                             .overflow_hidden()
                                             .truncate()
                                             .pl(if entry.indented {
@@ -265,6 +388,7 @@ mod tests {
             label: SharedString::from(label),
             pending,
             indented: false,
+            target: OutlineTarget::DocsSection(0),
         }
     }
 

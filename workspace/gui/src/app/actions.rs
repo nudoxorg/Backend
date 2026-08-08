@@ -23,6 +23,25 @@
 //! The GPUI action name string becomes `lindsey::OpenOmniSearch` etc.
 
 // ── Navigation (global) ───────────────────────────────────────────────────────
+//
+// `NavigateBack` / `NavigateForward` (§12.8) and `ToggleHud` (§25.2) used to be
+// declared here and bound in `keymaps` to `cmd-[` / `cmd-]` / `f12`. All three
+// were removed rather than left declared, because an action that exists is an
+// action the command palette will list and the `?` sheet will teach — and none
+// of the three had anywhere to go:
+//
+// * Back/forward: `stores::nav::NavHistory` is a complete, tested stack that
+//   nothing constructs, pushes to, or subscribes to. `Shell` owns no history,
+//   `SymbolStore::open` records no entry, and `Navigated` has no listener, so
+//   there is no sequence for "back" to move through. Restore the bindings in
+//   the same commit that wires `NavHistory` into `Shell` — not before.
+// * HUD: `crate::perf` is a one-line module skeleton (GUI-PLAN §26, "filled by
+//   its milestone"). There is no HUD to toggle. Its binding was additionally
+//   scoped to a `"DebugMode"` key context that no element in the tree has ever
+//   declared, so it could not have fired even with a handler.
+//
+// A bound-and-inert key is worse than an unbound one: it teaches the reader the
+// app is broken rather than that the feature is absent.
 
 gpui::actions!(
     lindsey,
@@ -31,18 +50,12 @@ gpui::actions!(
         OpenOmniSearch,
         /// Open the command palette overlay (§23.1). Lists all actions + keybindings.
         OpenCommandPalette,
-        /// Navigate back in the nav history (§12.8). Restores scroll position.
-        NavigateBack,
-        /// Navigate forward in the nav history (§12.8).
-        NavigateForward,
         /// Open the settings page (§21) as a WorkspaceItem.
         OpenSettings,
         /// Open a project folder via the OS file picker (§14).
         OpenProject,
         /// Toggle the `?` shortcuts overlay (§23.3). Only fires when no input is focused.
         ToggleShortcutsOverlay,
-        /// Toggle the performance HUD (§25.2). Debug builds only.
-        ToggleHud,
     ]
 );
 
@@ -118,6 +131,30 @@ gpui::actions!(
     ]
 );
 
+// ── Search mode chips ─────────────────────────────────────────────────────────
+//
+// The four chips on the omni-search input row (`Auto` / `Name` / `Type` /
+// `Semantic`) were mouse-only, and — until `SearchMode::shows` — they did
+// nothing at all when clicked: `SearchQuery` carries no mode field, so the
+// engine could not be told which plane the reader wanted, and the store dropped
+// the mode on the floor. Now that selecting one visibly scopes the results,
+// there is something for a keystroke to do, and a chip a keyboard user cannot
+// reach is a chip half the users do not have.
+
+gpui::actions!(
+    lindsey,
+    [
+        /// Route the query by shape — all three result sections shown (§15).
+        FilterAuto,
+        /// Show only lexical name matches.
+        FilterName,
+        /// Show only type-signature matches.
+        FilterType,
+        /// Show only semantic matches.
+        FilterSemantic,
+    ]
+);
+
 // ── Symbol page inner tabs ────────────────────────────────────────────────────
 
 gpui::actions!(
@@ -139,10 +176,15 @@ gpui::actions!(
         CopySymbolUri,
         /// Open the version picker popover for the current symbol (§16).
         OpenVersionPicker,
-        /// Deep-link to the currently highlighted line in the Source view (§16).
-        DeepLinkLine,
     ]
 );
+//
+// `DeepLinkLine` was declared here and bound (in a key context that never
+// existed at runtime — see `app::keymaps`) to permalink the highlighted source
+// line. `SymbolPage`'s Source section renders a path and a *byte* range, not a
+// line list, and holds no per-line selection state, so there was no
+// "highlighted line" for the action to address. It is removed rather than
+// stubbed; a real line permalink needs a line-addressable source view first.
 
 // ── Graph view ────────────────────────────────────────────────────────────────
 

@@ -212,12 +212,33 @@ impl PreparedPackageRow {
                 status_text: SharedString::from(format!("loading {}…", row.name)),
             },
             PackageStatus::Ready { symbols } => {
-                let label = match symbols {
-                    1 => SharedString::from("1 symbol"),
-                    n => SharedString::from(format!("{n} symbols")),
+                // Provenance, as far as the wire carries it (GUI-WORKORDER-2
+                // F8). docs.rs shows owner, dependencies, repository, homepage,
+                // licence, release date and a doc-coverage badge; *none* of
+                // those exist on `PackageLoadEvent::Loaded`, which carries
+                // exactly `{ name, ecosystem, version, symbol_count, root }`.
+                // Rather than invent fields the engine cannot fill — an empty
+                // provenance rail is F3 all over again — this shows the two
+                // facts we do hold and have not been showing: which registry
+                // the package came from, and how many of its generations are
+                // resident.
+                let ecosystem = row
+                    .lineage
+                    .as_ref()
+                    .map(|l| l.ecosystem.as_str().to_owned());
+                let generations = versions.len();
+                let mut label = match symbols {
+                    1 => "1 symbol".to_owned(),
+                    n => format!("{n} symbols"),
                 };
+                if let Some(ecosystem) = ecosystem {
+                    label = format!("{ecosystem} · {label}");
+                }
+                if generations > 1 {
+                    label = format!("{label} · {generations} versions");
+                }
                 RowStatus::Ready {
-                    symbol_count_label: label,
+                    symbol_count_label: SharedString::from(label),
                 }
             }
             PackageStatus::Failed { message } => RowStatus::Failed {
@@ -845,6 +866,14 @@ impl<P: PackageAccess> Panel for ProjectPanel<P> {
         div().child(SharedString::from("Project"))
     }
 
+    // Apply the same themed title style as the Editor panel and all other
+    // panels in the system. Without this override, the title renders with
+    // GPUI's unthemed black default text, which is invisible on dark surfaces.
+    // See `NudoxThemeExt::panel_title_style` for the rationale.
+    fn title_style(&self, cx: &App) -> Option<gpui_component::dock::TitleStyle> {
+        Some(cx.theme_ext().panel_title_style())
+    }
+
     fn closable(&self, _: &App) -> bool {
         false
     }
@@ -1160,6 +1189,71 @@ mod tests {
             panic!("expected Ready");
         };
         assert_eq!(symbol_count_label.as_ref(), "1 symbol");
+    }
+
+    /// F8: the status line carries the provenance the wire actually has — the
+    /// ecosystem the package came from and how many of its generations are
+    /// resident — and nothing it does not.
+    #[test]
+    fn ready_row_shows_the_provenance_the_wire_carries() {
+        use nudox_engine::wire::VersionRow;
+
+        let mut row = ready("memchr", 1347);
+        row.lineage = Some(default_lineage());
+        let versions = VersionList {
+            package: default_lineage(),
+            versions: std::sync::Arc::from(vec![
+                VersionRow {
+                    version: nudox_engine::wire::SharedStr::from("2.8.3"),
+                    is_current: true,
+                    symbol_count: 1347,
+                },
+                VersionRow {
+                    version: nudox_engine::wire::SharedStr::from("2.8.0"),
+                    is_current: false,
+                    symbol_count: 1347,
+                },
+            ]),
+        };
+        let prepared = PreparedPackageRow::from_row(&row, versions);
+        let RowStatus::Ready { symbol_count_label } = &prepared.status else {
+            panic!("expected Ready");
+        };
+        assert!(
+            symbol_count_label.contains("1347 symbols"),
+            "the symbol count must survive: {symbol_count_label}"
+        );
+        assert!(
+            symbol_count_label.contains("2 versions"),
+            "a package with several generations resident must say so — that is \
+             the lineage the corpus actually holds: {symbol_count_label}"
+        );
+    }
+
+    /// The inverse: one generation is the ordinary case and must not grow a
+    /// `1 versions` label that reads like a bug.
+    #[test]
+    fn single_generation_row_does_not_advertise_a_version_count() {
+        use nudox_engine::wire::VersionRow;
+
+        let mut row = ready("memchr", 1347);
+        row.lineage = Some(default_lineage());
+        let versions = VersionList {
+            package: default_lineage(),
+            versions: std::sync::Arc::from(vec![VersionRow {
+                version: nudox_engine::wire::SharedStr::from("2.8.3"),
+                is_current: true,
+                symbol_count: 1347,
+            }]),
+        };
+        let prepared = PreparedPackageRow::from_row(&row, versions);
+        let RowStatus::Ready { symbol_count_label } = &prepared.status else {
+            panic!("expected Ready");
+        };
+        assert!(
+            !symbol_count_label.contains("version"),
+            "one loaded generation is the ordinary case: {symbol_count_label}"
+        );
     }
 
     #[test]

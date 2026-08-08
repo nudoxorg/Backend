@@ -25,8 +25,31 @@
 //! from `Vec<ItemSlot>` to a tree of panes — no change to `WorkspaceItem` or
 //! to the views that implement it.  Items are never coupled to their containing
 //! pane except through the slot.
+//!
+//! # `Focusable` is a supertrait — this is the L16 fix
+//!
+//! GPUI's `dispatch_action` only walks the ancestor chain of whatever element
+//! currently holds *window focus*. `Pane` tracks focus on its own root div so
+//! pane-level actions (`ActivateTabN`, `CloseTab`) always work, but that does
+//! **not** extend focus down into a tab's own content: an item that registers
+//! `.on_action` handlers on its own root div can only receive them while its
+//! own `FocusHandle` is the focused one.
+//!
+//! `SymbolPage` learned this the hard way (LIMITATIONS.md L16): it declared
+//! `.on_action` handlers for `GoToSourceTab`, `GoToRefsTab`,
+//! `OpenVersionPicker` and never called `window.focus` on itself, so none of
+//! them could ever fire — not in tests, not from a real keystroke.
+//!
+//! Requiring `Focusable` here, rather than patching that one view, makes the
+//! failure mode unrepresentable for every *future* `WorkspaceItem` too:
+//! `Pane::activate_ix` (the single place a tab becomes active — on open, on
+//! click, on `ActivateTabN`) focuses the newly active item's handle as part of
+//! activation. A `WorkspaceItem` that cannot produce a `FocusHandle` cannot be
+//! opened in a pane at all; the compiler catches it at `open_item`'s call
+//! site instead of a reviewer catching it at a keystroke that silently does
+//! nothing.
 
-use gpui::{AnyElement, SharedString};
+use gpui::{AnyElement, Focusable, SharedString};
 
 use crate::theme::ext::Provenance;
 use gpui::prelude::*;
@@ -90,7 +113,7 @@ pub struct NavEntry {
 ///     }
 /// }
 /// ```
-pub trait WorkspaceItem: 'static {
+pub trait WorkspaceItem: 'static + Focusable {
     /// Element displayed inside the tab button.
     ///
     /// The implementation must include at minimum:
