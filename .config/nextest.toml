@@ -325,17 +325,27 @@ max-threads = 1
 # vulnerable to: that measurement is dated 2026-08-04 and every one of these
 # files was added after it.
 #
-# WHY THEY ARE NOT IN `real-crate-serial` EITHER. That group's cap is argued
-# from one specific shared bottleneck — booting in-process rust-analyzer, where
-# the dominant cost is the boot rather than the crate, and two concurrent boots
-# contend for the same page cache and CPU. None of these four boots
-# rust-analyzer. Their bottlenecks are four *different* external toolchains
-# (libclang in-process, `go build` + the go oracle, `javac`/javadoc doclet, and
-# for python a stub that does no I/O at all). Folding them in would inherit a
-# cap whose stated justification does not describe them, and would let a
-# 10-minute clang sweep serialise against the memchr lowerings whose timings
-# LIMITATIONS.md L1 depends on. Same reasoning the `slow` group's comment uses
-# to stay separate from `real-crate-serial`.
+# WHY FOUR OF THE FIVE ARE NOT IN `real-crate-serial`. That group's cap is
+# argued from one specific shared bottleneck — booting in-process rust-analyzer,
+# where the dominant cost is the boot rather than the crate, and two concurrent
+# boots contend for the same page cache and CPU. Clang's, go's, java's and
+# python's bottlenecks are four *different* external toolchains (libclang
+# in-process, `go build` + the go oracle, `javac`/javadoc doclet, and for python
+# a stub that does no I/O at all). Folding them in would inherit a cap whose
+# stated justification does not describe them, and would let a 10-minute clang
+# sweep serialise against the memchr lowerings whose timings LIMITATIONS.md L1
+# depends on. Same reasoning the `slow` group's comment uses to stay separate
+# from `real-crate-serial`.
+#
+# THE RUST SWEEP IS THE EXCEPTION, and it is assigned to `real-crate-serial` by
+# its own override below. It *does* boot in-process rust-analyzer — 23 times,
+# once per crates.io checkout — so it is precisely the workload that group's cap
+# exists for. Left in `corpus-sweep` it would sit in a *different* single-slot
+# group, and two different groups do not serialise against each other: the Rust
+# sweep would have run concurrently with the memchr lowerings, corrupting the
+# very timings L1 depends on. Two single-threaded groups are not the same thing
+# as one. (An earlier revision of this comment asserted "none of these four
+# boots rust-analyzer" and was already false when the Rust sweep was added.)
 #
 # WHY max-threads = 1 ANYWAY. Two independent reasons, neither borrowed:
 #  - `nudox-producer-clang`'s sweep holds a process-wide `CLANG_SINGLETON`
@@ -343,7 +353,7 @@ max-threads = 1
 #    process) and peaks at **646 MB** RSS, measured from its own `cost case=`
 #    lines (max `rss_bytes=677871616` over the 20 entries, 2026-08-07) — the
 #    same order as `real-crate-serial`'s 517-713 MB, on a laptop-class host.
-#  - Every one of these tests *is* a benchmark (doctrine §4 — all four call
+#  - Every one of these tests *is* a benchmark (doctrine §4 — all five call
 #    `nudox_test_support::measured`, emitting one `cost case=` line per corpus
 #    entry into `perf-report.nu`). Running two multi-minute sweeps side by side
 #    reproduces exactly the 21.9s-idle/44.6s-under-load contention swing
@@ -437,8 +447,11 @@ max-threads = 2
 # failure mode this note exists to catch).
 #
 # `binary(=corpus_sweep)` is the one term here that is NOT belt-and-suspenders:
-# none of the four sweeps is `#[ignore]`d, so deleting this term puts all four
-# straight back into the pre-commit gate. They cannot live there, for a reason
+# four of the five sweeps are NOT `#[ignore]`d, so deleting this term puts those
+# four straight back into the pre-commit gate. (The Rust sweep is the exception —
+# it *is* `#[ignore]`d at the source, so for it alone this term is redundant.
+# Do not let that tempt you into dropping the term: it is load-bearing for the
+# other four.) They cannot live there, for a reason
 # that is about correctness on a fresh clone rather than about cost: each one's
 # `corpus_root()` is
 # `Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates")
@@ -518,12 +531,13 @@ store-failure-output = true
 
 [profile.perf]
 # The measurement runs ONLY: real-crate lowering timings (LIMITATIONS.md L1),
-# the four `corpus-sweep` binaries (which emit one `cost case=` line per
-# corpus entry — ~86 rows across the four ecosystems, by far the largest
+# the five `corpus_sweep` binaries (which emit one `cost case=` line per
+# corpus entry — ~109 rows across the five ecosystems, by far the largest
 # single source of rows this report has), plus whatever else lands in `slow`.
 # The real-crate and `slow` members are `#[ignore]`d and so additionally
 # require `--run-ignored all` (or `only`) on the command line for the same
-# reason as `ci`, above; the corpus sweeps are not `#[ignore]`d and run
+# reason as `ci`, above; four of the five corpus sweeps are not `#[ignore]`d and
+# run
 # without it.
 #
 # `test-threads = 1` in addition to each group's own `max-threads`: a
@@ -597,6 +611,31 @@ or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and
 '''
 test-group = "slow"
 slow-timeout = { period = "60s", terminate-after = 3, on-timeout = "fail" }
+
+[[profile.default.overrides]]
+# The Rust corpus sweep goes to `real-crate-serial`, NOT `corpus-sweep`, and
+# must stay ABOVE the generic `binary(=corpus_sweep)` override below — overrides
+# match top-to-bottom, so this is what makes the qualified rule win.
+#
+# It is the only one of the five sweeps that boots in-process rust-analyzer (23
+# times, once per crates.io checkout), which is exactly the bottleneck
+# `real-crate-serial` caps. Two single-slot groups do not serialise against each
+# other, so leaving it in `corpus-sweep` let it run alongside the memchr
+# lowerings whose timings LIMITATIONS.md L1 depends on.
+#
+# BUDGET, MEASURED 2026-08-07, not inherited from `real-crate-serial`'s 90 s x 4
+# (which is sized for ONE lowering, and this is 23 of them):
+#
+#   781.99 s   the 23 entries, `--test-threads=1`, machine otherwise idle
+#  1342.97 s   the same 23 under concurrent-cargo load from other agents
+#
+# 150 s x 11 = SIGKILL at 1650 s, i.e. 1.23x the CONTENDED figure and 2.11x the
+# idle one. Deriving it from the contended number is the same choice the clang
+# budget below documents: a budget taken under idle conditions is honest about
+# the wrong thing.
+filter = '(package(=nudox-producer-rust) and binary(=corpus_sweep))'
+test-group = "real-crate-serial"
+slow-timeout = { period = "150s", terminate-after = 11, on-timeout = "fail" }
 
 [[profile.default.overrides]]
 # The real-corpus sweeps. `binary(=corpus_sweep)` is deliberately UNqualified
