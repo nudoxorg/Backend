@@ -278,7 +278,17 @@ fn type_to_stable_ref_str(ty: &Type, package: &PackageLineageId) -> Option<Strin
     match ty {
         Type::Nominal(raw_ref) => match raw_ref {
             Ref::Intro(id) => Some(StableRef::new(package.clone(), *id).to_string()),
-            Ref::Foreign(sr) => Some(sr.to_string()),
+            // A linked cross-package reference renders as its canonical
+            // `ecosystem:name#introhex`. An unlinked one renders its
+            // producer-canonical path (`core::clone::Clone`) rather than
+            // `None`: a query for `Impl.ofTrait` should see *which* trait,
+            // even when the trait's package is not in the corpus. Returning
+            // `None` there is how the previous version silently shortened
+            // every `Trait.supertraits` list instead of failing.
+            Ref::Foreign { key, target } => Some(match target {
+                Some(sr) => sr.to_string(),
+                None => key.path.to_string(),
+            }),
             Ref::Local(_) => None,
         },
         Type::Apply { base, .. } => type_to_stable_ref_str(base, package),

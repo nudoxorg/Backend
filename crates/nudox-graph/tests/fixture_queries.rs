@@ -30,10 +30,18 @@ async fn make_corpus() -> Corpus {
 
 /// Compute the StableRef key for fixture intro `n` in the rich fixture package.
 fn rich_key(n: u8) -> String {
-    use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+    use nudox_ir::change::{IntroId, StableRef};
     let lineage = rich_lineage();
     let intro = IntroId::from_raw([n; 32]);
     StableRef::new(lineage, intro).to_string()
+}
+
+/// Build a properly-typed empty query argument map.
+///
+/// Used for queries with no variables. Explicitly typed to satisfy
+/// `execute_query_async`'s generic type bounds (keys must impl `Into<Arc<str>>`).
+fn no_args() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +397,7 @@ async fn variant_coercion_matches_color_variants() {
                 }
             }
         }"#,
-        std::collections::BTreeMap::new(),
+        no_args(),
     )
     .expect("query must execute")
     .map(|row| {
@@ -447,7 +455,7 @@ async fn static_coercion_matches_registry() {
                 }
             }
         }"#,
-        std::collections::BTreeMap::new(),
+        no_args(),
     )
     .expect("query must execute")
     .map(|row| {
@@ -488,7 +496,7 @@ async fn module_coercion_matches_modules() {
                 }
             }
         }"#,
-        std::collections::BTreeMap::new(),
+        no_args(),
     )
     .expect("query must execute")
     .map(|row| {
@@ -528,7 +536,7 @@ async fn reexport_coercion_matches_reexports() {
                 }
             }
         }"#,
-        std::collections::BTreeMap::new(),
+        no_args(),
     )
     .expect("query must execute")
     .map(|row| {
@@ -569,7 +577,7 @@ async fn param_coercion_matches_params() {
                 }
             }
         }"#,
-        std::collections::BTreeMap::new(),
+        no_args(),
     )
     .expect("query must execute")
     .map(|row| {

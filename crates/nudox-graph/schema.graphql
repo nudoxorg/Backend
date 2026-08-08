@@ -22,6 +22,17 @@ type Package {
     members: [Symbol!]
 }
 
+# A symbol's stable identity across generations of a package.
+#
+# `key` is rendered as `ecosystem:name#introhex` — the package's lineage
+# (`ecosystem:name`, e.g. `cargo:memchr`), then `#`, then the symbol's
+# `IntroId` in hex. The intro half is stable across versions: the same
+# declaration keeps its key as the package evolves, which is what makes
+# timeline and lineage queries answerable.
+#
+# This is the format `nudox_ir::change::StableRef`'s `Display` produces, and
+# the one every MCP tool accepts and returns. An agent constructing a key by
+# hand must use exactly this shape.
 interface Symbol {
     key: String!
     name: String!
