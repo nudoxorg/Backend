@@ -680,3 +680,95 @@ what failed, not the code:
 
 Both are now written into the test's module doc, because the next reader will assume
 exactly the same two things.
+
+## L31 / L42 — the IR can now say where a declaration came from (`306f0e6`)
+
+Source jumping was asked for in the original brief and could not be built in the
+GUI: five-to-seven producers emitted `span: 0..0`, `ImplRow` had no source field
+at all, and `ra/source.rs:57` emitted the literal string `<file-id-N>` instead of
+a path.
+
+**Both published counts of the defect were wrong, in the same direction.** The
+register said "~23 sites across five producers"; the verification pass corrected
+it to "~47 across six" and called the first figure a 2× undercount. Re-counted
+properly — excluding comments and inline `#[cfg(test)]` modules, which is what
+both earlier passes failed to do — and independently reproduced by me:
+
+| producer | real sites | register | verification pass |
+|---|---:|---:|---:|
+| clang | 3 | — | 7 (counted `src/tests/mod.rs`) |
+| csharp | 8 | 8 | 8 |
+| go | 2 | — | 2 |
+| java | 5 | 5 | 5 |
+| python | 10 | — | 11 (counted `emit/tests.rs`) |
+| typescript | 14 | **omitted** | 14 |
+| **rust** | **8 (+3 positional)** | **omitted** | **omitted** |
+
+50 sites, plus 3 spelled positionally as `into_symbol(PathBuf::new(), 0..0)`, so
+**53**. Neither prior pass counted the Rust producer at all — the one this
+repository's own house tests run against.
+
+### The type
+
+`nudox_ir::entry::SourceLocation`, a closed enum rather than an `Option`:
+
+```
+Declared  { file, bytes, start: LineCol, end: LineCol }   the only jumpable variant
+BytesOnly { file, bytes }                                 position recorded, lines never computed
+Unlocated(Synthesized | MacroExpanded
+          | ProducerRecordsNoLocation
+          | OutsideDocumentedPackage)                     absence WITH the reason
+```
+
+`LineCol` is `NonZeroU32` on both axes, so **"line 0" — the shape the old sentinel
+took — is unrepresentable**. That is the §3 point exactly: the previous bug was a
+`0..0` that meant "absent" while type-checking as "present at offset zero", and
+the fix must not be a differently-spelled version of the same thing.
+
+`Option<SourceLocation>` was rejected because a `None` carries no reason, and the
+reason is precisely what turns "no source link here" into a bug filed against a
+named producer. An absolute path was rejected because it would make an entry's
+content hash depend on the build machine, destroying IR-VCS lineage.
+
+### Proof
+
+`memchr 2.8.3`, `pub fn memchr(needle: u8, haystack: &[u8]) -> Option<usize>`
+reports `src/memchr.rs`, bytes 68..1134, lines 5:1–35:2. **Verified against the
+file by me, not taken from the report:** byte 68 is the first `/` of the doc
+comment with exactly four newlines before it (line 5); `pub fn memchr(` is on
+line 27, consistent with a syntax node that starts at its doc comment; byte 1134
+is the closing `}` on line 35.
+
+Two non-`#[ignore]`d tests. The producer-side one re-derives the line by reading
+the fixture file at run time, so agreement is evidence rather than tautology. The
+engine-side one asserts the value survives to **both** wire types — `SymbolHead`
+and the newly-sourced `ImplRow`.
+
+### What is left
+
+Six producers still construct an explicit, named absence, reached through one
+greppable decoder. That is the honest interim state and is countable, which the
+`0..0` sentinel never was. Within Rust one real gap remains: the re-export scan
+reaches `pub use` through module *scope* rather than a syntax node.
+
+`FORMAT_VERSION` 1 → 2 and the golden entry digest regenerated; `GOLDEN_ALL_INTROS`
+and the impl/draw digests are **unchanged**, so identity did not move —
+`entry_content_hash` deliberately does not hash the location, so IDs stay stable
+as the remaining producers migrate.
+
+**The GUI half was reported UNVERIFIED** (agents are barred from building that
+workspace — concurrent builds corrupt the shared `target/`). Checked here:
+`cargo check --manifest-path workspace/gui/Cargo.toml --all-targets` → 0 errors,
+and `dependency_law` still passes 2/2.
+
+### Coordination, again
+
+`306f0e6` necessarily carries four files' worth of other tracks' uncommitted work
+that its hunks interleave with — `chunk/head.rs` (~470 foreign lines), `doc.rs`,
+`mcp/tests/schemas.rs`, `gui/symbol_page/*` (~1000). And `b1b4b6b` (mine) swept up
+three of that agent's then-staged files. **This is the second session in a row
+that concurrent agents produced unsplittable commits**, and the earlier lesson —
+"parallel agents need disjoint *files*, not merely disjoint *tasks*" — was
+followed at the level of directories and still was not enough, because an
+uncommitted working tree is itself a shared mutable resource. The rule needs
+strengthening: parallel agents need a *clean* tree, not merely disjoint paths.
