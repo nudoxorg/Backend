@@ -15,8 +15,8 @@
 # `.gitignore` DOES un-ignore both this file and its GUI sibling, with two
 # negation patterns:
 #
-#   .gitignore:174:!/.config/nextest.toml
-#   .gitignore:175:!/.config/nextest-gui.toml
+#   .gitignore:196:!/.config/nextest.toml
+#   .gitignore:197:!/.config/nextest-gui.toml
 #
 # HOW THE ORIGINAL AUTHOR GOT IT BACKWARDS — this is the load-bearing part,
 # because the same trap is one command away from anyone re-checking this:
@@ -38,14 +38,21 @@
 # describing behaviour is a claim, and claims rot" — this comment WAS the
 # claim, and it sent readers to a nonexistent `.gitignore` bug.)
 #
-# THE REAL, SMALLER CAVEAT, which survives: those two negations exist only in
-# the **uncommitted working-tree edit** to `.gitignore`.
-# `git show HEAD:.gitignore | grep nextest` returns nothing. So this file is
-# add-able right now and will survive a commit — but only if `.gitignore`'s
-# own working-tree change is committed alongside it. Commit them together or
-# the next clone loses the un-ignore and the original (wrong) complaint
-# becomes retroactively true. This file is still `??` untracked as of
-# 2026-08-07: nothing has actually staged it yet.
+# THE REAL, SMALLER CAVEAT — now DISCHARGED, kept because the ordering
+# constraint it names still applies to the next file in this position. It read:
+# those two negations exist only in the uncommitted working-tree edit to
+# `.gitignore`, so this file is add-able but only survives if `.gitignore`'s own
+# change is committed *alongside* it — commit them separately and the next clone
+# loses the un-ignore, making the original (wrong) complaint retroactively true.
+# They were committed together, and both are tracked as of 2026-08-07:
+#
+#   $ git show HEAD:.gitignore | grep -c nextest   # 4 (2 comment, 2 negation)
+#   $ git ls-files --error-unmatch .config/nextest.toml
+#   .config/nextest.toml
+#
+# The rule generalises: any new file under a `/**/*` deny-all needs its
+# `.gitignore` negation in the SAME commit, or it is untracked in every clone
+# but the author's.
 #
 # WHY THIS FILE EXISTS: tests here have wildly different costs and
 # preconditions — a real-crate lowering takes 20-60s and needs a checkout on
@@ -121,11 +128,28 @@
 #   find crates workspace -path '*/tests/*.rs' -not -path '*/vendor/*' \
 #     -not -path '*/.real-crates/*' -exec basename {} \; | sort | uniq -d
 #
-# As of 2026-08-07 that reports exactly two duplicated names: `real_package`
-# (3 files, qualified to `nudox-store` below — go's and clang's now reach the
-# default gate as their authors intended) and `corpus_sweep` (4 files, which
-# is the one case where matching all of them IS the intent; see the
-# `corpus-sweep` group).
+# As of 2026-08-07 that reports SIX duplicated names, of which this file names
+# only two — and the distinction is the whole point of the audit, so read the
+# output against this list rather than counting it:
+#
+#   real_package     3 files — NAMED here, qualified to `nudox-store` below, so
+#                    go's and clang's now reach the default gate as their
+#                    authors intended. This is the collision that cost coverage.
+#   corpus_sweep     5 files — NAMED here, deliberately UNqualified: matching
+#                    every package's is the intent (see the `corpus-sweep`
+#                    group). Was 4 when this audit was first written; rust's was
+#                    added later and picked up with no edit, as designed.
+#   adversarial      \
+#   lowering          } not named by any matcher in this file, so their
+#   producer_tests   /  collisions are inert — they fall through `kind(test)`
+#                       into `integration` like any other integration binary.
+#   mod              an ARTEFACT of the audit command, not a test binary at all:
+#                    `tests/*/mod.rs` is a submodule of some other binary.
+#                    `find … -path '*/tests/*.rs'` cannot tell the two apart.
+#
+# The rule the audit enforces is therefore "no matcher in this file may name a
+# colliding binary unqualified, unless matching all of them is stated intent" —
+# not "no collisions may exist". A duplicate that nothing here names is fine.
 #
 # KNOWN BLOCKER — `--exclude driver`, and ONLY `driver` (LIMITATIONS.md L7).
 #
