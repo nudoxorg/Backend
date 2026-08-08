@@ -6,12 +6,13 @@ license.workspace = true
 
 [dependencies]
 nudox-ir = { path = "../../../ir/model" }
+nudox-producer = { path = "../../producer" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+nudox-test-support = { path = "../../../../crates/nudox-test-support" }
 serde_json = { workspace = true }

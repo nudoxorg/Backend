@@ -1,6 +1,19 @@
 # Corpus manifest — reproducible package corpus for nudox
 # Each entry specifies packages by ecosystem, name, and version with content hash.
 # Multiple versions of the same package are grouped together.
+#
+# Seven ecosystems, 20 representative packages each: crates.io, go, maven,
+# nuget, npm, pypi, cpp. `hash` is a nix-base32-encoded sha256 of the exact
+# bytes at `url` (or the ecosystem's computed URL convention, if no `url` is
+# given — see corpus/README.md for what each ecosystem fetches and why, and
+# how to add a package). corpus/fetch.nu verifies every hash before
+# extracting anything.
+#
+# maven is the one exception to "20": it carries a 21st `[[packages]]` entry,
+# `org.reactivestreams:reactive-streams` — not a 21st representative library,
+# but rxjava's one and only external compile-time dependency, provisioned so
+# `nudox-producer-java` can resolve it (see that entry's own comment, and
+# `workspace/compiler/languages/java/src/producer.rs`'s module doc, for why).
 
 [[packages]]
 ecosystem = "crates.io"
@@ -129,4 +142,937 @@ ecosystem = "crates.io"
 name = "unicode-width"
 versions = [
   { version = "0.1.11", hash = "11ds4ydhg8g7l06rlmh712q41qsrd0j0h00n1jm74kww3kqk65z5" },
+]
+
+# clap/rayon added to bring crates.io to 20 packages (derive-macro-heavy CLI
+# parsing; data-parallelism trait plumbing) — everything above this line is
+# the original 18-package corpus, untouched.
+[[packages]]
+ecosystem = "crates.io"
+name = "clap"
+versions = [
+  { version = "4.5.1", hash = "1ni08mammjr61fg7cx900zgvcdfb4z7fjrlm1xx5f4r9xx0xa669" },
+]
+
+[[packages]]
+ecosystem = "crates.io"
+name = "rayon"
+versions = [
+  { version = "1.9.0", hash = "1gdk945j52vq3zx5vb4yzc3yyz19bf2vs8kh47pg7r46pk8kx5p4" },
+]
+
+# ---------------------------------------------------------------------------
+# go — proxy.golang.org module zips. github.com/pkg/errors and
+# github.com/stretchr/testify each carry two versions for lineage testing.
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/pkg/errors"
+versions = [
+  { version = "v0.8.1", hash = "1n2im6ss6ay33n5h6d7wm5h77brgalkzam74vskrcwqb6hhx0isf" },
+  { version = "v0.9.1", hash = "01xxy95b9w8djvr9c1b701pbscdrac7mw88k7452j5h6rn5nphyl" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/google/uuid"
+versions = [
+  { version = "v1.6.0", hash = "1vd6725h6mpakfx39k6x1lagbnqy8h34ws2rw812gx0pf8vjzw6h" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/spf13/cobra"
+versions = [
+  { version = "v1.10.2", hash = "0bc74rggynmiipb619dqqdrin3pp5x2h91n9abg0y7k3rmpsw2m0" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/spf13/viper"
+versions = [
+  { version = "v1.21.0", hash = "17i4gg6dmwrwaibwxv61s6q56c0rcxnxxzhdkz22fh5pvg6f95j0" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/stretchr/testify"
+versions = [
+  { version = "v1.11.1", hash = "0vn9vwx8yv7x94556zb64cw9px0zhyyawclz5fvh8lxd3rb5ncmp" },
+  { version = "v1.9.0", hash = "1q5qm6g276zpplnw6jbwa1rb3gczkwc8m46669a1p6v8rdrlypgf" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "gopkg.in/yaml.v3"
+versions = [
+  { version = "v3.0.1", hash = "05d0m7qk217jw99jrxc9yiwhrj91iahsw77yda7a03ihwv2gpf5a" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/gin-gonic/gin"
+versions = [
+  { version = "v1.12.0", hash = "0gmnbbj638lk93y8jh6bh6vr0hks2z06ifxc4zas0cxi6a9zk35f" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "golang.org/x/sync"
+versions = [
+  { version = "v0.22.0", hash = "1q5dky8a99cnz230ppa61jwljk4bv51mqxj33by7r1p7ihjpvijb" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "golang.org/x/text"
+versions = [
+  { version = "v0.40.0", hash = "1qwysq8sgwhhnvbbfzpvn2r9cqsy81iz3wy1hpfm43wdfa276x87" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/prometheus/client_golang"
+versions = [
+  { version = "v1.24.1", hash = "1hvgm2ipsqnsgphv5fhb2c8wrzlqc5nhc8zd23s6r4yrjbijgdlh" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/redis/go-redis/v9"
+versions = [
+  { version = "v9.22.0", hash = "07pvp0lb4fhcb54vy6674fgyn0a030hc95drvfks2fkcxky1ypzx" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/hashicorp/go-multierror"
+versions = [
+  { version = "v1.1.1", hash = "0300qcl0y92w3mi7zpgx2nzsw9zaz1biwc2skk3fmzaixr0xhb4p" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/BurntSushi/toml"
+versions = [
+  { version = "v1.6.0", hash = "1n0z042sq4iga4ai6aihp2aw5h2anl3j8853pl4f3zjb7xn3vw01" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/mattn/go-sqlite3"
+versions = [
+  { version = "v1.14.49", hash = "1qcc077q866k6xl6wda5ldcr3irqy9dnyi9r3n6j7vc08xj6xk2l" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/golang-jwt/jwt/v5"
+versions = [
+  { version = "v5.3.1", hash = "1izyasha43zam7548h7ayxkmgbsj693van35wp74dirb9r4p96jw" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/google/go-cmp"
+versions = [
+  { version = "v0.7.0", hash = "0fgmnffr2c3ngzr7pdh9n3q1i2jzl7sd387vhcvhwcicdw2cxab4" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/robfig/cron/v3"
+versions = [
+  { version = "v3.0.1", hash = "0w3cx1mnf9yylm1b543bsgc0y5grwpm51k5qa6j342128934brpb" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/fsnotify/fsnotify"
+versions = [
+  { version = "v1.10.1", hash = "05mh599dxlq231q1g7yzssx2djrlvbcvsrk00hpdl66mw0sa7imj" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "github.com/samber/lo"
+versions = [
+  { version = "v1.53.0", hash = "0ygmw5zzz68j5yrdknxcxfh9ndljx8nw928gr8b6lwx1jh0cysa9" },
+]
+
+[[packages]]
+ecosystem = "go"
+name = "go.uber.org/zap"
+versions = [
+  { version = "v1.28.0", hash = "174i31w6k9agpiyjbllzpwzpkb1qkkp3s3ikx7180x2kjxs2imj9" },
+]
+
+# ---------------------------------------------------------------------------
+# npm — registry.npmjs.org tarballs. lodash and zod each carry two versions
+# for lineage testing. @types/node is a declarations-only package (heavy
+# declaration merging); type-fest and fp-ts are type-only/HKT-heavy stress.
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "npm"
+name = "lodash"
+versions = [
+  { version = "4.17.21", hash = "017qragyfl5ifajdx48lvz46wr0jc1llikgvc2fhqakhwp4pl23a" },
+  { version = "4.17.20", hash = "1qpjahj6j8l9sag75f9sxfl85r6ab8f7v8w5axv9319wzim8ranj" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "zod"
+versions = [
+  { version = "3.22.4", hash = "1x2br9y5n6ipdygk0q6g4maxy49v03rjpwp0dbm8y06b1x8qjd92" },
+  { version = "3.23.8", hash = "06cyf3513flahlxckkkfgk2kz5lxcvjfjy7nggllwnn7awyfl726" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "type-fest"
+versions = [
+  { version = "4.10.2", hash = "1j7z063dap6k1fa15b3fksci2j1hli2zsvv935dcn869c4rp6fi7" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "chalk"
+versions = [
+  { version = "5.3.0", hash = "1s9jw9vj09n9wmyljva6h47wv7h2bbfy16c61443vac7g7l1zbh2" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "commander"
+versions = [
+  { version = "12.0.0", hash = "11w7j8hhyws22vk2plyyw6d3axckqq6mbfcfsdfzrsdc7as596p1" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "axios"
+versions = [
+  { version = "1.6.7", hash = "1b4rs9877ka24vll4c99w0m63np0mr75970myl1d9fb5imfhcnpq" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "date-fns"
+versions = [
+  { version = "3.3.1", hash = "1lnlzbnri4d1czp1l12irmcr6pgj0izphdnza83bp9v1c9yz763g" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "rxjs"
+versions = [
+  { version = "7.8.1", hash = "0jfim4x91kgic1q55j5rki3z48pg7k4md4904d8hhzdb4mviccn5" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "immer"
+versions = [
+  { version = "10.0.3", hash = "1zd1wzvq7ixjx7b0vb5jby7brg1b8babs1fqbilcvy4s58kp0x8w" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "uuid"
+versions = [
+  { version = "9.0.1", hash = "0zizkrc1adacql0mjffdhpd62qk8cysywnz493mgixyrlwaz99lz" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "debug"
+versions = [
+  { version = "4.3.4", hash = "1kwbyb5m63bz8a2bvhy4gsnsma6ks5wa4w5qya6qb9ip5sdjr4h4" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "left-pad"
+versions = [
+  { version = "1.3.0", hash = "1pc1siibc9nw5xxqgrmqmpya47k5gs5d0cl89y6sa8v217hhy347" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "yup"
+versions = [
+  { version = "1.4.0", hash = "1yiry1iclmbr72iz7hsy34a77w6lz41rdjhv9db4x0234b662d24" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "ws"
+versions = [
+  { version = "8.16.0", hash = "05bz1myr773jri4xgzlcdw55xhkhhbjmga7mwnyklmqbja4n18zv" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "@types/node"
+versions = [
+  { version = "20.11.0", hash = "1asp3cb60i9gbv8hx9mvsg72wg7jfm9hnw0yf7q3phikap4v9p0q" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "fp-ts"
+versions = [
+  { version = "2.16.5", hash = "1ppmv7c5xdgbr0b70yixsq7pwm3n6bj4qrs7mx6gd7q93jz3hpw6" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "class-validator"
+versions = [
+  { version = "0.14.1", hash = "0gz9r29a8ynqsq5bfjkxdflchnsg26j49i7l22h4knjq2kp9ahg1" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "reflect-metadata"
+versions = [
+  { version = "0.2.1", hash = "0nd1n3fpkwv273y9gllx8wmfs95fh725sbmw8gwg6nnddg3669ld" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "p-limit"
+versions = [
+  { version = "5.0.0", hash = "1yp5k64s2jv5cfw3jgs6v63mackmzswy2m03zlcxs3qdn1z9z9xq" },
+]
+
+[[packages]]
+ecosystem = "npm"
+name = "dayjs"
+versions = [
+  { version = "1.11.10", hash = "00bdkqksakcd5yzmbiw29r90905pym5by9piidxq00xs2vk79clv" },
+]
+
+# ---------------------------------------------------------------------------
+# pypi — sdists (source distributions), not wheels. click and pydantic each
+# carry two versions for lineage testing (pydantic spans the 1.x -> 2.x
+# rewrite, a real breaking-change lineage case, not just a point release).
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "pypi"
+name = "requests"
+versions = [
+  { version = "2.31.0", hash = "1qfidaynsrci4wymrw3srz8v1zy7xxpcna8sxpm91mwqixsmlb4l" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "click"
+versions = [
+  { version = "8.0.4", hash = "1nqa17zdd16fhiizziznx95ygkcxz4f3h8qfr4lb2pvw52qxfn44" },
+  { version = "8.1.7", hash = "1pm6khdv88h764scik67jki98xbyj367h591j8hpwy4y8nnm766a" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "pydantic"
+versions = [
+  { version = "1.10.14", hash = "19nw3627hdnli2f7x3r1vlh24s7aa3pazwwn122yfzg25y1ppwa6" },
+  { version = "2.6.1", hash = "1a8zbm510czjnfa6xn56w80q121pk7qpywrjdlzcd3a8la1c3mag" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "flask"
+versions = [
+  { version = "3.0.2", hash = "0zfbxxgl5zpbvswxywrr6fam6rj0vknv317flx84484rnzs06b42" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "attrs"
+versions = [
+  { version = "23.2.0", hash = "0c0zjwcqzbmpl93izm2g37gc3lsbbb9pf275fv7zcqn256sw6pck" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "sqlalchemy"
+versions = [
+  { version = "2.0.27", hash = "1y1l4lwhvgs7ivwhcp4vljjdsaha77x9859kz65virhzlxlyv9l6" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "pyyaml"
+versions = [
+  { version = "6.0.1", hash = "0hsa7g6ddynifrwdgadqcx80khhblfy94slzpbr7birn2w5ldpxz" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "python-dateutil"
+versions = [
+  { version = "2.8.2", hash = "11iy7m4bp2lgfkcl0r6xzf34bvk7ppjmsyn2ygfikbi72v6cl8q1" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "six"
+versions = [
+  { version = "1.16.0", hash = "09n9qih9rpj95q3r4a40li7hk6swma11syvgwdc68qm1fxsc6q8y" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "rich"
+versions = [
+  { version = "13.7.0", hash = "1yh3ajzm9bg6xmp1gncap7h2fhhix4b6h92489c71vprbhxi5daw" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "typer"
+versions = [
+  { version = "0.9.0", hash = "1ckq57dbmwwrlralga5zic6bsqi61pqqyh70m18lfbzakbbjz4jh" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "httpx"
+versions = [
+  { version = "0.27.0", hash = "1d9ajsibv9lbg030nrcg4ama5av44x66x5gf0i78gp1jdyj8ijx0" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "black"
+versions = [
+  { version = "24.2.0", hash = "1528xc3fjp6wri3yxx1vgqb7xf08435mp0g4mi6mwhy34xfg5r5w" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "more-itertools"
+versions = [
+  { version = "10.2.0", hash = "1q9rq9g026m4wl6ki2q8pw7xbc02vl34qqw702h9jgixqj0b9k4g" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "tenacity"
+versions = [
+  { version = "8.2.3", hash = "12ncyrgw06bnyyad3a1g9lwi26bfz6zw1d0zgh040gz6g06yz62k" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "dataclasses-json"
+versions = [
+  { version = "0.6.4", hash = "0xv3g9jygrg571zx2vplgfn27pgkqk5k094slz660rck4jznwsbk" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "structlog"
+versions = [
+  { version = "24.1.0", hash = "05kvwpl6n8vv3dmaiq23zwivgync9dkwkddrvidz4pfmwj39i821" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "jsonschema"
+versions = [
+  { version = "4.21.1", hash = "1r9f3g6g6zfh0w9b2jl6nkcfsfs0lqm8s8z6vfzacpwz4w07qwl5" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "cattrs"
+versions = [
+  { version = "23.2.3", hash = "17rbcx8rvbdisb3vqac59yqv9q4rhqx7wddc3n8rxambjl6hjd59" },
+]
+
+[[packages]]
+ecosystem = "pypi"
+name = "beautifulsoup4"
+versions = [
+  { version = "4.12.3", hash = "0l8hg3vz9q5fx7gav8sj5zr90d5k7xpc91c1fhhhs1ywis9d3qvl" },
+]
+
+# ---------------------------------------------------------------------------
+# maven — repo1.maven.org SOURCES jars (classifier "sources"), not the binary
+# jar; see corpus/README.md. guava and jackson-databind each carry two
+# versions for lineage testing. Heavy on annotations (lombok, dagger,
+# mapstruct, retrofit, jakarta.validation, junit-jupiter) and generics
+# (guava, rxjava, vavr, assertj).
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.code.gson:gson"
+versions = [
+  { version = "2.10.1", hash = "1hdwnyzzc3yfahrpdk8a77pkhiq8d1z7fif29hcywrs23xfcrqgf" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.guava:guava"
+versions = [
+  { version = "33.0.0-jre", hash = "1r9n03z54v866mpdzgf295vk03sjdl6p99hs15nn12jyg08xj5qc" },
+  { version = "32.1.3-jre", hash = "1wq9kbg3li7fb16ixasb4h61n59iddzfvpjds526dwza5lxk6vwz" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.commons:commons-lang3"
+versions = [
+  { version = "3.14.0", hash = "0vwv55y7g1id6rxqhhbf5p2rww8xkhgggaj3prnh5wcqp2pqcfxb" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "junit:junit"
+versions = [
+  { version = "4.13.2", hash = "0fkyxafxyfnzbdln478vvx5ykykz7jskq1kb0i6flh1d93v1s61l" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.junit.jupiter:junit-jupiter-api"
+versions = [
+  { version = "5.10.2", hash = "1vxm86j0sma81lw9758jajp86gnxwgkch404gw49vdw45r60a7jm" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.fasterxml.jackson.core:jackson-databind"
+versions = [
+  { version = "2.16.1", hash = "0b4fqip94bbzrsa0x6xgh8825j339dic4q3fxp2vkglc04204fci" },
+  { version = "2.15.4", hash = "1530lc2br16g8vn7dzc7i3brdchi3brw3m9j3nq4y3cgmhmkayxi" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.projectlombok:lombok"
+versions = [
+  { version = "1.18.30", hash = "0wdcksgld0k32zbbnb9znb4ckk16bjnd4idm9524iv6096rkl76l" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "io.reactivex.rxjava3:rxjava"
+versions = [
+  { version = "3.1.8", hash = "0mv7b18v3r8hkd8sqnnqrmwl3fgrwbzp46127rnarifcdp13v2r8" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.slf4j:slf4j-api"
+versions = [
+  { version = "2.0.12", hash = "11q7jm4y0wgs6xd28n1b5q1qagvn1qhqs8m8bgpfv1s8jbjm4l7h" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "ch.qos.logback:logback-classic"
+versions = [
+  { version = "1.4.14", hash = "0s5lvxwda9g4h66ljiyi28wxsay6zgxwcm2z8k3czwm8nv671rmk" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.squareup.retrofit2:retrofit"
+versions = [
+  { version = "2.9.0", hash = "0yjgcjkffr0nim4arw2giqc7qa2ihaj6drrpy9nq9afwiiyv7nk4" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.httpcomponents.client5:httpclient5"
+versions = [
+  { version = "5.3.1", hash = "16hcims98gjri84cv82jwl9b919x2205wybrm2j2dkysx3nkd6zx" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.google.dagger:dagger"
+versions = [
+  { version = "2.51", hash = "10rymgi6zn1kdrk02p0g08s0drv6gn6bxaprnh0ldndd4zxjppr9" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.mapstruct:mapstruct"
+versions = [
+  { version = "1.5.5.Final", hash = "19m302dirk7mmjrlr0kk5sm4g3sg2a0xlzv4sdd4n90bb87jr8pg" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "io.vavr:vavr"
+versions = [
+  { version = "0.10.4", hash = "06482zfpivh1k4q8mhz3iww2dilclqwivzflxqdwdzn93rh1z5fm" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.assertj:assertj-core"
+versions = [
+  { version = "3.25.3", hash = "1yrxmizpvvdqkbq11gy1xpcnwyw80x8vd8hcxnz184hrqqi848yc" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "com.h2database:h2"
+versions = [
+  { version = "2.2.224", hash = "1mpqm9b4gfr89ryp2m982kfljzswsw0x8n456l490f0qijl0vvx9" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.mockito:mockito-core"
+versions = [
+  { version = "5.10.0", hash = "02g3zm0kj9wrb46y0h7aqk8qmkx7mmx5iidzfm2s17ai7xy6qhfy" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "jakarta.validation:jakarta.validation-api"
+versions = [
+  { version = "3.0.2", hash = "1296a70gcr6g0rbdyfxzyck67ajs5cgnsif5vwc1gygh71vr3pvp" },
+]
+
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.kafka:kafka-clients"
+versions = [
+  { version = "3.7.0", hash = "0mgpmiplx7p70hj8v8y8kw491ckkw322wkndk6frhqy6c1y2aims" },
+]
+
+# reactive-streams is not a documented corpus package in its own right (it is
+# 4 tiny interfaces, not one of the 20 libraries the maven corpus was chosen
+# to represent). It is provisioned solely as rxjava's one and only external
+# compile-time dependency: `io.reactivex.rxjava3:rxjava`'s sources import
+# `org.reactivestreams.{Publisher,Subscriber,Subscription,Processor}`
+# directly, and every one of that package's ~2200 javac errors (see
+# nudox-producer-java's tests/corpus_sweep.rs) traces to this one missing
+# artifact -- verified by rerunning javadoc with `-Xmaxerrs 100000` and
+# confirming `org.reactivestreams` is the *only* `does not exist` package
+# reported. `JavaProducer::invoke` now adds `-sourcepath <corpus root>` (see
+# that module's doc comment) so a sibling checkout like this one is
+# resolvable without per-package classpath wiring.
+[[packages]]
+ecosystem = "maven"
+name = "org.reactivestreams:reactive-streams"
+versions = [
+  { version = "1.0.4", hash = "025pcjdqbwvylchvi3p6zq814wjd6zmry4dy9r1qqs9njnp3cyjs" },
+]
+
+# ---------------------------------------------------------------------------
+# nuget — nuget.org v3 flat-container .nupkg (the binary package; see
+# corpus/README.md for why nuget differs from maven/pypi here). Newtonsoft.Json
+# and Serilog each carry two versions for lineage testing.
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "nuget"
+name = "Newtonsoft.Json"
+versions = [
+  { version = "13.0.3", hash = "0xrwysmrn4midrjal8g2hr1bbg38iyisl0svamb11arqws4w2bw7" },
+  { version = "12.0.3", hash = "17dzl305d835mzign8r15vkmav2hq8l6g7942dfjpnzr17wwl89x" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "System.Text.Json"
+versions = [
+  { version = "8.0.2", hash = "1pi1dkypmn34qqspvwfcp1fx78v0nh78dpdyj4rcaa2qch40y15r" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Serilog"
+versions = [
+  { version = "3.1.1", hash = "0ck51ndmaqflsri7yyw5792z42wsp91038rx2i6vg7z4r35vfvig" },
+  { version = "2.12.0", hash = "0lqxpc96qcjkv9pr1rln7mi4y7n7jdi4vb36c2fv3845w1vswgr4" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "AutoMapper"
+versions = [
+  { version = "13.0.1", hash = "0s23aqxpiv86kx83hlfdkjwwg22n3fss24ix0kvm2g9fm9anrffy" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "FluentValidation"
+versions = [
+  { version = "11.9.0", hash = "1ayjznpgl891625h60hjjkcpl287ppshzihp33hi4gqgznaqwzwy" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Polly"
+versions = [
+  { version = "8.3.0", hash = "1pmh6iwkzgbxn62k1g1agwzgqdbq8g0yj5wslyxknpri6pyx9y5c" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Dapper"
+versions = [
+  { version = "2.1.35", hash = "1lxkbiip51bspzkh7xmafdcn5dzka08jmqfn5rrfv53v5k4yisnd" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "MediatR"
+versions = [
+  { version = "12.2.0", hash = "17s76w5c2gd2mvsdpn02dqifa62q7pn98ff0m3v559w7sna2apv7" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Moq"
+versions = [
+  { version = "4.20.70", hash = "0jzfxvw5ngxld2rfzq1361lqzi3f8shywqd4546ayz7wgga1vq9v" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "xunit"
+versions = [
+  { version = "2.7.0", hash = "0qs7yaz8qdhi75is7grgdxwxm09j36wv9c2ifyj2xd5jfzvlkc71" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "NUnit"
+versions = [
+  { version = "4.1.0", hash = "0fj6xwgqaxq3mrai86bklclfmjkzf038mrslwfqf4ignaz9f7g5j" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "StackExchange.Redis"
+versions = [
+  { version = "2.7.33", hash = "0hdqw5z95b8f5l8zkgpiv45w6snv9hykv48ywr9ab6gzkr3gi64j" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Microsoft.Extensions.DependencyInjection.Abstractions"
+versions = [
+  { version = "8.0.1", hash = "1wyhpamm1nqjfi3r463dhxljdlr6rm2ax4fvbgq2s0j3jhpdhd4p" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Humanizer.Core"
+versions = [
+  { version = "2.14.1", hash = "1ai7hgr0qwd7xlqfd92immddyi41j3ag91h3594yzfsgsy6yhyqi" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "CsvHelper"
+versions = [
+  { version = "30.0.1", hash = "0v01s672zcrd3fjwzh14dihbal3apzyg3dc80k05a90ljk8yh9wl" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "RestSharp"
+versions = [
+  { version = "111.2.0", hash = "1lsphw5f006qnmf5895g9idifdlbyfqq9l4m27mxhm1c05sz6ykn" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "NLog"
+versions = [
+  { version = "5.2.8", hash = "1z3h20m5rjnizm1jbf5j0vpdc1f373rzzkg6478p1lxv5j385c12" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Refit"
+versions = [
+  { version = "7.0.0", hash = "16v2yvycjyb2828gyrxfgnn7pmkbd8ycrqpjxpghvqvh9as0gipp" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "Microsoft.Bcl.AsyncInterfaces"
+versions = [
+  { version = "8.0.0", hash = "0z4jq5prnxyb4p3163yxx35znpd2msjd8hw8ysmv4ah90f5sd9gm" },
+]
+
+[[packages]]
+ecosystem = "nuget"
+name = "protobuf-net"
+versions = [
+  { version = "3.2.30", hash = "08bjdn8dbqpzn5c9fw89y5766irwplgyzhyxcrjzpywkwpj75r4i" },
+]
+
+# ---------------------------------------------------------------------------
+# cpp — no package registry exists for C++, so there is no computed URL
+# convention (unlike every other ecosystem above): every version pins an
+# explicit `url`. Where the upstream project publishes a maintainer-uploaded
+# GitHub Release asset, that asset is used (stable: it is a stored blob,
+# never regenerated). Where it does not, the fallback is a GitHub tag source
+# archive (`/archive/refs/tags/<tag>.tar.gz`) — usually stable, but GitHub
+# has in the past regenerated these bytes for unrelated infrastructure
+# reasons; corpus/fetch.nu's hash check turns any future drift into a loud
+# failure instead of a silent corpus change. See corpus/README.md for exactly
+# which entries below use which. nlohmann-json carries two versions for
+# lineage testing. simdjson and catch2 are raw single-file release assets,
+# not archives — fetch.nu places the file itself rather than extracting.
+# ---------------------------------------------------------------------------
+
+[[packages]]
+ecosystem = "cpp"
+name = "nlohmann-json"
+versions = [
+  { version = "v3.11.3", hash = "17aa7wqpfdiir7nr85xvw66fa0rln4fxzlq5y9w5rb0r678n2952", url = "https://github.com/nlohmann/json/releases/download/v3.11.3/include.zip" },
+  { version = "v3.10.5", hash = "13krlljnrjcpxy23azsnbisd916lnw1kfyhd5yvm6rw5d3grfjdr", url = "https://github.com/nlohmann/json/releases/download/v3.10.5/include.zip" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "simdjson"
+versions = [
+  { version = "v4.6.6", hash = "0xlcj0mlh2c8xpfp6xh3awydcrg6r6wn2x5hwjr8i39wnh0fc5r2", url = "https://github.com/simdjson/simdjson/releases/download/v4.6.6/simdjson.h" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "fmt"
+versions = [
+  { version = "12.2.0", hash = "13w7wndksh55wm47my1n5v5s0sypxmvpy01rqgj59ybq27asix52", url = "https://github.com/fmtlib/fmt/releases/download/12.2.0/fmt-12.2.0.zip" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "zlib"
+versions = [
+  { version = "v1.3.2", hash = "05lx27q69pm8vzi5w4ifsy86kq32q1kwcqcxa42ls9yh5h59lcmv", url = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "zstd"
+versions = [
+  { version = "v1.5.7", hash = "18vgkvh7w6zw4jn2aj1mp0yv98m4fk52ay6da0wh4pm194gyaczb", url = "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "lz4"
+versions = [
+  { version = "v1.10.0", hash = "12zlqlp7j3fri1bvwfpz7637cvf6iv7mq18j54imxcs48y814xak", url = "https://github.com/lz4/lz4/releases/download/v1.10.0/lz4-1.10.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cli11"
+versions = [
+  { version = "v2.7.2", hash = "1cl2ssaakn277jhs7775gwp1piq9dlgfhpjhfalrw4n7qi2fzc0c", url = "https://github.com/CLIUtils/CLI11/releases/download/v2.7.2/CLI11-2.7.2-Source.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "googletest"
+versions = [
+  { version = "v1.17.0", hash = "0z5j23gpwmmfp07f8yc9pzyqn46j672csjn1fz5ki7c2v40vgyk5", url = "https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "magic-enum"
+versions = [
+  { version = "v0.9.8", hash = "08fmq2i4dycnw2snx5v7fp0zpkyh7vbp1503bsknhwb9m749sw48", url = "https://github.com/Neargye/magic_enum/releases/download/v0.9.8/magic_enum-v0.9.8.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "abseil-cpp"
+versions = [
+  { version = "20260526.0", hash = "037a3bm5ps86v51ady018wdcgpj00b2fpr43pxj42hbkai9yw6kf", url = "https://github.com/abseil/abseil-cpp/releases/download/20260526.0/abseil-cpp-20260526.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "glm"
+versions = [
+  { version = "1.0.3", hash = "1cnygx77acwgim4bhpf2hd66vzqc96z40kn9gdxprn5hv770y2hw", url = "https://github.com/g-truc/glm/releases/download/1.0.3/glm-1.0.3.zip" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "catch2"
+versions = [
+  { version = "v3.15.3", hash = "1jhv6gm922gksjkdy262bnjc1icjr61j89rcq7vj50l9x7szqgdj", url = "https://github.com/catchorg/Catch2/releases/download/v3.15.3/catch_amalgamated.hpp" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "spdlog"
+versions = [
+  { version = "v1.17.0", hash = "0i57sdy8agmi5xpdh454jwfv2a14bmhb307mnd35hknpqrajk1nq", url = "https://github.com/gabime/spdlog/archive/refs/tags/v1.17.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cxxopts"
+versions = [
+  { version = "v3.3.1", hash = "0wi0kv1pdvi7qzc8n14dn9wsa5l92w4dhab4lialn7aj5ia71z1v", url = "https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.3.1.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "tomlplusplus"
+versions = [
+  { version = "v3.4.0", hash = "0maisabrwnz1fad5va7gnpgwmh9q39ikdfwfryfaxym471czc5w5", url = "https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "date"
+versions = [
+  { version = "v3.0.5", hash = "01dvnh3n3xz8biz22lpw667d0yr4myrl0ml2fmjcgbix43f6wy7g", url = "https://github.com/HowardHinnant/date/archive/refs/tags/v3.0.5.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cereal"
+versions = [
+  { version = "v1.3.2", hash = "0pzqh7mfgdankqa18dbask4fphs3ybbbaqjxqpd80n5s66dsv9qn", url = "https://github.com/USCiLab/cereal/archive/refs/tags/v1.3.2.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "range-v3"
+versions = [
+  { version = "0.12.0", hash = "1jx99dpqi84zp38c9khm96pl5x9p6gnbw987mz7dz3m900ixnnh1", url = "https://github.com/ericniebler/range-v3/archive/refs/tags/0.12.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "cpp-httplib"
+versions = [
+  { version = "v0.52.0", hash = "1fvjxxranbicpmqxlhxjbyw96zlhnxpg2jg29la8lc59diqns3by", url = "https://github.com/yhirose/cpp-httplib/archive/refs/tags/v0.52.0.tar.gz" },
+]
+
+[[packages]]
+ecosystem = "cpp"
+name = "argparse"
+versions = [
+  { version = "v3.2", hash = "167cd02snfvirhl4wdyxa8n6l6wz3asm9albmi42l6x4w263vjwx", url = "https://github.com/p-ranav/argparse/archive/refs/tags/v3.2.tar.gz" },
 ]

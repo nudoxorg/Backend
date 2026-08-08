@@ -12,7 +12,8 @@
 //!
 //! ```text
 //! javadoc -quiet -doclet nudox.oracle.Extractor -docletpath <classes> \
-//!     [--release <N>] <every .java file under PackageSource::root, recursively>
+//!     [-sourcepath <root>:<sibling dirs>] [--release <N>] \
+//!     <every .java file under PackageSource::root, recursively>
 //! ```
 //!
 //! No `-outfile` side channel is used: the doclet prints its one JSON document
@@ -22,6 +23,55 @@
 //! this JDK — verified empirically (JDK 21.0.11, Zulu) by capturing the two
 //! streams separately: stdout was byte-identical whether or not `-quiet` was
 //! passed. `-quiet` is passed anyway to keep stderr clean for the error path.
+//!
+//! # `-sourcepath`: best-effort cross-artifact resolution, not a dependency resolver
+//!
+//! Real Maven libraries routinely import types from *other* Maven artifacts
+//! (Guava's error-prone annotations, JUnit 5's platform-commons, Jackson's
+//! split core/annotations/databind, …), and `PackageSource` hands `invoke`
+//! exactly one artifact's own sources with no classpath at all. Two prior
+//! diagnoses of the resulting "5 of 22 corpus packages lower" failure were
+//! each wrong in a specific, checkable way: one assumed adding a classpath
+//! flag alone would fix most of them (it fixes none — no flag conjures
+//! dependency *content* that was never fetched); the other assumed the maven
+//! corpus packages were not provisioned at all (all 20/22 *were* on disk
+//! under `.real-crates/`, hash-verified — see `corpus/manifest.toml`). The
+//! real, sweep-verified shape (`tests/corpus_sweep.rs`) is per-package and
+//! non-uniform: 16 of the 17 non-lowering entries need one or more Maven
+//! artifacts that are not part of this corpus at all (Guava needs
+//! `com.google.errorprone`/`checkerframework`/`javax.annotation`; JUnit 4
+//! needs `org.hamcrest`; Jackson-databind needs `jackson-core` +
+//! `jackson-annotations`; …) — no local flag fixes those; they need new
+//! corpus entries this crate is not scoped to add unilaterally. Exactly one
+//! (`io.reactivex.rxjava3:rxjava`) needed precisely one artifact
+//! (`org.reactivestreams:reactive-streams`, 4 interfaces) and nothing else —
+//! confirmed by rerunning `javadoc -Xmaxerrs 100000` and observing every one
+//! of its ~2200 errors trace to `org.reactivestreams`. That one artifact is
+//! now a corpus entry (see `corpus/manifest.toml`), and [`invoke`] passes
+//! `-sourcepath` so `javadoc` can find it (and anything else already
+//! fetched) as a sibling checkout, instead of hand-wiring one classpath
+//! entry per package.
+//!
+//! [`sourcepath_entries`] builds that `-sourcepath` value from whatever
+//! directories happen to sit beside `PackageSource::root()` — it does not
+//! know or care that they came from `corpus/manifest.toml`; any caller that
+//! extracts several package checkouts as sibling directories gets the same
+//! benefit. Two things keep this from being a real dependency resolver: (1)
+//! it is peer-directory discovery, not `groupId:artifactId` resolution — a
+//! sibling only helps if its Java package names happen to match what the
+//! target imports, exactly as with reactive-streams here; (2) any sibling
+//! whose own root holds a `module-info.java` is excluded. `javac` treats
+//! every `-sourcepath` directory that contains one as a potential JPMS module
+//! root, and with more than one such directory on the path at once it fails
+//! *pre-resolution* module lookups (`module not found: …`) for modules that
+//! have nothing to do with the package being compiled — verified empirically
+//! by adding `ch.qos.logback:logback-classic`'s and
+//! `org.junit.jupiter:junit-jupiter-api`'s module-bearing checkouts to
+//! rxjava's sourcepath and watching rxjava's compile fail on logback's own
+//! unrelated `requires` directives. The target package's *own* root is always
+//! included even if it carries a `module-info.java` (`gson` and
+//! `jakarta.validation-api` both do, and both must keep working) — only
+//! *other* packages' module roots are excluded.
 //!
 //! # Where the compiled doclet classes come from
 //!
@@ -107,6 +157,10 @@ impl Producer for JavaProducer {
             "-docletpath".to_owned(),
             classes_dir,
         ];
+        if let Some(sourcepath) = sourcepath_entries(src.root()) {
+            args.push("-sourcepath".to_owned());
+            args.push(sourcepath);
+        }
         if let Ok(release) = std::env::var("NUDOX_JAVA_RELEASE") {
             args.push("--release".to_owned());
             args.push(release);
@@ -133,6 +187,38 @@ impl Producer for JavaProducer {
 fn oracle_classes_dir() -> String {
     std::env::var("NUDOX_JAVA_ORACLE_CLASSES")
         .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/classes").to_owned())
+}
+
+/// Builds the `-sourcepath` value: `root` itself, plus every sibling
+/// directory of `root` (i.e. every other entry directly under `root`'s
+/// parent) that does **not** carry its own `module-info.java` — see this
+/// module's doc comment for why module-bearing siblings are excluded and why
+/// `root` itself is always kept even when *it* has one.
+///
+/// Returns `None` when `root` has no parent or that parent cannot be read
+/// (e.g. a package extracted directly at a filesystem root, or a transient
+/// permission error) — `-sourcepath` is a best-effort resolution aid, not a
+/// requirement, so `invoke` falls back to the pre-existing no-sourcepath
+/// invocation rather than failing the whole run over it.
+fn sourcepath_entries(root: &Path) -> Option<String> {
+    let parent = root.parent()?;
+    let siblings = std::fs::read_dir(parent).ok()?;
+
+    let mut entries: Vec<PathBuf> = vec![root.to_path_buf()];
+    for entry in siblings.flatten() {
+        let path = entry.path();
+        if path == root || !path.is_dir() {
+            continue;
+        }
+        if path.join("module-info.java").is_file() {
+            continue;
+        }
+        entries.push(path);
+    }
+
+    std::env::join_paths(&entries)
+        .ok()
+        .map(|joined| joined.to_string_lossy().into_owned())
 }
 
 /// Recursively collect every `.java` file under `root`, sorted for

@@ -97,6 +97,7 @@ use std::path::PathBuf;
 
 use nudox_ir::build::*;
 use nudox_ir::entry::Visibility;
+use nudox_ir::foreign::ForeignKey;
 use nudox_ir::kinds::function::FnModifier;
 use nudox_ir::kinds::record::{FieldAttribute, FieldKey};
 use nudox_ir::kinds::sum::VariantForm;
@@ -105,8 +106,8 @@ use nudox_ir::kinds::ty::Variance;
 
 use crate::javadoc::{self, ParsedJavadoc};
 use crate::schema::{
-    self, Annotation, EnumConstant, Extraction, Field as SchemaField, Method, Modifier,
-    NestingKind, Param, TypeDecl, TypeDeclKind, TypeMirror, Value, has_modifier, is_synthetic,
+    self, Annotation, Directive, EnumConstant, Extraction, Field as SchemaField, Method, Modifier,
+    NestingKind, Param, TypeDecl, TypeDeclKind, TypeMirror, TypeParam, Value, has_modifier, is_synthetic,
 };
 
 // ── JavaId ──────────────────────────────────────────────────────────────────
@@ -133,10 +134,10 @@ impl JavaId {
         JavaId(format!("{owner_qualified}#{member_name}"))
     }
 
-    fn method(owner_qualified: &str, name: &str, params: &[Param]) -> Self {
+    fn method(owner_qualified: &str, name: &str, params: &[Param], typevar_bounds: &TypevarBounds<'_>) -> Self {
         let sig = params
             .iter()
-            .map(|p| type_erase(&p.ty))
+            .map(|p| type_erase(&p.ty, typevar_bounds))
             .collect::<Vec<_>>()
             .join(",");
         JavaId(format!("{owner_qualified}#{name}({sig})"))
@@ -151,10 +152,57 @@ impl JavaId {
     }
 }
 
+/// Maps an in-scope type-variable's simple name to its declared first bound
+/// (JVM erasure of an intersection bound uses only the leftmost type —
+/// mirrored by [`type_erase`]'s own `Intersection` arm), for whichever
+/// method/constructor signature is currently being erased into a
+/// [`JavaId`]. See [`typevar_bounds_map`].
+type TypevarBounds<'a> = HashMap<&'a str, &'a TypeMirror>;
+
+/// Build the bound lookup [`type_erase`] needs to erase a signature's
+/// type-variable parameters correctly.
+///
+/// Real JVM erasure of a type variable is the erasure of its **bound**, not
+/// its letter (JLS 4.6): `<T extends CharSequence> T notEmpty(T)` erases to
+/// `notEmpty(CharSequence)`. Two unrelated method-local `<T>`s with
+/// different bounds are ordinary, legal overloads — commons-lang3's real
+/// `Validate` class declares four: `<T extends CharSequence> T
+/// notEmpty(T)`, `<T> T[] notEmpty(T[])`, `<T extends Collection<?>> T
+/// notEmpty(T)`, `<T extends Map<?,?>> T notEmpty(T)`. Before this map
+/// existed, `type_erase` rendered every `Typevar` as its bare name, so three
+/// of those four collapsed onto the identical id
+/// `Validate#notEmpty(T)` — `Lowering::finish` correctly rejected the
+/// package as "declared more than once", which is how this producer's first
+/// real corpus sweep failed on commons-lang3 3.14.0, one of only five maven
+/// packages that otherwise resolve with no external classpath at all.
+///
+/// Method-level type parameters are unioned with (and, on a name collision,
+/// shadow) the owning class's own — matching Java's actual scoping rules —
+/// by inserting the class-level list first and the method-level list
+/// second, so `HashMap::insert`'s overwrite-on-collision semantics apply in
+/// the right direction.
+///
+/// Unbounded type variables (`bounds` empty) are deliberately **not**
+/// inserted: their true erasure is `Object`, but remapping every unbounded
+/// `T` to the literal string `"Object"` would newly collide distinct
+/// unbounded overloads (e.g. `foo(T)` next to a genuine `foo(Object)`
+/// overload) that this fix has no real corpus evidence for. Leaving them as
+/// their bare name preserves prior, already-correct-for-this-case behavior;
+/// only the bounded case this sweep actually found broken is changed.
+fn typevar_bounds_map<'a>(class_type_params: &'a [TypeParam], method_type_params: &'a [TypeParam]) -> TypevarBounds<'a> {
+    let mut map = HashMap::new();
+    for tp in class_type_params.iter().chain(method_type_params.iter()) {
+        if let Some(bound) = tp.bounds.first() {
+            map.insert(tp.name.as_ref(), bound);
+        }
+    }
+    map
+}
+
 /// Produce the "erased" type name for a method-signature id. We use the
 /// declared source name (not JVM bytecode descriptors) because the oracle
 /// reports source names.
-fn type_erase(t: &TypeMirror) -> String {
+fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
     match t {
         TypeMirror::Primitive { name, .. } => name.to_string(),
         TypeMirror::Void => "void".to_owned(),
@@ -162,19 +210,24 @@ fn type_erase(t: &TypeMirror) -> String {
             // Strip generic args for erasure — same as JVM erasure.
             name.to_string()
         }
-        TypeMirror::Array { component, .. } => format!("{}[]", type_erase(component)),
-        TypeMirror::Typevar { name, .. } => name.to_string(),
+        TypeMirror::Array { component, .. } => format!("{}[]", type_erase(component, typevar_bounds)),
+        TypeMirror::Typevar { name, .. } => match typevar_bounds.get(name.as_ref()) {
+            // A bounded type variable erases to its bound, not its letter —
+            // see `typevar_bounds_map`'s doc comment for why this matters.
+            Some(bound) => type_erase(bound, typevar_bounds),
+            None => name.to_string(),
+        },
         TypeMirror::Wildcard { .. } => "?".to_owned(),
         TypeMirror::Intersection { bounds } => {
             if bounds.is_empty() {
                 "Object".to_owned()
             } else {
-                type_erase(&bounds[0])
+                type_erase(&bounds[0], typevar_bounds)
             }
         }
         TypeMirror::Union { alternatives } => alternatives
             .iter()
-            .map(type_erase)
+            .map(|a| type_erase(a, typevar_bounds))
             .collect::<Vec<_>>()
             .join("|"),
         TypeMirror::Error { name } | TypeMirror::Other { repr: name } => name.to_string(),
@@ -232,6 +285,41 @@ impl<'a> LoweringCtx<'a> {
 
 // ── Symbol helpers ───────────────────────────────────────────────────────────
 
+/// Convert declaration-site annotations into `AttrTok`s for `Symbol.attrs`.
+///
+/// The oracle captures every declaration-site annotation (`@Override`,
+/// `@SuppressWarnings`, `@FunctionalInterface`, arbitrary custom annotations
+/// with values — see `Extractor.writeAnnotations`), but before this function
+/// existed the lowering only ever *read* that list looking for
+/// `@java.lang.Deprecated`'s `since` value (see `make_deprecation`); every
+/// other annotation was silently dropped on the floor — not even into
+/// documentation prose. Verified against real Gson 2.11.0 output: `@Override`
+/// on `Gson#toString`, `@SuppressWarnings` on several `Gson#fromJson`
+/// overloads, and `@CanIgnoreReturnValue` throughout `GsonBuilder` all
+/// reached the oracle's JSON and were being discarded here.
+///
+/// `@Deprecated` itself is excluded: it already has a dedicated structural
+/// slot (`Symbol.deprecation`, via `make_deprecation`), and duplicating the
+/// same fact into `attrs` as well would give two structural representations
+/// of one fact with no way to tell them apart.
+///
+/// One `AttrTok` per annotation, in declaration order; `arg` is always `None`
+/// — same rationale as `wrap_annotated`'s type-use-annotation `AttrTok`s: an
+/// annotation's argument structure (`values: BTreeMap<Box<str>, Value>`) has
+/// no lossless mapping to a single string. Consumers needing argument values
+/// must inspect `render_value` output in documentation, or a future
+/// structured annotation-value field.
+fn annotation_attrs(annotations: &[Annotation]) -> Vec<AttrTok> {
+    annotations
+        .iter()
+        .filter(|a| a.ty.as_ref() != "java.lang.Deprecated" && !a.ty.ends_with(".Deprecated"))
+        .map(|a| AttrTok {
+            token: a.ty.to_string(),
+            arg: None,
+        })
+        .collect()
+}
+
 /// Build a `Symbol` from common parts.
 fn make_sym(
     name: &str,
@@ -239,6 +327,7 @@ fn make_sym(
     doc: Option<String>,
     depr: Option<Deprecation>,
     doc_links: &[String],
+    attrs: &[Annotation],
     source: &str,
     line: Option<u64>,
 ) -> Symbol {
@@ -261,7 +350,7 @@ fn make_sym(
                 .collect();
             links.into_boxed_slice()
         },
-        attrs: Box::new([]),
+        attrs: annotation_attrs(attrs).into_boxed_slice(),
         cfg: None,
     }
 }
@@ -363,14 +452,43 @@ const MAX_DEPTH: usize = 64;
 /// enum has no `TypeOperator` wrapper. The information is lost at the type
 /// level; method-level annotation uses survive as documentation sections.
 ///
-/// **External type handling:** if a `Declared` type is not in
-/// `ctx.known_qualified` (i.e., it is a JDK or external library type not in
-/// the current oracle extraction), we emit `Type::Any` rather than calling
-/// `refer()` (which would record an `Undeclared` id and cause `finish()` to
-/// fail). This is a best-effort degradation — the type identity is lost, but
-/// the entry is still produced.
+/// **External type handling:** a `Declared` type that is not in
+/// `ctx.known_qualified` (a JDK or dependency type outside this oracle
+/// extraction) is lowered through [`refer_import`] into a `Ref::Foreign` that
+/// carries its fully-qualified name — see [`java_foreign_key`].
+///
+/// It emphatically does **not** call `refer()`, which would record an
+/// `Undeclared` id and fail `finish()`; that constraint is real and is why this
+/// used to emit `Type::Any` instead. The erasure was not a harmless
+/// best-effort degradation, though: `Skeleton` encodes `Type::Any` as a single
+/// byte, so `fromJson(String, Class)` and `fromJson(Reader, Type)` produced
+/// byte-identical signature skeletons, minted one `IntroId`, and 28 real Gson
+/// methods were silently dropped by the sealed table. Naming the type is what
+/// keeps distinct overloads distinct.
+///
+/// [`refer_import`]: nudox_ir::lower::Lowering::refer_import
 pub fn lower_type(ctx: &mut LoweringCtx<'_>, t: &TypeMirror) -> Type {
     lower_type_depth(ctx.low, &ctx.known_qualified, t, 0)
+}
+
+/// The cross-package key for a Java type outside the current extraction.
+///
+/// # What Java can and cannot state
+///
+/// The fully-qualified source name is globally stable and unique —
+/// `java.util.List` is that string in every extraction, so the key joins by
+/// construction. What is *not* derivable is the publishing artifact: mapping
+/// `java.util.List` to a Maven `groupId:artifactId` is a POM/classpath fact
+/// javac does not report, and `TypeMirror::Declared` carries no module. So this
+/// emits `ForeignOrigin::Namespace` over the package prefix, which states the
+/// limitation instead of fabricating a coordinate that would render as a
+/// working hyperlink and never resolve.
+fn java_foreign_key(fqn: &str) -> ForeignKey {
+    let (namespace, simple) = match fqn.rfind('.') {
+        Some(i) => (&fqn[..i], &fqn[i + 1..]),
+        None => ("", fqn),
+    };
+    ForeignKey::in_namespace(EcosystemId::new("maven"), namespace, fqn, simple)
 }
 
 fn lower_type_depth(
@@ -398,17 +516,33 @@ fn lower_type_depth(
             // java.lang.Object is the top type — map to Any.
             let base = if name.as_ref() == "java.lang.Object" {
                 Type::Any
-            } else if !known.contains(name.as_ref()) {
-                // If the type is not in the current extraction (e.g. java.util.List
-                // from the JDK or a dependency not included in the oracle run), emit
-                // Type::Any rather than refer()-ing to an unknown id — that would
-                // cause Lowering::finish to fail with Undeclared.
-                Type::Any
             } else {
-                // Type is known locally: refer() to it and produce a Nominal.
-                let nominal: RawRef = low
-                    .refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
-                    .into_raw();
+                let nominal: RawRef = if known.contains(name.as_ref()) {
+                    // Declared in this extraction: a same-package reference.
+                    low.refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
+                        .into_raw()
+                } else {
+                    // Outside the extraction — a JDK type, or a dependency the
+                    // oracle never loaded.
+                    //
+                    // This used to be `Type::Any`, with a comment explaining
+                    // that `refer()` would fail `finish` with `Undeclared`.
+                    // That reasoning was correct and `refer_import` is the
+                    // method it was looking for: it creates no declaration
+                    // slot, so `finish` never demands one.
+                    //
+                    // It matters far beyond rendering. Erasing every foreign
+                    // parameter type to `Type::Any` is what made Gson's
+                    // `fromJson(String, Class)`, `(String, Type)`,
+                    // `(Reader, Class)` and `(Reader, Type)` encode to four
+                    // byte-identical signature skeletons — one `IntroId`, three
+                    // silent overwrites, 28 real methods gone. Naming the types
+                    // makes the four skeletons structurally distinct, so their
+                    // ids stay signature-stable and seal's span escalation never
+                    // has to fire for them.
+                    low.refer_import::<nudox_ir::kinds::record::Record>(java_foreign_key(name))
+                        .into_raw()
+                };
                 if args.is_empty() {
                     Type::Nominal(nominal)
                 } else {
@@ -618,6 +752,7 @@ fn lower_package(ctx: &mut LoweringCtx<'_>, pkg: &schema::Package) {
         parsed.as_ref().and_then(ParsedJavadoc::documentation),
         None,
         &doc_links,
+        &pkg.annotations,
         src,
         line,
     );
@@ -637,12 +772,34 @@ fn lower_module(ctx: &mut LoweringCtx<'_>, m: &schema::Module) {
     );
     let (src, line) = source_of(m.position.as_ref());
     let doc_links: Vec<String> = parsed.as_ref().map(|p| p.links.clone()).unwrap_or_default();
+
+    // `nudox_ir::kinds::Module` is a unit struct (`pub struct Module;`) — it
+    // carries no fields at all, so `module-info.java`'s directives
+    // (`requires`/`exports`/`opens`/`uses`/`provides`) have no structural IR
+    // slot to land in. Before this, they were not even read here: the oracle
+    // faithfully captures every directive (`Extractor.writeDirective`), and
+    // `lower_module` discarded `m.directives` completely — unlike every other
+    // Java construct with no structural slot elsewhere in this file
+    // (`sealed … permits`, annotation-element defaults, non-access
+    // modifiers), which at least rides a documentation section. This closes
+    // that gap the same way: prose, not a fabricated structural field.
+    let mut doc = parsed.as_ref().and_then(ParsedJavadoc::documentation);
+    if !m.directives.is_empty() {
+        let lines: Vec<String> = m.directives.iter().map(render_directive).collect();
+        let section = format!("Module directives:\n{}", lines.join("\n"));
+        doc = Some(match doc {
+            Some(existing) => format!("{existing}\n\n{section}"),
+            None => section,
+        });
+    }
+
     let sym = make_sym(
         m.name.as_ref(),
         Visibility::Public,
-        parsed.as_ref().and_then(ParsedJavadoc::documentation),
+        doc,
         None,
         &doc_links,
+        &m.annotations,
         src,
         line,
     );
@@ -652,6 +809,43 @@ fn lower_module(ctx: &mut LoweringCtx<'_>, m: &schema::Module) {
         sym,
         nudox_ir::kinds::Module,
     );
+}
+
+/// Render one `module-info.java` directive as a documentation-prose line.
+fn render_directive(d: &Directive) -> String {
+    match d {
+        Directive::Requires {
+            module,
+            transitive,
+            is_static,
+        } => {
+            let mut mods = Vec::new();
+            if *transitive {
+                mods.push("transitive");
+            }
+            if *is_static {
+                mods.push("static");
+            }
+            if mods.is_empty() {
+                format!("- requires `{module}`")
+            } else {
+                format!("- requires {} `{module}`", mods.join(" "))
+            }
+        }
+        Directive::Exports { package, to } => match to {
+            Some(targets) => format!("- exports `{package}` to {}", targets.join(", ")),
+            None => format!("- exports `{package}`"),
+        },
+        Directive::Opens { package, to } => match to {
+            Some(targets) => format!("- opens `{package}` to {}", targets.join(", ")),
+            None => format!("- opens `{package}`"),
+        },
+        Directive::Uses { service } => format!("- uses `{service}`"),
+        Directive::Provides {
+            service,
+            implementations,
+        } => format!("- provides `{service}` with {}", implementations.join(", ")),
+    }
 }
 
 // ── Type declarations ─────────────────────────────────────────────────────────
@@ -723,6 +917,7 @@ fn lower_class_like(
                 comp_doc,
                 None,
                 &[],
+                &component.annotations,
                 src,
                 line,
             );
@@ -769,7 +964,7 @@ fn lower_class_like(
         if is_synthetic(ctor.origin) {
             continue;
         }
-        lower_constructor(ctx, qname, ctor);
+        lower_constructor(ctx, qname, ctor, &decl.type_params);
     }
 
     // --- Methods. ----------------------------------------------------------
@@ -777,7 +972,7 @@ fn lower_class_like(
         if is_synthetic(m.origin) {
             continue;
         }
-        lower_method(ctx, qname, m, false);
+        lower_method(ctx, qname, m, false, &decl.type_params);
     }
 
     // --- Supertypes. -------------------------------------------------------
@@ -861,6 +1056,7 @@ fn lower_class_like(
         },
         depr,
         &doc_links,
+        &decl.annotations,
         src,
         line,
     );
@@ -898,7 +1094,7 @@ fn lower_interface(
         }
         let is_provided = !has_modifier(&m.modifiers, Modifier::Abstract)
             || (is_annotation && m.annotation_default.is_some());
-        lower_method(ctx, qname, m, is_provided);
+        lower_method(ctx, qname, m, is_provided, &decl.type_params);
     }
 
     // Super-interfaces → supers list.
@@ -957,6 +1153,7 @@ fn lower_interface(
         },
         depr,
         &doc_links,
+        &decl.annotations,
         src,
         line,
     );
@@ -998,7 +1195,7 @@ fn lower_enum(
         if is_synthetic(m.origin) {
             continue;
         }
-        lower_method(ctx, qname, m, false);
+        lower_method(ctx, qname, m, false, &decl.type_params);
     }
 
     // Enum fields as standalone Field/Static entries.
@@ -1037,6 +1234,7 @@ fn lower_enum(
         },
         depr,
         &doc_links,
+        &decl.annotations,
         src,
         line,
     );
@@ -1093,6 +1291,7 @@ fn lower_enum_constant(
         },
         depr,
         &doc_links,
+        &c.annotations,
         src,
         line,
     );
@@ -1150,6 +1349,7 @@ fn lower_field(
         },
         depr,
         &doc_links,
+        &f.annotations,
         src,
         line,
     );
@@ -1170,8 +1370,15 @@ fn lower_field(
 
 /// Lower one method into its own `Function` declaration (overloads each become
 /// separate declarations with distinct `JavaId`s).
-fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_provided: bool) {
-    let mid = JavaId::method(owner_qname, m.name.as_ref(), &m.params);
+fn lower_method(
+    ctx: &mut LoweringCtx<'_>,
+    owner_qname: &str,
+    m: &Method,
+    is_provided: bool,
+    class_type_params: &[TypeParam],
+) {
+    let typevar_bounds = typevar_bounds_map(class_type_params, &m.type_params);
+    let mid = JavaId::method(owner_qname, m.name.as_ref(), &m.params, &typevar_bounds);
     let parsed = ctx.parse_doc(m.doc.as_deref(), m.doc_kind.as_deref(), Some(owner_qname));
     let (src, line) = source_of(m.position.as_ref());
 
@@ -1180,7 +1387,17 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
     let mut input_refs: Vec<Ref<nudox_ir::kinds::param::Param>> = Vec::new();
     for (idx, p) in m.params.iter().enumerate() {
         let is_variadic = m.varargs && idx == last;
-        let param_id = JavaId(format!("{owner_qname}#{}/{}", m.name, p.name));
+        // Namespaced under `mid` (which already carries the erased-parameter
+        // signature via `JavaId::method`), not rebuilt from `owner_qname` +
+        // the bare method name — two overloads sharing both a name and a
+        // parameter name (e.g. Gson's eight `toJson` overloads, several of
+        // which have a `src` parameter) would otherwise collide on the same
+        // `JavaId` and fail `Lowering::finish` with `declared more than
+        // once`. Found via the real Gson 2.11.0 lowering in
+        // `tests/producer_tests.rs`, not reachable from the hand-authored
+        // unit-test fixture below (no two of its methods share both a name
+        // and a parameter name).
+        let param_id = JavaId(format!("{}/{}", mid.0, p.name));
         let ty = lower_type(ctx, &p.ty);
         let mut attrs = Vec::new();
         if is_variadic {
@@ -1200,7 +1417,13 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
-            attrs: Box::new([]),
+            // A parameter's own declaration annotations (`p.annotations`,
+            // e.g. a custom `@Nullable`/`@Positive` on the parameter itself)
+            // are distinct from the type-use annotations `lower_type`
+            // already wires into `Type::Annotated` for `p.ty` — this is the
+            // parameter-*symbol*'s annotation list, previously dropped
+            // entirely (see `annotation_attrs`'s doc comment).
+            attrs: annotation_attrs(&p.annotations).into_boxed_slice(),
             cfg: None,
         };
         let pref = ctx.low.declare(
@@ -1221,7 +1444,10 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
     if let Some(ret) = &m.return_type
         && !ret.is_void()
     {
-        let ret_id = JavaId(format!("{owner_qname}#{}/$return", m.name));
+        // Same overload-collision fix as `param_id` above: namespaced under
+        // `mid`, not the bare method name (every overload otherwise shares
+        // one `.../$return` id).
+        let ret_id = JavaId(format!("{}/$return", mid.0));
         let ret_ty = lower_type(ctx, ret);
         let ret_doc = parsed
             .as_ref()
@@ -1232,7 +1458,24 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
             visibility: Visibility::Public,
             documentation: ret_doc,
             source: PathBuf::from(src),
-            span: 0..0,
+            // Was hardcoded `0..0` regardless of `line` — unlike every input
+            // param a few lines up, which threads `line` through into its
+            // span. The oracle reports no real byte spans (`Position` is
+            // `{file, line}` only), so `nudox_ir::package::seal`'s collision
+            // fallback (`Disambiguator::Span`, used whenever two entries
+            // share `(kind, ancestor-path-by-name, leaf-name)` — exactly the
+            // case for two overloads of one method name) is the only thing
+            // that can tell two same-named methods' `$return` entries apart.
+            // A hardcoded `0..0` made every overload's `$return` entry
+            // collide onto that same fallback key, and `PristineIntroTable`
+            // silently keeps only the last insert per `IntroId` — real
+            // overloads' return-value entries were vanishing during `seal`,
+            // not during this crate's own `Lowering::finish` (which sees
+            // them as distinct, since their `JavaId`s already differ).
+            // Found via Gson 2.11.0's `produce()` entry count (2051) sitting
+            // 80 below the typed pre-seal count (2131) in
+            // `tests/producer_tests.rs`.
+            span: 0..line.unwrap_or(0) as usize,
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -1370,6 +1613,7 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
         },
         depr,
         &doc_links,
+        &m.annotations,
         src,
         line,
     );
@@ -1406,8 +1650,9 @@ fn lower_method(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, is_pro
 }
 
 /// Lower a constructor into a `Function` entry with no receiver.
-fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method) {
-    let mid = JavaId::method(owner_qname, "<init>", &m.params);
+fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, class_type_params: &[TypeParam]) {
+    let typevar_bounds = typevar_bounds_map(class_type_params, &m.type_params);
+    let mid = JavaId::method(owner_qname, "<init>", &m.params, &typevar_bounds);
     let parsed = ctx.parse_doc(m.doc.as_deref(), m.doc_kind.as_deref(), Some(owner_qname));
     let (src, line) = source_of(m.position.as_ref());
 
@@ -1415,7 +1660,11 @@ fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method) {
     let mut input_refs: Vec<Ref<nudox_ir::kinds::param::Param>> = Vec::new();
     for (idx, p) in m.params.iter().enumerate() {
         let is_variadic = m.varargs && idx == last;
-        let param_id = JavaId(format!("{owner_qname}#<init>/{}", p.name));
+        // Same overload-collision fix as `lower_method`'s `param_id`:
+        // namespaced under `mid` (which carries the erased-parameter
+        // signature), not the bare `<init>` literal shared by every
+        // constructor overload of the owning type.
+        let param_id = JavaId(format!("{}/{}", mid.0, p.name));
         let ty = lower_type(ctx, &p.ty);
         let mut attrs = Vec::new();
         if is_variadic {
@@ -1435,7 +1684,8 @@ fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method) {
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
-            attrs: Box::new([]),
+            // See the identical comment in `lower_method`'s input-param loop.
+            attrs: annotation_attrs(&p.annotations).into_boxed_slice(),
             cfg: None,
         };
         let pref = ctx.low.declare(
@@ -1472,6 +1722,7 @@ fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method) {
         },
         depr,
         &doc_links,
+        &m.annotations,
         src,
         line,
     );
@@ -1499,7 +1750,12 @@ pub fn render_value(v: &Value) -> String {
         Value::Double { value } => value.to_string(),
         Value::Int { value } => value.to_string(),
         Value::Enum { ty, name } => format!("{ty}.{name}"),
-        Value::Type { value } => format!("{}.class", type_erase(value)),
+        // A `Foo.class` literal is always a concrete type in valid Java (a
+        // type variable cannot appear in a class-literal constant
+        // expression — `T.class` does not compile), so no typevar bound
+        // context can ever be needed here; an empty map is a genuine no-op,
+        // not a degradation.
+        Value::Type { value } => format!("{}.class", type_erase(value, &TypevarBounds::new())),
         Value::Array { values } => {
             let inner: Vec<String> = values.iter().map(render_value).collect();
             format!("{{{}}}", inner.join(", "))
@@ -2517,10 +2773,33 @@ mod tests {
                     1,
                     "Function::throws must have 1 entry for the declared IOException"
                 );
-                // External type: lowers to Type::Any.
+                // External type: named, not erased. `Type::Any` here used to be
+                // the answer, and it is what made distinct overloads collapse
+                // — `Skeleton` encodes `Any` as one byte, so two methods
+                // differing only in thrown/parameter types hashed identically.
+                let Type::Nominal(raw) = &f.throws[0] else {
+                    panic!(
+                        "an external thrown type must be a nominal reference; got {:?}",
+                        f.throws[0]
+                    );
+                };
+                let (key, target) = raw.as_foreign().expect(
+                    "java.io.IOException is outside the extraction, so it must be a \
+                     cross-package reference rather than an erased `Type::Any`",
+                );
+                assert_eq!(
+                    key.display.as_ref(),
+                    "IOException",
+                    "the display name is what the `Throws` row renders when unlinked"
+                );
+                assert_eq!(
+                    key.path.as_ref(),
+                    "java.io.IOException",
+                    "the fully-qualified name is the join key a resolver matches on"
+                );
                 assert!(
-                    matches!(f.throws[0], Type::Any),
-                    "IOException (external) must lower to Type::Any in Function::throws"
+                    target.is_none(),
+                    "nothing was sealed alongside this package, so it is named but unlinked"
                 );
             }
             other => panic!("write kind must be Function, got {other:?}"),
@@ -2562,7 +2841,8 @@ mod tests {
         let mut ctx = LoweringCtx::new(&mut low, &types);
 
         // `@com.example.NonNull String` — declared annotation on a Declared type.
-        // java.lang.String is external (not in known_qualified), so inner = Type::Any.
+        // java.lang.String is external (not in known_qualified), so the inner
+        // type is a cross-package reference that names itself.
         let annotated_string = TypeMirror::Declared {
             name: "java.lang.String".into(),
             args: vec![],
@@ -2578,13 +2858,20 @@ mod tests {
             "annotated type must lower to Type::Annotated with correct token; got {result:?}"
         );
         if let Type::Annotated { inner, .. } = result {
-            assert!(
-                matches!(*inner, Type::Any),
-                "inner of annotated external type must be Type::Any; got {inner:?}"
-            );
+            // The annotation must wrap the *named* type, not an erased hole:
+            // `@NonNull String` and `@NonNull Integer` have to stay
+            // distinguishable, and under `Type::Any` they were not.
+            let Type::Nominal(raw) = inner.as_ref() else {
+                panic!("the annotated inner type must be nominal; got {inner:?}");
+            };
+            let (key, _) = raw
+                .as_foreign()
+                .expect("java.lang.String is outside the extraction");
+            assert_eq!(key.display.as_ref(), "String");
+            assert_eq!(key.path.as_ref(), "java.lang.String");
         }
 
-        // Unannotated type — must lower to plain Type::Any (no Annotated wrapper).
+        // Unannotated external type — the same reference without the wrapper.
         let plain_string = TypeMirror::Declared {
             name: "java.lang.String".into(),
             args: vec![],
@@ -2592,9 +2879,30 @@ mod tests {
             annotations: vec![],
         };
         let plain_result = lower_type(&mut ctx, &plain_string);
-        assert!(
-            matches!(plain_result, Type::Any),
-            "unannotated external type must lower to plain Type::Any; got {plain_result:?}"
+        let Type::Nominal(plain_raw) = &plain_result else {
+            panic!("an unannotated external type must be nominal; got {plain_result:?}");
+        };
+        let (plain_key, _) = plain_raw
+            .as_foreign()
+            .expect("java.lang.String is outside the extraction");
+        assert_eq!(plain_key.path.as_ref(), "java.lang.String");
+
+        // A *different* external type must not collide with it. This is the
+        // property `Type::Any` destroyed: every external type shared one
+        // encoding, so overload skeletons that differed only here were equal.
+        let other = TypeMirror::Declared {
+            name: "java.lang.Integer".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![],
+        };
+        let Type::Nominal(other_raw) = lower_type(&mut ctx, &other) else {
+            panic!("expected a nominal reference for java.lang.Integer");
+        };
+        let (other_key, _) = other_raw.as_foreign().expect("Integer is external too");
+        assert_ne!(
+            plain_key.path, other_key.path,
+            "two distinct external types must carry distinct keys"
         );
     }
 }
