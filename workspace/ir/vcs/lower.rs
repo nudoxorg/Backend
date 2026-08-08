@@ -25,11 +25,14 @@
 use std::num::NonZeroU16;
 use std::path::PathBuf;
 
+use triomphe::Arc;
+
 use ir::{
     apply::PristineIntroTable,
     body::BodyEmbed,
     change::{IntroId, PackageLineageId},
     entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, Node, Symbol},
+    foreign::ForeignKey,
     index::{RawRef, Ref},
     kind::Kind,
     kinds::{
@@ -467,7 +470,29 @@ fn lower_where_pred(wp: &WherePredWire) -> WherePred {
 pub fn lower_type_ref(tr: &TypeRefWire) -> Type {
     match tr {
         TypeRefWire::Same(id) => Type::Nominal(RawRef::Intro(*id)),
-        TypeRefWire::Foreign(sr) => Type::Nominal(RawRef::Foreign(sr.clone())),
+        // `target` is ALWAYS `Some` here, and that is what makes the `display`
+        // value below acceptable.
+        //
+        // A `TypeRefWire::Foreign` carries a `StableRef` — package + `IntroId`
+        // — and nothing else. There is no name anywhere in the wire form to
+        // put in `ForeignKey::display`, whose contract is "what to render when
+        // the reference is *not linked*" (`Clone`, `List`, `Mutex`). We pass
+        // the intro hex because it is the only identifier that exists at this
+        // point, and it is never rendered: this reference arrives already
+        // resolved, so consumers take `target` and never fall back to
+        // `display`.
+        //
+        // If a future change can produce `target: None` on this path, the hex
+        // WILL reach a reader as a symbol name. Fix the wire format to carry a
+        // display name before allowing that — do not leave this as-is.
+        TypeRefWire::Foreign(sr) => Type::Nominal(RawRef::Foreign {
+            key: Arc::new(ForeignKey::in_package(
+                sr.package.clone(),
+                sr.intro.to_hex(),
+                sr.intro.to_hex(),
+            )),
+            target: Some(sr.clone()),
+        }),
     }
 }
 

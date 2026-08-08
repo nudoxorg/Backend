@@ -30,7 +30,7 @@ use ir::codec::{Plane, decode_body, encode_body, ir_path};
 use ir::continuity::Policy as ContinuityPolicy;
 use ir::view::IrView;
 
-use crate::error::VcsError;
+use crate::error::{VcsError, pijul_err};
 use crate::f1::ContinuitySummary;
 use crate::f1::{F1View, serialize_f1};
 use crate::protocol::BodyWire;
@@ -785,7 +785,15 @@ where
             .repo
             .changes_ref()
             .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
-            .map_err(|e| pijul_err(e))?;
+            .map_err(|e| {
+                // anyhow::Error wraps the actual error; try to downcast common types.
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    VcsError::Io(std::io::Error::new(io_err.kind(), e.to_string()))
+                } else {
+                    // Preserve the error chain as a string message in a generic Pijul error.
+                    VcsError::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                }
+            })?;
 
         libpijul::apply::apply_local_change(
             &mut *txn.write(),

@@ -15,10 +15,12 @@ use std::time::Duration;
 use heart::sync::{ApplyHook, ContentIo, SyncError};
 use index::transport::blob::{Fetcher, Provider, TransportHash};
 use index::transport::endpoint::{AddressLookup, EndpointId, SecretKey, bind_endpoint};
-use index::transport::frame::{recv_framed, send_framed};
+use index::transport::frame::{TERMINAL_DRAIN, finish_and_drain, recv_framed, send_framed};
 
 use super::MAX_CHANGE_BYTES;
-use super::types::{ChangeId, ChannelRef, IrohHash, MergeEvent, SyncAck, TipAnnouncement};
+use super::types::{
+    ChangeId, ChannelRef, IrohHash, MergeEvent, SyncAck, SyncResponse, TipAnnouncement,
+};
 
 /// ALPN for the ir-sync announcement/ack control protocol.
 pub const ALPN: &[u8] = b"nudox/ir-sync/1";
@@ -126,11 +128,16 @@ impl<C: ContentIo<Id = ChangeId> + 'static> Syncer<C> {
         send.finish()
             .map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
 
-        let ack: SyncAck = recv_framed(&mut recv, CONTROL_FRAME_CAP).await?;
+        let response: SyncResponse = recv_framed(&mut recv, CONTROL_FRAME_CAP).await?;
 
+        // Closing here is also what releases the receiver from its terminal
+        // drain (`finish_and_drain`), so it must happen on both arms.
         conn.close(0u32.into(), b"done");
 
-        Ok(ack)
+        match response {
+            SyncResponse::Ack(ack) => Ok(ack),
+            SyncResponse::Refused { reason } => Err(SyncError::RemoteRefused(reason)),
+        }
     }
 }
 
@@ -236,15 +243,28 @@ where
 
         let remote_endpoint_id = conn.remote_id();
         if !self.is_enrolled(&remote_endpoint_id) {
-            conn.close(0u32.into(), b"not enrolled");
-            return Err(SyncError::RemoteRefused(format!(
-                "push from non-enrolled endpoint {remote_endpoint_id}"
-            )));
+            let reason = format!("push from non-enrolled endpoint {remote_endpoint_id}");
+            // `accept_one` owns `self`, so returning here drops the whole
+            // `Endpoint` — the peer never even received the CONNECTION_CLOSE and
+            // sat on its read until QUIC's idle timer. Tell it, then leave.
+            return Err(match refuse(&conn, &reason).await {
+                Ok(()) => SyncError::RemoteRefused(reason),
+                Err(undelivered) => SyncError::RemoteRefused(format!(
+                    "{reason}; refusal could not be delivered: {undelivered}"
+                )),
+            });
         }
 
         self.handle_connection(conn).await
     }
 
+    /// Run the exchange and answer with exactly one terminal frame, whatever the
+    /// outcome.
+    ///
+    /// The receiver's local result and the frame the sender sees are derived
+    /// from the same value, so there is no path that fails locally and stays
+    /// silent on the wire — which is what turned every verification failure into
+    /// a 30-second stall on the sender.
     async fn handle_connection(
         &self,
         conn: iroh::endpoint::Connection,
@@ -254,7 +274,39 @@ where
             .await
             .map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
 
-        let announcement: TipAnnouncement = recv_framed(&mut recv, CONTROL_FRAME_CAP).await?;
+        let outcome = self.fetch_verify_apply(&mut recv).await;
+
+        let response = match &outcome {
+            Ok(ack) => SyncResponse::Ack(ack.clone()),
+            Err(error) => SyncResponse::Refused {
+                reason: error.to_string(),
+            },
+        };
+
+        let delivery = async {
+            send_framed(&mut send, &response).await?;
+            finish_and_drain(&mut send, &conn, TERMINAL_DRAIN).await
+        }
+        .await;
+
+        match outcome {
+            Ok(ack) => {
+                delivery?;
+                Ok(ack)
+            }
+            // The local failure is the diagnosis; a failure to deliver the
+            // refusal on top of it must not replace it with a transport error.
+            Err(error) => Err(error),
+        }
+    }
+
+    /// The receiver's real work: pull each announced change, verify it against
+    /// our own content-address id, write it, then apply the ordered set.
+    async fn fetch_verify_apply(
+        &self,
+        recv: &mut iroh::endpoint::RecvStream,
+    ) -> Result<SyncAck, SyncError> {
+        let announcement: TipAnnouncement = recv_framed(recv, CONTROL_FRAME_CAP).await?;
 
         let mut applied: u64 = 0;
         let mut to_apply: Vec<ChangeId> = Vec::new();
@@ -289,16 +341,32 @@ where
 
         let new_tip = self.apply_hook.apply(&announcement.channel, &to_apply)?;
 
-        let ack = SyncAck {
+        Ok(SyncAck {
             tip: new_tip,
             applied,
-        };
-
-        send_framed(&mut send, &ack).await?;
-        send.finish()
-            .map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
-
-        conn.closed().await;
-        Ok(ack)
+        })
     }
+}
+
+/// Answer a connection we are declining before it has said anything.
+///
+/// The peer is already parked waiting for a response frame, so the refusal has
+/// to travel on the bi-stream it opened. Both waits are bounded: a peer that
+/// never opens a stream, and a peer that never closes, are the same denial of
+/// service and neither may park the receiver.
+///
+/// Returns whether the refusal reached the peer, so the caller can say so rather
+/// than silently discard it.
+async fn refuse(conn: &iroh::endpoint::Connection, reason: &str) -> Result<(), SyncError> {
+    let accepted = tokio::time::timeout(TERMINAL_DRAIN, conn.accept_bi())
+        .await
+        .map_err(|_| SyncError::Timeout)?;
+    let (mut send, _recv) =
+        accepted.map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
+
+    let response = SyncResponse::Refused {
+        reason: reason.to_owned(),
+    };
+    send_framed(&mut send, &response).await?;
+    finish_and_drain(&mut send, conn, TERMINAL_DRAIN).await
 }

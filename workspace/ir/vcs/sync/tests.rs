@@ -194,8 +194,31 @@ async fn test_tampered_blob_rejected() {
         new_changes: vec![real_id.clone()],
     };
 
-    let _sender_result =
-        tokio::time::timeout(Duration::from_secs(30), syncer.on_merge(event)).await;
+    // The sender must be TOLD, by the receiver, that its push was rejected.
+    // Discarding this result hid the fact that the receiver simply hung up: the
+    // sender stayed parked on its ack read for QUIC's ~30 s idle timeout and
+    // then surfaced a bare transport error. Assert the typed refusal *and* that
+    // it arrived by being sent rather than by a timer expiring.
+    let started = std::time::Instant::now();
+    let sender_result = tokio::time::timeout(Duration::from_secs(30), syncer.on_merge(event))
+        .await
+        .expect("sender must not have to wait out a timeout to learn it was refused");
+    let elapsed = started.elapsed();
+
+    match sender_result {
+        Err(SyncError::RemoteRefused(reason)) => {
+            assert!(
+                reason.contains("hash mismatch") || reason.contains("verif"),
+                "the refusal must name the verification failure, got {reason:?}"
+            );
+        }
+        other => panic!("expected the sender to be refused, got: {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the refusal must be delivered, not discovered via QUIC's ~30s idle \
+         timeout; on_merge took {elapsed:?}"
+    );
 
     let recv_result = tokio::time::timeout(Duration::from_secs(30), accept_task)
         .await

@@ -27,7 +27,7 @@ use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::kind::KindDiscriminant;
 
 use crate::checkout::MaterializedIndex;
-use crate::error::VcsError;
+use crate::error::{VcsError, pijul_err};
 use crate::serialize::{LinkWire, intro_hex_of, is_symbol_path, symbol_path};
 
 /// Derive the type-skeleton fingerprint for a type-alias payload. F1 no longer
@@ -260,7 +260,7 @@ impl IrRepository<FsChanges> {
             // later ones) and all files are already in the store.
             libpijul::apply::apply_change_arc(&self.changes, &txn, &channel, &hash).map_err(
                 |e| {
-                    VcsError::Pijul(Box::new(std::io::Error::other(format_args!(
+                    VcsError::Pijul(Box::new(std::io::Error::other(format!(
                         "apply_change_arc {}: {e}",
                         hex.0
                     ))))
@@ -602,7 +602,15 @@ where
         let hash = self
             .changes
             .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
-            .map_err(|e| pijul_err(e))?;
+            .map_err(|e| {
+                // anyhow::Error wraps the actual error; try to downcast common types.
+                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                    VcsError::Io(std::io::Error::new(io_err.kind(), e.to_string()))
+                } else {
+                    // Preserve the error chain as a string message in a generic Pijul error.
+                    VcsError::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                }
+            })?;
 
         // 8. Apply local change.
         libpijul::apply::apply_local_change(

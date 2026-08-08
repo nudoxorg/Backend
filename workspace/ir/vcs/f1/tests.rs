@@ -1,3 +1,4 @@
+use super::*;
 use crate::wire::{
     AutoFact, AutoState, AutoTrait, EntryPayloadFlags, FnSigFlags, GenericParamWire, ImplFlags,
     ImplWire, ModuleWire, OwnedEntryPayload, ReexportWire, SelfKind, StaticWire, SymbolWire,

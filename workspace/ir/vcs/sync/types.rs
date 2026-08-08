@@ -143,6 +143,36 @@ pub struct SyncAck {
     pub applied: u64,
 }
 
+/// The receiver's terminal answer to a [`TipAnnouncement`] — the *only* thing
+/// the sender waits on.
+///
+/// [`SyncAck`] alone could express success and nothing else, so a receiver that
+/// refused a non-enrolled peer, failed a content-address `verify`, or errored in
+/// its apply hook had no way to say so: it could only hang up. Dropping a QUIC
+/// connection does not deliver a reason, and (worse) it does not reliably
+/// deliver anything at all, so the sender stayed parked on its read until QUIC's
+/// ~30 s idle timer fired and then reported a bare transport timeout.
+/// [`SyncError::RemoteRefused`] existed in the error vocabulary the whole time
+/// and was unreachable over the wire. Every receiver-side outcome is now
+/// expressible, so every exit path can be a *sent frame* rather than a hang-up.
+///
+/// Exhaustive on purpose (doctrine §3): this is an internal protocol between two
+/// halves of one workspace, never a semver-stable surface, and a new variant
+/// should break both halves at compile time and force each to decide what it
+/// means — not fall into a `_` arm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SyncResponse {
+    /// Every announced change was fetched, verified, written and applied.
+    Ack(SyncAck),
+    /// The push was declined or failed on the receiver. Carries the receiver's
+    /// stated reason as domain data (the sender cannot act on the receiver's
+    /// error *type*, only report it).
+    Refused {
+        /// Why the receiver declined (enrollment, verification, apply failure).
+        reason: String,
+    },
+}
+
 /// The event that triggers a push: a commit was merged onto a durable channel.
 #[derive(Clone, Debug)]
 pub struct MergeEvent {

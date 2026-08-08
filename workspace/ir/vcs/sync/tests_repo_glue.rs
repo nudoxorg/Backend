@@ -307,8 +307,27 @@ async fn full_iroh_sync_loop() {
     lookup2.add_endpoint_info(syncer2.endpoint().addr());
 
     let accept2 = tokio::spawn(async move { service2.accept_one().await });
-    let _send2 =
-        tokio::time::timeout(Duration::from_secs(30), syncer2.on_merge(tampered_event)).await;
+
+    // Same invariant as `sync::tests::test_tampered_blob_rejected`, over a real
+    // pijul repository: the receiver's rejection has to travel back as a frame.
+    // Dropping this result concealed that it did not — the sender waited out
+    // QUIC's ~30 s idle timer, which is the whole reason this test read as a
+    // hang under a 30 s gate.
+    let started2 = std::time::Instant::now();
+    let send2 = tokio::time::timeout(Duration::from_secs(30), syncer2.on_merge(tampered_event))
+        .await
+        .expect("sender must not have to wait out a timeout to learn it was refused");
+    let elapsed2 = started2.elapsed();
+
+    assert!(
+        matches!(send2, Err(SyncError::RemoteRefused(_))),
+        "sender must be told the tampered push was refused, got {send2:?}"
+    );
+    assert!(
+        elapsed2 < Duration::from_secs(10),
+        "the refusal must be delivered, not discovered via QUIC's ~30s idle \
+         timeout; on_merge took {elapsed2:?}"
+    );
 
     let recv2 = tokio::time::timeout(Duration::from_secs(30), accept2)
         .await
@@ -316,8 +335,8 @@ async fn full_iroh_sync_loop() {
         .expect("join ok");
 
     assert!(
-        recv2.is_err(),
-        "tampered change must cause an error on the receiver"
+        matches!(recv2, Err(SyncError::VerificationFailed(_))),
+        "tampered change must fail verification on the receiver, got {recv2:?}"
     );
     let repo_b2_verify = IrRepository::open(&dir_b2_path, pkg(), "main").unwrap();
     let mat_b2 = repo_b2_verify.materialize_index().unwrap();
