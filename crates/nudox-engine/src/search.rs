@@ -59,7 +59,7 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use nudox_ir::{entry::Visibility, kind::KindDiscriminant};
+use nudox_ir::{change::PackageLineageId, entry::Visibility, kind::KindDiscriminant};
 use nudox_store::corpus::Corpus;
 
 use crate::{
@@ -96,6 +96,22 @@ pub struct SearchQuery {
     pub text: String,
     /// If non-empty, restrict results to these kind discriminants.
     pub kinds: Vec<KindDiscriminant>,
+    /// If non-empty, restrict results to these package lineages.
+    ///
+    /// # Why this has to live here and not at the MCP call site
+    ///
+    /// `collect_name_hits` and `collect_type_hits` each `candidates.truncate(limit)`
+    /// *before* returning, because the whole point of `limit` is to bound how much
+    /// work later stages (scoring, disambiguation, the channel send) do. A caller
+    /// that filters by package *after* that truncation is filtering a set that has
+    /// already had the very rows it wanted thrown away — ties break on package
+    /// lineage (see `compare_candidates`), so a package whose name sorts late is
+    /// starved by every tie against a package that sorts earlier, and the caller
+    /// can see zero results for a package that genuinely has matches. Filtering
+    /// here, before either function's `truncate`, is the only place that produces
+    /// the honest answer: a package is excluded from consideration entirely rather
+    /// than included and then discarded.
+    pub packages: Vec<PackageLineageId>,
     /// Maximum number of hits per section (0 = unlimited, default: 50).
     pub limit: usize,
 }
@@ -105,6 +121,7 @@ impl Default for SearchQuery {
         Self {
             text: String::new(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 50,
         }
     }
@@ -119,6 +136,16 @@ impl SearchQuery {
     /// `true` when `kind` passes the optional kind filter.
     fn kind_matches(&self, kind: KindDiscriminant) -> bool {
         self.any_kind() || self.kinds.contains(&kind)
+    }
+
+    /// `true` when no package filter is applied (all loaded packages searched).
+    fn any_package(&self) -> bool {
+        self.packages.is_empty()
+    }
+
+    /// `true` when `lineage` passes the optional package filter.
+    fn package_matches(&self, lineage: &PackageLineageId) -> bool {
+        self.any_package() || self.packages.contains(lineage)
     }
 }
 
@@ -479,6 +506,9 @@ fn collect_name_hits(
     let mut candidates: Vec<Candidate> = Vec::new();
 
     for pkg in packages {
+        if !query.package_matches(pkg.lineage()) {
+            continue;
+        }
         let indexes = pkg.indexes();
         let provenance: Provenance = pkg.provenance().into();
         let pkg_name = pkg.lineage().name.as_str();
@@ -572,6 +602,9 @@ fn collect_type_hits(
     for pkg in packages {
         if candidates.len() >= limit {
             break;
+        }
+        if !query.package_matches(pkg.lineage()) {
+            continue;
         }
         let indexes = pkg.indexes();
         let provenance: Provenance = pkg.provenance().into();
@@ -692,6 +725,7 @@ mod tests {
         let query = SearchQuery {
             text: "Point".to_owned(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 50,
         };
         let (_handle, rx) = engine.search(query, Gen(1));
@@ -1135,6 +1169,7 @@ mod tests {
         let query = SearchQuery {
             text: "foo".to_owned(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 50,
         };
         let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
@@ -1168,6 +1203,7 @@ mod tests {
         let query = SearchQuery {
             text: "zzunique".to_owned(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 50,
         };
         let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
@@ -1233,6 +1269,7 @@ mod tests {
         let query = SearchQuery {
             text: "memchr".to_owned(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 0, // unlimited — we need the full collision set to exist
         };
         let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);

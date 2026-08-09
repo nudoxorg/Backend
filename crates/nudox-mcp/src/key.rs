@@ -1,5 +1,6 @@
-//! `SymbolKeyDto` — the codec between agent-supplied string keys and wire
-//! `SymbolKey` values (LR-1).
+//! `SymbolKeyDto` and `PackageLineageDto` — the codecs between agent-supplied
+//! string keys and the wire `SymbolKey` / `PackageLineageId` values they
+//! decode to (LR-1).
 //!
 //! # Why this module exists
 //!
@@ -102,6 +103,55 @@ impl SymbolKeyDto {
 }
 
 // ---------------------------------------------------------------------------
+// PackageLineageDto
+// ---------------------------------------------------------------------------
+
+/// The wire spelling of a [`PackageLineageId`], as `"ecosystem:name"`.
+///
+/// This is the prefix half of [`SymbolKeyDto`] — the part before the `#` — and
+/// exists as its own type for tools that name a *package* rather than a
+/// symbol: `search_symbols`'s `packages` filter, `list_versions`, and
+/// `select_version`. Same codec shape as `SymbolKeyDto` (LR-1: one id, one
+/// spelling), one field shorter because a lineage has no `IntroId` half.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct PackageLineageDto(pub String);
+
+impl PackageLineageDto {
+    /// Render a wire lineage into its canonical string form.
+    pub fn from_wire(id: &PackageLineageId) -> Self {
+        Self(format!("{}:{}", id.ecosystem.as_str(), id.name.as_str()))
+    }
+
+    /// Parse the string form back into a wire lineage.
+    ///
+    /// Every failure is an [`McpError::MalformedPackage`] carrying the input,
+    /// so an agent that mangled a lineage sees what it actually sent.
+    pub fn to_wire(&self) -> Result<PackageLineageId, McpError> {
+        let malformed = |reason: &'static str| McpError::MalformedPackage {
+            package: self.0.clone(),
+            reason,
+        };
+
+        let (ecosystem, name) = self
+            .0
+            .split_once(':')
+            .ok_or_else(|| malformed("expected 'ecosystem:name' — no ':' found"))?;
+        if ecosystem.is_empty() {
+            return Err(malformed("ecosystem segment is empty"));
+        }
+        if name.is_empty() {
+            return Err(malformed("package name segment is empty"));
+        }
+
+        Ok(PackageLineageId::new(
+            EcosystemId::new(ecosystem),
+            PackageName::new(name),
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Hex parsing helpers
 // ---------------------------------------------------------------------------
 
@@ -181,5 +231,33 @@ mod tests {
     fn lineage_is_the_prefix_before_the_hash() {
         let dto = SymbolKeyDto(sample_key());
         assert_eq!(dto.lineage(), Some("cargo:serde"));
+    }
+
+    // -----------------------------------------------------------------------
+    // PackageLineageDto
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn package_lineage_round_trips_through_the_wire_type() {
+        let dto = PackageLineageDto("cargo:serde".to_owned());
+        let wire = dto.to_wire().expect("sample lineage parses");
+        let back = PackageLineageDto::from_wire(&wire);
+        assert_eq!(dto, back, "wire -> string -> wire must be lossless");
+    }
+
+    #[test]
+    fn package_lineage_rejects_every_malformed_shape() {
+        let cases = [
+            ("", "empty"),
+            ("cargo", "no ':'"),
+            (":serde", "empty ecosystem"),
+            ("cargo:", "empty name"),
+        ];
+        for (input, why) in cases {
+            assert!(
+                PackageLineageDto(input.to_owned()).to_wire().is_err(),
+                "should have rejected {input:?} ({why})"
+            );
+        }
     }
 }

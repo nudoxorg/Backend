@@ -284,7 +284,26 @@ impl ProducerRegistry {
 
     /// Run the producer for `language` over `src`, or return an error if
     /// no producer is registered.
-    fn run(
+    ///
+    /// # Why this is `pub` when `load` is the production entry point
+    ///
+    /// Because [`Produced::report`] dies here otherwise. `load` wraps the table
+    /// in an [`IrView`] and drops the [`SealReport`] on the floor, so nothing
+    /// above this line can ask what sealing observed — `crates/nudox-graph/
+    /// schema.graphql` says exactly that about itself ("`SealReport` is
+    /// discarded at the `nudox-store` boundary and never reaches a
+    /// `PackageView` — so no query can ask, and this schema cannot answer").
+    /// A test that wants to hold the whole corpus to "every declaration got a
+    /// distinct, content-derived identity" needs the report, and the only
+    /// alternatives were to re-implement the ecosystem → producer routing in
+    /// the test (a second copy of the pairing that
+    /// `PackageDescriptor`'s named constructors exist to make unmistakable) or
+    /// to assert nothing. This is the same registry, the same
+    /// `Unlinked` resolver, and the same `produce` call the product runs.
+    ///
+    /// [`Produced::report`]: nudox_producer::Produced::report
+    /// [`SealReport`]: nudox_ir::package::SealReport
+    pub fn run(
         &self,
         language: Language,
         src: &PackageSource,
@@ -302,18 +321,18 @@ impl ProducerRegistry {
             ProducerError::OracleSpawn { .. } | ProducerError::OracleExit { .. } => {
                 SourceError::OracleFailed {
                     package: lineage.clone(),
-                    detail: err.to_string(),
+                    detail: chain(&err),
                 }
             }
             ProducerError::Decode { .. } | ProducerError::LoweringFailed { .. } => {
                 SourceError::LoweringFailed {
                     package: lineage.clone(),
-                    detail: err.to_string(),
+                    detail: chain(&err),
                 }
             }
             ProducerError::UnsupportedConstruct { .. } => SourceError::OracleFailed {
                 package: lineage.clone(),
-                detail: err.to_string(),
+                detail: chain(&err),
             },
             // The environment could not hand the producer a complete dependency
             // graph, so any table it produced would be silently partial. That is
@@ -372,6 +391,24 @@ impl ProducerRegistry {
                 package: lineage.clone(),
                 detail: chain(&err),
             },
+            // Sealing dropped a declaration, or kept one only by its position
+            // in the producer's output. `LoweringFailed`, whose contract in
+            // this crate is "the IR side is at fault", and never `OracleFailed`:
+            // the oracle told us the truth: two declarations that a lowering
+            // then flattened onto one identity. Sending the reader to look at
+            // the toolchain would send them away from the only file that can
+            // fix it.
+            //
+            // `err.to_string()` rather than `chain(&err)` — unlike its
+            // neighbours this variant has no `#[source]`, because the cause is
+            // not a nested error but a *list* of dropped declarations, and its
+            // own `Display` already names each one with both colliding source
+            // locations. Walking the chain would print the same line twice and
+            // then stop.
+            ProducerError::IdentityNotInjective { .. } => SourceError::LoweringFailed {
+                package: lineage.clone(),
+                detail: err.to_string(),
+            },
         })?;
 
         // A producer that declared `YieldContract::RootOnly` and contributed
@@ -401,21 +438,76 @@ impl ProducerRegistry {
 
 /// Render a `ProducerError` and every link of its `#[source]` chain.
 ///
-/// Three `ProducerError` variants — `DependenciesUnresolved`,
-/// `NoDeclarationsContributed`, `YieldContractOutgrown` — carry the thing a
-/// reader actually needs (which dependency failed; which blocker was declared)
-/// in a `#[source]` slot rather than in their own `Display`. `SourceError`'s
-/// `detail` is a `String` and is the last point at which that chain still
-/// exists, so it is flattened here rather than lost here. AGENTS-DOCTRINE.md §8:
-/// "Print the whole `#[source]` chain when a producer fails … Reading only it is
-/// how a five-second diagnosis becomes an hour."
+/// Several `ProducerError` variants carry the thing a reader actually needs
+/// (which dependency failed; which blocker was declared; which declaration was
+/// duplicated) in a `#[source]` slot rather than in their own `Display`.
+/// `SourceError`'s `detail` is a `String` and is the last point at which that
+/// chain still exists, so it is flattened here rather than lost here.
+/// AGENTS-DOCTRINE.md §8: "Print the whole `#[source]` chain when a producer
+/// fails … Reading only it is how a five-second diagnosis becomes an hour."
+///
+/// # Every variant goes through here, and that took a second attempt
+///
+/// This was originally applied to only three variants —
+/// `DependenciesUnresolved`, `NoDeclarationsContributed`,
+/// `YieldContractOutgrown` — while `OracleSpawn`/`OracleExit`, `Decode`,
+/// `LoweringFailed` and `UnsupportedConstruct` still used a bare
+/// `err.to_string()`.
+///
+/// `LoweringFailed` was the worst possible omission: its whole `Display` is the
+/// literal string `"lowering failed"`, and the concrete `LoweringError<P::Id>`
+/// naming the actual defect lives only in its source chain. On 2026-08-08 the
+/// first real nuget baseline measurement wrote six rows reading
+/// `producer_error = "lowering failed for nuget:Polly: lowering failed"` into
+/// `corpus/entry-baseline.toml` — a file whose own header calls itself the one
+/// authoritative record of how each package lowers. Those rows named the
+/// package twice and the defect zero times, and a baseline row is the *only*
+/// durable record of why a package does not lower.
+///
+/// The lesson is not "add a helper". The helper already existed, its doc
+/// comment already quoted §8, and the variants that bypassed it were the ones
+/// whose `Display` carried the least information. Route every variant through
+/// it, so a new variant cannot opt out by default.
+/// Upper bound on a flattened chain, in bytes.
+///
+/// Unbounded was tried first and was wrong. `LoweringError::Duplicate` lists
+/// every colliding declaration id, and `Microsoft.Bcl.AsyncInterfaces` produced
+/// a **283,070-character** single line — which went straight into
+/// `corpus/entry-baseline.toml`, taking that file from 33 KB to 519 KB. A
+/// diagnosis nobody can read in a diff is not better than no diagnosis; it is
+/// the same failure (an unusable record) with a larger footprint.
+///
+/// 2 KB holds the error category, the package, and the first several colliding
+/// ids — enough to name the defect and start work — while staying a line a
+/// human can scan and a reviewer can diff.
+const MAX_DETAIL_BYTES: usize = 2048;
+
 fn chain(err: &ProducerError) -> String {
-    std::iter::successors(Some(err as &dyn std::error::Error), |e| {
+    let full = std::iter::successors(Some(err as &dyn std::error::Error), |e| {
         std::error::Error::source(*e)
     })
     .map(|e| e.to_string())
     .collect::<Vec<_>>()
-    .join(": ")
+    .join(": ");
+
+    if full.len() <= MAX_DETAIL_BYTES {
+        return full;
+    }
+
+    // Truncate on a char boundary, and say what was dropped rather than
+    // trailing off — a reader must be able to tell "this is the whole error"
+    // from "this is the start of one", and how to obtain the rest.
+    let mut cut = MAX_DETAIL_BYTES;
+    while cut > 0 && !full.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!(
+        "{}… [truncated: {} of {} bytes shown; re-run the producer directly for the \
+         full chain]",
+        &full[..cut],
+        cut,
+        full.len(),
+    )
 }
 
 impl Default for ProducerRegistry {
@@ -661,17 +753,41 @@ impl IrSource for ProducerSource {
                         // for a local-first load of a single package they are
                         // the normal case, and a line per unloaded dependency
                         // would bury the ones that matter.
+                        //
+                        // `collisions` is deliberately NOT reported here any
+                        // more, and its absence is the point:
+                        // `nudox_producer::enforce_identity_contract` now fails
+                        // the run before this line is reached, so a non-zero
+                        // count is unreachable and printing `collisions = 0`
+                        // forever would be a claim that rots into "we check for
+                        // this" long after the check moved. What is left is the
+                        // residue the gate deliberately does not fail on:
+                        // `forced` (identities that needed an escalated
+                        // disambiguator but stayed distinct) and
+                        // `unmapped_local` (a `Lowering`/`seal` bug that costs
+                        // a reference, not a declaration).
                         if !produced.report.is_clean() {
                             tracing::warn!(
                                 package = %lineage,
                                 forced = produced.report.forced.len(),
                                 unmapped_local = produced.report.unmapped_local.len(),
-                                collisions = produced.report.collisions.len(),
                                 "seal observed identity defects while lowering"
                             );
                         }
                         let view = IrView::with_package(lineage.clone(), produced.table);
-                        let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
+                        // `build_sealed`, not `build`: this is the one place
+                        // in the system that holds both the table and the
+                        // `SealReport` that describes how its keys were
+                        // minted. `build` would silently produce a view whose
+                        // `key_tier` is `None` for every symbol, which is what
+                        // shipped for as long as the report died here — and
+                        // what made a churned key indistinguishable from a
+                        // deleted one at every layer above.
+                        let pkg = Arc::new(PackageView::build_sealed(
+                            view,
+                            Provenance::TrustedLocal,
+                            &produced.report,
+                        ));
                         Ok(LoadEvent::Ready { package: pkg })
                     }
                     Err(err) => Ok(LoadEvent::Failed {

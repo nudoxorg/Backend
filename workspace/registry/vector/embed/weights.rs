@@ -1,10 +1,17 @@
 //! Pinned weights artifact policy (09c I11/I16, 09-vector §13.5).
 //!
-//! The canonical durable artifact is the sha-pinned int8 ONNX file
-//! (`model_quantized.onnx`, ~162 MB) placed on disk by the artifact fetcher —
+//! The canonical durable artifact is the sha-pinned fp32 ONNX file
+//! (`model.onnx`, 641,517,466 bytes) placed on disk by the artifact fetcher —
 //! this module never touches the network. Callers that hit
 //! [`WeightsError::MissingWeights`] must disable semantic search gracefully
 //! (offline fail-soft), not block corpus readiness on a download.
+//!
+//! It was the int8 file (`model_quantized.onnx`, 161,895,621 bytes) until
+//! 2026-08-08. That artifact is *dynamically* quantized, so its vectors depend
+//! on batch composition and could never have been durable-canonical — see
+//! [`crate::vector::core::model::CANONICAL_WEIGHTS_FILE`] for the measurements.
+//! Verifying a hash proves you loaded the file you meant to; it says nothing
+//! about whether that file can support the claims made about its output.
 
 use std::fs::File;
 use std::io::Read;
@@ -27,7 +34,7 @@ pub struct WeightsSpec {
     pub dir: PathBuf,
 
     /// The ONNX file name inside `dir`. Canonical: the brand's weights hint
-    /// (`model_quantized.onnx` for JinaCodeV2).
+    /// (`model.onnx` for JinaCodeV2).
     pub onnx_file: String,
 
     /// Pinned sha256 of the ONNX file, if the config pins one.
@@ -36,14 +43,18 @@ pub struct WeightsSpec {
 
 impl WeightsSpec {
     /// A spec for the canonical JinaCodeV2 artifact under `dir`.
+    ///
+    /// Carries the brand's pinned sha256 through, rather than defaulting to
+    /// `None`. I16 ("an unpinned default in shipping config is a bug") was
+    /// stated here but not enforced anywhere: the brand held a pin and this
+    /// constructor discarded it, so every caller silently got "trust the file".
     pub fn jina_code_v2(dir: impl Into<PathBuf>) -> Self {
+        let hint = crate::vector::core::JinaCodeV2::weights_hint()
+            .expect("JinaCodeV2 is self-hostable with a pinned ONNX artifact");
         Self {
             dir: dir.into(),
-            onnx_file: crate::vector::core::JinaCodeV2::weights_hint()
-                .expect("JinaCodeV2 is self-hostable with a pinned ONNX artifact")
-                .file
-                .to_owned(),
-            expected_sha256: None,
+            onnx_file: hint.file.to_owned(),
+            expected_sha256: hint.sha256,
         }
     }
 

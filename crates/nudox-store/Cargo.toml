@@ -53,5 +53,21 @@ nudox-test-support = { path = "../nudox-test-support" }
 serde = { workspace = true }
 toml = { workspace = true }
 
+# `corpus_contract` imports `nudox_store::source::fixtures`, which exists only
+# under `cfg(any(test, feature = "fixtures"))`. Without this declaration the
+# target was autodiscovered with no requirement and a plain
+# `cargo check -p nudox-store --tests` failed outright with three E0432/E0433s —
+# a hard break sitting in the default build path, undeclared.
+#
+# This is the same defect class as `registry`'s `vector_onnx_live` (fixed the
+# same day), with the opposite symptom and the same cause: a test target whose
+# feature requirement lives in the source but not in the manifest. There, the
+# inner `#![cfg]` emptied the crate and it reported `0 tests; 0 passed` forever;
+# here there is no inner cfg, so it fails loudly instead. Silent-green is the
+# more dangerous of the two, but both come from cargo not being told.
+[[test]]
+name = "corpus_contract"
+required-features = ["fixtures"]
+
 [lints]
 workspace = true

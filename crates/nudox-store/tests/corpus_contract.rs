@@ -451,6 +451,33 @@ mod baseline {
         repo_root().join(".real-crates")
     }
 
+    /// Where a given ecosystem's fixtures actually live.
+    ///
+    /// Six ecosystems land in `.real-crates`; **nuget lands in `.real-csharp`**.
+    /// That split is not cosmetic — it is why every nuget row in
+    /// `corpus/entry-baseline.toml` reads "not yet measured". The measurement
+    /// harness resolved `.real-crates/AutoMapper-13.0.1`, found nothing, and the
+    /// producer reported `no .cs files found under .real-crates/…`, which reads
+    /// like a producer or provisioning failure rather than what it was: the
+    /// harness looking in the wrong directory. All 24 nuget checkouts were
+    /// present and lowering the whole time — a separate sweep verified 22/22
+    /// against `.real-csharp` on the same day this was found (2026-08-08).
+    ///
+    /// The general lesson is the one this file already encodes elsewhere: a
+    /// diagnostic that names the wrong subject is worse than no diagnostic,
+    /// because it sends the reader to the wrong place with confidence.
+    pub fn fixtures_root(ecosystem: Ecosystem) -> PathBuf {
+        match ecosystem {
+            Ecosystem::Nuget => repo_root().join(".real-csharp"),
+            _ => real_crates_root(),
+        }
+    }
+
+    /// The absolute fixture directory for one corpus key.
+    pub fn fixture_dir(key: &CorpusKey) -> PathBuf {
+        fixtures_root(key.ecosystem).join(safe_dir_name(&key.name, &key.version))
+    }
+
     /// Filesystem-safe fixture directory name, mirroring `corpus/fetch.nu`'s
     /// `safe-dir-name` byte for byte (`/` and `:` both become `__`), so this
     /// resolves exactly the directories the fetch step wrote.
@@ -471,11 +498,46 @@ mod baseline {
         packages: Vec<ManifestPackage>,
     }
 
+    /// Why a package is in the corpus at all.
+    ///
+    /// Until 2026-08-08 this distinction existed only in prose: `corpus/manifest.toml`
+    /// explained in a comment that `org.reactivestreams:reactive-streams` was "not a
+    /// 21st representative library, but rxjava's one and only external compile-time
+    /// dependency", and every count in CORPUS-SWEEP.md quietly excluded it. Nothing
+    /// enforced that, so the exclusion had to be re-derived by every reader, and
+    /// `154` vs the manifest's actual entry count looked like broken arithmetic.
+    ///
+    /// It stopped being cosmetic when 21 more dependency artifacts were provisioned
+    /// for the Java corpus in one afternoon: `every_corpus_package_has_a_recorded_entry_baseline`
+    /// immediately demanded a measured entry count for each of them, which is a
+    /// number nobody wants — `jsr305`'s own entry count says nothing about whether
+    /// guava lowers. Making the role explicit is what lets the coverage check keep
+    /// its teeth for representative packages while not inventing obligations for
+    /// provisioning artifacts.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+    #[serde(rename_all = "kebab-case")]
+    pub enum CorpusRole {
+        /// A representative library, under test. Its lowering is measured and its
+        /// entry count is part of the baseline. This is the default: a package with
+        /// no declared role is one we are making claims about.
+        #[default]
+        Representative,
+
+        /// Fetched solely so some representative package's compile closure
+        /// resolves. Never lowered on its own, never measured, never counted in a
+        /// per-ecosystem total.
+        Dependency,
+    }
+
     #[derive(Debug, serde::Deserialize)]
     struct ManifestPackage {
         ecosystem: Ecosystem,
         name: String,
         versions: Vec<ManifestVersion>,
+        /// Absent means [`CorpusRole::Representative`] — so forgetting the field
+        /// makes a package *more* scrutinised, not less.
+        #[serde(default)]
+        role: CorpusRole,
     }
 
     #[derive(Debug, serde::Deserialize)]
@@ -494,7 +556,22 @@ mod baseline {
     /// not a soft-skippable test outcome. A test that shrugs at an unreadable
     /// manifest and passes is the exact failure this whole section exists to
     /// remove.
+    /// Every package version the corpus is making a claim about — representatives
+    /// only. This is what the baseline must cover.
     pub fn manifest_keys() -> Vec<CorpusKey> {
+        manifest_keys_with_role(Some(CorpusRole::Representative))
+    }
+
+    /// Every package version the fetcher must place on disk, whatever its role.
+    ///
+    /// Provisioning artifacts still have to *be there* — a missing `jsr305` breaks
+    /// guava exactly as surely as a missing guava would — so presence is checked
+    /// over the full set even though measurement is not.
+    pub fn manifest_keys_all() -> Vec<CorpusKey> {
+        manifest_keys_with_role(None)
+    }
+
+    fn manifest_keys_with_role(only: Option<CorpusRole>) -> Vec<CorpusKey> {
         let path = manifest_path();
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
@@ -504,6 +581,7 @@ mod baseline {
         let mut keys: Vec<CorpusKey> = parsed
             .packages
             .into_iter()
+            .filter(|package| only.is_none_or(|role| package.role == role))
             .flat_map(|package| {
                 let ecosystem = package.ecosystem;
                 let name = package.name;
@@ -743,7 +821,19 @@ mod baseline {
 /// (`workspace/compiler/languages/*/tests/corpus_sweep.rs`) each hardcode their
 /// own copy of the package list, which is the duplication this file is meant to
 /// end — folding them in is what should drive this number down.
-const UNMEASURED_CORPUS_VERSIONS: usize = 131;
+/// Lowered 131 → 109 on 2026-08-08, when nuget was measured for the first time.
+///
+/// All 22 nuget rows had read "not yet measured" since this mechanism was built,
+/// for a reason that was not measurement debt at all: the harness resolved
+/// fixtures under `.real-crates/` while every nuget checkout lives in
+/// `.real-csharp/`, so it found nothing and the producer reported
+/// `no .cs files found under .real-crates/…` — a diagnostic naming the wrong
+/// subject. Sixteen of the 22 now carry real counts (StackExchange.Redis 22,664;
+/// AutoMapper 22,384; Newtonsoft.Json 18,886); the other six carry a recorded
+/// producer failure, which is an outcome and so also retires the debt.
+///
+/// go and cpp remain unmeasured — genuine debt, not a path bug.
+const UNMEASURED_CORPUS_VERSIONS: usize = 109;
 
 /// Every package version in `corpus/manifest.toml` must have a row in
 /// `corpus/entry-baseline.toml`, and vice versa.
@@ -903,12 +993,31 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         fixtures.display(),
     );
 
+    // Presence is checked over EVERY manifest entry, including provisioning
+    // dependencies: a missing `jsr305` breaks guava exactly as surely as a missing
+    // guava would, and it fails with a diagnostic that names neither. Measurement
+    // below still runs only over `manifest` (representatives).
+    let on_disk = baseline::manifest_keys_all();
+    let absent_any: Vec<String> = on_disk
+        .iter()
+        .filter(|key| {
+            !baseline::fixture_dir(key).is_dir()
+        })
+        .map(ToString::to_string)
+        .collect();
+    assert!(
+        absent_any.is_empty(),
+        "{} manifest entr(ies) are not on disk:\n{}\n\nFetch with `nu corpus/fetch.nu`.",
+        absent_any.len(),
+        absent_any.join("\n"),
+    );
+
     let present: Vec<(baseline::CorpusKey, std::path::PathBuf)> = manifest
         .iter()
         .map(|key| {
             (
                 key.clone(),
-                fixtures.join(baseline::safe_dir_name(&key.name, &key.version)),
+                baseline::fixture_dir(key),
             )
         })
         .collect();
@@ -1154,4 +1263,692 @@ fn measure_one(
             producer_error: "producer stream ended with neither Ready nor Failed".to_owned(),
         }))
     })
+}
+
+// ── Identity injectivity, over the whole corpus ──────────────────────────────
+//
+// `IntroId` is the key the graph, the MCP tools, the GUI's hyperlinks and
+// cross-version lineage are all built on. Two declarations minting one of them
+// is not a degraded table, it is a wrong one: `PristineIntroTable` keeps the
+// incumbent, the second declaration is dropped, and nothing downstream can tell
+// the resulting package from one whose public API really is that size.
+//
+// Until `nudox_producer::enforce_identity_contract` landed, `produce` returned
+// `Ok` no matter how many declarations `seal` had just dropped, and the only
+// production reader of `SealReport` was a `tracing::warn!` with no subscriber
+// installed. These two tests are the corpus-wide statements of the property
+// that gate enforces, plus the one it deliberately does not enforce yet.
+
+/// Independent decoder for the key format `nudox-graph`'s schema publishes,
+/// `ecosystem:name#introhex`.
+///
+/// Deliberately *not* shared with `nudox_graph::plan::parse_stable_ref`: this
+/// whole file exists to re-derive expected answers rather than to call the code
+/// under test twice (see the module doc), and a round trip through one
+/// implementation's own inverse proves only that it is self-consistent. It is
+/// also the only option available — `nudox-graph` sits beside `nudox-store`,
+/// not beneath it, so this crate could not call it even if that were wanted.
+fn decode_published_key(text: &str) -> Option<StableRef> {
+    let (lineage_text, intro_hex) = text.split_once('#')?;
+    let (ecosystem, name) = lineage_text.split_once(':')?;
+    if intro_hex.len() != 64 {
+        return None;
+    }
+    let mut raw = [0u8; 32];
+    for (byte, pair) in raw.iter_mut().zip(intro_hex.as_bytes().chunks(2)) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        *byte = ((hi << 4) | lo) as u8;
+    }
+    Some(StableRef::new(
+        PackageLineageId::new(
+            nudox_ir::change::EcosystemId::new(ecosystem),
+            nudox_ir::change::PackageName::new(name),
+        ),
+        IntroId::from_raw(raw),
+    ))
+}
+
+/// Every declaration in every provisioned corpus package must come out of
+/// `seal` with an identity that is distinct, content-derived, and expressible
+/// as the key the graph publishes.
+///
+/// Four properties, all read off the *same* `SealReport` the product gets, via
+/// the *same* `ProducerRegistry::with_all_available` it loads through:
+///
+///   1. **Nothing was dropped.** `report.collisions` empty. `produce` now
+///      refuses to return a table that lost a declaration, so this shows up as
+///      the package failing to lower at all — which is why the pass/fail
+///      expectation is taken from `corpus/entry-baseline.toml` rather than from
+///      "did it error": a package the baseline records as *lowering* that now
+///      errors is a hard failure here, and one the baseline records as already
+///      failing cannot mask an identity defect behind a toolchain gap.
+///   2. **No identity rests on emission order.** No `Escalation::Ordinal` in
+///      `report.forced`. This is the half `OrdinalPolicy::CURRENT` does not
+///      fail the pipeline on yet, which is exactly why it needs a test: a
+///      tolerated defect with nothing counting it is an untracked one.
+///   3. **No reference was left dangling.** `report.unmapped_local` empty.
+///      `SealReport` calls this "provably a bug in `Lowering`/`seal`" and "the
+///      case three separate downstream files each documented as impossible
+///      while it shipped on every real package".
+///   4. **Every key round-trips.** Rendering an entry's `StableRef` and parsing
+///      it back with an independent decoder must land on the same entry, and
+///      the rendered keys must be as numerous as the entries — a table with
+///      1,000 entries and 999 distinct keys has lost one to the text format
+///      even if the `IntroId`s were distinct.
+///
+/// Property 4 is what makes this more than a restatement of the gate: the gate
+/// checks the `IntroId`s, this checks the *published* form of them, and the
+/// published form is what an MCP client caches.
+#[test]
+#[ignore = "runs every language producer over the whole ~154-package .real-crates corpus \
+            and reads each package's SealReport; tens of minutes, needs the fixtures \
+            fetched (corpus/fetch.nu) plus each producer's toolchain. Run it on purpose \
+            with `cargo test -p nudox-store --features fixtures --test corpus_contract \
+            every_corpus_declaration -- --ignored --nocapture`"]
+fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
+    use nudox_ir::package::Escalation;
+    use nudox_store::source::producer::ProducerRegistry;
+
+    let manifest = baseline::manifest_keys();
+    let fixtures = baseline::real_crates_root();
+    assert!(
+        fixtures.is_dir(),
+        "no corpus at {}. This test measures real packages; with no fixtures it would \
+         assert nothing and report PASS. Fetch them with `nu corpus/fetch.nu`.",
+        fixtures.display(),
+    );
+
+    let recorded = baseline::load_baseline();
+    let registry = ProducerRegistry::with_all_available();
+
+    // Every finding, one line each, so a run reports the whole corpus rather
+    // than the first package that trips.
+    let mut findings: Vec<String> = Vec::new();
+    let mut examined = 0usize;
+    let mut declarations = 0usize;
+    // The subset the corpus has actually measured, and therefore the subset a
+    // regression here is unambiguous about. `corpus/entry-baseline.toml` is
+    // mostly `unmeasured` rows today; a package that has never lowered failing
+    // to lower now proves nothing, and letting it count towards coverage would
+    // let this test look broader than it is.
+    let ever_lowered = manifest
+        .iter()
+        .filter(|key| {
+            matches!(
+                recorded.get(key),
+                Some(baseline::VersionBaseline::Lowered(_))
+            )
+        })
+        .count();
+
+    for key in &manifest {
+        let dir = baseline::fixture_dir(key);
+        if !dir.is_dir() {
+            findings.push(format!("{key}: no fixture at {}", dir.display()));
+            continue;
+        }
+        let expected_to_lower = matches!(
+            recorded.get(key),
+            Some(baseline::VersionBaseline::Lowered(_))
+        );
+
+        let descriptor = key.ecosystem.descriptor_for(&dir, &key.name, &key.version);
+        let case = format!(
+            "identity/{}/{}-{}",
+            key.ecosystem.token(),
+            key.name,
+            key.version
+        );
+        let (outcome, _cost) = nudox_test_support::measured(&case, &dir, || {
+            registry.run(descriptor.language, &descriptor.source, &descriptor.lineage)
+        });
+
+        let produced = match outcome {
+            Ok(produced) => produced,
+            Err(error) if expected_to_lower => {
+                // The baseline says this package lowers. It no longer does, and
+                // the identity gate is the only thing between this run and that
+                // recording. The whole error is printed, and for an identity
+                // failure that means every dropped declaration with both of its
+                // source locations.
+                findings.push(format!(
+                    "{key}: baseline records this package as lowering, but the producer \
+                     now fails:\n      {error}"
+                ));
+                continue;
+            }
+            Err(error) => {
+                // Already failing before this change, for a reason
+                // `corpus/entry-baseline.toml` records. Not this test's finding,
+                // but printed so a reader can see what was not examined.
+                eprintln!("identity {key} => not examined ({error})");
+                continue;
+            }
+        };
+
+        examined += 1;
+        declarations += produced.table.len();
+
+        let ordinal: Vec<String> = produced
+            .report
+            .forced
+            .iter()
+            .filter(|forced| match forced.escalated_to {
+                Escalation::Ordinal => true,
+                // Span-keyed ids are unstable across versions, which is a real
+                // defect and a different one — see
+                // `unchanged_declarations_keep_their_intro_id_across_versions`.
+                // They are still injective and content-derived, which is all
+                // this test claims.
+                Escalation::Span => false,
+            })
+            .map(|forced| {
+                format!(
+                    "{:?} `{}{}` ({} declarations)",
+                    forced.kind,
+                    forced
+                        .segments
+                        .iter()
+                        .map(|segment| format!("{segment}::"))
+                        .collect::<String>(),
+                    forced.name,
+                    forced.group,
+                )
+            })
+            .collect();
+
+        eprintln!(
+            "identity {key} => {} entries, {} dropped, {} order-dependent group(s), \
+             {} unmapped local ref(s)",
+            produced.table.len(),
+            produced.report.collisions.len(),
+            ordinal.len(),
+            produced.report.unmapped_local.len(),
+        );
+
+        if !produced.report.collisions.is_empty() {
+            findings.push(format!(
+                "{key}: {} declaration(s) dropped by seal despite `produce` returning Ok — \
+                 the identity gate did not fire, which is a defect in the gate itself",
+                produced.report.collisions.len(),
+            ));
+        }
+        if !ordinal.is_empty() {
+            findings.push(format!(
+                "{key}: {} group(s) keep their identity only by emission order:\n      {}",
+                ordinal.len(),
+                ordinal.join("\n      "),
+            ));
+        }
+        if !produced.report.unmapped_local.is_empty() {
+            findings.push(format!(
+                "{key}: {} arena-local reference(s) survived sealing unmapped",
+                produced.report.unmapped_local.len(),
+            ));
+        }
+
+        // Property 4 — the published key round-trips to the same entry.
+        let mut keys: HashSet<String> = HashSet::with_capacity(produced.table.len());
+        let mut broken: Vec<String> = Vec::new();
+        for (intro, entry) in produced.table.iter() {
+            let rendered = StableRef::new(descriptor.lineage.clone(), intro).to_string();
+            match decode_published_key(&rendered) {
+                Some(parsed) if parsed.intro == intro && parsed.package == descriptor.lineage => {
+                    match produced.table.get(parsed.intro) {
+                        Some(round_tripped)
+                            if round_tripped.sym().name == entry.sym().name
+                                && round_tripped.sym().span == entry.sym().span => {}
+                        Some(other) => broken.push(format!(
+                            "`{}` renders {rendered}, which resolves to `{}`",
+                            entry.sym().name,
+                            other.sym().name,
+                        )),
+                        None => broken.push(format!(
+                            "`{}` renders {rendered}, which resolves to nothing",
+                            entry.sym().name,
+                        )),
+                    }
+                }
+                Some(parsed) => broken.push(format!(
+                    "`{}` renders {rendered}, which parses back as {parsed}",
+                    entry.sym().name,
+                )),
+                None => broken.push(format!(
+                    "`{}` renders {rendered}, which does not parse",
+                    entry.sym().name,
+                )),
+            }
+            keys.insert(rendered);
+        }
+        if keys.len() != produced.table.len() {
+            findings.push(format!(
+                "{key}: {} entries render to only {} distinct keys — {} declaration(s) are \
+                 unreachable through the published key format",
+                produced.table.len(),
+                keys.len(),
+                produced.table.len() - keys.len(),
+            ));
+        }
+        if !broken.is_empty() {
+            broken.truncate(10);
+            findings.push(format!(
+                "{key}: published keys do not round-trip:\n      {}",
+                broken.join("\n      "),
+            ));
+        }
+    }
+
+    // A green run over zero packages is the failure mode every corpus test here
+    // exists to prevent. The floor is derived from the baseline rather than
+    // written here, so it rises automatically as the corpus is measured: every
+    // package that has ever lowered must lower now, or its `Err` is already a
+    // finding above.
+    assert!(
+        ever_lowered > 0,
+        "corpus/entry-baseline.toml records no package as lowering, so this run had \
+         nothing whose identity it could hold to account"
+    );
+    assert!(
+        examined >= ever_lowered,
+        "{examined} package version(s) were examined but the baseline records \
+         {ever_lowered} as lowering; a run that inspects fewer packages than the corpus \
+         has already measured cannot support a claim about it"
+    );
+    eprintln!(
+        "identity: examined {examined} package version(s) ({ever_lowered} of them with a \
+         recorded baseline), {declarations} declarations"
+    );
+
+    assert!(
+        findings.is_empty(),
+        "{} of {examined} examined corpus package version(s) do not have injective, \
+         content-derived declaration identity:\n{}\n\n\
+         `IntroId` is the key the graph, the MCP tools and cross-version lineage are all \
+         built on. Fix the lowering that erased what distinguished the declarations; do \
+         not widen `nudox_producer::enforce_identity_contract`.",
+        findings.len(),
+        findings
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
+}
+
+// ── Version stability of the published key ───────────────────────────────────
+
+/// A declaration paired across two versions of the same package.
+///
+/// The pairing has to be independent of `IntroId`, or the test would be asking
+/// the key to prove its own stability. It is built from facts a producer states
+/// about the declaration itself:
+///
+/// * `kind`, `path` and `name` — the base collision key `seal` uses, so a
+///   declaration that moved namespace is correctly *not* paired.
+/// * `file` — the source path relative to the package root, so two same-named
+///   declarations in different files never pair with each other.
+/// * `rank` — position among same-key declarations in that file, ordered by
+///   span start. This is what pairs the *n*-th `parse` overload in `App.hpp`
+///   with the *n*-th `parse` overload in the next version's `App.hpp`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct DeclarationSite {
+    kind: u16,
+    path: Vec<String>,
+    name: String,
+    file: String,
+    rank: usize,
+}
+
+/// Everything about a declaration that changes when its *text* changes but not
+/// when text above it changes.
+///
+/// This is what makes "unchanged declaration" a checkable predicate rather than
+/// an assumption. A signature edit moves `length` and usually `documentation`;
+/// inserting a comment three lines above moves neither — and moves the byte
+/// offsets that `Disambiguator::Span` is built from. Two versions that agree on
+/// every field here are as close to "the same declaration, untouched" as the IR
+/// can testify to without the source text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeclarationShape {
+    visibility: String,
+    documentation: String,
+    /// Span *length*, never the offsets: the offsets are the thing under test.
+    length: usize,
+    deprecated: bool,
+}
+
+/// Index one sealed table by [`DeclarationSite`].
+fn index_by_site(
+    table: &nudox_ir::apply::PristineIntroTable,
+    root: &std::path::Path,
+) -> HashMap<DeclarationSite, (IntroId, DeclarationShape)> {
+    // Pass 1: (kind, path, name, file) -> every entry there, span-ordered.
+    let mut grouped: HashMap<(u16, Vec<String>, String, String), Vec<(usize, IntroId)>> =
+        HashMap::new();
+
+    for (intro, entry) in table.iter() {
+        let mut path: Vec<String> = Vec::new();
+        let mut cursor = intro;
+        while let Some(parent) = table.parent_of(cursor) {
+            match table.get(parent) {
+                Some(parent_entry) => {
+                    path.push(parent_entry.sym().name.clone());
+                    cursor = parent;
+                }
+                None => break,
+            }
+        }
+        path.reverse();
+
+        let kind = entry
+            .kind()
+            .as_owned_kind()
+            .map(|k| k.discriminant().as_u16())
+            .unwrap_or(nudox_ir::kind::KindDiscriminant::Reexport.as_u16());
+        let file = entry
+            .sym()
+            .source
+            .strip_prefix(root)
+            .unwrap_or_else(|_| entry.sym().source.as_path())
+            .to_string_lossy()
+            .into_owned();
+
+        grouped
+            .entry((kind, path, entry.sym().name.clone(), file))
+            .or_default()
+            .push((entry.sym().span.start, intro));
+    }
+
+    let mut sited = HashMap::with_capacity(table.len());
+    for ((kind, path, name, file), mut members) in grouped {
+        members.sort();
+        for (rank, (_, intro)) in members.into_iter().enumerate() {
+            let entry = table.get(intro).expect("intro came from this table");
+            let sym = entry.sym();
+            sited.insert(
+                DeclarationSite {
+                    kind,
+                    path: path.clone(),
+                    name: name.clone(),
+                    file: file.clone(),
+                    rank,
+                },
+                (
+                    intro,
+                    DeclarationShape {
+                        visibility: format!("{:?}", sym.visibility),
+                        documentation: sym.documentation.clone(),
+                        length: sym.span.end.saturating_sub(sym.span.start),
+                        deprecated: sym.deprecation.is_some(),
+                    },
+                ),
+            );
+        }
+    }
+    sited
+}
+
+/// A declaration that did not change between two versions of a package must
+/// keep the key the graph published for it.
+///
+/// # What this pins
+///
+/// `crates/nudox-graph/schema.graphql` is the contract every MCP consumer reads
+/// before it caches a key. It used to state flatly that "the intro half is
+/// stable across versions: the same declaration keeps its key as the package
+/// evolves"; it now qualifies that per disambiguator tier, and two of those
+/// tiers are honestly documented as unstable. Documenting an unstable key is
+/// better than promising a stable one, but it is not the same as having one,
+/// and nothing in the build measures how much of the corpus is affected. This
+/// test is that measurement.
+///
+/// # Why it is committed RED
+///
+/// It fails today, for a cause that is already root-caused and lives in files
+/// this change does not touch:
+///
+/// * `Disambiguator::Span` is keyed on **byte offsets**. For clang those are
+///   real offsets (`workspace/compiler/languages/clang/src/lower.rs`), so they
+///   move when *anything above the declaration changes* — including a comment,
+///   a `#include`, or a blank line. The declaration is untouched and its key
+///   moves anyway.
+/// * `Disambiguator::Ordinal` is keyed on emission order, and
+///   `nudox_ir::intro` says of it: "an `Ordinal` id is not stable across a
+///   producer reordering its output." The sibling test
+///   `every_corpus_declaration_gets_a_distinct_content_derived_identity`
+///   measured **32,339 ordinal-keyed groups across 49 of 79 corpus package
+///   versions** on 2026-08-08; see `nudox_producer::OrdinalPolicy` for the
+///   per-kind breakdown and the two independent causes.
+///
+/// **What has to change for this to go green:** a disambiguator tier below
+/// `Span` that is derived from the declaration's *content* rather than from its
+/// position — the structural skeleton already used for `FnOverload` and
+/// `TraitImpl`, extended to the kinds that currently fall through to `Span`,
+/// plus a way for a child to key on its parent's *identity* rather than its
+/// parent's name (13,601 of those groups are `Param`s of overloaded functions,
+/// whose ancestor path is byte-identical across the overload set). Fixing the
+/// four producers that hardcode a `0..0` span — typescript, go, csharp, python
+/// — is necessary and *not* sufficient: it converts `Ordinal` failures into
+/// `Span` failures, which this test also catches, because a byte offset is not
+/// a property of the declaration.
+///
+/// Following the precedent LIMITATIONS.md records for
+/// `real_memchr_generic_return::real_memchr_return_type_keeps_option_wrapper`
+/// and `real_crate.rs::router_doc_links_are_populated`: a deliberately-red test
+/// is `#[ignore]`d with a reason that names what must change, never weakened
+/// into an assertion it can pass. Do not "fix" this by comparing counts, by
+/// allowing a tolerance, or by restricting it to the `None` tier — the `None`
+/// tier is stable by construction and a test scoped to it proves nothing.
+#[test]
+#[ignore = "DELIBERATELY RED, and separately expensive. Fails because `Disambiguator::Span` \
+            keys on byte offsets and `Disambiguator::Ordinal` keys on emission order, so an \
+            untouched declaration in a collision group changes its published key whenever \
+            text above it moves. Goes green when the sealer gains a content-derived \
+            disambiguator below `Span` for the kinds that currently fall through to it, AND \
+            a way for a child to key on its parent's identity rather than its parent's name; \
+            fixing the four producers that hardcode a `0..0` span (typescript, go, csharp, \
+            python) is necessary but not sufficient. Also runs every multi-version corpus \
+            package through its producer — tens of minutes, needs `nu corpus/fetch.nu`. Run \
+            with `cargo test -p nudox-store --features fixtures --test corpus_contract \
+            unchanged_declarations -- --ignored --nocapture`"]
+fn unchanged_declarations_keep_their_intro_id_across_versions() {
+    use nudox_store::source::producer::ProducerRegistry;
+
+    let fixtures = baseline::real_crates_root();
+    assert!(
+        fixtures.is_dir(),
+        "no corpus at {}. Fetch it with `nu corpus/fetch.nu`.",
+        fixtures.display(),
+    );
+
+    // Multi-version lineages, derived from the manifest rather than listed here:
+    // adding a second version of a package upstream must bring it under this
+    // test automatically, exactly as it brings it under the entry baseline.
+    let mut lineages: std::collections::BTreeMap<
+        (baseline::Ecosystem, String),
+        Vec<baseline::CorpusKey>,
+    > = std::collections::BTreeMap::new();
+    for key in baseline::manifest_keys() {
+        lineages
+            .entry((key.ecosystem, key.name.clone()))
+            .or_default()
+            .push(key);
+    }
+    lineages.retain(|_, versions| versions.len() >= 2);
+    assert!(
+        !lineages.is_empty(),
+        "corpus/manifest.toml declares no package with two versions, so nothing here can \
+         be compared across versions. This test would report PASS having measured nothing."
+    );
+
+    let recorded = baseline::load_baseline();
+    let registry = ProducerRegistry::with_all_available();
+
+    let mut findings: Vec<String> = Vec::new();
+    let mut compared_pairs = 0usize;
+    let mut compared_declarations = 0usize;
+    let mut moved_total = 0usize;
+
+    for ((ecosystem, name), versions) in &lineages {
+        // Each version's sealed table, indexed by declaration site.
+        let mut tables: Vec<(
+            &baseline::CorpusKey,
+            HashMap<DeclarationSite, (IntroId, DeclarationShape)>,
+        )> = Vec::new();
+
+        for key in versions {
+            // Every version is attempted, not just the ones
+            // `corpus/entry-baseline.toml` has a number for. Most of the corpus
+            // is `unmeasured` today, and the lineages most likely to expose an
+            // unstable key — the C++ and C# ones, whose producers reach for
+            // `Span` and `Ordinal` — are all in that set. Gating on the
+            // baseline would quietly narrow this test to the two Rust lineages
+            // and report green. What the baseline *is* used for is the
+            // asymmetry below: a failure to produce is a finding only when the
+            // corpus has already recorded that this package lowers.
+            let expected_to_lower = matches!(
+                recorded.get(key),
+                Some(baseline::VersionBaseline::Lowered(_))
+            );
+            let dir = baseline::fixture_dir(key);
+            if !dir.is_dir() {
+                findings.push(format!("{key}: no fixture at {}", dir.display()));
+                continue;
+            }
+            let descriptor = key.ecosystem.descriptor_for(&dir, &key.name, &key.version);
+            let case = format!(
+                "stability/{}/{}-{}",
+                key.ecosystem.token(),
+                key.name,
+                key.version
+            );
+            let (outcome, _cost) = nudox_test_support::measured(&case, &dir, || {
+                registry.run(descriptor.language, &descriptor.source, &descriptor.lineage)
+            });
+            match outcome {
+                Ok(produced) => {
+                    eprintln!("stability {key} => {} entries", produced.table.len());
+                    tables.push((key, index_by_site(&produced.table, &dir)));
+                }
+                Err(error) if expected_to_lower => findings.push(format!(
+                    "{key}: baseline records this package as lowering, but the producer \
+                     now fails:\n      {error}"
+                )),
+                Err(error) => {
+                    eprintln!("stability {key} => not compared ({error})");
+                }
+            }
+        }
+
+        // Adjacent pairs, in manifest (sorted) version order.
+        for pair in tables.windows(2) {
+            let (older_key, older) = &pair[0];
+            let (newer_key, newer) = &pair[1];
+            compared_pairs += 1;
+
+            let mut unchanged = 0usize;
+            let mut moved: Vec<String> = Vec::new();
+            for (site, (old_intro, old_shape)) in older.iter() {
+                let Some((new_intro, new_shape)) = newer.get(site) else {
+                    // Declaration absent in the newer version, or moved file /
+                    // namespace. Nothing to say about its key.
+                    continue;
+                };
+                if old_shape != new_shape {
+                    // The declaration itself changed, so its key is *allowed*
+                    // to change. Not evidence either way.
+                    continue;
+                }
+                unchanged += 1;
+                if old_intro != new_intro {
+                    moved.push(format!(
+                        "`{}{}` in {} (rank {}) — {} then {}",
+                        site.path
+                            .iter()
+                            .map(|segment| format!("{segment}::"))
+                            .collect::<String>(),
+                        site.name,
+                        site.file,
+                        site.rank,
+                        old_intro.to_hex(),
+                        new_intro.to_hex(),
+                    ));
+                }
+            }
+
+            compared_declarations += unchanged;
+            moved_total += moved.len();
+            eprintln!(
+                "stability {}/{} {} -> {}: {} unchanged declaration(s), {} changed key",
+                ecosystem.token(),
+                name,
+                older_key.version,
+                newer_key.version,
+                unchanged,
+                moved.len(),
+            );
+
+            // A pair that shares no unchanged declaration cannot support a
+            // claim about stability, and silently contributing nothing is how
+            // a corpus test comes to measure less than it looks like it does.
+            if unchanged == 0 {
+                findings.push(format!(
+                    "{}/{} {} -> {}: no declaration was pairable and unchanged, so this \
+                     lineage contributed no evidence",
+                    ecosystem.token(),
+                    name,
+                    older_key.version,
+                    newer_key.version,
+                ));
+                continue;
+            }
+
+            if !moved.is_empty() {
+                let shown = moved.len().min(10);
+                findings.push(format!(
+                    "{}/{} {} -> {}: {} of {} unchanged declaration(s) changed their \
+                     published key:\n      {}{}",
+                    ecosystem.token(),
+                    name,
+                    older_key.version,
+                    newer_key.version,
+                    moved.len(),
+                    unchanged,
+                    moved[..shown].join("\n      "),
+                    if moved.len() > shown {
+                        format!("\n      … and {} more", moved.len() - shown)
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+        }
+    }
+
+    assert!(
+        compared_pairs > 0,
+        "no version pair was compared; the corpus has multi-version lineages but none of \
+         them lowered on both sides, so this run measured nothing"
+    );
+    eprintln!(
+        "stability: {compared_pairs} version pair(s), {compared_declarations} unchanged \
+         declaration(s), {moved_total} changed key"
+    );
+
+    assert!(
+        findings.is_empty(),
+        "{} finding(s) across {compared_pairs} version pair(s) and {compared_declarations} \
+         unchanged declaration(s):\n{}\n\n\
+         `crates/nudox-graph/schema.graphql` is what every MCP consumer reads before it \
+         caches a key. A declaration whose source did not change must keep its key, or a \
+         client cannot tell 'moved' from 'deleted'. The fix is a content-derived \
+         disambiguator tier below `Span`, not a weaker assertion here.",
+        findings.len(),
+        findings
+            .iter()
+            .map(|line| format!("  {line}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    );
 }

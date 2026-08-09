@@ -237,7 +237,15 @@ impl Embedder for FastembedOrt {
         EmbedRuntimeInfo {
             model_id: JinaCodeV2::id(),
             accel: AccelKind::Cpu,
-            durable_canonical: true,
+            // Derived, never asserted. Canonicality needs BOTH a trusted
+            // execution provider (CPU here, by construction — the EP list is
+            // empty) AND an artifact whose output depends only on its input.
+            // This was a hardcoded `true` until 2026-08-08, while the brand
+            // pointed at a dynamically quantized artifact whose vectors varied
+            // with batch composition — so the claim was false and nothing could
+            // notice. Deriving it means the two can no longer disagree.
+            durable_canonical: JinaCodeV2::weights_hint()
+                .is_some_and(|artifact| artifact.quantization.is_batch_invariant()),
             max_batch: MAX_BATCH,
             max_seq_len: MAX_SEQ_LEN,
             // Instance-independent view; the verified per-instance sha is on

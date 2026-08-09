@@ -33,6 +33,16 @@ pub const FIND_IMPLEMENTORS: &str = include_str!("find_implementors.trustfall");
 /// Source text of the `symbols_mentioning_type` query.
 pub const SYMBOLS_MENTIONING_TYPE: &str = include_str!("symbols_mentioning_type.trustfall");
 
+/// Source text of the `symbol_source_location` query.
+///
+/// The typed answer to "where was this written". Exists as a named query
+/// rather than only as a `graph_query` an agent must compose because the
+/// answer is a *sum type*: a caller that reads `file` without first reading
+/// `locationKind` will treat "this symbol has no source position" and "this
+/// producer does not record positions yet" as the same null. The row struct
+/// makes both fields mandatory to destructure.
+pub const SYMBOL_SOURCE_LOCATION: &str = include_str!("symbol_source_location.trustfall");
+
 // ---------------------------------------------------------------------------
 // Result row structs
 // ---------------------------------------------------------------------------
@@ -81,4 +91,32 @@ pub struct SymbolsMentioningTypeRow {
     pub key: String,
     pub name: String,
     pub kind: String,
+}
+
+/// A row produced by [`SYMBOL_SOURCE_LOCATION`].
+///
+/// `location_kind` is `"Declared"`, `"BytesOnly"` or `"Unlocated"` and is
+/// never absent — read it first. `unlocated_reason` is present exactly when
+/// `location_kind` is `"Unlocated"`, and is the difference between "there is
+/// nowhere to send the reader" and "nobody has recorded where yet".
+///
+/// Line and column are 1-based and present only for `"Declared"`, which is
+/// the only value a jump-to-source affordance may act on.
+#[derive(Debug, Deserialize)]
+pub struct SymbolSourceLocationRow {
+    pub key: String,
+    pub name: String,
+    #[serde(rename = "locationKind")]
+    pub location_kind: String,
+    pub file: Option<String>,
+    #[serde(rename = "startLine")]
+    pub start_line: Option<i64>,
+    #[serde(rename = "startColumn")]
+    pub start_column: Option<i64>,
+    #[serde(rename = "endLine")]
+    pub end_line: Option<i64>,
+    #[serde(rename = "endColumn")]
+    pub end_column: Option<i64>,
+    #[serde(rename = "unlocatedReason")]
+    pub unlocated_reason: Option<String>,
 }

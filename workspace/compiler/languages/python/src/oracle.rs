@@ -284,6 +284,27 @@ pub enum TypeData {
         /// Metadata annotations (second-and-beyond args), as oracle strings.
         metadata: Vec<String>,
     },
+    /// **A type-position construct this syntactic front end saw but has no
+    /// case for**, carrying the source text verbatim.
+    ///
+    /// Two distinct situations collapse here, both honestly "we understood
+    /// nothing about this position, not that the author wrote `Any`":
+    ///
+    /// - An `Expr` shape `expr_to_type` has no arm for (a lambda, a call, a
+    ///   comparison — anything that is not a name, attribute, subscript,
+    ///   literal, tuple, list, or `|`-union in type position).
+    /// - A `Literal[...]` subscript. Its members are *values*, not types, and
+    ///   the IR's type algebra has no slot for a value-set type — this is not
+    ///   the gradual-typing escape hatch, it is a real PEP 586 construct we
+    ///   cannot yet spell.
+    ///
+    /// `types::lower_type` maps this to
+    /// `Type::Unknown(UnknownType::NoIrRepresentation { construct })`, never
+    /// to `Type::DYNAMIC` — conflating "we didn't understand this" with "the
+    /// source asked for dynamic typing" is exactly what CC-2 exists to undo.
+    /// See that lowering for why `Any`/`DynamicallyTyped` is reserved for an
+    /// *explicit* `typing.Any`.
+    Unsupported(String),
 }
 
 // ---------------------------------------------------------------------------

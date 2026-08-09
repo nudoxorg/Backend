@@ -8,6 +8,8 @@
 //!
 //! No inline colours; all styling from tokens.  No `format!` in render.
 
+use std::rc::Rc;
+
 use gpui::{App, IntoElement, Keystroke, ParentElement, RenderOnce, SharedString, Window};
 use gpui_component::{ActiveTheme as _, h_flex, kbd::Kbd};
 
@@ -27,15 +29,27 @@ pub struct KeyHint {
     /// Human-readable description of the action.
     description: SharedString,
     /// The keystrokes to display as `Kbd` chips.
-    keys: Vec<Keystroke>,
+    ///
+    /// `Rc<[Keystroke]>`, not `Vec<Keystroke>`, because every caller holds its
+    /// keystrokes for the lifetime of a view and hands the *same* ones to a new
+    /// `KeyHint` on every frame. With a `Vec` that hand-off is a heap
+    /// allocation and a `String` clone per chip per row per frame — the search
+    /// footer paid five of them a frame and the command palette paid seventy-
+    /// nine. A refcount bump is the whole cost now, and the shape makes the
+    /// cheap form the default rather than something each caller must remember.
+    keys: Rc<[Keystroke]>,
 }
 
 impl KeyHint {
     /// Create a hint with a description and a list of keystrokes.
-    pub fn new(description: impl Into<SharedString>, keys: Vec<Keystroke>) -> Self {
+    ///
+    /// Takes `impl Into<Rc<[Keystroke]>>` so an owner that has already built
+    /// its keystrokes once can pass a clone of the `Rc` (free), while a caller
+    /// with a literal `vec![…]` is unchanged.
+    pub fn new(description: impl Into<SharedString>, keys: impl Into<Rc<[Keystroke]>>) -> Self {
         Self {
             description: description.into(),
-            keys,
+            keys: keys.into(),
         }
     }
 
@@ -64,6 +78,9 @@ impl RenderOnce for KeyHint {
                     .child(self.description),
             )
             // Kbd chips — each pre-built by gpui-component
-            .children(self.keys.into_iter().map(|k| Kbd::new(k)))
+            // `Kbd::new` takes an owned `Keystroke`, so the clone here is
+            // unavoidable at this boundary; what the `Rc` removes is the
+            // *slice* allocation that used to wrap it.
+            .children(self.keys.iter().map(|k| Kbd::new(k.clone())))
     }
 }

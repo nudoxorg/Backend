@@ -1186,6 +1186,233 @@ pub struct Timeline {
 }
 
 // ---------------------------------------------------------------------------
+// PackageDiff
+// ---------------------------------------------------------------------------
+
+/// Which disambiguator tier minted a key, as it crosses the wire.
+///
+/// A faithful projection of `nudox_ir::package::KeyTier` plus the one state
+/// that type deliberately cannot represent: `Unrecorded`, meaning the
+/// `PackageView` carries no `SealReport` and nothing is known. The IR type has
+/// no such variant because at the point sealing runs the answer is always
+/// known; the absence appears only downstream, and flattening it into
+/// `Structural` here would tell a caller its key is sound on a corpus that
+/// never looked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum KeyTierLabel {
+    /// Minted from the declaration's own content. Moves only when that
+    /// content moves.
+    Structural,
+    /// Minted from the declaration's byte offsets. An edit *above* the
+    /// declaration moves it.
+    Span,
+    /// Minted from the declaration's index among colliding siblings. A
+    /// producer reordering its output moves it.
+    Ordinal,
+    /// This package's view carries no seal report; nothing is known.
+    Unrecorded,
+}
+
+impl KeyTierLabel {
+    /// Whether a key at this tier is a function of the declaration's content
+    /// alone. `None` for [`KeyTierLabel::Unrecorded`] — the question is
+    /// unanswered, not answered "no".
+    pub fn is_content_derived(self) -> Option<bool> {
+        match self {
+            KeyTierLabel::Structural => Some(true),
+            KeyTierLabel::Span | KeyTierLabel::Ordinal => Some(false),
+            KeyTierLabel::Unrecorded => None,
+        }
+    }
+}
+
+/// What happened to one declaration between two generations of a package.
+///
+/// # Why `Removed` is not simply "absent from the newer generation"
+///
+/// The diff joins on `IntroId`, and an `IntroId` is not stable for every
+/// declaration: two of the sealer's disambiguator tiers embed a byte span or
+/// an ordinal, so a declaration that changed neither its name, its path, nor
+/// its signature can still be minted a different key in the next release.
+/// Measured on the provisioned corpus: 32,339 order-dependent groups across 49
+/// of 79 packages, and 24 declarations across log/memchr/jackson-databind/
+/// lodash that provably changed their published key between real releases.
+///
+/// A set-difference diff reports every one of those as a removal *and* an
+/// addition — two false rows apiece, and the false removal is the damaging
+/// one, because "this API was deleted" is exactly the kind of claim a reader
+/// acts on. This enum exists so that case has its own name
+/// ([`Self::Rekeyed`]), and so that the case we cannot resolve has one too
+/// ([`Self::Indeterminate`]) instead of borrowing `Removed`'s.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DiffVerdict {
+    /// Present in the newer generation, and no declaration in the older one
+    /// occupies its `(kind, path)`.
+    Added,
+
+    /// Present in the older generation, absent from the newer one, **and** its
+    /// key was content-derived — so its absence is evidence about the
+    /// declaration rather than about the key.
+    ///
+    /// This is the only verdict that asserts a deletion, and it is reachable
+    /// only at [`KeyTierLabel::Structural`].
+    Removed,
+
+    /// One declaration, two keys. Present in both generations at the same
+    /// `(kind, path)`, but the `IntroId` moved.
+    ///
+    /// Read `from_tier`/`to_tier` to know what the move means:
+    ///
+    /// * either side `Span` or `Ordinal` — the key may have moved with **no
+    ///   change to the declaration at all**. This is the case that makes a
+    ///   naive diff lie.
+    /// * both `Structural` — the key moved because the declaration's own
+    ///   identity-bearing content moved: an overload's signature, or an impl's
+    ///   `(trait, self, generics, wheres)` skeleton. A real change, correctly
+    ///   reported as one declaration rather than two.
+    Rekeyed {
+        /// The key it had in the older generation. Stop caching this one.
+        #[serde(serialize_with = "serialize_symbol_key")]
+        #[schemars(with = "String")]
+        from_key: SymbolKey,
+        /// The key it has in the newer generation.
+        #[serde(serialize_with = "serialize_symbol_key")]
+        #[schemars(with = "String")]
+        to_key: SymbolKey,
+        /// The tier that minted `from_key`.
+        from_tier: KeyTierLabel,
+        /// The tier that minted `to_key`.
+        to_tier: KeyTierLabel,
+    },
+
+    /// Present in both generations under the same key, with one observable
+    /// axis differing.
+    ///
+    /// The axis is a [`TimelineChange`] produced by the *same* classifier
+    /// `get_symbol`'s timeline uses, so the two surfaces cannot describe one
+    /// declaration differently.
+    Changed {
+        /// Which axis moved.
+        change: TimelineChange,
+    },
+
+    /// Present in the older generation, absent from the newer one, and we
+    /// **cannot say** whether it was deleted.
+    ///
+    /// Either its key was not content-derived (so its disappearance is equally
+    /// consistent with an unrelated edit having moved it) and no unambiguous
+    /// re-pairing was found, or the package carries no seal report at all so
+    /// no tier is known.
+    ///
+    /// Returning this instead of `Removed` is the whole reason this diff is
+    /// worth having: a diff that silently reports a key-churned declaration as
+    /// deleted is worse than no diff, because the reader has no way to
+    /// discount it.
+    Indeterminate {
+        /// The tier of the key that vanished — the evidence for why this is
+        /// unanswerable.
+        tier: KeyTierLabel,
+    },
+}
+
+/// One declaration's row in a [`PackageDiff`].
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct DiffRow {
+    /// The declaration's key in whichever generation it exists in — the newer
+    /// one when it exists there, otherwise the older one.
+    ///
+    /// For [`DiffVerdict::Rekeyed`] this is `to_key`, and `from_key` is on the
+    /// verdict: a caller navigating the diff wants the key that resolves
+    /// *now*, and the stale one is the thing it should evict.
+    #[serde(serialize_with = "serialize_symbol_key")]
+    #[schemars(with = "String")]
+    pub key: SymbolKey,
+    /// The declaration's fully-qualified path, root-first and dot-joined.
+    ///
+    /// The join axis for [`DiffVerdict::Rekeyed`], and the only identity in
+    /// this row a human can read.
+    pub path: SharedStr,
+    /// Its unqualified name in the generation `key` refers to.
+    pub name: SharedStr,
+    /// Its kind label (`Function`, `Record`, `Impl`, …).
+    pub kind: SharedStr,
+    /// What happened.
+    pub verdict: DiffVerdict,
+}
+
+/// Two generations of one package, compared declaration by declaration.
+///
+/// # Why this is a computed answer and not a graph vertex
+///
+/// `nudox-graph` resolves against `nudox_store::corpus::Corpus`, which holds
+/// exactly one resident `PackageView` per lineage — deliberately, because
+/// `PackageLineageId` is version-free and that is what makes `IntroId`
+/// continuity mean anything. The other generations live in the engine's
+/// `VersionRegistry`, which sits *above* the graph in the dependency law
+/// (`nudox-engine` → `nudox-graph`). A lineage-diff vertex would therefore
+/// have required either inverting that edge or making the corpus
+/// multi-resident — and multi-residency would change what every existing query
+/// means, because "the world as it currently is" would stop having one answer.
+///
+/// Computing it here costs nothing extra in memory: both generations are
+/// already resident in the registry. That is what the registry is for.
+///
+/// # Counts are derived, never accumulated
+///
+/// Every count below is computed from `rows` (doctrine §8). A tally kept
+/// beside the rows it describes can drift from them; one computed from them
+/// cannot.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct PackageDiff {
+    /// The lineage being diffed.
+    #[serde(serialize_with = "serialize_lineage_id")]
+    #[schemars(with = "String")]
+    pub package: PackageLineageId,
+    /// The older generation's version string.
+    pub from_version: SharedStr,
+    /// The newer generation's version string.
+    pub to_version: SharedStr,
+    /// One row per declaration that is not identical across the two
+    /// generations, ordered by `(path, name, key)` so two runs are comparable.
+    ///
+    /// Declarations that exist in both and differ on no observable axis are
+    /// **not** rows; they are counted in `unchanged`.
+    pub rows: Arc<[DiffRow]>,
+    /// How many declarations exist in both generations under the same key with
+    /// nothing observable changed.
+    pub unchanged: u32,
+    /// How many declarations the older generation held.
+    pub from_symbol_count: u32,
+    /// How many declarations the newer generation holds.
+    pub to_symbol_count: u32,
+}
+
+impl PackageDiff {
+    /// How many rows satisfy `predicate`, derived from `rows`.
+    ///
+    /// Takes a predicate rather than publishing five parallel count fields,
+    /// because five fields is five things that can disagree with the rows they
+    /// summarise.
+    pub fn count(&self, predicate: impl Fn(&DiffVerdict) -> bool) -> usize {
+        self.rows.iter().filter(|r| predicate(&r.verdict)).count()
+    }
+
+    /// How many rows this diff could not resolve — the honesty number.
+    ///
+    /// A non-zero value is not a failure; it is the count of declarations
+    /// whose disappearance the key scheme cannot explain. It rises with the
+    /// number of `Span`/`Ordinal` keys the producer was forced to mint, so it
+    /// is also a producer-quality signal.
+    pub fn indeterminate(&self) -> usize {
+        self.count(|v| matches!(v, DiffVerdict::Indeterminate { .. }))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // QueryRow
 // ---------------------------------------------------------------------------
 

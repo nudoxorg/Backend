@@ -50,6 +50,8 @@
 //! [`CommandOverlayEvent::Dismiss`]; `Shell::close_overlay` pops the overlay
 //! stack and returns focus to the pane.
 
+use std::rc::Rc;
+
 use gpui::{
     App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, Keystroke, ParentElement, Render, SharedString, StatefulInteractiveElement as _,
@@ -127,18 +129,120 @@ fn humanize_context(context: &str) -> SharedString {
 // CommandOverlay
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// One row of the palette / cheat sheet, resolved once at construction.
+///
+/// # Why this type exists
+///
+/// The struct it replaced held `&'static KeymapEntry` and let `render` do the
+/// rest, under a doc comment claiming "`render` only walks `groups` and clones
+/// `SharedString`s". That claim was false, and the instrumentation is what
+/// found it: `command_overlay.render` measured **0.378 ms self-mean**, four
+/// times every other region in the app, on a view whose content never changes
+/// after construction.
+///
+/// The cost was `(entry.binding)()` — called once per row per frame. That
+/// factory does not *look up* a binding, it *builds* one: `KeyBinding::new`
+/// parses the keystroke string into `Keystroke`s and compiles the context
+/// string into a `KeyBindingContextPredicate`, and the whole result was thrown
+/// away after reading `.keystrokes()`. Seventy-nine of those per frame.
+///
+/// Holding the parsed keystrokes instead makes the original comment true rather
+/// than merely aspirational, and doctrine §8's rule applies: when a comment and
+/// the code disagree, the comment is the bug — and the expensive one, because
+/// it tells the next reader not to look here.
+struct PreparedCommand {
+    /// The registry entry, kept for [`CommandOverlay::confirm`], which needs
+    /// the real `Action` and is not on a per-frame path.
+    entry: &'static KeymapEntry,
+    /// The row's label, interned once.
+    description: SharedString,
+    /// The already-parsed chord, in the order `Kbd` chips must render.
+    ///
+    /// `Rc<[_]>` so handing it to a `KeyHint` each frame is a refcount bump.
+    keystrokes: Rc<[Keystroke]>,
+}
+
+/// One context's worth of rows, as a *range* into [`CommandOverlay::rows`].
+///
+/// # Why a range and not a second `Vec` of entries
+///
+/// It used to be `Vec<(SharedString, Vec<&KeymapEntry>)>` beside a flat
+/// `Vec<&KeymapEntry>`, with `selected` indexing the flat one and `render`
+/// walking the grouped one — two containers that had to stay in exactly the
+/// same order or the highlight would land on a different command than the one
+/// `confirm` ran. Nothing in the types said so; a unit test
+/// (`groups_flatten_to_the_same_entries_as_the_flat_row_list`) stood in for the
+/// guarantee.
+///
+/// A range cannot disagree with the list it indexes. Doctrine §3: prefer the
+/// shape in which the illegal state is unrepresentable over the test that
+/// notices it.
+struct CommandGroup {
+    /// Reader-facing context label.
+    label: SharedString,
+    /// Half-open range of [`CommandOverlay::rows`] belonging to this group.
+    rows: std::ops::Range<usize>,
+}
+
+/// Resolve the registry into display rows and their groups, once.
+///
+/// A free function rather than a method so it can be tested without a GPUI
+/// `Context`: the tests below assert the ranges tile the row list exactly, and
+/// a guarantee that can only be checked through a live window is a guarantee
+/// nobody checks.
+fn build_rows(mode: CommandOverlayMode) -> (Vec<PreparedCommand>, Vec<CommandGroup>) {
+    let mut rows: Vec<PreparedCommand> = Vec::new();
+    let mut groups: Vec<CommandGroup> = Vec::new();
+
+    for entry in KEYMAP_REGISTRY.iter() {
+        // Palette lists *commands*; a `"(Linux/Windows)"` row is the same
+        // command with an alternate keystroke, not a second command.
+        if mode == CommandOverlayMode::Palette && entry.description.ends_with("(Linux/Windows)") {
+            continue;
+        }
+
+        let label = humanize_context(entry.context);
+        let ix = rows.len();
+        rows.push(PreparedCommand {
+            entry,
+            description: SharedString::from(entry.description),
+            // `keystrokes()` (not a hand-parse of `entry.keystroke`) so a
+            // chord like `"g d"` becomes two `Kbd` chips in the right order —
+            // the factory already parsed it once, correctly. The point of
+            // doing it *here* is that "once" now means once per overlay
+            // rather than once per row per frame.
+            keystrokes: (entry.binding)()
+                .keystrokes()
+                .iter()
+                .map(|k| k.inner().clone())
+                .collect(),
+        });
+
+        match groups.last_mut() {
+            Some(last) if last.label == label => last.rows.end = ix + 1,
+            _ => groups.push(CommandGroup {
+                label,
+                rows: ix..ix + 1,
+            }),
+        }
+    }
+
+    (rows, groups)
+}
+
 /// The `?` cheat sheet / command palette view.
 ///
-/// Grouping and filtering both happen once, in [`CommandOverlay::new`] — not
-/// in `render` — per this codebase's zero-string-work-in-render convention
-/// (§1.1.4). `render` only walks `groups` and clones `SharedString`s.
+/// Grouping, filtering, keystroke parsing and label interning all happen once,
+/// in [`CommandOverlay::new`] — not in `render` — per this codebase's
+/// zero-string-work-in-render convention (§1.1.4). `render` walks `groups`,
+/// slices `rows`, and clones a `SharedString` and an `Rc` per row.
 pub struct CommandOverlay {
     focus: FocusHandle,
     mode: CommandOverlayMode,
-    /// Rows grouped by (humanized) context, in first-seen order, for display.
-    groups: Vec<(SharedString, Vec<&'static KeymapEntry>)>,
-    /// The same rows flattened in display order, for `selected`'s index space.
-    rows: Vec<&'static KeymapEntry>,
+    /// Every row, in display order — the index space `selected` lives in.
+    rows: Vec<PreparedCommand>,
+    /// Contiguous slices of `rows`, one per context, in first-seen order.
+    groups: Vec<CommandGroup>,
     /// Palette mode only: index into `rows` of the highlighted command.
     /// Ignored (but kept valid) in Shortcuts mode.
     selected: usize,
@@ -156,30 +260,12 @@ pub enum CommandOverlayEvent {
 impl CommandOverlay {
     /// Build a view over the live keymap registry, in the given mode.
     pub fn new(mode: CommandOverlayMode, cx: &mut Context<Self>) -> Self {
-        let mut groups: Vec<(SharedString, Vec<&'static KeymapEntry>)> = Vec::new();
-        let mut rows: Vec<&'static KeymapEntry> = Vec::new();
-
-        for entry in KEYMAP_REGISTRY.iter() {
-            // Palette lists *commands*; a `"(Linux/Windows)"` row is the same
-            // command with an alternate keystroke, not a second command.
-            if mode == CommandOverlayMode::Palette && entry.description.ends_with("(Linux/Windows)")
-            {
-                continue;
-            }
-
-            let label = humanize_context(entry.context);
-            rows.push(entry);
-            match groups.last_mut() {
-                Some((last_label, bucket)) if *last_label == label => bucket.push(entry),
-                _ => groups.push((label, vec![entry])),
-            }
-        }
-
+        let (rows, groups) = build_rows(mode);
         Self {
             focus: cx.focus_handle(),
             mode,
-            groups,
             rows,
+            groups,
             selected: 0,
         }
     }
@@ -208,12 +294,17 @@ impl CommandOverlay {
     /// view does anything beyond rendering.
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode.selectable() {
-            if let Some(entry) = self.rows.get(self.selected) {
+            if let Some(row) = self.rows.get(self.selected) {
                 // `KeyBinding::action()` borrows from the temporary
                 // `KeyBinding` the factory `fn` just built; `boxed_clone()`
                 // takes an owned copy before that temporary drops, so this is
                 // exactly the `Action` a real keystroke would have run.
-                let action = (entry.binding)().action().boxed_clone();
+                //
+                // Still built on demand rather than cached: this runs once per
+                // Enter, and caching a `Box<dyn Action>` per row would trade a
+                // free path for eighty boxed actions held for the life of an
+                // overlay that is usually dismissed without confirming.
+                let action = (row.entry.binding)().action().boxed_clone();
                 window.dispatch_action(action, cx);
             }
         }
@@ -229,28 +320,20 @@ impl CommandOverlay {
         let selectable = self.mode.selectable();
 
         let mut out = Vec::with_capacity(self.rows.len() + self.groups.len());
-        let mut ix = 0usize;
-        for (label, entries) in &self.groups {
+        for group in &self.groups {
             out.push(
                 div()
                     .px(sp.space_3)
                     .pt(sp.space_2)
-                    .child(SectionHeader::new(label.clone()))
+                    .child(SectionHeader::new(group.label.clone()))
                     .into_any_element(),
             );
-            for entry in entries {
-                let row_ix = ix;
-                ix += 1;
+            // `group.rows` indexes `self.rows` by construction, so this slice
+            // and `selected` are in the same index space with nothing to keep
+            // in sync — see [`CommandGroup`].
+            for (offset, row_data) in self.rows[group.rows.clone()].iter().enumerate() {
+                let row_ix = group.rows.start + offset;
                 let is_selected = selectable && row_ix == self.selected;
-
-                // `keystrokes()` (not a hand-parse of `entry.keystroke`) so a
-                // chord like `"g d"` renders as two `Kbd` chips in the right
-                // order — the factory already parsed it once, correctly.
-                let keystrokes: Vec<Keystroke> = (entry.binding)()
-                    .keystrokes()
-                    .iter()
-                    .map(|k| k.inner().clone())
-                    .collect();
 
                 let mut row = div()
                     .id(("command_overlay.row", row_ix))
@@ -262,7 +345,12 @@ impl CommandOverlay {
                     .when(selectable, |el| {
                         el.cursor_pointer().hover(|s| s.bg(colours.bg_hover))
                     })
-                    .child(KeyHint::new(SharedString::from(entry.description), keystrokes));
+                    // Two refcount bumps. Everything this row draws was
+                    // resolved in `new` — see [`PreparedCommand`].
+                    .child(KeyHint::new(
+                        row_data.description.clone(),
+                        row_data.keystrokes.clone(),
+                    ));
 
                 if selectable {
                     row = row.on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
@@ -288,6 +376,7 @@ impl EventEmitter<CommandOverlayEvent> for CommandOverlay {}
 
 impl Render for CommandOverlay {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::scope(crate::perf::Region::CommandOverlay);
         let (sp, ts, colours) = {
             let ext = cx.theme_ext();
             (ext.space, ext.type_scale, ext.colours)
@@ -366,42 +455,66 @@ impl Render for CommandOverlay {
 mod tests {
     use super::*;
 
-    /// Every real `KeymapEntry` (minus the Linux-alt rows, in Palette mode)
-    /// ends up in exactly one group, and the grouped view flattens back to
-    /// the same set — this is the invariant `render_rows` and `confirm`'s
-    /// `self.rows[self.selected]` both depend on to stay in sync.
+    /// The group ranges tile the row list exactly: every row belongs to one
+    /// group, in order, with no gap and no overlap.
+    ///
+    /// This is what `render_rows` (which slices `rows` by group) and `confirm`
+    /// (which indexes `rows` by `selected`) both need in order to agree about
+    /// which command a highlighted row is. The previous shape kept two parallel
+    /// containers and this test compared them; the ranges make the disagreement
+    /// unrepresentable, so what is left to check is that the tiling is total —
+    /// a group whose range stopped short would silently hide the rows after it.
     #[test]
-    fn groups_flatten_to_the_same_entries_as_the_flat_row_list() {
+    fn group_ranges_tile_the_row_list_exactly() {
         for mode in [CommandOverlayMode::Shortcuts, CommandOverlayMode::Palette] {
-            let mut groups: Vec<(SharedString, Vec<&'static KeymapEntry>)> = Vec::new();
-            let mut rows: Vec<&'static KeymapEntry> = Vec::new();
-            for entry in KEYMAP_REGISTRY.iter() {
-                if mode == CommandOverlayMode::Palette
-                    && entry.description.ends_with("(Linux/Windows)")
-                {
-                    continue;
-                }
-                let label = humanize_context(entry.context);
-                rows.push(entry);
-                match groups.last_mut() {
-                    Some((last_label, bucket)) if *last_label == label => bucket.push(entry),
-                    _ => groups.push((label, vec![entry])),
-                }
-            }
+            let (rows, groups) = build_rows(mode);
+            assert!(!rows.is_empty(), "{mode:?}: the registry produced no rows");
 
-            let flattened: Vec<&'static KeymapEntry> =
-                groups.iter().flat_map(|(_, v)| v.iter().copied()).collect();
-
-            assert_eq!(
-                flattened.len(),
-                rows.len(),
-                "{mode:?}: grouping must not drop or duplicate rows"
-            );
-            for (a, b) in flattened.iter().zip(rows.iter()) {
+            let mut next = 0usize;
+            for group in &groups {
+                assert_eq!(
+                    group.rows.start, next,
+                    "{mode:?}: group {:?} starts at {} but the previous group ended at {next}",
+                    group.label, group.rows.start,
+                );
                 assert!(
-                    std::ptr::eq(*a, *b),
-                    "{mode:?}: grouped order must match flat row order exactly \
-                     (selection index math depends on this)"
+                    group.rows.end > group.rows.start,
+                    "{mode:?}: group {:?} is empty and would render a header over nothing",
+                    group.label,
+                );
+                next = group.rows.end;
+            }
+            assert_eq!(
+                next,
+                rows.len(),
+                "{mode:?}: the groups cover {next} of {} rows — the remainder \
+                 would never render",
+                rows.len(),
+            );
+        }
+    }
+
+    /// Every row carries a parsed chord and a label before any frame is drawn.
+    ///
+    /// This is the property that makes `render` free: the measurement that
+    /// prompted this shape (`command_overlay.render` at 0.378 ms self-mean,
+    /// four times every other region) was entirely `(entry.binding)()` being
+    /// re-evaluated per row per frame. A row that reached `render` with nothing
+    /// parsed would put that cost straight back.
+    #[test]
+    fn every_row_is_fully_resolved_before_render() {
+        for mode in [CommandOverlayMode::Shortcuts, CommandOverlayMode::Palette] {
+            let (rows, _) = build_rows(mode);
+            for row in &rows {
+                assert!(
+                    !row.description.is_empty(),
+                    "{mode:?}: a row reached the view with no label",
+                );
+                assert!(
+                    !row.keystrokes.is_empty(),
+                    "{mode:?}: {:?} carries no parsed keystroke, so its row would \
+                     render a description with no chip",
+                    row.description,
                 );
             }
         }
@@ -440,7 +553,7 @@ mod tests {
             let len = len as isize;
             ((selected as isize + delta).rem_euclid(len)) as usize
         }
-        let len = KEYMAP_REGISTRY.len();
+        let len = build_rows(CommandOverlayMode::Shortcuts).0.len();
         assert_eq!(wrapped(0, -1, len), len - 1, "Up from the first row wraps to the last");
         assert_eq!(wrapped(len - 1, 1, len), 0, "Down from the last row wraps to the first");
     }

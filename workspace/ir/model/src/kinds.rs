@@ -32,5 +32,5 @@ pub use self::{
     static_::Static,
     sum::{Enum, Variant, VariantForm},
     trait_::{Trait, TraitFlags},
-    ty::Type,
+    ty::{Type, UnknownType},
 };

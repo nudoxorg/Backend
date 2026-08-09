@@ -62,7 +62,7 @@ use crate::{
     },
     index::{RawRef, Ref, UntypedEntryIndex},
     kinds::{
-        GenericParam, Type, WherePred,
+        GenericParam, Type, UnknownType, WherePred,
         ty::{
             AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Variance, Width,
         },
@@ -208,6 +208,24 @@ impl<'a> Skeleton<'a> {
             }
             Type::Never => self.out.push(0x08),
             Type::Any => self.out.push(0x09),
+            // The *reason* is identity-relevant, and so is any name it
+            // carries.
+            //
+            // Two overloads whose parameters differ only in which external
+            // type they name — `f(Context)` and `f(Command)`, both unresolved
+            // — must not collide. That is the exact failure `Ref::Foreign`
+            // was given canonical key bytes to fix (see `ref_`), and encoding
+            // every `Unknown` as one opcode would reintroduce it one layer up.
+            //
+            // A later link pass that rewrites `Unknown(UnresolvedExternal)`
+            // into `Nominal(Ref::Foreign)` *does* move the skeleton — but it
+            // moves it by changing the opcode (0x18 → 0x0a) regardless of
+            // whether the name is hashed, so carrying the name costs no extra
+            // stability and buys collision-freedom in the meantime.
+            Type::Unknown(reason) => {
+                self.out.push(0x18);
+                self.unknown(reason);
+            }
             Type::Nominal(r) => {
                 self.out.push(0x0a);
                 self.ref_(r);
@@ -402,6 +420,29 @@ impl<'a> Skeleton<'a> {
             Ref::Foreign { key, .. } => {
                 self.out.push(0x02);
                 self.out.extend_from_slice(&key.canonical_bytes());
+            }
+        }
+    }
+
+    /// Encode an [`UnknownType`] reason. No `_` arm — a new reason must get an
+    /// opcode here, or identity silently merges two different gaps.
+    fn unknown(&mut self, r: &UnknownType) {
+        match r {
+            UnknownType::Unannotated => self.out.push(0x01),
+            UnknownType::DynamicallyTyped => self.out.push(0x02),
+            UnknownType::UnresolvedLocalName { name } => {
+                self.out.push(0x03);
+                encode_str(&mut self.out, name);
+            }
+            UnknownType::UnresolvedExternal { name } => {
+                self.out.push(0x04);
+                encode_str(&mut self.out, name);
+            }
+            UnknownType::TruncatedAtDepthLimit => self.out.push(0x05),
+            UnknownType::OracleGap => self.out.push(0x06),
+            UnknownType::NoIrRepresentation { construct } => {
+                self.out.push(0x07);
+                encode_str(&mut self.out, construct);
             }
         }
     }
@@ -816,6 +857,69 @@ mod tests {
             bytes_local, bytes_intro,
             "Ref::Local resolved to path_id must encode identically to Ref::Intro(path_id)"
         );
+    }
+
+    /// `Type::Unknown` opcodes are frozen: `0x18` then the reason opcode.
+    ///
+    /// Pinning the bytes here is what makes the CC-2 domain bump a *one-time*
+    /// event — a later edit that reorders the reason opcodes would silently
+    /// move every affected `IntroId` again.
+    #[test]
+    fn unknown_reason_opcodes_are_frozen() {
+        use crate::kinds::UnknownType;
+        let bytes = |r: UnknownType| type_skeleton(&Type::Unknown(r));
+        assert_eq!(bytes(UnknownType::Unannotated), &[0x18, 0x01]);
+        assert_eq!(bytes(UnknownType::DynamicallyTyped), &[0x18, 0x02]);
+        assert_eq!(bytes(UnknownType::TruncatedAtDepthLimit), &[0x18, 0x05]);
+        assert_eq!(bytes(UnknownType::OracleGap), &[0x18, 0x06]);
+        // Name-carrying reasons: opcode, reason, then the encoded string.
+        let local = bytes(UnknownType::UnresolvedLocalName {
+            name: "Ctx".to_owned(),
+        });
+        assert_eq!(&local[..2], &[0x18, 0x03]);
+        assert!(local.ends_with(b"Ctx"), "the name must be in the skeleton");
+        let external = bytes(UnknownType::UnresolvedExternal {
+            name: "Ctx".to_owned(),
+        });
+        assert_eq!(&external[..2], &[0x18, 0x04]);
+        assert_ne!(local, external, "the reason must discriminate, not just the name");
+        assert_eq!(
+            &bytes(UnknownType::NoIrRepresentation {
+                construct: "complex128".to_owned()
+            })[..2],
+            &[0x18, 0x07]
+        );
+    }
+
+    /// `Type::Any` keeps opcode `0x09` — the top type's encoding is unchanged
+    /// by CC-2, so an entry whose signature genuinely mentions `Object` /
+    /// `interface{}` / `unknown` keeps its v4-shaped preimage.
+    #[test]
+    fn any_opcode_is_unchanged_by_the_unknown_split() {
+        assert_eq!(type_skeleton(&Type::Any), &[0x09]);
+    }
+
+    /// Two overloads whose only difference is an unresolved parameter type
+    /// must not share a signature skeleton.
+    ///
+    /// This is the Gson / Click failure mode one layer up from `Ref::Foreign`:
+    /// under `Type::Any` both signatures encoded the same single byte, minted
+    /// the same `IntroId`, and one method silently overwrote the other.
+    #[test]
+    fn overloads_over_distinct_unresolved_types_do_not_collide() {
+        let a = function_signature_skeleton(
+            &[Some(Type::unresolved_external("java.lang.Class"))],
+            &[],
+            &[],
+            &[],
+        );
+        let b = function_signature_skeleton(
+            &[Some(Type::unresolved_external("java.lang.reflect.Type"))],
+            &[],
+            &[],
+            &[],
+        );
+        assert_ne!(a, b, "fromJson(String, Class) and (String, Type) must differ");
     }
 
     /// An unresolvable local ref (import) encodes as the 0x00 placeholder.

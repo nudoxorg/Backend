@@ -34,6 +34,19 @@ pub enum McpError {
         reason: &'static str,
     },
 
+    /// A package lineage argument was not in `ecosystem:name` form.
+    ///
+    /// Distinct from [`Self::MalformedKey`]: a package lineage carries no
+    /// `#introhex` half, so the two have different valid shapes and an agent
+    /// correcting one must not be told the rules of the other.
+    #[error("malformed package lineage {package:?}: {reason}")]
+    MalformedPackage {
+        /// The rejected input, echoed back so an agent can self-correct.
+        package: String,
+        /// Why it was rejected.
+        reason: &'static str,
+    },
+
     /// A tool argument was structurally valid but semantically out of range.
     #[error("invalid argument {argument}: {reason}")]
     InvalidArgument {
@@ -83,9 +96,9 @@ impl McpError {
         let message = self.to_string();
         match self {
             Self::Unauthenticated => rmcp::ErrorData::invalid_request(message, None),
-            Self::MalformedKey { .. } | Self::InvalidArgument { .. } => {
-                rmcp::ErrorData::invalid_params(message, None)
-            }
+            Self::MalformedKey { .. }
+            | Self::MalformedPackage { .. }
+            | Self::InvalidArgument { .. } => rmcp::ErrorData::invalid_params(message, None),
             Self::UnknownResource(_) => rmcp::ErrorData::resource_not_found(message, None),
             Self::Engine(_) | Self::TruncatedStream | Self::Bind { .. } | Self::Serve(_) => {
                 rmcp::ErrorData::internal_error(message, None)

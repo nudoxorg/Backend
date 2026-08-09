@@ -6,8 +6,8 @@ use futures::StreamExt as _;
 use nudox_graph::adapter::CorpusAdapter;
 use nudox_graph::queries::{
     FIND_IMPLEMENTORS, FIND_SYMBOL_BY_KEY, FIND_USAGES, FindImplementorsRow, FindSymbolByKeyRow,
-    FindUsagesRow, LIST_PACKAGE_FUNCTIONS, ListPackageFunctionsRow, SYMBOLS_MENTIONING_TYPE,
-    SymbolsMentioningTypeRow,
+    FindUsagesRow, LIST_PACKAGE_FUNCTIONS, ListPackageFunctionsRow, SYMBOL_SOURCE_LOCATION,
+    SYMBOLS_MENTIONING_TYPE, SymbolSourceLocationRow, SymbolsMentioningTypeRow,
 };
 use nudox_store::{
     corpus::Corpus,
@@ -119,6 +119,54 @@ async fn list_package_functions_finds_functions() {
             row.name
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// symbol_source_location — the named query for "where was this written"
+// ---------------------------------------------------------------------------
+
+/// The named query must return a *reason* for the rich fixture's symbols,
+/// which are all built through `Entry::new` with an empty source path.
+///
+/// This is the query an MCP agent runs to build a jump-to-source link, and
+/// the assertion pins the property that makes it safe: `location_kind` says
+/// there is nowhere to jump, and `unlocated_reason` says why, so the agent
+/// need not guess from a null `file`.
+#[tokio::test]
+async fn symbol_source_location_reports_a_reason_for_an_unlocated_symbol() {
+    let corpus = make_corpus().await;
+    let schema = schema();
+    let adapter = Arc::new(CorpusAdapter::new(corpus));
+    let key = rich_key(6); // distance
+
+    let vars = [("key".to_string(), key.clone())];
+    let results: Vec<SymbolSourceLocationRow> = execute_query_async(
+        &schema,
+        adapter,
+        SYMBOL_SOURCE_LOCATION,
+        vars.into_iter().collect(),
+    )
+    .expect("query must execute")
+    .map(|row| {
+        row.expect("no error")
+            .try_into_struct::<SymbolSourceLocationRow>()
+            .expect("deserialize")
+    })
+    .collect()
+    .await;
+
+    let row = results.first().expect("distance must resolve");
+    assert_eq!(row.key, key);
+    assert_eq!(row.name, "distance");
+    assert_eq!(row.location_kind, "Unlocated");
+    assert_eq!(
+        row.unlocated_reason.as_deref(),
+        Some("ProducerRecordsNoLocation"),
+        "the reason must reach the typed row, not be flattened into the null `file`"
+    );
+    assert_eq!(row.file, None);
+    assert_eq!(row.start_line, None);
+    assert_eq!(row.end_column, None);
 }
 
 // ---------------------------------------------------------------------------

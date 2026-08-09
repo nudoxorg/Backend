@@ -60,9 +60,16 @@ path = "tests/vector/stage_tests.rs"
 name = "vector_weights"
 path = "tests/vector/weights_tests.rs"
 
+# Requires the ONNX runtime stack. Without `required-features`, the inner
+# `#![cfg(feature = "onnx")]` compiled this target to an empty crate on every
+# default build and reported `0 tests; 0 passed` — so it bit-rotted unnoticed
+# (duplicate `#![cfg]`, a missing `EmbeddingModel` import, and a `-p vector-embed`
+# invocation naming a package that no longer exists). Declaring the requirement
+# makes cargo refuse the target up front rather than silently emptying it.
 [[test]]
 name = "vector_onnx_live"
 path = "tests/vector/onnx_live.rs"
+required-features = ["onnx"]
 
 [[test]]
 name = "vector_adversarial_depshard"

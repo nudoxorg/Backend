@@ -287,6 +287,21 @@ pub struct PreparedRow {
     /// its disambiguating tier is [`PreparedRow::qualifier`], which may be
     /// shorter.
     pub path: SharedString,
+    /// The owning package — the leading segment of [`PreparedRow::path`] — or
+    /// empty when the producer's display name carried no path at all.
+    ///
+    /// # Why this is a field
+    ///
+    /// The row template used to slice it out of `path` itself, under a comment
+    /// that named the fix and deferred it: "this is one `SharedString`
+    /// allocation per visible row per render frame. The proper fix is to add
+    /// `package: SharedString` to `PreparedRow`". This is that field.
+    ///
+    /// It belongs here for the same reason [`RowQualifier`] does: `path` is
+    /// what the *wire* said, and everything the row draws should be decided
+    /// once, on the generation that produced it, rather than re-derived by a
+    /// template that runs on every frame of every scroll (§1.1.4).
+    pub package: SharedString,
     /// Whether — and with what — this row is distinguished from its namesakes.
     pub qualifier: RowQualifier,
     /// Signature preview, already in the component's token vocabulary.
@@ -318,10 +333,29 @@ impl PreparedRow {
         } else {
             SharedString::from("unknown")
         };
+        // The package is the first segment of the path prefix
+        // (`"tokio::runtime::"` → `"tokio"`). Empty path ⇒ empty package,
+        // which the template reads as "nothing to disambiguate, draw no
+        // label".
+        //
+        // Both separators, via the same rule as `path_segments` and
+        // `split_qualified_name`. The template this replaces knew only about
+        // `::`, so a Java, Go, C# or Python hit — every producer whose display
+        // names are dot-separated — rendered *no* package label in a
+        // cross-package search, silently. That is a defect, not a deliberate
+        // narrowing, and it survived because the knowledge of how a producer
+        // separates path segments lived in three places and only two of them
+        // were kept current.
+        let package = match path.find(separator_of(&path)) {
+            Some(end) => SharedString::from(path[..end].to_owned()),
+            None => SharedString::default(),
+        };
+
         PreparedRow {
             key: hit.key.clone(),
             leaf,
             path,
+            package,
             // Overwritten by `prepare`, which is the only caller.
             qualifier: RowQualifier::UniqueLeaf,
             sig: hit.sig_preview.iter().map(prepare_sig_token).collect(),
@@ -478,14 +512,27 @@ fn common_head_len(segmented: &[(Vec<String>, &'static str)], group: &[usize]) -
 /// The separator that was found is returned rather than normalised, because
 /// rewriting `.` to `::` would be a claim about the language that this layer
 /// has no way to check — lindsey documents seven of them.
-fn path_segments(name: &str) -> (Vec<String>, &'static str) {
-    let (sep, split): (&'static str, Vec<&str>) = if name.contains("::") {
-        ("::", name.split("::").collect())
+/// Which separator a producer used in this qualified name.
+///
+/// One definition, because three copies of this rule is how the search row's
+/// package label came to understand only `::` while the two functions beside
+/// it understood both: the knowledge drifted in the copy nobody was looking at.
+/// A name with no separator at all reports `"::"` — it has no path to split, so
+/// the answer is arbitrary, and picking the majority convention keeps the
+/// `Rust`-shaped default.
+fn separator_of(name: &str) -> &'static str {
+    if name.contains("::") {
+        "::"
     } else if name.contains('.') {
-        (".", name.split('.').collect())
+        "."
     } else {
-        ("::", vec![name])
-    };
+        "::"
+    }
+}
+
+fn path_segments(name: &str) -> (Vec<String>, &'static str) {
+    let sep = separator_of(name);
+    let split: Vec<&str> = name.split(sep).collect();
     let mut segments: Vec<String> = split.into_iter().map(|s| s.to_owned()).collect();
     // The last piece is the leaf, which lives on `PreparedRow::leaf`.
     segments.pop();
@@ -777,6 +824,37 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The row's package label is decided at ingest, from the leading path
+    /// segment — the value `render_row` used to slice out of `path` on every
+    /// frame.
+    #[test]
+    fn the_package_label_is_the_leading_path_segment() {
+        let rows = PreparedRow::prepare(&[hit("serde_json::value::Value")]);
+        assert_eq!(rows[0].package.as_ref(), "serde_json");
+    }
+
+    /// A dot-separated producer gets a package label too.
+    ///
+    /// The render-time helper this replaced tested `path.find("::")` and
+    /// nothing else, so every Java, Go, C# and Python hit came out with no
+    /// package label in a cross-package search — invisibly, because the
+    /// missing label looks exactly like the single-package case that is
+    /// supposed to have none.
+    #[test]
+    fn a_dot_separated_producer_still_names_its_package() {
+        let rows = PreparedRow::prepare(&[hit("memchr.arch.x86_64.avx2.memchr")]);
+        assert_eq!(rows[0].package.as_ref(), "memchr");
+    }
+
+    /// A bare leaf has no path, so there is no package to name and the row
+    /// draws no label — the empty string is that answer.
+    #[test]
+    fn a_bare_leaf_has_no_package_label() {
+        let rows = PreparedRow::prepare(&[hit("Value")]);
+        assert!(rows[0].path.is_empty());
+        assert!(rows[0].package.is_empty());
     }
 
     #[test]

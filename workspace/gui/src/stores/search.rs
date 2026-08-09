@@ -161,6 +161,14 @@ impl SearchEngine for EngineHandle {
             text: text.to_owned(),
             kinds,
             limit: 50,
+            // Empty means "every loaded package", which is what the omni-search
+            // has always done — the field exists because MCP's `search_symbols`
+            // needs to filter *before* the engine truncates to `limit` (filtering
+            // after truncation can return zero rows while matches exist). The GUI
+            // has no package-scoping UI today; when it gets one, this is where it
+            // plugs in, and it will be correct by construction rather than needing
+            // the same fix again.
+            packages: Vec::new(),
         };
 
         // `EngineHandle::search` returns `(StreamHandle, Receiver<SearchEvent>)`.

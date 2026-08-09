@@ -56,9 +56,24 @@ pub struct EmbedRuntimeInfo {
     /// The execution provider actually selected.
     pub accel: AccelKind,
 
-    /// Whether this runtime's output is bit-canonical (int8 ONNX on the
-    /// pinned graph): only durable-canonical outputs may be persisted and
-    /// shared across planes (I12); non-canonical accel is query-side only.
+    /// Whether this runtime's output is a function of its input alone: only
+    /// durable-canonical outputs may be persisted and shared across planes
+    /// (I12); non-canonical accel is query-side only.
+    ///
+    /// Two independent things can break it, and both must be checked:
+    ///
+    /// * a non-CPU execution provider, which may reassociate float operations;
+    /// * a **dynamically quantized** artifact, whose activation scale is refit
+    ///   from each batch's own value range — so the same text embedded next to
+    ///   different neighbours yields a different vector. See
+    ///   [`crate::vector::core::model::Quantization::is_batch_invariant`].
+    ///
+    /// The second was live in this repo until 2026-08-08: this field was set to
+    /// a literal `true` while the brand pointed at `model_quantized.onnx`, and
+    /// the deviation was ~0.015 per component — 400× the float32 noise floor.
+    /// Nothing failed, because nothing compared two batchings of the same text.
+    /// Implementors should therefore **derive** this from the loaded artifact
+    /// rather than assert it.
     pub durable_canonical: bool,
 
     /// Max texts per `embed_batch` call.

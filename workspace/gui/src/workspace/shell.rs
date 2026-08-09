@@ -1272,6 +1272,7 @@ impl EventEmitter<ShellEvent> for Shell {}
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::scope(crate::perf::Region::Shell);
         // ── §4.2 render-loop contract: tick all springs here ──────────────────
         // Notify *only this entity* via `request_animation_frame` while unsettled.
         // The rest of the app renders zero frames during a dock slide.

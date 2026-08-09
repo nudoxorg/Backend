@@ -98,6 +98,7 @@ async fn known_symbol_returns_hits() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     let (_h, rx) = engine.search(q, Gen(1));
     let events = drain(rx).await;
@@ -130,6 +131,7 @@ async fn nonsense_query_returns_no_hits() {
         text: "XxXzZzNoSuchSymbol42XxX".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     let (_h, rx) = engine.search(q, Gen(2));
     let events = drain(rx).await;
@@ -165,6 +167,7 @@ async fn repeated_identical_queries_produce_stable_results() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
 
     let (_h1, rx1) = engine.search(q(), Gen(10));
@@ -201,6 +204,7 @@ async fn dropping_handle_does_not_hang() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     let (handle, rx) = engine.search(q, Gen(20));
 
@@ -232,6 +236,7 @@ async fn case_insensitive_lookup_returns_same_hits() {
         text: text.to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
 
     let (_h_lower, rx_lower) = engine.search(make("point"), Gen(30));
@@ -290,6 +295,7 @@ async fn exact_match_outscores_prefix_match() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     let (_h, rx) = engine.search(q, Gen(40));
     let events = drain(rx).await;
@@ -347,6 +353,7 @@ async fn very_long_query_terminates() {
         text: long,
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     let (_h, rx) = engine.search(q, Gen(50));
     let result = tokio::time::timeout(Duration::from_millis(500), drain(rx)).await;
@@ -374,6 +381,7 @@ async fn non_ascii_query_does_not_panic() {
             text: text.to_string(),
             kinds: Vec::new(),
             limit: 50,
+            packages: Vec::new(),
         };
         let (_h, rx) = engine.search(q, Gen(60));
         let result = tokio::time::timeout(Duration::from_millis(500), drain(rx)).await;
@@ -407,6 +415,7 @@ async fn search_before_corpus_ready_does_not_error() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
     // Issue the search immediately — corpus may not be loaded.
     let (_h, rx) = engine.search(q, Gen(70));
@@ -442,6 +451,7 @@ async fn cancelled_gen_does_not_deliver_events_to_next_gen() {
         text: "Point".to_owned(),
         kinds: Vec::new(),
         limit: 50,
+        packages: Vec::new(),
     };
 
     let (h_old, _rx_old) = engine.search(q(), Gen(80));

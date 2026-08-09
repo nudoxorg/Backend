@@ -1,12 +1,47 @@
 //! Signature rendering: `nudox_ir::entry::Entry` → `Vec<SigToken>`.
 //!
-//! # LR-4: one renderer, everywhere
+//! # LR-4: one renderer per job, and exactly two jobs
 //!
 //! This module is the **only** place that converts an `Entry`'s kind data into
 //! typed signature tokens. Every surface that shows a signature — the symbol
 //! page header, search hit rows, quick-peek, MCP output, and the diff view —
 //! uses the `tokens` function below. Rendering a signature by `format!` or any
 //! other means outside this module is a review-blocking violation of LR-4.
+//!
+//! ## The claim this paragraph used to make, and why it was wrong
+//!
+//! It read: "Rendering a signature by `format!` or any other means outside
+//! this module is a review-blocking violation of LR-4" — full stop, with no
+//! qualification. Read as "no other code may render a `Type`", that rule was
+//! both unenforced and unenforceable, and the codebase had already broken it
+//! in the worst possible way: `nudox-graph`'s `Field.typeStr` was
+//! `format!("{t:?}")`, shipping `Nominal(Intro(intro:3f1a9c2b…))` to MCP
+//! clients. Five further type-valued schema fields were left *unexposed*
+//! rather than copy that dump. So the unqualified rule bought no safety and
+//! cost five answers.
+//!
+//! There are now two renderers, deliberately, with disjoint jobs:
+//!
+//! | | this module (`tokens`) | [`nudox_ir::render`] |
+//! |---|---|---|
+//! | input | an `Entry` + its `PackageView` | a bare `Type` |
+//! | output | `Vec<SigToken>`, each nominal carrying a jump target | one `String` |
+//! | reader | a human looking at a signature | a program holding a scalar |
+//! | `Unknown(UnresolvedLocalName{"Context"})` | `Context` | `?unresolved(Context)` |
+//! | `Unknown(Unannotated)` | `?` | `?unannotated` |
+//! | `Unknown(TruncatedAtDepthLimit)` | `…` | `?depth-limit` |
+//!
+//! **Neither can serve the other's caller**, and the unknown-lattice rows are
+//! why. A page renders `Context` because the name is the useful half and the
+//! page has a second channel — no link target on that token — to say it is
+//! unresolved. A scalar string has no second channel, so its rendering must
+//! carry the reason inline and must `?`-prefix it so a hole can never be
+//! mistaken for a type the source wrote.
+//!
+//! What LR-4 forbids, stated so it is checkable: **a third path, and `Debug`
+//! in either of the two.** If you need type text somewhere new, call one of
+//! these two by name; if neither fits, the correct move is to widen one of
+//! them and say here why.
 //!
 //! # Design
 //!
@@ -25,6 +60,7 @@ use nudox_ir::{
     kind::Kind,
     kinds::{
         FieldKey, FnModifier, Function, GenericParam, Param, Receiver, RecordForm, Type,
+        UnknownType,
         ty::{Primitive, TemplatePart, TupleElement, Variance, Width},
     },
 };
@@ -432,6 +468,30 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 text: SharedStr::from("any"),
                 target: None,
             });
+        }
+
+        // Each reason renders differently, because each *is* different to a
+        // reader. Collapsing them back to one glyph here would undo the whole
+        // point of the lattice split: a reader must be able to tell "the
+        // source wrote nothing" from "the source wrote `Any`" from "we know
+        // the name and have not linked it yet".
+        //
+        // The two name-carrying reasons render the name itself — an
+        // unresolved `Context` is far more useful on screen as `Context` than
+        // as `any`, even with no jump target behind it.
+        Type::Unknown(reason) => {
+            let text = match reason {
+                UnknownType::Unannotated => SharedStr::from("?"),
+                UnknownType::DynamicallyTyped => SharedStr::from("dynamic"),
+                UnknownType::UnresolvedLocalName { name }
+                | UnknownType::UnresolvedExternal { name } => SharedStr::from(name.as_str()),
+                UnknownType::TruncatedAtDepthLimit => SharedStr::from("…"),
+                UnknownType::OracleGap => SharedStr::from("?"),
+                UnknownType::NoIrRepresentation { construct } => {
+                    SharedStr::from(construct.as_str())
+                }
+            };
+            toks.push(SigToken::Ty { text, target: None });
         }
 
         Type::Inferred => {

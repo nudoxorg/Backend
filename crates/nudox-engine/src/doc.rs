@@ -84,9 +84,28 @@ impl EngineHandle {
     ///
     /// The generation currently resident in the `Corpus` — see
     /// [`EngineHandle::select_version`]. `SymbolKey` carries no version, and
-    /// deliberately so: `IntroId` is stable across versions, so the same key
-    /// opens the same symbol in whichever generation is current, and switching
-    /// version does not invalidate a link, a tab, or a history entry.
+    /// deliberately so: for most declarations `IntroId` is stable across
+    /// versions, so the same key opens the same symbol in whichever generation
+    /// is current, and switching version does not invalidate a link, a tab, or
+    /// a history entry.
+    ///
+    /// **This does not hold for every declaration**, and the exception is not
+    /// rare. `IntroId` is minted with a disambiguator tier
+    /// (`nudox_ir::change::intro`), and only the top tiers are content-derived.
+    /// A declaration that collided and fell through to `Disambiguator::Span` is
+    /// keyed on **byte offsets**, so adding a comment above it changes its key;
+    /// one that fell through to `Ordinal` is, in that module's own words, "not
+    /// stable across a producer reordering its output". `Span` is universally
+    /// degenerate in the Go, C# and Python producers (they emit `0..0`), which
+    /// forces `Ordinal` for every collision there. Measured: memchr drops
+    /// 1835 → 1794 entries with escalation disabled, i.e. 41 declarations in
+    /// one crate whose identity is not content-derived.
+    ///
+    /// So a stale link is possible, and the graph cannot currently tell you
+    /// which tier a key came from — `SealReport::forced` records exactly that
+    /// and is discarded at the `nudox-store` boundary before reaching
+    /// `PackageView`. Treat "the key still resolves" as the common case, not a
+    /// guarantee.
     pub fn open_symbol(
         &self,
         key: SymbolKey,
@@ -378,61 +397,66 @@ async fn stream_symbol(
 
 /// Collect all `ImplRow`s for the type identified by `target`.
 ///
-/// Walks `pkg.indexes().by_kind[KindDiscriminant::Impl]` — every impl in
-/// the package — and selects those whose `self_ty` points at `target`.
-/// The result is sorted by label string for deterministic emission order.
+/// One posting-list probe: the entries that name `target` in the
+/// [`TypePosition::ImplSelf`] position *are* the impls whose `self_ty` is
+/// `target`. The result is sorted by label string for deterministic emission
+/// order.
+///
+/// # What this used to do, and why it stopped
+///
+/// It scanned the whole `by_kind[Impl]` bucket per symbol and re-matched every
+/// impl's `self_ty` by hand, under a comment saying the scan existed *because*
+/// `mentions` indexed `Impl::of` and not `Impl::self_ty`. That is no longer
+/// true — `PackageIndexes::type_refs` carries the position — so the workaround
+/// is a probe.
+///
+/// The swap also fixes two cases the hand-rolled matcher silently dropped,
+/// because it only recursed one level into `Type::Apply` and knew nothing
+/// about `Type::Annotated`:
+///
+/// * `impl Trait for Outer<Inner<T>>` — the matcher compared `target` against
+///   `Outer` only at the outermost level, which happened to be right, but
+///   `impl Trait for @NonNull Point` matched nothing at all.
+/// * `head_stable_ref` (which builds the index) recurses through both, so the
+///   index and the Implementations tab can no longer disagree about what an
+///   impl is *for*.
+///
+/// [`TypePosition::ImplSelf`]: nudox_store::package::TypePosition::ImplSelf
 fn collect_impls(
     target: nudox_ir::change::IntroId,
     pkg: &nudox_store::package::PackageView,
     lineage: nudox_ir::change::PackageLineageId,
 ) -> Vec<ImplRow> {
-    use nudox_ir::index::Ref;
-    use nudox_ir::kind::{Kind, KindDiscriminant};
+    use nudox_ir::change::StableRef;
+    use nudox_ir::kind::Kind;
     use nudox_ir::kinds::Type;
+    use nudox_store::package::TypePosition;
 
     let view = pkg.view();
-    let indexes = pkg.indexes();
 
-    // Retrieve the bucket; an absent key means zero impls, which is fine.
-    let impl_ids = match indexes.by_kind.get(&KindDiscriminant::Impl) {
-        Some(ids) => ids,
-        None => return Vec::new(),
-    };
-
-    // Determine whether a `Type` resolves to `target` in this package.
-    // We recurse one level into `Type::Apply` to handle `impl Trait for Vec<T>`
-    // where the outer type is an Apply whose base is the Nominal we want.
-    let ty_matches = |ty: &Type| -> bool {
-        match ty {
-            Type::Nominal(Ref::Intro(id)) => *id == target,
-            // A cross-package self type never matches a *local* `target`: this
-            // function answers "which impls are on the symbol I opened", and
-            // that symbol is by definition in this package. Stated explicitly
-            // rather than caught by the `_` wildcard below, because the
-            // wildcard would silently drop such an impl from the
-            // Implementations list rather than fail — the exact shape of the
-            // defect this change exists to remove.
-            Type::Nominal(Ref::Foreign { .. }) | Type::Nominal(Ref::Local(_)) => false,
-            // Generic application: `impl Debug for Router<E>` — the outer
-            // `Apply` has a `Nominal(Intro(router_intro))` as its base.
-            Type::Apply { base, .. } => {
-                matches!(base.as_ref(), Type::Nominal(Ref::Intro(id)) if *id == target)
-            }
-            _ => false,
-        }
-    };
+    // `ImplSelf` and not `ImplementedTrait`: this tab answers "what is
+    // implemented *for* the symbol I opened". Reading the trait position here
+    // would list, for `trait Display`, every impl of `Display` — which is a
+    // real question, but a different one, and the one `Trait.implementors`
+    // answers.
+    let self_ref = StableRef::new(lineage.clone(), target);
+    let impl_ids = pkg
+        .indexes()
+        .type_refs_in(&self_ref, TypePosition::ImplSelf);
 
     let mut rows: Vec<ImplRow> = impl_ids
         .iter()
         .filter_map(|&impl_intro| {
             let entry = view.entry(impl_intro)?;
+            // A non-`Impl` entry cannot appear in the `ImplSelf` position —
+            // only `Kind::Impl` contributes one — so this arm is unreachable
+            // rather than a filter. It stays a `return None` instead of an
+            // `expect` because a corpus inconsistency should cost one row, not
+            // the whole page.
             let impl_data = match entry.kind().as_owned_kind() {
                 Some(Kind::Impl(i)) => i,
                 _ => return None,
             };
-            if !ty_matches(&impl_data.self_ty) {
-                return None;
-            }
             // Render the impl signature as the label.  `chunk::signature::tokens`
             // produces something like `impl Debug for Router<E>` which is exactly
             // what the Implementations tab wants to display.  We flatten the

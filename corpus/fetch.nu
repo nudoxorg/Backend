@@ -124,6 +124,101 @@ def resolve-url [ecosystem: string, name: string, version: string, override_url]
     }
 }
 
+# ---------------------------------------------------------------------------
+# JPMS module descriptors — the one place this corpus fetches a COMPILED jar.
+#
+# `[[jpms_modules]]` is a separate top-level array from `[[packages]]`, and
+# that separation is the enforcement mechanism, not decoration. A jpms module
+# is:
+#
+#   * never extracted — the `.jar` is copied verbatim, so there is no `.java`
+#     file anywhere for a producer to discover;
+#   * never placed under `<output_dir>/<name>-<version>/` alongside the
+#     package checkouts — it goes to `<output_dir>/.module-path/`, a
+#     dot-directory that `JavaProducer::sourcepath_entries` skips outright;
+#   * only ever passed to `javac`/`javadoc` as `--module-path`.
+#
+# It therefore cannot become lowering input by accident: `PackageSource::root`
+# is always a `[[packages]]` directory, and `discover_java_sources` finds
+# nothing in a directory of jars even if one were pointed at it.
+#
+# Why any compiled artifact at all: `javac`'s module system has positions no
+# source artifact can fill. `org.slf4j` and `org.opentest4j` publish sources
+# jars with no `module-info.java` at all (only their binary jars carry the
+# descriptor). `ch.qos.logback.core`'s source `module-info.java` names
+# `janino` and `commons.compiler`, which are *automatic* module names derived
+# from jar filenames — by construction there is no source form of an
+# automatic module. And a target with no `module-info.java` of its own
+# (`assertj-core`) cannot use `--module-source-path` at all, because `javac`
+# rejects it in the same invocation as `-sourcepath`, which that target needs
+# for its non-modular dependencies. See
+# `workspace/compiler/languages/java/tests/corpus_sweep.rs` for the per-entry
+# derivation.
+# ---------------------------------------------------------------------------
+
+def resolve-jpms-url [name: string, version: string, override_url] {
+    if $override_url != null {
+        return $override_url
+    }
+    let parts = ($name | split row ":")
+    if ($parts | length) != 2 {
+        error make { msg: $"jpms module name must be 'groupId:artifactId', got '($name)'" }
+    }
+    let group_path = ($parts | get 0 | str replace --all "." "/")
+    let artifact = ($parts | get 1)
+    $"https://repo1.maven.org/maven2/($group_path)/($artifact)/($version)/($artifact)-($version).jar"
+}
+
+def jpms-jar-name [name: string, version: string] {
+    let artifact = ($name | split row ":" | last)
+    $"($artifact)-($version).jar"
+}
+
+# Fetches, verifies, and *places* (never extracts) one compiled module jar.
+def fetch-one-jpms [name: string, ver_entry: record, output_dir: path] {
+    let version = $ver_entry.version
+    let hash = $ver_entry.hash
+    let module_dir = $"($output_dir)/.module-path"
+    let jar_path = $"($module_dir)/(jpms-jar-name $name $version)"
+
+    if ($jar_path | path exists) {
+        print $"SKIP: jpms-module/($name) ($version) already present"
+        return { ecosystem: "jpms-module", name: $name, version: $version, status: "skipped", detail: "already present" }
+    }
+
+    print $"INFO: Fetching jpms-module/($name) ($version)"
+    let temp_dir = (mktemp -d)
+
+    let result = (try {
+        let url = (resolve-jpms-url $name $version ($ver_entry.url?))
+        let archive_path = $"($temp_dir)/module.jar"
+        curl -sS -L -f --retry 2 --retry-delay 2 --max-time 180 -o $archive_path $url
+
+        if not ($archive_path | path exists) {
+            error make { msg: $"download produced no file (url: ($url))" }
+        }
+
+        let actual_hash = (compute-nix-sha256 $archive_path)
+        if $actual_hash != $hash {
+            error make { msg: $"hash mismatch: manifest says ($hash), downloaded content hashes to ($actual_hash) \(url: ($url)\)" }
+        }
+
+        mkdir $module_dir
+        cp $archive_path $jar_path
+
+        print $"OK: jpms-module/($name)-($version) ready"
+        { ecosystem: "jpms-module", name: $name, version: $version, status: "ok", detail: $jar_path }
+    } catch { |err|
+        let is_mismatch = ($err.msg | str starts-with "hash mismatch")
+        let status = if $is_mismatch { "hash-mismatch" } else { "error" }
+        print $"(if $is_mismatch { 'HASH MISMATCH' } else { 'ERROR' }): jpms-module/($name) ($version): ($err.msg)"
+        { ecosystem: "jpms-module", name: $name, version: $version, status: $status, detail: $err.msg }
+    })
+
+    rm -rf $temp_dir
+    $result
+}
+
 def guess-extension [url: string] {
     if ($url | str ends-with ".tar.gz") { ".tar.gz" } else if ($url | str ends-with ".tgz") { ".tgz" } else if ($url | str ends-with ".zip") { ".zip" } else if ($url | str ends-with ".jar") { ".jar" } else if ($url | str ends-with ".nupkg") { ".nupkg" } else if ($url | str ends-with ".crate") { ".crate" } else { "" }
 }
@@ -168,8 +263,33 @@ def deepest-sole-dir [dir: path] {
 # have none (maven sources jars and nuget nupkgs, which put files straight at
 # the archive root). Handle both without hardcoding a name-version directory
 # convention that not every ecosystem follows.
-def finalize-package [extract_dir: path, pkg_dir: path] {
-    let source = (deepest-sole-dir $extract_dir)
+#
+# The stripping is ecosystem-scoped, and that is load-bearing rather than
+# tidiness. `deepest-sole-dir` cannot tell an archive *wrapper* from a real
+# leading *package* directory — both look like "a directory with one child".
+# For maven and nuget those leading directories ARE the package path, so
+# stripping them silently corrupts the layout:
+#
+#   javax.inject-1-sources.jar contains javax/ -> inject/ -> 7 .java files.
+#   Recursive stripping descended twice and produced flat files at the package
+#   root, each still declaring `package javax.inject;`. javadoc resolves
+#   `-sourcepath` by directory structure, so the artifact was present, hash-
+#   verified, and unusable — dagger failed with `package javax.inject does not
+#   exist` while the jar sat right there. Discovered 2026-08-08 when dagger
+#   regressed out of the java corpus sweep's known-good list.
+#
+# jsr305 survived only by accident: its javax/annotation/ has several
+# subdirectories, so the recursion stopped before eating anything. That is the
+# tell that this was never a maven-safe transformation — it depended on how
+# many packages an artifact happened to ship.
+const WRAPPED_ECOSYSTEMS = ["crates.io", "npm", "pypi", "go", "cpp"]
+
+def finalize-package [extract_dir: path, pkg_dir: path, ecosystem: string] {
+    let source = if $ecosystem in $WRAPPED_ECOSYSTEMS {
+        deepest-sole-dir $extract_dir
+    } else {
+        $extract_dir
+    }
     mkdir ($pkg_dir | path dirname)
     mv $source $pkg_dir
 }
@@ -247,7 +367,7 @@ def fetch-one [ecosystem: string, name: string, ver_entry: record, output_dir: p
         } else {
             let extract_dir = $"($temp_dir)/extracted"
             extract-to $archive_path $extract_dir
-            finalize-package $extract_dir $pkg_dir
+            finalize-package $extract_dir $pkg_dir $ecosystem
         }
         append-cargo-workspace $pkg_dir
 
@@ -281,16 +401,32 @@ def main [--output-dir: path = ".real-crates", --threads: int = 4] {
         }
     } | flatten)
 
+    # `[[jpms_modules]]` is optional and deliberately a separate array from
+    # `[[packages]]` — see `fetch-one-jpms`'s section comment above for why
+    # the separation is the safety property, not a stylistic choice.
+    let all_modules = ($manifest | get -o jpms_modules | default [] | each { |mod_entry|
+        $mod_entry.versions | each { |ver_entry|
+            { name: $mod_entry.name, ver_entry: $ver_entry }
+        }
+    } | flatten)
+
     let total = ($all_versions | length)
     print $"INFO: Materializing corpus into '($output_dir)' -- ($total) package versions, ($threads) at a time"
+    if ($all_modules | length) > 0 {
+        print $"INFO: plus ($all_modules | length) compiled JPMS module descriptor\(s\) into '($output_dir)/.module-path'"
+    }
 
     # Independent network fetches, each returning a result record rather than
     # touching shared state (see fetch-one's doc comment) -- safe to run
     # concurrently. Seven ecosystems' worth of registries means no single
     # host takes the full fan-out.
-    let results = ($all_versions | par-each -t $threads { |v|
+    let package_results = ($all_versions | par-each -t $threads { |v|
         fetch-one $v.ecosystem $v.name $v.ver_entry $output_dir
     })
+    let module_results = ($all_modules | par-each -t $threads { |m|
+        fetch-one-jpms $m.name $m.ver_entry $output_dir
+    })
+    let results = ($package_results | append $module_results)
 
     let ok = ($results | where status == "ok" | length)
     let skipped = ($results | where status == "skipped" | length)
@@ -316,6 +452,37 @@ def main [--output-dir: path = ".real-crates", --threads: int = 4] {
 #
 #   nu corpus/fetch.nu hash-url crates.io regex 1.10.3
 #   nu corpus/fetch.nu hash-url cpp nlohmann-json v3.11.3 --url https://github.com/nlohmann/json/releases/download/v3.11.3/include.zip
+# Hash a candidate `[[jpms_modules]]` entry — the COMPILED jar for a
+# `groupId:artifactId`, not its sources classifier. Separate from `hash-url`
+# on purpose: `hash-url maven ...` must keep meaning "the sources jar", so
+# that reaching for a binary is always an explicit act.
+#
+#   nu corpus/fetch.nu hash-module org.slf4j:slf4j-api 2.0.12
+def "main hash-module" [name: string, version: string, --url: string] {
+    let override_url = if ($url | is-empty) { null } else { $url }
+    let resolved = (resolve-jpms-url $name $version $override_url)
+    print $"INFO: resolved URL: ($resolved)"
+
+    let temp_dir = (mktemp -d)
+    let archive_path = $"($temp_dir)/module.jar"
+    curl -sS -L -f --retry 2 --retry-delay 2 --max-time 180 -o $archive_path $resolved
+
+    if not ($archive_path | path exists) {
+        rm -rf $temp_dir
+        print $"ERROR: download produced no file"
+        exit 1
+    }
+
+    let h = (compute-nix-sha256 $archive_path)
+    rm -rf $temp_dir
+
+    print ""
+    print $"hash = ($h)"
+    print ""
+    print "Manifest snippet:"
+    print $"  { version = \"($version)\", hash = \"($h)\" }"
+}
+
 def "main hash-url" [ecosystem: string, name: string, version: string, --url: string] {
     let override_url = if ($url | is-empty) { null } else { $url }
     let resolved = (resolve-url $ecosystem $name $version $override_url)

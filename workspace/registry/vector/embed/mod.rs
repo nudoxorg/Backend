@@ -2,7 +2,7 @@
 //!
 //! | Module | Role |
 //! |---|---|
-//! | [`weights`] | Pinned-artifact policy: locate + sha256-verify `model_quantized.onnx` (09c I11/I16). |
+//! | [`weights`] | Pinned-artifact policy: locate + sha256-verify `model.onnx` (09c I11/I16). |
 //! | [`gate`] | Concurrency cap + idle-unload/lazy-reload of the loaded embedder (09c §1.6). |
 //! | [`scheduler`] | Priority queue with ~75 ms batch coalescing, cancellation, and bounded backpressure (09c §4.3). |
 //! | [`stage`] | `EmbedStage` — the core write path (09b §4.1/§16). |

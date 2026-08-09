@@ -1941,7 +1941,17 @@ fn lower_type_alias_with_id(
         .unwrap_or_default();
 
     let alias_body = Alias::builder()
-        .maybe_target(target.filter(|t| !matches!(t, nudox_ir::kinds::Type::Any)))
+        // Was `!matches!(t, Type::Any)`, which discarded the alias target for
+        // *every* foreign or unresolvable RHS — `type R = io::Result<()>` kept
+        // nothing at all. Post-CC-2 those carry their spelling
+        // (`UnresolvedExternal`), so only the genuinely contentless gap is
+        // dropped: `Unknown(OracleGap)` says no more than `None` does.
+        .maybe_target(target.filter(|t| {
+            !matches!(
+                t,
+                nudox_ir::kinds::Type::Unknown(nudox_ir::kinds::UnknownType::OracleGap)
+            )
+        }))
         .generics(generics)
         .wheres(wheres)
         .bounds(bounds)

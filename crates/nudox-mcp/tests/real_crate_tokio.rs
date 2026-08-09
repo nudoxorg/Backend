@@ -307,7 +307,7 @@ async fn search_symbols_finds_tokio_runtime() {
             kinds: None,
             packages: None,
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("search for Runtime must not fail");
 
@@ -345,7 +345,7 @@ async fn search_symbols_broad_search_respects_limit() {
             kinds: None,
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("broad search must not fail");
 
@@ -376,7 +376,7 @@ async fn get_symbol_runtime_streams_head_and_sections() {
             kinds: None,
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -447,7 +447,7 @@ async fn find_usages_runtime_has_callers() {
             kinds: None,
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -470,7 +470,7 @@ async fn find_usages_runtime_has_callers() {
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("find_usages must not fail");
 
@@ -506,7 +506,7 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -536,7 +536,7 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
             .to_owned(),
             args: None,
             limit: Some(50),
-        })
+            cursor: None,        })
         .await
         .expect("occurrencesOf → target traversal must succeed");
 
@@ -606,7 +606,7 @@ async fn graph_query_target_key_still_works_alongside_target_edge() {
             .to_owned(),
             args: None,
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("targetKey-only query must still work after adding the target edge");
 
@@ -648,7 +648,7 @@ async fn graph_query_variant_coercion_returns_real_rows() {
             .to_owned(),
             args: None,
             limit: Some(50),
-        })
+            cursor: None,        })
         .await
         .expect("... on Variant { } coercion must succeed");
 
@@ -709,7 +709,7 @@ async fn graph_query_module_coercion_returns_real_rows() {
             .to_owned(),
             args: None,
             limit: Some(30),
-        })
+            cursor: None,        })
         .await
         .expect("... on Module { } coercion must succeed");
 
@@ -763,7 +763,7 @@ async fn graph_query_symbol_members_traversal_still_works() {
             .to_owned(),
             args: None,
             limit: Some(50),
-        })
+            cursor: None,        })
         .await
         .expect("Symbols → members traversal must succeed after schema changes");
 
@@ -790,7 +790,7 @@ async fn graph_query_trait_implementors_still_work() {
             kinds: Some(vec!["Trait".to_owned()]),
             packages: None,
             limit: Some(5),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -814,7 +814,7 @@ async fn graph_query_trait_implementors_still_work() {
             query: nudox_graph::queries::FIND_IMPLEMENTORS.to_owned(),
             args: Some([("key".to_owned(), key_str)].into_iter().collect()),
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("FIND_IMPLEMENTORS must succeed after schema changes");
 
@@ -850,7 +850,7 @@ async fn graph_query_package_members_traversal_still_works() {
                     .collect(),
             ),
             limit: Some(50),
-        })
+            cursor: None,        })
         .await
         .expect("Package → members traversal must succeed");
 
@@ -896,7 +896,7 @@ async fn graph_query_is_deterministic_over_tokio() {
         query: "{ Symbols { name @output kind @output } }".to_owned(),
         args: None,
         limit: Some(30),
-    };
+        cursor: None,    };
 
     let a = tools.do_graph_query(q.clone()).await.expect("first call");
     let b = tools.do_graph_query(q).await.expect("second call");
@@ -958,7 +958,7 @@ async fn graph_query_truncation_is_set_for_large_corpus() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("query must succeed");
 
@@ -986,7 +986,7 @@ async fn graph_query_max_limit_is_respected_for_tokio() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("unlimited query must succeed");
 

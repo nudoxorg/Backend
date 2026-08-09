@@ -350,6 +350,7 @@ async fn name_search_latency_single_real_package() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 50,
     };
     let ((events, wall), _cost) = nudox_test_support::measured("search/name/1pkg/memchr", &dir, || {
@@ -400,6 +401,7 @@ async fn type_search_latency_single_real_package() {
     let query = SearchQuery {
         text: "fn".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0, // unlimited: we want the true kind-facet size
     };
     let ((events, wall), _cost) = nudox_test_support::measured("search/type/1pkg/fn", &dir, || {
@@ -466,6 +468,7 @@ async fn prefix_search_many_matches_latency() {
     let query = SearchQuery {
         text: "mem".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0, // unlimited: measure the true match volume
     };
     let ((events, wall), _cost) = nudox_test_support::measured("search/prefix/1pkg/mem", &dir, || {
@@ -565,6 +568,7 @@ async fn latency_one_package_vs_several_real_packages() {
     let query = || SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
 
@@ -636,6 +640,7 @@ async fn first_query_cold_vs_warm_real_corpus() {
     let query = || SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 50,
     };
 
@@ -696,6 +701,7 @@ async fn memchr_query_returns_the_real_function_and_the_real_struct() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(30)).await;
@@ -764,6 +770,7 @@ async fn memchr_query_ranks_public_api_above_same_named_internal_module() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(40)).await;
@@ -837,6 +844,7 @@ async fn cross_package_search_returns_only_the_owning_real_package() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(50)).await;
@@ -878,6 +886,7 @@ async fn memchr_query_display_names_do_not_triple_repeat_a_path_segment() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(60)).await;
@@ -937,6 +946,7 @@ async fn memchr_function_specifically_outranks_internal_module_collision() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(41)).await;
@@ -1018,6 +1028,7 @@ async fn memchr_reexport_aliases_are_invisible_to_name_search() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(42)).await;

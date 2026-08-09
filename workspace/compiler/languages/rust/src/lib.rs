@@ -288,7 +288,18 @@ pub fn produce_with_occurrences(
     // is the right follow-up if a second producer ever needs occurrences.
     let _contract = nudox_producer::enforce_yield_contract(producer, src, &ir_package)?;
 
-    let table = ir_package.seal(lineage, imports).table;
+    // The identity gate, for the same reason as the yield gate above: this is a
+    // second copy of `produce`'s pipeline, so every contract `produce` enforces
+    // has to be restated here or the one producer with a bespoke pipeline is the
+    // one producer allowed to ship a table that lost declarations. Sharing the
+    // check as a function is what makes that a one-line obligation.
+    //
+    // It runs *before* occurrence resolution, not after: `resolve_occurrences`
+    // builds a canonical-path -> `IntroId` map from the sealed table, so a table
+    // that is missing declarations would silently produce occurrences pointing
+    // at the wrong owners rather than none at all.
+    let outcome = nudox_producer::enforce_identity_contract(src, ir_package.seal(lineage, imports))?;
+    let table = outcome.table;
 
     // Resolve pending occurrences against the sealed table.
     let resolved = resolve_occurrences(&table, lineage, pending_occs);

@@ -52,20 +52,93 @@ impl Metric {
     }
 }
 
-/// The canonical ONNX weights filename both planes must load (09-vector §20.3:
-/// the *same* int8 quantized artifact locally and remotely, so local and
-/// remote vectors are bit-comparable — I12).
-pub const CANONICAL_WEIGHTS_FILE: &str = "model_quantized.onnx";
+/// How an ONNX artifact encodes its weights numerically.
+///
+/// This exists because [`Self::DynamicInt8`] silently breaks the property the
+/// whole durable-vector plane rests on, and nothing else in the load path can
+/// detect it. See [`Self::is_batch_invariant`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quantization {
+    /// Full float precision, as exported. Activations are computed in float.
+    Float32,
+
+    /// Half precision. Values are converted at export; no run-time refitting.
+    Float16,
+
+    /// int8 with the activation scales baked in at export ("static"/"QDQ").
+    StaticInt8,
+
+    /// int8 whose activation scale is computed **per batch, at run time**.
+    ///
+    /// A vector produced this way depends on the other texts it was batched
+    /// with, so the same input yields different output on two runs that batch
+    /// differently. Never durable-canonical.
+    DynamicInt8,
+}
+
+impl Quantization {
+    /// Whether a vector depends only on its own input, and not on whatever it
+    /// happened to be batched alongside.
+    ///
+    /// This is the precondition for [`crate::vector::core::EmbedRuntimeInfo::
+    /// durable_canonical`]: a vector may only be persisted, shared across
+    /// planes, or compared with a vector computed elsewhere if it is a function
+    /// of its input alone.
+    pub const fn is_batch_invariant(self) -> bool {
+        !matches!(self, Self::DynamicInt8)
+    }
+}
+
+/// The canonical ONNX weights filename both planes must load.
+///
+/// # Why fp32 and not the int8 artifact (changed 2026-08-08)
+///
+/// This was `model_quantized.onnx` (161,895,621 bytes), chosen per 09-vector
+/// §20.3 so both planes would load *the same* artifact and produce
+/// bit-comparable vectors (I12). Measured against the real artifact, that
+/// rationale inverts: `model_quantized.onnx` is **dynamically** quantized
+/// (its producer string is `onnx.quantize`), so its activation scale is refit
+/// from each batch's own value range — and the same text embedded next to
+/// different neighbours comes out different.
+///
+/// Measured worst-component deviation for one text embedded alone vs. in a
+/// batch (`vector_onnx_live::live_model_vectors_do_not_depend_on_batch_composition`):
+///
+/// | neighbour | `model_quantized.onnx` | `model_fp16.onnx` | `model.onnx` |
+/// |---|---|---|---|
+/// | same length  | 0.01525469 | 0.0 | 0.0 |
+/// | much longer  | 0.02113844 | 0.00004499 | 0.00000010 |
+/// | much shorter | 0.01431698 | 0.0 | 0.0 |
+///
+/// A batch of six *identical* texts reproduced the solo vector exactly under
+/// all three, which rules out batch size and non-determinism: neighbour
+/// *content* is the variable, which is dynamic range refitting and nothing
+/// else. So the int8 artifact was not merely a worse choice than fp32 — it
+/// could not deliver the one property it was selected for.
+///
+/// fp16 is 321 MB and deviates only at 4.5e-5 (fine for ranking, and its
+/// residual is a sequence-length effect, not range refitting). It is rejected
+/// anyway because `durable_canonical` is a claim about reproducibility, not
+/// about being close enough.
+pub const CANONICAL_WEIGHTS_FILE: &str = "model.onnx";
 
 /// A pinned local-weights artifact hint for a model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeightsArtifact {
-    /// Filename inside the model package (always the canonical int8 ONNX).
+    /// Filename inside the model package.
     pub file: &'static str,
 
     /// SHA-256 of the artifact. `None` until operationally pinned; once pinned
     /// it participates in [`crate::key::tool_digest`] (I12).
     pub sha256: Option<[u8; 32]>,
+
+    /// How this artifact encodes its weights.
+    ///
+    /// Carried as a field rather than inferred from the filename because the
+    /// consequence — whether vectors may be persisted at all — is too large to
+    /// rest on a naming convention. A dynamically quantized artifact declared
+    /// here makes every runtime loading it non-canonical, structurally.
+    pub quantization: Quantization,
 }
 
 mod sealed {
@@ -94,7 +167,7 @@ pub trait EmbeddingModel: sealed::Sealed + Send + Sync + 'static {
 }
 
 /// `jinaai/jina-embeddings-v2-base-code` — the self-hostable parity model
-/// (Apache-2.0; runs identically on both planes as canonical int8 ONNX).
+/// (Apache-2.0; runs identically on both planes as canonical fp32 ONNX).
 pub enum JinaCodeV2 {}
 
 impl EmbeddingModel for JinaCodeV2 {
@@ -108,7 +181,18 @@ impl EmbeddingModel for JinaCodeV2 {
     fn weights_hint() -> Option<WeightsArtifact> {
         Some(WeightsArtifact {
             file: CANONICAL_WEIGHTS_FILE,
-            sha256: None,
+            // Pinned 2026-08-08 against the artifact this was actually verified
+            // with: `onnx/model.onnx` (641,517,466 bytes) at revision
+            // 516f4baf13dec4ddddda8631e019b5737c8bc250 of
+            // `jinaai/jina-embeddings-v2-base-code`. weights.rs I16 says an
+            // unpinned artifact in a shipping config is a bug; leaving this
+            // `None` is what let an unexamined file become canonical.
+            sha256: Some([
+                0x63, 0x36, 0x3f, 0xc1, 0x78, 0x42, 0x8b, 0x74, 0x62, 0x0c, 0x6f, 0x37, 0x80, 0xcb,
+                0xc7, 0x19, 0x18, 0x83, 0xfa, 0x5c, 0x7f, 0x84, 0xc0, 0x94, 0x5c, 0x45, 0xeb, 0x5c,
+                0x42, 0x56, 0x73, 0x3b,
+            ]),
+            quantization: Quantization::Float32,
         })
     }
 }
@@ -181,9 +265,38 @@ mod tests {
     #[test]
     fn jina_hints_canonical_weights_voyage_does_not() {
         let hint = JinaCodeV2::weights_hint().expect("jina is self-hostable");
-        assert_eq!(hint.file, "model_quantized.onnx");
-        assert_eq!(hint.sha256, None, "sha unpinned until ops freeze");
+        assert_eq!(hint.file, "model.onnx");
+        assert!(hint.sha256.is_some(), "the canonical artifact is pinned");
         assert!(VoyageCode3::weights_hint().is_none(), "voyage is API-only");
+    }
+
+    /// Any artifact a brand names as canonical must be batch-invariant.
+    ///
+    /// This is the assertion that would have caught the 2026-08-08 defect at
+    /// compile-test time instead of after a live run: the brand pointed at a
+    /// dynamically quantized artifact while the runtime hardcoded
+    /// `durable_canonical: true`. Stated as a property over the whole catalog
+    /// rather than about Jina specifically, so a future brand cannot reintroduce
+    /// it — a `DynamicInt8` hint is a compile-time-visible contradiction with
+    /// persisting the vectors it produces.
+    #[test]
+    fn no_brand_may_declare_a_batch_dependent_artifact_canonical() {
+        for hint in [JinaCodeV2::weights_hint(), VoyageCode3::weights_hint()]
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                hint.quantization.is_batch_invariant(),
+                "{} is named as a brand's canonical weights artifact but is \
+                 {:?}, whose activation scale is refit per batch. Vectors from \
+                 it depend on what they were batched with, so they cannot be \
+                 persisted or compared across planes (I12). Either ship a \
+                 statically-quantized/float artifact, or stop calling the \
+                 runtime that loads it durable-canonical.",
+                hint.file,
+                hint.quantization,
+            );
+        }
     }
 
     #[test]

@@ -67,7 +67,7 @@ use nudox_store::package::PackageView;
 
 use crate::{
     runtime::EngineHandle,
-    wire::{Gen, SharedStr, VersionEvent, VersionList, VersionRow},
+    wire::{Gen, PackageDiff, SharedStr, VersionEvent, VersionList, VersionRow},
 };
 
 // ---------------------------------------------------------------------------
@@ -504,6 +504,56 @@ impl EngineHandle {
         self.inner.versions.versions(package)
     }
 
+    /// Compare two loaded generations of `package`, declaration by
+    /// declaration.
+    ///
+    /// # Why this exists as a call and not as a query
+    ///
+    /// `Packages` and `Symbols` only ever see the one resident
+    /// `PackageView` per lineage, so "what changed between 2.8.0 and 2.8.3"
+    /// previously meant switch → query → switch → query → diff by hand. Both
+    /// generations are already resident *here*, in the registry, so the answer
+    /// costs a walk rather than a load. See [`crate::diff`] for why the
+    /// alternatives — a graph vertex, or multi-generation residency in the
+    /// corpus — were rejected.
+    ///
+    /// # `None` means "not both loaded"
+    ///
+    /// Not an error: a caller may legitimately name a version it saw in a
+    /// manifest and never asked the engine to load. Call
+    /// [`EngineHandle::versions`] to see what is actually resident. The two
+    /// version strings are matched exactly as [`EngineHandle::select_version`]
+    /// matches them.
+    ///
+    /// # Argument order is chronological, and it is load-bearing
+    ///
+    /// `from` is the older generation and `to` the newer. Every verdict in a
+    /// [`PackageDiff`] is directional — `Added`, `Removed` and `Rekeyed` all
+    /// mean the opposite thing reversed — so passing them backwards produces a
+    /// diff that is internally consistent and describes the wrong release.
+    /// The engine does not reorder them by [`VersionOrder`]: a caller
+    /// deliberately diffing newer-against-older is asking a real question, and
+    /// silently transposing it would be a repair (doctrine §8).
+    ///
+    /// # Cost
+    ///
+    /// One signature render per declaration present in both generations, plus
+    /// two hash maps sized by the number of unmatched declarations. On the
+    /// corpus's larger packages (30k+ entries) that is the same order of work
+    /// as building the package's indexes once, and it is not cached — this is
+    /// a tool call a user makes, not a hot path.
+    pub fn diff_versions(
+        &self,
+        package: &PackageLineageId,
+        from: &str,
+        to: &str,
+    ) -> Option<PackageDiff> {
+        let slices = self.inner.versions.slices(package);
+        let from_slice = slices.iter().find(|s| &*s.version == from)?;
+        let to_slice = slices.iter().find(|s| &*s.version == to)?;
+        Some(crate::diff::build(package, from_slice, to_slice))
+    }
+
     /// Switch which generation of `package` the corpus serves.
     ///
     /// # What actually changes
@@ -512,10 +562,41 @@ impl EngineHandle {
     /// version-free path — `open_symbol`, `search`, `query` — resolves against
     /// it. Selecting a version replaces that resident view, so those paths
     /// begin answering from the selected generation with no change to their
-    /// signatures. `SymbolKey` stays valid across the switch, because
-    /// `IntroId` is stable across versions: the same key opens the same symbol
-    /// in whichever generation is resident, which is precisely what makes a
-    /// version dropdown meaningful rather than a navigation reset.
+    /// signatures. `SymbolKey` usually stays valid across the switch, because
+    /// for most declarations `IntroId` is content-derived: the same key opens
+    /// the same symbol in whichever generation is resident, which is precisely
+    /// what makes a version dropdown meaningful rather than a navigation reset.
+    ///
+    /// # The caveat this feature rests on
+    ///
+    /// "`IntroId` is stable across versions" was stated here without
+    /// qualification until 2026-08-08, and it is not true of every declaration.
+    /// Identity is minted through a disambiguator ladder
+    /// (`nudox_ir::change::intro`); a declaration that collided and escalated
+    /// to `Disambiguator::Span` is keyed on **byte offsets**, so an edit
+    /// anywhere above it in the file changes its key, and `Ordinal` is
+    /// explicitly documented upstream as "not stable across a producer
+    /// reordering its output".
+    ///
+    /// This matters more here than anywhere else, because version switching is
+    /// the one feature whose whole value proposition is that a key survives.
+    /// For an escalated declaration it may not, and the user-visible symptom is
+    /// a dropdown that silently lands on nothing after an upstream release
+    /// added a line of documentation.
+    ///
+    /// **Whether a given key is affected is now answerable**, and this comment
+    /// said the opposite until 2026-08-09: it read "not currently answerable at
+    /// this layer: `SealReport::forced` … is dropped at the `nudox-store`
+    /// boundary before it reaches `PackageView`". `SealReport::forced_keys`
+    /// now names the escalated declarations by `IntroId`,
+    /// `nudox_store::package::PackageView::key_tier` answers for any one of
+    /// them, and the graph publishes it as `Symbol.keyTier`. Ask before
+    /// caching a key across a switch; after the lookup fails there is no
+    /// vertex left to ask.
+    ///
+    /// For the follow-up question — *which* declaration a churned key became —
+    /// use [`EngineHandle::diff_versions`], which re-pairs on
+    /// `(kind, path)` and reports the pair as one `Rekeyed` row.
     ///
     /// # Ordering, and the window between the two
     ///

@@ -181,7 +181,9 @@ fn lower_input_params(
                 .name(ctx.db)
                 .map(|n| n.as_str().to_owned())
                 .unwrap_or_else(|| format!("_{i}"));
-            let param_ty = ast_tys.get(i).cloned().unwrap_or(Type::Any);
+            // The HIR reports more parameters than the AST produced types for,
+            // which only happens on source that did not parse cleanly.
+            let param_ty = ast_tys.get(i).cloned().unwrap_or(Type::ORACLE_GAP);
             let mut attributes = Vec::new();
             // `f.is_varargs` covers variadic C-style params.
             if i + 1 == hir_params.len() && f.is_varargs(ctx.db) {
@@ -263,7 +265,8 @@ fn ast_param_types(
                     let hir_ty = hp.ty();
                     ty::lower_hir_type_fallback(ctx, hir_ty, ref_for)
                 })
-                .unwrap_or(Type::Any),
+                // Neither AST nor HIR has a type for this parameter position.
+                .unwrap_or(Type::ORACLE_GAP),
         })
         .collect()
 }

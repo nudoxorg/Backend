@@ -77,11 +77,82 @@ pub enum OutlineTarget {
     PageRow(PageSection, usize),
 }
 
+/// What kind of thing an outline row points at.
+///
+/// # Why the rail needs this and a label does not suffice
+///
+/// `08-symbol-opened.png` listed **"Fields" twice**: once for the `# Fields`
+/// heading inside `Point`'s doc comment, once for the generated field table
+/// below it. Both rows were correct — the page really does have two things
+/// called Fields — and the rail gave the reader no way to tell which was
+/// which, so one of its eight rows was pure noise and another was unreachable
+/// by name.
+///
+/// The fix is not to rename either one. It is that a table of contents for a
+/// *code* page has two different populations in it — what the author wrote and
+/// what the producer derived — and until now the rail rendered them
+/// identically. Marking the kind separates them at a glance and turns the rail
+/// from a list of words into a map of the page.
+///
+/// Closed on purpose, like `perf::Region`: a new section kind must decide what
+/// it looks like in the rail rather than defaulting into whatever arm happened
+/// to be last.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OutlineMarker {
+    /// A heading the author wrote, inside the prose.
+    Heading,
+    /// A code block or worked example.
+    Code,
+    /// A table the producer derived — members, fields, variants.
+    Table,
+    /// One of the page's own disclosure sections.
+    Section,
+    /// A row inside a disclosure section — an impl, a reference group.
+    Row,
+}
+
+impl OutlineMarker {
+    /// The rail's leading swatch colour for this marker, or `None` for a row
+    /// that carries no swatch at all.
+    ///
+    /// Drawn from the same [`crate::theme::tokens::KindColours`] the body's
+    /// badges use, so a `Fields` table reads the same blue in the rail as the
+    /// `field` chips beside its rows do. Authored headings deliberately get
+    /// nothing: the absence *is* the signal that this row is prose, and it is
+    /// what tells the two `Fields` rows apart without renaming either.
+    fn swatch(self, ext: &crate::theme::ext::NudoxThemeExt) -> Option<gpui::Hsla> {
+        let kinds = ext.kind_colours;
+        match self {
+            OutlineMarker::Heading => None,
+            OutlineMarker::Code => Some(ext.colours.fg_faint),
+            OutlineMarker::Table => Some(kinds.field),
+            OutlineMarker::Section => Some(kinds.module),
+            OutlineMarker::Row => Some(kinds.impl_),
+        }
+    }
+}
+
+/// The rail marker a planned documentation section should carry.
+fn marker_for(kind: SectionKind) -> OutlineMarker {
+    match kind {
+        SectionKind::CodeBlock | SectionKind::Examples => OutlineMarker::Code,
+        SectionKind::Members | SectionKind::Fields => OutlineMarker::Table,
+        // Prose, callouts and anything a newer producer adds read as authored
+        // text until we have a reason to say otherwise.
+        _ => OutlineMarker::Heading,
+    }
+}
+
 /// One row in the outline.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutlineEntry {
     /// Current label: the kind name, or the section's heading once known.
     pub label: SharedString,
+    /// Pre-formatted item count, for a row that points at a table. Empty
+    /// otherwise — a heading is read, not counted.
+    pub count: SharedString,
+    /// What kind of thing this row points at.
+    pub marker: OutlineMarker,
     /// `true` while the label is still the plan's placeholder.
     pub pending: bool,
     /// Nested one level under the preceding entry.
@@ -167,6 +238,12 @@ impl Outline {
             .enumerate()
             .map(|(ix, slot)| OutlineEntry {
                 label: slot.label.clone(),
+                // Formatted here, once per change, never per frame (§1.1.4).
+                count: match slot.row_count() {
+                    Some(n) => SharedString::from(n.to_string()),
+                    None => SharedString::default(),
+                },
+                marker: marker_for(slot.kind),
                 pending: slot.is_pending(),
                 indented: is_nested(slot.kind),
                 target: OutlineTarget::DocsSection(ix),
@@ -176,6 +253,11 @@ impl Outline {
         for entry in page {
             next.push(OutlineEntry {
                 label: entry.label.clone(),
+                // The page sections carry their count inside `label` already
+                // (`"Implementations 6"`), formatted by
+                // `SymbolPage::page_section_entries`.
+                count: SharedString::default(),
+                marker: OutlineMarker::Section,
                 // A page section is structure that exists whether or not its
                 // contents have streamed; marking it pending would make the
                 // rail flicker between two greys for no information.
@@ -186,6 +268,8 @@ impl Outline {
             for (ix, child) in entry.children.iter().enumerate() {
                 next.push(OutlineEntry {
                     label: child.clone(),
+                    count: SharedString::default(),
+                    marker: OutlineMarker::Row,
                     pending: false,
                     indented: true,
                     target: OutlineTarget::PageRow(entry.section, ix),
@@ -293,6 +377,11 @@ impl Outline {
                                 } else {
                                     colours.fg_muted
                                 };
+                                // Resolved per frame from the marker rather
+                                // than cached on the entry, so a theme switch
+                                // repaints the rail instead of leaving last
+                                // theme's hues in it.
+                                let swatch = entry.marker.swatch(&ext);
 
                                 div()
                                     .id(("symbol.outline.row", ix))
@@ -330,6 +419,28 @@ impl Outline {
                                             .flex_shrink_0()
                                             .when(is_active, |s| s.bg(colours.accent)),
                                     )
+                                    // The kind swatch: a 3 px square in the
+                                    // gutter, in the same hue the body's badge
+                                    // for that kind uses. Every row reserves
+                                    // the column whether or not it draws one,
+                                    // so labels stay on a single left edge and
+                                    // the *absence* of a swatch on an authored
+                                    // heading is legible as an absence rather
+                                    // than as a shifted row.
+                                    .child(
+                                        div()
+                                            .w(sp.space_3)
+                                            .flex_shrink_0()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .size(sp.space_1 - sp.border_width)
+                                                    .rounded(sp.border_width)
+                                                    .when_some(swatch, |el, c| el.bg(c)),
+                                            ),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
@@ -358,16 +469,33 @@ impl Outline {
                                             .min_w_0()
                                             .overflow_hidden()
                                             .truncate()
-                                            .pl(if entry.indented {
-                                                sp.space_4
-                                            } else {
-                                                sp.space_2
-                                            })
+                                            // The swatch column already supplies
+                                            // the left gutter, so only a nested
+                                            // row needs padding of its own.
+                                            .when(entry.indented, |el| el.pl(sp.space_3))
                                             .text_size(ts.dense.size)
                                             .line_height(ts.dense.line_height)
                                             .text_color(colour)
                                             .child(entry.label.clone()),
                                     )
+                                    // The count, right-aligned in the same
+                                    // column for every row that has one. This
+                                    // is the second half of telling the two
+                                    // `Fields` rows apart: the derived table
+                                    // says how many rows it has, the authored
+                                    // heading has nothing to say, and the
+                                    // reader can now name the one they want.
+                                    .when(!entry.count.is_empty(), |el| {
+                                        el.child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .pl(sp.space_2)
+                                                .text_size(ts.caption.size)
+                                                .line_height(ts.dense.line_height)
+                                                .text_color(colours.fg_faint)
+                                                .child(entry.count.clone()),
+                                        )
+                                    })
                             })
                             .collect::<Vec<_>>()
                     },
@@ -386,11 +514,34 @@ mod tests {
     fn entry(label: &'static str, pending: bool) -> OutlineEntry {
         OutlineEntry {
             label: SharedString::from(label),
+            count: SharedString::default(),
+            marker: OutlineMarker::Heading,
             pending,
             indented: false,
             target: OutlineTarget::DocsSection(0),
         }
     }
+
+    /// A derived table and an authored heading that share a name must not
+    /// render as the same row.
+    ///
+    /// This is the `08-symbol-opened.png` defect in miniature: `Point`'s doc
+    /// comment has a `# Fields` heading and the struct has a `Fields` table,
+    /// and the rail listed both as the bare word "Fields". The marker is what
+    /// separates them, and it is derived from the plan's `SectionKind` — so
+    /// this test is over the mapping, not over one frame.
+    #[test]
+    fn an_authored_heading_and_a_derived_table_carry_different_markers() {
+        assert_eq!(marker_for(SectionKind::Prose), OutlineMarker::Heading);
+        assert_eq!(marker_for(SectionKind::Fields), OutlineMarker::Table);
+        assert_ne!(
+            marker_for(SectionKind::Prose),
+            marker_for(SectionKind::Fields),
+            "a prose heading called `Fields` and the fields table would be \
+             indistinguishable in the rail",
+        );
+    }
+
 
     /// Code, callout and example sections read as subordinate; prose, members
     /// and fields are top-level landmarks.

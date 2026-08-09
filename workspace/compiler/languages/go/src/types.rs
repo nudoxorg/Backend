@@ -143,16 +143,23 @@ fn lower_type_depth_low(
     local: &HashSet<String>,
     depth: usize,
 ) -> Type {
+    // Our own guard, not the language's and not the oracle's: a real type
+    // exists below here and we chose not to walk it. Raising MAX_DEPTH closes
+    // this with no new information from anywhere, which is exactly what
+    // separates it from `OracleGap`.
     if depth >= MAX_DEPTH {
-        return Type::Any;
+        return Type::TRUNCATED;
     }
     match t.kind {
         TypeKind::Basic => lower_basic(&t.name),
 
         // Named and alias types → Nominal(RawRef).
-        // `any` (universe alias for the empty interface) → top type.
         // Generic instantiations → Apply { base: Nominal, args }.
         TypeKind::Named | TypeKind::Alias => {
+            // `any` is Go's genuine top type — the universe alias for
+            // `interface{}`, which every value implements. This is the one
+            // place in this producer where `Type::Any` is the right answer,
+            // and it stays.
             if t.pkg.is_empty() && t.name == "any" {
                 return Type::Any;
             }
@@ -200,7 +207,7 @@ fn lower_type_depth_low(
                 .elem
                 .as_deref()
                 .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Primitive(Primitive::MutPointer(Box::new(elem)))
         }
 
@@ -209,7 +216,7 @@ fn lower_type_depth_low(
                 .elem
                 .as_deref()
                 .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Slice(Box::new(elem))
         }
 
@@ -218,7 +225,7 @@ fn lower_type_depth_low(
                 .elem
                 .as_deref()
                 .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Array {
                 ty: Box::new(elem),
                 length: t.len.max(0) as usize,
@@ -233,12 +240,12 @@ fn lower_type_depth_low(
                 .key
                 .as_deref()
                 .map(|k| lower_type_depth_low(k, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             let val = t
                 .value
                 .as_deref()
                 .map(|v| lower_type_depth_low(v, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Apply {
                 base: Box::new(Type::TypeVar("map".to_string())),
                 args: Box::new([key, val]),
@@ -253,7 +260,7 @@ fn lower_type_depth_low(
                 .elem
                 .as_deref()
                 .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Apply {
                 base: Box::new(Type::TypeVar(op)),
                 args: Box::new([elem]),
@@ -287,7 +294,7 @@ fn lower_type_depth_low(
                     p.r#type
                         .as_ref()
                         .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                        .unwrap_or(Type::Any)
+                        .unwrap_or(Type::ORACLE_GAP)
                 })
                 .collect();
 
@@ -299,7 +306,7 @@ fn lower_type_depth_low(
                         .r#type
                         .as_ref()
                         .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                        .unwrap_or(Type::Any);
+                        .unwrap_or(Type::ORACLE_GAP);
                     Some(Box::new(ty))
                 }
                 _ => {
@@ -312,7 +319,7 @@ fn lower_type_depth_low(
                                 .r#type
                                 .as_ref()
                                 .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                                .unwrap_or(Type::Any);
+                                .unwrap_or(Type::ORACLE_GAP);
                             TupleElement::Positional(ty)
                         })
                         .collect();
@@ -343,7 +350,7 @@ fn lower_type_depth_low(
                         .r#type
                         .as_ref()
                         .map(|ft| lower_type_depth_low(ft, low, local, depth + 1))
-                        .unwrap_or(Type::Any),
+                        .unwrap_or(Type::ORACLE_GAP),
                     optional: false,
                     readonly: false,
                 })
@@ -356,7 +363,9 @@ fn lower_type_depth_low(
 
         TypeKind::Interface => {
             if t.is_empty_interface() {
-                // empty interface = `any` = top type
+                // `interface{}` — Go's genuine top type, satisfied by every
+                // value. A real type, not an absence: `Type::Any` is correct
+                // here in the post-CC-2 sense of that variant.
                 Type::Any
             } else {
                 // Anonymous interface literal: `interface { Foo() bool }`.
@@ -374,7 +383,7 @@ fn lower_type_depth_low(
                             .signature
                             .as_ref()
                             .map(|sig| lower_type_depth_low(sig, low, local, depth + 1))
-                            .unwrap_or(Type::Any);
+                            .unwrap_or(Type::ORACLE_GAP);
                         AnonField {
                             name: m.name.clone(),
                             ty,
@@ -404,7 +413,7 @@ fn lower_type_depth_low(
                         .r#type
                         .as_ref()
                         .map(|inner| lower_type_depth_low(inner, low, local, depth + 1))
-                        .unwrap_or(Type::Any);
+                        .unwrap_or(Type::ORACLE_GAP);
                     if term.tilde {
                         // Encode tilde-approximation: ~T ≠ T
                         Type::Apply {
@@ -428,7 +437,9 @@ fn lower_type_depth_low(
             Type::Tuple(parts)
         }
 
-        TypeKind::Invalid => Type::Any,
+        // `go/types` already reported this as invalid and already logged. We
+        // are propagating its failure, not adding a claim of our own.
+        TypeKind::Invalid => Type::ORACLE_GAP,
     }
 }
 
@@ -451,14 +462,22 @@ fn chan_op(dir: oracle::ChanDir) -> &'static str {
 /// Map a Go basic-type name onto the IR primitive algebra.
 ///
 /// Notable decisions:
-/// * `byte` → `Type::Any`.
-///   UNCERTAINTY: `byte` is a universe alias for `uint8`, but we cannot
-///   produce a nominal `RawRef` without Lowering access from this path.
-///   Callers that need a precise `byte` type should use
-///   `lower_type_with_lowering` on the containing oracle Type node instead.
+/// * `byte` → `Type::U8`. The Go spec makes `byte` an **alias** for `uint8`,
+///   not a distinct type: `[]byte` and `[]uint8` are the same type and are
+///   mutually assignable without conversion. The previous `Type::Any` was not
+///   a conservative degradation, it was wrong — it claimed a `byte` parameter
+///   accepted anything. Only the alias *spelling* is lost, and no IR slot for
+///   a spelling exists to lose it to.
 /// * `rune` → `Primitive::Char`.
-/// * `complex64`/`complex128` → `Type::Any` (no complex number primitive).
-/// * `unsafe.Pointer` → `Type::Any` (no unsafe-pointer primitive).
+/// * `complex64`/`complex128`, `unsafe.Pointer`, and any other universe name →
+///   `UnknownType::NoIrRepresentation { construct: name }`. The producer knows
+///   exactly what it is looking at; this IR has no slot for it. Naming the
+///   construct keeps `complex128` and `unsafe.Pointer` distinguishable, which
+///   one shared `Type::Any` opcode did not.
+///
+/// The trailing `_` arm matches an **open string domain**, not an enum, so it
+/// cannot be made exhaustive — but it must never yield a bare `Type::Any`,
+/// which would re-collapse everything it catches into one opcode.
 pub fn lower_basic(name: &str) -> Type {
     let name = name.strip_prefix("untyped ").unwrap_or(name);
     match name {
@@ -485,15 +504,15 @@ pub fn lower_basic(name: &str) -> Type {
             signed: false,
             width: Width::Arch,
         }),
-        // `byte` is a distinct universe alias for uint8.
-        // We cannot produce a nominal RawRef in this pure-function context.
-        // Callers that need precision must use lower_type_with_lowering.
-        "byte" => Type::Any,
+        // `byte` is an *alias* for uint8 — the same type, by spec. See the doc
+        // comment for why `Type::Any` here was wrong rather than cautious.
+        "byte" => Type::U8,
         "rune" => Type::Primitive(Primitive::Char),
         "float32" => Type::Primitive(Primitive::Float(Width::W32)),
         "float64" | "float" => Type::Primitive(Primitive::Float(Width::W64)),
-        // complex64/complex128, unsafe.Pointer, error, comparable — no IR match.
-        _ => Type::Any,
+        // complex64/complex128, unsafe.Pointer, error, comparable — known
+        // constructs with no IR slot. Keep the name so they stay distinct.
+        other => Type::no_ir_representation(other),
     }
 }
 
@@ -1059,6 +1078,101 @@ mod tests {
             }
             other => panic!("anonymous struct must lower to AnonymousRecord, got {other:?}"),
         }
+    }
+
+    // ── CC-2: `Type::Any` means *top type* and nothing else ──────────────────
+
+    /// Go's two top-type spellings survive CC-2 as `Type::Any`; nothing else
+    /// in this producer does.
+    ///
+    /// `any` and `interface{}` are real types — every value implements the
+    /// empty method set. They are not gaps and must not be reported as such.
+    #[test]
+    fn only_gos_real_top_type_stays_any() {
+        let mut low = make_low();
+        let universe_any = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: String::new(),
+            name: "any".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            lower_type_with_lowering(&universe_any, &mut low, &HashSet::new()),
+            Type::Any
+        );
+    }
+
+    /// An oracle `Invalid` node is `OracleGap` — `go/types` already failed and
+    /// already reported; the producer is propagating, not claiming a top type.
+    #[test]
+    fn invalid_oracle_node_is_an_oracle_gap() {
+        use nudox_ir::kinds::UnknownType;
+        let mut low = make_low();
+        let invalid = oracle::Type {
+            kind: TypeKind::Invalid,
+            ..Default::default()
+        };
+        assert_eq!(
+            lower_type_with_lowering(&invalid, &mut low, &HashSet::new()),
+            Type::Unknown(UnknownType::OracleGap)
+        );
+    }
+
+    /// Universe names with no IR slot keep their spelling and stay distinct.
+    ///
+    /// Under `Type::Any` a `complex128` parameter and an `unsafe.Pointer`
+    /// parameter produced the same skeleton byte.
+    #[test]
+    fn unrepresentable_basics_name_themselves_and_stay_distinct() {
+        use nudox_ir::kinds::UnknownType;
+        assert_eq!(
+            lower_basic("complex128"),
+            Type::Unknown(UnknownType::NoIrRepresentation {
+                construct: "complex128".to_owned()
+            })
+        );
+        assert_ne!(lower_basic("complex128"), lower_basic("unsafe.Pointer"));
+        // Neither may masquerade as the top type.
+        assert_ne!(lower_basic("complex128"), Type::Any);
+    }
+
+    /// `byte` is an alias for `uint8` by spec — not a gap, and certainly not a
+    /// top type. `Type::Any` here claimed a `[]byte` accepted anything.
+    #[test]
+    fn byte_is_uint8_not_a_gap() {
+        assert_eq!(lower_basic("byte"), Type::U8);
+        assert_eq!(lower_basic("byte"), lower_basic("uint8"));
+    }
+
+    /// The recursion guard reports itself as *our* limit, distinctly from an
+    /// oracle failure — raising `MAX_DEPTH` closes one and not the other.
+    #[test]
+    fn depth_limit_is_reported_as_truncation_not_as_a_gap() {
+        use nudox_ir::kinds::UnknownType;
+        let mut low = make_low();
+        // Build a pointer chain deeper than MAX_DEPTH.
+        let mut t = oracle::Type {
+            kind: TypeKind::Basic,
+            name: "int".to_string(),
+            ..Default::default()
+        };
+        for _ in 0..(MAX_DEPTH + 2) {
+            t = oracle::Type {
+                kind: TypeKind::Pointer,
+                elem: Some(Box::new(t)),
+                ..Default::default()
+            };
+        }
+        let rendered = lower_type_with_lowering(&t, &mut low, &HashSet::new()).to_string();
+        assert!(
+            rendered.contains("?depth-limit"),
+            "the truncation point must name itself; got {rendered}"
+        );
+        assert!(
+            !rendered.contains("any"),
+            "a truncated chain must not claim a top type; got {rendered}"
+        );
+        assert_ne!(Type::TRUNCATED, Type::Unknown(UnknownType::OracleGap));
     }
 
     /// Empty anonymous `interface{}` must remain `Type::Any` (it means `any`).

@@ -1053,11 +1053,26 @@ fn function_throws_is_wired() {
         fn_kind.throws.len()
     );
 
-    // System.ArgumentException is cross-package: the type is Type::Any.
-    assert!(
-        matches!(fn_kind.throws[0], Type::Any),
-        "cross-package exception type must lower to Type::Any, got {:?}",
+    // `System.ArgumentException` is cross-package, so it is an *unresolved
+    // external* that keeps its FQN — not `Type::Any`.
+    //
+    // Asserting on the name rather than on the variant is the whole point of
+    // CC-2 here: `throws` exists to say *which* exception, and under
+    // `Type::Any` a `<exception cref="ArgumentException">` and a
+    // `<exception cref="IOException">` produced identical entries. A
+    // `matches!(t, Type::Unknown(_))` assertion would still pass on that bug.
+    assert_eq!(
+        fn_kind.throws[0],
+        Type::Unknown(nudox_ir::kinds::UnknownType::UnresolvedExternal {
+            name: "System.ArgumentException".to_owned()
+        }),
+        "a cross-package exception type must name itself, got {:?}",
         fn_kind.throws[0]
+    );
+    assert_ne!(
+        fn_kind.throws[0],
+        Type::Any,
+        "`object` is not what a missing exception reference means"
     );
 
     // output_params still has only the return value, not the exception.

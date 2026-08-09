@@ -31,8 +31,8 @@ pub use embedding::{EmbedError, Embedding, l2_normalize};
 pub use fusion::{FusedHit, RRF_K, RankedList, rrf_fuse};
 pub use key::{ChangedSymbol, SymbolDelta, SymbolPartHashes, embed_key, tool_digest};
 pub use model::{
-    CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, VoyageCode3,
-    WeightsArtifact,
+    CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, Quantization,
+    VoyageCode3, WeightsArtifact,
     license::{FORBIDDEN_MODEL_IDS, LicenseError, assert_licensed},
 };
 pub use quant::{HnswParams, QP1, QuantProfile, RescorePolicy, project_ladder, search_ef};

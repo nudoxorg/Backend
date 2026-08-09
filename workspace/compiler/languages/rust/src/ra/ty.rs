@@ -16,7 +16,8 @@
 //! Type::Union(List<Type>)             — used for raw unions only
 //! Type::Intersection(List<Type>)      — TypeScript; unused for Rust
 //! Type::Never
-//! Type::Any                           — placeholder when the type is unrepresentable
+//! Type::Any                           — NEVER emitted: Rust has no top type
+//! Type::Unknown(UnknownType)          — a named reason the type is not known
 //! Type::Nominal(RawRef)               — named type; Ref resolved at seal time
 //! Type::Apply { base, args }          — generic application Foo<T, U>
 //! Type::TypeVar(String)               — use of a generic type parameter
@@ -107,16 +108,42 @@
 //! authorized touching. See the L19 task report's REMAINING section for the
 //! full evidence trail.
 //!
-//! # Remaining `Type::Any` fallbacks (accurate as of the current IR)
+//! # This producer emits no `Type::Any` at all (CC-2)
 //!
-//! - **Unresolvable paths** — `resolve_path_opt` returns `None` (macro
-//!   expansion the producer could not follow, a `cfg`'d-out branch, etc.),
-//!   *not* merely "the type lives in another crate" — see above.
+//! **Rust has no top type.** There is no `Object`, no `interface{}`, no
+//! `unknown` — no type that every value inhabits. Every `Type::Any` this
+//! module used to emit was therefore a claim the language cannot express, and
+//! the post-CC-2 meaning of `Type::Any` (a genuine top type) has no Rust
+//! inhabitant. Every former site now says which kind of gap it is:
+//!
+//! - **Unresolvable path** — `resolve_path_opt` returned `None`, or resolved
+//!   but `ref_for` produced nothing → `UnknownType::UnresolvedExternal`,
+//!   carrying the written path. rust-analyzer resolves everything in the crate
+//!   it loaded, so a failure here names something outside it (or behind a
+//!   macro it declined to expand).
+//! - **Missing AST child / unexpanded macro** — a `PathType` with no path, a
+//!   `SliceType` with no element, a `MacroType` whose call is absent →
+//!   `UnknownType::OracleGap`. The source did not parse; no producer effort
+//!   closes it.
+//! - **`str` and other builtins with no `Primitive` slot**, and HIR types with
+//!   no IR variant (closures, fn items, opaques) →
+//!   `UnknownType::NoIrRepresentation`, carrying the construct name. This is
+//!   the countable lattice backlog.
+//!
+//! Keeping the spelling is not cosmetic. `Skeleton` encoded `Type::Any` as one
+//! byte, so `fn f(x: SomeForeignA)` and `fn f(x: SomeForeignB)` produced
+//! byte-identical signature skeletons — one `IntroId`, one silent overwrite.
+//!
+//! # Still-unrepresentable, and not a `Type::Unknown` case
+//!
 //! - **Lifetime / const generic args in `Apply.args`** — `Apply.args` is
 //!   `List<Type>`; there is no position for lifetime or const arguments.
 //! - **Lifetime-only bounds on `dyn Trait`** — `dyn Trait + 'static` lifetime
 //!   bounds are filtered out in `lower_dyn_trait`; the IR's `List<Type>` has
-//!   no lifetime slot. This is a known limitation.
+//!   no lifetime slot.
+//!
+//! Both drop an argument from a list rather than mislabel a type, so there is
+//! no type position to attach a reason to.
 //!
 //! Previously `Any` fallbacks that now have real IR slots:
 //! - `impl Trait` → `Type::ImplTrait(bounds)` (was: `Type::Any`)
@@ -129,7 +156,7 @@
 //! 1. AST shape is the source of truth for lifetimes, mutability, and arg order.
 //! 2. `Semantics::resolve_path` resolves `PathType` → `ModuleDef` so we can
 //!    emit `Nominal(RawRef)` for both local *and* foreign types (see above).
-//! 3. Only an unresolvable path falls back to `Type::Any`.
+//! 3. Only an unresolvable path falls back to a named `Type::Unknown`.
 //! 4. `lower_hir_type_fallback` covers the no-AST case (macro-expanded items).
 
 use std::panic::{self, AssertUnwindSafe};
@@ -174,7 +201,7 @@ pub(crate) fn lower_ast_type(
             let inner = s
                 .ty()
                 .map(|t| lower_ast_type(ctx, &t, ref_for))
-                .unwrap_or(Type::Any);
+                .unwrap_or(Type::ORACLE_GAP);
             Type::Slice(Box::new(inner))
         }
         ast::Type::ArrayType(a) => lower_array_type(ctx, a, ref_for),
@@ -196,17 +223,17 @@ pub(crate) fn lower_ast_type(
         ast::Type::ParenType(p) => p
             .ty()
             .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::Any),
+            .unwrap_or(Type::ORACLE_GAP),
         ast::Type::ForType(f) => f
             .ty()
             .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::Any),
+            .unwrap_or(Type::ORACLE_GAP),
         ast::Type::MacroType(m) => lower_macro_type(ctx, m, ref_for),
         // Pattern types (`#is(...)`) are nightly-only; peel to the base type.
         ast::Type::PatternType(p) => p
             .ty()
             .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::Any),
+            .unwrap_or(Type::ORACLE_GAP),
     }
 }
 
@@ -304,8 +331,12 @@ pub(crate) fn lower_hir_type_fallback(
                 args: type_args,
             };
         }
-        // External — not emittable as Nominal.
-        return Type::Any;
+        // External ADT — `ref_for` had nothing for it. Rust has no top type,
+        // so `Type::Any` here claimed something the language cannot even
+        // express; keep the rendered name so two different external ADTs in
+        // one overload set do not hash alike.
+        let name = attach_db(ctx.db, || ty.display(ctx.db, ctx.display).to_string());
+        return Type::unresolved_external(name);
     }
     // Last resort: rendered display string.
     let rendered = attach_db(ctx.db, || ty.display(ctx.db, ctx.display).to_string());
@@ -321,7 +352,9 @@ pub(crate) fn lower_hir_type_fallback(
     if rendered == "Self" {
         return Type::SelfType;
     }
-    Type::Any
+    // A HIR type this IR has no variant for — a closure type, an fn item, an
+    // opaque. We know exactly what it is; the lattice has nowhere to put it.
+    Type::no_ir_representation(rendered)
 }
 
 // ── Path types ────────────────────────────────────────────────────────────────
@@ -331,8 +364,10 @@ fn lower_path_type(
     path_ty: &ast::PathType,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Type {
+    // A `PathType` node with no `Path` child means the source did not parse
+    // into a type here. Nothing this producer does closes that.
     let Some(path) = path_ty.path() else {
-        return Type::Any;
+        return Type::ORACLE_GAP;
     };
 
     // `<T as Trait>::Assoc` — qualified path, now representable as Type::QualifiedPath.
@@ -345,7 +380,7 @@ fn lower_path_type(
         // self_ty: the type inside the angle brackets (the `T` in `<T as Trait>::Assoc`)
         let self_ty = type_ref
             .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::Any);
+            .unwrap_or(Type::ORACLE_GAP);
 
         // trait_ref: the `as Trait` disambiguation (present for `<T as Trait>::Assoc`,
         // absent for `<T>::Assoc` — though the latter is rare in practice).
@@ -367,7 +402,10 @@ fn lower_path_type(
                         })
                     }
                 } else {
-                    Box::new(Type::Any)
+                    // The `as Trait` disambiguator did not resolve. Keep the
+                    // written path — `<T as Iterator>::Item` and
+                    // `<T as Display>::Item` must not collapse together.
+                    Box::new(Type::unresolved_external(path_identifier_text(&p)))
                 }
             })
         });
@@ -414,8 +452,11 @@ fn lower_path_type(
                 if let Some(prim) = primitive_from_str(&name) {
                     return Type::Primitive(prim);
                 }
-                // `str` stays non-primitive.
-                return Type::Any;
+                // `str` (and any future builtin `primitive_from_str` does not
+                // cover) — a known language builtin with no `Primitive` slot.
+                // `Type::Any` said "accepts anything", which for `str` is the
+                // opposite of true.
+                return Type::no_ir_representation(name);
             }
             PathResolution::Def(def) => {
                 if let Some(key) = id_of(ctx, def)
@@ -430,8 +471,9 @@ fn lower_path_type(
                         args: type_args.into_boxed_slice(),
                     };
                 }
-                // External type.
-                return Type::Any;
+                // Resolved, but `ref_for` could not produce a ref — an item in
+                // another crate. Keep the written path.
+                return Type::unresolved_external(path_identifier_text(&path));
             }
             // Value-ns / attr — fall through.
             PathResolution::Local(_)
@@ -452,7 +494,12 @@ fn lower_path_type(
             return Type::SelfType;
         }
     }
-    Type::Any
+    // rust-analyzer resolves everything inside the crate it has loaded, so a
+    // path it cannot resolve names something outside it — or something behind
+    // a macro it declined to expand. Keeping the spelling is what stops two
+    // different unresolvable paths in one overload set from producing the same
+    // skeleton byte.
+    Type::unresolved_external(written)
 }
 
 // ── ref / ptr / array ─────────────────────────────────────────────────────────
@@ -467,7 +514,7 @@ fn lower_ref_type(
     let inner = r
         .ty()
         .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::Any);
+        .unwrap_or(Type::ORACLE_GAP);
     Type::Primitive(Primitive::Reference {
         lifetime,
         mutable,
@@ -484,7 +531,7 @@ fn lower_ptr_type(
     let inner = p
         .ty()
         .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::Any);
+        .unwrap_or(Type::ORACLE_GAP);
     if is_mutable {
         Type::Primitive(Primitive::MutPointer(Box::new(inner)))
     } else {
@@ -500,7 +547,7 @@ fn lower_array_type(
     let inner = a
         .ty()
         .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::Any);
+        .unwrap_or(Type::ORACLE_GAP);
     let length = a
         .const_arg()
         .and_then(|c| c.expr())
@@ -631,8 +678,10 @@ fn lower_macro_type(
     m: &ast::MacroType,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Type {
+    // A `MacroType` node with no macro call under it: the source did not
+    // parse. No producer effort closes this.
     let Some(call) = m.macro_call() else {
-        return Type::Any;
+        return Type::ORACLE_GAP;
     };
     let expanded = match panic::catch_unwind(AssertUnwindSafe(|| ctx.sema.expand_macro_call(&call)))
     {
@@ -650,7 +699,9 @@ fn lower_macro_type(
             return lower_ast_type(ctx, &ty, ref_for);
         }
     }
-    Type::Any
+    // The macro did not expand (or expanded to something that is not a type,
+    // or panicked above). rust-analyzer has already failed here.
+    Type::ORACLE_GAP
 }
 
 // ── Generic args on last path segment ────────────────────────────────────────
@@ -709,7 +760,7 @@ fn path_type_to_type(
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> Type {
     let Some(path) = path_ty.path() else {
-        return Type::Any;
+        return Type::ORACLE_GAP;
     };
     if let Some(res) = resolve_path_opt(ctx, &path)
         && let PathResolution::Def(def) = res
@@ -726,7 +777,11 @@ fn path_type_to_type(
             args: type_args.into_boxed_slice(),
         };
     }
-    Type::Any
+    // A `dyn Trait + …` bound naming a trait from another crate. Keeping the
+    // spelling is what makes `dyn Debug` and `dyn Display` distinguishable —
+    // under `Type::Any` every foreign bound in a `DynTrait` list was the same
+    // byte, so `dyn Debug + Send` and `dyn Display + Send` had one skeleton.
+    Type::unresolved_external(path_identifier_text(&path))
 }
 
 // ── Semantics resolve (panic-safe) ────────────────────────────────────────────
@@ -810,6 +865,16 @@ pub(crate) fn primitive_from_str(name: &str) -> Option<Primitive> {
 }
 
 // ── Path text helpers ─────────────────────────────────────────────────────────
+
+/// The written text of a path, for `generics.rs` to name an unresolved bound.
+///
+/// Exposed (rather than duplicated) so that both modules produce byte-identical
+/// `UnknownType::UnresolvedExternal` names for the same written path — two
+/// spellings of the same gap would defeat the skeleton discrimination the
+/// name exists to provide.
+pub(crate) fn path_identifier_text_of(path: &ast::Path) -> String {
+    path_identifier_text(path)
+}
 
 fn path_identifier_text(path: &ast::Path) -> String {
     path.segments()
@@ -1012,39 +1077,65 @@ mod tests {
         }
     }
 
-    /// `impl Trait` lowers to `Type::ImplTrait`, not `Type::Any`.
+    /// `impl Trait` and `dyn Trait` must stay structurally distinguishable.
+    ///
+    /// These two used to be asserted as `matches!(x, Type::ImplTrait(_))` on a
+    /// value the test had just constructed as `Type::ImplTrait`, which is a
+    /// tautology: it restates the constructor and would pass against any
+    /// producer, including one that never emits the variant. What is actually
+    /// worth pinning is the property downstream depends on — that the two
+    /// dispatch strategies do not share an identity — so this asserts on
+    /// **skeleton bytes**, which is what `IntroId` is minted from.
+    ///
+    /// The behavioural claim that the producer *reaches* these variants is
+    /// covered end-to-end by `tests/no_top_type.rs`, which lowers a real crate
+    /// containing `impl Display` and `&dyn Debug` through rust-analyzer.
     #[test]
-    fn impl_trait_lowers_to_impl_trait_not_any() {
-        // Shape contract: the function we fixed returns ImplTrait.
-        let it = Type::ImplTrait(Box::new([]));
-        assert!(
-            matches!(it, Type::ImplTrait(_)),
-            "impl Trait must produce ImplTrait variant"
-        );
-        assert!(!matches!(it, Type::Any), "impl Trait must not produce Any");
-    }
-
-    /// `dyn Trait` lowers to `Type::DynTrait`, not `Type::Intersection`.
-    #[test]
-    fn dyn_trait_lowers_to_dyn_trait_not_intersection() {
-        let dt = Type::DynTrait(Box::new([Type::Any]));
-        assert!(
-            matches!(dt, Type::DynTrait(_)),
-            "dyn Trait must produce DynTrait variant"
-        );
-        assert!(
-            !matches!(dt, Type::Intersection(_)),
-            "dyn Trait must not produce Intersection"
-        );
-    }
-
-    /// `Type::Inferred` is distinct from `Type::Any`.
-    #[test]
-    fn inferred_is_distinct_from_any() {
+    fn impl_trait_and_dyn_trait_do_not_share_an_identity() {
+        use nudox_ir::skeleton::type_skeleton;
+        let bound = || Box::new([Type::TypeVar("T".to_owned())]);
+        let impl_t = Type::ImplTrait(bound());
+        let dyn_t = Type::DynTrait(bound());
         assert_ne!(
-            Type::Inferred,
-            Type::Any,
-            "Inferred and Any must be distinct types"
+            type_skeleton(&impl_t),
+            type_skeleton(&dyn_t),
+            "static dispatch and a vtable are different types and must not collide"
+        );
+        // `dyn A + B` must also not be encoded as the structural intersection
+        // `A & B`, which is what it used to be squeezed into.
+        assert_ne!(
+            type_skeleton(&dyn_t),
+            type_skeleton(&Type::Intersection(bound())),
+            "`dyn A + B` is a trait object, not an intersection type"
+        );
+    }
+
+    /// The three "I cannot give you a concrete type" spellings are three
+    /// different facts, and Rust reaches exactly two of them.
+    ///
+    /// `Type::Any` is a genuine top type and Rust has none, so it is never
+    /// emitted (enforced end-to-end by `tests/no_top_type.rs`). `Inferred` is
+    /// a *written* request (`_`). `Unknown(reason)` is an unrequested gap.
+    /// Asserting only `Inferred != Any` — as this test used to — left the
+    /// third case, the one CC-2 added, unpinned.
+    #[test]
+    fn inferred_unknown_and_any_are_three_distinct_types() {
+        use nudox_ir::skeleton::type_skeleton;
+        let inferred = type_skeleton(&Type::Inferred);
+        let oracle_gap = type_skeleton(&Type::ORACLE_GAP);
+        let external = type_skeleton(&Type::unresolved_external("std::io::Error"));
+        let any = type_skeleton(&Type::Any);
+
+        assert_ne!(inferred, any, "`_` is a request, not a top type");
+        assert_ne!(inferred, oracle_gap, "`_` is a request, not a parse failure");
+        assert_ne!(oracle_gap, any);
+        assert_ne!(external, oracle_gap, "a named gap outranks an anonymous one");
+        // And the name inside an external gap is identity-relevant, which is
+        // what stops two unresolvable parameter types from colliding.
+        assert_ne!(
+            external,
+            type_skeleton(&Type::unresolved_external("std::fmt::Error")),
+            "two distinct unresolved paths must not share a skeleton"
         );
     }
 

@@ -55,6 +55,10 @@ fn expected_type_names() -> Vec<(&'static str, Vertex)> {
                 occ_index: 0,
             }),
         ),
+        (
+            "SourceLocation",
+            Vertex::SourceLocation(dummy_sym(pkg.clone(), 6)),
+        ),
     ]
 }
 

@@ -2450,6 +2450,93 @@ Source jumping requires producers to emit spans first.
 
 ## L47 — The TypeScript producer reads nothing out of CommonJS packages without bundled `.d.ts`
 
+> ### RESOLVED 2026-08-08 — the root cause named below was wrong, not just incomplete
+>
+> "There is no top-level declaration for the extractor to read" does not
+> survive contact with the checkouts. `ws` ships a real ESM entry
+> (`wrapper.mjs`, five named exports) that `collect_export_specifiers`
+> (`entry.rs`) never reached: it pushed a `.`-prefixed conditional-exports
+> *key* (`"."`) without recursing into its *value* (`{"import":
+> "./wrapper.mjs", ...}`), so the literal string `"./wrapper.mjs"` was never
+> a candidate. `lodash`'s ~300-function API is not missing, it lives in 333
+> sibling top-level `.js` files next to the UMD `main` bundle
+> (`lodash.js`) — each with a real top-level `function <name>(...)` +
+> `module.exports = <name>;` — that `discover_entry_points` never visited,
+> because Node's "no `exports` field in `package.json` means every file is
+> importable" rule was not implemented. `debug`'s real API (`useColors`,
+> `formatArgs`, `save`, `load`) is `exports.X = <ident>;` in `src/node.js`/
+> `src/browser.js` — a `Statement::ExpressionStatement`, and this crate had
+> **zero** CommonJS export recognition anywhere: `extract_statement`
+> (`extract/decl.rs`) matched 8 statement kinds and ended `_ => vec![]`,
+> silently dropping every CommonJS export as a byproduct of matching nothing
+> ESM-shaped.
+>
+> Fixed with four changes, all in `languages/typescript/src/`:
+> - `entry.rs`: `collect_export_specifiers` now recurses into `.`-prefixed
+>   subpath keys' own values (recovers `ws`'s `wrapper.mjs`); a new
+>   `deep_import_roots` enumerates a package's whole `.js`/`.d.ts` tree as
+>   declaration roots when `package.json` has no `exports` field (recovers
+>   `lodash`'s and `debug`'s sibling files — confirmed **not** to fire for
+>   `ws`, which has an `exports` map).
+> - `extract/decl.rs`: `scan_commonjs_exports` recognizes `module.exports =
+>   X`, `exports.X = Y`, `module.exports.X = Y`, and `<export-binding>.X =
+>   Y`, both to mark the named declaration `Visibility::Public` (the
+>   "honesty gate" — without it, everything the roots above recover lands
+>   `Private`, counted but not honest) and to populate
+>   `ExportTable.locals["default"]` so a real ESM module (`wrapper.mjs`) that
+>   `import`s a CommonJS one (`lib/websocket.js`) resolves instead of
+>   crashing `Lowering::finish` with "referred but never declared" (reproduced
+>   before this half of the fix). A second, adjacent defect surfaced by the
+>   same code path: `const X = require('./y');` was rendering the `require()`
+>   call as a fake `Const` string value (`ws` emitted `Const { ty: Any, value:
+>   Some("\"require('./lib/websocket')\"") }` for its own real `WebSocket`
+>   class) — now skipped entirely, the same way an ESM `import` produces no
+>   `DeclFact`. A related, pre-existing gap fixed as a consequence:
+>   `Statement::VariableDeclaration` hardcoded `is_exported = false`
+>   regardless of `exported_names`, so even a plain ESM `const x = 1; export {
+>   x };` would have declared `x` as `Private` — `lodash`'s `merge.js`
+>   (`var merge = createAssigner(...); module.exports = merge;`) hit the
+>   CommonJS form of the same bug.
+> - `graph.rs`: top-level `require(...)` calls in variable initializers and
+>   assignment RHS are now graph edges, the same way `import`/`export from`
+>   already were.
+>
+> Measured 2026-08-08 against the same checkouts, contributed declarations
+> beyond the synthesized root (`tests/real_npm_packages.rs`, `--nocapture`):
+>
+> | package | before | after | public, non-module, real-identifier declarations after |
+> |---|---:|---:|---:|
+> | `lodash` 4.17.21 | 1 | 5,427 | 724 |
+> | `lodash` 4.17.20 | 1 | 5,413 | 722 |
+> | `debug` 4.3.4 | 1 | 27 | 11 |
+> | `ws` 8.16.0 | 2 | 424 | 160 |
+>
+> The sweep's canary check (named, source-verified public symbols — see
+> `tests/real_npm_packages.rs`'s `Fixture::must_contain`) passes for all four:
+> `lodash` → `chunk`/`debounce`/`merge`/`cloneDeep`/`isEqual`; `debug` →
+> `useColors`/`formatArgs`/`save`/`load`; `ws` →
+> `WebSocket`/`WebSocketServer`/`Receiver`/`Sender`/`createWebSocketStream`.
+> The whole `Expect::Stub` mechanism this file used to describe (a pinned
+> *exact* count standing in for real extraction) is gone; see that test
+> file's `Fixture` doc comment for why it was a bug in the sweep, not just a
+> permissive fixture.
+>
+> **Not fully closed** — `debug`'s `enable`/`disable`/`enabled`/`coerce`/
+> `destroy` remain unreachable. They are declared *inside* `common.js`'s
+> `function setup(env) { ... }` and exposed only as runtime properties of a
+> local variable (`createDebug.enable = enable;`), never at module top level
+> in any of the package's four files. Recognizing them would need
+> interprocedural analysis of a nested function's return value, which is out
+> of scope for the syntactic, single-pass extractor this crate is. This is a
+> real, narrower ceiling than the original (false) claim, and it is
+> documented rather than silently absorbed into a passing floor — see
+> `tests/real_npm_packages.rs`'s `debug` fixture comment for the exact
+> symbols checked and rejected.
+>
+> The original entry below is left as the historical record of what was
+> believed and measured on 2026-08-07; do not read its blast-radius framing
+> ("no top-level declaration … to read") as still true.
+
 **Blast radius:** 4 of 22 npm corpus entries, and by extension a large fraction
 of the real npm registry — every package that publishes its types as a separate
 `@types/*` package rather than shipping them.
@@ -2967,4 +3054,172 @@ without knowing how it happened.
 paragraphs with *identical text*, differing only in `LinkOrigin`, and asserts the
 frames differ. 1560 pixels do. That is what stops the mark from being a Rust
 enum nobody can see.
+
+---
+
+## L51 — Rust proc-macro degradation is silent: the typed variant is never constructed
+
+**Blast radius:** every Rust package that uses proc macros and hits a
+proc-macro-server failure — macro-generated items (derives, attribute macros,
+function-like macros) go missing from the IR with nothing in the API able to
+say so.
+
+**Evidence:** `RustProducerError::ProcMacroDegraded(String)`
+(`workspace/compiler/languages/rust/src/error.rs:158-161`) exists, is documented
+as "a soft-degradation warning rather than a hard failure", and is **matched
+nowhere and constructed nowhere** — a repo-wide grep for `ProcMacroDegraded`
+finds exactly the one line that declares it. The only place the underlying
+condition is even detected is
+`workspace/compiler/languages/rust/src/ra/loaded.rs:759-760`:
+
+```rust
+if proc_macro.is_none() {
+    warn!("proc-macro server unavailable; macro-generated items will be missing");
+}
+```
+
+That `warn!` is the entire signal. It reaches nothing in most of the ways this
+workspace runs the producer: a repo-wide grep for `tracing_subscriber` finds a
+global subscriber installed only in `workspace/gui/src/main.rs`,
+`workspace/driver/main.rs`, and `workspace/heart/telemetry/*` — **not** in the
+Rust producer's own test binaries, not in `nudox-store`'s corpus tests, and not
+in any ad hoc use of `nudox-producer-rust` as a library. In every one of those
+contexts `tracing`'s no-op default dispatcher swallows the event and the
+degradation leaves no trace at all. Even in the GUI/driver contexts where a
+subscriber *is* installed, the event still never becomes part of the typed
+`RustProducerError`/`ProducerError`/extraction result — it is a side-channel log
+line a caller cannot match on, count, or surface in the UI, which is exactly the
+shape doctrine §8's "silent repair" rule (`LIMITATIONS.md` L46, the `--no-deps`
+fallback under L28) already condemns for a different mechanism.
+
+**Made worse by a hole on the test side:** the corpus test's own `thiserror`
+entry (`workspace/compiler/languages/rust/tests/common/mod.rs:310-318`)
+deliberately avoids asserting on any proc-macro-derived item, so nothing in the
+suite would go red if macro expansion silently stopped working tomorrow.
+`thiserror`'s own public face is a proc macro re-exported from a different
+crate, so this producer's proc-macro fidelity is untested by its own corpus
+fixture on top of being unreported at runtime.
+
+**Why this was not fixed here rather than just recorded:** the obvious fix —
+construct `RustProducerError::ProcMacroDegraded` at
+`ra/loaded.rs:759-760` instead of only warning — was checked and rejected as
+worse than the status quo. `RustProducerError` -> `ProducerError` conversion
+(`workspace/compiler/languages/rust/src/lib.rs:181-204`) has no arm for this
+variant; it would fall into the `other =>` catch-all and come out as
+`ProducerError::UnsupportedConstruct`, the exact mislabeling L45 already
+documents for Java's classpath failures. That would turn today's *soft*
+degradation (extraction still succeeds, just with fewer entries) into a *hard*
+failure of the entire package for a condition its own doc comment says should
+not be one. A correct fix needs the degradation carried on the **success**
+path — e.g. a field on the extraction result, typed/counted/bounded/visible per
+the L46 discipline — which touches the shared `Producer`/`ProducerError`
+contract in `workspace/compiler/producer/src/lib.rs`, out of this task's scope.
+
+**Status:** OPEN. Recorded, not fixed. The next fix must design the carrier on
+the success path before touching `ra/loaded.rs`, not the other way around.
+
+---
+
+## L52 — Go build-tag-gated files are invisible, not reported as missing
+
+**Blast radius:** every Go package that ships platform-specific source files —
+common for anything touching syscalls, file I/O, or OS-specific behavior.
+
+**Evidence:** `workspace/compiler/languages/go/oracle/main.go:101-110`:
+
+```go
+cfg := &packages.Config{
+    Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+        packages.NeedImports | packages.NeedDeps | packages.NeedTypes |
+        packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedTypesSizes |
+        packages.NeedModule,
+    Dir:   dir,
+    Tests: false,
+}
+
+pkgs, err := packages.Load(cfg, "./...")
+```
+
+No `BuildFlags` is set, so `packages.Load` resolves against only the host's
+default `GOOS`/`GOARCH` (whatever machine the oracle happens to run on). Any
+file gated by a build-tag suffix (`_windows.go`, `_darwin.go`, `_linux.go`) or a
+`//go:build` line naming a different platform than the host is silently
+excluded by the Go toolchain itself, before this oracle ever sees it — not as
+an error, not as a diagnostic, just absent from `pkgs[i].GoFiles` /
+`CompiledGoFiles`. A package whose public API differs by platform (e.g. a type
+that only exists under `//go:build windows`) documents only whatever the build
+host happens to be, with nothing in the extraction's output recording that
+other platforms exist or were skipped.
+
+**Status:** OPEN. Unrecorded before this entry.
+
+---
+
+## L53 — clang: partial template specializations are not extracted
+
+**Blast radius:** any C++ library using `template <...> class Foo<Bar<T>> { ... }`-style
+partial specialization — a common pattern for trait-like customization (e.g.
+`std::hash` specializations, type-trait libraries, containers with a
+specialized `bool` or pointer variant).
+
+**Evidence:** `workspace/compiler/languages/clang/src/extract.rs`'s dispatch
+match (roughly lines 128-155) has an arm for `EntityKind::ClassTemplate` (the
+primary template) but **no arm for
+`EntityKind::ClassTemplatePartialSpecialization`** anywhere in the file — a
+repo-wide grep for `ClassTemplatePartialSpecialization` in
+`workspace/compiler/languages/clang/src/` returns nothing. The catch-all
+`_ => {}` at the end of the match silently drops it. A partial specialization's
+members — which can differ arbitrarily from the primary template's — never
+reach the oracle, and nothing in the extraction's diagnostics counts or names
+what was skipped.
+
+**Status:** OPEN. Unrecorded before this entry.
+
+---
+
+## L54 — clang: preprocessor macros are entirely invisible
+
+**Blast radius:** every macro-heavy C library. `#define`d constants and
+function-like macros are a primary part of the public API for libraries like
+zlib (`Z_OK`, `Z_NULL`, `deflateInit`-style macro wrappers), and for any C++
+library that still exposes configuration or feature-detection via macros.
+
+**Evidence:** the same dispatch match in
+`workspace/compiler/languages/clang/src/extract.rs` has no arm for
+`CXCursor_MacroDefinition` (`EntityKind::MacroDefinition` in the `clang-rs`
+wrapper this producer uses) or `CXCursor_MacroExpansion` — a repo-wide grep for
+`MacroDefinition`/`MacroExpansion` under
+`workspace/compiler/languages/clang/src/` returns nothing. Nothing in this
+producer requests `TranslationUnit::detailed_preprocessing_record()` either, so
+even if an arm existed, macro cursors would not be walked by default. `Z_OK`
+and every other `#define`d constant or function-like macro in a documented
+library is real, real API surface, and it is silently absent from every
+extraction this producer has ever produced.
+
+**Status:** OPEN. Unrecorded before this entry.
+
+---
+
+## L55 — C# source generators are structurally invisible
+
+**Blast radius:** every C# package that relies on a Roslyn source generator for
+part of its public surface — a mainstream, growing pattern (e.g.
+`System.Text.Json`'s source-generation mode, MVVM toolkits' `[ObservableProperty]`
+partial-member generation, regex source generators).
+
+**Evidence:** `workspace/compiler/languages/csharp/oracle/SourceLoader.cs`'s own
+class remarks say what this tool is: "no MSBuild, no NuGet restore, no project
+system" — sources are parsed and bound directly with Roslyn's
+`CSharpCompilation.Create`. A repo-wide grep for `GeneratorDriver`,
+`ISourceGenerator`, and `IIncrementalGenerator` under
+`workspace/compiler/languages/csharp/oracle/` returns nothing: no generator is
+ever instantiated or run. Generator-emitted `partial class`/`partial struct`
+members — the entire point of a source generator — therefore never exist in
+this oracle's compilation at all, distinct from (and invisible in the same way
+as) the per-TFM file-selection gap the oracle's `SourceLoader.ApplyTfmPreference`
+now handles (see the `nuget_corpus.rs` module docs). A package whose public API
+is partly generator-emitted documents only its hand-written half, with nothing
+in the extraction's diagnostics naming what a generator would have added.
+
+**Status:** OPEN. Unrecorded before this entry.
 

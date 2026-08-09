@@ -96,8 +96,10 @@ fn lower_type_depth(
     out: &mut Lowering<String>,
     depth: usize,
 ) -> Type {
+    // Our own guard, not Roslyn's: a real type exists below here and raising
+    // MAX_DEPTH is all that is needed to reach it.
     if depth > MAX_DEPTH {
-        return Type::Any;
+        return Type::TRUNCATED;
     }
 
     match t {
@@ -220,7 +222,13 @@ fn lower_type_depth(
             apply_nullable(base, nullable)
         }
 
-        TypeSig::Dynamic {} => Type::Any,
+        // `dynamic` is the gradual-typing escape hatch, not the top type.
+        // `object` and `dynamic` have the *same* CLR representation but
+        // opposite static contracts: `object` forbids every member access
+        // until you cast, `dynamic` permits every member access and defers to
+        // runtime binding. Collapsing them onto one opcode — which is what
+        // `Type::Any` did — erased the single fact a caller most needs.
+        TypeSig::Dynamic {} => Type::DYNAMIC,
 
         // `Nullable<T>` (value type): represent as `Union([T, Never])` to
         // match the annotated-nullable reference treatment.
@@ -229,8 +237,12 @@ fn lower_type_depth(
             Type::Union(Box::new([t, Type::Never]))
         }
 
-        // Unresolvable type (missing dependency).
-        TypeSig::Error { .. } => Type::Any,
+        // Roslyn produced an `IErrorTypeSymbol`: it has the name and could not
+        // bind it, which in practice means an assembly reference the
+        // extraction never loaded. Cross-package input is what closes this, so
+        // it is `UnresolvedExternal` — and the name is kept, because two
+        // unresolvable types in one overload set must not share an encoding.
+        TypeSig::Error { name } => Type::unresolved_external(name.as_str()),
     }
 }
 
@@ -398,7 +410,9 @@ fn lower_primitive(name: &str) -> Option<Type> {
         "System.Char" => Type::Primitive(Primitive::Char),
         // `string` is the primitive string type in C# (unlike heap-allocated String in Rust).
         "System.String" => Type::Primitive(Primitive::Str),
-        // `object` — the top type.
+        // `object` — C#'s genuine top type. Every value converts to it and
+        // nothing narrows out of it without a cast. Distinct from `dynamic`
+        // (see `TypeSig::Dynamic` above), which is now `Unknown`.
         "System.Object" => Type::Any,
         // `void` — the unit type.
         "System.Void" => Type::Tuple(Box::new([])),
@@ -646,6 +660,69 @@ mod tests {
             cfg: None,
         };
         Lowering::new(PackageId::path("test"), sym)
+    }
+
+    // ── CC-2: `object` is the top type; `dynamic` and `Error` are not ────────
+
+    /// `dynamic` and `object` share a CLR representation and have opposite
+    /// static contracts. They must not share an IR encoding.
+    ///
+    /// `object` forbids every member access until you cast; `dynamic` permits
+    /// every member access and defers to runtime binding. Under `Type::Any`
+    /// the two were byte-identical.
+    #[test]
+    fn dynamic_and_object_are_different_types() {
+        use nudox_ir::kinds::UnknownType;
+        let mut out = make_sink();
+        let names = HashMap::new();
+
+        let dynamic = lower_type(&TypeSig::Dynamic {}, &names, &mut out);
+        assert_eq!(dynamic, Type::Unknown(UnknownType::DynamicallyTyped));
+
+        let object = lower_type(
+            &TypeSig::Named {
+                name: "System.Object".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: String::new(),
+            },
+            &names,
+            &mut out,
+        );
+        assert_eq!(object, Type::Any, "`object` is C#'s genuine top type");
+        assert_ne!(dynamic, object, "`dynamic` is not `object`");
+    }
+
+    /// A Roslyn `IErrorTypeSymbol` becomes `UnresolvedExternal` and keeps its
+    /// name, so two unbindable types in one overload set stay distinct.
+    #[test]
+    fn error_type_keeps_its_name() {
+        use nudox_ir::kinds::UnknownType;
+        let mut out = make_sink();
+        let names = HashMap::new();
+        let a = lower_type(
+            &TypeSig::Error {
+                name: "Foo.Bar".to_owned(),
+            },
+            &names,
+            &mut out,
+        );
+        assert_eq!(
+            a,
+            Type::Unknown(UnknownType::UnresolvedExternal {
+                name: "Foo.Bar".to_owned()
+            })
+        );
+        let b = lower_type(
+            &TypeSig::Error {
+                name: "Foo.Baz".to_owned(),
+            },
+            &names,
+            &mut out,
+        );
+        assert_ne!(a, b, "two unbindable types must not collapse together");
+        assert_ne!(a, Type::Any, "an unbindable type is not `object`");
     }
 
     /// `Outer<T>.Inner` must lower to `Type::QualifiedPath`, not `Type::Any`.

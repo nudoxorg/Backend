@@ -1059,14 +1059,17 @@ fn lower_method(
             // `name_to_doc_id` (which maps FQN → doc-id).  If found, the
             // type is in the same extraction and we can produce a live
             // Type::Nominal(Ref).  If not found (cross-package type, e.g.
-            // System.ArgumentException in a foreign assembly), fall back to
-            // Type::Any — consistent with how lower_type handles cross-package
-            // named types.
+            // System.ArgumentException in a foreign assembly), record it as
+            // an unresolved *external* and keep the FQN.
+            //
+            // `Type::Any` here meant a `<exception cref="ArgumentNullException">`
+            // and a `<exception cref="IOException">` produced the same throws
+            // entry — the whole point of the `throws` list is to say *which*.
             let fqn = cref.strip_prefix("T:").unwrap_or(cref.as_str());
             let throws_ty = if let Some(doc_id) = name_to_doc_id.get(fqn) {
                 out.nominal::<Record>(doc_id.clone())
             } else {
-                Type::Any
+                Type::unresolved_external(fqn)
             };
             throws_types.push(throws_ty);
 

@@ -3,70 +3,31 @@
 //! yield-contract gate -> `seal`) against real, third-party sdists under
 //! `.real-crates/`.
 //!
-//! # What this file used to assert, and why that was the bug
+//! # History: this file used to assert the opposite of what it asserts now
 //!
-//! Until now the sweep asserted `table_len == 1` for all 22 entries and
-//! reported them as "produced a table" — i.e. it pinned the defect as expected
-//! behaviour and counted every one of them as a success. That is the register's
-//! L45-cs finding ("26 of 154 corpus entries return Ok with a stub table and
-//! are counted as successes") written down as a green test.
+//! Before the ruff syntactic front end (`src/syntax.rs`) existed, every one
+//! of these 22 entries hit `PythonProducer`'s degraded stub path: `invoke`
+//! ignored `PackageSource` entirely, `yield_contract` declared
+//! `YieldContract::RootOnly`, and this file's job was to prove that
+//! degradation was *declared*, not silently swallowed. `table_len == 1` (the
+//! synthesized root, nothing else) was the expected, asserted outcome for
+//! all 22 entries — see git history for that version if you need it.
 //!
-//! `table_len == 1` is not a fact about Python packages. It is the count of the
-//! root [`nudox_ir::entry::Symbol`] that `produce()` synthesizes *itself*,
-//! before `lower` is ever called, for every producer in every language. A
-//! producer that does nothing at all yields exactly 1. So the old assertion
-//! could not distinguish "we analysed `sqlalchemy`'s 1205 files and found one
-//! public symbol" from "we never opened the directory" — and the second is what
-//! actually happens.
-//!
-//! # What it asserts now
-//!
-//!   1. Every one of the 22 provisioned pypi version entries is present and is
-//!      a genuine unpacked sdist (a `setup.py` or `pyproject.toml` at its root
-//!      — the actual PyPI source-distribution contract, not just a directory
-//!      that happens to exist). Unchanged.
-//!   2. Each runs through the real `produce()` pipeline, so the day the
-//!      `pyrefly` feature is wired up this test starts measuring real content
-//!      with no structural changes. Unchanged.
-//!   3. **The emptiness is declared, not merely observed.** `PythonProducer`
-//!      returns `YieldContract::RootOnly` under `cfg(not(feature =
-//!      "pyrefly"))`, so `produce()` hands back a `Produced` whose `contract`
-//!      field carries the degradation and the blocker behind it. The sweep
-//!      asserts on *that*, per entry — the typed projection
-//!      `Produced::contract.degraded()`, not a count.
-//!   4. `table_len == 1` is still asserted, unchanged, as a *secondary*
-//!      consistency check: a declared-degraded producer that contributed
-//!      anything would already have failed the gate inside `produce()`, so this
-//!      now pins agreement between the declaration and the output rather than
-//!      standing in for it.
-//!   5. The summary counts these as **degraded**, never as successes.
-//!
-//! And, separately, `the_declaration_is_what_keeps_python_out_of_the_error_path`
-//! proves the gate is live rather than vacuous, by mutation (AGENTS-DOCTRINE.md
-//! §8: "verify the guard by mutation … a guard nobody has watched fail is a
-//! guard nobody has tested").
+//! Per AGENTS-DOCTRINE.md §4 ("a test that would pass against a stub is not
+//! a test") and the mission that added `syntax.rs`, that shape is gone.
+//! `PythonProducer` no longer overrides `yield_contract` at all — it takes
+//! the trait default (`YieldContract::Declarations`) — so a run that
+//! contributes nothing now genuinely fails `produce()` rather than being
+//! reported as a documented no-op. This file now asserts what actually
+//! matters for a producer that claims to work: per-package **named-symbol
+//! canaries** (a real, human-verified export that must appear by name) plus
+//! a **floor** on the non-module entry count, both derived from an actual
+//! measured run and set safely below it — never a bare count, per
+//! AGENTS-DOCTRINE.md §4's "a count-only assertion is satisfiable by a table
+//! of module entries named after files."
 //!
 //! Every entry is measured via `nudox_test_support::measured` per
-//! AGENTS-DOCTRINE.md §4, even though the wall-clock numbers this produces are
-//! structurally uninteresting (no I/O happens inside `invoke`) — the doctrine
-//! requirement is unconditional, not conditioned on the measurement being
-//! interesting.
-//!
-//! # Why `pyrefly` cannot simply be switched on
-//!
-//! Two independent blockers, both verified against this tree and both named in
-//! the producer's own `DegradedYield` blocker string:
-//!
-//!   * `nudox-producer-python/src/context.rs` — declared by `src/lib.rs` as
-//!     `#[cfg(feature = "pyrefly")] pub mod context;` and called by `invoke` —
-//!     **is not in the tree**. With the feature on, the crate fails to compile
-//!     at the module declaration.
-//!   * Adding the git dependency exactly as `Cargo.toml`'s comment prescribes
-//!     fails Cargo *dependency resolution*, before any compilation, on a hard
-//!     disjoint `blake3` conflict: `pyrefly` pins `=1.8.2`, `workspace/index`'s
-//!     `iroh` requires `^1.8.3`. `workspace/driver`'s `blake3 = "^1.8"`
-//!     resolves to 1.8.5 and is the first collision Cargo reports; the
-//!     `index`/`iroh` one surfaces once that is forced.
+//! AGENTS-DOCTRINE.md §4.
 
 use std::path::{Path, PathBuf};
 
@@ -76,44 +37,253 @@ use nudox_producer::{
 };
 use nudox_producer_python::{PythonProducer, oracle::PythonOracle};
 
-/// One corpus entry: `.real-crates/<dir>`, the PyPI project name, and the
-/// ecosystem version string. Mirrors `corpus/manifest.toml`'s 20 `pypi`
-/// `[[packages]]` blocks exactly: 20 packages, of which `click` and `pydantic`
-/// each carry two versions for lineage testing, giving **22** version entries.
+/// One corpus entry: `.real-crates/<dir>`, the PyPI project name, the
+/// ecosystem version string, and its canary set.
 ///
-/// This count said 21 until now, in three places, while the array below has
-/// always had 22 elements. The number is load-bearing — the sweep asserts every
-/// entry is accounted for — so an off-by-one here reads as "one fixture is
-/// missing" to the next person who checks.
+/// Mirrors `corpus/manifest.toml`'s 20 `pypi` `[[packages]]` blocks exactly:
+/// 20 packages, of which `click` and `pydantic` each carry two versions for
+/// lineage testing, giving **22** version entries.
+///
+/// # Canaries
+///
+/// Every name in `canaries` was verified against this exact checkout's
+/// source before being added here (see the per-entry comment): each is a
+/// real, non-private, non-module symbol the package actually defines at a
+/// syntactically visible (not control-flow-gated) position. A canary that
+/// does not hold is a bug in this test, not in the producer — per
+/// AGENTS-DOCTRINE.md §4.
+///
+/// `non_module_floor` is a floor, not an expectation: it is set safely below
+/// the entry count actually observed on the checkout in this repo (roughly
+/// 75-80% of it), so the assertion tolerates small, legitimate shifts (a
+/// future ruff version parsing one more file, a corpus re-provision) without
+/// being satisfiable by a near-empty table. "Non-module" means every sealed
+/// entry whose `KindDiscriminant` is not `Module` — classes, functions,
+/// fields, params, consts, aliases, variants, everything a real syntactic
+/// walk of the package contributes beyond the one entry per source file.
 struct Entry {
     dir: &'static str,
     name: &'static str,
     version: &'static str,
+    /// Real, syntactically-visible exports, verified against source.
+    canaries: &'static [&'static str],
+    /// Floor on sealed non-module entries; see the struct doc above.
+    non_module_floor: usize,
 }
 
 const ENTRIES: &[Entry] = &[
-    Entry { dir: "requests-2.31.0", name: "requests", version: "2.31.0" },
-    Entry { dir: "click-8.0.4", name: "click", version: "8.0.4" },
-    Entry { dir: "click-8.1.7", name: "click", version: "8.1.7" },
-    Entry { dir: "pydantic-1.10.14", name: "pydantic", version: "1.10.14" },
-    Entry { dir: "pydantic-2.6.1", name: "pydantic", version: "2.6.1" },
-    Entry { dir: "flask-3.0.2", name: "flask", version: "3.0.2" },
-    Entry { dir: "attrs-23.2.0", name: "attrs", version: "23.2.0" },
-    Entry { dir: "sqlalchemy-2.0.27", name: "sqlalchemy", version: "2.0.27" },
-    Entry { dir: "pyyaml-6.0.1", name: "pyyaml", version: "6.0.1" },
-    Entry { dir: "python-dateutil-2.8.2", name: "python-dateutil", version: "2.8.2" },
-    Entry { dir: "six-1.16.0", name: "six", version: "1.16.0" },
-    Entry { dir: "rich-13.7.0", name: "rich", version: "13.7.0" },
-    Entry { dir: "typer-0.9.0", name: "typer", version: "0.9.0" },
-    Entry { dir: "httpx-0.27.0", name: "httpx", version: "0.27.0" },
-    Entry { dir: "black-24.2.0", name: "black", version: "24.2.0" },
-    Entry { dir: "more-itertools-10.2.0", name: "more-itertools", version: "10.2.0" },
-    Entry { dir: "tenacity-8.2.3", name: "tenacity", version: "8.2.3" },
-    Entry { dir: "dataclasses-json-0.6.4", name: "dataclasses-json", version: "0.6.4" },
-    Entry { dir: "structlog-24.1.0", name: "structlog", version: "24.1.0" },
-    Entry { dir: "jsonschema-4.21.1", name: "jsonschema", version: "4.21.1" },
-    Entry { dir: "cattrs-23.2.3", name: "cattrs", version: "23.2.3" },
-    Entry { dir: "beautifulsoup4-4.12.3", name: "beautifulsoup4", version: "4.12.3" },
+    // requests/api.py: `get`/`post`/`put`/`delete` free functions.
+    // requests/models.py: `Request`, `PreparedRequest`, `Response`.
+    // requests/sessions.py: `Session`. Observed non_module=639.
+    Entry {
+        dir: "requests-2.31.0",
+        name: "requests",
+        version: "2.31.0",
+        canaries: &["get", "post", "put", "delete", "Session", "Request", "Response", "PreparedRequest"],
+        non_module_floor: 500,
+    },
+    // click/core.py: `Command`, `Group`, `Context`, `Option`, `Argument`.
+    // click/termui.py/utils.py: `echo`, `prompt`, `confirm`. Observed 1839.
+    Entry {
+        dir: "click-8.0.4",
+        name: "click",
+        version: "8.0.4",
+        canaries: &["Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm"],
+        non_module_floor: 1400,
+    },
+    Entry {
+        dir: "click-8.1.7",
+        name: "click",
+        version: "8.1.7",
+        canaries: &["Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm"],
+        non_module_floor: 1400,
+    },
+    // pydantic 1.x: pydantic/main.py `BaseModel`; pydantic/fields.py
+    // `Field`; pydantic/class_validators.py `validator`; pydantic/error_wrappers.py
+    // `ValidationError`. Observed 2655.
+    Entry {
+        dir: "pydantic-1.10.14",
+        name: "pydantic",
+        version: "1.10.14",
+        canaries: &["BaseModel", "Field", "validator", "ValidationError"],
+        non_module_floor: 2000,
+    },
+    // pydantic 2.x renamed the validator decorator to `field_validator`.
+    // Observed 6356.
+    Entry {
+        dir: "pydantic-2.6.1",
+        name: "pydantic",
+        version: "2.6.1",
+        canaries: &["BaseModel", "Field", "field_validator", "ValidationError"],
+        non_module_floor: 5000,
+    },
+    // flask/app.py `Flask`; flask/blueprints.py `Blueprint`; flask/wrappers.py
+    // `Request`/`Response`; flask/templating.py `render_template`. Observed 1350.
+    Entry {
+        dir: "flask-3.0.2",
+        name: "flask",
+        version: "3.0.2",
+        canaries: &["Flask", "Blueprint", "Request", "Response", "render_template"],
+        non_module_floor: 1000,
+    },
+    // attr/_next_gen.py `define`/`field`; attr/_make.py `Factory`; attr/_funcs.py
+    // and attr/__init__.py re-export `attrs`/`attrib` as their own defs
+    // (`attr/_make.py` defines the legacy `attrib` function; `attrs` is the
+    // lowercase legacy alias for `attr.s`). Observed 614.
+    Entry {
+        dir: "attrs-23.2.0",
+        name: "attrs",
+        version: "23.2.0",
+        canaries: &["define", "field", "Factory", "attrs", "attrib"],
+        non_module_floor: 450,
+    },
+    // sqlalchemy/sql/schema.py `Column`/`Table`; sqlalchemy/engine/create.py
+    // `create_engine`; sqlalchemy/orm/relationships.py `relationship`;
+    // sqlalchemy/orm/session.py `Session`. Observed 31809 (by far the
+    // largest package in the corpus).
+    Entry {
+        dir: "sqlalchemy-2.0.27",
+        name: "sqlalchemy",
+        version: "2.0.27",
+        canaries: &["Column", "Table", "create_engine", "relationship", "Session"],
+        non_module_floor: 25000,
+    },
+    // yaml/__init__.py `safe_load`/`dump`; yaml/loader.py `Loader`;
+    // yaml/dumper.py `Dumper`; yaml/error.py `YAMLError`. Observed 1012.
+    Entry {
+        dir: "pyyaml-6.0.1",
+        name: "pyyaml",
+        version: "6.0.1",
+        canaries: &["safe_load", "dump", "Loader", "Dumper", "YAMLError"],
+        non_module_floor: 750,
+    },
+    // dateutil/relativedelta.py `relativedelta`; dateutil/rrule.py `rrule`;
+    // dateutil/parser/_parser.py `parse`; dateutil/tz/tz.py `tzutc`. Observed 806.
+    Entry {
+        dir: "python-dateutil-2.8.2",
+        name: "python-dateutil",
+        version: "2.8.2",
+        canaries: &["relativedelta", "rrule", "parse", "tzutc"],
+        non_module_floor: 600,
+    },
+    // six.py: `PY2`/`PY3` are unconditional module-level constants;
+    // `with_metaclass`/`add_metaclass`/`ensure_str` are unconditional
+    // top-level `def`s. (`string_types` and `iteritems` are real six.py
+    // exports too, but both are bound inside `if PY3: ... else: ...` blocks
+    // — this producer deliberately does not walk control flow, see
+    // `syntax.rs`'s module doc — so they are NOT used as canaries here; using
+    // them would assert a capability this front end honestly does not have.)
+    // Observed 127.
+    Entry {
+        dir: "six-1.16.0",
+        name: "six",
+        version: "1.16.0",
+        canaries: &["PY2", "PY3", "with_metaclass", "add_metaclass", "ensure_str"],
+        non_module_floor: 90,
+    },
+    // rich/console.py `Console`; rich/table.py `Table`; rich/panel.py `Panel`;
+    // rich/text.py `Text`; rich/__init__.py `print`. Observed 3668.
+    Entry {
+        dir: "rich-13.7.0",
+        name: "rich",
+        version: "13.7.0",
+        canaries: &["Console", "Table", "Panel", "Text", "print"],
+        non_module_floor: 2800,
+    },
+    // typer/main.py `Typer`; typer/params.py `Argument`/`Option`;
+    // typer/main.py `run`. Observed 1122.
+    Entry {
+        dir: "typer-0.9.0",
+        name: "typer",
+        version: "0.9.0",
+        canaries: &["Typer", "Argument", "Option", "run"],
+        non_module_floor: 800,
+    },
+    // httpx/_client.py `Client`/`AsyncClient`; httpx/_api.py `get`/`post`;
+    // httpx/_models.py `Response`. Observed 1943.
+    Entry {
+        dir: "httpx-0.27.0",
+        name: "httpx",
+        version: "0.27.0",
+        canaries: &["Client", "AsyncClient", "get", "post", "Response"],
+        non_module_floor: 1500,
+    },
+    // black/mode.py `Mode`/`FileMode`; black/__init__.py
+    // `format_str`/`format_file_contents`. Observed 2472.
+    Entry {
+        dir: "black-24.2.0",
+        name: "black",
+        version: "24.2.0",
+        canaries: &["Mode", "FileMode", "format_str", "format_file_contents"],
+        non_module_floor: 1900,
+    },
+    // more_itertools/more.py `chunked`/`first`; more_itertools/recipes.py
+    // `flatten`/`unique_everseen`. (`pairwise` is a real export too, but is
+    // bound inside a `try: ... except ImportError: ... else: ...` at module
+    // scope — the same documented control-flow gap as six.py above — so it
+    // is deliberately not used as a canary.) Observed 591.
+    Entry {
+        dir: "more-itertools-10.2.0",
+        name: "more-itertools",
+        version: "10.2.0",
+        canaries: &["chunked", "flatten", "first", "unique_everseen"],
+        non_module_floor: 450,
+    },
+    // tenacity/__init__.py `retry`/`Retrying`; tenacity/stop.py
+    // `stop_after_attempt`; tenacity/wait.py `wait_fixed`. Observed 422.
+    Entry {
+        dir: "tenacity-8.2.3",
+        name: "tenacity",
+        version: "8.2.3",
+        canaries: &["retry", "Retrying", "stop_after_attempt", "wait_fixed"],
+        non_module_floor: 300,
+    },
+    // dataclasses_json/api.py `DataClassJsonMixin`; dataclasses_json/core.py
+    // and cfg.py `dataclass_json`/`LetterCase`. Observed 294.
+    Entry {
+        dir: "dataclasses-json-0.6.4",
+        name: "dataclasses-json",
+        version: "0.6.4",
+        canaries: &["DataClassJsonMixin", "dataclass_json", "LetterCase"],
+        non_module_floor: 200,
+    },
+    // structlog/_config.py `get_logger`; structlog/stdlib.py `BoundLogger`;
+    // structlog/_output.py `PrintLogger`. Observed 1284.
+    Entry {
+        dir: "structlog-24.1.0",
+        name: "structlog",
+        version: "24.1.0",
+        canaries: &["get_logger", "BoundLogger", "PrintLogger"],
+        non_module_floor: 950,
+    },
+    // jsonschema/validators.py `validate`/`Draft7Validator`;
+    // jsonschema/exceptions.py `ValidationError`; jsonschema/_format.py
+    // `FormatChecker`. Observed 709.
+    Entry {
+        dir: "jsonschema-4.21.1",
+        name: "jsonschema",
+        version: "4.21.1",
+        canaries: &["validate", "Draft7Validator", "ValidationError", "FormatChecker"],
+        non_module_floor: 500,
+    },
+    // cattr/converters.py `Converter`/`GenConverter`;
+    // cattr/__init__.py `structure`/`unstructure`. Observed 683.
+    Entry {
+        dir: "cattrs-23.2.3",
+        name: "cattrs",
+        version: "23.2.3",
+        canaries: &["Converter", "structure", "unstructure", "GenConverter"],
+        non_module_floor: 500,
+    },
+    // bs4/__init__.py `BeautifulSoup`; bs4/element.py `Tag`/`NavigableString`.
+    // Observed 999.
+    Entry {
+        dir: "beautifulsoup4-4.12.3",
+        name: "beautifulsoup4",
+        version: "4.12.3",
+        canaries: &["BeautifulSoup", "Tag", "NavigableString"],
+        non_module_floor: 750,
+    },
 ];
 
 fn corpus_root() -> PathBuf {
@@ -138,20 +308,19 @@ fn chain(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 enum Outcome {
-    /// `produce()` returned a table the producer stands behind: it declared
-    /// [`YieldContract::Declarations`] and contributed at least one entry of
-    /// its own. **No pypi entry reaches this today**, and the sweep says so out
-    /// loud rather than folding it together with the case below — the two were
-    /// the same `Ok` before this change, which is the whole finding.
-    Produced { table_len: usize, unlinked: usize },
-    /// `produce()` returned a table whose producer declared up front that it
-    /// contributes nothing. Carries the declared blocker so the summary can
-    /// print *why*, per entry, instead of a bare count.
-    Degraded { table_len: usize, blocker: String },
-    /// Fixture is missing or is not a genuine sdist (no `setup.py` /
-    /// `pyproject.toml` at its root).
-    Preflight { reason: String },
-    Fail { stage: &'static str, chain: String },
+    Produced {
+        table_len: usize,
+        non_module: usize,
+        missing_canaries: Vec<&'static str>,
+        contract_is_declarations: bool,
+    },
+    Preflight {
+        reason: String,
+    },
+    Fail {
+        stage: &'static str,
+        chain: String,
+    },
 }
 
 fn run_entry(entry: &Entry) -> Outcome {
@@ -176,20 +345,29 @@ fn run_entry(entry: &Entry) -> Outcome {
     });
 
     match produced {
-        // The classification is *derived from* the value that crossed the seam
-        // (`Produced::contract`), never from what this test knows about the
-        // build it is compiled into. If someone wires pyrefly up, these entries
-        // move to `Produced` on their own.
-        Ok(p) => match p.contract.degraded() {
-            Some(degraded) => Outcome::Degraded {
+        Ok(p) => {
+            let names: std::collections::HashSet<&str> = p
+                .table
+                .iter()
+                .filter_map(|(_, e)| {
+                    let n = e.sym().name.as_str();
+                    (!n.is_empty()).then_some(n)
+                })
+                .collect();
+            let missing_canaries: Vec<&'static str> =
+                entry.canaries.iter().copied().filter(|c| !names.contains(c)).collect();
+            let non_module = p
+                .table
+                .iter()
+                .filter(|(_, e)| e.kind().discriminant().map(|d| format!("{d:?}")) != Some("Module".to_owned()))
+                .count();
+            Outcome::Produced {
                 table_len: p.table.len(),
-                blocker: degraded.blocker().to_owned(),
-            },
-            None => Outcome::Produced {
-                table_len: p.table.len(),
-                unlinked: p.report.unlinked.len(),
-            },
-        },
+                non_module,
+                missing_canaries,
+                contract_is_declarations: matches!(p.contract, YieldContract::Declarations),
+            }
+        }
         Err(e) => Outcome::Fail {
             stage: "produce (invoke/lower/finish/yield-contract/seal)",
             chain: chain(&e),
@@ -198,65 +376,33 @@ fn run_entry(entry: &Entry) -> Outcome {
 }
 
 #[test]
-fn every_provisioned_pypi_corpus_package_declares_its_degradation_rather_than_yielding_a_silent_stub()
- {
-    let mut failures = Vec::new();
+fn every_provisioned_pypi_corpus_package_lowers_real_named_declarations() {
     let mut preflight_failures = Vec::new();
-    let mut produced = Vec::new();
-    let mut degraded = Vec::new();
+    let mut failures = Vec::new();
+    let mut canary_failures: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut floor_failures: Vec<(&str, usize, usize)> = Vec::new();
+    let mut contract_failures: Vec<&str> = Vec::new();
+    let mut produced_summary: Vec<(&str, usize, usize)> = Vec::new();
 
     for entry in ENTRIES {
         eprintln!("=== {} ({} @ {}) ===", entry.dir, entry.name, entry.version);
         match run_entry(entry) {
-            Outcome::Produced { table_len, unlinked } => {
+            Outcome::Produced { table_len, non_module, missing_canaries, contract_is_declarations } => {
                 eprintln!(
-                    "PRODUCED {}: table_len={table_len} unlinked_refs={unlinked}",
+                    "PRODUCED {}: table_len={table_len} non_module={non_module} \
+                     contract_is_declarations={contract_is_declarations} missing_canaries={missing_canaries:?}",
                     entry.dir
                 );
-                produced.push((entry.dir, table_len));
-            }
-            Outcome::Degraded { table_len, blocker } => {
-                eprintln!("DEGRADED {}: table_len={table_len} blocker={blocker}", entry.dir);
-                // The blocker must stay specific enough to be checkable. Both
-                // facts below are the *current* reasons pyrefly cannot be
-                // enabled, and both are stronger than "the feature is off" — a
-                // reader told only that would reach for `--features pyrefly`,
-                // which fails at module resolution and then at dependency
-                // resolution. There is no typed variant to assert instead (the
-                // set of blockers is open, deliberately — see `DegradedYield`),
-                // so this is the exception AGENTS-DOCTRINE.md §4's
-                // "never assert on a message string" rule leaves: the typed
-                // half is already asserted by `contract.degraded()` being
-                // `Some` in `run_entry`, and this pins that the reason has not
-                // decayed into a tautology.
-                assert!(
-                    blocker.contains("context.rs"),
-                    "{}: the declared blocker must name the missing module, since enabling the \
-                     feature fails to compile there; got {blocker:?}",
-                    entry.dir
-                );
-                assert!(
-                    blocker.contains("blake3"),
-                    "{}: the declared blocker must name the dependency-resolution conflict, \
-                     since it blocks the fix before compilation; got {blocker:?}",
-                    entry.dir
-                );
-                // Retained verbatim from the pre-inversion version of this
-                // test, and deliberately not weakened. Its meaning has changed:
-                // it is no longer the *primary* assertion standing in for real
-                // analysis, but a consistency check that the declaration and
-                // the output agree. `produce()`'s gate would already have
-                // failed a declared-degraded producer that contributed
-                // anything (`ProducerError::YieldContractOutgrown`), so a
-                // `table_len != 1` reaching here would mean the root symbol
-                // itself changed shape.
-                assert_eq!(
-                    table_len, 1,
-                    "{}: a degraded producer's table must hold exactly the root entry \
-                     `produce()` synthesized, got table_len={table_len}",
-                    entry.dir
-                );
-                degraded.push((entry.dir, blocker));
+                if !contract_is_declarations {
+                    contract_failures.push(entry.dir);
+                }
+                if !missing_canaries.is_empty() {
+                    canary_failures.push((entry.dir, missing_canaries));
+                }
+                if non_module < entry.non_module_floor {
+                    floor_failures.push((entry.dir, non_module, entry.non_module_floor));
+                }
+                produced_summary.push((entry.dir, table_len, non_module));
             }
             Outcome::Preflight { reason } => {
                 eprintln!("PREFLIGHT-FAIL {}: {reason}", entry.dir);
@@ -269,152 +415,116 @@ fn every_provisioned_pypi_corpus_package_declares_its_degradation_rather_than_yi
         }
     }
 
-    eprintln!(
-        "\n=== pypi corpus sweep summary: {} produced / {} DEGRADED / {} of {} entries ===",
-        produced.len(),
-        degraded.len(),
-        produced.len() + degraded.len(),
-        ENTRIES.len()
-    );
-    eprintln!(
-        "NOTE: a DEGRADED entry is NOT a success. Its producer declared up front that it \
-         contributes nothing, and `Produced::contract` carries that declaration downstream. \
-         These entries must not be counted toward any corpus coverage number."
-    );
-    for (dir, table_len) in &produced {
-        eprintln!("  PRODUCED {dir}: table_len={table_len}");
-    }
-    for (dir, blocker) in &degraded {
-        eprintln!("  DEGRADED {dir}: {blocker}");
-    }
-    for (dir, reason) in &preflight_failures {
-        eprintln!("  PREFLIGHT-FAIL {dir}: {reason}");
-    }
-    for (dir, stage, chain) in &failures {
-        eprintln!("  FAIL {dir} [{stage}]: {chain}");
+    eprintln!("\n=== pypi corpus sweep summary: {} of {} entries produced ===", produced_summary.len(), ENTRIES.len());
+    for (dir, table_len, non_module) in &produced_summary {
+        eprintln!("  {dir}: table_len={table_len} non_module={non_module}");
     }
 
     assert!(
         preflight_failures.is_empty(),
-        "{} of {} pypi corpus entries are not genuine sdists on disk",
+        "{} of {} pypi corpus entries are not genuine sdists on disk: {preflight_failures:?}",
         preflight_failures.len(),
-        ENTRIES.len()
+        ENTRIES.len(),
     );
     assert!(
         failures.is_empty(),
         "{} of {} pypi corpus entries failed to lower through produce(); see stderr above \
-         for the full error chain of each",
+         for the full error chain of each: {failures:?}",
         failures.len(),
-        ENTRIES.len()
+        ENTRIES.len(),
     );
-    // The inversion, stated as an invariant. While `pyrefly` is off, *every*
-    // entry must land in the degraded bucket — none may quietly appear in the
-    // produced bucket, which is where they all used to be counted. The day the
-    // oracle works this assertion is what forces someone to come back here and
-    // retire it, rather than letting a real result be filed under "degraded".
-    #[cfg(not(feature = "pyrefly"))]
-    {
-        assert!(
-            produced.is_empty(),
-            "{} pypi entries were reported as genuinely produced while the pyrefly oracle is \
-             absent: {produced:?}. Either the oracle now works — in which case retire this \
-             assertion and `PythonProducer::yield_contract` together — or something is \
-             fabricating declarations",
-            produced.len()
-        );
-        assert_eq!(
-            degraded.len(),
-            ENTRIES.len(),
-            "every provisioned pypi entry must declare its degradation; {} did not",
-            ENTRIES.len() - degraded.len()
-        );
-    }
+    assert!(
+        contract_failures.is_empty(),
+        "these entries did not report YieldContract::Declarations (the trait default, since \
+         PythonProducer no longer overrides yield_contract): {contract_failures:?}",
+    );
+    assert!(
+        canary_failures.is_empty(),
+        "these entries are missing at least one verified real symbol — either a genuine \
+         regression in the producer, or the corpus checkout no longer matches the source this \
+         test's canaries were read from: {canary_failures:?}",
+    );
+    assert!(
+        floor_failures.is_empty(),
+        "these entries fell below their non-module entry floor (dir, observed, floor): {floor_failures:?}",
+    );
 }
 
-/// The gate is live, not vacuous: strip Python's declaration and `produce()`
-/// rejects the very same run the sweep above accepts.
+/// The yield-contract gate is live, not vacuous: a producer that genuinely
+/// contributes nothing — while still taking the trait default
+/// `YieldContract::Declarations`, exactly like `PythonProducer` itself now
+/// does — is rejected by `produce()`, and the real `PythonProducer` on the
+/// identical package is accepted because it actually declares something.
 ///
-/// AGENTS-DOCTRINE.md §8 requires verifying a guard by mutation — "break the
-/// repair verdict deliberately and confirm the suite goes red. A guard nobody
-/// has watched fail is a guard nobody has tested." The sweep above can only
-/// show that the *declared* path returns `Ok`; on its own that is equally
-/// consistent with a gate that never fires. This produces the mutation as a
-/// real type rather than as a comment: `UndeclaredPython` delegates `invoke`
-/// and `lower` to the real `PythonProducer` and differs from it in exactly one
-/// respect — it does not override `Producer::yield_contract`, so it takes the
-/// trait default. That is precisely the state `PythonProducer` was in before
-/// this change, and it is the state every one of the 22 corpus entries was
-/// counted as a success from.
-struct UndeclaredPython;
+/// This is the repurposed twin of the pre-`syntax.rs` version of this test
+/// (`the_declaration_is_what_keeps_python_out_of_the_error_path`), updated
+/// for AGENTS-DOCTRINE.md §8's "verify the guard by mutation" now that the
+/// thing being guarded against is different: it used to be "an undeclared
+/// stub is wrongly accepted"; it is now "a producer that silently regresses
+/// to contributing nothing is wrongly accepted". `EmptyPython` delegates
+/// nothing to the real producer — its `invoke`/`lower` are hand-written
+/// no-ops — so this measures the gate, not `PythonProducer`'s own behavior.
+struct EmptyPython;
 
-impl Producer for UndeclaredPython {
+impl Producer for EmptyPython {
     type Id = <PythonProducer as Producer>::Id;
     type Oracle = PythonOracle;
 
-    const ID: ProducerId = ProducerId("python-undeclared-mutant/1");
+    const ID: ProducerId = ProducerId("python-empty-mutant/1");
     const LANGUAGE: nudox_ir::body::Language = <PythonProducer as Producer>::LANGUAGE;
 
-    fn invoke(&self, src: &PackageSource) -> Result<Self::Oracle, ProducerError> {
-        PythonProducer.invoke(src)
+    fn invoke(&self, _src: &PackageSource) -> Result<Self::Oracle, ProducerError> {
+        Ok(PythonOracle::default())
     }
 
-    // No `yield_contract` override — that is the mutation.
+    // No `yield_contract` override — the trait default (`Declarations`)
+    // applies, exactly as it now does for the real `PythonProducer`.
 
     fn lower(
         &self,
-        oracle: &Self::Oracle,
-        out: &mut nudox_ir::lower::Lowering<Self::Id>,
+        _oracle: &Self::Oracle,
+        _out: &mut nudox_ir::lower::Lowering<Self::Id>,
     ) -> Result<(), ProducerError> {
-        PythonProducer.lower(oracle, out)
+        Ok(())
     }
 }
 
 #[test]
-#[cfg(not(feature = "pyrefly"))]
-fn the_declaration_is_what_keeps_python_out_of_the_error_path() {
+fn a_producer_that_contributes_nothing_is_rejected_even_under_the_default_contract() {
     let entry = &ENTRIES[0];
     let root = corpus_root().join(entry.dir);
     let src = PackageSource::new(&root, entry.name, entry.version);
     let lid = PackageLineageId::new(EcosystemId::new("pypi"), PackageName::new(entry.name));
 
-    // Same package, same `invoke`, same `lower`, same pipeline as the sweep.
-    let case = format!("pypi-undeclared-mutant-{}", entry.dir);
+    let case = format!("pypi-empty-mutant-{}", entry.dir);
     let (result, _cost) = nudox_test_support::measured(&case, &root, || {
-        produce(&UndeclaredPython, &src, &lid, &nudox_ir::foreign::Unlinked)
+        produce(&EmptyPython, &src, &lid, &nudox_ir::foreign::Unlinked)
     });
 
     match result {
-        Err(ProducerError::NoDeclarationsContributed {
-            package,
-            producer,
-            source,
-        }) => {
-            eprintln!(
-                "mutant rejected as expected: package={package} producer={producer} \
-                 source={source:?}"
-            );
+        Err(ProducerError::NoDeclarationsContributed { package, producer, source }) => {
+            eprintln!("mutant rejected as expected: package={package} producer={producer} source={source:?}");
             assert_eq!(package, entry.name);
-            assert_eq!(producer, UndeclaredPython::ID);
+            assert_eq!(producer, EmptyPython::ID);
         }
         Err(other) => panic!(
             "expected ProducerError::NoDeclarationsContributed for a producer that contributes \
-             nothing and declares nothing, got {other:?}"
+             nothing and declares no degradation, got {other:?}"
         ),
         Ok(p) => panic!(
-            "the yield-contract gate did not fire: a producer that reads no source and \
-             declares no degradation sealed a table of {} entries and was reported as a \
-             success — this is exactly the L45-cs defect, unrepaired",
+            "the yield-contract gate did not fire: a producer that reads no source sealed a \
+             table of {} entries and was reported as a success",
             p.table.len()
         ),
     }
 
-    // And the real producer, on the identical input, is accepted *because* it
-    // declares. The pair is the point: acceptance is earned by the
-    // declaration, not by the gate being asleep.
+    // And the real producer, on the identical input, is accepted — because
+    // it actually declares real content, not because the gate is asleep.
     let honest = produce(&PythonProducer, &src, &lid, &nudox_ir::foreign::Unlinked)
-        .expect("the declared-degraded producer is accepted");
+        .expect("the real producer must be accepted: it genuinely reads and lowers `src`");
     assert!(
-        matches!(honest.contract, YieldContract::RootOnly(_)),
-        "and it is accepted as degraded, not as a success"
+        matches!(honest.contract, YieldContract::Declarations),
+        "and it is accepted under the real (non-degraded) contract"
     );
+    assert!(honest.table.len() > 1, "and with real content beyond the synthesized root");
 }

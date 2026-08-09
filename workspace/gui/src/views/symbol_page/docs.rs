@@ -654,6 +654,25 @@ impl SectionSlot {
     pub fn is_pending(&self) -> bool {
         self.body.is_none()
     }
+
+    /// How many enumerable rows this section holds, when it holds a table.
+    ///
+    /// `None` for prose, code and callouts — sections that are read, not
+    /// counted. The outline uses it to tell a *generated* section apart from an
+    /// authored heading that happens to share its name: `Point`'s doc comment
+    /// has a `# Fields` heading and the struct also has a `Fields` table, and
+    /// `08-symbol-opened.png` listed both in the rail as the bare word
+    /// "Fields", twice, with nothing to choose between them.
+    ///
+    /// The count is derived from the rows themselves rather than carried
+    /// alongside them, so it cannot drift from what the section paints
+    /// (doctrine §6's "counted" rule, applied to a label).
+    pub fn row_count(&self) -> Option<usize> {
+        match self.body.as_ref()? {
+            SectionView::Rows { rows, .. } => Some(rows.len()),
+            _ => None,
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -894,6 +913,7 @@ impl DocsBody {
     /// Every path produces an element inside a `min_h(reserved)` box, so the
     /// promise the skeleton made is kept whether or not content has arrived.
     pub fn render_section(&self, ix: usize, _window: &mut Window, cx: &App) -> AnyElement {
+        let _span = crate::perf::scope(crate::perf::Region::DocsSection);
         let Some(slot) = self.slots.get(ix) else {
             return div().into_any_element();
         };
@@ -908,6 +928,18 @@ impl DocsBody {
         let frame = div()
             .id(("doc.section", ix))
             .w_full()
+            // §9.4: the reserve is the arrived content's floor as well as the
+            // skeleton's height, which is what makes arrival a replacement
+            // rather than a reflow.
+            //
+            // Releasing this floor once the document has finished streaming was
+            // tried and reverted on 2026-08-09. It is not what produces the
+            // dead band below the fields table in `08-symbol-opened.png`: with
+            // the release in place the harness reported `consumed=4 slots=4
+            // streaming=false reserved=[56, 104, 51, 80]` — 291 logical px of
+            // reserve against a `list()` that still laid out 538 — so the
+            // floors were already off at capture and the band was unchanged.
+            // Whatever is padding that list, it is not this.
             .min_h(slot.reserved)
             .px(sp.space_4)
             .py(sp.space_3);
@@ -1338,6 +1370,25 @@ impl DocsBody {
             (ext.space, ext.type_scale, ext.colours)
         };
 
+        // The table's own heading.
+        //
+        // # Why this is a landmark and not a caption
+        //
+        // It used to be `caption` (11 px, muted) over a hairline — the visual
+        // weight of a column label. But a `Fields` or `Members` table is a
+        // *section of the page*: it is what the outline rail points at, it is
+        // where a reader scanning for "what does this type hold" stops, and
+        // `08-symbol-opened.png` showed it reading fainter than the body prose
+        // above it and fainter than the disclosure headers below it. The page
+        // had no rank between "paragraph" and "page section", so everything
+        // read at one level (F4).
+        //
+        // `title` gives it that rank — the same token the disclosure headers
+        // use, because they are the same kind of thing. The leading swatch is
+        // the kind hue this table's rows are badged with and the one the
+        // outline draws beside its row, so a reader can follow one colour from
+        // the rail to the heading to the badges.
+        let swatch = cx.theme_ext().kind_colours.field;
         div()
             .v_flex()
             .w_full()
@@ -1345,14 +1396,40 @@ impl DocsBody {
             .child(
                 div()
                     .w_full()
-                    .pb(sp.space_1)
-                    .text_size(ts.caption.size)
-                    .line_height(ts.caption.line_height)
-                    .font_weight(gpui::FontWeight(ts.caption.weight as f32))
-                    .text_color(colours.fg_muted)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(sp.space_2)
+                    .pb(sp.space_2)
                     .border_b_1()
                     .border_color(colours.border_default)
-                    .child(title.clone()),
+                    .child(
+                        div()
+                            .w(sp.border_width * 3.0)
+                            .h(ts.title.size)
+                            .flex_shrink_0()
+                            .rounded(sp.border_width)
+                            .bg(swatch),
+                    )
+                    .child(
+                        div()
+                            .text_size(ts.title.size)
+                            .line_height(ts.title.line_height)
+                            .font_weight(gpui::FontWeight(ts.title.weight as f32))
+                            .text_color(colours.fg_default)
+                            .child(title.clone()),
+                    )
+                    // The count, in the same relation to its heading as the
+                    // disclosure headers' counts are to theirs. Formatted per
+                    // render, but from a `usize` on a path that runs once per
+                    // arrived section rather than once per row.
+                    .child(
+                        div()
+                            .text_size(ts.caption.size)
+                            .line_height(ts.title.line_height)
+                            .text_color(colours.fg_faint)
+                            .child(SharedString::from(rows.len().to_string())),
+                    ),
             )
             .children(rows.iter().enumerate().map(|(rx, row)| {
                 let row_id = section_ix * 100_000 + rx;

@@ -1,4 +1,4 @@
-//! The `rmcp` server: the six §L6 tools plus the §L6 resource set.
+//! The `rmcp` server: the eight §L6 tools plus the §L6 resource set.
 //!
 //! This module is the MCP *surface*. Every tool body immediately delegates to
 //! the matching `NudoxTools::do_*` method in [`crate::tools`], which is where
@@ -11,9 +11,10 @@
 //! A description string here is the *only* documentation an LLM client ever
 //! sees for a tool — there is no README, no rustdoc, and no type signature it
 //! can read. Each one therefore says what the tool returns, when to prefer it
-//! over the others, and what a `SymbolKey` looks like. The four typed tools
-//! announce themselves as the first choice and `graph_query` announces itself
-//! as the escape hatch, per §L6.
+//! over the others, and what a `SymbolKey` looks like. The typed tools
+//! (`search_symbols`, `get_symbol`, `find_usages`, `list_packages`,
+//! `list_versions`, `select_version`) announce themselves as the first choice
+//! and `graph_query` announces itself as the escape hatch, per §L6.
 //!
 //! # Resources
 //!
@@ -39,9 +40,10 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router
 
 use crate::error::McpError;
 use crate::tools::{
-    FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs, ListPackagesArgs, NudoxTools,
-    PackagesResult, QueryResult, SchemaResult, SearchResult, SearchSymbolsArgs, SymbolDoc,
-    UsagesResult,
+    DiffVersionsArgs, DiffVersionsResult, FindUsagesArgs, GetSymbolArgs, GraphQueryArgs,
+    GraphSchemaArgs, ListPackagesArgs, ListVersionsArgs, ListVersionsResult, NudoxTools,
+    PackagesResult, QueryResult, SchemaResult, SearchResult, SearchSymbolsArgs, SelectVersionArgs,
+    SelectVersionResult, SymbolDoc, UsagesResult,
 };
 
 /// URI of the schema resource.
@@ -62,9 +64,17 @@ against a remote generation, and carries a `provenance` field saying which.
 Start with `list_packages` to see what is loaded, then `search_symbols` to find \
 a symbol by name, then `get_symbol` to read it in full. Use `find_usages` to \
 find a symbol's callers. All four speak the same key format, \
-`ecosystem:name#introhex`, so a key returned by one goes straight into another.
+`ecosystem:name#introhex`, so a key returned by one goes straight into another. \
+`get_symbol`'s result also carries `timeline`: the symbol's history across \
+every loaded version of its package (renames, deprecations, signature changes, \
+introduction, removal).
 
-Reach for `graph_query` only when those four cannot express the question. It \
+When a package has more than one version loaded, use `list_versions` to see \
+them and `select_version` to switch which one the other tools answer from. \
+Most `SymbolKey`s survive a version switch, but not all — read \
+`select_version`'s description before relying on one across a switch.
+
+Reach for `graph_query` only when those tools cannot express the question. It \
 runs an arbitrary Trustfall query over the corpus, and you must call \
 `graph_schema` first to learn the exact type, property and edge names.";
 
@@ -160,7 +170,9 @@ read the symbol or to `find_usages` to find its callers. Narrow with `kinds` (Fu
 Trait, Enum, Impl, Alias, Field, Const, Static, Module, Variant, Reexport, Param) and with \
 `packages` (each `ecosystem:name`; see `list_packages`). This matches names and kinds, not \
 documentation prose — for structural questions such as \"which types implement this trait\" or \
-\"what does this function reference\", use `graph_query`."
+\"what does this function reference\", use `graph_query`. Results are paginated: if `next_cursor` \
+is present in the response, more results exist — pass it back as `cursor` to get the next page. \
+Treat `cursor` as opaque; never construct one yourself."
     )]
     pub async fn search_symbols(
         &self,
@@ -196,7 +208,9 @@ this?\". Given a symbol key, returns the symbols holding a resolved reference to
 a function, users of a type — each with its own key, name and kind, so you can follow the chain \
 with `get_symbol`. Only references the producer resolved with index-grade confidence or better \
 are returned, so results are precise rather than textual: a name that merely appears in a comment \
-or belongs to an unrelated identifier will not show up. `key` must be `ecosystem:name#introhex`."
+or belongs to an unrelated identifier will not show up. `key` must be `ecosystem:name#introhex`. \
+Paginated the same way as `search_symbols`: check `next_cursor` and pass it back as `cursor` for \
+more."
     )]
     pub async fn find_usages(
         &self,
@@ -222,19 +236,88 @@ been produced or loaded yet and no other tool will find symbols from it — this
         Ok(Json(self.tools.do_list_packages().await?))
     }
 
+    /// List every loaded generation of a package.
+    #[tool(
+        name = "list_versions",
+        description = "List every loaded generation of one package, newest first, with which one \
+is current and its symbol count. Several real packages in this corpus have more than one version \
+loaded at once (for example memchr, pydantic, guava, jackson-databind) — call this to see them \
+before assuming there is only one. `package` is `ecosystem:name` (see `list_packages`). An unloaded \
+package returns zero versions rather than an error. HONESTY NOTE: most symbol keys are stable \
+across the versions this lists, but not all are — some declarations mint a key that depends on \
+byte offsets or emission order and does not survive every release. This tool cannot tell you which \
+ones in a given package are affected; see `select_version`'s description before switching."
+    )]
+    pub async fn list_versions(
+        &self,
+        Parameters(args): Parameters<ListVersionsArgs>,
+    ) -> Result<Json<ListVersionsResult>, ErrorData> {
+        Ok(Json(self.tools.do_list_versions(args).await?))
+    }
+
+    /// Switch which loaded generation of a package the other tools answer from.
+    #[tool(
+        name = "select_version",
+        description = "Switch which loaded generation of a package `get_symbol`, `search_symbols` \
+and `graph_query` answer from. `package` is `ecosystem:name`; `version` must be one of the strings \
+`list_versions` returned — call that first. Returns `Switched` (with the new symbol count) or, if \
+the version is not loaded, `NotLoaded` — not an error, since the engine only holds what it was \
+asked to load. By the time you receive this tool's response the switch has actually landed, so \
+subsequent calls answer from the new generation. HONESTY NOTE, read before relying on this across a \
+switch: most `SymbolKey`s survive a version change unchanged, because their identity is derived \
+from the declaration's content — but not every declaration's key is content-derived. Some fall back \
+to an identity keyed on byte offset or emission order during lowering, and that kind of key can \
+silently stop resolving after a switch — indistinguishable from the symbol having been deleted, \
+because this tool has no way to tell you in advance which declarations in a package are affected. \
+If a key you held before switching returns `symbol not found` afterward, treat it as possibly-stale \
+and re-fetch it with `search_symbols` rather than concluding the symbol was removed."
+    )]
+    pub async fn select_version(
+        &self,
+        Parameters(args): Parameters<SelectVersionArgs>,
+    ) -> Result<Json<SelectVersionResult>, ErrorData> {
+        Ok(Json(self.tools.do_select_version(args).await?))
+    }
+
+    /// Compare two loaded generations of one package.
+    #[tool(
+        name = "diff_versions",
+        description = "Compare two loaded generations of one package and get back what changed, \
+declaration by declaration — the question `select_version` could previously only answer by \
+switching, querying, switching back and diffing by hand. `package` is `ecosystem:name`; \
+`from_version` is the OLDER and `to_version` the NEWER, exactly as `list_versions` spells them \
+(call it first; several packages here have two generations loaded). If either is not loaded you \
+get `not_loaded` with the list of ones that are, not an error. READ THE VERDICT ON EACH ROW: \
+`removed` is the ONLY value that means a declaration is gone, and it is emitted only when the \
+symbol's key was derived from its own content. `rekeyed` means one declaration got a new key \
+(use `to_key`, stop using `from_key`) — a naive diff would report that as a deletion plus an \
+addition, which is the single most misleading thing a diff can say. `indeterminate` means it \
+vanished but its key was of a kind that can move on its own, so the tool refuses to guess: \
+re-search by name and path before concluding it was deleted. Rows are paginated like \
+`search_symbols`; the counts describe the whole diff on every page."
+    )]
+    pub async fn diff_versions(
+        &self,
+        Parameters(args): Parameters<DiffVersionsArgs>,
+    ) -> Result<Json<DiffVersionsResult>, ErrorData> {
+        Ok(Json(self.tools.do_diff_versions(args).await?))
+    }
+
     /// Run an arbitrary Trustfall query over the corpus.
     #[tool(
         name = "graph_query",
-        description = "THE ESCAPE HATCH — use it only when the four typed tools cannot express \
-the question. `search_symbols`, `get_symbol`, `find_usages` and `list_packages` are faster, \
-cheaper and better shaped for what they cover; come here for structural or relational questions \
-they do not, such as \"every public function in package X returning type Y\", \"all implementors \
-of this trait\", or a join across packages. Takes a Trustfall (GraphQL-subset) query plus string \
-variable bindings referenced as `$name`, and returns column names with positionally aligned \
-string cells, so `rows[i].cells[j]` is the value of `columns[j]`. ALWAYS call `graph_schema` \
-first and write the query against the exact type, property and edge names it returns — queries \
-are validated against that schema, so a guessed field name is an error rather than an empty \
-result."
+        description = "THE ESCAPE HATCH — use it only when the typed tools cannot express the \
+question. `search_symbols`, `get_symbol`, `find_usages`, `list_packages`, `list_versions` and \
+`select_version` are faster, cheaper and better shaped for what they cover; come here for \
+structural or relational questions they do not, such as \"every public function in package X \
+returning type Y\" (the `returnedBy` edge), \"what does this type implement\" (`implementedBy`), \
+\"all implementors of this trait\" (`implementors`), or a join across packages. Takes a \
+Trustfall (GraphQL-subset) query plus string variable bindings referenced as `$name`, and returns \
+column names with positionally aligned string cells, so `rows[i].cells[j]` is the value of \
+`columns[j]`. ALWAYS call `graph_schema` first and write the query against the exact type, \
+property and edge names it returns — queries are validated against that schema, so a guessed \
+field name is an error rather than an empty result. Paginated the same way as `search_symbols`: \
+check `next_cursor` and pass it back as `cursor` for more."
     )]
     pub async fn graph_query(
         &self,
@@ -250,7 +333,8 @@ result."
 validated against. Call this before writing any `graph_query`: it documents every queryable type \
 (Package; Symbol and its Function, Record, Trait, Impl, Enum, Field, Const and Alias \
 implementors; Occurrence), every scalar property, every edge (members, parent, usages, mentions, \
-implementors, occurrencesOf) and the cost of each traversal. It also documents the \
+implementors, occurrencesOf, and the type-reference edges implementedBy, subtypes, returnedBy, \
+acceptedBy, heldBy and signatureTypes) and the cost of each traversal. It also documents the \
 `ecosystem:name#introhex` key format that every other tool consumes. The schema is fixed for the \
 life of the server, so one call per session is enough."
     )]

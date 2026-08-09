@@ -34,6 +34,29 @@
 //!
 //! C++ template type parameters have no declaration-site variance keyword.
 //! Variance is `None` for all `GenericParam::Type` entries from this producer.
+//!
+//! # `OracleType::Named` — not a `Type::TypeVar`
+//!
+//! An unresolved named type (`OracleType::Named`) previously lowered to
+//! `Type::TypeVar(name)`, the same variant used for a genuine template
+//! type-parameter use (`OracleType::TypeVar`). That conflated "this is a
+//! generic parameter" with "this is an ordinary named type we have no
+//! resolution path for" — the two are semantically opposite (a `TypeVar` is
+//! alpha-equivalent and excluded from identity skeletons by name; a named
+//! type's identity is exactly its name). It now lowers to
+//! `Type::Unknown(UnknownType::UnresolvedExternal { name })`, keeping the
+//! spelling. `lower_type` takes only `&OracleType` — it has no `Lowering`
+//! sink and so cannot resolve this against the package's own declared USRs
+//! or build a `Ref::Foreign`; a later registry link pass owns that.
+//!
+//! **Identity note:** this moves `IntroId`s for overload sets whose
+//! signature mentions an unresolved named type (an entry's skeleton is
+//! consulted only when it collides with another on `(kind, path, name)`, or
+//! for `Kind::Impl`, which this producer never emits). It rides the same
+//! `INTRO_DOMAIN` v4→v5 bump already required by the rest of the type-lattice
+//! change; `skeleton::tests::unknown_reason_opcodes_are_frozen` pins the
+//! `UnknownType` variant→opcode mapping and needs no change for a new
+//! *caller* of an existing variant.
 
 use std::path::PathBuf;
 
@@ -501,14 +524,26 @@ fn lower_type(ty: &OracleType) -> Type {
             }
         }
         OracleType::Named { name, args } if args.is_empty() => {
-            // Pure nominal reference; no apply args.
-            // We cannot resolve USRs at lower time, so use TypeVar as a string ref
-            // to avoid the overhead of a full Nominal RawRef resolution.
-            // The caller can post-process to resolve these via the registry.
-            Type::TypeVar(name.clone())
+            // A nominal type reference (a `struct`/`class`/`enum`/alias name),
+            // NOT a template type-parameter use — those are the distinct
+            // `OracleType::TypeVar` case below, which the oracle already tells
+            // apart from this one. `Type::TypeVar(name)` here was therefore a
+            // lie: it told every downstream consumer "this is a generic
+            // parameter" about ordinary named types, most of which are not.
+            //
+            // `lower_type` has no access to the `Lowering` sink (it takes only
+            // `&OracleType`), so it cannot look this name up against the
+            // package's own declared USRs and cannot build a same-package
+            // `Nominal` ref or a `Ref::Foreign`. `Type::unresolved_external`
+            // is the honest residue: a real named type this producer has a
+            // spelling for and no resolution path to, exactly the case
+            // `UnknownType::UnresolvedExternal` documents. A later registry
+            // link pass — not this function — is what can turn it into a
+            // `Ref`.
+            Type::unresolved_external(name.clone())
         }
         OracleType::Named { name, args } => {
-            let base = Box::new(Type::TypeVar(name.clone()));
+            let base = Box::new(Type::unresolved_external(name.clone()));
             let lowered_args: Vec<Type> = args.iter().map(lower_type).collect();
             Type::Apply {
                 base,
@@ -516,10 +551,12 @@ fn lower_type(ty: &OracleType) -> Type {
             }
         }
         OracleType::TypeVar(name) => Type::TypeVar(name.clone()),
-        // `auto` / `__auto_type` / `decltype(auto)` — a specific type exists in the
-        // source but libclang did not resolve it at oracle time. Use Type::Inferred
-        // rather than Type::Any: the distinction matters (Any = genuinely dynamic,
-        // Inferred = producer resolution gap).
+        // `auto` / `__auto_type` / `decltype(auto)` — the source *asked* for
+        // inference and libclang did not resolve it at oracle time.
+        // `Type::Inferred` is right precisely because a written inference
+        // request is neither a top type (`Type::Any` — C has none) nor an
+        // unrequested gap (`Type::Unknown`); see `Type::Inferred`'s doc for
+        // the three-way boundary.
         OracleType::Inferred => Type::Inferred,
     }
 }
@@ -583,5 +620,64 @@ mod tests {
             !matches!(ty, Type::Any),
             "OracleType::Inferred must NOT lower to Type::Any"
         );
+    }
+
+    /// An unresolved named type must lower to `Unknown(UnresolvedExternal)`,
+    /// carrying its spelling — never to `TypeVar`, which is reserved for a
+    /// genuine template type-parameter use (`OracleType::TypeVar`).
+    #[test]
+    fn unresolved_named_type_lowers_to_unresolved_external_not_typevar() {
+        use nudox_ir::kinds::UnknownType;
+
+        let ty = lower_type(&OracleType::Named {
+            name: "SomeStruct".to_owned(),
+            args: Vec::new(),
+        });
+        assert_eq!(
+            ty,
+            Type::Unknown(UnknownType::UnresolvedExternal {
+                name: "SomeStruct".to_owned()
+            }),
+            "an unresolved named type must be a named gap, not a type variable"
+        );
+        assert!(
+            !matches!(ty, Type::TypeVar(_)),
+            "a named type must never be reported as a generic parameter"
+        );
+    }
+
+    /// A genuine template type-parameter use is unaffected: it still lowers
+    /// to `Type::TypeVar`, distinct from an unresolved named type above.
+    #[test]
+    fn template_type_parameter_use_still_lowers_to_typevar() {
+        let ty = lower_type(&OracleType::TypeVar("T".to_owned()));
+        assert!(
+            matches!(ty, Type::TypeVar(ref n) if n == "T"),
+            "a real template type-parameter use must stay Type::TypeVar; got {ty:?}"
+        );
+    }
+
+    /// A named type with template arguments (`Foo<int>`) keeps the `Apply`
+    /// wrapper, with the unresolved base carrying the name.
+    #[test]
+    fn unresolved_named_type_with_args_keeps_apply_wrapper() {
+        use nudox_ir::kinds::UnknownType;
+
+        let ty = lower_type(&OracleType::Named {
+            name: "Foo".to_owned(),
+            args: vec![OracleType::Integer { signed: true, bits: 32 }],
+        });
+        match ty {
+            Type::Apply { base, args } => {
+                assert_eq!(
+                    *base,
+                    Type::Unknown(UnknownType::UnresolvedExternal {
+                        name: "Foo".to_owned()
+                    })
+                );
+                assert_eq!(args.len(), 1);
+            }
+            other => panic!("expected Type::Apply, got {other:?}"),
+        }
     }
 }

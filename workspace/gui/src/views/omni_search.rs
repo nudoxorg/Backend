@@ -376,22 +376,6 @@ impl InputEditState {
 // above.  The view's movement policy functions reference it through the bound
 // `S: SearchAccess` on `OmniSearch<S>`.
 
-/// Extract the package name from a module-path prefix.
-///
-/// `path` is a string like `"tokio::runtime::"` or `"serde_json::value::"`,
-/// produced by [`split_qualified_name`].  Returns a `SharedString` containing
-/// the leading segment (e.g. `"tokio"`, `"serde_json"`), or `None` when the
-/// path is empty or has no `::` separator.
-///
-/// Used by [`OmniSearch::render_row`] to render a package label inline with the
-/// symbol name.  Called in render — see §1.1.4 note in `render_row`.
-fn extract_package_label(path: &SharedString) -> Option<SharedString> {
-    if path.is_empty() {
-        return None;
-    }
-    path.find("::").map(|end| SharedString::from(path[..end].to_owned()))
-}
-
 /// A stand-in [`SearchAccess`] so this view compiles and can be driven before
 /// the real store lands.
 ///
@@ -783,7 +767,10 @@ impl SectionRuntime {
 /// happens once at construction and never in render.
 struct FooterHint {
     description: SharedString,
-    keys: Vec<Keystroke>,
+    /// `Rc`, not `Vec`: the footer is rebuilt into fresh `KeyHint`s on every
+    /// frame, and a `Vec` would make that five heap allocations a frame for a
+    /// row whose contents never change.
+    keys: std::rc::Rc<[Keystroke]>,
 }
 
 /// The §15 footer, in display order.
@@ -808,7 +795,7 @@ fn build_footer_hints() -> Vec<FooterHint> {
             // missing hint is a cosmetic loss, a panic on startup is not.
             Keystroke::parse(chord).ok().map(|k| FooterHint {
                 description: SharedString::from(*description),
-                keys: vec![k],
+                keys: std::rc::Rc::from(vec![k]),
             })
         })
         .collect()
@@ -1637,22 +1624,18 @@ impl<S: SearchAccess> OmniSearch<S> {
         row_height: Pixels,
         cx: &mut App,
     ) -> gpui::Stateful<gpui::Div> {
+        let _span = crate::perf::scope(crate::perf::Region::OmniSearchRow);
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
 
-        // Extract the package name from the leading path segment.
-        // `path` looks like `"tokio::runtime::"` or `"serde_json::value::"`.
-        // The package name is everything before the first `::`.
-        //
-        // §1.1.4 NOTE: this is one `SharedString` allocation per visible row per
-        // render frame.  The proper fix is to add `package: SharedString` to
-        // `PreparedRow` in `stores/search_model.rs` and compute it in
-        // `PreparedRow::from_hit` — see "Seams" in the commit description.
-        // Until that field exists, this is the least-wrong place: at least it is
-        // a bounded-size operation on an already-typed string, not a `format!`.
-        let package_label: Option<SharedString> = extract_package_label(&row.path);
+        // `PreparedRow::package` — computed once at ingest, which is where the
+        // §1.1.4 note that used to live here said it belonged. Nothing is
+        // sliced, allocated or searched per frame; the `None` case is the
+        // empty string, which means "no path prefix, so no package to name".
+        let package_label: Option<SharedString> =
+            (!row.package.is_empty()).then(|| row.package.clone());
 
         let kind_badge = match row.kind {
             Some(kind) => Badge::for_kind(("search.row.kind", ix), kind, cx),
@@ -2209,6 +2192,7 @@ impl<S: SearchAccess> EventEmitter<OmniSearchEvent> for OmniSearch<S> {}
 
 impl<S: SearchAccess> Render for OmniSearch<S> {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::scope(crate::perf::Region::OmniSearch);
         let now = Instant::now();
 
         // Read the scale out as a plain `f32` rather than holding a borrow of
@@ -2846,33 +2830,8 @@ mod tests {
         assert_eq!(s1, RevealState::Revealed, "pinned bar must not contract");
     }
 
-    // ── extract_package_label ─────────────────────────────────────────────────
-
-    #[test]
-    fn package_label_extracts_leading_segment() {
-        let path = SharedString::from("tokio::runtime::");
-        let label = extract_package_label(&path);
-        assert_eq!(label.map(|s| s.as_ref().to_owned()), Some("tokio".to_owned()));
-    }
-
-    #[test]
-    fn package_label_for_top_level_path() {
-        // A two-segment path: package is still the first.
-        let path = SharedString::from("serde_json::value::");
-        let label = extract_package_label(&path);
-        assert_eq!(label.map(|s| s.as_ref().to_owned()), Some("serde_json".to_owned()));
-    }
-
-    #[test]
-    fn package_label_is_none_for_empty_path() {
-        let path = SharedString::default();
-        assert!(extract_package_label(&path).is_none());
-    }
-
-    #[test]
-    fn package_label_is_none_for_bare_name() {
-        // `split_qualified_name("Value")` returns an empty path.
-        let path = SharedString::default();
-        assert!(extract_package_label(&path).is_none());
-    }
+    // The package-label cases moved to `stores::search_model` with the field
+    // they describe: the value is now decided at ingest, so a test that
+    // exercised the old render-time helper would be testing a function this
+    // view no longer has.
 }

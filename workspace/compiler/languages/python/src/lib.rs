@@ -1,41 +1,47 @@
-//! Python producer for the nudox-ir pipeline (pyrefly tier).
+//! Python producer for the nudox-ir pipeline (ruff syntactic tier, default;
+//! pyrefly semantic tier, gated and not yet reachable — see below).
 //!
 //! # Architecture
 //!
 //! ```text
-//! invoke():                                         (pyrefly feature required)
-//!   context::invoke_oracle()                → PythonOracle { modules: Vec<ModuleData> }
-//!     └─ pyrefly State + transaction + extraction → owned data, all handles dropped
+//! invoke():                                          (default: no feature needed)
+//!   syntax::build_oracle()                  → PythonOracle { modules: Vec<ModuleData> }
+//!     └─ ruff_python_parser::parse_module per .py file → owned data, all arenas dropped
 //!
 //! lower():
 //!   emit::emit_package(&oracle, out)        → one-pass into Lowering<PythonId>
 //! ```
 //!
-//! # pyrefly feature gate
+//! `PythonOracle` (`oracle.rs`) and the lowering layer (`emit/`, `types.rs`,
+//! `docstring.rs`) were built oracle-agnostic from the start: no
+//! `pyrefly::`/`ruff_python_ast::` type appears in their signatures. That is
+//! what let `syntax.rs` become a genuine second front end without touching
+//! any of that ~2,100 lines — the same "extract to owned data, drop the
+//! arena" shape `nudox-producer-typescript`'s OXC front end uses.
 //!
-//! The `pyrefly` Cargo feature is **off by default**. Without it:
-//! - All lowering, type-mapping, and docstring code compiles and tests cleanly.
-//! - `invoke()` ignores its `PackageSource` and returns an empty
-//!   `PythonOracle`, and [`PythonProducer`] declares that through
-//!   `Producer::yield_contract` so `nudox_producer::produce` cannot report the
-//!   result as a successful lowering.
-//! - Tests that need a live oracle are marked `#[ignore]` or gated behind
-//!   `#[cfg(feature = "pyrefly")]`.
+//! # pyrefly feature gate (off by default — now a choice, not a breakage)
 //!
-//! **Turning the feature on does not work, and this is not a matter of adding a
-//! `--features` flag.** Two blockers, both verified against this tree:
+//! ```text
+//! invoke() with --features pyrefly:
+//!   context::invoke_oracle()
+//!     ├─ syntax::build_oracle()  → structure, docstrings, written annotations
+//!     └─ pyrefly State/Bindings  → fills the type slots the syntax tier cannot
+//! ```
 //!
-//!  1. `context` is declared below as `#[cfg(feature = "pyrefly")] pub mod
-//!     context;` and `src/context.rs` **does not exist**. With the feature on,
-//!     the crate fails to compile at this declaration.
-//!  2. Declaring the git dependency exactly as `Cargo.toml`'s "Pyrefly gate"
-//!     comment prescribes fails Cargo *dependency resolution*: pyrefly pins
-//!     `blake3 =1.8.2` against `workspace/index`'s `iroh` requirement of
-//!     `^1.8.3` — disjoint ranges, no version in common.
+//! Both reasons this comment used to give for the feature being unreachable
+//! were retired on 2026-08-08. `src/context.rs` exists and is the semantic
+//! tier above. pyrefly's `blake3` pin has moved to `=1.8.6`, which every
+//! blake3 requirement in this workspace (`^1.8`) already admits, so
+//! `cargo metadata --locked --features nudox-producer-python/pyrefly`
+//! resolves. `pyrefly_bundled` never downloaded anything either — its typeshed
+//! is committed in the pyrefly repo and therefore inside cargo's own git
+//! checkout; see the accounting in `Cargo.toml`.
 //!
-//! See `Cargo.toml` for the rest of the rationale on why the git dep is not
-//! declared by default (pyrefly_bundled downloads a typeshed at build time; the
-//! crate is not on crates.io at the needed version).
+//! It stays off by default because of what it costs versus what it adds: 77
+//! extra lock entries for 4,607 of 16,025 corpus annotation positions gaining a
+//! resolvable type — and roughly a third of that gain is also reachable by
+//! matching bare type names against same-package ids, with no dependency at
+//! all. `context.rs`'s module doc carries the full split.
 //!
 //! # Id scheme: `PythonId`
 //!
@@ -99,6 +105,7 @@ pub mod docstring;
 pub mod emit;
 pub mod oracle;
 pub mod producer;
+pub mod syntax;
 pub mod types;
 
 #[cfg(feature = "pyrefly")]

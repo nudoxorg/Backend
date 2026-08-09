@@ -316,8 +316,8 @@ use crate::{
         Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait, TraitFlags, TriState,
         Variant, VariantForm, WherePred,
         ty::{
-            AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Type, Variance,
-            Width,
+            AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Type,
+            UnknownType, Variance, Width,
         },
     },
 };
@@ -894,6 +894,14 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
         }
         Type::Never => out.push(0x08),
         Type::Any => out.push(0x09),
+        // The content hash is *total*: both the reason and any name it carries
+        // are part of what the producer emitted, so a producer that goes from
+        // "unresolved external `Foo`" to "unresolved external `Bar`" — or from
+        // unannotated to explicitly dynamic — is a real content change.
+        Type::Unknown(reason) => {
+            out.push(0x18);
+            encode_unknown(out, reason);
+        }
         Type::Nominal(r) => {
             out.push(0x0a);
             encode_ref(out, r);
@@ -1011,6 +1019,29 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
                 None => out.push(0x00),
             }
             encode_str(out, assoc);
+        }
+    }
+}
+
+/// Encode an [`UnknownType`] reason. No `_` wildcard — every new reason must
+/// get an opcode here, or two different gaps hash to the same content.
+fn encode_unknown(out: &mut Vec<u8>, r: &UnknownType) {
+    match r {
+        UnknownType::Unannotated => out.push(0x01),
+        UnknownType::DynamicallyTyped => out.push(0x02),
+        UnknownType::UnresolvedLocalName { name } => {
+            out.push(0x03);
+            encode_str(out, name);
+        }
+        UnknownType::UnresolvedExternal { name } => {
+            out.push(0x04);
+            encode_str(out, name);
+        }
+        UnknownType::TruncatedAtDepthLimit => out.push(0x05),
+        UnknownType::OracleGap => out.push(0x06),
+        UnknownType::NoIrRepresentation { construct } => {
+            out.push(0x07);
+            encode_str(out, construct);
         }
     }
 }

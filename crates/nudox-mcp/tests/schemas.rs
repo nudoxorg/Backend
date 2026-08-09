@@ -13,13 +13,16 @@
 
 use nudox_engine::wire::{
     CalloutLevel, GenerationId, HitRow, KindDiscriminant, KindTag, LangId, MemberRow, Provenance,
-    RenderSection, SectionId, SectionKind, SectionPlan, SigToken, SizeHint, SymbolHead, Visibility,
+    RenderSection, SectionId, SectionKind, SectionPlan, SigToken, SizeHint, SymbolHead, Timeline,
+    TimelineChange, TimelineRow, Visibility,
 };
 use nudox_mcp::SymbolKeyDto;
 use nudox_mcp::tools::{
-    FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs, ListPackagesArgs,
-    PackageSummary, PackagesResult, QueryResult, QueryResultRow, SchemaResult, SearchResult,
-    SearchSymbolsArgs, SymbolDoc, UsageRow, UsagesResult,
+    DiffVersionsResult, FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs,
+    ListPackagesArgs,
+    ListVersionsArgs, ListVersionsResult, PackageSummary, PackagesResult, QueryResult,
+    QueryResultRow, SchemaResult, SearchResult, SearchSymbolsArgs, SelectVersionArgs,
+    SelectVersionResult, SymbolDoc, UsageRow, UsagesResult, VersionSummary,
 };
 use schemars::schema_for;
 use serde::Serialize;
@@ -74,6 +77,8 @@ fn every_tool_argument_type_has_a_derived_schema() {
     assert_schema_is_meaningful(&schema_for!(GetSymbolArgs), "get_symbol args");
     assert_schema_is_meaningful(&schema_for!(FindUsagesArgs), "find_usages args");
     assert_schema_is_meaningful(&schema_for!(ListPackagesArgs), "list_packages args");
+    assert_schema_is_meaningful(&schema_for!(ListVersionsArgs), "list_versions args");
+    assert_schema_is_meaningful(&schema_for!(SelectVersionArgs), "select_version args");
     assert_schema_is_meaningful(&schema_for!(GraphQueryArgs), "graph_query args");
     assert_schema_is_meaningful(&schema_for!(GraphSchemaArgs), "graph_schema args");
 }
@@ -84,8 +89,95 @@ fn every_tool_result_type_has_a_derived_schema() {
     assert_schema_is_meaningful(&schema_for!(SymbolDoc), "get_symbol result");
     assert_schema_is_meaningful(&schema_for!(UsagesResult), "find_usages result");
     assert_schema_is_meaningful(&schema_for!(PackagesResult), "list_packages result");
+    assert_schema_is_meaningful(&schema_for!(ListVersionsResult), "list_versions result");
+    assert_schema_is_meaningful(&schema_for!(SelectVersionResult), "select_version result");
     assert_schema_is_meaningful(&schema_for!(QueryResult), "graph_query result");
     assert_schema_is_meaningful(&schema_for!(SchemaResult), "graph_schema result");
+    assert_schema_is_meaningful(&schema_for!(DiffVersionsResult), "diff_versions result");
+}
+
+/// Every tool result schema must declare a root `type` of `"object"`.
+///
+/// # Why this test exists
+///
+/// rmcp validates `outputSchema` at **server construction** and the MCP spec
+/// requires a root object, so a result type that does not say so does not
+/// disable one tool — it panics `NudoxMcpServer::serve`, taking the whole
+/// endpoint down. `SelectVersionResult` shipped exactly that defect today: a
+/// `#[serde(tag = "kind")]` enum, for which schemars emits a bare `oneOf` with
+/// no root `type`. Every `tools`-level test passed, because none of them
+/// construct a server; only `tests/endpoint.rs` did, and it failed with
+/// "Schema is missing 'type' field" on all six of its cases.
+///
+/// Asserting on the *schema* rather than on server construction is the point:
+/// this names which type is wrong, where the endpoint failure only says that
+/// one of them is.
+#[test]
+fn every_tool_result_schema_declares_a_root_object_type() {
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("SearchResult", serde_json::to_value(schema_for!(SearchResult)).unwrap()),
+        ("SymbolDoc", serde_json::to_value(schema_for!(SymbolDoc)).unwrap()),
+        ("UsagesResult", serde_json::to_value(schema_for!(UsagesResult)).unwrap()),
+        ("PackagesResult", serde_json::to_value(schema_for!(PackagesResult)).unwrap()),
+        (
+            "ListVersionsResult",
+            serde_json::to_value(schema_for!(ListVersionsResult)).unwrap(),
+        ),
+        (
+            "SelectVersionResult",
+            serde_json::to_value(schema_for!(SelectVersionResult)).unwrap(),
+        ),
+        (
+            "DiffVersionsResult",
+            serde_json::to_value(schema_for!(DiffVersionsResult)).unwrap(),
+        ),
+        ("QueryResult", serde_json::to_value(schema_for!(QueryResult)).unwrap()),
+        ("SchemaResult", serde_json::to_value(schema_for!(SchemaResult)).unwrap()),
+    ];
+    for (name, schema) in cases {
+        assert_eq!(
+            schema.get("type").and_then(|t| t.as_str()),
+            Some("object"),
+            "{name}'s schema has no root `type: \"object\"`; rmcp rejects that \
+             at server construction and the whole endpoint panics. A tagged \
+             enum needs `#[schemars(extend(\"type\" = \"object\"))]`. schema: \
+             {schema}"
+        );
+    }
+}
+
+/// §L2.5 / the capability-probe's "critical honesty requirement": a tool that
+/// lets an agent switch which generation of a package it reads must not ship
+/// a schema that implies every `SymbolKey` survives the switch. This asserts
+/// the caveat is actually in the text an MCP client sees — the derived
+/// schema's `description`, sourced from the doc comments above
+/// `SelectVersionResult` and `ListVersionsResult` — not merely somewhere in
+/// this crate's rustdoc that no client ever reads.
+#[test]
+fn version_switching_schemas_disclose_that_keys_can_stop_resolving() {
+    let select = serde_json::to_value(schema_for!(SelectVersionResult))
+        .expect("SelectVersionResult schema must serialise");
+    let select_desc = select
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or_else(|| panic!("SelectVersionResult schema has no top-level description"));
+    assert!(
+        select_desc.contains("not guaranteed") || select_desc.contains("does not hold for"),
+        "select_version's result schema must plainly say key survival is not \
+         guaranteed for every declaration; got: {select_desc:?}"
+    );
+
+    let list = serde_json::to_value(schema_for!(ListVersionsResult))
+        .expect("ListVersionsResult schema must serialise");
+    let list_desc = list
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or_else(|| panic!("ListVersionsResult schema has no top-level description"));
+    assert!(
+        list_desc.contains("not guaranteed") || list_desc.contains("indistinguishable from"),
+        "list_versions's result schema must plainly say a stale key looks the \
+         same as a deleted symbol; got: {list_desc:?}"
+    );
 }
 
 #[test]
@@ -206,6 +298,27 @@ fn sample_head() -> Box<SymbolHead> {
     })
 }
 
+/// A one-row `Timeline` for the sample key: present in the one loaded
+/// version, exactly what a single-version corpus produces. Populated rather
+/// than empty on purpose (see `sample_head`'s own reasoning) — an always-empty
+/// fixture would leave every field of `Timeline`/`TimelineRow` unexercised by
+/// the assertions below.
+fn sample_timeline() -> Timeline {
+    Timeline {
+        key: sample_wire_key(),
+        rows: vec![TimelineRow {
+            version: nudox_engine::wire::SharedStr::from("1.0.219"),
+            change: TimelineChange::Present,
+            name: nudox_engine::wire::SharedStr::from("Deserializer"),
+            sig: sample_sig(),
+            deprecated: false,
+            is_current: true,
+        }]
+        .into(),
+        versions_examined: 1,
+    }
+}
+
 #[test]
 fn search_result_serialises() {
     use std::sync::Arc;
@@ -221,6 +334,7 @@ fn search_result_serialises() {
             score: 0.875,
         }],
         truncated: true,
+        next_cursor: Some("50".to_owned()),
     };
     let json = serde_json::to_string(&value).expect("SearchResult must serialise");
     // Key must be the canonical string form.
@@ -238,6 +352,12 @@ fn search_result_serialises() {
         json.contains("\"truncated\":true"),
         "truncated must serialise: {json}"
     );
+    // next_cursor must reach the wire as an opaque string an agent can pass
+    // straight back into `search_symbols`'s `cursor` argument.
+    assert!(
+        json.contains("\"next_cursor\":\"50\""),
+        "next_cursor must serialise: {json}"
+    );
 }
 
 #[test]
@@ -250,6 +370,7 @@ fn symbol_doc_serialises() {
     }];
     let value = SymbolDoc {
         head: sample_head(),
+        timeline: sample_timeline(),
         sections: vec![
             RenderSection::Prose {
                 id: SectionId(1),
@@ -332,6 +453,25 @@ fn symbol_doc_serialises() {
         json.contains("\"bytes\":[120,480]"),
         "head.source must still carry the byte range for in-file slicing: {json}"
     );
+
+    // `timeline` must reach the wire — this is the fix for the defect where
+    // `open_symbol` computed `DocEvent::Timeline` on every call and
+    // `do_get_symbol` silently dropped it in a wildcard match arm. A test
+    // that only checked `head`/`sections` would stay green if that
+    // regressed.
+    assert!(
+        json.contains("\"timeline\":{"),
+        "SymbolDoc must carry a timeline field: {json}"
+    );
+    assert!(
+        json.contains("\"kind\":\"present\""),
+        "the sample timeline's one row must serialise its TimelineChange::Present \
+         tag: {json}"
+    );
+    assert!(
+        json.contains("\"versions_examined\":1"),
+        "timeline must carry versions_examined: {json}"
+    );
 }
 
 #[test]
@@ -343,6 +483,7 @@ fn usages_result_round_trips() {
             kind: "Function".to_owned(),
         }],
         truncated: false,
+        next_cursor: None,
     };
     assert_round_trips(&value, "UsagesResult");
 }
@@ -367,6 +508,7 @@ fn query_result_round_trips() {
             cells: vec![sample_key_dto().0, "Deserializer".to_owned()],
         }],
         truncated: true,
+        next_cursor: Some("10".to_owned()),
     };
     assert_round_trips(&value, "QueryResult");
 }
@@ -387,6 +529,7 @@ fn tool_arguments_round_trip() {
             kinds: Some(vec!["Trait".into()]),
             packages: Some(vec!["cargo:serde".into()]),
             limit: Some(25),
+            cursor: None,
         },
         "SearchSymbolsArgs",
     );
@@ -400,6 +543,7 @@ fn tool_arguments_round_trip() {
         &FindUsagesArgs {
             key: sample_key_dto(),
             limit: None,
+            cursor: None,
         },
         "FindUsagesArgs",
     );
@@ -413,10 +557,63 @@ fn tool_arguments_round_trip() {
                     .collect(),
             ),
             limit: Some(10),
+            cursor: None,
         },
         "GraphQueryArgs",
     );
     assert_round_trips(&GraphSchemaArgs {}, "GraphSchemaArgs");
+}
+
+#[test]
+fn version_tool_types_round_trip() {
+    use nudox_mcp::key::PackageLineageDto;
+
+    assert_round_trips(
+        &ListVersionsArgs {
+            package: PackageLineageDto("cargo:memchr".to_owned()),
+        },
+        "ListVersionsArgs",
+    );
+    assert_round_trips(
+        &SelectVersionArgs {
+            package: PackageLineageDto("cargo:memchr".to_owned()),
+            version: "2.8.0".to_owned(),
+        },
+        "SelectVersionArgs",
+    );
+    assert_round_trips(
+        &ListVersionsResult {
+            package: PackageLineageDto("cargo:memchr".to_owned()),
+            versions: vec![
+                VersionSummary {
+                    version: "2.8.0".to_owned(),
+                    is_current: true,
+                    symbol_count: 1835,
+                },
+                VersionSummary {
+                    version: "2.7.5".to_owned(),
+                    is_current: false,
+                    symbol_count: 1794,
+                },
+            ],
+        },
+        "ListVersionsResult",
+    );
+    assert_round_trips(
+        &SelectVersionResult::Switched {
+            package: PackageLineageDto("cargo:memchr".to_owned()),
+            version: "2.7.5".to_owned(),
+            symbol_count: 1794,
+        },
+        "SelectVersionResult::Switched",
+    );
+    assert_round_trips(
+        &SelectVersionResult::NotLoaded {
+            package: PackageLineageDto("cargo:memchr".to_owned()),
+            version: "9.9.9".to_owned(),
+        },
+        "SelectVersionResult::NotLoaded",
+    );
 }
 
 #[test]

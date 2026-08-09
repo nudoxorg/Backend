@@ -68,7 +68,7 @@ at all — see AGENTS-DOCTRINE.md §6 on fabricated fixtures.
 |---|---|---|---|
 | `crates.io` | crate name | `.crate` (tar.gz) from static.crates.io | crates.io only ever serves source; there's no separate binary artifact to avoid. |
 | `go` | full module path, e.g. `github.com/google/uuid` | module zip from `proxy.golang.org` | The module proxy is the same thing `go mod download` uses; module zips are source by construction. Path/version are escaped per Go's module-proxy convention (every uppercase letter becomes `!`+lowercase) — see `github.com/BurntSushi/toml` in the manifest for a real example that exercises this. |
-| `maven` | `groupId:artifactId` | the **sources** jar (`-sources.jar` classifier) from `repo1.maven.org` | The default jar is compiled `.class` bytecode. Maven Central separately publishes a sources classifier for exactly this reason; asking for anything else would hand the producer bytecode instead of Java. |
+| `maven` | `groupId:artifactId` | the **sources** jar (`-sources.jar` classifier) from `repo1.maven.org` | The default jar is compiled `.class` bytecode. Maven Central separately publishes a sources classifier for exactly this reason; asking for anything else would hand the producer bytecode instead of Java. (One narrow, structurally-fenced exception exists for JPMS module descriptors — see "`[[jpms_modules]]`" below. It never affects what gets lowered.) |
 | `nuget` | package ID as published | the **binary** `.nupkg` from `api.nuget.org`'s v3 flat-container endpoint | Unlike the other five source ecosystems, NuGet packages do not generally embed C# source — a `.nupkg` is compiled DLLs (per-TFM under `lib/`) plus a `.nuspec`. There is no NuGet-wide "sources package" convention comparable to Maven's classifier or PyPI's sdist (some packages publish symbol packages, inconsistently, for a different purpose). This was scoped explicitly (see the task's ecosystem table) — it is a real, intentional gap in this corpus, not an oversight. If the C# producer needs to document real C# *source*, its packages will need a different source (GitHub, symbol server with embedded source, etc.); flagging it here so it isn't discovered by surprise later. |
 | `npm` | package name, including scope (e.g. `@types/node`) | tarball from `registry.npmjs.org` | npm tarballs are source (usually already-transpiled JS plus, for typed packages, `.d.ts`). For scoped packages the tarball filename drops the scope (`@scope/name` → `name-version.tgz` under `@scope/name/-/`); `fetch.nu` handles that. |
 | `pypi` | project name | the **sdist** (`packagetype: sdist`), not a wheel, from `pypi.org`'s JSON API | Wheels are frequently pre-built/pre-compiled and platform-specific, and don't reliably contain full source for extension modules. The sdist is what PyPI itself calls a source distribution. `fetch.nu` calls PyPI's JSON API (`/pypi/<name>/<version>/json`) to find the real sdist URL rather than guessing a filename pattern (sdist filenames aren't uniformly `name-version.tar.gz` — underscores vs. hyphens vary by project). |
@@ -100,6 +100,52 @@ Two entries (`simdjson`, `catch2`) are raw single-file release assets — a
 `.h`/`.hpp`, not an archive. `fetch.nu` detects this (no recognized archive
 extension) and places the file itself into the package directory instead of
 trying to `tar`/`unzip` it.
+
+## `[[jpms_modules]]` — the one place a compiled jar is fetched
+
+`manifest.toml` ends with a `[[jpms_modules]]` array, separate from
+`[[packages]]`. Its entries are **compiled** Maven jars, and they exist for
+exactly one reason: `javac`'s module system has positions no source artifact
+can fill, and three `maven` corpus packages (`logback-classic`,
+`junit-jupiter-api`, `assertj-core`) are unlowerable without them.
+
+The maven row above still holds without qualification for everything that gets
+*lowered*. A jpms module:
+
+- is **never extracted** — `fetch.nu` copies the `.jar` verbatim, so there is
+  no `.java` file in it for any producer to discover;
+- is **never** placed under `.real-crates/<name>-<version>/` beside the package
+  checkouts — it goes to `.real-crates/.module-path/`, a dot-directory that
+  `JavaProducer::sourcepath_entries` skips;
+- is only ever passed to `javac`/`javadoc` as `--module-path`.
+
+Those three properties are why it lives in a different array rather than under
+a new `role`: a binary jar becoming lowering input is prevented by *where the
+bytes are*, not by anyone remembering a convention.
+
+The bar for adding one is narrow, and each existing entry's comment states
+which of these three situations it is:
+
+1. the artifact's own sources jar has no `module-info.java` at all (only its
+   compiled jar carries the descriptor);
+2. the artifact's source `module-info.java` `requires` an **automatic** module
+   — a name derived from a jar filename, which by construction has no source
+   form;
+3. the *consuming* target has no `module-info.java`, so it cannot use
+   `--module-source-path` at all (`javac` rejects that option alongside
+   `-sourcepath`, which such a target needs for its non-modular dependencies).
+
+Anything that does not fit one of those should be an ordinary sources-jar
+`[[packages]]` entry. If a module's sources jar carries a real
+`module-info.java`, it stays source and resolves through `--module-source-path`
+— five currently do.
+
+Hashes use a deliberately separate subcommand, so reaching for a compiled jar
+is always an explicit act:
+
+```bash
+nu corpus/fetch.nu hash-module org.slf4j:slf4j-api 2.0.12
+```
 
 ## The `[workspace]` trap — and why it's Rust-only here
 
@@ -138,12 +184,17 @@ At least two packages per ecosystem carry more than one version, for
 
 ```bash
 # Materialize everything missing from .real-crates/ (idempotent — already-
-# present packages are skipped, not re-downloaded or re-verified).
+# present packages are skipped, not re-downloaded or re-verified). This also
+# materializes [[jpms_modules]] into .real-crates/.module-path/.
 nu corpus/fetch.nu
 nu corpus/fetch.nu --output-dir /some/other/path --threads 8
 
 # Hash a candidate package without adding it to the manifest first.
 nu corpus/fetch.nu hash-url <ecosystem> <name> <version> [--url <override>]
+
+# Hash a candidate [[jpms_modules]] entry — the COMPILED jar, not the sources
+# classifier. Separate subcommand on purpose; see the section above.
+nu corpus/fetch.nu hash-module <group:artifact> <version> [--url <override>]
 ```
 
 A hash mismatch on any single package does not stop the others (they run

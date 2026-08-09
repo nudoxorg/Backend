@@ -74,7 +74,7 @@ use crate::{
         ClassForm, DeprecationData, FieldData, FunctionData, ItemBody, ItemData, ModuleData,
         ParamKind, PythonId, PythonOracle, ReceiverKind,
     },
-    types,
+    types::{self, KnownIds},
 };
 
 // ---------------------------------------------------------------------------
@@ -86,9 +86,10 @@ use crate::{
 /// Called from [`PythonProducer::lower`].
 pub fn emit_package(oracle: &PythonOracle, out: &mut Lowering<PythonId>) {
     // Build the set of all fully-qualified IDs declared in this package so
-    // that `lower_type` can resolve same-package nominals to real Refs instead
-    // of falling back to `Type::Any`.
-    let known_ids = collect_known_ids(oracle);
+    // that `lower_type` can resolve same-package nominals to real Refs — and,
+    // when it cannot, can still tell a locally-declared short name apart from
+    // a genuinely external one. See [`KnownIds`].
+    let known_ids = KnownIds::new(collect_known_ids(oracle));
 
     for module in &oracle.modules {
         emit_module(module, out, &known_ids);
@@ -145,7 +146,7 @@ fn collect_item_ids(item: &ItemData, ids: &mut HashSet<String>) {
 // Module
 // ---------------------------------------------------------------------------
 
-fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &HashSet<String>) {
+fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &KnownIds) {
     let module_id = PythonId::new(module.name.clone());
     let sym = make_sym(
         &module.name,
@@ -169,7 +170,7 @@ fn emit_item(
     item: &ItemData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     match &item.body {
         ItemBody::Module => {
@@ -207,7 +208,7 @@ fn emit_class(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     let class_id = item.id.clone();
 
@@ -268,7 +269,7 @@ fn emit_enum(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     let enum_id = item.id.clone();
     let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
@@ -310,7 +311,7 @@ fn emit_protocol(
     cls: &crate::oracle::ClassData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     let trait_id = item.id.clone();
     let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
@@ -343,7 +344,7 @@ fn emit_function(
     func: &FunctionData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     let fn_id = item.id.clone();
 
@@ -367,7 +368,15 @@ fn emit_function(
             attrs: Box::new([]),
             cfg: None,
         };
-        let ty = param.ty.as_ref().map(|t| types::lower_type(t, out, known_ids));
+        // 19,741 of the 87,101 censused annotation positions (22.7%) are
+        // unannotated parameters. Under `Param::ty = None` the IR could not
+        // represent that at all — `None` is also what a producer emits when it
+        // has not looked. `Unannotated` says the source wrote nothing, which
+        // is a different and checkable claim.
+        let ty = Some(match &param.ty {
+            Some(t) => types::lower_type(t, out, known_ids),
+            None => nudox_ir::kinds::Type::UNANNOTATED,
+        });
         let mut attrs = Vec::new();
         match param.kind {
             // `nudox_ir::kinds::ParamAttribute` has no positional-only
@@ -440,7 +449,7 @@ fn emit_function(
 fn build_function_kind(
     func: &FunctionData,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) -> Function {
     let receiver = match func.receiver {
         ReceiverKind::SharedRef => Some(nudox_ir::kinds::Receiver::SharedRef),
@@ -473,13 +482,16 @@ fn emit_const(
     c: &crate::oracle::ConstData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
+    // A module-level constant with no annotation is *unannotated*, not
+    // dynamic and not `object`. `Type::Any` here asserted the source had
+    // written something it had not.
     let ty = c
         .ty
         .as_ref()
         .map(|t| types::lower_type(t, out, known_ids))
-        .unwrap_or(nudox_ir::kinds::Type::Any);
+        .unwrap_or(nudox_ir::kinds::Type::UNANNOTATED);
 
     let const_kind = Const::builder().ty(ty).maybe_value(c.value.clone()).build();
 
@@ -492,7 +504,7 @@ fn emit_alias(
     a: &crate::oracle::AliasData,
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) {
     let target = a.target.as_ref().map(|t| types::lower_type(t, out, known_ids));
     let generics: Box<[_]> = types::lower_generics(&a.generics, out, known_ids);
@@ -580,12 +592,15 @@ fn make_field_sym(field: &FieldData, class_name: &str) -> Symbol {
 fn build_field_kind(
     field: &FieldData,
     out: &mut Lowering<PythonId>,
-    known_ids: &HashSet<String>,
+    known_ids: &KnownIds,
 ) -> Field {
-    let ty = field
-        .ty
-        .as_ref()
-        .map(|t| types::lower_type(t, out, known_ids));
+    // `Field::ty = None` meant "the producer has nothing to say", which is
+    // indistinguishable from "the producer never ran". A Python field with no
+    // annotation is a *fact about the source*, so record it as one.
+    let ty = Some(match &field.ty {
+        Some(t) => types::lower_type(t, out, known_ids),
+        None => nudox_ir::kinds::Type::UNANNOTATED,
+    });
     let mut attrs = Vec::new();
     if !field.is_final && !field.is_class_var {
         attrs.push(FieldAttribute::Mutable);

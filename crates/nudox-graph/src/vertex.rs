@@ -87,6 +87,7 @@ pub struct OccurrenceVertex {
 /// | `Param` | `Param` | `Param` |
 /// | `OtherSymbol` | `OtherSymbol` | `None` / `Reference` |
 /// | `Occurrence` | `Occurrence` | — |
+/// | `SourceLocation` | `SourceLocation` | — |
 #[derive(Debug, Clone, TrustfallEnumVertex)]
 pub enum Vertex {
     Package(Arc<PackageView>),
@@ -117,6 +118,19 @@ pub enum Vertex {
     /// the schema has no named type for yet.  See schema comment on `OtherSymbol`.
     OtherSymbol(SymbolVertex),
     Occurrence(OccurrenceVertex),
+    /// Where a symbol's declaration was written, as
+    /// [`nudox_ir::entry::SourceLocation`] knows it.
+    ///
+    /// Carries the owning [`SymbolVertex`] rather than a copy of the location,
+    /// for the same reason `SymbolVertex` carries an `IntroId` rather than an
+    /// `Entry`: the vertex must be `'static`, and the location is an O(1)
+    /// `entry(intro).location()` read away.
+    ///
+    /// It is a vertex rather than nine scalar fields on every symbol type
+    /// because the IR value is a *sum* — `Declared | BytesOnly | Unlocated` —
+    /// and flattening a sum into sibling nullable columns is precisely how the
+    /// `Unlocated` reason would have been lost.
+    SourceLocation(SymbolVertex),
 }
 
 // ---------------------------------------------------------------------------
@@ -144,6 +158,10 @@ pub fn as_symbol_vertex(v: &Vertex) -> Option<&SymbolVertex> {
         | Vertex::Reexport(sv)
         | Vertex::Param(sv)
         | Vertex::OtherSymbol(sv) => Some(sv),
-        Vertex::Package(_) | Vertex::Occurrence(_) => None,
+        // `SourceLocation` deliberately does *not* answer here even though it
+        // wraps a `SymbolVertex`. It is a distinct schema type with its own
+        // properties; letting it fall through to the Symbol-interface resolver
+        // would make `location { name }` silently return the owner's name.
+        Vertex::Package(_) | Vertex::Occurrence(_) | Vertex::SourceLocation(_) => None,
     }
 }

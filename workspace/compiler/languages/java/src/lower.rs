@@ -497,8 +497,10 @@ fn lower_type_depth(
     t: &TypeMirror,
     depth: usize,
 ) -> Type {
+    // Our own guard. A real type exists below here; raising MAX_DEPTH is all
+    // that is needed to see it. That is why this is not `OracleGap`.
     if depth > MAX_DEPTH {
-        return Type::Any;
+        return Type::TRUNCATED;
     }
 
     match t {
@@ -513,7 +515,10 @@ fn lower_type_depth(
             annotations,
             ..
         } => {
-            // java.lang.Object is the top type — map to Any.
+            // `java.lang.Object` is Java's genuine top type: every reference
+            // value is an `Object`, and nothing narrows out of it without a
+            // cast. This is the one `Type::Any` in this producer that survives
+            // CC-2 — it is a real type with a real method set, not a gap.
             let base = if name.as_ref() == "java.lang.Object" {
                 Type::Any
             } else {
@@ -608,17 +613,34 @@ fn lower_type_depth(
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         ),
-        TypeMirror::Error { name } | TypeMirror::Other { repr: name } => {
-            // Unresolvable — keep a nominal reference over the source text.
-            // We use a synthetic "refer" that will not be declared; this is a
-            // best-effort preservation. The LoweringError::Undeclared that
-            // would normally result is suppressed by *not* using refer() —
-            // instead we emit Any and record the name in documentation.
-            // This is the one documented best-effort spot.
-            let _ = name;
-            Type::Any
+        TypeMirror::Error { name } => {
+            // javac produced an `ErrorType`: it saw the name and could not
+            // resolve it, which in practice means a classpath entry the
+            // extraction never loaded. More *cross-package* input is exactly
+            // what closes this, so it is `UnresolvedExternal` and not
+            // `OracleGap`.
+            //
+            // The name is now kept. The previous code wrote `let _ = name;`
+            // and returned `Type::Any`, discarding the single most useful
+            // thing it held — and making every unresolvable Java type in an
+            // overload set hash to the same skeleton byte.
+            Type::unresolved_external(name.as_ref())
         }
-        TypeMirror::None | TypeMirror::Null => Type::Any,
+        TypeMirror::Other { repr } => {
+            // A `TypeKind` with no counterpart in this IR at all — javac's
+            // EXECUTABLE, PACKAGE, MODULE. The producer knows precisely what
+            // it is looking at; the lattice has nowhere to put it. Naming the
+            // construct makes the backlog countable.
+            Type::no_ir_representation(repr.as_ref())
+        }
+        // JLS 4.1: the *null type* is a subtype of every reference type — it
+        // is Java's bottom, not its top. Mapping it to `Type::Any` inverted
+        // the lattice; `Type::Never` is the bottom variant and is correct.
+        TypeMirror::Null => Type::Never,
+        // `TypeKind.NONE` is javac's pseudo-type for positions where no type
+        // is appropriate (the superclass of `Object`, a package). Nothing the
+        // producer does closes this.
+        TypeMirror::None => Type::ORACLE_GAP,
     }
 }
 
@@ -662,9 +684,11 @@ fn lower_primitive(name: &str) -> Type {
         "float" => Type::Primitive(Primitive::Float(Width::W32)),
         "double" => Type::Primitive(Primitive::Float(Width::W64)),
         other => {
-            // Unknown primitive — fall back to Any.
-            let _ = other;
-            Type::Any
+            // Java has exactly eight primitives, all handled above, so this is
+            // unreachable for well-formed input — which is precisely why it
+            // must not silently become `Type::Any`. Name whatever arrived so
+            // the surprise is visible instead of laundered into a top type.
+            Type::no_ir_representation(other)
         }
     }
 }
@@ -2554,6 +2578,115 @@ mod tests {
                 "found synthetic wildcard anchor entry: `{name}` — anchors must not be declared"
             );
         }
+    }
+
+    // --- CC-2: `Type::Any` means `java.lang.Object` and nothing else ---------
+
+    /// Build a bare `LoweringCtx` for direct `lower_type` unit tests.
+    fn tv_ctx(low: &mut nudox_ir::build::Lowering<JavaId>) -> LoweringCtx<'_> {
+        // `types` is empty, so every `Declared` name is outside the extraction
+        // — which is the situation these tests are about.
+        static NO_TYPES: &[schema::TypeDecl] = &[];
+        LoweringCtx::new(low, NO_TYPES)
+    }
+
+    fn tv_lowering() -> nudox_ir::build::Lowering<JavaId> {
+        nudox_ir::build::Lowering::new(
+            PackageId::path("cc2:test:1.0"),
+            Symbol {
+                name: "cc2".to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::new(),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            },
+        )
+    }
+
+    /// `java.lang.Object` is the *only* thing in this producer that is
+    /// `Type::Any` — it is Java's genuine top type.
+    #[test]
+    fn only_java_lang_object_is_the_top_type() {
+        use crate::schema::TypeMirror;
+        use nudox_ir::kinds::ty::Type;
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        let object = TypeMirror::Declared {
+            name: "java.lang.Object".into(),
+            args: vec![],
+            annotations: vec![],
+            owner: None,
+        };
+        assert_eq!(lower_type(&mut ctx, &object), Type::Any);
+    }
+
+    /// An `ErrorType` is `UnresolvedExternal` **and keeps its name**.
+    ///
+    /// The previous code wrote `let _ = name;` and returned `Type::Any`,
+    /// throwing away the only useful thing it held — and making every
+    /// unresolvable type in an overload set hash to one skeleton byte.
+    #[test]
+    fn error_mirror_keeps_its_name_as_unresolved_external() {
+        use crate::schema::TypeMirror;
+        use nudox_ir::kinds::{UnknownType, ty::Type};
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        let err = TypeMirror::Error {
+            name: "com.example.Missing".into(),
+        };
+        assert_eq!(
+            lower_type(&mut ctx, &err),
+            Type::Unknown(UnknownType::UnresolvedExternal {
+                name: "com.example.Missing".to_owned()
+            })
+        );
+        // Two different unresolvable types must not collapse together.
+        let other = TypeMirror::Error {
+            name: "com.example.AlsoMissing".into(),
+        };
+        assert_ne!(lower_type(&mut ctx, &err), lower_type(&mut ctx, &other));
+    }
+
+    /// JLS 4.1: the null type is a subtype of every reference type. Mapping it
+    /// to `Type::Any` inverted the lattice — it is the bottom, not the top.
+    #[test]
+    fn null_type_is_the_bottom_not_the_top() {
+        use crate::schema::TypeMirror;
+        use nudox_ir::kinds::{UnknownType, ty::Type};
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        assert_eq!(lower_type(&mut ctx, &TypeMirror::Null), Type::Never);
+        // `NONE` is javac's "no type is appropriate here" pseudo-type, which is
+        // a gap and not a bottom.
+        assert_eq!(
+            lower_type(&mut ctx, &TypeMirror::None),
+            Type::Unknown(UnknownType::OracleGap)
+        );
+    }
+
+    /// A `TypeKind` with no IR counterpart names itself.
+    #[test]
+    fn other_mirror_is_named_as_unrepresentable() {
+        use crate::schema::TypeMirror;
+        use nudox_ir::kinds::{UnknownType, ty::Type};
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        assert_eq!(
+            lower_type(
+                &mut ctx,
+                &TypeMirror::Other {
+                    repr: "MODULE".into()
+                }
+            ),
+            Type::Unknown(UnknownType::NoIrRepresentation {
+                construct: "MODULE".to_owned()
+            })
+        );
     }
 
     // --- TypeVar uses lower to Type::TypeVar, not Type::Any ------------------

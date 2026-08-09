@@ -84,7 +84,8 @@ pub(crate) fn lower_generics(
                     let param_ty = cp
                         .ty()
                         .map(|t| ty::lower_ast_type(ctx, &t, ref_for))
-                        .unwrap_or(nudox_ir::kinds::Type::Any);
+                        // `const N: <missing>` — the source did not parse.
+                        .unwrap_or(nudox_ir::kinds::Type::ORACLE_GAP);
                     ir_params.push(GenericParam::Const { name, ty: param_ty });
                 }
                 ast::GenericParam::LifetimeParam(lp) => {
@@ -151,15 +152,18 @@ fn bound_list_to_types(
 
 /// A `PathType` bound → `Type`.
 ///
-/// Tries to resolve to a `Nominal` ref; falls back to `Any` for external or
-/// unresolvable bounds.
+/// Tries to resolve to a `Nominal` ref; otherwise emits a *named*
+/// `Type::Unknown` rather than `Type::Any` — Rust has no top type, and a bound
+/// that erases to one byte makes `T: Serialize` and `T: Deserialize`
+/// structurally identical, which is exactly the collision the generics were
+/// added to the skeleton to prevent.
 fn path_type_to_type(
     ctx: &mut LowerCtx<'_>,
     path_ty: &ast::PathType,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> nudox_ir::kinds::Type {
     let Some(path) = path_ty.path() else {
-        return nudox_ir::kinds::Type::Any;
+        return nudox_ir::kinds::Type::ORACLE_GAP;
     };
     use ra_ap_hir::PathResolution;
     if let Some(res) = ty::resolve_path_opt(ctx, &path)
@@ -192,7 +196,8 @@ fn path_type_to_type(
             args: type_args,
         };
     }
-    nudox_ir::kinds::Type::Any
+    // A bound naming a trait from another crate. Keep the written path.
+    nudox_ir::kinds::Type::unresolved_external(ty::path_identifier_text_of(&path))
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────

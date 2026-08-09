@@ -12,7 +12,7 @@
 //!
 //! # LR-8: a view of the engine, never a second engine
 //!
-//! Every one of the six tools bottoms out in an [`nudox_engine::EngineHandle`]
+//! Every one of the eight tools bottoms out in an [`nudox_engine::EngineHandle`]
 //! call. This crate holds no corpus, no index, and no IR; it opens no files and
 //! walks no `Entry`. If a tool here ever answers a question the engine could
 //! not, that is a bug, because it means the GUI and an agent can disagree about

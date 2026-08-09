@@ -205,6 +205,22 @@ impl NudoxThemeExt {
         token.line_height + self.space.space_2
     }
 
+    /// The tallest a disclosure section's body may get before it scrolls, for a
+    /// table whose rows are set in `token`.
+    ///
+    /// # Why this is derived and not a constant
+    ///
+    /// A cap over a list of fixed-height rows has to be a whole number of those
+    /// rows, or it clips one in half — which is exactly what `px(400.0)` did to
+    /// the References table (see [`crate::theme::tokens::SpaceTokens::section_rows`]).
+    /// Deriving it here, from the same [`NudoxThemeExt::row_height`] the table
+    /// lays its rows out with, means the two cannot disagree: change the row
+    /// rhythm and the cap moves with it.
+    #[inline]
+    pub fn section_max_h(&self, token: crate::theme::tokens::TypeToken) -> gpui::Pixels {
+        self.row_height(token) * self.space.section_rows
+    }
+
     // ── Motion helpers (§6.1) ────────────────────────────────────────────────
 
     /// Whether animations should be fully suppressed (instant-cut everywhere).

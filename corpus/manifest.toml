@@ -9,11 +9,33 @@
 # how to add a package). corpus/fetch.nu verifies every hash before
 # extracting anything.
 #
-# maven is the one exception to "20": it carries a 21st `[[packages]]` entry,
-# `org.reactivestreams:reactive-streams` — not a 21st representative library,
-# but rxjava's one and only external compile-time dependency, provisioned so
-# `nudox-producer-java` can resolve it (see that entry's own comment, and
-# `workspace/compiler/languages/java/src/producer.rs`'s module doc, for why).
+# Not every entry is a representative library. Some are provisioned only so a
+# representative package's compile closure resolves — `role = "dependency"`
+# marks those. maven has 43 of them (the Java producer needs a real classpath;
+# see `workspace/compiler/languages/java/src/producer.rs`'s module doc), every
+# other ecosystem currently has none.
+#
+# There is also one non-`[[packages]]` array at the very bottom of this file:
+# `[[jpms_modules]]`, six COMPILED jars that exist only so `javac` can resolve
+# a JPMS module descriptor with no source form. They are never extracted,
+# never on any `-sourcepath`, and never lowering input. Read that section's
+# header before adding to it — the separate array is the enforcement, and the
+# bar for what belongs in it is narrow and stated there.
+#
+# The role is a field rather than a comment because it changes what the repo
+# owes each entry. `corpus/entry-baseline.toml` must state a measured outcome
+# for every *representative* package — that is the check which catches a
+# producer silently degrading — but a dependency jar's own entry count is a
+# number nobody wants: `jsr305`'s count says nothing about whether guava lowers.
+# Until 2026-08-08 the distinction existed only in prose here, and every
+# per-ecosystem total in CORPUS-SWEEP.md silently excluded `reactive-streams`
+# without saying so, which made the published arithmetic look wrong to anyone
+# who checked it against this file.
+#
+# Omitting `role` means representative, so forgetting the field makes a package
+# MORE scrutinised, not less. `corpus/fetch.nu` fetches both roles identically
+# and the on-disk presence check covers both: a missing dependency breaks its
+# dependent just as surely, and fails with a diagnostic naming neither.
 
 [[packages]]
 ecosystem = "crates.io"
@@ -769,8 +791,604 @@ versions = [
 [[packages]]
 ecosystem = "maven"
 name = "org.reactivestreams:reactive-streams"
+role = "dependency"
 versions = [
   { version = "1.0.4", hash = "025pcjdqbwvylchvi3p6zq814wjd6zmry4dy9r1qqs9njnp3cyjs" },
+]
+
+# The 19 entries below are, like reactive-streams above, not representative
+# maven-corpus libraries in their own right -- each is provisioned solely to
+# satisfy a *named* other package's real compile-time closure, discovered
+# empirically (never guessed from a POM alone -- see nudox-producer-java's
+# tests/corpus_sweep.rs module doc and LIMITATIONS.md L45 for the full
+# methodology and citations). Several of these are NOT declared as compile
+# dependencies in their consumer's own published POM at all (Maven Shade
+# relocation for jackson-core/fastdoubleparser; plain non-declaration for
+# byte-buddy's/byte-buddy-agent's `provided`-scope jna/findbugs-annotations)
+# -- confirmed only by reading the consumer's actual `import` statements and
+# recompiling, per this corpus's standing rule that a POM's declared scope is
+# a hint, not ground truth.
+
+# guava (both 32.1.3-jre and 33.0.0-jre) imports javax.annotation.* and
+# com.google.errorprone.annotations.* directly (Preconditions.java,
+# Strings.java, ImmutableMap.java, ...). One copy of each satisfies both
+# guava versions -- `-sourcepath` resolution is by Java package name, not by
+# exact artifact version (same mechanism reactive-streams already relies on).
+[[packages]]
+ecosystem = "maven"
+name = "com.google.code.findbugs:jsr305"
+role = "dependency"
+versions = [
+  { version = "3.0.2", hash = "0fq6mai14sg5rj1swxfc90xha0qnqwl4iiqxb5m8qw6hfbi8b7hw" },
+]
+
+# guava: org.checkerframework.checker.nullness.qual.* (Preconditions.java,
+# Strings.java, ...).
+[[packages]]
+ecosystem = "maven"
+name = "org.checkerframework:checker-qual"
+role = "dependency"
+versions = [
+  { version = "3.41.0", hash = "0kvxgglf6nw4h264fr346wdcrygshpk1va86z94jpqflpl5j4243" },
+]
+
+# guava: com.google.errorprone.annotations.* / .concurrent.* (CollectPreconditions.java,
+# ImmutableMap.java, ...).
+[[packages]]
+ecosystem = "maven"
+name = "com.google.errorprone:error_prone_annotations"
+role = "dependency"
+versions = [
+  { version = "2.23.0", hash = "0gwpm6rcj38x102pm48abl9pin5p1g7kkn3wp0j3qgdrkdh08iav" },
+]
+
+# guava: com.google.j2objc.annotations.ReflectionSupport (AbstractFuture.java,
+# AtomicDouble.java, InterruptibleTask.java, ...).
+[[packages]]
+ecosystem = "maven"
+name = "com.google.j2objc:j2objc-annotations"
+role = "dependency"
+versions = [
+  { version = "2.8", hash = "1xf39hzy20p48mbx7jv6sjp7zvfx1rlarx9pi2h5650i3zafw4vl" },
+]
+
+# guava: com.google.common.util.concurrent.internal.{InternalFutureFailureAccess,
+# InternalFutures} (AbstractFuture.java, Futures.java, ...) -- real code, not
+# just a comment; guava's sibling `listenablefuture` dependency is NOT
+# provisioned here because it is a deliberately empty placeholder jar (no
+# `-sources.jar` classifier is even published for it) that guava's own source
+# never imports, only mentions in Javadoc prose.
+[[packages]]
+ecosystem = "maven"
+name = "com.google.guava:failureaccess"
+role = "dependency"
+versions = [
+  { version = "1.0.2", hash = "1q3qd46ad5zzcwv5g2bhywzk34n18kqcxhxjxybm7g655rgglfyx" },
+]
+
+# junit:junit:4.13.2's own main source -- org.junit.matchers.JUnitMatchers,
+# a public class, not a test fixture -- imports org.hamcrest.core.CombinableMatcher,
+# and org.junit.internal.matchers.{ThrowableCauseMatcher,ThrowableMessageMatcher,
+# StacktracePrintingMatcher} import org.hamcrest.Factory. Must be this split-era
+# 1.3 artifact specifically, matching junit4's own pinned `hamcrestVersion`:
+# hamcrest 2.x (below) deleted `@Factory` when it unified the hamcrest-core/
+# hamcrest-library split, so it does NOT satisfy this import -- verified by
+# recompiling junit4 against each independently. Both this and the unified
+# hamcrest 2.2 below coexist on every package's `-sourcepath` without
+# collision -- verified by recompiling junit4 and mockito-core together with
+# both present.
+[[packages]]
+ecosystem = "maven"
+name = "org.hamcrest:hamcrest-core"
+role = "dependency"
+versions = [
+  { version = "1.3", hash = "1pw41yfc7d8avknlik2jsvnkqg6n491ck344m1bn1mmgzgcd48z2" },
+]
+
+# mockito-core: org.mockito.hamcrest.MockitoHamcrest and
+# org.mockito.internal.hamcrest.MatcherGenericTypeExtractor import
+# org.hamcrest.* -- undeclared in mockito-core's own POM (an internal,
+# optional bridge). The unified post-split artifact; assertj-core's own
+# `org.hamcrest` need (declared `<scope>provided><optional>true` in its POM)
+# is satisfied by this same entry, though assertj-core does not fully lower
+# regardless -- see its pinned test in tests/corpus_sweep.rs for why.
+[[packages]]
+ecosystem = "maven"
+name = "org.hamcrest:hamcrest"
+role = "dependency"
+versions = [
+  { version = "2.2", hash = "1bv6sva9k547m7b1d91l7zv563vqym0zgmqdm68iynbhpiynk7pl" },
+]
+
+# jackson-databind (both 2.16.1 and 2.15.4) imports com.fasterxml.jackson.core.*
+# throughout. One copy of 2.16.1 satisfies both databind versions -- verified
+# by recompiling jackson-databind:2.15.4 against ONLY this 2.16.1 checkout.
+# Provisioning BOTH a 2.15.4 and a 2.16.1 copy side by side was tried first
+# and rejected: `javac` resolving `com.fasterxml.jackson.core.JsonParser`
+# against two same-package sibling directories at once produces cross-version
+# "cannot find symbol" contamination (observed directly) -- the same failure
+# mode the multiple-`module-info.java`-siblings problem in producer.rs's doc
+# comment describes for JPMS, but here for a plain package-name collision.
+[[packages]]
+ecosystem = "maven"
+name = "com.fasterxml.jackson.core:jackson-core"
+role = "dependency"
+versions = [
+  { version = "2.16.1", hash = "0k50v6yvg0h44vffd6ndx7f1qsqj51d7f7srlvwdf0kxvsq39lqv" },
+]
+
+# jackson-databind: com.fasterxml.jackson.annotation.* (JsonAutoDetect,
+# JsonCreator, JsonTypeInfo, ...).
+[[packages]]
+ecosystem = "maven"
+name = "com.fasterxml.jackson.core:jackson-annotations"
+role = "dependency"
+versions = [
+  { version = "2.16.1", hash = "1qvb1xwzp6mr652f7338m8vwn9pbr46r97pv5qaklnwd34abggff" },
+]
+
+# jackson-core's own NumberInput.java imports ch.randelshofer.fastdoubleparser
+# directly -- undeclared in jackson-core's published POM (zero dependencies
+# listed) because FasterXML's build shades/relocates this artifact into
+# `com.fasterxml.jackson.core.io.doubleparser` inside jackson-core's own
+# binary jar; the *sources* jar still carries the original, unrelocated
+# import. Confirmed against jackson-core's real build (`gradle/`-equivalent
+# `pom.xml` at the `jackson-core-2.15.4`/`2.16.1` GitHub tags, both pin
+# `ch.randelshofer:fastdoubleparser:1.0.0`).
+[[packages]]
+ecosystem = "maven"
+name = "ch.randelshofer:fastdoubleparser"
+role = "dependency"
+versions = [
+  { version = "1.0.0", hash = "1p6whsjnfqisr84xigywrivkp73ackk1pjdvlw9qcsb715dwr4hc" },
+]
+
+# dagger:2.51 imports javax.inject.* throughout (Component.java, Reusable.java,
+# BindsOptionalOf.java, ...) -- its single external dependency; every one of
+# dagger's ~31 javac errors traced to this one package, confirmed the same
+# way rxjava's single-dependency diagnosis was (org.reactivestreams above).
+[[packages]]
+ecosystem = "maven"
+name = "javax.inject:javax.inject"
+role = "dependency"
+versions = [
+  { version = "1", hash = "0gj31rfs2a5kwyi2k18spisjxszicwcpi2j9mwyrq4qwj7i7xf64" },
+]
+
+# io.vavr:vavr:0.10.4's io/vavr/API.java uses `yield` as a bare identifier,
+# legal pre-JDK-14 and a parse error at this JDK's default `--release` --
+# masking a second, real error once NUDOX_JAVA_RELEASE unmasks it:
+# io.vavr.match.annotation (a separate multi-module-reactor sibling artifact,
+# same groupId/version as vavr itself) is missing. Both halves verified
+# independently: at the default release, vavr fails ONLY on the 5 `yield`
+# parse errors, with or without this artifact present; at `--release 8/9`
+# with this artifact ABSENT, vavr fails on 23 `io.vavr.match.annotation does
+# not exist` errors; only with both fixes together does it lower.
+[[packages]]
+ecosystem = "maven"
+name = "io.vavr:vavr-match"
+role = "dependency"
+versions = [
+  { version = "0.10.4", hash = "1zk6kjdvn1xb0axla8qqqhdmj21spbbk95k3h54ifcs3h5rbizpz" },
+]
+
+# mockito-core imports net.bytebuddy.* throughout (its own declared compile
+# dependency); assertj-core's ProxifyMethodChangingTheObjectUnderTest.java,
+# SoftProxies.java, ErrorCollector.java, ClassLoadingStrategyFactory.java,
+# Assumptions.java import it too -- MANDATORY there too (assertj-core's POM
+# does not mark it optional, unlike its junit/hamcrest/opentest4j deps).
+[[packages]]
+ecosystem = "maven"
+name = "net.bytebuddy:byte-buddy"
+role = "dependency"
+versions = [
+  { version = "1.14.11", hash = "147r6rm9r8d19ijfxpivzxn0ypzr8m2dd0639haaz6qla4zbv9hp" },
+]
+
+# mockito-core's own declared compile dependency (self-attach agent support).
+[[packages]]
+ecosystem = "maven"
+name = "net.bytebuddy:byte-buddy-agent"
+role = "dependency"
+versions = [
+  { version = "1.14.11", hash = "1m6f652inczc0d86drkmwbfgj1brvn9a7bl0fhya908g7gg1hdhy" },
+]
+
+# httpclient5: org.apache.hc.core5.* -- the HttpCore 5 base library that every
+# httpclient5 source file imports (annotation, http, http.protocol, util). Both
+# are declared compile deps in httpclient5-parent's ${httpcore.version}.
+#
+# Provisioned 2026-08-08 after the sweep caught a MASKED blocker -- not a wrong
+# one. httpclient5 was pinned as "blocked on org.conscrypt", which is true, but
+# javadoc never got that far: it stopped at `package org.apache.hc.core5.annotation
+# does not exist`, because httpcore5 had been identified as needed and then never
+# added. With that fixed the conscrypt blocker is the real and only one, and its
+# pinned test passes.
+#
+# Worth keeping as a pattern: this is the same masking that hid vavr's real
+# dependency error behind a `yield` parse error. The pinned test asserts its
+# *specific* diagnostic rather than merely "this fails" -- so it went red on the
+# wrong error instead of passing for the wrong reason. A generic expected-fail
+# would have stayed green through both, and the missing artifact would never
+# have surfaced.
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.httpcomponents.core5:httpcore5"
+role = "dependency"
+versions = [
+  { version = "5.2.4", hash = "1sc2kjpfmcnbb1278v2l8a19046h1iy23z0g8qvl1q28ygk1wijh" },
+]
+
+# httpclient5: the HTTP/2 half of HttpCore 5, same rationale as httpcore5.
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.httpcomponents.core5:httpcore5-h2"
+role = "dependency"
+versions = [
+  { version = "5.2.4", hash = "0a50mqqwr1a7h0bj6hhqwm9k46k4s1jbpfyqi9b0yxnaaf76k1ki" },
+]
+
+# mockito-core's own declared compile dependency.
+[[packages]]
+ecosystem = "maven"
+name = "org.objenesis:objenesis"
+role = "dependency"
+versions = [
+  { version = "3.3", hash = "078kzhk45diz7bwnlq850lrxs510ha1ddwnfjgqqwb00rbw68qfh" },
+]
+
+# mockito-core: org.opentest4j (undeclared internal bridge, same shape as its
+# hamcrest need above). Also relevant to, but NOT sufficient to fix,
+# junit-jupiter-api and assertj-core -- see their pinned tests in
+# tests/corpus_sweep.rs for why: opentest4j is a real JPMS module but its
+# published *sources* jar carries no `module-info.java` (only the compiled
+# binary jar's multi-release `META-INF/versions/9/module-info.class` does),
+# so it can never satisfy a `requires opentest4j;` under this corpus's
+# sources-only policy regardless of this entry.
+[[packages]]
+ecosystem = "maven"
+name = "org.opentest4j:opentest4j"
+role = "dependency"
+versions = [
+  { version = "1.3.0", hash = "1cpbq7ak977mb3x8yi321kjp32k32nd3h4clmkmxarw2lvij8jkj" },
+]
+
+# byte-buddy's own source (369 files) imports edu.umd.cs.findbugs.annotations.*
+# -- declared `<scope>provided>` in byte-buddy's POM, i.e. omitted from a
+# normal dependency resolution, but genuinely referenced at compile time.
+[[packages]]
+ecosystem = "maven"
+name = "com.google.code.findbugs:findbugs-annotations"
+role = "dependency"
+versions = [
+  { version = "3.0.1", hash = "0b4raj0c1sllnm5lk7bawkcr9kxsy9s4w76bdz6kpvl5cribrkrk" },
+]
+
+# byte-buddy-agent's VirtualMachine.java imports com.sun.jna.* and
+# com.sun.jna.platform.win32.* directly -- also `<scope>provided>` in its
+# POM, also genuinely referenced (Windows self-attach support compiled
+# unconditionally, not behind a reflective guard).
+[[packages]]
+ecosystem = "maven"
+name = "net.java.dev.jna:jna"
+role = "dependency"
+versions = [
+  { version = "5.12.1", hash = "12hqxpq1p6dqbb9p67agjdhxjs6vg4mcqldi5y4gb3s738h37y98" },
+]
+
+# byte-buddy-agent's VirtualMachine.java: com.sun.jna.platform.win32.* specifically
+# (a separate artifact from plain jna above).
+[[packages]]
+ecosystem = "maven"
+name = "net.java.dev.jna:jna-platform"
+role = "dependency"
+versions = [
+  { version = "5.12.1", hash = "0vlzn8yva7dc1k1vb0pgpzy91ci83z92acsk64fg59ij0fanqivy" },
+]
+
+# httpclient5: org.brotli.dec.BrotliInputStream, imported unconditionally by
+# `BrotliInputStreamFactory.java`/`BrotliDecompressingEntity.java`. Declared
+# `<optional>true` in httpclient5's POM (i.e. skipped by an ordinary
+# resolution) but referenced at compile time all the same.
+[[packages]]
+ecosystem = "maven"
+name = "org.brotli:dec"
+role = "dependency"
+versions = [
+  { version = "0.1.2", hash = "1hzvhnxnwjbasmsxrga8p52b0fvf9gs0arcv8z81yp273zjc2jh6" },
+]
+
+# ---------------------------------------------------------------------------
+# h2's compile closure (8 entries below).
+#
+# `com.h2database:h2`'s *published* Maven POM declares ZERO dependencies —
+# it is a shaded, self-contained release POM, and trusting it is exactly the
+# mistake this corpus's standing rule warns against. Every version below
+# comes from h2's own build file, `h2/pom.xml` at GitHub tag
+# `version-2.2.224`, cross-checked against h2's real `import` statements:
+#
+#   jts.version=1.17.0  lucene.version=8.5.2  osgi.version=5.0.0
+#   osgi.jdbc.version=1.1.0  javax.servlet.version=4.0.1
+#   jakarta.servlet.version=5.0.0
+#
+# NOTE on jakarta.servlet-api: 5.0.0, NOT 6.0.0. Two independent reasons.
+# (1) 5.0.0 is what h2's own pom.xml pins at this tag. (2) 6.0.0's sources
+# jar carries a root `module-info.java`, which `JavaProducer::sourcepath_entries`
+# excludes from every other package's `-sourcepath` (see that function's doc
+# comment) — provisioning 6.0.0 would download an artifact that could never
+# resolve `jakarta.servlet` for h2. 5.0.0's sources jar has no
+# `module-info.java`, verified by `unzip -l` on both.
+# ---------------------------------------------------------------------------
+
+# h2: org.locationtech.jts.geom.* / .geom.impl.* — the geometry value type
+# (`org/h2/value/ValueGeometry.java`, `org/h2/util/geometry/*.java`).
+[[packages]]
+ecosystem = "maven"
+name = "org.locationtech.jts:jts-core"
+role = "dependency"
+versions = [
+  { version = "1.17.0", hash = "02nlg0ri8hw7f5d1r7xd689narqr0yaz2rly6l7ngmz90a2al1nh" },
+]
+
+# h2: org.osgi.framework.* — `org/h2/util/DbDriverActivator.java`
+# (a `BundleActivator`).
+[[packages]]
+ecosystem = "maven"
+name = "org.osgi:org.osgi.core"
+role = "dependency"
+versions = [
+  { version = "5.0.0", hash = "05bh3plafkl7h5qhr4r2xjxx3mdf1lwzyvk5n8smw8l83ih7kmfc" },
+]
+
+# h2: org.osgi.service.jdbc.DataSourceFactory — `org/h2/util/OsgiDataSourceFactory.java`.
+# Declared `<scope>provided</scope>` in h2's own pom.xml, i.e. absent from an
+# ordinary resolution, but compiled unconditionally.
+[[packages]]
+ecosystem = "maven"
+name = "org.osgi:org.osgi.service.jdbc"
+role = "dependency"
+versions = [
+  { version = "1.1.0", hash = "0sb9zw06s478jzlm6w0962z8f5k3sr1ibr15c5f0g9py673lpa9c" },
+]
+
+# h2: jakarta.servlet.* / jakarta.servlet.http.* — `org/h2/server/web/JakartaWebServlet.java`
+# and friends. See the section header above for why this is 5.0.0 and not 6.0.0.
+[[packages]]
+ecosystem = "maven"
+name = "jakarta.servlet:jakarta.servlet-api"
+role = "dependency"
+versions = [
+  { version = "5.0.0", hash = "1mb5jkhh04zs21nkj6lqg93jwwqdy3icl6246jxlh2mpwiw6s1rg" },
+  # 6.0.0 is here for a *different* consumer and a different mechanism:
+  # logback-classic's `module-info.java` says `requires static jakarta.servlet;`,
+  # which needs a resolvable JPMS module, and 6.0.0 is the lowest
+  # jakarta.servlet-api whose SOURCES jar carries a `module-info.java`
+  # (`module jakarta.servlet`). 5.0.0's does not, so 5.0.0 can only ever work
+  # the `-sourcepath` way (h2, above) and 6.0.0 only the `--module-source-path`
+  # way. They do not collide: a checkout with a root `module-info.java` is
+  # excluded from every package's `-sourcepath`, so h2 sees exactly one
+  # `jakarta.servlet` package tree, the 5.0.0 one.
+  { version = "6.0.0", hash = "17ggmspwgifpcybl6vxsy4li1rm0gg3f0zibibvlnahmfvwjdhix" },
+]
+
+# h2: javax.servlet.* / javax.servlet.http.* — the pre-Jakarta twin of the
+# above (`org/h2/server/web/WebServlet.java`). h2 ships both servlet
+# generations side by side; both are real compile inputs.
+[[packages]]
+ecosystem = "maven"
+name = "javax.servlet:javax.servlet-api"
+role = "dependency"
+versions = [
+  { version = "4.0.1", hash = "1mj8hz55df9pvqacy7bsc8i4wja6r2n9w11s1bxmllw8mrhng0m2" },
+]
+
+# h2: org.apache.lucene.{analysis,document,index,search,store}.* — the
+# full-text search implementation in `org/h2/fulltext/FullTextLucene.java`.
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.lucene:lucene-core"
+role = "dependency"
+versions = [
+  { version = "8.5.2", hash = "134dr2rrpxzw3dqmnjiya4dxlyl3vlxdb1b29n6x7b3sxf5mgj4w" },
+]
+
+# h2: org.apache.lucene.analysis.standard.StandardAnalyzer — same file.
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.lucene:lucene-analyzers-common"
+role = "dependency"
+versions = [
+  { version = "8.5.2", hash = "14565h3dck3idqmz86c226fcarzk2sxy6iwi1hfcf5kkv97my2fd" },
+]
+
+# h2: org.apache.lucene.queryparser.flexible.standard.StandardQueryParser —
+# same file.
+[[packages]]
+ecosystem = "maven"
+name = "org.apache.lucene:lucene-queryparser"
+role = "dependency"
+versions = [
+  { version = "8.5.2", hash = "1wmmmf8lkknd6b4kvphfjybq5zndnz0b18s8n5siqwxrs8c6glcw" },
+]
+
+# ---------------------------------------------------------------------------
+# kafka-clients' compile closure (6 entries below).
+#
+# MAINTENANCE NOTE — read before bumping `org.apache.kafka:kafka-clients`.
+# Unlike every other closure in this file, kafka-clients' is *not derivable
+# from its published Maven metadata at all*. Its POM lists 4 dependencies,
+# all `runtime` scope; its real compile-time imports (grepped out of the
+# sources jar, which is the only trustworthy source here) are:
+#
+#   com.fasterxml.jackson.databind[.node]  net.jpountz.lz4  net.jpountz.xxhash
+#   com.github.luben.zstd  org.xerial.snappy  org.jose4j.{http,jwa,jwk,jws,
+#   jwt,jwt.consumer,jwx,keys.resolvers,lang}
+#   io.opentelemetry.proto.{common,metrics,resource}.v1
+#
+# The *versions* below come from Kafka's own `gradle/dependencies.gradle` at
+# GitHub tag `3.7.0`, not from any POM. jose4j and opentelemetry-proto are
+# not declared in the POM in any scope whatsoever.
+#
+# Consequence: a version bump of kafka-clients MUST re-derive this list from
+# the new tag's `gradle/dependencies.gradle` plus a fresh import grep. A
+# POM-only check will silently miss half of it and this entry will regress
+# out of `tests/corpus_sweep.rs`'s `known_good` list. That is a real, ongoing
+# maintenance cost, recorded here rather than used as an excuse to skip the
+# package.
+# ---------------------------------------------------------------------------
+
+# kafka-clients: com.github.luben.zstd.{ZstdInputStreamNoFinalizer,
+# ZstdOutputStreamNoFinalizer,BufferPool,RecyclingBufferPool} —
+# `org/apache/kafka/common/record/CompressionType.java` and
+# `common/compress/*`. POM scope `runtime`; imported at compile time.
+[[packages]]
+ecosystem = "maven"
+name = "com.github.luben:zstd-jni"
+role = "dependency"
+versions = [
+  { version = "1.5.5-6", hash = "0nl5j2qq9k16fn9m1y151rng2ijdblddh8cl66q9pd739iils94b" },
+]
+
+# kafka-clients: net.jpountz.lz4.LZ4Exception and net.jpountz.xxhash.XXHashFactory
+# — `org/apache/kafka/common/compress/KafkaLZ4BlockInputStream.java` and its
+# output twin. Same `runtime`-scope-but-compile-imported shape as zstd-jni.
+[[packages]]
+ecosystem = "maven"
+name = "org.lz4:lz4-java"
+role = "dependency"
+versions = [
+  { version = "1.8.0", hash = "03v58chzwbsbvlrk72yh6xx3g9fl5mbvr74g0yvx198bv2i0kb2k" },
+]
+
+# kafka-clients: org.xerial.snappy.{SnappyInputStream,SnappyOutputStream} —
+# same two record/compression files. Same shape again.
+[[packages]]
+ecosystem = "maven"
+name = "org.xerial.snappy:snappy-java"
+role = "dependency"
+versions = [
+  { version = "1.1.10.5", hash = "1jnns992yw8w3nzlvrzv5yyzvg5xc5cx3rvcrbc90k7g3vlv8q15" },
+]
+
+# kafka-clients: org.jose4j.* (9 subpackages) — the OAUTHBEARER SASL
+# implementation under
+# `org/apache/kafka/common/security/oauthbearer/internals/secured/*.java`.
+# Entirely undeclared in kafka-clients' POM, in any scope.
+[[packages]]
+ecosystem = "maven"
+name = "org.bitbucket.b_c:jose4j"
+role = "dependency"
+versions = [
+  { version = "0.9.4", hash = "0qg2kni0y79a4rq0ylr37bgr5xyfbkpibnyay4fif8rx8xpw881b" },
+]
+
+# kafka-clients: io.opentelemetry.proto.{common,metrics,resource}.v1 — the
+# client-telemetry serializer
+# (`org/apache/kafka/common/telemetry/internals/*.java`). Also entirely
+# undeclared in kafka-clients' POM.
+[[packages]]
+ecosystem = "maven"
+name = "io.opentelemetry.proto:opentelemetry-proto"
+role = "dependency"
+versions = [
+  { version = "1.0.0-alpha", hash = "06cv7hvrmdkw0kv9bddlcdxdwn2gq461kxxw9gnb9sjxcyr09wp0" },
+]
+
+# opentelemetry-proto's own transitive requirement, not kafka's: its
+# generated classes `extend com.google.protobuf.GeneratedMessageV3`, so the
+# telemetry types above do not resolve without it. 3.23.4 is the version
+# opentelemetry-proto:1.0.0-alpha's own POM declares (`<scope>compile</scope>`
+# — one of the few declared-and-correct scopes in this whole closure).
+[[packages]]
+ecosystem = "maven"
+name = "com.google.protobuf:protobuf-java"
+role = "dependency"
+versions = [
+  { version = "3.23.4", hash = "01bdbl22j5frmidw7pv3435dmhjvwhxvrhp7nmsj4n65i4w02n7j" },
+]
+
+# httpclient5: org.conscrypt.Conscrypt — `ConscryptClientTlsStrategy.java`.
+#
+# `conscrypt-openjdk`, NOT `conscrypt-openjdk-uber`. This distinction is the
+# whole entry: an earlier pass checked the *uber* artifact, found its sources
+# jar missing `org/conscrypt/NativeConstants.java` (a file conscrypt's native
+# build generates from C headers), and concluded — reasonably but wrongly —
+# that no conscrypt source artifact on Maven Central can compile. The plain
+# `conscrypt-openjdk` sources jar DOES ship `NativeConstants.java`: 134 `.java`
+# entries versus the uber jar's 133, and that one file is the difference.
+# Verified by `unzip -l` on both and by compiling all 366 httpclient5 sources
+# against this one to zero errors.
+#
+# Also requires `--add-exports java.base/sun.security.x509=ALL-UNNAMED`:
+# conscrypt's `Platform.java` imports `sun.security.x509.AlgorithmId`, and
+# conscrypt's own Gradle build only gets away with it by compiling at
+# `sourceCompatibility 1.7` (pre-JPMS, no export enforcement). That flag is
+# supplied per-entry via `NUDOX_JAVA_ADD_EXPORTS` in
+# `workspace/compiler/languages/java/tests/corpus_sweep.rs`, never globally.
+[[packages]]
+ecosystem = "maven"
+name = "org.conscrypt:conscrypt-openjdk"
+role = "dependency"
+versions = [
+  { version = "2.5.2", hash = "03vj3xwgds09q6h7ha2h9000ajsyfmixp52g9j2z1xz7v20kg8r4" },
+]
+
+# ---------------------------------------------------------------------------
+# The JPMS source modules (4 entries below).
+#
+# These differ from every other `role = "dependency"` entry in *how* they are
+# consumed. An ordinary dependency resolves by package name on `-sourcepath`.
+# These resolve by MODULE name on `--module-source-path`, because the package
+# that needs them (`logback-classic`, `junit-jupiter-api`) carries its own
+# `module-info.java` and `javac` therefore compiles it as a named module,
+# where only `requires`d modules are readable. Each entry below is a sources
+# jar that carries a real `module-info.java` — verified with `unzip -l`, and
+# the reason each one can stay source rather than becoming a compiled
+# `[[jpms_modules]]` entry at the bottom of this file.
+# ---------------------------------------------------------------------------
+
+# junit-jupiter-api: `requires static transitive org.apiguardian.api;`.
+# Sources jar carries `module org.apiguardian.api { exports org.apiguardian.api; }`.
+[[packages]]
+ecosystem = "maven"
+name = "org.apiguardian:apiguardian-api"
+role = "dependency"
+versions = [
+  { version = "1.1.2", hash = "0bayd1xs45syys5hpw5zbvlj2ri7qx6k4nv5nsz1fa212m1plyi7" },
+]
+
+# junit-jupiter-api: `requires transitive org.junit.platform.commons;`.
+# Sources jar carries a real `module org.junit.platform.commons`. 1.10.2 is
+# the platform version junit-jupiter-api 5.10.2's own BOM pairs with.
+[[packages]]
+ecosystem = "maven"
+name = "org.junit.platform:junit-platform-commons"
+role = "dependency"
+versions = [
+  { version = "1.10.2", hash = "1miasymgjyydrmv8l15gfq9xnw2ikb9r64rcdjhijdl4ykw5qhz1" },
+]
+
+# logback-classic: `requires static jakarta.mail;` — the SMTPAppender. Version
+# from logback-parent-1.4.14's `${jakarta.mail.version}`. Sources jar carries
+# `module jakarta.mail`.
+[[packages]]
+ecosystem = "maven"
+name = "jakarta.mail:jakarta.mail-api"
+role = "dependency"
+versions = [
+  { version = "2.1.0", hash = "1ix4qwvh9g3nnnnyriy5r4qbhjnh1xvzzsskcjab8nvzs776p42j" },
+]
+
+# jakarta.mail's own `requires transitive jakarta.activation;`, not
+# logback's — but a transitive `requires` is still a hard module-resolution
+# edge, so it has to be present. Version from logback-parent's
+# `${jakarta.activation.version}`.
+[[packages]]
+ecosystem = "maven"
+name = "jakarta.activation:jakarta.activation-api"
+role = "dependency"
+versions = [
+  { version = "2.1.0", hash = "0kjj4wghmani8ki6a7w0qb4114y3kxpdqsz9f9ryb172w6bqj0s3" },
 ]
 
 # ---------------------------------------------------------------------------
@@ -1075,4 +1693,106 @@ ecosystem = "cpp"
 name = "argparse"
 versions = [
   { version = "v3.2", hash = "167cd02snfvirhl4wdyxa8n6l6wz3asm9albmi42l6x4w263vjwx", url = "https://github.com/p-ranav/argparse/archive/refs/tags/v3.2.tar.gz" },
+]
+
+# ===========================================================================
+# jpms_modules — the ONLY compiled artifacts in this corpus, and a separate
+# top-level array from `[[packages]]` precisely so that stays true.
+# ===========================================================================
+#
+# Every `[[packages]]` maven entry is a sources jar, because "asking for
+# anything else would hand the producer bytecode instead of Java"
+# (corpus/README.md). That rule is about what gets *lowered*. The six entries
+# below are never lowered, never extracted, and never reachable as source:
+# `corpus/fetch.nu` copies each `.jar` verbatim into `.real-crates/.module-path/`,
+# a dot-directory `JavaProducer::sourcepath_entries` skips, and the only flag
+# any of them is ever passed to is `--module-path`. A `PackageSource::root`
+# is always a `[[packages]]` directory, and `discover_java_sources` would find
+# zero `.java` files in a directory of jars even if one were aimed at it. The
+# separate array is what makes "a binary jar accidentally becomes lowering
+# input" structurally impossible rather than merely discouraged.
+#
+# The exception exists because `javac`'s module system has three positions no
+# source artifact can fill. Each entry below states which one it is:
+#
+#   (a) the artifact's own sources jar omits `module-info.java` entirely —
+#       only the compiled jar carries the descriptor;
+#   (b) the artifact's source `module-info.java` `requires` an AUTOMATIC
+#       module (a name derived from a jar filename), which by definition has
+#       no source form;
+#   (c) the consuming target has no `module-info.java` of its own, so it
+#       cannot use `--module-source-path` at all — `javac` rejects that
+#       option in the same invocation as `-sourcepath`, which the target
+#       needs for its non-modular dependencies.
+#
+# Hashes come from `nu corpus/fetch.nu hash-module <group:artifact> <version>`,
+# a deliberately separate subcommand from `hash-url` so that reaching for a
+# compiled jar is always an explicit act.
+
+# (a) logback-classic: `requires org.slf4j;` — mandatory, not `static`.
+# `slf4j-api-2.0.12-sources.jar` has no `module-info.java` anywhere; the
+# binary carries one only under the multi-release path
+# `META-INF/versions/9/module-info.class`. Verified with `unzip -l` on both.
+[[jpms_modules]]
+name = "org.slf4j:slf4j-api"
+versions = [
+  { version = "2.0.12", hash = "0izdyyncrag2h2dlyr9mdlnni220d8i92xm28ql75gfzmfw055d7" },
+]
+
+# (b) logback-classic: `requires ch.qos.logback.core;`. logback-core's sources
+# jar DOES carry a real `module-info.java` — and that is exactly the problem:
+# it says `requires static janino;`, `requires static commons.compiler;`, and
+# `requires static org.fusesource.jansi;`. `janino` and `commons.compiler` are
+# automatic module names (derived from `janino-3.1.8.jar` /
+# `commons-compiler-3.1.8.jar`), so compiling logback-core from source fails
+# with `module not found: janino` no matter what else is provisioned —
+# reproduced directly before choosing the compiled jar. Resolving logback-core
+# as a compiled module instead does not follow its `requires static` edges,
+# and logback-classic then compiles clean.
+[[jpms_modules]]
+name = "ch.qos.logback:logback-core"
+versions = [
+  { version = "1.4.14", hash = "14x22xk3v4f68ij3k3zda1w1d0005xww21wmfd91h2sk89gz1hpq" },
+]
+
+# (a) junit-jupiter-api: `requires transitive org.opentest4j;`, and
+# assertj-core transitively. `opentest4j-1.3.0-sources.jar` has no
+# `module-info.java`; the binary jar has a plain (non-multi-release) one at
+# its root. The *sources* jar is separately provisioned as an ordinary
+# `role = "dependency"` package above, because mockito-core resolves
+# `org.opentest4j` the normal `-sourcepath` way — the two coexist and serve
+# different mechanisms.
+[[jpms_modules]]
+name = "org.opentest4j:opentest4j"
+versions = [
+  { version = "1.3.0", hash = "06rgfkgjss4qfprhpvrnn9y64m93pf5gzkadsv766rdbdiixzqj8" },
+]
+
+# (c) assertj-core only. Its 4 JUnit-Jupiter soft-assertion files import
+# `org.junit.jupiter.api.extension` and `org.junit.platform.commons.support`,
+# and assertj-core has no `module-info.java`, so `--module-source-path` is
+# unavailable to it (it needs `-sourcepath` for byte-buddy, hamcrest and
+# opentest4j sources, and `javac` refuses both options at once:
+# "cannot specify both --source-path and --module-source-path"). The three
+# entries here plus opentest4j above, on `--module-path` with
+# `--add-modules ALL-MODULE-PATH`, are the only combination that resolves
+# them. junit-jupiter-api's and junit-platform-commons' SOURCES are still what
+# junit-jupiter-api itself lowers from; these compiled copies exist solely so
+# a *different* package's four files can resolve their imports.
+[[jpms_modules]]
+name = "org.apiguardian:apiguardian-api"
+versions = [
+  { version = "1.1.2", hash = "0f0bnysya4gil4r1hx7ch9sh0waxngq3f98qkwqhgmh6qn5482dm" },
+]
+
+[[jpms_modules]]
+name = "org.junit.platform:junit-platform-commons"
+versions = [
+  { version = "1.10.2", hash = "1bnq3z3xhlgl7ryr1j0lma7xpq4gr4jbm2xifd4xyyd40305wsmm" },
+]
+
+[[jpms_modules]]
+name = "org.junit.jupiter:junit-jupiter-api"
+versions = [
+  { version = "5.10.2", hash = "1k0p9fdh1y3cib3r3ga0mkb1z05a6d8zlwiqh1sp4cfdhv0pgzxg" },
 ]

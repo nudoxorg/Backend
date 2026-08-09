@@ -18,7 +18,7 @@ pub use crate::id::{PackageId, PackageIdView};
 pub use self::{
     builder::EntryBuilder,
     info::PackageInfo,
-    seal::{Escalation, ForcedDisambiguation, SealOutcome, SealReport},
+    seal::{Escalation, ForcedDisambiguation, KeyTier, SealOutcome, SealReport},
 };
 
 /// A built, serializable package IR.

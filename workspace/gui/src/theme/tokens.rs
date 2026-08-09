@@ -93,6 +93,29 @@ pub struct SpaceTokens {
     /// descriptions) has to agree on it, and a number retyped per view is a
     /// number that drifts.
     pub measure: Pixels,
+
+    /// 10 — how many rows a disclosure section shows before it scrolls.
+    ///
+    /// # Why a row count and not a height
+    ///
+    /// This was `let max_section_h = gpui::px(400.0);` inside
+    /// `SymbolPage::page_body`, and the literal was not merely
+    /// off-the-scale — it was the *wrong unit*. A pixel cap over a table of
+    /// fixed-height rows lands wherever 400 px happens to fall, which is
+    /// mid-row: `12-timeline-tab.png` shows the References group header
+    /// `nudox-fixture-rich.format_point` with a half-drawn row sheared off
+    /// beneath it, the glyphs sliced through their x-height.
+    ///
+    /// Expressed in rows the cap cannot do that. The height is derived by
+    /// [`crate::theme::ext::NudoxThemeExt::section_max_h`] from the same
+    /// `row_height(token)` the table itself lays its rows out with, so the
+    /// boundary is a row boundary by construction rather than by arithmetic
+    /// that has to be kept true.
+    ///
+    /// Ten rows is enough to read a group without the section swallowing the
+    /// page; past that the section scrolls and the count in its header tells
+    /// the reader how much more there is.
+    pub section_rows: f32,
 }
 
 impl SpaceTokens {
@@ -117,6 +140,8 @@ impl SpaceTokens {
         focus_ring_width: px(2.0),
 
         measure: px(640.0),
+
+        section_rows: 10.0,
     };
 }
 

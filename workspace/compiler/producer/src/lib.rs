@@ -35,12 +35,12 @@ use std::{
 };
 
 use nudox_ir::{
-    apply::PristineIntroTable,
+    apply::{IntroCollision, PristineIntroTable},
     body::Language,
     change::{PackageLineageId, PackageName},
     foreign::ForeignResolver,
     lower::Lowering,
-    package::{PackageId, SealReport},
+    package::{Escalation, ForcedDisambiguation, PackageId, SealOutcome, SealReport},
 };
 use thiserror::Error;
 
@@ -241,6 +241,114 @@ impl YieldContract {
             Self::RootOnly(_) => true,
         }
     }
+}
+
+// ── Identity contract ─────────────────────────────────────────────────────────
+
+/// How strictly [`enforce_identity_contract`] treats a declaration whose
+/// identity survived only by its **ordinal position** among its colliding peers.
+///
+/// # Why this tier is a knob and dropped declarations are not
+///
+/// A declaration in [`SealReport::collisions`] is *gone*: `seal` ran out of
+/// disambiguators, `PristineIntroTable::try_insert_live` refused it, and the
+/// table that ships is missing a public symbol. There is no policy under which
+/// that is acceptable, so it is unconditional.
+///
+/// `Disambiguator::Ordinal` is a weaker failure of the same kind. The
+/// declaration survives, but its [`IntroId`] is a function of *where the
+/// producer happened to emit it*, which `nudox_ir::intro` states plainly:
+/// "an `Ordinal` id is not stable across a producer reordering its output. A
+/// report is the mitigation; it is not stability." Every consumer that caches a
+/// key — the graph, the MCP tools, cross-version lineage — is therefore holding
+/// something that can move for no source-level reason.
+///
+/// # What the corpus actually says, measured 2026-08-08
+///
+/// `nudox-store`'s `every_corpus_declaration_gets_a_distinct_content_derived_identity`
+/// over 79 provisioned package versions and 446,947 declarations:
+///
+/// ```text
+/// dropped declarations                  0
+/// unmapped local references             0
+/// ordinal-keyed groups             32,339   in 49 of the 79 packages
+/// ```
+///
+/// So the unconditional half of this gate is green on the whole corpus today —
+/// the escalation ladder always reaches a distinct id — and **this knob is the
+/// only reason the run is not red**. It is holding back a real, measured,
+/// 32,339-group defect, not a hypothetical one.
+///
+/// By declaration kind, the ordinal-keyed groups are:
+///
+/// ```text
+/// Param 13,601   Field 3,845   Const 3,809   Function 3,395   Module 2,772
+/// Reexport 1,480   Static 1,335   Trait 1,310   Alias 600   Record 129
+/// ```
+///
+/// There are **two** independent causes, and only the first is about spans:
+///
+/// 1. **Degenerate spans.** A producer that writes `0..0` on every declaration
+///    collapses the `Span` tier onto `Ordinal` for every collision it makes.
+///    Four producers do this, not three — and the largest was missing from the
+///    list this comment first carried:
+///    `typescript/src/emit.rs` (fourteen `span: 0..0` literals; only the
+///    `decl.span_start..decl.span_end` path at the bottom of the file is real),
+///    `go/src/lower/mod.rs`, `csharp/src/lower.rs`,
+///    `python/src/emit/mod.rs`. TypeScript alone accounts for roughly
+///    24,000 of the 32,339 groups.
+///
+/// 2. **The ancestor path is built from parent *names*, so overloads share it.**
+///    This one has nothing to do with spans, and clang and Rust — both of which
+///    emit real byte offsets — hit it hard. Two overloads of `CLI::App::parse`
+///    are distinguished by `Disambiguator::FnOverload`, but their *parameters*
+///    are not: each param's key is `(Param, [.., App, parse], "args")`, which
+///    is byte-identical across the overload set, and a parameter has no
+///    signature skeleton to fall back to. That is why `Param` is the single
+///    largest kind above, and it is LIMITATIONS.md L23's residue at corpus
+///    scale ("memchr's own return-type `Param` is overwritten by a sibling
+///    function's").
+///
+/// **Flip [`Self::CURRENT`] to [`Self::Reject`] when that measurement reads
+/// zero.** Fixing the four degenerate-span producers is necessary and not
+/// sufficient: it converts cause 1 into `Escalation::Span`, which is injective
+/// but still not version-stable, and it does nothing at all for cause 2. Cause
+/// 2 wants a disambiguator that keys a child on its *parent's* identity rather
+/// than on its parent's name.
+///
+/// The knob exists so the drop-a-declaration half of this gate could land hard
+/// on day one instead of waiting for four producers and a sealer change, not so
+/// that ordinal identity is a permanent state of affairs.
+///
+/// [`IntroId`]: nudox_ir::change::IntroId
+/// [`SealReport::collisions`]: nudox_ir::package::SealReport::collisions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrdinalPolicy {
+    /// An ordinal-keyed group travels in [`SealReport::forced`] and does not
+    /// fail the run.
+    ///
+    /// This is *not* "ignored": `forced` is a field on [`Produced`], carrying
+    /// the kind, path, name and group size of every group that needed the
+    /// tier, and [`enforce_identity_contract`] still lists them in the failure
+    /// message when the run fails for a dropped declaration anyway.
+    ///
+    /// [`SealReport::forced`]: nudox_ir::package::SealReport::forced
+    Report,
+
+    /// An ordinal-keyed group fails the run as
+    /// [`ProducerError::IdentityNotInjective`].
+    Reject,
+}
+
+impl OrdinalPolicy {
+    /// The single policy every pipeline in this workspace runs under.
+    ///
+    /// A constant rather than a parameter on purpose: a parameter would let one
+    /// pipeline pick `Report` while another picked `Reject`, which is precisely
+    /// the per-call-site exemption that [`enforce_yield_contract`] was made
+    /// `pub` to prevent. There is one place to flip, and flipping it is a diff
+    /// a reviewer sees.
+    pub const CURRENT: Self = Self::Report;
 }
 
 // ── ProducerError ─────────────────────────────────────────────────────────────
@@ -446,6 +554,82 @@ pub enum ProducerError {
         declared: DegradedYield,
     },
 
+    /// Sealing could not give every declaration a distinct, content-derived
+    /// identity.
+    ///
+    /// Carried rather than logged because [`IntroId`] is the key the graph, the
+    /// MCP tools and cross-version lineage are all built on: a table that lost a
+    /// declaration here is not a degraded table, it is a **wrong** one. The
+    /// symbol is not marked missing, not rendered greyed out, not counted
+    /// anywhere — it simply is not in the product, and every consumer sees a
+    /// package whose public API is smaller than its source says. `seal` already
+    /// records the fact in [`SealReport`]; before this variant existed the only
+    /// production reader of that record was a `tracing::warn!` in
+    /// `nudox_store::source::producer` with no subscriber installed, which is
+    /// exactly what [`SealReport`]'s own doc calls insufficient — "a `warn!`
+    /// stops no caller".
+    ///
+    /// # The two halves, and why they are one variant
+    ///
+    /// `lost` is unconditional: `seal` exhausted its escalation ladder and
+    /// [`PristineIntroTable::try_insert_live`] rejected the declaration.
+    ///
+    /// `order_dependent` is gated on [`OrdinalPolicy::CURRENT`] — the
+    /// declaration survives, but only because it was the *n*-th of its
+    /// colliding group, so its identity moves when the producer reorders its
+    /// output. See [`OrdinalPolicy`] for what has to change before that becomes
+    /// unconditional too.
+    ///
+    /// They share a variant because they share a cause and a fix: something
+    /// upstream erased the bytes that told two declarations apart. The
+    /// canonical instance is `.real-crates/cli11-v2.7.2/include/CLI/App.hpp`,
+    /// where `parse(std::vector<std::string>&)` and
+    /// `parse(std::vector<std::string>&&)` both lower to the identical mutable
+    /// reference — `workspace/compiler/languages/clang/src/lower.rs` says so in
+    /// its own comment, "No dedicated RValueRef in the IR; model as mutable
+    /// reference" — so they mint one base key, one skeleton, one `IntroId`.
+    ///
+    /// Recover by making the lowering preserve whatever distinguishes the two
+    /// declarations in the source. Do **not** recover by widening this gate:
+    /// the escalation ladder is already the widening, and this variant is what
+    /// says the ladder ran out.
+    ///
+    /// [`IntroId`]: nudox_ir::change::IntroId
+    /// [`SealReport`]: nudox_ir::package::SealReport
+    /// [`PristineIntroTable::try_insert_live`]: nudox_ir::apply::PristineIntroTable::try_insert_live
+    #[error(
+        "sealing `{package}` did not give every declaration a distinct identity: {} \
+         declaration(s) were dropped because another minted the same IntroId, and {} \
+         group(s) survive only by ordinal position. A dropped declaration is absent from \
+         the table, the graph, and every MCP answer, with nothing downstream able to tell \
+         it from a symbol the package never had. Fix the lowering that erased what \
+         distinguished them.\n{}",
+        .lost.len(),
+        .order_dependent.len(),
+        render_identity_failure(.lost, .order_dependent),
+    )]
+    IdentityNotInjective {
+        /// Package whose sealed table is not injective over its declarations.
+        package: String,
+        /// Declarations `seal` could not insert, each carrying the `IntroId`
+        /// both sides minted and *both* symbols' file and span — enough to open
+        /// the two source lines that collided without any further search.
+        ///
+        /// The whole [`IntroCollision`] is kept rather than a count or a
+        /// rendered string: it owns the only surviving copy of the rejected
+        /// [`Entry`], and discarding it here would be the `map_err(|_| …)`
+        /// mistake at the one place the data still exists.
+        ///
+        /// [`Entry`]: nudox_ir::entry::Entry
+        lost: Vec<IntroCollision>,
+        /// Groups that reached `Disambiguator::Ordinal`, so their identity is a
+        /// function of the producer's emission order rather than of their
+        /// content. Empty unless [`OrdinalPolicy::CURRENT`] is
+        /// [`OrdinalPolicy::Reject`], in which case a non-empty list is by
+        /// itself enough to fail the run.
+        order_dependent: Vec<ForcedDisambiguation>,
+    },
+
     /// The producer encountered a language construct it does not yet know how
     /// to lower.
     ///
@@ -461,6 +645,56 @@ pub enum ProducerError {
         /// Short description of what the construct is.
         description: String,
     },
+}
+
+/// Render the body of [`ProducerError::IdentityNotInjective`]'s message.
+///
+/// One line per finding, because the reader's next action is to open two source
+/// locations and see what the lowering flattened, and a count cannot tell them
+/// which.
+///
+/// The rendering is capped; the *data* is not. Both vectors stay whole on the
+/// variant, so a caller that wants all of them has them — only the `Display`
+/// text is bounded, so a producer that loses four hundred declarations does not
+/// bury the rest of the run's output.
+fn render_identity_failure(
+    lost: &[IntroCollision],
+    order_dependent: &[ForcedDisambiguation],
+) -> String {
+    /// How many findings of each kind the message spells out in full.
+    const SHOWN: usize = 25;
+
+    let mut out = String::new();
+    for collision in lost.iter().take(SHOWN) {
+        out.push_str("\n  dropped: ");
+        out.push_str(&collision.to_string());
+    }
+    if lost.len() > SHOWN {
+        out.push_str(&format!(
+            "\n  … and {} further dropped declaration(s)",
+            lost.len() - SHOWN
+        ));
+    }
+    for forced in order_dependent.iter().take(SHOWN) {
+        out.push_str(&format!(
+            "\n  order-dependent: {:?} `{}{}` — {} declarations shared one key",
+            forced.kind,
+            forced
+                .segments
+                .iter()
+                .map(|s| format!("{s}::"))
+                .collect::<String>(),
+            forced.name,
+            forced.group,
+        ));
+    }
+    if order_dependent.len() > SHOWN {
+        out.push_str(&format!(
+            "\n  … and {} further order-dependent group(s)",
+            order_dependent.len() - SHOWN
+        ));
+    }
+    out
 }
 
 // ── Producer trait ────────────────────────────────────────────────────────────
@@ -648,6 +882,8 @@ pub fn produce<P: Producer>(
     let contract = enforce_yield_contract(producer, src, &ir_package)?;
 
     let outcome = ir_package.seal(lineage, imports);
+    let outcome = enforce_identity_contract(src, outcome)?;
+
     Ok(Produced {
         table: outcome.table,
         report: outcome.report,
@@ -718,6 +954,112 @@ pub fn enforce_yield_contract<P: Producer>(
         }
         YieldContract::Declarations | YieldContract::RootOnly(_) => Ok(contract),
     }
+}
+
+/// Hold a sealed package to the one property its identity scheme has to have:
+/// **every declaration got a distinct, content-derived [`IntroId`]**.
+///
+/// # Why this exists at all
+///
+/// `seal` is infallible by design, and rightly so — a package that cannot be
+/// sealed cannot be *shown*, and its report already carries every observation a
+/// caller needs. What was missing was anyone holding the caller to reading it.
+/// `produce` returned `Ok` no matter how many declarations `seal` had just
+/// dropped, and the only production reader of the report was a `tracing::warn!`
+/// with no subscriber installed. The whole defect class this workspace keeps
+/// finding — AGENTS-DOCTRINE.md §8's `map_err(|_| …)`, the `--no-deps` fallback,
+/// the yield contract — is a real failure converted into a success with the
+/// cause parked somewhere a caller need not look. This is that shape, wearing
+/// `SealReport`'s hat.
+///
+/// # Why this is `pub` rather than a private step inside [`produce`]
+///
+/// The same reason [`enforce_yield_contract`] is, and it is not a hypothetical:
+/// `nudox_producer_rust::produce_with_occurrences` repeats
+/// `invoke → lower → finish → seal` verbatim. A gate written inside `produce`'s
+/// body would simply not exist there, and the one producer with a bespoke
+/// pipeline would be the one producer whose tables were allowed to lose
+/// declarations. Every pipeline calls this function, so a reviewer looking at a
+/// new one asks "does it call this?" instead of re-deriving the rule.
+///
+/// Call it immediately after `seal`, on the outcome, before anything reads the
+/// table: a table that is missing declarations must not be indexed, cached, or
+/// rendered first.
+///
+/// # Why it takes and returns the whole [`SealOutcome`]
+///
+/// So it cannot be called and ignored. Taking `&SealReport` would let a caller
+/// invoke it, drop the `Result`, and carry on with the table it already has;
+/// taking the outcome by value means the only way to reach the table is through
+/// the `?`.
+///
+/// # Errors
+///
+/// [`ProducerError::IdentityNotInjective`] when `seal` dropped a declaration
+/// outright, and — once [`OrdinalPolicy::CURRENT`] is
+/// [`OrdinalPolicy::Reject`] — when a declaration's identity depends on the
+/// producer's emission order.
+///
+/// [`IntroId`]: nudox_ir::change::IntroId
+pub fn enforce_identity_contract(
+    src: &PackageSource,
+    outcome: SealOutcome,
+) -> Result<SealOutcome, ProducerError> {
+    enforce_identity_contract_under(src, outcome, OrdinalPolicy::CURRENT)
+}
+
+/// [`enforce_identity_contract`] with the ordinal policy supplied rather than
+/// read from [`OrdinalPolicy::CURRENT`].
+///
+/// `pub(crate)` and not one step further. Doctrine §8's rule for a guard is
+/// "verify it by mutation: break the verdict deliberately and confirm the suite
+/// goes red", and a guard whose strict half is unreachable from any test until
+/// three producers in three languages are fixed is a guard nobody has watched
+/// fail. This seam lets the test suite watch it fail today. Widening it to
+/// `pub` would hand every pipeline the per-call-site exemption that
+/// [`OrdinalPolicy::CURRENT`] exists to deny them.
+pub(crate) fn enforce_identity_contract_under(
+    src: &PackageSource,
+    outcome: SealOutcome,
+    ordinals: OrdinalPolicy,
+) -> Result<SealOutcome, ProducerError> {
+    // Derived from the report's own rows, never tallied alongside them
+    // (AGENTS-DOCTRINE.md §8). `seal` re-mints *whole groups* and never just
+    // the losers — `package/seal.rs` says so where it does it — so
+    // `SealReport::forced` carries exactly one row per colliding group and
+    // filtering it cannot double-count.
+    let order_dependent: Vec<ForcedDisambiguation> = match ordinals {
+        OrdinalPolicy::Reject => outcome
+            .report
+            .forced
+            .iter()
+            .filter(|forced| match forced.escalated_to {
+                Escalation::Ordinal => true,
+                // `Span` is not stable across versions either, and that is a
+                // real defect — see the schema's own account of the tiers. It
+                // is not *this* gate's defect: a span-keyed id is at least a
+                // function of the declaration, so the table is injective and
+                // nothing was lost. Version stability is tracked separately by
+                // `unchanged_declarations_keep_their_intro_id_across_versions`.
+                Escalation::Span => false,
+            })
+            .cloned()
+            .collect(),
+        OrdinalPolicy::Report => Vec::new(),
+    };
+
+    if outcome.report.collisions.is_empty() && order_dependent.is_empty() {
+        return Ok(outcome);
+    }
+
+    // Destructured rather than cloned: `IntroCollision` owns the only copy of
+    // the entry that did not make it into the table.
+    let SealOutcome { report, .. } = outcome;
+    Err(ProducerError::IdentityNotInjective {
+        package: src.name.as_str().to_owned(),
+        lost: report.collisions,
+        order_dependent,
+    })
 }
 
 /// A sealed package plus what `seal` observed while sealing it.

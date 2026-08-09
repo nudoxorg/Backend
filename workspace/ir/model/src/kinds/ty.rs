@@ -42,9 +42,65 @@ pub enum Type {
     /// Ex: `!` in Rust, `never` in TypeScript, `NoReturn` in Python.
     Never,
 
-    /// Represents the "All" type (Top Type).
-    /// Ex: `any` or `unknown` in TypeScript, `Object` in Java.
+    /// The language's genuine **top type**: the one type every value inhabits.
+    ///
+    /// Ex: `java.lang.Object` (Java), `System.Object` / `object` (C#),
+    /// `any` / `interface{}` (Go), `unknown` (TypeScript).
+    ///
+    /// **This is a real type, not an absence of knowledge.** A top type is
+    /// *upcast-only*: every value is assignable *to* it, and nothing is
+    /// assignable *from* it without a checked cast. It has a declaration, a
+    /// method set, and a place in the subtype lattice.
+    ///
+    /// It is emphatically **not** the gradual-typing escape hatch — Python's
+    /// `typing.Any`, TypeScript's `any`, C#'s `dynamic` — which is
+    /// bidirectionally consistent with every type and suppresses checking
+    /// rather than constraining it. That is
+    /// [`UnknownType::DynamicallyTyped`], and it lives under
+    /// [`Type::Unknown`].
+    ///
+    /// Nor is it "the producer does not know". Every such case is a named
+    /// reason under [`Type::Unknown`]; see that variant for why.
     Any,
+
+    /// **The type is not known**, together with the reason it is not known.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Type::Any`] used to carry at least four unrelated facts at once, and
+    /// a consumer could not tell them apart. A ruff-based census of 87,101
+    /// annotation positions across 22 pypi packages measured the collapse:
+    ///
+    /// | fact | positions | share |
+    /// |---|---:|---:|
+    /// | unannotated (`ty: None` — not representable *at all*) | 19,741 | 22.7% |
+    /// | explicitly dynamic (`typing.Any`, `Literal[…]`, `...`) | 7,586 | 8.7% |
+    /// | cross-package nominal, unresolved | 20,227 | 23.2% |
+    /// | genuinely structured | 39,531 | 45.4% |
+    ///
+    /// 41.3% of annotated positions collapsed onto one opcode, and a fourth
+    /// case could not be spelled even as `Any`. Of the 20,227 unresolved
+    /// nominals, 13,724 (67.8%) carry a bare short name that *does* match a
+    /// fully-qualified id the same package declares elsewhere — `click/core.py`
+    /// writing `-> "Context"` where the package declares `click.core.Context`.
+    /// That is a syntactically-recoverable state, not "genuinely external", and
+    /// it gets its own variant so a link pass can find it by grep and by match.
+    ///
+    /// # The shape
+    ///
+    /// This mirrors [`Unlocated`](crate::entry::Unlocated), which solved the
+    /// identical problem for source locations: named, exhaustively-matched
+    /// reasons rather than a bare `None`. See [`UnknownType`] for why the
+    /// reason enum is deliberately *not* `#[non_exhaustive]`.
+    ///
+    /// # Boundary with [`Type::Inferred`]
+    ///
+    /// [`Type::Inferred`] is a **written source construct** — Rust's `_`,
+    /// clang's `__auto_type`, C#'s `var` — where the author explicitly asked
+    /// the compiler to infer. `Type::Unknown` is the *absence* of a resolved
+    /// type, which the author never asked for. `_` is a request; `Unknown` is
+    /// a gap.
+    Unknown(UnknownType),
 
     /// A **nominal** reference to a declared type (record/enum/trait/alias).
     /// Ex: `Bar`, `std::string::String`, `java.util.List`.
@@ -233,22 +289,22 @@ pub enum Type {
     /// the full rationale.
     DynTrait(List<Type>),
 
-    /// A **placeholder type** the producer could not resolve.
+    /// A **written inference request**: Rust's `_` wildcard, clang's
+    /// `auto`/`__auto_type`/`decltype(auto)`, C#'s `var`.
     ///
-    /// Rust's `_` wildcard, clang's `__auto_type`, or any type the producer
-    /// encountered but could not lower. Distinct from [`Type::Any`]:
+    /// The author explicitly asked the compiler to work the type out. That is
+    /// a source construct with a spelling, and it is what separates this from
+    /// [`Type::Unknown`]:
     ///
-    /// - `Any` — the type is genuinely dynamic/unconstrained at the language level.
-    /// - `Inferred` — a specific type exists but the producer could not determine it.
+    /// - `Inferred` — the source said "you figure it out". A request.
+    /// - `Unknown(reason)` — nobody asked; the producer simply has no type,
+    ///   and the reason says why. A gap.
+    /// - `Any` — a genuine top type, `Object`/`interface{}`. A real type.
     ///
-    /// Conflating them makes it impossible to distinguish a real dynamic type
-    /// from a producer resolution gap.
-    ///
-    /// **Note on foreign-ref fallbacks:** cross-package references falling back
-    /// to `Type::Any` are NOT a type-system gap and do not belong here.
-    /// `Ref::Foreign(StableRef)` already exists for that case; the fallback is
-    /// an acquisition-boundary problem (producers have no registry handle),
-    /// not a missing type variant.
+    /// **Note on foreign-ref fallbacks:** cross-package references do not
+    /// belong here either. `Ref::Foreign` already exists for that case; where
+    /// a producer cannot yet build one, the honest encoding is
+    /// [`UnknownType::UnresolvedExternal`], which keeps the name.
     Inferred,
 
     /// A **qualified path** expression: `<T as Trait>::Assoc` (Rust) or
@@ -267,6 +323,165 @@ pub enum Type {
 }
 
 // ─── Supporting types for the new variants ──────────────────────────────────
+
+/// Why a type position has no resolved type.
+///
+/// # Deliberately exhaustive
+///
+/// **No `#[non_exhaustive]`**, for exactly the reason
+/// [`Unlocated`](crate::entry::Unlocated) gives and doctrine §3 states. This
+/// enum is internal to the workspace, and its whole value is that adding a
+/// reason breaks every match and forces each producer and consumer to decide
+/// what the new kind of absence means.
+///
+/// `#[non_exhaustive]` would achieve the *opposite* of the stated goal: it
+/// forces every downstream crate to write a `_ =>` arm, which is precisely the
+/// collapse this type exists to undo. A wildcard arm anywhere here recreates
+/// `Type::Any`.
+///
+/// # What does *not* belong here
+///
+/// - A genuine top type (`Object`, `interface{}`) — that is [`Type::Any`].
+/// - A written inference request (`_`, `auto`, `var`) — that is
+///   [`Type::Inferred`].
+/// - A cross-package reference the producer *can* name — that is
+///   `Type::Nominal(Ref::Foreign { .. })`. `Ref::Foreign` carries a real key
+///   and a producer needs no registry handle to build one; a producer reaching
+///   for [`UnknownType::UnresolvedExternal`] when it holds enough to build a
+///   `ForeignKey` is erasing information it has.
+#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+pub enum UnknownType {
+    /// **The source wrote no type here at all.**
+    ///
+    /// A Python parameter with no annotation, a TypeScript `const` with no
+    /// type and no lowered initializer, a Go declaration whose oracle node
+    /// carries no `type`. 22.7% of the Python census — and before this
+    /// variant existed the IR could not represent it, because the producer's
+    /// only move was `.unwrap_or(Type::Any)`, which said "dynamic" about a
+    /// position where the source said nothing.
+    ///
+    /// Distinct from [`UnknownType::DynamicallyTyped`]: `def f(x):` and
+    /// `def f(x: Any):` are different source, mean different things to a type
+    /// checker, and must not share an encoding.
+    Unannotated,
+
+    /// **The source explicitly asked for dynamic typing.**
+    ///
+    /// Python `typing.Any`, TypeScript `any`, C# `dynamic`. The gradual-typing
+    /// escape hatch: bidirectionally consistent with every type, suppressing
+    /// checks in both directions.
+    ///
+    /// Distinct from [`Type::Any`], which is the *top* type — upcast-only,
+    /// with a real declaration and method set. `object` constrains; `dynamic`
+    /// abdicates. Collapsing them loses the single most load-bearing fact
+    /// about a gradually-typed API surface.
+    DynamicallyTyped,
+
+    /// **A short, unqualified name that matches a fully-qualified id this same
+    /// package declares elsewhere** — the import graph has simply not been
+    /// walked.
+    ///
+    /// 13,724 of the Python census's 20,227 unresolved nominals (67.8%) are
+    /// this: `click/core.py` writes `-> "Context"` while the package declares
+    /// `click.core.Context`. Nothing external is involved; the producer is one
+    /// name-resolution pass short.
+    ///
+    /// Recorded separately from [`UnknownType::UnresolvedExternal`] because it
+    /// is resolvable **without any cross-package linking** — a within-package
+    /// pass closes it. Grep for it to size that pass.
+    UnresolvedLocalName {
+        // The name exactly as written in source (`"Context"`).
+        name: String,
+    },
+
+    /// **A name that resolves outside this package**, and the producer could
+    /// not build a `ForeignKey` for it.
+    ///
+    /// This is the honest residue of the acquisition boundary: the producer
+    /// has a spelling but no canonical cross-package path. A registry link
+    /// pass rewrites these into `Type::Nominal(Ref::Foreign { .. })`.
+    ///
+    /// The `name` is carried, not dropped. Two distinct external types must
+    /// stay distinguishable — erasing both to one opcode is what collapsed
+    /// overload sets in Java and C# before `Ref::Foreign` existed, and this
+    /// variant must not reintroduce that.
+    UnresolvedExternal {
+        // The name as the producer saw it — qualified where possible.
+        name: String,
+    },
+
+    /// **The producer's own recursion guard fired**; a real type exists below
+    /// this point and was not walked.
+    ///
+    /// Go, C# and Java all carry a `MAX_DEPTH` and all three returned
+    /// `Type::Any` on hitting it. Distinct from every other variant because it
+    /// is *our* limit, not the language's and not the oracle's: raising
+    /// `MAX_DEPTH` closes it with no new information from anywhere.
+    TruncatedAtDepthLimit,
+
+    /// **The language front-end handed the producer nothing usable** at this
+    /// position.
+    ///
+    /// Go's `TypeKind::Invalid`, C#'s `TypeSig::Error`, Java's
+    /// `TypeMirror::None`/`Null`, and a rust-analyzer AST node whose type
+    /// child is absent because the source did not parse. The upstream tool has
+    /// already failed and already reported; the producer is propagating that,
+    /// not adding to it.
+    ///
+    /// Distinct from [`UnknownType::TruncatedAtDepthLimit`]: no amount of
+    /// extra effort inside the producer closes this one.
+    OracleGap,
+
+    /// **The construct is known and named, and this IR has no slot for it.**
+    ///
+    /// Go `complex64`/`complex128`/`unsafe.Pointer`, a Java primitive spelling
+    /// outside the eight, a TypeScript `TypeGuard` predicate. The producer
+    /// knows exactly what it is looking at.
+    ///
+    /// This is the type-lattice backlog, in-band, in the same spirit as
+    /// [`Unlocated::ProducerRecordsNoLocation`](crate::entry::Unlocated):
+    /// grep for it to count what is left, and `construct` names each gap so
+    /// the count is actionable rather than a number.
+    NoIrRepresentation {
+        // The source-level construct, e.g. `"complex128"`, `"unsafe.Pointer"`.
+        construct: String,
+    },
+}
+
+impl UnknownType {
+    /// A short, stable, language-neutral tag for this reason.
+    ///
+    /// Intended for renderers, query filters and metrics that need to *name*
+    /// the reason without matching on it. Kept in sync with the variants by
+    /// the exhaustive match below.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            UnknownType::Unannotated => "unannotated",
+            UnknownType::DynamicallyTyped => "dynamically-typed",
+            UnknownType::UnresolvedLocalName { .. } => "unresolved-local-name",
+            UnknownType::UnresolvedExternal { .. } => "unresolved-external",
+            UnknownType::TruncatedAtDepthLimit => "truncated-at-depth-limit",
+            UnknownType::OracleGap => "oracle-gap",
+            UnknownType::NoIrRepresentation { .. } => "no-ir-representation",
+        }
+    }
+
+    /// The source spelling this reason carries, when it carries one.
+    ///
+    /// `Some` only for the variants that recovered a name; `None` is the
+    /// honest answer for the rest, not a missing feature.
+    pub fn spelling(&self) -> Option<&str> {
+        match self {
+            UnknownType::UnresolvedLocalName { name }
+            | UnknownType::UnresolvedExternal { name } => Some(name),
+            UnknownType::NoIrRepresentation { construct } => Some(construct),
+            UnknownType::Unannotated
+            | UnknownType::DynamicallyTyped
+            | UnknownType::TruncatedAtDepthLimit
+            | UnknownType::OracleGap => None,
+        }
+    }
+}
 
 /// A tri-state modifier on a mapped type's `readonly` or `optional` position.
 ///
@@ -378,6 +593,53 @@ pub enum Variance {
 }
 
 impl Type {
+    /// The source wrote no type here. See [`UnknownType::Unannotated`].
+    pub const UNANNOTATED: Self = Type::Unknown(UnknownType::Unannotated);
+
+    /// The source explicitly asked for dynamic typing. See
+    /// [`UnknownType::DynamicallyTyped`].
+    pub const DYNAMIC: Self = Type::Unknown(UnknownType::DynamicallyTyped);
+
+    /// The producer's recursion guard fired. See
+    /// [`UnknownType::TruncatedAtDepthLimit`].
+    pub const TRUNCATED: Self = Type::Unknown(UnknownType::TruncatedAtDepthLimit);
+
+    /// The language front-end handed the producer nothing. See
+    /// [`UnknownType::OracleGap`].
+    pub const ORACLE_GAP: Self = Type::Unknown(UnknownType::OracleGap);
+
+    /// A bare name matching a fully-qualified id this package declares. See
+    /// [`UnknownType::UnresolvedLocalName`].
+    pub fn unresolved_local(name: impl Into<String>) -> Self {
+        Type::Unknown(UnknownType::UnresolvedLocalName { name: name.into() })
+    }
+
+    /// A name resolving outside this package. See
+    /// [`UnknownType::UnresolvedExternal`].
+    pub fn unresolved_external(name: impl Into<String>) -> Self {
+        Type::Unknown(UnknownType::UnresolvedExternal { name: name.into() })
+    }
+
+    /// A known construct this IR has no slot for. See
+    /// [`UnknownType::NoIrRepresentation`].
+    pub fn no_ir_representation(construct: impl Into<String>) -> Self {
+        Type::Unknown(UnknownType::NoIrRepresentation {
+            construct: construct.into(),
+        })
+    }
+
+    /// The reason this type is unknown, or `None` if it is a known type.
+    ///
+    /// A consumer that only needs to *report* the gap should use this rather
+    /// than matching, so that adding a reason does not break it. A consumer
+    /// that must *act* on the gap should match exhaustively.
+    pub fn unknown_reason(&self) -> Option<&UnknownType> {
+        match self {
+            Type::Unknown(r) => Some(r),
+            _ => None,
+        }
+    }
+
     pub const U8: Self = Type::Primitive(Primitive::Integer {
         signed: false,
         width: Width::W8,
@@ -1031,6 +1293,175 @@ mod tests {
     #[test]
     fn inferred_vs_any_differ_in_skeleton() {
         assert_ne!(ty_skeleton(&Type::Inferred), ty_skeleton(&Type::Any));
+    }
+
+    // ── Type::Unknown / UnknownType (CC-2) ────────────────────────────────────
+
+    /// Every reason, listed once. Adding a variant to `UnknownType` without
+    /// adding it here fails to compile — the destructuring match below is
+    /// exhaustive on purpose.
+    fn every_reason() -> Vec<UnknownType> {
+        let all = vec![
+            UnknownType::Unannotated,
+            UnknownType::DynamicallyTyped,
+            UnknownType::UnresolvedLocalName {
+                name: "Context".to_owned(),
+            },
+            UnknownType::UnresolvedExternal {
+                name: "click.core.Context".to_owned(),
+            },
+            UnknownType::TruncatedAtDepthLimit,
+            UnknownType::OracleGap,
+            UnknownType::NoIrRepresentation {
+                construct: "complex128".to_owned(),
+            },
+        ];
+        // Compile-time completeness check: this match has no `_` arm, so a new
+        // `UnknownType` variant breaks the build here and forces whoever adds
+        // it to extend `all` above.
+        for r in &all {
+            match r {
+                UnknownType::Unannotated
+                | UnknownType::DynamicallyTyped
+                | UnknownType::UnresolvedLocalName { .. }
+                | UnknownType::UnresolvedExternal { .. }
+                | UnknownType::TruncatedAtDepthLimit
+                | UnknownType::OracleGap
+                | UnknownType::NoIrRepresentation { .. } => {}
+            }
+        }
+        all
+    }
+
+    /// Every reason round-trips through serde.
+    #[test]
+    fn every_unknown_reason_roundtrips() {
+        for r in every_reason() {
+            let ty = Type::Unknown(r.clone());
+            let json = serde_json::to_string(&ty).expect("serialize");
+            let back: Type = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(ty, back, "round-trip failed for {r:?}");
+        }
+    }
+
+    /// **The point of CC-2.** No two reasons may share a skeleton — if any pair
+    /// collides, a consumer cannot tell them apart and `Type::Any` has simply
+    /// been renamed.
+    #[test]
+    fn every_unknown_reason_has_a_distinct_skeleton() {
+        let reasons = every_reason();
+        for (i, a) in reasons.iter().enumerate() {
+            for b in reasons.iter().skip(i + 1) {
+                assert_ne!(
+                    ty_skeleton(&Type::Unknown(a.clone())),
+                    ty_skeleton(&Type::Unknown(b.clone())),
+                    "{a:?} and {b:?} must not share a skeleton"
+                );
+            }
+        }
+    }
+
+    /// The three "I have no type" spellings are three different facts.
+    ///
+    /// `Any` is a top type, `Inferred` is a written inference request, and
+    /// `Unknown(_)` is a gap. Before CC-2 the first and third were one variant.
+    #[test]
+    fn any_inferred_and_unknown_are_three_distinct_types() {
+        let any = ty_skeleton(&Type::Any);
+        let inferred = ty_skeleton(&Type::Inferred);
+        let unannotated = ty_skeleton(&Type::UNANNOTATED);
+        let dynamic = ty_skeleton(&Type::DYNAMIC);
+        assert_ne!(any, inferred);
+        assert_ne!(any, unannotated, "`object` is not `no annotation`");
+        assert_ne!(any, dynamic, "a top type is not the dynamic escape hatch");
+        assert_ne!(inferred, unannotated, "`_` is a request, not an absence");
+        assert_ne!(unannotated, dynamic, "`def f(x)` is not `def f(x: Any)`");
+    }
+
+    /// The two name-carrying reasons discriminate on the name.
+    ///
+    /// This is what stops `f(Context)` and `f(Command)` — both unresolved —
+    /// from producing one signature skeleton and therefore one `IntroId`.
+    #[test]
+    fn unresolved_names_discriminate_in_the_skeleton() {
+        let ctx = Type::unresolved_external("click.core.Context");
+        let cmd = Type::unresolved_external("click.core.Command");
+        assert_ne!(
+            ty_skeleton(&ctx),
+            ty_skeleton(&cmd),
+            "two distinct external types must not collide"
+        );
+
+        let local_ctx = Type::unresolved_local("Context");
+        assert_ne!(
+            ty_skeleton(&local_ctx),
+            ty_skeleton(&Type::unresolved_local("Command")),
+        );
+        // Same spelling, different *reason* — still distinct, because which
+        // pass can close the gap is itself a fact.
+        assert_ne!(
+            ty_skeleton(&local_ctx),
+            ty_skeleton(&Type::unresolved_external("Context")),
+            "a locally-declared short name is not a cross-package reference"
+        );
+    }
+
+    /// `NoIrRepresentation` keeps `complex128` and `unsafe.Pointer` apart.
+    #[test]
+    fn no_ir_representation_discriminates_on_construct() {
+        assert_ne!(
+            ty_skeleton(&Type::no_ir_representation("complex128")),
+            ty_skeleton(&Type::no_ir_representation("unsafe.Pointer")),
+        );
+    }
+
+    /// The convenience constants build the variants they claim to.
+    #[test]
+    fn constructors_build_the_documented_variants() {
+        assert_eq!(Type::UNANNOTATED, Type::Unknown(UnknownType::Unannotated));
+        assert_eq!(Type::DYNAMIC, Type::Unknown(UnknownType::DynamicallyTyped));
+        assert_eq!(
+            Type::TRUNCATED,
+            Type::Unknown(UnknownType::TruncatedAtDepthLimit)
+        );
+        assert_eq!(Type::ORACLE_GAP, Type::Unknown(UnknownType::OracleGap));
+        assert_eq!(
+            Type::unresolved_local("Ctx"),
+            Type::Unknown(UnknownType::UnresolvedLocalName {
+                name: "Ctx".to_owned()
+            })
+        );
+    }
+
+    /// `unknown_reason` answers for unknowns and only for unknowns.
+    #[test]
+    fn unknown_reason_is_none_for_known_types() {
+        assert_eq!(Type::I32.unknown_reason(), None);
+        assert_eq!(Type::Any.unknown_reason(), None, "a top type is known");
+        assert_eq!(Type::Inferred.unknown_reason(), None, "`_` is a request");
+        assert_eq!(
+            Type::DYNAMIC.unknown_reason(),
+            Some(&UnknownType::DynamicallyTyped)
+        );
+    }
+
+    /// Tags are unique — a metrics sink keyed on `tag()` must not merge rows.
+    #[test]
+    fn reason_tags_are_unique_and_spellings_are_carried() {
+        let mut tags: Vec<&str> = every_reason().iter().map(|r| r.tag()).collect();
+        let count = tags.len();
+        tags.sort_unstable();
+        tags.dedup();
+        assert_eq!(tags.len(), count, "two reasons share a tag");
+
+        assert_eq!(
+            UnknownType::UnresolvedLocalName {
+                name: "Context".to_owned()
+            }
+            .spelling(),
+            Some("Context")
+        );
+        assert_eq!(UnknownType::Unannotated.spelling(), None);
     }
 
     // ── Type::QualifiedPath ───────────────────────────────────────────────────

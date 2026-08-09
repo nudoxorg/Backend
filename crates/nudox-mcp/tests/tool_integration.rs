@@ -1,4 +1,4 @@
-//! Integration tests for the six §L6 MCP tools against the fixture corpus.
+//! Integration tests for the eight §L6 MCP tools against the fixture corpus.
 //!
 //! # What these tests prove
 //!
@@ -26,7 +26,11 @@ use std::time::Duration;
 
 use nudox_engine::wire::{KindDiscriminant, KindTag};
 use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
-use nudox_mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
+use nudox_mcp::key::PackageLineageDto;
+use nudox_mcp::tools::{
+    FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, ListVersionsArgs, SearchSymbolsArgs,
+    SelectVersionArgs, SelectVersionResult,
+};
 use nudox_mcp::{NudoxTools, SymbolKeyDto};
 
 // ---------------------------------------------------------------------------
@@ -212,7 +216,7 @@ async fn search_symbols_finds_known_symbol() {
             kinds: None,
             packages: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("search for 'Point' must not fail");
 
@@ -247,7 +251,7 @@ async fn search_symbols_nonsense_query_returns_empty() {
             kinds: None,
             packages: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("search for nonsense must not fail");
 
@@ -268,7 +272,7 @@ async fn search_symbols_kind_filter_restricts_results() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("filtered search must not fail");
 
@@ -320,7 +324,7 @@ async fn search_symbols_invalid_kind_is_rejected() {
             kinds: Some(vec!["NotARealKind".to_owned()]),
             packages: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("invalid kind must be rejected");
 
@@ -343,7 +347,7 @@ async fn search_symbols_empty_packages_list_is_rejected() {
             kinds: None,
             packages: Some(vec![]), // empty — semantically invalid
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("empty packages list must be rejected");
 
@@ -372,7 +376,7 @@ async fn search_symbols_limit_is_respected() {
             kinds: None,
             packages: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("search with limit=1 must not fail");
 
@@ -389,7 +393,7 @@ async fn search_symbols_limit_is_respected() {
             kinds: None,
             packages: None,
             limit: Some(0),
-        })
+            cursor: None,        })
         .await
         .expect("search with limit=0 must not fail");
     // We cannot assert an exact count, but we can assert it does not return
@@ -409,7 +413,7 @@ async fn search_symbols_is_deterministic() {
             kinds: None,
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("first search must succeed");
     let b = tools
@@ -418,7 +422,7 @@ async fn search_symbols_is_deterministic() {
             kinds: None,
             packages: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("second search must succeed");
 
@@ -469,7 +473,7 @@ async fn get_symbol_returns_doc_for_fixture_symbol() {
             kinds: Some(vec!["Record".to_owned()]),
             packages: None,
             limit: Some(5),
-        })
+            cursor: None,        })
         .await
         .expect("search for Point must succeed");
 
@@ -514,6 +518,39 @@ async fn get_symbol_returns_doc_for_fixture_symbol() {
     assert!(
         !doc.sections.is_empty(),
         "Point has documentation; at least one section must be emitted"
+    );
+
+    // `timeline` must be present and describe the same symbol `head` does.
+    // This is the fix for the defect where the engine computed a `Timeline`
+    // on every `open_symbol` call and `do_get_symbol` silently discarded it —
+    // see `get_symbol_always_terminates` below for the history.
+    assert_eq!(
+        doc.timeline.rows.len(),
+        1,
+        "the fixture corpus has exactly one loaded generation, so the \
+         timeline must be exactly one row, not an empty list and not more \
+         than one"
+    );
+    assert_eq!(
+        doc.timeline.rows[0].change,
+        nudox_engine::wire::TimelineChange::Present,
+        "a single-version corpus has no evidence of introduction — the row \
+         must say Present, never Introduced"
+    );
+    assert!(
+        doc.timeline.rows[0].is_current,
+        "the one loaded generation must be marked current"
+    );
+    assert_eq!(doc.timeline.versions_examined, 1);
+    let timeline_key_str = format!(
+        "{}:{}#{}",
+        doc.timeline.key.package.ecosystem.as_str(),
+        doc.timeline.key.package.name.as_str(),
+        doc.timeline.key.intro.to_hex()
+    );
+    assert_eq!(
+        timeline_key_str, key_str,
+        "doc.timeline.key must identify the same symbol as doc.head.key"
     );
 }
 
@@ -564,11 +601,13 @@ async fn get_symbol_unknown_key_fails_cleanly() {
 
 /// `get_symbol` terminates — the stream never hangs.
 ///
-/// This is the regression test for the `_ => {}` arm at line 411 of tools.rs:
-/// `DocEvent::Timeline` was silently dropped there, which is fine (it is a
-/// GUI-only event). But if the engine ever emits `Timeline` as a *terminal*
-/// event instead of `Done`, the drain would hang forever. This test exercises
-/// the drain path for a real symbol and asserts it finishes within 5 s.
+/// `do_get_symbol` now matches `DocEvent::Timeline` explicitly (it used to
+/// fall into a wildcard arm and be silently discarded — the defect
+/// `get_symbol_returns_doc_for_fixture_symbol` above pins the fix for). This
+/// test guards the adjacent risk: if the engine ever emitted `Timeline` as a
+/// *terminal* event instead of `Done`, the drain loop would hang forever. It
+/// exercises the drain path for a real symbol and asserts it finishes within
+/// 5 s.
 #[tokio::test]
 async fn get_symbol_always_terminates() {
     let tools = make_tools();
@@ -581,7 +620,7 @@ async fn get_symbol_always_terminates() {
             kinds: None,
             packages: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -625,7 +664,7 @@ async fn find_usages_returns_oracle_confidence_callers() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(5),
-        })
+            cursor: None,        })
         .await
         .expect("search for distance must succeed");
 
@@ -659,7 +698,7 @@ async fn find_usages_returns_oracle_confidence_callers() {
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("find_usages for distance must not fail");
 
@@ -680,7 +719,7 @@ async fn find_usages_malformed_key_is_rejected() {
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto("bad-key".to_owned()),
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("malformed key must be rejected");
 
@@ -703,7 +742,7 @@ async fn find_usages_no_callers_returns_empty() {
             kinds: Some(vec!["Const".to_owned()]),
             packages: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("search for MAX_SIZE must succeed");
 
@@ -724,7 +763,7 @@ async fn find_usages_no_callers_returns_empty() {
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("find_usages for a symbol with no callers must succeed (not fail)");
 
@@ -752,7 +791,7 @@ async fn graph_query_list_packages_returns_fixture() {
             query: nudox_mcp::tools::PACKAGES_QUERY.to_owned(),
             args: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect("PACKAGES_QUERY must succeed");
 
@@ -791,7 +830,7 @@ async fn graph_query_symbols_query_returns_rows() {
             query: "{ Symbols { name @output kind @output } }".to_owned(),
             args: None,
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("Symbols query must succeed");
 
@@ -813,7 +852,7 @@ async fn graph_query_empty_query_is_rejected() {
             query: "   ".to_owned(), // whitespace-only
             args: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("empty query must be rejected");
 
@@ -840,7 +879,7 @@ async fn graph_query_invalid_query_returns_engine_error() {
             query: "{ this is not trustfall syntax !!! }".to_owned(),
             args: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("syntactically invalid query must fail");
 
@@ -867,7 +906,7 @@ async fn graph_query_unknown_field_returns_error_not_empty_rows() {
             query: "{ Symbols { nonExistentField2b7f @output } }".to_owned(),
             args: None,
             limit: None,
-        })
+            cursor: None,        })
         .await
         .expect_err("unknown field must fail with an error, not silently return empty rows");
 
@@ -890,7 +929,7 @@ async fn graph_query_limit_is_applied_and_truncated_is_set() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("query with limit=1 must succeed");
 
@@ -913,7 +952,7 @@ async fn graph_query_column_order_is_stable() {
             query: "{ Packages { name @output ecosystem @output lineage @output } }".to_owned(),
             args: None,
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("Packages query with multiple outputs must succeed");
 
@@ -979,7 +1018,7 @@ async fn graph_query_symbol_members_traversal_is_reachable() {
                 .collect(),
             ),
             limit: Some(20),
-        })
+            cursor: None,        })
         .await
         .expect("Symbols → members traversal must succeed");
 
@@ -1027,7 +1066,7 @@ async fn graph_query_trait_implementors_traversal_is_reachable() {
                         kinds: Some(vec!["Trait".to_owned()]),
                         packages: None,
                         limit: Some(5),
-                    })
+                        cursor: None,                    })
                     .await
                     .expect("search for Display trait must succeed");
                 let display = search
@@ -1044,7 +1083,7 @@ async fn graph_query_trait_implementors_traversal_is_reachable() {
                 Some([("key".to_owned(), key_str)].into_iter().collect())
             },
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("FIND_IMPLEMENTORS must succeed");
 
@@ -1085,7 +1124,7 @@ async fn graph_query_usages_edge_is_reachable() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(5),
-        })
+            cursor: None,        })
         .await
         .expect("search for distance must succeed");
 
@@ -1110,7 +1149,7 @@ async fn graph_query_usages_edge_is_reachable() {
             query: nudox_graph::queries::FIND_USAGES.to_owned(),
             args: Some([("key".to_owned(), key_str)].into_iter().collect()),
             limit: Some(10),
-        })
+            cursor: None,        })
         .await
         .expect("FIND_USAGES query must succeed");
 
@@ -1157,7 +1196,7 @@ async fn graph_query_package_members_traversal_is_reachable() {
                     .collect(),
             ),
             limit: Some(50),
-        })
+            cursor: None,        })
         .await
         .expect("Package → members traversal must succeed");
 
@@ -1205,7 +1244,7 @@ async fn graph_query_concurrent_calls_do_not_interfere() {
                     query: "{ Symbols { name @output } }".to_owned(),
                     args: None,
                     limit: Some(5),
-                })
+                    cursor: None,                })
                 .await
                 .expect("concurrent call 1 must succeed");
             assert!(
@@ -1289,7 +1328,7 @@ async fn symbol_key_from_search_round_trips() {
             kinds: None,
             packages: None,
             limit: Some(1),
-        })
+            cursor: None,        })
         .await
         .expect("search must succeed");
 
@@ -1311,5 +1350,190 @@ async fn symbol_key_from_search_round_trips() {
     assert_eq!(
         dto, back,
         "round-trip through wire key must be lossless: {key_str}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// list_versions / select_version
+//
+// Full cross-generation coverage (multiple real loaded versions of one
+// package) lives in `tests/real_crate_memchr_versions.rs` against the three
+// real memchr releases `corpus/manifest.toml` pins — this fixture corpus
+// only ever has one generation loaded, so what is tested here is the
+// single-generation edge (deliberately the first thing `Timeline`'s own
+// module docs call out: "with one generation loaded... `Present`, never
+// `Introduced`") and the honest failure shapes (unloaded package, unloaded
+// version, malformed lineage string).
+// ---------------------------------------------------------------------------
+
+/// `list_versions` on the loaded fixture package returns exactly its one
+/// generation, marked current.
+#[tokio::test]
+async fn list_versions_returns_the_one_loaded_fixture_generation() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let result = tools
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+        })
+        .await
+        .expect("list_versions must not fail");
+
+    assert_eq!(
+        result.package,
+        PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+        "result must echo back the requested lineage"
+    );
+    assert_eq!(
+        result.versions.len(),
+        1,
+        "the fixture corpus loads exactly one generation of this package"
+    );
+    assert_eq!(&result.versions[0].version, "0.1.0");
+    assert!(
+        result.versions[0].is_current,
+        "the one loaded generation must be current"
+    );
+    assert!(
+        result.versions[0].symbol_count > 0,
+        "the rich fixture has real symbols; symbol_count must not be zero"
+    );
+}
+
+/// `list_versions` for a package that was never loaded returns zero
+/// versions, not an error — "not loaded" and "loaded with zero versions" are
+/// the same observable state (see `crate::versions::VersionRegistry::versions`).
+#[tokio::test]
+async fn list_versions_for_an_unloaded_package_is_empty_not_an_error() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let result = tools
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto("cargo:never-loaded-anywhere".to_owned()),
+        })
+        .await
+        .expect("an unloaded package must not error");
+
+    assert!(result.versions.is_empty());
+}
+
+/// A malformed `package` argument (`"ecosystem:name"` form violated) is
+/// rejected as `MalformedPackage`, before any engine call.
+#[tokio::test]
+async fn list_versions_malformed_package_is_rejected() {
+    let tools = make_tools();
+
+    let err = tools
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto("not-a-valid-lineage".to_owned()),
+        })
+        .await
+        .expect_err("malformed lineage must be rejected");
+
+    assert!(
+        matches!(err, nudox_mcp::McpError::MalformedPackage { .. }),
+        "expected MalformedPackage, got {err:?}"
+    );
+}
+
+/// Selecting the version that is already current is idempotent: it returns
+/// `Switched` with the real symbol count, not an error and not a no-op that
+/// silently does nothing (`VersionRegistry::set_current`'s own documented
+/// behaviour — "Selecting the version that is already current still returns
+/// `Some`").
+#[tokio::test]
+async fn select_version_to_the_current_version_is_idempotent() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let result = tools
+        .do_select_version(SelectVersionArgs {
+            package: PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+            version: "0.1.0".to_owned(),
+        })
+        .await
+        .expect("selecting the current version must not fail");
+
+    match result {
+        SelectVersionResult::Switched {
+            package,
+            version,
+            symbol_count,
+        } => {
+            assert_eq!(package, PackageLineageDto(FIXTURE_LINEAGE.to_owned()));
+            assert_eq!(version, "0.1.0");
+            assert!(symbol_count > 0);
+        }
+        other => panic!("expected Switched for the already-current version, got {other:?}"),
+    }
+
+    // And a follow-up list_versions must still show exactly one, current, row —
+    // an idempotent select must not have duplicated or de-selected anything.
+    let list = tools
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+        })
+        .await
+        .expect("list_versions must not fail");
+    assert_eq!(list.versions.len(), 1);
+    assert!(list.versions[0].is_current);
+}
+
+/// Selecting a version that was never loaded returns `NotLoaded` — not an
+/// error, and not silently treated as `Switched` to something.
+#[tokio::test]
+async fn select_version_to_an_unloaded_version_is_not_loaded_not_an_error() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let result = tools
+        .do_select_version(SelectVersionArgs {
+            package: PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+            version: "9.9.9-never-loaded".to_owned(),
+        })
+        .await
+        .expect("an unloaded version must not error");
+
+    match result {
+        SelectVersionResult::NotLoaded { package, version } => {
+            assert_eq!(package, PackageLineageDto(FIXTURE_LINEAGE.to_owned()));
+            assert_eq!(version, "9.9.9-never-loaded");
+        }
+        other => panic!("expected NotLoaded, got {other:?}"),
+    }
+
+    // The corpus must be genuinely unchanged: the fixture's one real version
+    // must still be the one reported current.
+    let list = tools
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto(FIXTURE_LINEAGE.to_owned()),
+        })
+        .await
+        .expect("list_versions must not fail");
+    assert_eq!(list.versions.len(), 1);
+    assert_eq!(&list.versions[0].version, "0.1.0");
+    assert!(list.versions[0].is_current);
+}
+
+/// A malformed `package` argument to `select_version` is rejected the same
+/// way `list_versions` rejects one — before any engine call, as
+/// `MalformedPackage`.
+#[tokio::test]
+async fn select_version_malformed_package_is_rejected() {
+    let tools = make_tools();
+
+    let err = tools
+        .do_select_version(SelectVersionArgs {
+            package: PackageLineageDto("garbage".to_owned()),
+            version: "1.0.0".to_owned(),
+        })
+        .await
+        .expect_err("malformed lineage must be rejected");
+
+    assert!(
+        matches!(err, nudox_mcp::McpError::MalformedPackage { .. }),
+        "expected MalformedPackage, got {err:?}"
     );
 }

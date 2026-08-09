@@ -58,7 +58,23 @@ Notes that change how the table should be read:
   this workspace can build (blocked by L43's `blake3` conflict, independently
   reproduced this sweep).
 - **cpp is 21 entries, not 20**: 20 packages plus the `nlohmann-json` v3.10.5
-  lineage pair. 23+22+22+22+22+21+22 = 154, reconciling with `corpus/manifest.toml`.
+  lineage pair. 23+22+22+22+22+21+22 = 154, reconciling with
+  `corpus/manifest.toml` **only after excluding role-marked dependency
+  entries — stated here explicitly, which it previously was not.** The raw
+  manifest now parses to more than 154 version-entries: maven alone
+  contributes 44, not the 22 that both this table and the 154 total use.
+  22 of those 44 are provisioning-only artifacts (`org.reactivestreams:reactive-streams`
+  plus ~21 more; see `corpus/manifest.toml`'s `role = "dependency"` field,
+  added 2026-08-08) that exist only so a *representative* Maven package's
+  classpath resolves — they are not themselves packages under test, and
+  `corpus/entry-baseline.toml` does not require a measured outcome for them
+  (see the manifest's own header comment). Every figure in this document that
+  cites 154, or maven's 22, counts only the `role`-unset (representative)
+  entries; add the 22 dependency-only entries back and the manifest totals
+  176. The arithmetic above was always defensible — it was the reconciling
+  step itself that went unstated, which is exactly why a reader who counted
+  `ecosystem = "maven"` blocks directly got 44 and reasonably concluded this
+  doc's numbers were wrong.
 
 ---
 

@@ -328,6 +328,7 @@ async fn name_rows(
     let q = SearchQuery {
         text: text.to_owned(),
         kinds: Vec::new(),
+            packages: Vec::new(),
         limit: 0,
     };
     let (_h, rx) = engine.search(q, generation);
@@ -462,6 +463,7 @@ async fn corpora_built_in_different_orders_rank_identically() {
         let q = SearchQuery {
             text: "fn".to_owned(),
             kinds: Vec::new(),
+            packages: Vec::new(),
             limit: 0,
         };
         let (_h, rx) = engine.search(q, Gen(generation));

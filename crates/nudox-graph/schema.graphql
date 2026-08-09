@@ -22,19 +22,118 @@ type Package {
     members: [Symbol!]
 }
 
-# A symbol's stable identity across generations of a package.
+# A symbol's identity within a package lineage.
 #
 # `key` is rendered as `ecosystem:name#introhex` — the package's lineage
 # (`ecosystem:name`, e.g. `cargo:memchr`), then `#`, then the symbol's
-# `IntroId` in hex. The intro half is stable across versions: the same
-# declaration keeps its key as the package evolves, which is what makes
-# timeline and lineage queries answerable.
+# `IntroId` in hex. This is the format `nudox_ir::change::StableRef`'s
+# `Display` produces, and the one every MCP tool accepts and returns. An agent
+# constructing a key by hand must use exactly this shape.
 #
-# This is the format `nudox_ir::change::StableRef`'s `Display` produces, and
-# the one every MCP tool accepts and returns. An agent constructing a key by
-# hand must use exactly this shape.
+# ## How stable the intro half actually is
+#
+# This comment used to read: "The intro half is stable across versions: the
+# same declaration keeps its key as the package evolves." That is true of most
+# declarations and false of several important classes, and asserting it
+# unqualified is what leads a caller to cache a key, re-query it a version
+# later, and get silence it cannot distinguish from deletion.
+#
+# An `IntroId` is a hash of `(kind, path, name, disambiguator)`
+# (`nudox_ir::intro`). Stability follows which disambiguator tier the sealer
+# had to reach for, and the tiers are not equally stable:
+#
+#   None       — a unique `(kind, path, name)`. Stable across versions. This is
+#                the common case, and the only one the old claim described.
+#   FnOverload — one of several functions sharing a name; keyed on the
+#                signature skeleton. Stable until the signature changes, so
+#                altering a parameter type moves the key.
+#   TraitImpl  — applied to EVERY impl unconditionally, keyed on the
+#                `(trait, self, generics, wheres, negative, blanket)` skeleton.
+#                Stable until any of those change.
+#   Span       — a non-function collision with no better key: the declaration's
+#                BYTE OFFSETS. Not stable. Inserting a line above the
+#                declaration moves its key.
+#   Ordinal    — last resort: the declaration's index among entries that
+#                collided under every rule above. `nudox_ir::intro` says of it,
+#                "an `Ordinal` id is not stable across a producer reordering
+#                its output. A report is the mitigation; it is not stability."
+#
+# Separately, no key is stable across IR schema versions: the hash domain is
+# itself versioned (`INTRO_DOMAIN = "nudox.intro.v4"`), and its own
+# documentation states that every persisted `IntroId` in the corpus is
+# invalidated by a bump.
+#
+# ## Which tier a key came from — ask `keyTier`
+#
+# This section used to read "What the graph cannot yet tell you", and said the
+# tier was unreachable because `SealReport` was discarded at the `nudox-store`
+# boundary and never reached a `PackageView`. That is no longer true.
+# `SealReport::forced_keys` now names the escalated declarations by `IntroId`,
+# `PackageView::key_tier` answers for any one of them, and every `Symbol` in
+# this schema publishes it as `keyTier` (plus `keyIsContentDerived`).
+#
+# So the rule for a key that stops resolving after a version switch is no
+# longer "treat it as may-have-moved" — it is:
+#
+#   keyTier == "Structural"  ⇒ the declaration is very likely gone.
+#   keyTier == "Span"        ⇒ an unrelated edit above it may have moved the
+#                              key; the symbol is probably still there.
+#   keyTier == "Ordinal"     ⇒ a producer reordering may have moved the key;
+#                              assume nothing about the source changed.
+#   keyTier == "Unrecorded"  ⇒ this corpus never saw the seal report. You are
+#                              back to may-have-moved, and you know that you
+#                              are, which is the whole difference.
+#
+# Read the tier **before** you cache a key across a `select_version`, not
+# after the lookup fails: the failed lookup carries no tier, because there is
+# no vertex left to ask.
+#
+# What is still not answerable here: whether a *specific* churned key has a
+# successor in the new generation, and what it is. That needs a cross-version
+# diff, which this schema does not model — `Packages` and `Symbols` only ever
+# see the single resident generation per lineage.
+#
+# ## `String` fields: keys versus rendered text
+#
+# Two unrelated things are spelled `String` on this schema, and confusing them
+# is a silent failure rather than an error — you get an empty `get_symbol`.
+# The naming rule separates them:
+#
+#   `…Str`  — **rendered type text**, the syntax a developer would have
+#             written: `Field.typeStr`, `Const.typeStr`, `Static.typeStr`,
+#             `Param.typeStr`, `Alias.targetStr`, `Impl.selfTypeStr`. Display
+#             only. Never pass one to `get_symbol`.
+#   no `Str` — a **`StableRef` key**: `Symbol.key`, `Impl.ofTrait`,
+#             `Trait.supertraits`, `Occurrence.targetKey`. Pass these.
+#
+# To go from a type *position* to the symbol it names — the navigable
+# direction — do not parse a `…Str`; follow the `signatureTypes` edge, which
+# is derived from the same index and yields real `Symbol` vertices.
 interface Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
@@ -42,237 +141,1165 @@ interface Symbol {
     documentation: String!
     isDeprecated: Boolean!
 
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
+
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
+
+    # ## The type-reference edges
+    #
+    # Seven edges below project one index: which declaration names which type,
+    # and **in what syntactic position**. Six of them are reverse (from the
+    # type to the declarations that name it) and one - `signatureTypes` - is
+    # forward. They are separate edges rather than one edge with a role
+    # argument because they answer different questions, and a single
+    # undifferentiated list gives every one of them a wrong answer: a function
+    # that *takes* `Y` is not a function that *returns* it, and
+    # `impl Debug for dyn Display` is not an implementor of `Display`.
+    #
+    # ### Head vs whole-expression matching
+    #
+    # `mentions`, `implementedBy`, `subtypes` and `Trait.implementors` match
+    # the **head** of the type expression only: `impl Display for Vec<Point>`
+    # is reached from `Vec`, not from `Point`, because that impl is not an
+    # implementation for `Point`.
+    #
+    # `returnedBy`, `acceptedBy`, `heldBy` and `signatureTypes` match **every**
+    # nominal in the expression: `-> Option<Point>` is reached from
+    # `Point.returnedBy`, because a caller asking which functions return
+    # `Point` means that one.
+    #
+    # ### Cross-package references
+    #
+    # A reference into a package that is not loaded contributes nothing to any
+    # of these edges. The index is keyed by resolved symbol identity, and an
+    # unlinked reference has no identity to key on - so an empty answer here
+    # means "not indexed in this corpus", never "does not exist". Load the
+    # other package and the edge starts answering.
+    #
+    # ### What is deliberately not indexed
+    #
+    # Generic-parameter bounds and where-clause predicates. `T: Display` is a
+    # constraint on a type *variable*, not a reference to `Display` from this
+    # declaration, and indexing it would make `acceptedBy` on `Display` list
+    # every generic function in the corpus.
+
+    # The declarations that name this symbol in a **relational** position: the
+    # trait an `impl` implements, a supertrait bound, a base class or
+    # implemented interface.
+    #
+    # NOTE ON THE NAME: `mentions` reads forward - "the things this symbol
+    # mentions" - and means the opposite. It is the *reverse* edge, kept under
+    # this name because it is an existing contract. The forward reading the
+    # name invites is `signatureTypes`.
     mentions: [Symbol!]
+
+    # The `impl` blocks whose `Self` type is this symbol.
+    #
+    # This is how "what does `Point` implement?" is answered:
+    # `implementedBy { ... on Impl { ofTrait } }`. The inverse of
+    # `Trait.implementors`, and not the same edge - `implementors` reads
+    # `Impl.of`, this reads `Impl.self_ty`.
+    implementedBy: [Symbol!]
+
+    # The records or classes that name this symbol as a base class or
+    # implemented interface.
+    #
+    # The non-Rust half of "who implements this": Java, C#, C++ and Go have no
+    # `impl` entry, so `class Foo implements Bar` lands here rather than in
+    # `Trait.implementors`.
+    subtypes: [Symbol!]
+
+    # The functions whose return type names this symbol.
+    #
+    # Multi-value returns (Go) and out-parameters are each recorded, so a
+    # function returning `(Point, error)` is reached from both.
+    returnedBy: [Symbol!]
+
+    # The functions with a parameter whose type names this symbol.
+    acceptedBy: [Symbol!]
+
+    # The fields and properties whose declared type names this symbol.
+    #
+    # Traverse `parent` from a result to reach the record that declares it.
+    heldBy: [Symbol!]
+
+    # **Forward**: every symbol named in this declaration's own signature -
+    # the trait an impl implements and its self type, supertraits, base
+    # classes, field types, parameter and return types, declared throws, an
+    # alias's target, a const or static's type.
+    #
+    # Reads the declaration itself rather than a posting list, so it costs one
+    # corpus lookup per distinct target package however many symbols the query
+    # traverses from.
+    signatureTypes: [Symbol!]
+
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 
 type Function implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
     isAsync: Boolean!
     receiverKind: String!
 }
 
 type Record implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 type Trait implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
     supertraits: [String!]
+
+    # The `impl` blocks that implement this trait — `Impl.of`, and only that.
+    #
+    # It used to be served by the whole `mentions` list, which also carries
+    # supertrait bounds, so `Display.implementors` reported every
+    # `trait Foo: Display` as an implementor of `Display`. It now reads the
+    # `ImplementedTrait` position alone, so those rows are gone.
+    #
+    # For Java, C#, C++ and Go there are no `impl` entries and this edge is
+    # empty by construction: `class Foo implements Bar` is `Bar.subtypes`.
     implementors: [Symbol!]
 }
 type Impl implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
     ofTrait: String
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    selfTypeStr: String
 }
 type Enum implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 type Field implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
-    typeStr: String!
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    typeStr: String
 }
 type Const implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    typeStr: String
 }
 type Alias implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    targetStr: String
 }
 type Static implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    typeStr: String
 }
 type Variant implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 type Module implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 type Reexport implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 type Param implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
+    # Rendered type text — **not** a key. See the naming rule above the
+    # `Symbol` interface: a `…Str` field is what a developer would have
+    # written, a keyless one (`Impl.ofTrait`) is a `ecosystem:name#introhex`
+    # you can pass to `get_symbol`.
+    #
+    # Null means the IR carries no type here at all, which is a different
+    # fact from a type that is present but unknown. An unknown type renders
+    # as a `?`-prefixed marker naming the reason — `?unannotated`,
+    # `?unresolved(Context)`, `?external(click.core.Context)`,
+    # `?depth-limit`, `?oracle-gap`, `?unsupported(complex128)` — and
+    # `dynamic` for a language that really did write "dynamic".
+    typeStr: String
 }
 type OtherSymbol implements Symbol {
     key: String!
+    # Which disambiguator tier minted this symbol's `key`, and therefore what
+    # a failed lookup after a version switch actually means. One of:
+    #
+    #   Structural — minted from the declaration's own content. A key that
+    #                stops resolving almost certainly means the declaration
+    #                was deleted or its signature changed. Re-search by name.
+    #   Span       — the key embeds the declaration's BYTE OFFSETS. An edit
+    #                anywhere above it in the file moves the key with no
+    #                change to the declaration. Re-search by name and path.
+    #   Ordinal    — the key embeds the declaration's index among colliding
+    #                siblings. A producer emitting an overload set in a
+    #                different order moves it. Nothing about the source need
+    #                have changed at all.
+    #   Unrecorded — this package's `PackageView` carries no `SealReport`, so
+    #                nothing is known. NOT the same as `Structural`: a corpus
+    #                that never looked must not be read as one that looked and
+    #                found nothing.
+    keyTier: String!
+
+    # `true` when `keyTier` is `Structural`. Null — never false — when
+    # `keyTier` is `Unrecorded`, because "we do not know how this key was
+    # minted" is not "this key is fragile".
+    keyIsContentDerived: Boolean
     name: String!
     path: String
     kind: String!
     isPublic: Boolean!
     documentation: String!
     isDeprecated: Boolean!
+
+    # The IR's full six-valued visibility, one of: Public, Private, Protected,
+    # Internal, Package, Crate. `isPublic` answers only "is it Public", so a
+    # `pub(crate)` item and a genuinely private one are indistinguishable
+    # through it; this field is the faithful projection of
+    # `nudox_ir::entry::Visibility` and is what a filter should use.
+    visibility: String!
+
+    # The deprecation note and version, when the producer recorded them.
+    # Non-null only where `isDeprecated` is true — and `isDeprecated` being
+    # true does not imply either is non-null, because the IR's `Deprecation`
+    # carries two independent `Option`s.
+    deprecationNote: String
+    deprecationSince: String
     package: Package!
     members: [Symbol!]
     parent: Symbol
     usages: [Symbol!]
     mentions: [Symbol!]
+    implementedBy: [Symbol!]
+    subtypes: [Symbol!]
+    returnedBy: [Symbol!]
+    acceptedBy: [Symbol!]
+    heldBy: [Symbol!]
+    signatureTypes: [Symbol!]
     occurrencesOf: [Occurrence!]
+
+    # Where this symbol's declaration was written. Never null: the IR has no
+    # way to represent an entry without a location, because "we do not know"
+    # is the `Unlocated` *value*, not an absence. Read `location { kind }`
+    # before reading anything else on it.
+    location: SourceLocation!
 }
 
 type Occurrence {
     targetKey: String!
     referenceKind: String!
     confidence: String!
+
+    # Byte offsets **relative to the owning symbol's own span start**, not
+    # absolute file offsets — this is `nudox_ir::vocab::RelSpan`, and reading
+    # them as file positions is wrong by however far into the file the owner
+    # begins. Traverse `owner { location { byteStart } }` for the base.
     spanStart: Int!
     spanEnd: Int!
+
+    # The symbol whose body contains this reference. Never null: an occurrence
+    # is stored on its owner, so it cannot exist without one.
+    owner: Symbol!
+
     target: Symbol
+}
+
+# Where a declaration was written, as `nudox_ir::entry::SourceLocation` knows
+# it. This is a projection of a *sum type* with three variants, and the whole
+# point of exposing it as a vertex rather than as nullable columns on `Symbol`
+# is that the third variant carries a reason which must not be flattened away.
+#
+# `kind` is one of:
+#
+#   "Declared"  — file, byte span and 1-based line/column are all present.
+#                 The only value a jump-to-source affordance may use.
+#   "BytesOnly" — file and byte span present; no line index was built, so
+#                 `startLine`/`endLine`/`startColumn`/`endColumn` are null.
+#   "Unlocated" — there is no location, and `unlocatedReason` says why.
+#
+# A reader that checks only `file != null` cannot distinguish
+# `Unlocated(MacroExpanded)` — "this symbol genuinely has no source position"
+# — from `Unlocated(ProducerRecordsNoLocation)` — "this producer has not been
+# migrated yet". Those call for different product behaviour, so `kind` and
+# `unlocatedReason` are the two fields to read first.
+type SourceLocation {
+    # "Declared" | "BytesOnly" | "Unlocated". Never null.
+    kind: String!
+
+    # Package-relative, `/`-separated. Null exactly when kind is "Unlocated".
+    file: String
+
+    # Half-open byte range within `file`. Null exactly when kind is
+    # "Unlocated".
+    byteStart: Int
+    byteEnd: Int
+
+    # 1-based line and column (column counted in UTF-8 bytes from the start of
+    # the line). Non-null only when kind is "Declared".
+    startLine: Int
+    startColumn: Int
+    endLine: Int
+    endColumn: Int
+
+    # WHY there is no location, one of: Synthesized, MacroExpanded,
+    # ProducerRecordsNoLocation, OutsideDocumentedPackage. Non-null exactly
+    # when kind is "Unlocated".
+    unlocatedReason: String
 }

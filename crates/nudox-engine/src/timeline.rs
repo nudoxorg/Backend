@@ -77,9 +77,9 @@ use crate::{
 /// than snapshotting its fields. Every generation's view is alive for the whole
 /// walk, so there is nothing to copy and nothing to hash: comparison is direct
 /// field access against the real IR.
-struct Seen<'a> {
-    entry: &'a Entry,
-    sig: Vec<SigToken>,
+pub(crate) struct Seen<'a> {
+    pub(crate) entry: &'a Entry,
+    pub(crate) sig: Vec<SigToken>,
 }
 
 /// Build the timeline for `key` across `slices`.
@@ -168,7 +168,13 @@ pub(crate) fn build(key: &SymbolKey, slices: &[VersionSlice]) -> Timeline {
 /// rarest-and-most-consequential first. A rename is checked before a signature
 /// change because a rename is almost always accompanied by one (the name is a
 /// token in the signature), and "renamed" is the fact that explains the other.
-fn classify(prev: &Seen<'_>, cur: &Entry, cur_sig: &[SigToken]) -> TimelineChange {
+///
+/// `pub(crate)` so that [`crate::diff`] classifies a package-level diff with
+/// **this** function rather than one written for it. Two classifiers over the
+/// same five axes would eventually disagree, and then `get_symbol`'s timeline
+/// and `diff_versions` would describe the same declaration differently — which
+/// a caller would read as a bug in whichever one they looked at second.
+pub(crate) fn classify(prev: &Seen<'_>, cur: &Entry, cur_sig: &[SigToken]) -> TimelineChange {
     let before = prev.entry.sym();
     let after = cur.sym();
 

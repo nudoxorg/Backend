@@ -16,15 +16,28 @@
 //!
 //! # Filter pushdown
 //!
-//! `resolve_starting_vertices` for the `Symbols` entrypoint inspects the
-//! `ResolveInfo` passed by the Trustfall engine and uses
-//! [`VertexInfo::statically_required_property`] to detect equality filters on
-//! `key`, `name`, and `kind` before any iteration.  When a usable filter is
-//! found, the resolver routes directly to the relevant `nudox-store` index
-//! (corpus `entry()`, `NameIndex`, or `by_kind` map) instead of enumerating
-//! every symbol.  When no usable filter is present the resolver falls back to
-//! full enumeration and emits a `tracing::debug!` so slow queries are
-//! diagnosable.
+//! `resolve_starting_vertices` does not decide anything itself: it hands the
+//! engine's hints to [`crate::plan`], which returns a [`SymbolPlan`] or
+//! [`PackagePlan`] naming the access path, and then executes that plan. See
+//! that module for why the decision is a value rather than a ladder of
+//! `if let`s.
+//!
+//! # One corpus round-trip per resolution, not one per row
+//!
+//! `Corpus::packages()` takes a read lock over the whole corpus map and
+//! allocates a fresh `Vec` with one `Arc` clone per loaded package — on every
+//! call. The reverse edges (`usages`, `mentions`, `implementors`) each used to
+//! call it *inside* their per-vertex resolver closure, so a query over `T`
+//! source symbols against a corpus of `P` packages paid `T` lock acquisitions
+//! and `T × P` `Arc` clones to read a table that cannot change during the
+//! query. [`CorpusMemo`] collapses that to one, and records what it did in an
+//! [`AdapterProbe`] so the collapse is testable rather than asserted.
+//!
+//! Every reverse edge added since — `implementedBy`, `subtypes`, `returnedBy`,
+//! `acceptedBy`, `heldBy` — goes through the same [`posting_neighbors`], so it
+//! inherits the memo rather than being a fresh opportunity to reintroduce the
+//! N+1. The forward `signatureTypes` edge reads the entry itself and takes
+//! only `CorpusMemo::package`, which memoises misses as well as hits.
 //!
 //! # Why `AsyncAdapter` directly, not `AsyncBasicAdapter`
 //!
@@ -32,31 +45,35 @@
 //! `&ResolveInfo`, so there is no way to inspect filter hints through that
 //! interface.  The blanket `impl<T: AsyncBasicAdapter> AsyncAdapter for T`
 //! drops `_resolve_info` on the floor.  We implement `AsyncAdapter` directly
-//! so that `Symbols` resolution sees the hints and can push equality filters
-//! down to the appropriate indexes.
+//! so that resolution sees the hints and can push filters down to the
+//! appropriate indexes.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use futures::{StreamExt as _, stream};
+use futures::{StreamExt as _, lock::Mutex, stream};
 use nudox_ir::{
-    change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
-    entry::Visibility,
-    index::Ref,
+    change::{IntroId, PackageLineageId, StableRef},
+    entry::{Deprecation, SourceLocation, Unlocated, Visibility},
+    index::{RawRef, Ref},
     kind::{Kind, KindDiscriminant},
     kinds::{FnModifier, Receiver, Type},
 };
-use nudox_store::{corpus::Corpus, package::PackageView};
+use nudox_ir::package::KeyTier;
+use nudox_store::{
+    corpus::Corpus,
+    package::{PackageView, TypePosition, TypeRef, typerefs_of_entry},
+};
 use thiserror::Error;
 use trustfall::FieldValue;
 use trustfall::provider::async_helpers;
 use trustfall::provider::{
-    AsVertex, AsyncAdapter, CandidateValue, ContextOutcomeStream, ContextStream, EdgeParameters,
-    ResolveEdgeInfo, ResolveInfo, Typename as _, VertexInfo as _, VertexStream,
+    AsVertex, AsyncAdapter, ContextOutcomeStream, ContextStream, EdgeParameters, ResolveEdgeInfo,
+    ResolveInfo, Typename as _, VertexInfo as _, VertexStream,
 };
 
+use crate::plan::{PackagePlan, SymbolPlan, plan_packages, plan_symbols};
+use crate::probe::{AdapterProbe, StoreProbe};
 use crate::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
 
 // ---------------------------------------------------------------------------
@@ -79,6 +96,17 @@ pub enum GraphError {
     #[error("invalid stable-ref key: {0:?}")]
     InvalidKey(String),
 
+    /// A `Packages { lineage @filter(…) }` operand that is not
+    /// `"ecosystem:name"`.
+    ///
+    /// Distinct from [`GraphError::InvalidKey`] because the two formats fail
+    /// for different reasons and a caller fixes them differently: a lineage
+    /// has no `#introhex` half, so reporting "invalid stable-ref key" for
+    /// `"cargo:memchr"` would send the reader looking for a missing hex
+    /// suffix that should not be there.
+    #[error("invalid package lineage {0:?}: expected \"ecosystem:name\"")]
+    InvalidLineage(String),
+
     #[error("unknown edge '{edge}' on type '{ty}'")]
     UnknownEdge { ty: String, edge: String },
 
@@ -93,20 +121,94 @@ pub enum GraphError {
 }
 
 // ---------------------------------------------------------------------------
+// CorpusMemo
+// ---------------------------------------------------------------------------
+
+/// The corpus round-trips made while resolving one entrypoint or one edge,
+/// memoised and counted.
+///
+/// # Why a memo is correct here
+///
+/// A query's result set is defined against the corpus as it stood when the
+/// query began; `Corpus::packages()` already snapshots (it clones the map's
+/// values under one read lock). Serving every resolution in a query from one
+/// snapshot is therefore *more* consistent than re-reading, not less: without
+/// it, a concurrent `Corpus::insert` could make `usages` see a package that
+/// `mentions` did not, inside a single row.
+///
+/// # Negative caching
+///
+/// [`CorpusMemo::package`] caches `None` as well as `Some`. `Occurrence.target`
+/// is the reason: an occurrence pointing into a package that is not loaded is
+/// the common case on a partially-loaded corpus, and re-probing the map once
+/// per occurrence to be told "still missing" is the same N+1 in a different
+/// hat.
+struct CorpusMemo {
+    corpus: Corpus,
+    probe: Option<Arc<AdapterProbe>>,
+    all: Mutex<Option<Arc<[Arc<PackageView>]>>>,
+    by_lineage: Mutex<HashMap<PackageLineageId, Option<Arc<PackageView>>>>,
+}
+
+impl CorpusMemo {
+    fn new(corpus: Corpus, probe: Option<Arc<AdapterProbe>>) -> Arc<Self> {
+        Arc::new(Self {
+            corpus,
+            probe,
+            all: Mutex::new(None),
+            by_lineage: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Record a store round-trip, if this adapter was built with a probe.
+    fn record(&self, which: StoreProbe) {
+        if let Some(p) = &self.probe {
+            p.record(which);
+        }
+    }
+
+    /// Every loaded package, read from the corpus at most once.
+    ///
+    /// Returns `Arc<[…]>` rather than `Vec<…>` so that the second and later
+    /// callers pay one atomic increment instead of re-cloning one `Arc` per
+    /// package.
+    async fn all_packages(self: Arc<Self>) -> Arc<[Arc<PackageView>]> {
+        let mut slot = self.all.lock().await;
+        if let Some(cached) = slot.as_ref() {
+            return Arc::clone(cached);
+        }
+        self.record(StoreProbe::CorpusList);
+        let fresh: Arc<[Arc<PackageView>]> = self.corpus.packages().await.into();
+        *slot = Some(Arc::clone(&fresh));
+        fresh
+    }
+
+    /// One package by lineage, read from the corpus at most once per lineage.
+    async fn package(self: Arc<Self>, id: PackageLineageId) -> Option<Arc<PackageView>> {
+        let mut seen = self.by_lineage.lock().await;
+        if let Some(cached) = seen.get(&id) {
+            return cached.clone();
+        }
+        self.record(StoreProbe::CorpusLookup);
+        let found = self.corpus.package(&id).await;
+        seen.insert(id, found.clone());
+        found
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CorpusAdapter
 // ---------------------------------------------------------------------------
 
 /// The Trustfall async adapter over the local IR corpus.
 ///
 /// Cheap to clone — holds only an `Arc`-backed [`Corpus`] and an optional
-/// `Arc<AtomicUsize>` probe counter used by pushdown regression tests.
+/// `Arc<AdapterProbe>` shared with a test that wants to assert on how much
+/// work the store was asked to do.
 #[derive(Clone)]
 pub struct CorpusAdapter {
     corpus: Corpus,
-    /// Optional counter incremented each time `packages()` is called on the
-    /// full-scan fallback path inside `Symbols` resolution.  Used by tests
-    /// to verify that the O(1) pushdown path was taken.
-    pub(crate) packages_scanned: Option<Arc<AtomicUsize>>,
+    probe: Option<Arc<AdapterProbe>>,
 }
 
 impl CorpusAdapter {
@@ -114,20 +216,20 @@ impl CorpusAdapter {
     pub fn new(corpus: Corpus) -> Self {
         Self {
             corpus,
-            packages_scanned: None,
+            probe: None,
         }
     }
 
-    /// Construct an adapter with a probe counter.
+    /// Construct an adapter that records every store round-trip into `probe`.
     ///
-    /// Every time the `Symbols` entrypoint falls back to a full-scan (i.e. no
-    /// usable equality filter was found on `key`, `name`, or `kind`), the
-    /// counter is incremented by the number of packages enumerated.  Use this
-    /// variant in tests that assert pushdown is happening.
-    pub fn new_with_counter(corpus: Corpus, counter: Arc<AtomicUsize>) -> Self {
+    /// An optimisation in this crate is a claim about the *shape* of the work
+    /// — one index probe rather than a corpus walk, one package list rather
+    /// than one per row — and the rows a query returns are identical either
+    /// way. This is how a test asserts on the claim instead of on the rows.
+    pub fn new_with_probe(corpus: Corpus, probe: Arc<AdapterProbe>) -> Self {
         Self {
             corpus,
-            packages_scanned: Some(counter),
+            probe: Some(probe),
         }
     }
 
@@ -135,61 +237,24 @@ impl CorpusAdapter {
     pub fn corpus(&self) -> &Corpus {
         &self.corpus
     }
+
+    /// A fresh memo for one resolution.
+    ///
+    /// Scoped per resolver call rather than per adapter: an adapter outlives
+    /// any one query, and caching the package list across queries would make
+    /// a corpus insert invisible to the next one.
+    fn memo(&self) -> Arc<CorpusMemo> {
+        CorpusMemo::new(self.corpus.clone(), self.probe.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Parse `"ecosystem:name"` into a [`PackageLineageId`].
-fn parse_lineage(s: &str) -> Option<PackageLineageId> {
-    let (eco, name) = s.split_once(':')?;
-    Some(PackageLineageId::new(
-        EcosystemId::new(eco),
-        PackageName::new(name),
-    ))
-}
-
-/// Parse `"ecosystem:name#introhex"` into a [`StableRef`].
-fn parse_stable_ref(s: &str) -> Option<StableRef> {
-    let (pkg_str, intro_hex) = s.split_once('#')?;
-    let lineage = parse_lineage(pkg_str)?;
-    let bytes = parse_hex_32(intro_hex)?;
-    Some(StableRef::new(lineage, IntroId::from_raw(bytes)))
-}
-
-/// Decode exactly 64 lowercase hex chars into 32 bytes.
-fn parse_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 {
-        return None;
-    }
-    let mut out = [0u8; 32];
-    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
-        let hi = (chunk[0] as char).to_digit(16)? as u8;
-        let lo = (chunk[1] as char).to_digit(16)? as u8;
-        out[i] = (hi << 4) | lo;
-    }
-    Some(out)
-}
-
-/// Match a kind-discriminant name string to the enum variant.
-fn kind_disc_from_str(s: &str) -> Option<KindDiscriminant> {
-    match s {
-        "Module" => Some(KindDiscriminant::Module),
-        "Record" => Some(KindDiscriminant::Record),
-        "Field" => Some(KindDiscriminant::Field),
-        "Function" => Some(KindDiscriminant::Function),
-        "Alias" => Some(KindDiscriminant::Alias),
-        "Trait" => Some(KindDiscriminant::Trait),
-        "Impl" => Some(KindDiscriminant::Impl),
-        "Enum" => Some(KindDiscriminant::Enum),
-        "Variant" => Some(KindDiscriminant::Variant),
-        "Const" => Some(KindDiscriminant::Const),
-        "Static" => Some(KindDiscriminant::Static),
-        "Reexport" => Some(KindDiscriminant::Reexport),
-        "Param" => Some(KindDiscriminant::Param),
-        _ => None,
-    }
+/// A one-item stream carrying an error, for the arms that can only fail.
+fn error_stream<'v>(e: GraphError) -> VertexStream<'v, Result<Vertex, GraphError>> {
+    Box::pin(stream::once(async move { Err(e) }))
 }
 
 /// Construct the concrete [`Vertex`] variant for a symbol intro in a package.
@@ -234,6 +299,65 @@ pub(crate) fn vertex_for_intro(
     })
 }
 
+/// The name a `Visibility` is published under in the schema.
+///
+/// Written out rather than `format!("{v:?}")` because these six strings are a
+/// wire contract: an agent filtering `visibility @filter(op: "=", value:
+/// ["$v"])` is matching against them, and a rename in `nudox-ir`'s `Debug`
+/// output must not silently change what a query means.
+fn visibility_name(v: Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "Public",
+        Visibility::Private => "Private",
+        Visibility::Protected => "Protected",
+        Visibility::Internal => "Internal",
+        Visibility::Package => "Package",
+        Visibility::Crate => "Crate",
+    }
+}
+
+/// The name an `Unlocated` reason is published under in the schema.
+///
+/// Same contract as [`visibility_name`], and load-bearing for a different
+/// reason: this string is the *only* thing distinguishing "we have no idea
+/// where this is" from "this symbol has no source location because it does
+/// not exist in source". Flattening the two to a null `file` is the defect
+/// this field exists to prevent.
+fn unlocated_name(u: Unlocated) -> &'static str {
+    match u {
+        Unlocated::Synthesized => "Synthesized",
+        Unlocated::MacroExpanded => "MacroExpanded",
+        Unlocated::ProducerRecordsNoLocation => "ProducerRecordsNoLocation",
+        Unlocated::OutsideDocumentedPackage => "OutsideDocumentedPackage",
+    }
+}
+
+/// The name a [`KeyTier`] is published under in the schema.
+///
+/// Same wire-contract reasoning as [`visibility_name`]: these four strings are
+/// what a `keyTier @filter(op: "=", …)` matches against, so they are written
+/// out rather than derived from `Debug`.
+///
+/// # Why `Unrecorded` is a fourth string and not a null
+///
+/// `None` here means the `PackageView` carries no [`SealReport`] — a
+/// hand-built table, or an `IrView` reconstituted from a snapshot this process
+/// never sealed. That is a different fact from `Structural`, and collapsing
+/// the two is precisely the defect the whole key-provenance path exists to
+/// remove: a caller must not be told "your key is content-derived" by a corpus
+/// that never checked. Publishing it as a null instead would make the field
+/// nullable and let a careless reader's `?? "Structural"` do the same damage.
+///
+/// [`SealReport`]: nudox_ir::package::SealReport
+fn key_tier_name(tier: Option<KeyTier>) -> &'static str {
+    match tier {
+        Some(KeyTier::Structural) => "Structural",
+        Some(KeyTier::Span) => "Span",
+        Some(KeyTier::Ordinal) => "Ordinal",
+        None => "Unrecorded",
+    }
+}
+
 /// Resolve the shared Symbol interface properties from a [`SymbolVertex`].
 fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue, GraphError> {
     let view = sv.package.view();
@@ -244,6 +368,19 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
 
     Ok(match property_name {
         "key" => FieldValue::String(sv.stable_ref().to_string().into()),
+        // The two staleness fields. See `key_tier_name` for why `Unrecorded`
+        // is a value here rather than a null, and the schema comment above
+        // `interface Symbol` for what a caller does with each tier.
+        "keyTier" => FieldValue::String(key_tier_name(sv.package.key_tier(sv.intro)).into()),
+        "keyIsContentDerived" => match sv.package.key_tier(sv.intro) {
+            Some(tier) => FieldValue::Boolean(tier.is_content_derived()),
+            // Null, not `false`: "we do not know how this key was minted" is
+            // not "this key is fragile". Reporting the unknown as fragile
+            // would make every fixture-backed corpus look unusable; reporting
+            // it as sound would be the silent repair this field exists to
+            // prevent.
+            None => FieldValue::Null,
+        },
         "name" => FieldValue::String(sym.name.clone().into()),
         "path" => sv
             .package
@@ -260,8 +397,24 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
             FieldValue::String(kind_str.into())
         }
         "isPublic" => FieldValue::Boolean(matches!(sym.visibility, Visibility::Public)),
+        // The IR distinguishes six visibilities; `isPublic` answers only
+        // "is it Public", which makes a `pub(crate)` item and a genuinely
+        // private one indistinguishable through the graph. Both fields are
+        // published: `isPublic` because it is the existing contract, and
+        // `visibility` because it is the faithful one.
+        "visibility" => FieldValue::String(visibility_name(sym.visibility).into()),
         "documentation" => FieldValue::String(sym.documentation.clone().into()),
         "isDeprecated" => FieldValue::Boolean(sym.deprecation.is_some()),
+        "deprecationNote" => match &sym.deprecation {
+            Some(Deprecation { note: Some(n), .. }) => FieldValue::String(n.clone().into()),
+            _ => FieldValue::Null,
+        },
+        "deprecationSince" => match &sym.deprecation {
+            Some(Deprecation {
+                since: Some(s), ..
+            }) => FieldValue::String(s.clone().into()),
+            _ => FieldValue::Null,
+        },
         _ => {
             return Err(GraphError::UnknownProperty {
                 ty: "Symbol".to_string(),
@@ -269,6 +422,140 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
             });
         }
     })
+}
+
+/// Resolve a `SourceLocation` vertex's properties.
+///
+/// The three IR variants are projected without collapsing: `kind` always says
+/// which one this is, and every other field is null exactly where the variant
+/// has nothing to say. A consumer that reads only `file` still cannot tell
+/// `Unlocated(MacroExpanded)` from `Unlocated(Synthesized)` — which is why it
+/// must read `kind` and `unlocatedReason`, and why they are the two fields the
+/// schema documents as load-bearing.
+fn location_property(loc: &SourceLocation, property_name: &str) -> Result<FieldValue, GraphError> {
+    let lines = loc.lines();
+    Ok(match property_name {
+        "kind" => FieldValue::String(
+            match loc {
+                SourceLocation::Declared { .. } => "Declared",
+                SourceLocation::BytesOnly { .. } => "BytesOnly",
+                SourceLocation::Unlocated(_) => "Unlocated",
+            }
+            .into(),
+        ),
+        "file" => loc
+            .file()
+            .map(|f| FieldValue::String(f.as_str().into()))
+            .unwrap_or(FieldValue::Null),
+        "byteStart" => loc
+            .bytes()
+            .map(|b| FieldValue::Int64(b.as_range().start as i64))
+            .unwrap_or(FieldValue::Null),
+        "byteEnd" => loc
+            .bytes()
+            .map(|b| FieldValue::Int64(b.as_range().end as i64))
+            .unwrap_or(FieldValue::Null),
+        "startLine" => lines
+            .map(|(s, _)| FieldValue::Int64(i64::from(s.line())))
+            .unwrap_or(FieldValue::Null),
+        "startColumn" => lines
+            .map(|(s, _)| FieldValue::Int64(i64::from(s.column())))
+            .unwrap_or(FieldValue::Null),
+        "endLine" => lines
+            .map(|(_, e)| FieldValue::Int64(i64::from(e.line())))
+            .unwrap_or(FieldValue::Null),
+        "endColumn" => lines
+            .map(|(_, e)| FieldValue::Int64(i64::from(e.column())))
+            .unwrap_or(FieldValue::Null),
+        "unlocatedReason" => match loc {
+            SourceLocation::Unlocated(reason) => {
+                FieldValue::String(unlocated_name(*reason).into())
+            }
+            SourceLocation::Declared { .. } | SourceLocation::BytesOnly { .. } => FieldValue::Null,
+        },
+        _ => {
+            return Err(GraphError::UnknownProperty {
+                ty: "SourceLocation".to_string(),
+                prop: property_name.to_string(),
+            });
+        }
+    })
+}
+
+/// The one rendered-type property each vertex type publishes, if it has one.
+///
+/// A function rather than a `match` inlined into the resolver so that the
+/// schema's naming rule is stated once and checkably: a property whose value
+/// is **rendered type text** ends in `Str`, and one whose value is a
+/// **`StableRef` key** (`Impl.ofTrait`, `Trait.supertraits`) does not. The two
+/// are both `String` on the wire and a caller that mistakes one for the other
+/// gets silence from `get_symbol`, so the distinction has to survive in the
+/// name.
+fn rendered_type_property(type_name: &str) -> Option<&'static str> {
+    Some(match type_name {
+        "Field" => "typeStr",
+        "Const" => "typeStr",
+        "Static" => "typeStr",
+        "Param" => "typeStr",
+        "Alias" => "targetStr",
+        "Impl" => "selfTypeStr",
+        _ => return None,
+    })
+}
+
+/// Render a [`Type`] as the text a developer would have written, resolving
+/// same-package nominals through `package`'s entry table.
+///
+/// # Why this is not `format!("{ty:?}")`
+///
+/// It used to be, on `Field.typeStr`, and that shipped
+/// `Nominal(Intro(intro:3f1a9c2b…))` and
+/// `Primitive(Integer { signed: true, width: Fixed(32) })` to MCP clients as
+/// if they were rendered types. Five more type-valued fields (`Alias.target`,
+/// `Impl.self_ty`, `Const.ty`, `Static.ty`, `Param.ty`) were left off this
+/// schema entirely rather than replicate that, so the `Debug` dump was
+/// costing the graph five answers as well as being wrong about one.
+///
+/// # Which renderer this is, and which one it is not
+///
+/// There are exactly **two** type renderers in this system, and they are not
+/// interchangeable:
+///
+/// * [`nudox_ir::render`] — **this one**. A `Type` with no surrounding entry,
+///   rendered to *one scalar string* for a program to read. Every
+///   `Type::Unknown` reason renders as a distinct, marked token
+///   (`?unannotated`, `?unresolved(Context)`, `?external(click.core.Context)`),
+///   because a consumer that receives only a string has no other channel to
+///   recover the reason from, and `?`-prefixing is what stops a hole from
+///   being mistaken for a type the source wrote.
+/// * `nudox_engine::chunk::signature::tokens` — the LR-4 renderer for a
+///   *declaration signature*: typed [`SigToken`]s carrying per-nominal link
+///   targets, built from an `Entry` and resolved against a `PackageView`. It
+///   renders an unresolved `Context` as the bare word `Context`, and an
+///   unannotated parameter as `?`, because it is read by a human looking at a
+///   page and the name is the useful half.
+///
+/// The two disagree *on purpose* about the unknown lattice, which is why
+/// neither can serve the other's caller. What LR-4 forbids — and what this
+/// function exists to remove — is a **third** rendering path, and `Debug` in
+/// any of them.
+///
+/// [`SigToken`]: https://docs.rs/nudox-engine
+fn type_str(ty: &Type, package: &PackageView) -> String {
+    // `render_with` falls back to its own marked placeholder when the resolver
+    // returns `None`, so a missing entry degrades to `?ref(3f1a9c2b)` rather
+    // than to a fabricated name. `Ref::Foreign` is deliberately not handled
+    // here: the renderer already prints the producer's own spelling off
+    // `ForeignKey::display`, which is a better answer than anything this
+    // package's table could supply for a symbol that is not in it.
+    let resolve = |r: &RawRef| match r {
+        Ref::Intro(id) => package
+            .view()
+            .entry(*id)
+            .map(|entry| entry.sym().name.clone()),
+        Ref::Foreign { .. } | Ref::Local(_) => None,
+    };
+    ty.render_with(&resolve).to_string()
 }
 
 /// Extract the `StableRef` string of a `Type::Nominal` (or `Type::Apply`'s
@@ -297,6 +584,203 @@ fn type_to_stable_ref_str(ty: &Type, package: &PackageLineageId) -> Option<Strin
 }
 
 // ---------------------------------------------------------------------------
+// Plan execution
+// ---------------------------------------------------------------------------
+
+/// Run a [`SymbolPlan`] against the corpus.
+///
+/// Every arm is lazy per package: the package list is pulled once, and each
+/// package's intro list is materialised only when the consumer has drained the
+/// previous package's. A query that stops after one row therefore enumerates
+/// one package, which is what `PackageEnumerated` in the probe measures.
+fn run_symbol_plan<'v>(
+    memo: Arc<CorpusMemo>,
+    plan: SymbolPlan,
+) -> VertexStream<'v, Result<Vertex, GraphError>> {
+    match plan {
+        SymbolPlan::Empty => Box::pin(stream::empty()),
+
+        // O(keys) `Corpus::package` probes, deduplicated by lineage. No
+        // package list is read at all.
+        SymbolPlan::Keys(refs) => Box::pin(stream::iter(refs).then(move |sr| {
+            let memo = Arc::clone(&memo);
+            async move {
+                let pkg = Arc::clone(&memo)
+                    .package(sr.package.clone())
+                    .await
+                    .ok_or_else(|| GraphError::PackageNotLoaded(sr.package.clone()))?;
+                vertex_for_intro(pkg, sr.intro)
+            }
+        })),
+
+        SymbolPlan::Names(names) => {
+            per_package(memo, move |pkg, memo| {
+                names
+                    .iter()
+                    .flat_map(|name| {
+                        memo.record(StoreProbe::IndexProbe);
+                        pkg.indexes()
+                            .by_name
+                            .get_exact(name)
+                            .iter()
+                            .map(|e| e.intro)
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            })
+        }
+
+        SymbolPlan::Kinds(discs) => per_package(memo, move |pkg, memo| {
+            discs
+                .iter()
+                .flat_map(|disc| {
+                    memo.record(StoreProbe::IndexProbe);
+                    pkg.indexes()
+                        .by_kind
+                        .get(disc)
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect()
+        }),
+
+        SymbolPlan::FullScan => {
+            tracing::debug!(
+                "Symbols entrypoint: no key/name/kind constraint and no type coercion — \
+                 falling back to O(total symbols) full enumeration"
+            );
+            per_package(memo, |pkg, memo| {
+                memo.record(StoreProbe::PackageEnumerated);
+                // `entries_sorted`, not `entries`: the latter is `HashMap`
+                // order, which is not stable across process launches. Every
+                // projection a user can observe must be deterministic, and
+                // this stream is the row order of every unfiltered `Symbols`
+                // query.
+                pkg.view().entries_sorted().map(|(id, _)| id).collect()
+            })
+        }
+    }
+}
+
+/// Build a symbol stream by asking each package, in corpus order, for the
+/// intros it contributes — pulling the next package only when the previous
+/// one's rows have been consumed.
+fn per_package<'v, F>(memo: Arc<CorpusMemo>, select: F) -> VertexStream<'v, Result<Vertex, GraphError>>
+where
+    F: Fn(&Arc<PackageView>, &CorpusMemo) -> Vec<IntroId> + 'v,
+{
+    // `Arc`, not a borrow: the inner `flat_map` closure outlives the outer
+    // one (it is stored in the returned stream), so `select` has to be owned
+    // by every level that calls it.
+    let select = Arc::new(select);
+    Box::pin(
+        stream::once(Arc::clone(&memo).all_packages()).flat_map(move |pkgs| {
+            let memo = Arc::clone(&memo);
+            let select = Arc::clone(&select);
+            stream::iter(pkgs.to_vec()).flat_map(move |pkg| {
+                let intros = select(&pkg, &memo);
+                stream::iter(
+                    intros
+                        .into_iter()
+                        .map(move |intro| vertex_for_intro(Arc::clone(&pkg), intro)),
+                )
+            })
+        }),
+    )
+}
+
+/// Run a [`PackagePlan`] against the corpus.
+fn run_package_plan<'v>(
+    memo: Arc<CorpusMemo>,
+    plan: PackagePlan,
+) -> VertexStream<'v, Result<Vertex, GraphError>> {
+    match plan {
+        PackagePlan::Empty => Box::pin(stream::empty()),
+
+        // A lineage that is not loaded yields no row rather than an error:
+        // `Packages` enumerates what is present, and asking it for a package
+        // that has not been indexed yet is a legitimate "not here", not a
+        // malformed query. (`Symbols { key … }` is the opposite case and does
+        // error — there the caller named a specific symbol.)
+        PackagePlan::Lineages(ids) => Box::pin(
+            stream::iter(ids)
+                .then(move |id| {
+                    let memo = Arc::clone(&memo);
+                    async move { memo.package(id).await }
+                })
+                .filter_map(|found| async move { found.map(|p| Ok(Vertex::Package(p))) }),
+        ),
+
+        PackagePlan::All => Box::pin(
+            stream::once(memo.all_packages())
+                .flat_map(|pkgs| stream::iter(pkgs.to_vec()).map(|p| Ok(Vertex::Package(p)))),
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reverse-edge posting lists
+// ---------------------------------------------------------------------------
+
+/// Which per-package posting list a reverse-edge traversal reads.
+///
+/// `usages`, `mentions`, `Trait.implementors` and the five signature-position
+/// edges differ only in this choice and in an error string; they are one
+/// function, so an optimisation to the traversal cannot land on some of them
+/// and miss the rest.
+#[derive(Debug, Clone, Copy)]
+enum Posting {
+    /// Occurrence postings: who *calls* or *reads* this symbol.
+    Usages,
+    /// Relational type references only — the trait an impl implements, a
+    /// supertrait bound, a base class. This is the `mentions` edge, and it is
+    /// deliberately narrower than "every type reference": see
+    /// [`nudox_store::package::PackageIndexes::mentions_of`].
+    Mentions,
+    /// One syntactic position of the type-reference index.
+    ///
+    /// Every reverse edge added for signature questions is this variant with a
+    /// different [`TypePosition`], which is why none of them can answer a
+    /// question a different position was asked.
+    At(TypePosition),
+}
+
+impl Posting {
+    fn probe(self, pkg: &PackageView, target: &StableRef) -> Vec<IntroId> {
+        match self {
+            Posting::Usages => pkg.indexes().usages_of(target).to_vec(),
+            Posting::Mentions => pkg.indexes().mentions_of(target),
+            Posting::At(position) => pkg.indexes().type_refs_in(target, position),
+        }
+    }
+}
+
+/// Resolve a reverse edge that fans out over every package's posting list.
+///
+/// The package list is read from [`CorpusMemo`], so `N` source vertices cost
+/// one `Corpus::packages()` call between them rather than `N`.
+fn posting_neighbors<'v, V: AsVertex<Vertex> + 'v>(
+    contexts: ContextStream<'v, V>,
+    memo: Arc<CorpusMemo>,
+    posting: Posting,
+    edge: &'static str,
+) -> ContextOutcomeStream<'v, V, VertexStream<'v, Result<Vertex, GraphError>>> {
+    async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+        let Some(sv) = crate::vertex::as_symbol_vertex(vertex) else {
+            return error_stream(GraphError::UnknownEdge {
+                ty: "Symbol".to_string(),
+                edge: edge.to_string(),
+            });
+        };
+        let target = sv.stable_ref();
+        per_package(Arc::clone(&memo), move |pkg, memo| {
+            memo.record(StoreProbe::IndexProbe);
+            posting.probe(pkg, &target)
+        })
+    })
+}
+
+// ---------------------------------------------------------------------------
 // AsyncAdapter impl
 // ---------------------------------------------------------------------------
 
@@ -306,9 +790,6 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
 
     // -----------------------------------------------------------------------
     // Starting vertices
-    //
-    // `Symbols` inspects `resolve_info` for statically-known filter values
-    // before deciding which corpus index to use.
     // -----------------------------------------------------------------------
 
     fn resolve_starting_vertices(
@@ -317,175 +798,39 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
         _parameters: &EdgeParameters,
         resolve_info: &ResolveInfo,
     ) -> VertexStream<'vertex, Result<Vertex, GraphError>> {
-        let corpus = self.corpus.clone();
-        let counter = self.packages_scanned.clone();
+        let memo = self.memo();
 
         match edge_name.as_ref() {
-            // ── Packages ────────────────────────────────────────────────────
-            //
-            // Cost: O(packages) — always an index scan over the package map.
-            // Add `@filter(op: "=", value: ["$lineage"])` on `lineage` to
-            // narrow, or traverse `Packages → members` instead of `Symbols`
-            // when a single-package filter is needed.
-            "Packages" => Box::pin(
-                stream::once(async move { corpus.packages().await }).flat_map(|pkgs| {
-                    stream::iter(pkgs.into_iter().map(|p| Ok(Vertex::Package(p))))
-                }),
-            ),
+            "Packages" => {
+                match plan_packages(resolve_info.statically_required_property("lineage")) {
+                    Err(e) => error_stream(e),
+                    Ok(plan) => {
+                        tracing::debug!(?plan, "Packages entrypoint plan");
+                        run_package_plan(memo, plan)
+                    }
+                }
+            }
 
-            // ── Symbols ──────────────────────────────────────────────────────
-            //
-            // Pushdown priority (first matching branch wins):
-            //   1. Equality on `key`  → O(1) via `Corpus::entry`.
-            //   2. Equality on `name` → O(packages × log n) via `NameIndex::get_exact`.
-            //   3. Equality on `kind` → O(packages × 1) via `by_kind` map.
-            //   4. No usable filter   → O(total symbols) full scan.
-            //      A `tracing::debug!` is emitted so slow queries are diagnosable.
-            //
-            // API used: `ResolveInfo::statically_required_property` from
-            // `/tmp/tf-probe/trustfall_core/src/interpreter/hints/vertex_info.rs:65`
-            // returns `Some(CandidateValue::Single(v))` when a single equality
-            // filter with a query-variable operand is present on the property.
             "Symbols" => {
-                // ── Pushdown 1: equality on `key` ──────────────────────────
-                //
-                // `statically_required_property("key")` returns
-                // `Some(CandidateValue::Single(...))` when the query has
-                // `@filter(op: "=", value: ["$key"])` and `$key` is bound.
-                // We parse the StableRef, look up the package, and yield the
-                // single matching vertex — bypassing `packages()` entirely.
-                if let Some(CandidateValue::Single(FieldValue::String(key_val))) =
-                    resolve_info.statically_required_property("key")
-                {
-                    let key_str = key_val.to_string();
-                    return Box::pin(stream::once(async move {
-                        let sr = parse_stable_ref(&key_str)
-                            .ok_or_else(|| GraphError::InvalidKey(key_str.clone()))?;
-                        let pkg = corpus
-                            .package(&sr.package)
-                            .await
-                            .ok_or_else(|| GraphError::PackageNotLoaded(sr.package.clone()))?;
-                        vertex_for_intro(pkg, sr.intro)
-                    }));
-                }
-
-                // ── Pushdown 2: equality on `name` ─────────────────────────
-                //
-                // Routes to `NameIndex::get_exact` per package instead of
-                // iterating every entry.
-                if let Some(CandidateValue::Single(FieldValue::String(name_val))) =
-                    resolve_info.statically_required_property("name")
-                {
-                    let name_lower = name_val.to_lowercase();
-                    return Box::pin(
-                        stream::once(async move { corpus.packages().await }).flat_map(
-                            move |pkgs| {
-                                let name = name_lower.clone();
-                                let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                                    .into_iter()
-                                    .flat_map(|pkg| {
-                                        let intros: Vec<IntroId> = pkg
-                                            .indexes()
-                                            .by_name
-                                            .get_exact(&name)
-                                            .iter()
-                                            .map(|e| e.intro)
-                                            .collect();
-                                        intros.into_iter().map(move |i| (pkg.clone(), i))
-                                    })
-                                    .collect();
-                                stream::iter(
-                                    pairs
-                                        .into_iter()
-                                        .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                                )
-                            },
-                        ),
-                    );
-                }
-
-                // ── Pushdown 3: equality on `kind` ─────────────────────────
-                //
-                // Routes to `by_kind` map per package: O(packages) lookups
-                // instead of O(total symbols) entry scans.
-                if let Some(CandidateValue::Single(FieldValue::String(kind_val))) =
-                    resolve_info.statically_required_property("kind")
-                {
-                    let kind_str = kind_val.to_string();
-                    return Box::pin(
-                        stream::once(async move {
-                            let disc = kind_disc_from_str(&kind_str)
-                                .ok_or_else(|| GraphError::InvalidKind(kind_str.clone()))?;
-                            Ok((corpus.packages().await, disc))
-                        })
-                        .flat_map(|result| match result {
-                            Err(e) => Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'_, Result<Vertex, GraphError>>,
-                            Ok((pkgs, disc)) => Box::pin({
-                                let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                                    .into_iter()
-                                    .flat_map(|pkg| {
-                                        let intros: Vec<IntroId> = pkg
-                                            .indexes()
-                                            .by_kind
-                                            .get(&disc)
-                                            .cloned()
-                                            .unwrap_or_default();
-                                        intros.into_iter().map(move |i| (pkg.clone(), i))
-                                    })
-                                    .collect();
-                                stream::iter(
-                                    pairs
-                                        .into_iter()
-                                        .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                                )
-                            }),
-                        }),
-                    );
-                }
-
-                // ── Fallback: full enumeration ──────────────────────────────
-                //
-                // No equality filter on `key`, `name`, or `kind` was found.
-                // Emit a diagnostic log so slow queries are identifiable.
-                tracing::debug!(
-                    "Symbols entrypoint: no equality filter on `key`, `name`, or `kind` — \
-                     falling back to O(total symbols) full enumeration"
+                let plan = plan_symbols(
+                    resolve_info.statically_required_property("key"),
+                    resolve_info.statically_required_property("name"),
+                    resolve_info.statically_required_property("kind"),
+                    resolve_info.coerced_to_type().map(|t| t.as_ref()),
                 );
-                Box::pin(
-                    stream::once(async move { corpus.packages().await }).flat_map(move |pkgs| {
-                        // Increment the probe counter by the number of packages
-                        // being enumerated.  Only the full-scan path increments
-                        // this; pushdown paths bypass `packages()` entirely.
-                        if let Some(ref c) = counter {
-                            c.fetch_add(pkgs.len(), Ordering::Relaxed);
-                        }
-                        let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                            .into_iter()
-                            .flat_map(|pkg| {
-                                let intros: Vec<IntroId> =
-                                    pkg.view().entries().map(|(id, _)| id).collect();
-                                intros.into_iter().map(move |i| (pkg.clone(), i))
-                            })
-                            .collect();
-                        stream::iter(
-                            pairs
-                                .into_iter()
-                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                        )
-                    }),
-                )
+                match plan {
+                    Err(e) => error_stream(e),
+                    Ok(plan) => {
+                        tracing::debug!(?plan, "Symbols entrypoint plan");
+                        run_symbol_plan(memo, plan)
+                    }
+                }
             }
 
-            other => {
-                let msg = other.to_string();
-                Box::pin(stream::once(async move {
-                    Err(GraphError::UnknownEdge {
-                        ty: "RootSchemaQuery".to_string(),
-                        edge: msg,
-                    })
-                }))
-            }
+            other => error_stream(GraphError::UnknownEdge {
+                ty: "RootSchemaQuery".to_string(),
+                edge: other.to_string(),
+            }),
         }
     }
 
@@ -541,6 +886,24 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             });
                         }
                     })
+                })
+            }
+
+            // ── SourceLocation properties ──────────────────────────────────
+            "SourceLocation" => {
+                let prop = property_name.to_string();
+                async_helpers::try_resolve_property_with(contexts, move |vertex| {
+                    let sv = vertex.as_source_location().ok_or_else(|| {
+                        GraphError::UnknownProperty {
+                            ty: "SourceLocation".to_string(),
+                            prop: prop.clone(),
+                        }
+                    })?;
+                    let view = sv.package.view();
+                    let entry = view
+                        .entry(sv.intro)
+                        .ok_or(GraphError::SymbolNotFound(sv.intro))?;
+                    location_property(entry.location(), &prop)
                 })
             }
 
@@ -610,24 +973,49 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 })
             }
 
-            // ── Field-specific properties ──────────────────────────────────
-            "Field" if property_name == "typeStr" => {
-                async_helpers::try_resolve_property_with(contexts, |vertex| {
-                    let sv = symbol_vertex_from(vertex, "Field")?;
+            // ── The six rendered-type properties ───────────────────────────
+            //
+            // One arm, one renderer. `Field.typeStr` was the only one of these
+            // that existed, it was a `Debug` dump, and the other five were left
+            // off the schema *because* copying that dump was the only way to
+            // add them. Resolving all six through [`type_str`] is what makes a
+            // seventh cost nothing and makes a second renderer impossible to
+            // add here by accident.
+            //
+            // Every one of them is nullable, and the null is load-bearing:
+            // `Field::ty`, `Param::ty` and `Alias::target` are `Option<Type>`
+            // in the IR, and "the producer recorded no type at all" is a
+            // different fact from `Type::Unknown(Unannotated)`, which renders
+            // as `?unannotated`. The old code returned the string `"?"` for
+            // both, which is exactly the conflation the unknown lattice was
+            // split to remove.
+            "Field" | "Const" | "Static" | "Param" | "Alias" | "Impl"
+                if rendered_type_property(type_name) == Some(property_name) =>
+            {
+                let ty_name = type_name.to_string();
+                async_helpers::try_resolve_property_with(contexts, move |vertex| {
+                    let sv = symbol_vertex_from(vertex, &ty_name)?;
                     let entry = sv
                         .package
                         .view()
                         .entry(sv.intro)
                         .ok_or(GraphError::SymbolNotFound(sv.intro))?;
-                    let type_str = match entry.kind().as_owned_kind() {
-                        Some(Kind::Field(f)) => {
-                            f.ty.as_ref()
-                                .map(|t| format!("{t:?}"))
-                                .unwrap_or_else(|| "?".to_string())
-                        }
-                        _ => "?".to_string(),
+                    // A reference entry (`as_owned_kind() == None`) carries no
+                    // kind body and therefore no type; that is a null, not a
+                    // rendering.
+                    let ty: Option<&Type> = match entry.kind().as_owned_kind() {
+                        Some(Kind::Field(f)) => f.ty.as_ref(),
+                        Some(Kind::Const(c)) => Some(&c.ty),
+                        Some(Kind::Static(s)) => Some(&s.ty),
+                        Some(Kind::Param(p)) => p.ty.as_ref(),
+                        Some(Kind::Alias(a)) => a.target.as_ref(),
+                        Some(Kind::Impl(i)) => Some(&i.self_ty),
+                        _ => None,
                     };
-                    Ok(FieldValue::String(type_str.into()))
+                    Ok(match ty {
+                        Some(ty) => FieldValue::String(type_str(ty, &sv.package).into()),
+                        None => FieldValue::Null,
+                    })
                 })
             }
 
@@ -681,7 +1069,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 // bound on the resolver closure (type_name: &str is shorter).
                 let ty_for_err = type_name.to_string();
                 async_helpers::try_resolve_property_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
+                    match crate::vertex::as_symbol_vertex(vertex) {
                         Some(sv) => symbol_property(sv, &prop),
                         None => Err(GraphError::UnknownProperty {
                             ty: ty_for_err.clone(),
@@ -705,7 +1093,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
         _parameters: &EdgeParameters,
         _resolve_info: &ResolveEdgeInfo,
     ) -> ContextOutcomeStream<'vertex, V, VertexStream<'vertex, Result<Vertex, GraphError>>> {
-        let corpus = self.corpus.clone();
+        let memo = self.memo();
         let type_name = type_name.as_ref();
         let edge_name = edge_name.as_ref();
 
@@ -714,18 +1102,16 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             ("Package", "members") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
                     match vertex.as_package() {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Package".to_string(),
-                                edge: "members".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
+                        None => error_stream(GraphError::UnknownEdge {
+                            ty: "Package".to_string(),
+                            edge: "members".to_string(),
+                        }),
                         Some(pkg) => {
                             let pkg = pkg.clone();
+                            // `entries_sorted`: `Package.members` is a user-
+                            // visible row order, and `entries()` is hash order.
                             let intros: Vec<IntroId> =
-                                pkg.view().entries().map(|(id, _)| id).collect();
+                                pkg.view().entries_sorted().map(|(id, _)| id).collect();
                             Box::pin(stream::iter(
                                 intros
                                     .into_iter()
@@ -738,15 +1124,11 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
 
             // ── Symbol → package ───────────────────────────────────────────
             (_, "package") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match extract_symbol_vertex(vertex) {
-                    None => {
-                        let e = GraphError::UnknownEdge {
-                            ty: "Symbol".to_string(),
-                            edge: "package".to_string(),
-                        };
-                        Box::pin(stream::once(async move { Err(e) }))
-                            as VertexStream<'vertex, Result<Vertex, GraphError>>
-                    }
+                match crate::vertex::as_symbol_vertex(vertex) {
+                    None => error_stream(GraphError::UnknownEdge {
+                        ty: "Symbol".to_string(),
+                        edge: "package".to_string(),
+                    }),
                     Some(sv) => {
                         let pkg = sv.package.clone();
                         Box::pin(stream::once(async move { Ok(Vertex::Package(pkg)) }))
@@ -754,17 +1136,35 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 }
             }),
 
+            // ── Symbol → location ──────────────────────────────────────────
+            //
+            // A non-null edge: every entry has a `SourceLocation`, because the
+            // IR has no way to represent an entry without one — the absent
+            // case is the `Unlocated` variant, which is a *value*, not a null.
+            // Modelling it as `location: SourceLocation!` rather than an
+            // optional edge is what forces a reader to confront the reason.
+            (_, "location") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                match crate::vertex::as_symbol_vertex(vertex) {
+                    None => error_stream(GraphError::UnknownEdge {
+                        ty: "Symbol".to_string(),
+                        edge: "location".to_string(),
+                    }),
+                    Some(sv) => {
+                        let sv = sv.clone();
+                        Box::pin(stream::once(async move {
+                            Ok(Vertex::SourceLocation(sv))
+                        }))
+                    }
+                }
+            }),
+
             // ── Symbol → members (children) ────────────────────────────────
             (_, "members") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match extract_symbol_vertex(vertex) {
-                    None => {
-                        let e = GraphError::UnknownEdge {
-                            ty: "Symbol".to_string(),
-                            edge: "members".to_string(),
-                        };
-                        Box::pin(stream::once(async move { Err(e) }))
-                            as VertexStream<'vertex, Result<Vertex, GraphError>>
-                    }
+                match crate::vertex::as_symbol_vertex(vertex) {
+                    None => error_stream(GraphError::UnknownEdge {
+                        ty: "Symbol".to_string(),
+                        edge: "members".to_string(),
+                    }),
                     Some(sv) => {
                         let children: Vec<IntroId> =
                             sv.package.view().children_of(sv.intro).to_vec();
@@ -780,15 +1180,11 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
 
             // ── Symbol → parent ────────────────────────────────────────────
             (_, "parent") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match extract_symbol_vertex(vertex) {
-                    None => {
-                        let e = GraphError::UnknownEdge {
-                            ty: "Symbol".to_string(),
-                            edge: "parent".to_string(),
-                        };
-                        Box::pin(stream::once(async move { Err(e) }))
-                            as VertexStream<'vertex, Result<Vertex, GraphError>>
-                    }
+                match crate::vertex::as_symbol_vertex(vertex) {
+                    None => error_stream(GraphError::UnknownEdge {
+                        ty: "Symbol".to_string(),
+                        edge: "parent".to_string(),
+                    }),
                     Some(sv) => match sv.package.view().parent_of(sv.intro) {
                         None => Box::pin(stream::empty()),
                         Some(parent_intro) => {
@@ -802,99 +1198,135 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             }),
 
             // ── Symbol → usages (reverse occurrences across all packages) ──
-            (_, "usages") => {
-                let corpus_clone = corpus.clone();
-                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "usages".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => {
-                            let target = sv.stable_ref();
-                            let corpus2 = corpus_clone.clone();
-                            Box::pin(
-                                stream::once(async move { corpus2.packages().await }).flat_map(
-                                    move |pkgs| {
-                                        let target = target.clone();
-                                        let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                                            .into_iter()
-                                            .flat_map(|pkg| {
-                                                let intros: Vec<IntroId> =
-                                                    pkg.indexes().usages_of(&target).to_vec();
-                                                intros.into_iter().map(move |i| (pkg.clone(), i))
-                                            })
-                                            .collect();
-                                        stream::iter(
-                                            pairs
-                                                .into_iter()
-                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                                        )
-                                    },
-                                ),
-                            )
-                        }
-                    }
-                })
-            }
+            (_, "usages") => posting_neighbors(contexts, memo, Posting::Usages, "usages"),
 
-            // ── Symbol → mentions (type references across all packages) ────
-            (_, "mentions") => {
-                let corpus_clone = corpus.clone();
+            // ── Symbol → mentions (relational type references) ─────────────
+            (_, "mentions") => posting_neighbors(contexts, memo, Posting::Mentions, "mentions"),
+
+            // ── Trait → implementors ───────────────────────────────────────
+            //
+            // Exactly the `ImplementedTrait` position: an impl's `of` type is
+            // a reference to the trait it implements, and nothing else is.
+            //
+            // This used to read the whole `mentions` list, which also carries
+            // supertrait bounds — so `Display.implementors` reported every
+            // `trait Foo: Display` as an implementor of `Display`, which is
+            // not one. Naming the position removes the false positives rather
+            // than filtering them out downstream.
+            ("Trait", "implementors") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::ImplementedTrait),
+                "implementors",
+            ),
+
+            // ── Symbol → the five signature-position reverse edges ─────────
+            //
+            // Each names one [`TypePosition`], because the questions they
+            // answer have different answers: a function that *takes* `Y` is
+            // not a function that *returns* it, and an impl *for* `Y` is not
+            // an implementation *of* `Y`. Serving them from one undifferentiated
+            // list is the conflation `mentions` would have become had these
+            // references been added to it.
+            (_, "implementedBy") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::ImplSelf),
+                "implementedBy",
+            ),
+            (_, "subtypes") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::SuperType),
+                "subtypes",
+            ),
+            (_, "returnedBy") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::Return),
+                "returnedBy",
+            ),
+            (_, "acceptedBy") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::Parameter),
+                "acceptedBy",
+            ),
+            (_, "heldBy") => posting_neighbors(
+                contexts,
+                memo,
+                Posting::At(TypePosition::FieldType),
+                "heldBy",
+            ),
+
+            // ── Symbol → signatureTypes (the forward direction) ────────────
+            //
+            // The only forward type edge in the schema, and the one the name
+            // `mentions` has always misleadingly suggested. It reads the
+            // declaration's own kind — no posting list is involved, because
+            // the answer is written on the entry — so it is proportional to
+            // the signature and costs the corpus one lookup per *distinct
+            // target package*, memoised across the whole edge.
+            //
+            // Derived from the same `typerefs_of_entry` that builds the
+            // reverse index, so the two directions cannot disagree about what
+            // a signature references.
+            (_, "signatureTypes") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "mentions".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => {
-                            let target = sv.stable_ref();
-                            let corpus2 = corpus_clone.clone();
-                            Box::pin(
-                                stream::once(async move { corpus2.packages().await }).flat_map(
-                                    move |pkgs| {
-                                        let target = target.clone();
-                                        let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                                            .into_iter()
-                                            .flat_map(|pkg| {
-                                                let intros: Vec<IntroId> =
-                                                    pkg.indexes().mentions_of(&target).to_vec();
-                                                intros.into_iter().map(move |i| (pkg.clone(), i))
-                                            })
-                                            .collect();
-                                        stream::iter(
-                                            pairs
-                                                .into_iter()
-                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                                        )
-                                    },
-                                ),
-                            )
-                        }
-                    }
+                    let Some(sv) = crate::vertex::as_symbol_vertex(vertex) else {
+                        return error_stream(GraphError::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "signatureTypes".to_string(),
+                        });
+                    };
+                    // Deduplicate by target: a type named in two positions
+                    // (`impl Point` on `Point`, `fn f(a: T, b: T)`) is one
+                    // neighbor, not two. `typerefs_of_entry` returns
+                    // `(position, target)` order, so this keeps the first
+                    // position's ordering and is deterministic.
+                    let mut targets: Vec<StableRef> =
+                        typerefs_of_entry(sv.package.view(), sv.intro)
+                            .into_iter()
+                            .map(|TypeRef { target, .. }| target)
+                            .collect();
+                    targets.sort_unstable();
+                    targets.dedup();
+
+                    let memo = Arc::clone(&memo);
+                    Box::pin(
+                        stream::iter(targets)
+                            .then(move |sr| {
+                                let memo = Arc::clone(&memo);
+                                async move {
+                                    // A target whose package is not loaded
+                                    // yields no neighbor rather than an error,
+                                    // matching `Occurrence.target`: a
+                                    // partially-loaded corpus is the normal
+                                    // case, not a malformed query.
+                                    let Some(pkg) = memo.package(sr.package.clone()).await else {
+                                        return Ok(None);
+                                    };
+                                    Ok(Some(vertex_for_intro(pkg, sr.intro)?))
+                                }
+                            })
+                            .flat_map(|result| match result {
+                                Err(e) => error_stream(e),
+                                Ok(None) => Box::pin(stream::empty())
+                                    as VertexStream<'vertex, Result<Vertex, GraphError>>,
+                                Ok(Some(v)) => Box::pin(stream::once(async move { Ok(v) })),
+                            }),
+                    )
                 })
             }
 
             // ── Symbol → occurrencesOf ─────────────────────────────────────
             (_, "occurrencesOf") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Symbol".to_string(),
-                                edge: "occurrencesOf".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
+                    match crate::vertex::as_symbol_vertex(vertex) {
+                        None => error_stream(GraphError::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "occurrencesOf".to_string(),
+                        }),
                         Some(sv) => {
                             let count = sv.package.view().occurrences_of(sv.intro).len();
                             let sv_clone = sv.clone();
@@ -904,6 +1336,30 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                     occ_index: idx,
                                 }))
                             })))
+                        }
+                    }
+                })
+            }
+
+            // ── Occurrence → owner ─────────────────────────────────────────
+            //
+            // `Occurrence.spanStart`/`spanEnd` are offsets *relative to the
+            // owning entry's span start* (`nudox_ir::vocab::RelSpan`). Without
+            // this edge the graph published two numbers a caller could not
+            // turn into a position, because the base they are relative to was
+            // unreachable: `owner { location { byteStart } }` is that base.
+            ("Occurrence", "owner") => {
+                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
+                    match vertex.as_occurrence() {
+                        None => error_stream(GraphError::UnknownEdge {
+                            ty: "Occurrence".to_string(),
+                            edge: "owner".to_string(),
+                        }),
+                        Some(ov) => {
+                            let owner = ov.owner.clone();
+                            Box::pin(stream::once(async move {
+                                vertex_for_intro(owner.package, owner.intro)
+                            }))
                         }
                     }
                 })
@@ -921,21 +1377,17 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // the corpus yet we yield zero neighbors rather than an error, so
             // queries stay robust against partially-loaded corpora.
             //
-            // Cost: O(1) `Corpus::entry` lookup per occurrence — identical to
-            // the `Symbols` pushdown path on `key` equality.
+            // Cost: one `Corpus::package` probe per *distinct target package*,
+            // not per occurrence — `CorpusMemo` caches the misses as well as
+            // the hits, which is what makes a partially-loaded corpus cheap
+            // rather than the worst case.
             ("Occurrence", "target") => {
-                let corpus_clone = corpus.clone();
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    let ov = match vertex.as_occurrence() {
-                        Some(ov) => ov,
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Occurrence".to_string(),
-                                edge: "target".to_string(),
-                            };
-                            return Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>;
-                        }
+                    let Some(ov) = vertex.as_occurrence() else {
+                        return error_stream(GraphError::UnknownEdge {
+                            ty: "Occurrence".to_string(),
+                            edge: "target".to_string(),
+                        });
                     };
                     // Read the target StableRef out of the occurrence slice.
                     // `occurrences_of` borrows `ov.owner.package`, so we must
@@ -953,73 +1405,28 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             }
                         }
                     };
-                    let corpus2 = corpus_clone.clone();
+                    let memo = Arc::clone(&memo);
                     Box::pin(
                         stream::once(async move {
-                            // Look up the package that owns the target.  If it is
-                            // not loaded, yield nothing (optional edge).
-                            let pkg = match corpus2.package(&target_sr.package).await {
-                                Some(p) => p,
-                                None => return Ok(None),
+                            let Some(pkg) = memo.package(target_sr.package.clone()).await else {
+                                return Ok(None);
                             };
                             // Build the vertex.  A missing intro in a loaded package
                             // is a corpus inconsistency; surface it as an error so
                             // the caller can diagnose it rather than silently losing
                             // the row.
-                            let v = vertex_for_intro(pkg, target_sr.intro)?;
-                            Ok(Some(v))
+                            Ok(Some(vertex_for_intro(pkg, target_sr.intro)?))
                         })
                         // `stream::once` yields `Result<Option<Vertex>, GraphError>`.
                         // We must flatten the `Option` into a zero-or-one element
                         // stream without losing the `Result` wrapper.
                         .flat_map(|result| match result {
-                            Err(e) => Box::pin(stream::once(async move { Err(e) }))
+                            Err(e) => error_stream(e),
+                            Ok(None) => Box::pin(stream::empty())
                                 as VertexStream<'vertex, Result<Vertex, GraphError>>,
-                            Ok(None) => Box::pin(stream::empty()),
                             Ok(Some(v)) => Box::pin(stream::once(async move { Ok(v) })),
                         }),
                     )
-                })
-            }
-
-            // ── Trait → implementors ───────────────────────────────────────
-            ("Trait", "implementors") => {
-                let corpus_clone = corpus.clone();
-                async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match extract_symbol_vertex(vertex) {
-                        None => {
-                            let e = GraphError::UnknownEdge {
-                                ty: "Trait".to_string(),
-                                edge: "implementors".to_string(),
-                            };
-                            Box::pin(stream::once(async move { Err(e) }))
-                                as VertexStream<'vertex, Result<Vertex, GraphError>>
-                        }
-                        Some(sv) => {
-                            let target = sv.stable_ref();
-                            let corpus2 = corpus_clone.clone();
-                            Box::pin(
-                                stream::once(async move { corpus2.packages().await }).flat_map(
-                                    move |pkgs| {
-                                        let target = target.clone();
-                                        let pairs: Vec<(Arc<PackageView>, IntroId)> = pkgs
-                                            .into_iter()
-                                            .flat_map(|pkg| {
-                                                let intros: Vec<IntroId> =
-                                                    pkg.indexes().mentions_of(&target).to_vec();
-                                                intros.into_iter().map(move |i| (pkg.clone(), i))
-                                            })
-                                            .collect();
-                                        stream::iter(
-                                            pairs
-                                                .into_iter()
-                                                .map(|(pkg, intro)| vertex_for_intro(pkg, intro)),
-                                        )
-                                    },
-                                ),
-                            )
-                        }
-                    }
                 })
             }
 
@@ -1029,11 +1436,10 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 async_helpers::try_resolve_neighbors_with(
                     contexts,
                     move |_vertex| -> VertexStream<'vertex, Result<Vertex, GraphError>> {
-                        let e = GraphError::UnknownEdge {
+                        error_stream(GraphError::UnknownEdge {
                             ty: ty_owned.clone(),
                             edge: edge_owned.clone(),
-                        };
-                        Box::pin(stream::once(async move { Err(e) }))
+                        })
                     },
                 )
             }
@@ -1062,31 +1468,10 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
 // Internal vertex extraction helpers
 // ---------------------------------------------------------------------------
 
-/// Extract a `SymbolVertex` from any symbol-type vertex variant.
-fn extract_symbol_vertex(vertex: &Vertex) -> Option<&SymbolVertex> {
-    match vertex {
-        Vertex::Function(sv)
-        | Vertex::Record(sv)
-        | Vertex::Trait(sv)
-        | Vertex::Impl(sv)
-        | Vertex::Enum(sv)
-        | Vertex::Field(sv)
-        | Vertex::Const(sv)
-        | Vertex::Alias(sv)
-        | Vertex::Static(sv)
-        | Vertex::Variant(sv)
-        | Vertex::Module(sv)
-        | Vertex::Reexport(sv)
-        | Vertex::Param(sv)
-        | Vertex::OtherSymbol(sv) => Some(sv),
-        Vertex::Package(_) | Vertex::Occurrence(_) => None,
-    }
-}
-
 /// Extract a `SymbolVertex` from a generic vertex, returning an error if the
 /// vertex is not a symbol type.
 fn symbol_vertex_from<'v>(vertex: &'v Vertex, ty: &str) -> Result<&'v SymbolVertex, GraphError> {
-    extract_symbol_vertex(vertex).ok_or_else(|| GraphError::UnknownEdge {
+    crate::vertex::as_symbol_vertex(vertex).ok_or_else(|| GraphError::UnknownEdge {
         ty: ty.to_string(),
         edge: String::new(),
     })

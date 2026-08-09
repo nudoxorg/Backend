@@ -37,6 +37,8 @@ fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
+    lindsey::perf::init_from_env();
+
     // ── The engine (LR-9: it owns every runtime; lindsey links none) ─────────
     //
     // Started before the window so the corpus is loading while GPUI is still

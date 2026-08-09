@@ -63,6 +63,7 @@
 //! looked. See [`EngineCapability`] and LIMITATIONS.md L37.
 
 pub mod chunk;
+pub mod diff;
 pub mod doc;
 pub mod highlight;
 pub mod query;

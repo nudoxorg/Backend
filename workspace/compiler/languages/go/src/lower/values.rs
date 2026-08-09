@@ -97,7 +97,10 @@ pub(super) fn lower_const(
         .r#type
         .as_ref()
         .map(|t| types::lower_type_with_lowering(t, low, local))
-        .unwrap_or(Type::Any);
+        // `const Foo = 1` writes no type; Go infers one. The source-level fact
+        // is that the annotation is absent, which is not the same claim as
+        // "this constant accepts any value".
+        .unwrap_or(Type::UNANNOTATED);
     let value = if decl.value.is_empty() {
         None
     } else {
@@ -128,7 +131,8 @@ pub(super) fn lower_var(
         .r#type
         .as_ref()
         .map(|t| types::lower_type_with_lowering(t, low, local))
-        .unwrap_or(Type::Any);
+        // `var x = f()` writes no type; Go infers one. See `lower_const`.
+        .unwrap_or(Type::UNANNOTATED);
 
     let static_kind = Static::builder().ty(ty).mutable(true).build();
     low.declare(item_id, Some(parent), sym, static_kind);

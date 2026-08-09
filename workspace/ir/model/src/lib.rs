@@ -154,6 +154,7 @@ pub mod package;
 pub mod reflect;
 pub mod registry;
 pub mod relation;
+pub mod render;
 pub mod skeleton;
 pub mod view;
 pub mod vocab;

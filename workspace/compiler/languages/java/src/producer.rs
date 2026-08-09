@@ -12,9 +12,17 @@
 //!
 //! ```text
 //! javadoc -quiet -doclet nudox.oracle.Extractor -docletpath <classes> \
-//!     [-sourcepath <root>:<sibling dirs>] [--release <N>] \
+//!     [-sourcepath <root>:<sibling dirs>                  # non-modular target
+//!      | --module-source-path <mod>=<dir> ...]            # modular target
+//!     [--module-path <corpus>/.module-path] [--add-modules <spec>] \
+//!     [--release <N>] [--add-exports <module>/<pkg>=ALL-UNNAMED ...] \
 //!     <every .java file under PackageSource::root, recursively>
 //! ```
+//!
+//! The `-sourcepath` / `--module-source-path` choice is forced by `javac`,
+//! which rejects both in one invocation, and is made on one fact: whether
+//! `PackageSource::root` holds a `module-info.java`. See
+//! [`module_source_path_args`].
 //!
 //! No `-outfile` side channel is used: the doclet prints its one JSON document
 //! to stdout only when `-outfile` is absent (see `Extractor.run`), and
@@ -68,10 +76,23 @@
 //! by adding `ch.qos.logback:logback-classic`'s and
 //! `org.junit.jupiter:junit-jupiter-api`'s module-bearing checkouts to
 //! rxjava's sourcepath and watching rxjava's compile fail on logback's own
-//! unrelated `requires` directives. The target package's *own* root is always
-//! included even if it carries a `module-info.java` (`gson` and
-//! `jakarta.validation-api` both do, and both must keep working) — only
-//! *other* packages' module roots are excluded.
+//! unrelated `requires` directives.
+//!
+//! # Modular targets take the other branch entirely
+//!
+//! A target that carries its own `module-info.java` (`gson`,
+//! `jakarta.validation-api`, `logback-classic`, `junit-jupiter-api`) is
+//! compiled by `javac` as a *named module*, and a named module does not read
+//! `-sourcepath` packages at all — it reads the modules in its `requires`
+//! closure, and fails before touching ordinary source if any of them is
+//! missing. Those targets therefore get [`module_source_path_args`] instead:
+//! `--module-source-path <module-name>=<dir>` for the target and every
+//! module-bearing sibling, plus [`module_path_args`] for the handful of
+//! modules that exist only as compiled descriptors. `javac` refuses to accept
+//! `-sourcepath` and `--module-source-path` together, so this is genuinely
+//! either/or rather than a union — which also means a modular target sees no
+//! non-modular sibling, and is fine precisely because a named module could
+//! not have read one anyway.
 //!
 //! # Where the compiled doclet classes come from
 //!
@@ -96,6 +117,11 @@
 //!   supported in -source 8`) rather than silently accepting it, and that
 //!   ordinary Java-8-era source (raw generics, no `var`, anonymous classes)
 //!   processes cleanly at every level from 8 through 21.
+//! * **`--add-exports`**: unset by default. `NUDOX_JAVA_ADD_EXPORTS` takes a
+//!   comma-separated list of `<module>/<package>` specs, each emitted as
+//!   `--add-exports <module>/<package>=ALL-UNNAMED`. See
+//!   [`add_exports_args`] for why a per-invocation escape hatch rather than
+//!   an always-on flag, and which real library forces the question.
 //! * **JEP 467 Markdown javadoc (`///`)**: `javadoc.rs` in this crate parses
 //!   both flavors, but the *oracle* can only ever hand it Markdown-flavored
 //!   text on a JDK that recognizes `///` as a doc comment at all — that
@@ -157,14 +183,25 @@ impl Producer for JavaProducer {
             "-docletpath".to_owned(),
             classes_dir,
         ];
-        if let Some(sourcepath) = sourcepath_entries(src.root()) {
+        // A target that carries its own `module-info.java` is compiled as a
+        // named JPMS module, and a named module can only read other *modules* —
+        // `-sourcepath` package lookup does not apply to it. The two options
+        // are mutually exclusive (`javac`: "cannot specify both --source-path
+        // and --module-source-path"), so this is an either/or, not a union.
+        // See [`module_source_path_args`].
+        if is_module_root(src.root()) {
+            args.extend(module_source_path_args(src.root()));
+        } else if let Some(sourcepath) = sourcepath_entries(src.root()) {
             args.push("-sourcepath".to_owned());
             args.push(sourcepath);
         }
+        args.extend(module_path_args(src.root()));
+        args.extend(add_modules_args());
         if let Ok(release) = std::env::var("NUDOX_JAVA_RELEASE") {
             args.push("--release".to_owned());
             args.push(release);
         }
+        args.extend(add_exports_args());
         args.extend(sources.iter().map(|p| p.to_string_lossy().into_owned()));
 
         let javadoc_bin = std::env::var("NUDOX_JAVADOC").unwrap_or_else(|_| "javadoc".to_owned());
@@ -189,6 +226,44 @@ fn oracle_classes_dir() -> String {
         .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/classes").to_owned())
 }
 
+/// `--add-exports <module>/<package>=ALL-UNNAMED` pairs, read from
+/// `NUDOX_JAVA_ADD_EXPORTS` (comma-separated `<module>/<package>` specs;
+/// unset — the default — contributes nothing).
+///
+/// This exists because a small number of real libraries compile *only* with
+/// a JDK-internal package exported, and say so in their own build rather
+/// than their POM. The corpus's live case is `org.conscrypt`, whose
+/// `Platform.java` imports `sun.security.x509.AlgorithmId`; conscrypt's own
+/// Gradle build gets away with that by compiling at `sourceCompatibility
+/// 1.7`, i.e. before the module system enforced exports at all. Nothing
+/// short of this flag makes that import resolve on a modern JDK: `--release
+/// 8` does *not* work (it swaps in the `ct.sym` cross-compilation view,
+/// under which `sun.security.x509` does not exist at all rather than merely
+/// being unexported), and no Maven artifact can supply a package that lives
+/// inside `java.base`.
+///
+/// Deliberately off by default and per-invocation, exactly like
+/// `NUDOX_JAVA_RELEASE`: an always-on `--add-exports` would quietly make
+/// this producer's compile environment more permissive than a stock
+/// `javadoc`, which is the kind of difference that turns "the corpus lowers"
+/// into a claim about our flags rather than about the code. Callers that
+/// need it scope it to the one package that does (see
+/// `tests/corpus_sweep.rs`'s `Entry::add_exports`).
+///
+/// The value is `ALL-UNNAMED` rather than a named module because the
+/// producer never compiles the *dependency* as a module — sibling checkouts
+/// resolve through `-sourcepath` into the unnamed module.
+fn add_exports_args() -> Vec<String> {
+    let Ok(raw) = std::env::var("NUDOX_JAVA_ADD_EXPORTS") else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .flat_map(|spec| ["--add-exports".to_owned(), format!("{spec}=ALL-UNNAMED")])
+        .collect()
+}
+
 /// Builds the `-sourcepath` value: `root` itself, plus every sibling
 /// directory of `root` (i.e. every other entry directly under `root`'s
 /// parent) that does **not** carry its own `module-info.java` — see this
@@ -207,18 +282,224 @@ fn sourcepath_entries(root: &Path) -> Option<String> {
     let mut entries: Vec<PathBuf> = vec![root.to_path_buf()];
     for entry in siblings.flatten() {
         let path = entry.path();
-        if path == root || !path.is_dir() {
+        if path == root || !path.is_dir() || is_hidden(&path) {
             continue;
         }
-        if path.join("module-info.java").is_file() {
+        if is_module_root(&path) {
             continue;
         }
         entries.push(path);
     }
+    entries[1..].sort();
 
     std::env::join_paths(&entries)
         .ok()
         .map(|joined| joined.to_string_lossy().into_owned())
+}
+
+/// A dot-prefixed directory next to the package checkouts is never a package
+/// checkout — it is corpus machinery. Today the only one is
+/// `.real-crates/.module-path`, the compiled-JPMS-descriptor directory (see
+/// [`module_path_args`]); skipping the whole class rather than that one name
+/// keeps `-sourcepath` from picking up anything a future corpus mechanism
+/// puts beside the checkouts.
+fn is_hidden(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with('.'))
+}
+
+/// Whether `dir` is a JPMS module root — i.e. holds a `module-info.java`
+/// directly at its top level, which is the only place `javac` looks.
+fn is_module_root(dir: &Path) -> bool {
+    dir.join("module-info.java").is_file()
+}
+
+/// `--module-source-path <module>=<dir>` for the target and for every
+/// module-bearing sibling checkout.
+///
+/// This is the invocation shape for a target that carries its own
+/// `module-info.java`. Such a target is compiled as a named module, and a
+/// named module reads *modules*, not `-sourcepath` packages: every name in
+/// its `requires` list — including `requires static`, which is optional at
+/// runtime but mandatory at compile time — has to resolve to a real module or
+/// `javac` stops before it looks at a single ordinary source file
+/// (`module not found: org.slf4j`, and so on).
+///
+/// The module-specific `<module>=<path>` form (JDK 12+) is used rather than
+/// the pattern form, because this corpus's checkout directories are named
+/// `groupId__artifactId-version` and a module's name is unrelated to that
+/// (`ch.qos.logback__logback-classic-1.4.14` declares `ch.qos.logback.classic`).
+/// The name is read out of each `module-info.java` by [`declared_module_name`].
+///
+/// Registering *every* module-bearing sibling, not just the ones a given
+/// target happens to require, is safe: `javac` resolves lazily from the root
+/// module outward, so an unrequired entry is scanned for its name and then
+/// ignored. It is also what makes this a general mechanism rather than a
+/// per-package table.
+///
+/// Modules that only exist as compiled jars come in through
+/// [`module_path_args`] instead; the two are complementary and both are
+/// passed.
+fn module_source_path_args(root: &Path) -> Vec<String> {
+    let mut roots: Vec<PathBuf> = vec![root.to_path_buf()];
+    if let Some(parent) = root.parent()
+        && let Ok(siblings) = std::fs::read_dir(parent)
+    {
+        let mut others: Vec<PathBuf> = siblings
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p != root && p.is_dir() && !is_hidden(p) && is_module_root(p))
+            .collect();
+        others.sort();
+        roots.extend(others);
+    }
+
+    roots
+        .iter()
+        .filter_map(|dir| {
+            let name = declared_module_name(&dir.join("module-info.java"))?;
+            Some([
+                "--module-source-path".to_owned(),
+                format!("{name}={}", dir.display()),
+            ])
+        })
+        .flatten()
+        .collect()
+}
+
+/// The module name declared by a `module-info.java`, or `None` if the file
+/// cannot be read or holds nothing that looks like a module declaration.
+///
+/// Deliberately a small scanner rather than a real parser: strip comments
+/// (both flavors — every real `module-info.java` in this corpus opens with a
+/// block-comment license header, and several document individual `requires`
+/// with `//`), then take the identifier after the first `module` keyword. The
+/// optional `open` modifier is handled by simply not caring about it: `open
+/// module foo` still has `module` immediately before the name. Annotations
+/// (`@Deprecated module foo`) likewise fall out for free.
+fn declared_module_name(module_info: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(module_info).ok()?;
+    let stripped = strip_java_comments(&text);
+    let mut tokens = stripped.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == "module" {
+            let name = tokens.next()?.trim_end_matches('{');
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_owned());
+            }
+        }
+    }
+    None
+}
+
+/// Removes `/* … */` and `// …` from Java source. Only used on
+/// `module-info.java`, which by construction has no string or character
+/// literals for a comment delimiter to hide inside — the reason this can be a
+/// character scan instead of a lexer.
+fn strip_java_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match (c, chars.peek()) {
+            ('/', Some('*')) => {
+                chars.next();
+                let mut prev = '\0';
+                for c in chars.by_ref() {
+                    if prev == '*' && c == '/' {
+                        break;
+                    }
+                    prev = c;
+                }
+                // Comments separate tokens; without this, `*/module` would
+                // read as one word.
+                out.push(' ');
+            }
+            ('/', Some('/')) => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+                out.push(' ');
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// `--module-path <corpus>/.module-path`, when that directory exists.
+///
+/// This is where `corpus/fetch.nu` puts the corpus's only compiled artifacts:
+/// jars fetched *solely* so `javac` can resolve a module descriptor that has
+/// no source form (see `corpus/manifest.toml`'s `[[jpms_modules]]` header for
+/// the three situations that arise, and why a sources jar cannot cover them).
+/// They are never extracted and never on `-sourcepath` — [`is_hidden`] keeps
+/// the dot-directory off it — so nothing here can be lowered.
+///
+/// Passing the flag whenever the directory exists is deliberate and safe: a
+/// module on `--module-path` is inert unless something *resolves* it. For a
+/// modular target that means appearing in its `requires` closure; for a
+/// non-modular one it means being named in `--add-modules` (see
+/// [`add_modules_args`]), which is off by default.
+///
+/// The one exception is a pre-module-system `--release`: `javac` rejects the
+/// combination outright (`option --module-path not allowed with target 8`),
+/// so an entry pinned below Java 9 gets no module path at all. This is not
+/// hypothetical tidiness — `io.vavr:vavr` runs at `--release 8` and regressed
+/// out of the corpus sweep the moment the module path was added
+/// unconditionally.
+fn module_path_args(root: &Path) -> Vec<String> {
+    if !module_system_available() {
+        return Vec::new();
+    }
+    let dir = root.parent().map(|p| p.join(".module-path"));
+    match dir {
+        Some(dir) if dir.is_dir() => {
+            vec!["--module-path".to_owned(), dir.display().to_string()]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the current `NUDOX_JAVA_RELEASE` (if any) admits the module system
+/// at all. JPMS arrived in Java 9, and `javac` refuses `--module-path` /
+/// `--add-modules` when targeting 8 or lower rather than ignoring them.
+///
+/// An unset or unparseable value means "this JDK's native level", which is
+/// always ≥ 9 on any toolchain this crate can run on (the doclet API it uses
+/// is itself JDK 9+).
+fn module_system_available() -> bool {
+    match std::env::var("NUDOX_JAVA_RELEASE") {
+        Ok(release) => release.trim().parse::<u32>().ok().is_none_or(|n| n >= 9),
+        Err(_) => true,
+    }
+}
+
+/// `--add-modules <value>` from `NUDOX_JAVA_ADD_MODULES`; unset contributes
+/// nothing.
+///
+/// Needed only by a **non**-modular target that has to see types from a
+/// compiled module: without an explicit `--add-modules`, nothing on
+/// `--module-path` enters the root module set, so the unnamed module cannot
+/// read any of it. `assertj-core` is the corpus's one such case
+/// (`ALL-MODULE-PATH`) — see its entry in `tests/corpus_sweep.rs`.
+///
+/// Off by default, per-invocation, for the same reason as
+/// [`add_exports_args`]: silently widening every package's module graph would
+/// make "the corpus lowers" a statement about our flags.
+fn add_modules_args() -> Vec<String> {
+    if !module_system_available() {
+        return Vec::new();
+    }
+    match std::env::var("NUDOX_JAVA_ADD_MODULES") {
+        Ok(value) if !value.trim().is_empty() => {
+            vec!["--add-modules".to_owned(), value.trim().to_owned()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Recursively collect every `.java` file under `root`, sorted for

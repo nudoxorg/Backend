@@ -889,6 +889,7 @@ impl<P: PackageAccess> Panel for ProjectPanel<P> {
 
 impl<P: PackageAccess> Render for ProjectPanel<P> {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::scope(crate::perf::Region::ProjectPanel);
         // Snapshot the precomputed rows (cheap: Arc-clones under the hood).
         let rows = self.rows.clone();
         let row_count = rows.len();

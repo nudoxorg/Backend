@@ -35,126 +35,163 @@
 //! (an environment problem, not a code defect) rather than a failure — run
 //! `nu corpus/fetch.nu` first to materialize the corpus.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
+use nudox_ir::entry::{EntryInner, Visibility};
 use nudox_ir::foreign::Unlinked;
+use nudox_ir::kind::Kind;
 use nudox_producer::{PackageSource, YieldContract, produce};
 use nudox_producer_typescript::TypescriptProducer;
-
-/// What a fixture's real public API entitles this sweep to demand of the
-/// producer.
-///
-/// # Why an enum and not a `min_entries: usize`
-///
-/// The clang sweep (`languages/clang/tests/corpus_sweep.rs`) carries a plain
-/// per-package floor because every package in that corpus really does extract.
-/// The npm corpus does not: four entries here (`lodash` at both pinned
-/// versions, `debug`, and `ws`) are CommonJS with no bundled `.d.ts`, and this
-/// producer reads almost nothing out of them — see [`Expect::Stub`] and
-/// LIMITATIONS.md L47. A floor is the wrong
-/// shape for those, because the only floor they would pass is a floor so low it
-/// is the vacuous guard this file just replaced, wearing a number.
-///
-/// So the degradation is *named* instead, exactly the way
-/// [`nudox_producer::YieldContract`] names a producer's own: a `Stub` case
-/// asserts an **exact** count, so the day the extractor learns to read these
-/// packages the test fails and the claim has to be retracted in the same
-/// change that invalidates it. That is [`nudox_producer::ProducerError`]'s
-/// `YieldContractOutgrown` reasoning applied one level up, at the corpus.
-enum Expect {
-    /// The producer analyses this package and must contribute at least this
-    /// many declarations *beyond* the root `produce` synthesizes.
-    ///
-    /// Floors are set below the count measured on 2026-08-07 with enough margin
-    /// that ordinary extractor churn does not trip them, and high enough that
-    /// falling back to a stub does. They are not the measured numbers: a floor
-    /// pinned to today's exact output is a change-detector, not an assertion.
-    Declarations(usize),
-
-    /// The producer contributes (almost) nothing for this package, for a reason
-    /// that is a real property of the package rather than a defect this sweep
-    /// should hide.
-    ///
-    /// `contributed` is asserted **exactly**, not as a floor. `why` must name
-    /// the concrete obstruction, in the [`nudox_producer::DegradedYield`] sense
-    /// — specific enough that a reader can check whether it still holds.
-    Stub {
-        contributed: usize,
-        why: &'static str,
-    },
-}
 
 /// One npm corpus fixture: the manifest package name, the pinned version, the
 /// `.real-crates/` directory name `fetch.nu`'s `safe-dir-name` produces for it
 /// (`/` -> `__`, joined with `-<version>`), and what the producer owes it.
+///
+/// # Why `floor` + `must_contain`, and not the old `Expect` enum
+///
+/// This sweep used to carry an `Expect::Stub { contributed, why }` case for
+/// four packages (`lodash` at both pinned versions, `debug`, `ws`) that
+/// pinned a degenerate 1- or 2-entry result as an *acceptable, exact* count,
+/// on the theory that these CommonJS packages had no top-level declaration
+/// for the extractor to read at all. That theory does not survive contact
+/// with the checkouts: `ws` ships a real ESM entry (`wrapper.mjs`) with five
+/// named exports, and `lodash`'s ~300-function API lives in 331 sibling
+/// `.js` files next to the UMD bundle `main` points at — each with its own
+/// real top-level declaration. The bug was in the extractor (no CommonJS
+/// `module.exports`/`exports.X` recognition, and no "no `exports` field
+/// means every file is importable" fallback), not in the packages, and
+/// `Expect::Stub` encoded the bug's output as policy.
+///
+/// It was also unfalsifiable by construction: `Stub`'s `contributed` count
+/// was checked with no regard for *which* names, if any, were public and
+/// real — a table holding only the entry-file's own module name (`"lodash"`,
+/// `"index"`) passed identically to a table holding real content, because
+/// the sweep's only content check (`identifiers != 0`) is satisfied by the
+/// module entry's own name, which is always a real identifier.
+///
+/// The replacement is two independent claims per fixture:
+/// - `floor`: at least this many declarations, counted the same way as
+///   before (contributed beyond the synthesized root). Set with margin below
+///   the count measured on 2026-08-08 so ordinary extractor churn does not
+///   trip it — not the exact measured number, which would make this a
+///   change-detector instead of an assertion.
+/// - `must_contain`: real, source-verified symbol names that must appear
+///   among this fixture's `Visibility::Public`, **non-module** contributed
+///   entries. This is the check `floor` alone cannot make honest: a package
+///   whose only reachable "declarations" are one-per-file module entries
+///   (exactly what enumerating a CommonJS package's file tree without also
+///   teaching the extractor to read `module.exports` produces) can inflate
+///   `floor` arbitrarily while `must_contain` — filtered to
+///   non-`EntryInner::Owned(Kind::Module(_))` — stays red, because every
+///   name in it would land `Visibility::Private` without real CommonJS
+///   export recognition. Empty for fixtures whose triple-digit-plus floor is
+///   already a claim no stub could satisfy.
+///
+/// Every name in every `must_contain` list below was checked against the
+/// 2026-08-08 checkout under `.real-crates/` before being pinned — see the
+/// per-fixture comments for exactly where each symbol is declared and
+/// exported. A canary naming a symbol the package does not actually export
+/// is a bug in this file, not a floor to be met by inventing one.
 struct Fixture {
     name: &'static str,
     version: &'static str,
     dir: &'static str,
-    expect: Expect,
+    floor: usize,
+    must_contain: &'static [&'static str],
 }
-
-/// The three `Expect::Stub` reasons, written once so the three fixtures that
-/// share the same real obstruction cannot drift into three different accounts
-/// of it.
-const NO_TYPE_DECLARATIONS: &str =
-    "ships no `.d.ts` and declares no `types`/`typings` in package.json — a pure \
-     CommonJS tarball whose API escapes only through `module.exports` at runtime, \
-     so there is no top-level declaration for the extractor to read. Verified \
-     against the 2026-08-07 checkout under `.real-crates/`.";
 
 /// The 22 npm version entries from `corpus/manifest.toml`, in manifest order.
 const FIXTURES: &[Fixture] = &[
-    // lodash publishes its types as the separate `@types/lodash` package;
-    // `lodash.js` itself is a UMD bundle whose ~300 functions are assigned
-    // inside one closure. `.real-crates/lodash-4.17.21/` contains no `.d.ts`.
+    // `lodash.js` (the `main` entry, a 17k-line UMD bundle) is one
+    // `ExpressionStatement`; the real ~300-function API lives in sibling
+    // top-level `.js` files (`chunk.js`, `debounce.js`, `merge.js`,
+    // `cloneDeep.js`, `isEqual.js`, …), each `function <name>(...) { ... }`
+    // followed by `module.exports = <name>;`. `package.json` has no
+    // `exports` field, so Node's classic resolution makes every one of
+    // those 333 top-level `.js` files real, importable API
+    // (`require('lodash/chunk')`) — verified by listing
+    // `.real-crates/lodash-4.17.21/*.js` directly.
     Fixture { name: "lodash", version: "4.17.21", dir: "lodash-4.17.21",
-              expect: Expect::Stub { contributed: 1, why: NO_TYPE_DECLARATIONS } },
+              floor: 250,
+              must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"] },
     Fixture { name: "lodash", version: "4.17.20", dir: "lodash-4.17.20",
-              expect: Expect::Stub { contributed: 1, why: NO_TYPE_DECLARATIONS } },
+              floor: 250,
+              must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"] },
     Fixture { name: "zod", version: "3.22.4", dir: "zod-3.22.4",
-              expect: Expect::Declarations(800) },
+              floor: 800, must_contain: &[] },
     Fixture { name: "zod", version: "3.23.8", dir: "zod-3.23.8",
-              expect: Expect::Declarations(800) },
+              floor: 800, must_contain: &[] },
     Fixture { name: "type-fest", version: "4.10.2", dir: "type-fest-4.10.2",
-              expect: Expect::Declarations(300) },
+              floor: 300, must_contain: &[] },
     Fixture { name: "chalk", version: "5.3.0", dir: "chalk-5.3.0",
-              expect: Expect::Declarations(80) },
+              floor: 80, must_contain: &[] },
     Fixture { name: "commander", version: "12.0.0", dir: "commander-12.0.0",
-              expect: Expect::Declarations(250) },
+              floor: 250, must_contain: &[] },
     Fixture { name: "axios", version: "1.6.7", dir: "axios-1.6.7",
-              expect: Expect::Declarations(400) },
+              floor: 400, must_contain: &[] },
     Fixture { name: "date-fns", version: "3.3.1", dir: "date-fns-3.3.1",
-              expect: Expect::Declarations(1500) },
+              floor: 1500, must_contain: &[] },
     Fixture { name: "rxjs", version: "7.8.1", dir: "rxjs-7.8.1",
-              expect: Expect::Declarations(1500) },
+              floor: 1500, must_contain: &[] },
     Fixture { name: "immer", version: "10.0.3", dir: "immer-10.0.3",
-              expect: Expect::Declarations(40) },
+              floor: 40, must_contain: &[] },
     Fixture { name: "uuid", version: "9.0.1", dir: "uuid-9.0.1",
-              expect: Expect::Declarations(30) },
-    // `main` is `./src/index.js`; the tarball is four `.js` files and a README.
+              floor: 30, must_contain: &[] },
+    // `main` is `./src/index.js`, which just re-dispatches to `browser.js`
+    // or `node.js` at runtime (`if (...) { module.exports = require(...) }`
+    // — a single `IfStatement`). `package.json` has no `exports` field, so
+    // all four `.js` files under `src/` (`index.js`, `browser.js`,
+    // `node.js`, `common.js`) are enumerated as declaration roots directly.
+    // `node.js` and `browser.js` each declare top-level `function
+    // useColors()`, `function formatArgs(...)`, `function save(...)`,
+    // `function load(...)`, and then `exports.useColors = useColors;`, etc.
+    // — real top-level `exports.X = <ident>` CommonJS exports.
+    //
+    // NOT included: `enable`/`disable`/`formatters`, which the original
+    // diagnosis for this fixture proposed as canaries. Verified false:
+    // `enable`/`disable`/`enabled`/`coerce`/`destroy` are declared *inside*
+    // `common.js`'s `function setup(env) { ... }`, assigned only to a local
+    // `createDebug` variable's properties, never at module top level in any
+    // of the four files. `formatters` is reached only via `const
+    // {formatters} = module.exports;` followed by `formatters.o = ...` — a
+    // destructured local, not `module.exports.X` or the module's own export
+    // binding. Recovering any of these needs interprocedural analysis of a
+    // nested function's return value, which is out of scope here and belongs
+    // to a documented gap, not a canary this sweep pins.
     Fixture { name: "debug", version: "4.3.4", dir: "debug-4.3.4",
-              expect: Expect::Stub { contributed: 1, why: NO_TYPE_DECLARATIONS } },
+              floor: 15,
+              must_contain: &["useColors", "formatArgs", "save", "load"] },
     Fixture { name: "left-pad", version: "1.3.0", dir: "left-pad-1.3.0",
-              expect: Expect::Declarations(4) },
+              floor: 4, must_contain: &[] },
     Fixture { name: "yup", version: "1.4.0", dir: "yup-1.4.0",
-              expect: Expect::Declarations(250) },
-    // `exports.require` is plain CommonJS `index.js`; no `.d.ts` in the tarball.
+              floor: 250, must_contain: &[] },
+    // `exports["."]["import"]` points at `wrapper.mjs`, real ESM with five
+    // named exports re-exported from CommonJS siblings under `lib/`:
+    // `import WebSocket from './lib/websocket.js'; ... export {
+    // createWebSocketStream, Receiver, Sender, WebSocket, WebSocketServer
+    // };`. Each `lib/*.js` file declares its class/function at module top
+    // level (`class WebSocket extends EventEmitter { ... }`,
+    // `module.exports = WebSocket;`) — verified in
+    // `.real-crates/ws-8.16.0/wrapper.mjs` and `lib/{websocket,receiver,
+    // sender,stream,websocket-server}.js`.
     Fixture { name: "ws", version: "8.16.0", dir: "ws-8.16.0",
-              expect: Expect::Stub { contributed: 2, why: NO_TYPE_DECLARATIONS } },
+              floor: 5,
+              must_contain: &["WebSocket", "WebSocketServer", "Receiver", "Sender",
+                               "createWebSocketStream"] },
     Fixture { name: "@types/node", version: "20.11.0", dir: "@types__node-20.11.0",
-              expect: Expect::Declarations(9000) },
+              floor: 9000, must_contain: &[] },
     Fixture { name: "fp-ts", version: "2.16.5", dir: "fp-ts-2.16.5",
-              expect: Expect::Declarations(5000) },
+              floor: 5000, must_contain: &[] },
     Fixture { name: "class-validator", version: "0.14.1", dir: "class-validator-0.14.1",
-              expect: Expect::Declarations(800) },
+              floor: 800, must_contain: &[] },
     Fixture { name: "reflect-metadata", version: "0.2.1", dir: "reflect-metadata-0.2.1",
-              expect: Expect::Declarations(40) },
+              floor: 40, must_contain: &[] },
     Fixture { name: "p-limit", version: "5.0.0", dir: "p-limit-5.0.0",
-              expect: Expect::Declarations(3) },
+              floor: 3, must_contain: &[] },
     Fixture { name: "dayjs", version: "1.11.10", dir: "dayjs-1.11.10",
-              expect: Expect::Declarations(80) },
+              floor: 80, must_contain: &[] },
 ];
 
 /// Root of the corpus checkout directory, resolved relative to this crate's
@@ -188,6 +225,25 @@ fn is_real_identifier(name: &str) -> bool {
     }
 }
 
+/// Whether `entry` is the kind of thing `must_contain` is entitled to demand:
+/// a real, publicly-visible declaration, not the synthetic per-file `Module`
+/// entry this producer declares for every module it walks.
+///
+/// Without the `Module` exclusion, enumerating a CommonJS package's file tree
+/// (declaration-root discovery, see `Fixture`'s doc comment) alone would let
+/// `lodash/chunk.js` satisfy a `"chunk"` canary just by *existing* as a
+/// module named `chunk` — the module entry's own name coincides with the
+/// function it contains, because lodash names each file after the one thing
+/// it exports. That would pass identically whether or not the extractor can
+/// actually read `module.exports = chunk;`. Filtering to non-`Module` kinds
+/// is what keeps the canary honest: it can only be satisfied by a `Function`/
+/// `Record`/etc. entry the extractor produced from real `module.exports`
+/// recognition, not by file-tree enumeration alone.
+fn is_public_non_module(entry: &nudox_ir::entry::Entry) -> bool {
+    entry.sym().visibility == Visibility::Public
+        && !matches!(entry.kind(), EntryInner::Owned(Kind::Module(_)))
+}
+
 /// What one fixture's lowering actually yielded, in the terms the sweep asserts
 /// on.
 struct Lowered {
@@ -202,6 +258,9 @@ struct Lowered {
     contributed: usize,
     /// How many contributed entries carry a real identifier name.
     identifiers: usize,
+    /// Names of contributed entries that are both `Visibility::Public` and
+    /// not a `Module` entry — what `must_contain` is checked against.
+    public_non_module_names: HashSet<String>,
     /// The first few contributed names, so a failure says *what* was found
     /// instead of only that the count was wrong.
     sample: Vec<String>,
@@ -225,19 +284,24 @@ fn lower(root: &Path, name: &str, version: &str) -> Result<Lowered, String> {
     produce(&TypescriptProducer::new(), &src, &lineage, &Unlinked)
         .map(|produced| {
             let table = &produced.table;
-            let declared: Vec<&str> = table
+            let declared: Vec<&nudox_ir::entry::Entry> = table
                 .iter()
                 .filter(|(id, _)| table.parent_of(*id).is_some())
-                .map(|(_, e)| e.sym().name.as_str())
+                .map(|(_, e)| e)
                 .collect();
 
             Lowered {
                 contributed: declared.len(),
                 identifiers: declared
                     .iter()
-                    .filter(|n| is_real_identifier(n))
+                    .filter(|e| is_real_identifier(&e.sym().name))
                     .count(),
-                sample: declared.iter().take(6).map(|n| (*n).to_owned()).collect(),
+                public_non_module_names: declared
+                    .iter()
+                    .filter(|e| is_public_non_module(e))
+                    .map(|e| e.sym().name.clone())
+                    .collect(),
+                sample: declared.iter().take(6).map(|e| e.sym().name.clone()).collect(),
                 contract: produced.contract.clone(),
             }
         })
@@ -263,11 +327,14 @@ fn lower(root: &Path, name: &str, version: &str) -> Result<Lowered, String> {
 /// * the producer's [`YieldContract`] is not a declared degradation — an
 ///   inert producer must not be counted here as a documented package;
 /// * the count of declarations it contributed *beyond the synthesized root*
-///   meets the fixture's [`Expect`] — a floor for the packages it really
-///   reads, an exact count for the four it does not;
+///   meets the fixture's `floor`;
 /// * at least one contributed entry's name is a real identifier
-///   (`is_real_identifier`) — the content assertion this doc comment promised
-///   from the day the file was written and the body did not implement.
+///   (`is_real_identifier`) — a baseline sanity check kept from the original
+///   version of this sweep;
+/// * every name in `must_contain` appears among the fixture's `Visibility::
+///   Public`, non-`Module` contributed entries (`is_public_non_module`) — the
+///   check that actually distinguishes real extraction from file-tree
+///   enumeration; see `Fixture`'s doc comment.
 ///
 /// # What the count used to be, and why it could not fail
 ///
@@ -275,11 +342,12 @@ fn lower(root: &Path, name: &str, version: &str) -> Result<Lowered, String> {
 /// `produced.table.len()`. That branch was unreachable: [`produce`] builds the
 /// root [`nudox_ir::entry::Symbol`] itself and hands it to `Lowering::new`
 /// before `lower` is called, so *every* successful run seals a table of at
-/// least one entry and the count is never zero. A producer that read no bytes
-/// at all scored 1 and passed. The replacement counts only what the producer
-/// contributed, which is 0 in exactly that case — and which [`produce`] now
-/// rejects outright as `ProducerError::NoDeclarationsContributed`, making the
-/// old guard unreachable from a second direction as well.
+/// least one entry. A producer that read no bytes at all scored 1 and passed.
+/// A later revision replaced that with a floor plus `identifiers != 0`, and
+/// then papered over four still-degenerate packages with an
+/// `Expect::Stub { contributed, why }` case that asserted their broken output
+/// as policy (see `Fixture`'s doc comment for the full history). This version
+/// is the one that actually demands real extraction from those four.
 ///
 /// Any fixture whose checkout is missing is skipped with a printed reason
 /// (environment problem, not a code defect) rather than failing the whole
@@ -324,14 +392,16 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
         let Lowered {
             contributed,
             identifiers,
+            public_non_module_names,
             sample,
             contract,
         } = lowered;
         eprintln!(
             "OK: {}-{} contributed {contributed} declarations ({identifiers} named by a \
-             real identifier) in {:.2}s; first names: {sample:?}",
+             real identifier, {} public non-module) in {:.2}s; first names: {sample:?}",
             fixture.name,
             fixture.version,
+            public_non_module_names.len(),
             cost.wall.as_secs_f64()
         );
 
@@ -348,38 +418,14 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
             continue;
         }
 
-        match fixture.expect {
-            Expect::Declarations(floor) => {
-                if contributed < floor {
-                    failures.push(format!(
-                        "{}-{}: contributed {contributed} declarations beyond the \
-                         synthesized root, expected at least {floor} — this is not real \
-                         extraction. First names: {sample:?}",
-                        fixture.name, fixture.version
-                    ));
-                    continue;
-                }
-            }
-            Expect::Stub {
-                contributed: pinned,
-                why,
-            } => {
-                // Asserted as equality on purpose: see `Expect::Stub`. If the
-                // extractor learns to read these packages this fails, and the
-                // fixture has to be promoted to `Expect::Declarations` in the
-                // same change — the claim cannot outlive the obstruction.
-                if contributed != pinned {
-                    failures.push(format!(
-                        "{}-{}: pinned as a stub at {pinned} contributed declarations \
-                         because it {why} — got {contributed}. If the extractor now reads \
-                         this package, promote the fixture to \
-                         `Expect::Declarations`; if it regressed, that is a real defect. \
-                         First names: {sample:?}",
-                        fixture.name, fixture.version
-                    ));
-                    continue;
-                }
-            }
+        if contributed < fixture.floor {
+            failures.push(format!(
+                "{}-{}: contributed {contributed} declarations beyond the synthesized \
+                 root, expected at least {} — this is not real extraction. First names: \
+                 {sample:?}",
+                fixture.name, fixture.version, fixture.floor
+            ));
+            continue;
         }
 
         // The content assertion (AGENTS-DOCTRINE.md §4): a count is satisfied by
@@ -390,6 +436,28 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
                  identifier — a table of path fragments or placeholders is not a lowered \
                  public API. First names: {sample:?}",
                 fixture.name, fixture.version
+            ));
+        }
+
+        // The canary (this file's replacement for `Expect::Stub`): named,
+        // source-verified public symbols must actually be present as real,
+        // non-module declarations — never satisfiable by declaration-root
+        // enumeration alone. See `Fixture`'s doc comment and
+        // `is_public_non_module`.
+        let missing: Vec<&str> = fixture
+            .must_contain
+            .iter()
+            .filter(|name| !public_non_module_names.contains(**name))
+            .copied()
+            .collect();
+        if !missing.is_empty() {
+            failures.push(format!(
+                "{}-{}: missing {missing:?} among {} public non-module declarations \
+                 (verified real, exported symbols — see the fixture's doc comment for where \
+                 each is declared in the real package source). First names: {sample:?}",
+                fixture.name,
+                fixture.version,
+                public_non_module_names.len()
             ));
         }
     }

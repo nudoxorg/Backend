@@ -422,3 +422,231 @@ fn oracle_exit_display_includes_stderr() {
         "Display must contain stderr"
     );
 }
+
+// ── Identity contract ─────────────────────────────────────────────────────────
+
+/// A producer that declares two records with the same name, under the same
+/// parent, at the same (degenerate) span.
+///
+/// This is not a synthetic corner: it is the exact shape three real producers
+/// emit today, because `go/src/lower/mod.rs`, `csharp/src/lower.rs` and
+/// `python/src/emit/mod.rs` all hardcode `0..0` for every declaration's span.
+/// Two same-named declarations from any of them collapse the `Span`
+/// disambiguator to nothing and force `seal` down to `Disambiguator::Ordinal`
+/// — an identity that is a function of emission order rather than of content.
+struct DegenerateSpanProducer;
+
+impl Producer for DegenerateSpanProducer {
+    type Id = u32;
+    type Oracle = ();
+
+    const ID: ProducerId = ProducerId("degenerate-span/1");
+    const LANGUAGE: Language = Language::Go;
+
+    fn invoke(&self, _src: &PackageSource) -> Result<(), ProducerError> {
+        Ok(())
+    }
+
+    fn lower(&self, _oracle: &(), out: &mut Lowering<u32>) -> Result<(), ProducerError> {
+        // `sym` above builds every symbol with `span: 0..0`, which is the point.
+        out.declare(1, None, sym("Dup"), Record::builder().build());
+        out.declare(2, None, sym("Dup"), Record::builder().build());
+        Ok(())
+    }
+}
+
+/// Seal `DegenerateSpanProducer`'s package and hand back the outcome, so both
+/// policy tests below measure the same input.
+fn degenerate_span_outcome() -> nudox_ir::package::SealOutcome {
+    let mut sink: Lowering<u32> = Lowering::new(
+        nudox_ir::package::PackageId::path("/tmp/fake"),
+        sym("fake-pkg"),
+    );
+    DegenerateSpanProducer
+        .lower(&(), &mut sink)
+        .expect("lowering a two-record package cannot fail");
+    sink.finish()
+        .expect("the package is structurally valid; only its identities collide")
+        .seal(&test_lineage(), &nudox_ir::foreign::Unlinked)
+}
+
+/// Two declarations that differ only by emission order must be *recorded* as
+/// such by `seal`, not silently separated.
+///
+/// The precondition for both policy tests below, and a real assertion in its
+/// own right: if `seal` ever stopped escalating to `Ordinal` here — by growing
+/// a better disambiguator, which is the outcome we want — the two tests after
+/// this one would start passing for a reason that has nothing to do with the
+/// gate, and this one going red is what says so.
+#[test]
+fn a_degenerate_span_collision_is_recorded_as_an_ordinal_escalation() {
+    let outcome = degenerate_span_outcome();
+
+    assert!(
+        outcome.report.collisions.is_empty(),
+        "the escalation ladder reaches Ordinal, so nothing should have been dropped"
+    );
+    assert_eq!(
+        outcome.table.len(),
+        3,
+        "root + two records: both declarations must survive with distinct ids"
+    );
+
+    let ordinal: Vec<&nudox_ir::package::ForcedDisambiguation> = outcome
+        .report
+        .forced
+        .iter()
+        .filter(|forced| forced.escalated_to == nudox_ir::package::Escalation::Ordinal)
+        .collect();
+    assert_eq!(
+        ordinal.len(),
+        1,
+        "exactly one colliding group, reported once — `seal` re-mints whole groups, so \
+         `forced` must not carry one row per escalation round; got {:?}",
+        outcome.report.forced,
+    );
+    assert_eq!(ordinal[0].name, "Dup");
+    assert_eq!(
+        ordinal[0].group, 2,
+        "the group size is the number of declarations that shared one key"
+    );
+}
+
+/// Under the policy the workspace runs today, an ordinal-keyed identity travels
+/// on the report and does not fail the run.
+///
+/// This is the *tolerated* half of the identity contract, and it is asserted
+/// rather than assumed so that flipping `OrdinalPolicy::CURRENT` cannot happen
+/// by accident: the day someone does, this test goes red and tells them which
+/// promise they changed.
+#[test]
+fn an_ordinal_keyed_identity_is_tolerated_under_the_report_policy() {
+    let outcome = crate::enforce_identity_contract_under(
+        &test_src(),
+        degenerate_span_outcome(),
+        crate::OrdinalPolicy::Report,
+    )
+    .expect("the Report policy must let an ordinal-keyed identity through");
+
+    assert_eq!(outcome.table.len(), 3, "the table passes through unchanged");
+    assert!(
+        outcome
+            .report
+            .forced
+            .iter()
+            .any(|forced| forced.escalated_to == nudox_ir::package::Escalation::Ordinal),
+        "tolerated is not the same as erased: the report must still say it happened"
+    );
+}
+
+/// Under the strict policy the same input is a typed failure carrying the group
+/// that has no content-derived identity.
+///
+/// Doctrine §8: "verify the guard by mutation — break the repair verdict
+/// deliberately and confirm the suite goes red. A guard nobody has watched fail
+/// is a guard nobody has tested." Without this test the strict half of the gate
+/// would be unexecuted code until three producers in three languages were
+/// fixed.
+#[test]
+fn an_ordinal_keyed_identity_is_a_typed_failure_under_the_reject_policy() {
+    let error = crate::enforce_identity_contract_under(
+        &test_src(),
+        degenerate_span_outcome(),
+        crate::OrdinalPolicy::Reject,
+    )
+    .expect_err("the Reject policy must refuse an identity that rests on emission order");
+
+    let ProducerError::IdentityNotInjective {
+        package,
+        lost,
+        order_dependent,
+    } = error
+    else {
+        panic!("expected IdentityNotInjective, got {error:?}");
+    };
+
+    assert_eq!(package, "fake-pkg");
+    assert!(
+        lost.is_empty(),
+        "nothing was dropped here — the ladder reached Ordinal — so the dropped list must \
+         be empty and the failure must come from the order-dependent list alone"
+    );
+    assert_eq!(order_dependent.len(), 1);
+    assert_eq!(order_dependent[0].name, "Dup");
+    assert_eq!(order_dependent[0].group, 2);
+}
+
+/// A package whose identities are all content-derived passes through untouched.
+///
+/// The other half of the guard: a gate that fails everything is as useless as
+/// one that fails nothing, and `FakeProducer`'s four distinct declarations are
+/// the case the corpus is supposed to be made of.
+#[test]
+fn a_clean_seal_passes_the_identity_gate_unchanged() {
+    let mut sink: Lowering<&'static str> = Lowering::new(
+        nudox_ir::package::PackageId::path("/tmp/fake"),
+        sym("fake-pkg"),
+    );
+    FakeProducer
+        .lower(&CannedOracle, &mut sink)
+        .expect("lowering must succeed");
+    let sealed = sink
+        .finish()
+        .expect("finish must succeed")
+        .seal(&test_lineage(), &nudox_ir::foreign::Unlinked);
+    let before = sealed.table.len();
+
+    let outcome = crate::enforce_identity_contract(&test_src(), sealed)
+        .expect("a package with four distinct declarations must pass the identity gate");
+
+    assert_eq!(outcome.table.len(), before, "the table is not modified");
+    assert!(
+        outcome.report.forced.is_empty(),
+        "no declaration in this package needed an escalated disambiguator"
+    );
+}
+
+/// The failure message must name the package and the specific declaration
+/// whose identity is not content-derived, not merely count them.
+///
+/// Asserted on the rendered message rather than on the variant — which the two
+/// tests above already do — because the rendering is the thing under test here.
+/// `IntroCollision` and `ForcedDisambiguation` are kept whole on the variant
+/// precisely so this text can exist; a message that said only "1 collision"
+/// would make carrying them pointless, and the reader's next action is always
+/// to open the declaration it names.
+#[test]
+fn identity_failure_message_names_the_package_and_the_declaration() {
+    let mut sink: Lowering<u32> = Lowering::new(
+        nudox_ir::package::PackageId::path("/tmp/fake"),
+        sym("fake-pkg"),
+    );
+    DegenerateSpanProducer
+        .lower(&(), &mut sink)
+        .expect("lowering must succeed");
+    let sealed = sink
+        .finish()
+        .expect("finish must succeed")
+        .seal(&test_lineage(), &nudox_ir::foreign::Unlinked);
+
+    let error = crate::enforce_identity_contract_under(
+        &test_src(),
+        sealed,
+        crate::OrdinalPolicy::Reject,
+    )
+    .expect_err("must fail");
+
+    let message = error.to_string();
+    assert!(
+        message.contains("fake-pkg"),
+        "message must name the package: {message}"
+    );
+    assert!(
+        message.contains("Dup"),
+        "message must name the declaration whose identity is not content-derived: {message}"
+    );
+    assert!(
+        message.contains("order-dependent"),
+        "message must say which half of the contract failed: {message}"
+    );
+}

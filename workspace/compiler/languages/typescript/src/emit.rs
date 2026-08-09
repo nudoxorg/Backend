@@ -761,7 +761,9 @@ fn emit_const(
     body: &ConstBody,
     out: &mut Lowering<TsId>,
 ) {
-    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::Any);
+    // The declaration exists; the type annotation does not. `const x = 1` is
+    // not the same claim as `const x: any = 1`.
+    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED);
     let _: Ref<Const> = out.declare(
         id,
         parent,
@@ -780,7 +782,9 @@ fn emit_static(
     body: &StaticBody,
     out: &mut Lowering<TsId>,
 ) {
-    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::Any);
+    // The declaration exists; the type annotation does not. `const x = 1` is
+    // not the same claim as `const x: any = 1`.
+    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED);
     let _: Ref<Static> = out.declare(
         id,
         parent,
@@ -1008,7 +1012,19 @@ fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> 
 
 pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
     match ty {
-        TypeOwned::Any | TypeOwned::Unknown => Type::Any,
+        // TypeScript is the language that makes the `Any` / `Unknown` split
+        // unarguable, because it ships both and they are *not* interchangeable:
+        //
+        // - `unknown` is the genuine top type. Every value is assignable to it
+        //   and no member access or narrowing is permitted until you refine it.
+        // - `any` is the escape hatch. It is assignable in both directions and
+        //   disables checking entirely — `--noImplicitAny` exists precisely
+        //   because it is the thing you want to find and remove.
+        //
+        // Lowering both to `Type::Any` made a hardened `unknown` signature and
+        // an unchecked `any` signature byte-identical in the IR.
+        TypeOwned::Unknown => Type::Any,
+        TypeOwned::Any => Type::DYNAMIC,
         TypeOwned::Never => Type::Never,
         TypeOwned::Void | TypeOwned::Undefined => Type::Tuple(Box::new([])), // unit
         TypeOwned::Null => Type::Primitive(Primitive::Builtin("null".to_string())),
@@ -1100,7 +1116,11 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             let params: Vec<Type> = body
                 .params
                 .iter()
-                .map(|p| p.ty.as_ref().map(lower_type).unwrap_or(Type::Any))
+                // A parameter of a function *type* with no annotation. TS
+                // treats it as implicit-any, but the source did not write
+                // `any` — under `--noImplicitAny` this is an error, and the
+                // IR must be able to tell the two apart.
+                .map(|p| p.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED))
                 .collect();
             let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r)));
             // TypeScript functions are always managed; no ABI.
@@ -1244,4 +1264,49 @@ fn field_attrs(m: &MemberModifiers) -> Vec<FieldAttribute> {
         attrs.push(FieldAttribute::Mutable);
     }
     attrs
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod cc2_tests {
+    use super::*;
+    use nudox_ir::kinds::UnknownType;
+
+    /// TypeScript ships both spellings, and they are not interchangeable.
+    ///
+    /// `unknown` is the genuine top type — assignable *to* from everything,
+    /// narrowable only by refinement. `any` is the escape hatch — assignable
+    /// in both directions and check-suppressing. Lowering both to `Type::Any`
+    /// made a hardened `unknown` signature and an unchecked `any` signature
+    /// byte-identical in the IR, which is exactly the thing `--noImplicitAny`
+    /// exists to let you find.
+    #[test]
+    fn unknown_is_the_top_type_and_any_is_the_escape_hatch() {
+        let unknown = lower_type(&TypeOwned::Unknown);
+        let any = lower_type(&TypeOwned::Any);
+        assert_eq!(unknown, Type::Any, "`unknown` is TypeScript's top type");
+        assert_eq!(
+            any,
+            Type::Unknown(UnknownType::DynamicallyTyped),
+            "`any` is the gradual-typing escape hatch, not a top type"
+        );
+        assert_ne!(unknown, any, "`unknown` and `any` must not share an encoding");
+    }
+
+    /// An *implicit* any — a parameter with no annotation at all — is a third
+    /// thing again, and the one `--noImplicitAny` reports.
+    #[test]
+    fn implicit_any_is_unannotated_not_written_any() {
+        let unannotated = Type::UNANNOTATED;
+        assert_ne!(
+            unannotated,
+            lower_type(&TypeOwned::Any),
+            "`(x) => …` and `(x: any) => …` are different source"
+        );
+        assert_ne!(unannotated, lower_type(&TypeOwned::Unknown));
+        assert_eq!(unannotated.to_string(), "?unannotated");
+    }
 }

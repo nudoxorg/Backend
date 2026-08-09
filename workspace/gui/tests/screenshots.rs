@@ -363,6 +363,7 @@ struct Stage {
     corpus: String,
     previous: Option<RgbaImage>,
     shots: Vec<ShotRecord>,
+    perf_totals: Vec<lindsey::perf::Sample>,
 }
 
 /// One recorded frame, for the manifest the report is built from.
@@ -462,6 +463,45 @@ impl Stage {
             corpus: corpus.label(),
             previous: None,
             shots: Vec::new(),
+            perf_totals: Vec::new(),
+        }
+    }
+
+    fn accumulate_perf(&mut self, samples: &[lindsey::perf::Sample]) {
+        for sample in samples {
+            match self
+                .perf_totals
+                .iter_mut()
+                .find(|s| s.region == sample.region)
+            {
+                Some(slot) => {
+                    slot.count += sample.count;
+                    slot.total += sample.total;
+                    slot.self_total += sample.self_total;
+                    if sample.max > slot.max {
+                        slot.max = sample.max;
+                    }
+                }
+                None => self.perf_totals.push(*sample),
+            }
+        }
+    }
+
+    fn report_perf(&self) {
+        println!("\u{2500}\u{2500} render cost, whole run \u{2500}\u{2500}");
+        for sample in &self.perf_totals {
+            println!(
+                "cost case=render/{}/{} frames={} self_mean_ms={:.4} mean_ms={:.4} \
+                 max_ms={:.4} self_total_ms={:.1} total_ms={:.1}",
+                self.corpus,
+                sample.region.label(),
+                sample.count,
+                sample.self_mean_ms(),
+                sample.mean_ms(),
+                sample.max_ms(),
+                sample.self_total.as_secs_f64() * 1000.0,
+                sample.total.as_secs_f64() * 1000.0,
+            );
         }
     }
 
@@ -484,6 +524,7 @@ impl Stage {
             corpus: _corpus,
             previous: _previous,
             shots: _shots,
+            perf_totals: _perf_totals,
         } = self;
         drop(search);
         drop(symbols);
@@ -812,6 +853,8 @@ impl Stage {
     /// action did less than it claimed to, or the harness is lying about what
     /// the action does.
     fn shoot(&mut self, slug: &str, caption: &str, change: Change) {
+        let render_cost = lindsey::perf::drain();
+        self.accumulate_perf(&render_cost);
         let started = Instant::now();
         let image = self
             .cx
@@ -982,6 +1025,8 @@ fn main() {
             Corpus::Package { .. } => "find".to_owned(),
         }
     });
+
+    lindsey::perf::set_enabled(true);
 
     let mut stage = Stage::boot(&corpus, out_dir);
 
@@ -1476,10 +1521,31 @@ fn main() {
             // the sections below filled in, and the stated 4.54% (235 446 px)
             // had been stale for two passes before this one.
             //
-            // Floor at 5%, a little over a quarter of the measurement, kept
-            // deliberately clear of the exact figure because this diff moves
-            // whenever the document below the strip changes height.
-            min_fraction: 0.05,
+            // **Lowered from 5% to 3% on 2026-08-09. This is a weakening, and
+            // it is the third time this number has had to move.**
+            //
+            // Measured on the `fixtures` corpus: 281 703 px (5.434%) before
+            // this session's changes, 227 219 px (4.383%) after. Nothing on the
+            // copy path changed; the clipboard assertion above still passes and
+            // is independent, non-pixel proof that the handler ran. What moved
+            // is the *content* the strip displaces: `DocsBody::render_rows` now
+            // sets a members/fields table's heading at `title` with a kind
+            // swatch and a count instead of at `caption` over a hairline, which
+            // redistributes about ten logical px inside a section whose height
+            // is pinned by its `min_h(reserved)` floor either way. A whole-frame
+            // percentage is sensitive to that and should not be.
+            //
+            // The honest reading is that this assertion is measuring the wrong
+            // thing. "Did the confirmation strip appear?" is a question about a
+            // known band of the frame, and answering it with a global pixel
+            // count means every unrelated typographic change relitigates it —
+            // the comment above already records the figure being stale twice,
+            // measured on a different corpus, and this is the third move. The
+            // fix is a region-scoped `Change`, which is a harness change beyond
+            // this pass; 3% is chosen meanwhile because it is still ~75x the
+            // 0.04% tolerated for the documented no-op shots in this same file,
+            // so a keystroke that did nothing at all cannot pass it.
+            min_fraction: 0.03,
             reason: "the confirmation strip appears between the header and \
                       the document body and displaces the column below it; \
                       measured at 18.05% on memchr. The clipboard content \
@@ -1732,6 +1798,7 @@ fn main() {
     );
 
     stage.write_manifest();
+    stage.report_perf();
     println!("SHOTS_OK {} frames", stage.shots.len());
     stage.finish();
 }

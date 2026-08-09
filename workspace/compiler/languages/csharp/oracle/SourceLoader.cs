@@ -1,4 +1,6 @@
 using System.Collections.Immutable;
+using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 
@@ -35,6 +37,19 @@ internal sealed record LoadedCompilation
 /// <see cref="IErrorTypeSymbol"/>; that is not silently swallowed — every such
 /// symbol is counted into the document's <c>diagnostics.errorTypeCount</c> so a
 /// consumer can tell a fully-resolved extraction from a partial one.
+///
+/// One narrow exception to "walks every <c>.cs</c> file unconditionally":
+/// <see cref="ApplyTfmPreference"/>. dotnet/runtime-style packages ship
+/// per-TFM source *file* variants selected by MSBuild <c>&lt;Compile
+/// Include&gt;</c> conditions — e.g. <c>Foo.netstandard.cs</c> and
+/// <c>Foo.net8.cs</c> both declaring the same member on the same <c>partial
+/// class</c>, with only one ever compiled into a given TFM's assembly. This
+/// tool cannot evaluate that MSBuild condition (see the class remarks above),
+/// so without this step every such pair binds as a hard duplicate-definition
+/// error instead of a clean extraction. The heuristic is deliberately narrow:
+/// it only ever picks among files that already share a directory and a base
+/// name after stripping a recognized TFM tag, and a lone TFM-tagged file with
+/// no such sibling is always kept untouched.
 /// </remarks>
 internal static class SourceLoader
 {
@@ -167,9 +182,120 @@ internal static class SourceLoader
             }
         }
 
-        var files = seen.ToList();
+        var files = ApplyTfmPreference(seen.ToList());
         files.Sort(StringComparer.Ordinal);
         return files;
+    }
+
+    /// <summary>Matches a per-TFM source-file variant's trailing tag.</summary>
+    /// <remarks>
+    /// Anchored to the end of the filename (minus <c>.cs</c>) so only the
+    /// file's own trailing dotted segment counts — never an unrelated dotted
+    /// component earlier in the name (e.g. <c>Json.Encoder.cs</c> must not
+    /// match on <c>Encoder</c>). Covers the three TFM families this repo's
+    /// corpus has actually produced: the unified <c>net5</c>+ line, the
+    /// legacy <c>netcoreapp</c> line, and <c>netstandard</c>, each with an
+    /// optional version number.
+    /// </remarks>
+    private static readonly Regex TfmSuffix = new(
+        @"\.(net\d+(?:\.\d+)?|netstandard\d*(?:\.\d+)?|netcoreapp\d*(?:\.\d+)?)$",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Ranks a TFM tag by how modern/specific it is — higher wins ties within
+    /// <see cref="ApplyTfmPreference"/>. The three bands keep families ordered
+    /// relative to each other (the unified <c>net&lt;N&gt;</c> line ranks above
+    /// <c>netcoreapp</c>, which ranks above <c>netstandard</c>, mirroring how
+    /// close each gets to a modern managed runtime); the version number, where
+    /// present, breaks ties within a family.
+    /// </summary>
+    private static int TfmRank(string tag)
+    {
+        static double Version(string digits)
+        {
+            if (digits.Length == 0)
+            {
+                return 0;
+            }
+
+            return digits.Contains('.')
+                ? double.Parse(digits, CultureInfo.InvariantCulture)
+                : int.Parse(digits, CultureInfo.InvariantCulture);
+        }
+
+        var lower = tag.ToLowerInvariant();
+        if (lower.StartsWith("netstandard", StringComparison.Ordinal))
+        {
+            return 0_000 + (int)(Version(lower["netstandard".Length..]) * 10);
+        }
+        if (lower.StartsWith("netcoreapp", StringComparison.Ordinal))
+        {
+            return 1_000 + (int)(Version(lower["netcoreapp".Length..]) * 10);
+        }
+        return 2_000 + (int)(Version(lower["net".Length..]) * 10);
+    }
+
+    /// <summary>
+    /// Collapses same-directory, same-base per-TFM source variants to one file
+    /// each, keeping the <see cref="TfmRank"/>-highest tag — see this class's
+    /// remarks for why, and <see cref="TfmSuffix"/> for what counts as a TFM
+    /// tag at all.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately conservative: a file's trailing segment must match
+    /// <see cref="TfmSuffix"/> to be considered, and a lone TFM-tagged file
+    /// with no same-base, same-directory sibling is always kept — dropping it
+    /// would silently lose real content the base file never declares.
+    /// </remarks>
+    private static List<string> ApplyTfmPreference(List<string> files)
+    {
+        var groups = new Dictionary<(string Dir, string Base), List<(string File, string Tag, int Rank)>>();
+        var passthrough = new List<string>();
+
+        foreach (var file in files)
+        {
+            var dir = Path.GetDirectoryName(file) ?? string.Empty;
+            var stem = Path.GetFileNameWithoutExtension(file);
+            var match = TfmSuffix.Match(stem);
+            if (!match.Success)
+            {
+                passthrough.Add(file);
+                continue;
+            }
+
+            var tag = match.Groups[1].Value;
+            var baseName = stem[..^(tag.Length + 1)];
+            var key = (dir, baseName);
+            if (!groups.TryGetValue(key, out var candidates))
+            {
+                candidates = [];
+                groups[key] = candidates;
+            }
+            candidates.Add((file, tag, TfmRank(tag)));
+        }
+
+        var result = new List<string>(passthrough);
+        foreach (var candidates in groups.Values)
+        {
+            if (candidates.Count == 1)
+            {
+                result.Add(candidates[0].File);
+                continue;
+            }
+
+            var ordered = candidates.OrderByDescending(c => c.Rank).ToList();
+            var kept = ordered[0];
+            result.Add(kept.File);
+
+            foreach (var dropped in ordered.Skip(1))
+            {
+                Console.Error.WriteLine(
+                    $"oracle: preferring TFM variant {Path.GetFileName(kept.File)} " +
+                    $"({kept.Tag}) over {Path.GetFileName(dropped.File)} ({dropped.Tag})");
+            }
+        }
+
+        return result;
     }
 
     private static bool IsExcluded(string root, string file)

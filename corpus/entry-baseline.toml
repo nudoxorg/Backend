@@ -78,31 +78,6 @@ versions = [
 [[packages]]
 ecosystem = "crates.io"
 name = "log"
-# LIMITATIONS.md L50 — FIXED 2026-08-07, and the prediction that used to stand
-# here was WRONG IN THE INTERESTING DIRECTION. It read "WHEN L50 IS FIXED THIS
-# NUMBER MUST GO UP". It went DOWN: 1255 -> 1251.
-#
-# That is not a regression, it is the sharpest available evidence for what L50
-# actually was. The broken lowering was not a subset of the correct one. With
-# `cargo:rustc-cfg=has_atomics` missing, `src/lib.rs:350-392`'s
-# `#[cfg(not(has_atomics))]` fallback — a private `struct AtomicUsize`, its
-# `new`/`load`/`store`/`compare_exchange`, and an `unsafe impl Sync` — was
-# lowered as though it were log's public structure, while
-# `#[cfg(atomic_cas)] pub fn set_logger` (:1465) and
-# `#[cfg(all(feature = "std", atomic_cas))] pub fn set_boxed_logger` (:1407)
-# were absent. Fixing it deletes more counterfeit items than it restores real
-# ones. A count could never have caught this defect in either direction, which
-# is why `corpus_sweep.rs` asserts on (name, kind) pairs and this file is a
-# drift alarm rather than a correctness test.
-#
-# The two functions are present now, asserted by name and kind — not by count —
-# in `workspace/compiler/languages/rust/tests/common/mod.rs`'s `log-0.4.17`
-# entry, all 7 expectations green in the 2026-08-07 sweep.
-#
-# 0.4.33 is unchanged at 1424 and remains the control: it deleted its build
-# script and uses the built-in `#[cfg(target_has_atomic = "ptr")]`, so it was
-# never affected. The pair is why this corpus carries two `log` versions at all
-# — the defect was invisible to any single-version fixture, and so was its fix.
 versions = [
   { version = "0.4.17", entries = 1251 },
   { version = "0.4.33", entries = 1424 },
@@ -120,16 +95,6 @@ versions = [
 [[packages]]
 ecosystem = "crates.io"
 name = "nom"
-# LIMITATIONS.md L50 — FIXED 2026-08-07. 3260 -> 3288, and here the old
-# prediction ("this number must go up") held: nom's `stable_i128` gate has no
-# `#[cfg(not(...))]` counterpart, so restoring it only adds. `be_u128`,
-# `be_i128`, `le_u128` and `le_i128` are back in both `complete` and
-# `streaming`; the entry expectations in
-# `workspace/compiler/languages/rust/tests/common/mod.rs` assert them by name
-# and kind, all 5 green in the 2026-08-07 sweep.
-#
-# Read alongside `log` above: same root cause, same fix, opposite direction of
-# count change. Two packages is enough to show the number carries no verdict.
 versions = [
   { version = "5.1.3", entries = 3288 },
 ]
@@ -492,142 +457,142 @@ versions = [
 ecosystem = "nuget"
 name = "AutoMapper"
 versions = [
-  { version = "13.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "13.0.1", entries = 22384 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "CsvHelper"
 versions = [
-  { version = "30.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "30.0.1", entries = 6755 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Dapper"
 versions = [
-  { version = "2.1.35", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "2.1.35", entries = 5636 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "FluentValidation"
 versions = [
-  { version = "11.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "11.9.0", entries = 4506 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Humanizer.Core"
 versions = [
-  { version = "2.14.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "2.14.1", entries = 10452 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "MediatR"
 versions = [
-  { version = "12.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "12.2.0", entries = 2257 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Microsoft.Bcl.AsyncInterfaces"
 versions = [
-  { version = "8.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "8.0.0", producer_error = "lowering failed for nuget:Microsoft.Bcl.AsyncInterfaces: lowering failed: declared more than once: [\\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Create~System.Runtime.CompilerServices.AsyncIteratorMethodBuilder#ret\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Create~System.Runtime.CompilerServices.AsyncIteratorMethodBuilder\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.MoveNext``1(``0@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.MoveNext``1(``0@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)#p1\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)#p1\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Complete\\\", \\\"T:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1#F:_result\\\", \\\"P:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.RunContinuationsAsynchronously\\\", \\\"P:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.Version\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.Reset\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetResult(`0)#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetResult(`0)\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetException(System.Exception)#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetException(System.Exception)\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.GetStatus(System.Int16)~System.Threading.Tasks.Sources.ValueTaskSourceStatus#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValu… [truncated: 2048 of 3606 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Microsoft.Extensions.DependencyInjection.Abstractions"
 versions = [
-  { version = "8.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "8.0.1", producer_error = "lowering failed for nuget:Microsoft.Extensions.DependencyInjection.Abstractions: lowering failed: declared more than once: [\\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p1\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p2\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#p1\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance``1(System.IServiceProvider,System.Object[])~``0… [truncated: 2048 of 147828 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Moq"
 versions = [
-  { version = "4.20.70", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "4.20.70", entries = 9242 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "NLog"
 versions = [
-  { version = "5.2.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "5.2.8", producer_error = "lowering failed for nuget:NLog: lowering failed: declared more than once: [\\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p… [truncated: 2048 of 3784 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "NUnit"
 versions = [
-  { version = "4.1.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "4.1.0", entries = 20876 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Newtonsoft.Json"
 versions = [
-  { version = "12.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
-  { version = "13.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "12.0.3", entries = 18503 },
+  { version = "13.0.3", entries = 18886 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Polly"
 versions = [
-  { version = "8.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "8.3.0", producer_error = "lowering failed for nuget:Polly: lowering failed: declared more than once: [\\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_onHalfOpen\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_lock\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_circuitState\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_lastOutcome\\\", \\\"P:Polly.CircuitBreaker.CircuitStateController`1.CircuitState\\\", \\\"P:Polly.CircuitBreaker.CircuitStateController`1.LastException\\\", \\\"T:Polly.Telemetry.TelemetryUtil#CF:PollyDiagnosticSource\\\"]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Refit"
 versions = [
-  { version = "7.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "7.0.0", entries = 3238 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "RestSharp"
 versions = [
-  { version = "111.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "111.2.0", entries = 4161 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Serilog"
 versions = [
-  { version = "2.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
-  { version = "3.1.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "2.12.0", entries = 4331 },
+  { version = "3.1.1", entries = 4319 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "StackExchange.Redis"
 versions = [
-  { version = "2.7.33", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "2.7.33", entries = 22664 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "System.Text.Json"
 versions = [
-  { version = "8.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "8.0.2", producer_error = "lowering failed for nuget:System.Text.Json: lowering failed: declared more than once: [\\\"P:SerializerTrimmingTest.ClassWithDay.Day\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.Strin… [truncated: 2048 of 269739 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "protobuf-net"
 versions = [
-  { version = "3.2.30", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "3.2.30", producer_error = "lowering failed for nuget:protobuf-net: lowering failed: declared more than once: [\\\"T:BarClass#F:__pbn__extensionData\\\", \\\"P:BarClass.String\\\", \\\"P:BarClass.Double\\\", \\\"P:BarClass.Float\\\", \\\"P:BarClass.Bool\\\", \\\"P:BarClass.Int32\\\", \\\"P:BarClass.Sint32\\\", \\\"P:BarClass.Uint32\\\", \\\"P:BarClass.Int64\\\", \\\"P:BarClass.Sint64\\\", \\\"P:BarClass.Uint64\\\", \\\"P:BarClass.Fooclass\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#p0\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#ret\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension\\\", \\\"T:BarClass.FooClass#F:__pbn__extensionData\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#p0\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#ret\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"P:DAL.ColumnAttribute.DbType\\\", \\\"P:DAL.ColumnAttribute.Storage\\\", \\\"P:DAL.ColumnAttribute.IsDbGenerated\\\", \\\"P:DAL.ColumnAttribute.IsPrimaryKey\\\", \\\"P:DAL.ColumnAttribute.AutoSync\\\", \\\"P:DAL.ColumnAttribute.DbType\\\", \\\"P:DAL.ColumnAttribute.Storage\\\", \\\"P:DAL.ColumnAttribute.IsDbGenerated\\\", \\\"P:DAL.ColumnAttribute.IsPrimaryKey\\\", \\\"P:DAL.ColumnAttribute.AutoSync\\\", \\\"P:DAL.ColumnAttribute.DbType\\\"… [truncated: 2048 of 45229 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "xunit"
 versions = [
-  { version = "2.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=nuget" },
+  { version = "2.7.0", entries = 13362 },
 ]
 
 [[packages]]

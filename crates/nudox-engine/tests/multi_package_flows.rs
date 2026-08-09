@@ -258,6 +258,7 @@ async fn search_spans_multiple_packages() {
     let q_a = SearchQuery {
         text: "RouterA".to_owned(),
         kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
     let (_h, rx) = engine.search(q_a, Gen(1));
@@ -283,6 +284,7 @@ async fn search_spans_multiple_packages() {
     let q_b = SearchQuery {
         text: "HandlerB".to_owned(),
         kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
     let (_h, rx) = engine.search(q_b, Gen(2));
@@ -389,6 +391,7 @@ async fn name_collisions_across_packages_are_disambiguated() {
     let q = SearchQuery {
         text: "Router".to_owned(),
         kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
     let (_h, rx) = engine.search(q, Gen(10));
@@ -456,6 +459,7 @@ async fn one_failing_package_does_not_block_others() {
     let q = SearchQuery {
         text: "StableApi".to_owned(),
         kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
     let (_h, rx) = engine.search(q, Gen(20));
@@ -582,4 +586,123 @@ async fn late_subscriber_sees_already_loaded_packages_exactly_once() {
         "late subscriber must receive each package exactly once; got duplicates: {:?}",
         names
     );
+}
+
+// ---------------------------------------------------------------------------
+// `packages` filter is applied before truncation, not after (L-timeline task
+// item 3: the truncate-then-filter defect)
+// ---------------------------------------------------------------------------
+
+/// Extract every `SECTION_NAME` hit row from a drained event list.
+fn name_hits(events: &[nudox_engine::wire::SearchEvent]) -> Vec<nudox_engine::wire::HitRow> {
+    use nudox_engine::wire::SearchEvent;
+    events
+        .iter()
+        .flat_map(|e| match e {
+            SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_NAME =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// Two packages declare a symbol with the *identical* name, kind and
+/// visibility, so `search::score_of` scores both hits identically and the
+/// total order (`search::compare_candidates`) breaks the tie on package
+/// lineage: `cargo:aaa` sorts before `cargo:zzz`. With `limit: 1` and no
+/// package filter, only `aaa`'s hit survives truncation — `zzz`'s identical
+/// match is silently crowded out.
+///
+/// This is the regression `EngineHandle::search`'s own `packages` field
+/// exists to fix: filtering `packages: [cargo:zzz]` must apply *before* that
+/// truncation, at the point candidates are collected, not after. Filtering
+/// the already-truncated one-row result (the old MCP-layer behaviour this
+/// test would have caught) can only ever see `aaa`'s row and therefore always
+/// returns zero hits for `zzz`, even though `zzz` has a real, exact match.
+#[tokio::test]
+async fn packages_filter_is_applied_before_truncation_not_after() {
+    let lid_a = lineage("cargo", "aaa");
+    let lid_z = lineage("cargo", "zzz");
+
+    let pkg_a = build_package(&lid_a, &[(1, "Shared")]);
+    let pkg_z = build_package(&lid_z, &[(1, "Shared")]);
+
+    let source = StaticSource::new(vec![
+        (lid_a.clone(), Some("1.0.0".to_owned()), pkg_a),
+        (lid_z.clone(), Some("1.0.0".to_owned()), pkg_z),
+    ]);
+
+    let engine = Engine::start(EngineConfig::default(), source);
+    wait_for_n_packages(&engine, 2).await;
+
+    // Sanity check the tie actually crowds `zzz` out when unfiltered — this
+    // is the precondition the rest of the test depends on, not the assertion
+    // under test. If this fails, the scenario is not exercising the defect.
+    let unfiltered = SearchQuery {
+        text: "Shared".to_owned(),
+        kinds: Vec::new(),
+        packages: Vec::new(),
+        limit: 1,
+    };
+    let (_h, rx) = engine.search(unfiltered, Gen(30));
+    let hits = name_hits(&drain_search(rx).await);
+    assert_eq!(hits.len(), 1, "limit:1 must yield exactly one hit");
+    assert_eq!(
+        hits[0].key.package.name.as_str(),
+        "aaa",
+        "the tie must break toward the alphabetically-earlier package or this \
+         test does not exercise the crowd-out at all"
+    );
+
+    // Filtered to `zzz` only, same limit: 1 — `zzz`'s hit must survive,
+    // because `aaa` must never be considered a candidate at all once excluded
+    // by the filter, so there is nothing left to crowd `zzz` out.
+    let filtered = SearchQuery {
+        text: "Shared".to_owned(),
+        kinds: Vec::new(),
+        packages: vec![lid_z.clone()],
+        limit: 1,
+    };
+    let (_h, rx) = engine.search(filtered, Gen(31));
+    let hits = name_hits(&drain_search(rx).await);
+    assert_eq!(
+        hits.len(),
+        1,
+        "zzz has a real exact match; the packages filter must not return zero \
+         results for a package that genuinely matches"
+    );
+    assert_eq!(hits[0].key.package.name.as_str(), "zzz");
+
+    // And the `kinds`-facet section (`SECTION_TYPE`) must obey the same rule:
+    // querying the kind keyword "mod" ties every `Module` entry in both
+    // packages, and the same crowd-out applies.
+    let filtered_type = SearchQuery {
+        text: "mod".to_owned(),
+        kinds: Vec::new(),
+        packages: vec![lid_z.clone()],
+        limit: 1,
+    };
+    let (_h, rx) = engine.search(filtered_type, Gen(32));
+    let events = drain_search(rx).await;
+    let type_hits: Vec<_> = events
+        .iter()
+        .flat_map(|e| match e {
+            nudox_engine::wire::SearchEvent::Section { section, rows, .. }
+                if *section == nudox_engine::search::SECTION_TYPE =>
+            {
+                rows.iter().cloned().collect::<Vec<_>>()
+            }
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(
+        type_hits.len(),
+        1,
+        "the kind-facet section must respect the packages filter before \
+         truncation too"
+    );
+    assert_eq!(type_hits[0].key.package.name.as_str(), "zzz");
 }

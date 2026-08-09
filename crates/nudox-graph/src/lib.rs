@@ -14,10 +14,14 @@
 //! * `GraphError` and every public wire enum are `#[non_exhaustive]`.
 
 pub mod adapter;
+pub mod plan;
+pub mod probe;
 pub mod queries;
 pub mod vertex;
 
 pub use adapter::{CorpusAdapter, GraphError};
+pub use plan::{PackagePlan, SymbolPlan};
+pub use probe::{AdapterProbe, StoreProbe};
 pub use vertex::Vertex;
 
 /// The raw GraphQL SDL source of `schema.graphql`, for serving to agents.

@@ -105,6 +105,34 @@ pub struct SealReport {
     /// overloads encode to identical skeletons.
     pub forced: Vec<ForcedDisambiguation>,
 
+    /// The minted `IntroId` of every declaration that needed an escalated
+    /// disambiguator, with the tier it landed on. Sorted by `IntroId`.
+    ///
+    /// # Why this is not derivable from `forced`
+    ///
+    /// [`SealReport::forced`] counts *groups*, keyed on
+    /// `(kind, ancestor-path, leaf-name)`. That is the right shape for
+    /// "which producer erased something load-bearing", and it is the wrong
+    /// shape for the only question a *consumer* of a key can ask: **"is the
+    /// key I am holding fragile?"** A consumer has an `IntroId` and nothing
+    /// else — it cannot reconstruct the ancestor path that minted it, because
+    /// the id is a hash.
+    ///
+    /// So this field names the declarations, not the groups. It is the half
+    /// that has to survive the `nudox-store` boundary for
+    /// `nudox_store::package::PackageView::key_tier` to answer anything, and
+    /// the reason a stale key was previously indistinguishable from a deleted
+    /// symbol: MCP's `select_version` could disclose that *some* keys churn
+    /// and never which ones.
+    ///
+    /// An `IntroId` **absent** from this list was minted at
+    /// [`KeyTier::Structural`] — from the declaration's own content — and is
+    /// as stable as that content. Absence is meaningful, which is why this is
+    /// the escalated set rather than a row per declaration: a 30k-entry
+    /// package would otherwise pay a 30k-row map to record that nothing
+    /// happened.
+    pub forced_keys: Vec<(IntroId, Escalation)>,
+
     /// Arena-local references that had no minted `IntroId` and therefore
     /// survived sealing as `Ref::Local`.
     ///
@@ -150,6 +178,75 @@ pub enum Escalation {
     /// Spans were identical too (a line-granular oracle, or several
     /// declarations on one line); the ordinal is the terminal guard.
     Ordinal,
+}
+
+/// Which disambiguator tier minted a declaration's [`IntroId`], and therefore
+/// how much a caller may trust the key to survive the next release.
+///
+/// # Why a caller needs this and a `bool` will not do
+///
+/// A key that stops resolving after a version switch is either a *deleted
+/// symbol* or a *churned key*, and until this type existed a caller could not
+/// tell which — MCP's `select_version` disclosed that the ambiguity exists,
+/// which is honest and useless. The three tiers are not "more or less stable"
+/// on one axis; they fail for different reasons and a caller reacts to each
+/// differently:
+///
+/// * [`KeyTier::Structural`] gone ⇒ almost certainly deleted or its signature
+///   changed. Re-search by name.
+/// * [`KeyTier::Span`] gone ⇒ an edit *above* the declaration may have moved
+///   it. Re-search by name and path; the symbol is probably still there.
+/// * [`KeyTier::Ordinal`] gone ⇒ the producer may simply have emitted the
+///   overload set in a different order. Nothing about the source need have
+///   changed at all.
+///
+/// # Deliberately exhaustive
+///
+/// Per doctrine §3, and for the reason [`Disambiguator`] itself is: adding a
+/// tier must break every reader's `match` so each one decides what the new
+/// tier means for staleness. A `_` arm here would let a future, less stable
+/// tier be reported as if it were `Structural`.
+///
+/// [`Disambiguator`]: crate::intro::Disambiguator
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum KeyTier {
+    /// Minted from the declaration's own content — `Disambiguator::None`,
+    /// `FnOverload`, or `TraitImpl`.
+    Structural,
+    /// Escalated to [`Disambiguator::Span`](crate::intro::Disambiguator::Span):
+    /// the key includes byte offsets, so an unrelated edit above the
+    /// declaration moves it.
+    Span,
+    /// Escalated to
+    /// [`Disambiguator::Ordinal`](crate::intro::Disambiguator::Ordinal): the
+    /// key includes the declaration's index among its colliding siblings, so a
+    /// producer reordering its output moves it.
+    Ordinal,
+}
+
+impl KeyTier {
+    /// Whether the key is a function of the declaration's own content alone.
+    ///
+    /// This is the single question a cache wants answered before it stores a
+    /// key across a version boundary. `false` does **not** mean the key *will*
+    /// change — most `Span` keys survive most releases — it means the key can
+    /// change without the declaration changing, which is precisely the case a
+    /// caller cannot detect after the fact.
+    pub fn is_content_derived(self) -> bool {
+        match self {
+            KeyTier::Structural => true,
+            KeyTier::Span | KeyTier::Ordinal => false,
+        }
+    }
+}
+
+impl From<Escalation> for KeyTier {
+    fn from(e: Escalation) -> Self {
+        match e {
+            Escalation::Span => KeyTier::Span,
+            Escalation::Ordinal => KeyTier::Ordinal,
+        }
+    }
 }
 
 impl<Id: Eq + Hash> IrPackage<Id> {
@@ -390,6 +487,28 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                     }
                 }
             }
+            // Per-declaration tiers, derived from the same `tier` vector the
+            // loop above maintained — never accumulated alongside it. Doctrine
+            // §8: "the count is derived from the repaired values, never
+            // accumulated alongside them"; a parallel tally can drift from the
+            // ids it describes, and this one is read to decide whether a
+            // caller's key is trustworthy.
+            report.forced_keys = (0..n)
+                .filter_map(|i| match tier[i] {
+                    0 => None,
+                    1 => Some((intros[i], Escalation::Span)),
+                    // Tier 2 is `Ordinal`; the loop above never assigns a
+                    // higher one, because `next_tier` is capped by the two
+                    // `Escalation` variants and `MAX_ROUNDS` bounds the walk.
+                    _ => Some((intros[i], Escalation::Ordinal)),
+                })
+                .collect();
+            // By `IntroId` alone. The tier is not an ordering axis — sorting
+            // on it would group the report by severity and make two runs of
+            // the same package incomparable line-by-line, which is the one
+            // thing a report of this kind has to support.
+            report.forced_keys.sort_unstable_by_key(|(intro, _)| *intro);
+
             report.forced = forced_by_group.into_values().collect();
             // Deterministic reporting order: a report that reorders between
             // runs is not comparable across generations.

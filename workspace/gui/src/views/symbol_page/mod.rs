@@ -1635,6 +1635,7 @@ impl<E: SymbolEngine> Render for SymbolPage<E> {
     /// page state therefore cannot render itself unfocusable, which is exactly
     /// how L22 happened.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _span = crate::perf::scope(crate::perf::Region::SymbolPage);
         // §4.2 render-loop contract: advance any running `highlight.sweep`, and
         // ask for another frame only while one is actually moving. A settled
         // page requests nothing.
@@ -1809,7 +1810,16 @@ impl<E: SymbolEngine> SymbolPage<E> {
         // Precompute per-section content elements. All calls that need `cx` or
         // `self` must happen before the `.child()` / `.when()` calls below,
         // because `.when(condition, |el| ...)` closures do not receive either.
-        let max_section_h = gpui::px(400.0);
+        //
+        // The caps are per-table, because the two tables set their rows in
+        // different type tokens: `ImplsTable` in `mono`, `RefsTable` in
+        // `dense`. One shared pixel number could only ever be a row boundary
+        // for one of them — see `SpaceTokens::section_rows`.
+        let (impls_max_h, refs_max_h) = {
+            let ext = cx.theme_ext();
+            let ts = ext.type_scale;
+            (ext.section_max_h(ts.mono), ext.section_max_h(ts.dense))
+        };
 
         // Source body — shows the file path and byte range when the head carries
         // a source location; falls back to the empty state when none was recorded.
@@ -1895,7 +1905,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 div()
                     .id("symbol.impls.body")
                     .w_full()
-                    .max_h(max_section_h)
+                    // `flex_shrink_0`: see the References body below.
+                    .flex_shrink_0()
+                    .max_h(impls_max_h)
                     .overflow_y_scroll()
                     .child(impls_body),
             );
@@ -1907,7 +1919,20 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 div()
                     .id("symbol.refs.body")
                     .w_full()
-                    .max_h(max_section_h)
+                    // The other half of the mid-row clip.
+                    //
+                    // A row-quantised `max_h` only bounds the section from
+                    // above; flex could still *shrink* it to any height at all,
+                    // and did — in `12-timeline-tab.png` this body was squeezed
+                    // to about a row and a half because the column ran out of
+                    // room and this was one of the few children that would
+                    // give. `flex_shrink_0` moves that pressure onto the
+                    // documentation list, which is the correct place for it:
+                    // the list is a virtualized scroller that loses nothing by
+                    // being shorter, whereas a table shrunk below a row
+                    // boundary shows the reader half a glyph.
+                    .flex_shrink_0()
+                    .max_h(refs_max_h)
                     .overflow_y_scroll()
                     .child(refs_body),
             );

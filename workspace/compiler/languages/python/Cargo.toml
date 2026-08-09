@@ -4,78 +4,69 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
-# ── Pyrefly gate ──────────────────────────────────────────────────────────────
+# ── Pyrefly gate ─────────────────────────────────────────────────────────────────────
 #
-# `pyrefly` is NOT on crates.io (only a 0.0.1 placeholder exists). The real
-# library lives at github.com/facebook/pyrefly at the exact rev recorded in
-# build/third-party/git-fragment.bzl:
+# `pyrefly` is not on crates.io at a usable version (only a 0.0.1 placeholder),
+# so it is a git dependency. This comment used to list five reasons the feature
+# could not be turned on. Four of the five were re-checked on 2026-08-08 and are
+# no longer true; the list is replaced with what was actually verified, because
+# a stale blocker list is how a solvable problem stays unsolved.
 #
-#   PYREFLY_REV = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"  (version 1.1.1)
+#   0a. RESOLUTION — FIXED UPSTREAM. pyrefly pinned `blake3 =1.8.2` at the old
+#       rev, disjoint with `workspace/index`'s iroh (`^1.8.3`). Upstream has
+#       since walked it forward (4a9a3597 → =1.8.3, 375a4308 → =1.8.4,
+#       f3d5c794 → =1.8.5, dd4d9f30 → =1.8.6). At the rev pinned below,
+#       full-workspace `cargo metadata` resolves, with one consequence: the lock
+#       moves blake3 1.8.5 → 1.8.6, which every other blake3 requirement here
+#       (`^1.8`) already admits.
 #
-# FIVE blockers, not three. Two were missing from this list, and they are the
-# two that matter most, because the three below read as "we chose not to" while
-# these two are "it does not work":
+#   0b. THE GATED CODE — NOW IN THE TREE. `src/context.rs` exists and is the
+#       pyrefly tier: it runs the ruff front end for structure, then fills the
+#       type slots the syntactic tier cannot resolve. See its module doc.
 #
-#   0a. RESOLUTION. Declaring the git dep exactly as written below fails Cargo
-#       *dependency resolution*, before a single crate is compiled: pyrefly pins
-#       `blake3 =1.8.2`, and `workspace/index`'s `iroh` dependency requires
-#       `^1.8.3`. The two ranges are disjoint, so there is no lock file that
-#       satisfies both. (`workspace/driver`'s `blake3 = "^1.8"` resolves to
-#       1.8.5 and is the first collision Cargo reports; the index/iroh one
-#       surfaces only once that is forced.)
+#   1.  TYPESHED / NETWORK AT BUILD TIME — THE CLAIM WAS FALSE. `pyrefly_bundled`
+#       does not download anything. Its build.rs reads `third_party/typeshed`
+#       and `third_party/stubs` relative to its own manifest dir (or under
+#       `$TYPESHED_ROOT` / `$STUBS_ROOT`, which is only how Buck passes a
+#       filegroup) and tars them with `tar` + `zstd` + `sha2` — the complete
+#       build-dependency list, none of which can open a socket. Those 36 MB of
+#       typeshed are committed in the pyrefly repo, so cargo's own git checkout
+#       carries them. Verified by building it: the build script emitted
+#       stdlib.tar.zst / typeshed_stubs.tar.zst / stubs.tar.zst with no network.
+#       Nothing needs provisioning through `corpus/manifest.toml`.
 #
-#   0b. THE GATED CODE IS NOT IN THE TREE. `src/lib.rs` declares
-#       `#[cfg(feature = "pyrefly")] pub mod context;` and `src/producer.rs`
-#       calls `crate::context::invoke_oracle(src)` under the same cfg — but
-#       `src/context.rs` does not exist. Even with resolution fixed, enabling
-#       the feature fails to compile at the module declaration. The note at the
-#       bottom of this comment saying "only the oracle-driving code
-#       (context.rs, traversal.rs) is gated" describes files that are absent.
+#   2.  TRANSITIVE CRATES — REAL, AND LARGER THAN THE OLD ESTIMATE. Adding the
+#       deps below adds **77** lock entries, not ~30: capnp, arc-swap, dupe,
+#       enum-iterator, fuzzy-matcher, fxhash, watchman_client, tikv-jemallocator
+#       (a C build), lsp-server/lsp-types, allocative, starlark_map, a second
+#       `futures 0.1` — and a second copy of the ruff crate family at 0.0.6
+#       alongside the 0.0.8 this crate already pins. Cold `cargo check` of that
+#       subtree is ~1m40s on this machine.
 #
-# The three originally listed blockers, all still true:
+#   3.  API STABILITY — REAL, AND SMALL SO FAR. `context.rs` uses
+#       `pyrefly::state::state::State`, `::binding::bindings::Bindings` and
+#       `::alt::answers::Answers`, all still `pub` at 1.3.0-dev.1. The one drift
+#       between 1.1.1 and here was `ClassFields::names()` → `::fields()`. These
+#       are `#[doc(hidden)]` modules; treat a rev bump as a code change.
 #
-#   1. `pyrefly_bundled` has a build.rs that downloads and compresses a Python
-#      typeshed at build time over the network (using sha2 / tar / zstd). A
-#      plain `cargo check` in an offline or sandboxed environment will fail
-#      before any Rust source is compiled.
-#
-#   2. `pyrefly` itself depends on ~30 crates not all present in this workspace
-#      (capnp, arc-swap, dupe, enum-iterator, fuzzy-matcher, fxhash, …); adding
-#      them all just to satisfy a feature gate would bloat the lock file.
-#
-#   3. The pyrefly API used by the old workspace/compiler/compile/python/ code
-#      relies on internal crate boundaries (pyrefly::state::state::State,
-#      pyrefly::alt::answers::Answers, pyrefly::binding::bindings::Bindings, …)
-#      that may not be stable across minor revisions.
-#
-# The `pyrefly` feature therefore defaults to OFF. The lowering layer (types,
-# docstring, emit) compiles and is fully tested without it. The oracle-driving
-# code that was gated (context.rs, traversal.rs) is no longer in the tree at
-# all — see 0b above.
-#
-# What OFF costs is now stated in the type system rather than left to comments:
-# `PythonProducer::yield_contract` returns `YieldContract::RootOnly` under
-# `cfg(not(feature = "pyrefly"))`, so `nudox_producer::produce` refuses to
-# report a Python lowering as a success. It also refuses the reverse — if this
-# producer ever declares real entries while that override is still in place,
-# `produce` fails with `ProducerError::YieldContractOutgrown`, so the claim
-# above cannot outlive the repair.
-#
-# To enable: fix 0a and 0b, then add the git dep below and activate the feature.
-#
-#   [dependencies.pyrefly]
-#   git = "https://github.com/facebook/pyrefly"
-#   rev = "3e17a690edbde7d1f2341864d6f1c6523ba207c5"
-#
-# (plus all transitive sub-crates: pyrefly_types, pyrefly_python,
-# pyrefly_build, pyrefly_util, pyrefly_config, pyrefly_graph, pyrefly_bundled,
-# pyrefly_derive)
+# The feature is still **off by default** — not because it does not work, but
+# because 77 crates buy a measured +22% of annotation positions, of which the
+# half that comes from unqualified same-package names is also reachable with no
+# dependency at all. See `src/context.rs` for the per-bucket numbers.
 
 [features]
 default = []
-# Enable the live pyrefly oracle. Requires the git dep above and network access
-# during build (pyrefly_bundled downloads a typeshed).
-pyrefly = []
+# Enable the pyrefly semantic tier (`src/context.rs`). Builds fully offline —
+# the typeshed is committed inside the pyrefly git checkout (see blocker 1
+# above). Costs 77 extra lock entries and ~1m40s of cold compile.
+pyrefly = [
+  "dep:pyrefly",
+  "dep:pyrefly_build",
+  "dep:pyrefly_config",
+  "dep:pyrefly_python",
+  "dep:pyrefly_types",
+  "dep:pyrefly_util",
+]
 
 [lints]
 workspace = true
@@ -83,6 +74,62 @@ workspace = true
 [dependencies]
 nudox-ir      = { path = "../../../ir/model" }
 nudox-producer = { path = "../../producer" }
+tracing = { workspace = true }
+
+# ── ruff syntactic front end ────────────────────────────────────────────────
+#
+# Parser + AST only, exact-pinned, mirroring the TypeScript producer's OXC
+# style (`workspace/compiler/languages/typescript/Cargo.toml`): a lockstep
+# version so a ruff release cannot silently change AST shape under us.
+# `ruff_python_parser`/`ruff_python_ast`/`ruff_text_size` are internal
+# component crates of the `ruff` linter (crates.io publishes them under the
+# same 0.0.x scheme oxc used before its 1.0), and 0.0.8 is the only version
+# published as of this change. Deliberately NOT pulled in: `ruff` itself, or
+# any of the type-checking/semantic crates (`ruff_python_semantic` and
+# friends) — this stays a parser + AST, never a checker, so it carries none
+# of the `pyrefly` git-dependency/typeshed-vendoring baggage described above.
+ruff_python_parser = { version = "=0.0.8" }
+ruff_python_ast     = { version = "=0.0.8" }
+ruff_text_size       = { version = "=0.0.8" }
+
+# ── pyrefly semantic tier (optional) ────────────────────────────────────────
+#
+# One rev for all six, pinned exactly: these are one workspace upstream and
+# only ever version-lock together. `pyrefly_bundled`, `pyrefly_graph`,
+# `pyrefly_derive`, `pyrefly_glean_schema` and `tsp_types` come in
+# transitively — they are not named here because `context.rs` does not `use`
+# them, and naming a dependency you do not import is how a lock file
+# accumulates things nobody can justify removing.
+[dependencies.pyrefly]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
+
+[dependencies.pyrefly_build]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
+
+[dependencies.pyrefly_config]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
+
+[dependencies.pyrefly_python]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
+
+[dependencies.pyrefly_types]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
+
+[dependencies.pyrefly_util]
+git = "https://github.com/facebook/pyrefly"
+rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
+optional = true
 
 [dev-dependencies]
 nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+tempfile = "3"

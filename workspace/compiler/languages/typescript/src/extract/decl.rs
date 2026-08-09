@@ -19,7 +19,7 @@
 use std::path::Path;
 
 use oxc_ast::ast::{
-    AccessorPropertyType, AssignmentOperator, AssignmentTarget, BindingPattern, Class,
+    AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern, Class,
     ClassElement, Declaration, ExportDefaultDeclarationKind, Expression, Function,
     MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey, Statement,
     TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
@@ -75,6 +75,25 @@ pub fn extract_module<'a>(
             }
         });
 
+    // ── CommonJS export recognition ───────────────────────────────────────────
+    // `module_record`/`exported_names` above sees ES `export` syntax only.
+    // Every CommonJS export (`module.exports = X`, `exports.X = Y`, …) is
+    // syntactically an `ExpressionStatement`, invisible to that machinery.
+    // Union the local identifiers these assignments name into the same
+    // visibility set ESM declarations already consult below, so
+    // `is_exported`/`is_public` is correct for both module systems through
+    // one code path — the "honesty gate": without this, a CommonJS-exported
+    // declaration is real (declared, counted) but `Visibility::Private`,
+    // which is not actually honest about what the package's public API is.
+    let cjs_exports = scan_commonjs_exports(&program.body);
+    let mut visible_names = exported_names.clone();
+    if let Some(name) = &cjs_exports.whole_module {
+        visible_names.insert(name.clone());
+    }
+    for (_, local) in &cjs_exports.named {
+        visible_names.insert(local.clone());
+    }
+
     // ── Walk program body ─────────────────────────────────────────────────────
     for stmt in program.body.iter() {
         let decls = extract_statement(
@@ -82,7 +101,7 @@ pub fn extract_module<'a>(
             source,
             semantic,
             path,
-            &exported_names,
+            &visible_names,
             &default_local_name,
             &mut name_counts,
         );
@@ -90,8 +109,13 @@ pub fn extract_module<'a>(
     }
 
     // ── Export table ──────────────────────────────────────────────────────────
-    let exports =
-        build_export_table(module_record, &exported_names, &default_local_name, &declarations);
+    let exports = build_export_table(
+        module_record,
+        &exported_names,
+        &default_local_name,
+        &declarations,
+        &cjs_exports,
+    );
 
     // ── Import table ──────────────────────────────────────────────────────────
     let imports = build_import_table(module_record);
@@ -109,6 +133,144 @@ pub fn extract_module<'a>(
     }
 }
 
+// ── CommonJS export recognition ─────────────────────────────────────────────────
+
+/// Local names this module exports via CommonJS `module.exports`/`exports`
+/// assignment forms, discovered by a syntactic scan of the module's
+/// top-level statement list.
+///
+/// Deliberately shallow: this crate never walks *inside* a function body
+/// looking for further declarations (`lower_function` only reads params/
+/// generics/return type), so a name assigned only from inside a closure —
+/// `debug`'s `common.js` sets `createDebug.enable = enable` inside
+/// `function setup(env) { ... }`, never at module top level in any file —
+/// is a genuine, documented gap here, not a missed case. See
+/// `tests/real_npm_packages.rs`'s `debug` fixture for the real-package
+/// evidence this was checked against.
+#[derive(Default)]
+pub(crate) struct CommonJsExports {
+    /// The identifier assigned via `module.exports = <ident>;` — this
+    /// module's whole-module export target, the CommonJS analogue of
+    /// `export default <ident>;`.
+    pub(crate) whole_module: Option<String>,
+    /// `(export-facing name, local identifier)` pairs from
+    /// `exports.X = <ident>;`, `module.exports.X = <ident>;`, and
+    /// `<export-binding>.X = <ident>;` (`<export-binding>` is
+    /// `whole_module`'s identifier, once known — matched regardless of
+    /// whether the `module.exports = <export-binding>;` statement that
+    /// establishes it appears before or after this assignment in the file,
+    /// which real packages do not keep consistent: `ws`'s `index.js` sets
+    /// `WebSocket.createWebSocketStream = ...` several statements before
+    /// its own `module.exports = WebSocket;`).
+    pub(crate) named: Vec<(String, String)>,
+}
+
+/// True when `expr` is exactly `module.exports` (not `module.exports.X`,
+/// which is one `StaticMemberExpression` deeper).
+fn is_module_dot_exports(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::StaticMemberExpression(mem)
+            if matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
+                && mem.property.name == "exports"
+    )
+}
+
+/// True when `expr` is exactly a call `require("specifier")` — callee a
+/// bare identifier named `require`, one string-literal argument. Mirrors
+/// `graph.rs`'s `as_require_call` (which additionally extracts the
+/// specifier, needed there for graph edges and not here); kept as a
+/// separate, smaller check in this module rather than sharing code across
+/// the `entry`/`extract`/`graph` boundary for a four-line predicate.
+fn is_require_call(expr: &Expression) -> bool {
+    let Expression::CallExpression(call) = expr else {
+        return false;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return false;
+    };
+    callee.name == "require" && matches!(call.arguments.first(), Some(Argument::StringLiteral(_)))
+}
+
+/// `expr` reduced to a plain identifier name, or `None` for anything else
+/// (a call expression, a literal, an object/array literal, …). Only the
+/// plain-identifier RHS is handled: `module.exports = require('./x')` and
+/// `exports.foo = function () { ... }` are real CommonJS shapes this does
+/// not attempt to model, a documented gap rather than a guess — see
+/// `CommonJsExports`'s doc comment and this module's `extract_module`.
+fn as_plain_identifier(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Identifier(id) => Some(id.name.to_string()),
+        _ => None,
+    }
+}
+
+/// Scan `body` for the CommonJS export assignment forms `CommonJsExports`
+/// documents.
+fn scan_commonjs_exports<'a>(body: &[Statement<'a>]) -> CommonJsExports {
+    let mut out = CommonJsExports::default();
+
+    // Pass 1: find `module.exports = <ident>;` first, so pass 2 can
+    // recognise `<ident>.X = …` regardless of where in the file that
+    // assignment appears relative to the ones establishing `<ident>` as the
+    // export binding.
+    for stmt in body.iter() {
+        let Statement::ExpressionStatement(expr_stmt) = stmt else {
+            continue;
+        };
+        let Expression::AssignmentExpression(assign) = &expr_stmt.expression else {
+            continue;
+        };
+        if assign.operator != AssignmentOperator::Assign {
+            continue;
+        }
+        let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
+            continue;
+        };
+        let is_whole_module_target =
+            matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
+                && mem.property.name == "exports";
+        if is_whole_module_target {
+            if let Some(name) = as_plain_identifier(&assign.right) {
+                out.whole_module = Some(name);
+            }
+            break; // a module has at most one `module.exports = ident` target
+        }
+    }
+
+    // Pass 2: `exports.X = ident;`, `module.exports.X = ident;`, and
+    // `<export-binding>.X = ident;`.
+    for stmt in body.iter() {
+        let Statement::ExpressionStatement(expr_stmt) = stmt else {
+            continue;
+        };
+        let Expression::AssignmentExpression(assign) = &expr_stmt.expression else {
+            continue;
+        };
+        if assign.operator != AssignmentOperator::Assign {
+            continue;
+        }
+        let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
+            continue;
+        };
+        let Some(rhs_name) = as_plain_identifier(&assign.right) else {
+            continue;
+        };
+
+        let object_is_export_binding = match &mem.object {
+            Expression::Identifier(id) if id.name == "exports" => true,
+            Expression::Identifier(id) => out.whole_module.as_deref() == Some(id.name.as_str()),
+            other => is_module_dot_exports(other),
+        };
+
+        if object_is_export_binding {
+            out.named.push((mem.property.name.to_string(), rhs_name));
+        }
+    }
+
+    out
+}
+
 // ── Statement dispatch ─────────────────────────────────────────────────────────
 
 fn extract_statement<'a>(
@@ -123,7 +285,16 @@ fn extract_statement<'a>(
     match stmt {
         Statement::ExportNamedDeclaration(exp) => {
             if let Some(decl) = &exp.declaration {
-                return extract_declaration(decl, source, semantic, path, true, false, name_counts);
+                return extract_declaration(
+                    decl,
+                    source,
+                    semantic,
+                    path,
+                    true,
+                    false,
+                    exported_names,
+                    name_counts,
+                );
             }
             vec![]
         }
@@ -147,6 +318,7 @@ fn extract_statement<'a>(
                     path,
                     is_exported,
                     false,
+                    exported_names,
                     name_counts,
                 )
             } else {
@@ -168,6 +340,7 @@ fn extract_statement<'a>(
                     path,
                     is_exported,
                     false,
+                    exported_names,
                     name_counts,
                 )
             } else {
@@ -179,7 +352,33 @@ fn extract_statement<'a>(
             let decl = stmt
                 .as_declaration()
                 .expect("VariableDeclaration is a Declaration");
-            extract_declaration(decl, source, semantic, path, false, false, name_counts)
+            // `is_exported` here is deliberately `false`, not a guess: a
+            // bare `const merge = ...;` (no `export` keyword) is only public
+            // when some other statement makes it so — an ESM `export {
+            // merge };` elsewhere in the file (already in `exported_names`),
+            // or a CommonJS `module.exports = merge;` /
+            // `exports.merge = merge;` (folded into `exported_names` by
+            // `extract_module`'s CommonJS scan before this is called). Both
+            // are per-*name* facts, and `lower_variable` — not this
+            // statement-level dispatch — is what checks `exported_names` per
+            // declarator, because one `var`/`let`/`const` statement can
+            // declare several names with different export status
+            // (`export const a = 1, b = 2;` cannot, but a bare
+            // `const a = 1, b = 2;` where only `b` is separately
+            // `export`-ed can). `lodash`'s `merge.js` is exactly this
+            // shape: `var merge = createAssigner(...)` is a
+            // `VariableDeclaration`, never `export`-prefixed, made public
+            // only by the later `module.exports = merge;`.
+            extract_declaration(
+                decl,
+                source,
+                semantic,
+                path,
+                false,
+                false,
+                exported_names,
+                name_counts,
+            )
         }
 
         Statement::TSTypeAliasDeclaration(a) => {
@@ -192,6 +391,7 @@ fn extract_statement<'a>(
                 path,
                 is_exported,
                 false,
+                exported_names,
                 name_counts,
             )
         }
@@ -206,6 +406,7 @@ fn extract_statement<'a>(
                 path,
                 is_exported,
                 false,
+                exported_names,
                 name_counts,
             )
         }
@@ -220,6 +421,7 @@ fn extract_statement<'a>(
                 path,
                 is_exported,
                 false,
+                exported_names,
                 name_counts,
             )
         }
@@ -239,6 +441,7 @@ fn extract_statement<'a>(
                 path,
                 is_exported,
                 false,
+                exported_names,
                 name_counts,
             )
         }
@@ -256,6 +459,7 @@ fn extract_declaration<'a>(
     path: &Path,
     is_exported: bool,
     is_default: bool,
+    exported_names: &std::collections::HashSet<String>,
     name_counts: &mut std::collections::HashMap<String, u32>,
 ) -> Vec<DeclFact> {
     use nudox_ir::entry::Visibility;
@@ -316,7 +520,7 @@ fn extract_declaration<'a>(
         }
 
         Declaration::VariableDeclaration(v) => {
-            lower_variable(v, source, semantic, path, is_exported, name_counts)
+            lower_variable(v, source, semantic, path, is_exported, exported_names, name_counts)
         }
 
         Declaration::TSTypeAliasDeclaration(a) => {
@@ -1119,7 +1323,8 @@ fn lower_variable<'a>(
     source: &'a str,
     semantic: &'a Semantic<'a>,
     path: &Path,
-    is_exported: bool,
+    force_exported: bool,
+    exported_names: &std::collections::HashSet<String>,
     name_counts: &mut std::collections::HashMap<String, u32>,
 ) -> Vec<DeclFact> {
     use nudox_ir::entry::Visibility;
@@ -1130,6 +1335,26 @@ fn lower_variable<'a>(
         let Some(name) = binding_pattern_name(&d.id) else {
             continue;
         };
+
+        // `const X = require('./y');` is CommonJS's import syntax, not a
+        // real constant — the same relationship `import X from './y';` has
+        // to a `Const`. Before this check, the initializer's raw source
+        // text was captured as the declared "value" regardless of what it
+        // was, so `ws`'s `index.js` (`const WebSocket =
+        // require('./lib/websocket');`) produced a `Const { ty: Any, value:
+        // Some("\"require('./lib/websocket')\"") }` — a require call
+        // rendered as if it were a string literal constant, sitting
+        // alongside the real `WebSocket` class `graph.rs`'s `require()`
+        // edges (and `wrapper.mjs`'s real ESM chain) already resolve to.
+        // Skipped exactly like an ESM import: no `DeclFact` at all, not a
+        // `Const`/`Static` with a fabricated value. `ExpressionStatement`
+        // forms (`module.exports = require('./y');`) never had this bug —
+        // `extract_statement` has no dispatch arm for a bare
+        // `ExpressionStatement`, so they already produce no `DeclFact`.
+        if d.init.as_ref().is_some_and(is_require_call) {
+            continue;
+        }
+
         let span = d.span();
         let doc = jsdoc::jsdoc_for_span(semantic, span);
         if doc.ignore {
@@ -1155,6 +1380,15 @@ fn lower_variable<'a>(
             })
         };
 
+        // `force_exported` carries the statement-level `export` keyword
+        // (`export const x = 1;` — every declarator in the statement is
+        // exported, no per-name check needed or possible). Absent that,
+        // each declarator's own name is checked against `exported_names`
+        // independently, because one `var`/`let`/`const` statement can bind
+        // several names with different export status — see the call site
+        // in `extract_statement` for why this cannot be decided once per
+        // statement the way `FunctionDeclaration`/`ClassDeclaration` can.
+        let is_exported = force_exported || exported_names.contains(&name);
         let visibility = if is_exported {
             Visibility::Public
         } else {
@@ -1257,6 +1491,7 @@ fn build_export_table<'a>(
     exported_names: &std::collections::HashSet<String>,
     default_local_name: &Option<String>,
     declarations: &[DeclFact],
+    cjs_exports: &CommonJsExports,
 ) -> ExportTable {
     let exported_names_list: Vec<String> = exported_names.iter().cloned().collect();
 
@@ -1316,7 +1551,33 @@ fn build_export_table<'a>(
         star.push(StarExport { module_request });
     }
 
-    let locals = build_local_export_map(module_record, declarations);
+    let mut locals = build_local_export_map(module_record, declarations);
+
+    // CommonJS interop: `module.exports = <ident>;` makes this module
+    // resolvable exactly the way a real ESM `export default <ident>;` would
+    // be. `resolve_export_target` (emit.rs) looks up `locals.get("default")`
+    // whenever another module does `import X from "this-module"` — real ESM
+    // importing a CommonJS dependency, which is exactly what `ws`'s
+    // `wrapper.mjs` does to every file under `lib/`. Without this, that
+    // lookup misses, falls through to `resolve_export_target`'s "genuine
+    // indirect re-export" branch, and builds a `TsId` naming "default" that
+    // nothing here ever `declare()`s — `Lowering::finish` then rejects the
+    // whole package as "referred but never declared" the moment a real ESM
+    // entry point re-exports a CommonJS sibling (reproduced against `ws`
+    // 8.16.0 before this fix). `.entry(...).or_insert(...)` never overwrites
+    // a real ESM local export — there should never be one under "default" in
+    // a file that also has `module.exports = …`, but this keeps ESM
+    // authoritative if some future syntax mix produced one anyway.
+    if let Some(local_name) = &cjs_exports.whole_module {
+        locals
+            .entry("default".to_string())
+            .or_insert_with(|| LocalExport::Named(local_name.clone()));
+    }
+    for (export_name, local_name) in &cjs_exports.named {
+        locals
+            .entry(export_name.clone())
+            .or_insert_with(|| LocalExport::Named(local_name.clone()));
+    }
 
     ExportTable {
         exported_names: exported_names_list,
