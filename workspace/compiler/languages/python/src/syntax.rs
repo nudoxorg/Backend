@@ -2,12 +2,18 @@
 //!
 //! # Why syntactic, and why ruff
 //!
-//! `lib.rs`'s module doc (see "pyrefly feature gate") records why the
-//! semantic (type-checking) tier is unavailable today: `pyrefly` pins
-//! `blake3 =1.8.2` against `workspace/index`'s `iroh` requirement of
-//! `^1.8.3` — a hard dependency-resolution conflict — and its own gated
-//! `context.rs` module was never checked in. Neither blocker is syntactic;
-//! both are specific to running a *type checker* in-process.
+//! This module is the front end `context.rs`'s pyrefly semantic tier itself
+//! runs first, for structure, docstrings and written annotations — see
+//! `lib.rs`'s module doc ("pyrefly feature gate") for the current state of
+//! that tier, which has been on by default since 2026-08-09. It used to be
+//! the *only* tier: `pyrefly` once pinned `blake3 =1.8.2` against
+//! `workspace/index`'s `iroh` requirement of `^1.8.3`, a hard
+//! dependency-resolution conflict, and `context.rs` had not been written yet.
+//! Both blockers were retired on 2026-08-08; neither was ever syntactic, both
+//! were specific to running a *type checker* in-process, and this module's
+//! own job has not changed — it still never runs Python, never resolves
+//! imports across files, and never infers a type that was not spelled out in
+//! the source, whether or not the pyrefly tier is layered on top of it.
 //!
 //! `ruff_python_parser` + `ruff_python_ast` have none of that baggage: they
 //! are a parser and an AST, nothing more, exactly mirroring the shape of
@@ -289,6 +295,7 @@ fn extract_module(module: &ModModule, source: &str, module_name: String) -> Modu
         documentation,
         deprecation: None,
         items,
+        span: 0..source.len(),
     }
 }
 
@@ -488,6 +495,13 @@ fn build_function_group(
         documentation,
         deprecation,
         decorators,
+        // The containing `ItemData`'s own span is the *first* branch's `def`
+        // — matching `name`/`documentation`/`decorators` above, which are
+        // also taken from `first`. Each branch's own, distinct span lives on
+        // its `FunctionData` (see `function_data` below) and is what
+        // `emit/mod.rs` actually uses per overload; this one is a reasonable
+        // "where is this declared" answer for the group as a whole.
+        span: first.range().to_std_range(),
         body,
     }
 }
@@ -550,11 +564,15 @@ fn function_data(
     });
     let is_stub = is_stub_body(body_without_leading_docstring(&f.body));
 
+    let return_span = f.returns.as_deref().map(|e| e.range().to_std_range());
+
     FunctionData {
         overload_index: 0,
+        span: f.range().to_std_range(),
         receiver,
         params,
         return_ty,
+        return_span,
         generics,
         is_async: f.is_async,
         is_abstract,
@@ -572,7 +590,8 @@ fn bare_param(
     let name = p.name.as_str().to_owned();
     let ty = p.annotation.as_deref().map(|e| expr_to_type(e, source, typevars));
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
-    ParamData { name, ty, kind, has_default: false, doc_description }
+    let span = p.range().to_std_range();
+    ParamData { name, ty, kind, has_default: false, doc_description, span }
 }
 
 fn param_data(
@@ -586,7 +605,12 @@ fn param_data(
     let ty = p.parameter.annotation.as_deref().map(|e| expr_to_type(e, source, typevars));
     let has_default = p.default.is_some();
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
-    ParamData { name, ty, kind, has_default, doc_description }
+    // `p.range()` (`ParameterWithDefault`) covers the name, annotation, and
+    // default together; `p.parameter.range()` would drop the default. The
+    // whole parameter as written is the more useful span for a symbol whose
+    // identity might need to fall back to it.
+    let span = p.range().to_std_range();
+    ParamData { name, ty, kind, has_default, doc_description, span }
 }
 
 // ---------------------------------------------------------------------------
@@ -643,6 +667,7 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
         documentation,
         deprecation: deprecation_from_decorators(&c.decorator_list, source),
         decorators,
+        span: c.range().to_std_range(),
         body: ItemBody::Class(ClassData { super_types, generics, form, fields, methods, nested }),
     }
 }
@@ -711,6 +736,7 @@ fn extract_fields(
                     is_final,
                     is_property: false,
                     has_default: a.value.is_some(),
+                    span: a.range().to_std_range(),
                 });
             }
             Stmt::Assign(asg) => {
@@ -732,6 +758,7 @@ fn extract_fields(
                     is_final: false,
                     is_property: false,
                     has_default: true,
+                    span: asg.range().to_std_range(),
                 });
             }
             _ => {}
@@ -776,6 +803,7 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
                 parent,
                 name,
                 ItemBody::Alias(AliasData { target, generics }),
+                ta.range().to_std_range(),
             ))
         }
         Stmt::AnnAssign(a) => {
@@ -784,6 +812,7 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
             if name.starts_with("__") && name.ends_with("__") {
                 return None;
             }
+            let span = a.range().to_std_range();
             // Legacy `X: TypeAlias = <expr>`.
             if last_segment(&dotted_name(&a.annotation, source)) == "TypeAlias" {
                 let target = a.value.as_deref().map(|v| expr_to_type(v, source, typevars));
@@ -791,11 +820,12 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
                     parent,
                     name,
                     ItemBody::Alias(AliasData { target, generics: Vec::new() }),
+                    span,
                 ));
             }
             let ty = Some(expr_to_type(&a.annotation, source, typevars));
             let value = a.value.as_deref().map(|v| source[v.range()].to_owned());
-            Some(plain_item(parent, name, ItemBody::Const(ConstData { ty, value })))
+            Some(plain_item(parent, name, ItemBody::Const(ConstData { ty, value }), span))
         }
         Stmt::Assign(asg) => {
             let [Expr::Name(target)] = asg.targets.as_slice() else { return None };
@@ -804,13 +834,18 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
                 return None;
             }
             let value = Some(source[asg.value.range()].to_owned());
-            Some(plain_item(parent, name, ItemBody::Const(ConstData { ty: None, value })))
+            Some(plain_item(
+                parent,
+                name,
+                ItemBody::Const(ConstData { ty: None, value }),
+                asg.range().to_std_range(),
+            ))
         }
         _ => None,
     }
 }
 
-fn plain_item(parent: &str, name: String, body: ItemBody) -> ItemData {
+fn plain_item(parent: &str, name: String, body: ItemBody, span: std::ops::Range<usize>) -> ItemData {
     ItemData {
         id: PythonId::new(format!("{parent}.{name}")),
         parent: Some(PythonId::new(parent.to_owned())),
@@ -819,6 +854,7 @@ fn plain_item(parent: &str, name: String, body: ItemBody) -> ItemData {
         documentation: None,
         deprecation: None,
         decorators: Vec::new(),
+        span,
         body,
     }
 }

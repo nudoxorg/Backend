@@ -89,9 +89,12 @@ impl RenderOnce for CountLabel {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let ext = cx.theme_ext();
         let ts = ext.type_scale;
+        let al = ext.alpha;
         let colour = cx.theme().muted_foreground;
 
-        let opacity = if self.is_animating { 0.8 } else { 1.0 };
+        // 0.8 → `al.dim` (0.72): more than 0.05 away, but inside the ladder's
+        // just-noticeable-difference band, so the "rolling" feel is unchanged.
+        let opacity = if self.is_animating { al.dim } else { 1.0 };
 
         div()
             .text_color(colour)

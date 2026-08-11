@@ -32,15 +32,16 @@ use gpui::prelude::*;
 use crate::app::actions::{
     ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
     ActivateTab7, ActivateTab8, ActivateTab9, CloseTab, CollapseTreeNode, ConfirmOverlay,
-    Copy, CopySymbolUri, Cut, DiffAgainstPrevious, DismissOverlay,
+    Copy, CopySymbolUri, Cut, DiffAgainstPrevious, DismissOverlay, DismissWindow,
     ExpandNeighbors, ExpandRow, ExpandTreeNode, FilterAuto, FilterName, FilterSemantic,
     FilterType, FitGraphToView, GoToDocsTab, GoToRefsTab,
-    GoToSourceTab, JumpToSection1, JumpToSection2, JumpToSection3,
+    CycleTheme, CycleThemeBack,
+    GoToSourceTab, HideApp, JumpToSection1, JumpToSection2, JumpToSection3,
     MoveSelectionDown, MoveSelectionUp,
-    NextSection, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenProject,
+    NextSection, OpenAccount, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenProject,
     OpenSettings, OpenVersionPicker, OpenWithoutClosing, Paste, PinGraphNode,
-    PrevSection, Redo, SelectAll, SwitchFocusTreeTable, SyncSelected, ToggleBottomDock,
-    ToggleLeftDock, ToggleShortcutsOverlay, Undo,
+    PrevSection, Quit, Redo, SelectAll, ShowWindow, SwitchFocusTreeTable, SyncSelected,
+    ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay, Undo,
 };
 
 // ── KeymapEntry ───────────────────────────────────────────────────────────────
@@ -98,6 +99,62 @@ pub struct KeymapEntry {
 /// description. Queried by `all_bindings`, `entries_for_context`, and the `?`
 /// overlay renderer.
 pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
+    // ── Application lifecycle ─────────────────────────────────────────────────
+    //
+    // These five rows are unlike every other entry in this registry in one
+    // respect that matters: their actions are handled on the *App*
+    // (`app::lifecycle::wire`), not on an element. That is what lets the same
+    // actions still fire from the menu bar once the window is dismissed and no
+    // dispatch tree exists — see `app::menus`.
+    //
+    // `cmd-Q` in particular is not a nicety. lindsey installed no menu bar and
+    // gpui binds no default quit, so before this row existed the only way to
+    // stop the process was to kill it — which skips `on_app_quit` and therefore
+    // skips the MCP host's drain of in-flight agent requests.
+    //
+    // **Non-macOS caveat, stated rather than hidden.** `QuitMode::Default`
+    // resolves to `LastWindowClosed` off macOS, so "close the window and keep
+    // running" is a macOS behaviour; the two rows that describe it say so. They
+    // deliberately have no `ctrl-` alternate for that reason — a Linux reader
+    // should not be taught a key whose description is false there.
+    KeymapEntry {
+        keystroke: "cmd-q",
+        linux_keystroke: Some("ctrl-q"),
+        context: "global",
+        description: "Quit lindsey",
+        binding: || KeyBinding::new("cmd-q", Quit, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "ctrl-q",
+        linux_keystroke: None,
+        context: "global",
+        description: "Quit lindsey (Linux/Windows)",
+        binding: || KeyBinding::new("ctrl-q", Quit, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "cmd-h",
+        linux_keystroke: None,
+        context: "global",
+        description: "Hide lindsey, keeping the window (macOS)",
+        binding: || KeyBinding::new("cmd-h", HideApp, Some("global")),
+    },
+    // Not `cmd-W`: that is `CloseTab` in the `Pane` context, and the app menu
+    // gives this action a key equivalent that AppKit consumes *before* GPUI
+    // dispatches. Claiming `cmd-W` here would delete tab closing outright.
+    KeymapEntry {
+        keystroke: "cmd-shift-w",
+        linux_keystroke: None,
+        context: "global",
+        description: "Close the window; lindsey keeps hosting MCP (macOS)",
+        binding: || KeyBinding::new("cmd-shift-w", DismissWindow, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "cmd-0",
+        linux_keystroke: None,
+        context: "global",
+        description: "Show the lindsey window",
+        binding: || KeyBinding::new("cmd-0", ShowWindow, Some("global")),
+    },
     // ── Global ────────────────────────────────────────────────────────────────
     KeymapEntry {
         keystroke: "cmd-k",
@@ -112,6 +169,20 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         context: "global",
         description: "Open omni-search (Linux/Windows)",
         binding: || KeyBinding::new("ctrl-k", OpenOmniSearch, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "cmd-shift-a",
+        linux_keystroke: Some("ctrl-shift-a"),
+        context: "global",
+        description: "Open the account panel (sign in / sign out)",
+        binding: || KeyBinding::new("cmd-shift-a", OpenAccount, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "ctrl-shift-a",
+        linux_keystroke: None,
+        context: "global",
+        description: "Open the account panel (Linux/Windows)",
+        binding: || KeyBinding::new("ctrl-shift-a", OpenAccount, Some("global")),
     },
     KeymapEntry {
         keystroke: "cmd-shift-p",
@@ -164,6 +235,41 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         context: "global",
         description: "Toggle bottom dock (Linux/Windows)",
         binding: || KeyBinding::new("ctrl-j", ToggleBottomDock, Some("global")),
+    },
+    // ── Theme ─────────────────────────────────────────────────────────────
+    //
+    // `cmd-shift-T` rather than a chord. Cycling is something the reader does
+    // repeatedly while judging a page against a palette, and a chord turns
+    // "try the next one" into a two-beat operation you stop doing after three
+    // presses. T is the only letter it could be, and nothing in this app has
+    // a "reopen closed tab" for it to collide with.
+    KeymapEntry {
+        keystroke: "cmd-shift-t",
+        linux_keystroke: Some("ctrl-shift-t"),
+        context: "global",
+        description: "Next theme",
+        binding: || KeyBinding::new("cmd-shift-t", CycleTheme, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "ctrl-shift-t",
+        linux_keystroke: None,
+        context: "global",
+        description: "Next theme (Linux/Windows)",
+        binding: || KeyBinding::new("ctrl-shift-t", CycleTheme, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "cmd-alt-shift-t",
+        linux_keystroke: Some("ctrl-alt-shift-t"),
+        context: "global",
+        description: "Previous theme",
+        binding: || KeyBinding::new("cmd-alt-shift-t", CycleThemeBack, Some("global")),
+    },
+    KeymapEntry {
+        keystroke: "ctrl-alt-shift-t",
+        linux_keystroke: None,
+        context: "global",
+        description: "Previous theme (Linux/Windows)",
+        binding: || KeyBinding::new("ctrl-alt-shift-t", CycleThemeBack, Some("global")),
     },
     KeymapEntry {
         keystroke: "cmd-,",

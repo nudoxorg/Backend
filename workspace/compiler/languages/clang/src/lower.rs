@@ -52,11 +52,13 @@
 //! **Identity note:** this moves `IntroId`s for overload sets whose
 //! signature mentions an unresolved named type (an entry's skeleton is
 //! consulted only when it collides with another on `(kind, path, name)`, or
-//! for `Kind::Impl`, which this producer never emits). It rides the same
-//! `INTRO_DOMAIN` v4→v5 bump already required by the rest of the type-lattice
-//! change; `skeleton::tests::unknown_reason_opcodes_are_frozen` pins the
-//! `UnknownType` variant→opcode mapping and needs no change for a new
-//! *caller* of an existing variant.
+//! for `Kind::Impl`, which this producer never emits). It rode the single
+//! `INTRO_DOMAIN` v4 → v5 bump shared with the rest of the type-lattice change
+//! and with Python's `TypeData::Unsupported` change — one bump for all three,
+//! since each alone would have invalidated the whole corpus.
+//! `skeleton::tests::unknown_reason_opcodes_are_frozen` pins the `UnknownType`
+//! variant→opcode mapping and needed no change for a new *caller* of an
+//! existing variant.
 
 use std::path::PathBuf;
 

@@ -23,7 +23,7 @@ pub(super) fn lower_alias(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let target = decl
         .target
@@ -56,7 +56,7 @@ pub(super) fn lower_func(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let (input_refs, output_refs) =
         lower_sig_params_into_lowering(pkg, "", &decl.name, decl.signature.as_ref(), low, local);
@@ -91,7 +91,7 @@ pub(super) fn lower_const(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let ty = decl
         .r#type
@@ -125,7 +125,7 @@ pub(super) fn lower_var(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let ty = decl
         .r#type

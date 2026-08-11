@@ -127,7 +127,7 @@ macro_rules! boot_shell {
         $cx.executor().allow_parking();
         $cx.update(|cx: &mut App| {
             gpui_component::init(cx);
-            NudoxThemeExt::init(cx);
+            NudoxThemeExt::init(cx).expect("bundled themes parse and install");
             cx.set_global(MotionTokens::new(1.0));
             cx.bind_keys(keymaps::all_bindings());
         });
@@ -136,6 +136,8 @@ macro_rules! boot_shell {
         let search = $cx.new(|_cx| SearchStore::new(engine.clone()));
         let symbols = $cx.new(|_cx| SymbolStore::new(engine.clone()));
         let packages = $cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
+        let index_jobs = $cx
+            .new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
         let shell_cell =
             std::sync::Arc::new(std::sync::Mutex::new(None::<gpui::Entity<Shell>>));
@@ -143,7 +145,8 @@ macro_rules! boot_shell {
         // Clone for the move closure — Entity<T> clone is a cheap arc bump.
         // The originals are returned in the tuple so callers observe the same
         // entities the Shell holds.
-        let (s2, y2, p2) = (search.clone(), symbols.clone(), packages.clone());
+        let (s2, y2, p2, j2) =
+            (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
         let window = $cx
             .update(|cx: &mut App| {
                 cx.open_window(WindowOptions::default(), move |window, cx| {
@@ -152,6 +155,7 @@ macro_rules! boot_shell {
                             s2.clone(),
                             y2.clone(),
                             p2.clone(),
+                            j2.clone(),
                             window,
                             cx,
                         )

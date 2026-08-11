@@ -177,7 +177,12 @@ pub struct Session {
 /// Lengths are compared up front — that leaks the *length* of the presented
 /// credential, which is harmless (the token's length is a public constant) and
 /// is what every constant-time string compare does.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+///
+/// `pub(crate)` so [`crate::account::ApiKey`] can reuse it rather than deriving
+/// `PartialEq`. Two secrets in one crate must not be compared two different
+/// ways, and the second implementation is exactly where the short-circuiting
+/// one would appear.
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }

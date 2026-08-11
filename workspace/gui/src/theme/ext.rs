@@ -33,12 +33,12 @@
 //! a `match` on `Provenance`.  The match lives here, in data, keyed by theme.
 
 use gpui::{App, Global};
-use gpui_component::ActiveTheme as _;
 use gpui_component::dock::TitleStyle;
 
+use crate::theme::palette::{Appearance, Palette};
 use crate::theme::tokens::{
-    ColourRoles, ElevTokens, KindColours, SpaceTokens, SyntaxColours, TrustStyle, TrustTokens,
-    TypeScale,
+    AlphaTokens, ColourRoles, ElevTokens, KindColours, SpaceTokens, SyntaxColours, TrustStyle,
+    TrustTokens, TypeScale,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,10 +77,30 @@ pub enum Provenance {
 /// `cx.set_global()`, and tests can copy it freely without Arc indirection.
 #[derive(Debug, Clone)]
 pub struct NudoxThemeExt {
-    /// Spacing and radius tokens (§10.1 — same in both themes).
+    /// Stable identifier of the live theme — `"ink-dark"`, `"paper-light"`.
+    ///
+    /// Carried on the theme rather than looked up from the registry so that a
+    /// view can label what it is rendering without reaching for a second
+    /// global, and so a test can assert which theme produced a frame.
+    pub theme_key: gpui::SharedString,
+    /// The live theme's display name, for the status bar and the cycle toast.
+    pub theme_name: gpui::SharedString,
+    /// One line saying what the live theme is for.
+    pub theme_blurb: gpui::SharedString,
+    /// Which direction the scale runs.
+    ///
+    /// Replaces `cx.theme().is_dark()` as the answer to "am I in the dark?".
+    /// The gpui-component call was answering a question about *that* global's
+    /// mode, which used to be the input to our theme choice and is now an
+    /// output of it — asking it was a cycle waiting to be closed the wrong way.
+    pub appearance: Appearance,
+    /// Spacing and radius tokens (§10.1 — same in every theme: geometry does
+    /// not change with colour).
     pub space: SpaceTokens,
-    /// Type-scale tokens (§10.2 — same in both themes).
+    /// Type-scale tokens (§10.2 — same in every theme).
     pub type_scale: TypeScale,
+    /// The transparency ladder (same in every theme).
+    pub alpha: AlphaTokens,
     /// Semantic colour roles (§10.3).
     pub colours: ColourRoles,
     /// Trust-chrome colour tokens (§10.4).
@@ -99,6 +119,13 @@ pub struct NudoxThemeExt {
     /// Motion duration multiplier.  `1.0` = full fidelity, `0.5` = reduced,
     /// `0.0` = instant-cut (animations degrade gracefully — §6.1).
     pub motion_scale: f32,
+    /// The palette every token above was selected from.
+    ///
+    /// Carried so that the property the restructure exists to guarantee is
+    /// *checkable*: `tests/theme_law.rs` walks every resolved role and asserts
+    /// it is a colour this palette produced. Without the palette on the theme
+    /// that assertion would have to re-derive it and could re-derive it wrongly.
+    pub palette: Palette,
 }
 
 impl Global for NudoxThemeExt {}
@@ -112,29 +139,34 @@ impl NudoxThemeExt {
         cx.global::<NudoxThemeExt>()
     }
 
-    /// Initialise the global with the appropriate theme for the current
-    /// gpui-component `ThemeMode`.  Call once in `main.rs` after
-    /// `gpui_component::theme::init(cx)`.
-    pub fn init(cx: &mut App) {
-        use crate::theme::themes::{dark_theme, light_theme};
-        let ext = if cx.theme().is_dark() {
-            dark_theme()
-        } else {
-            light_theme()
-        };
-        cx.set_global(ext);
-    }
-
-    /// Switch the extension to match the new gpui-component theme mode.
-    /// Call from the same `observe_global::<Theme>` hook that updates gpui-component.
-    pub fn sync_to_theme(cx: &mut App) {
-        use crate::theme::themes::{dark_theme, light_theme};
-        let ext = if cx.theme().is_dark() {
-            dark_theme()
-        } else {
-            light_theme()
-        };
-        cx.set_global(ext);
+    /// Install the bundled themes and make the first one live.
+    ///
+    /// # What this replaced, and why the old shape was backwards
+    ///
+    /// This used to be:
+    ///
+    /// ```rust,ignore
+    /// let ext = if cx.theme().is_dark() { dark_theme() } else { light_theme() };
+    /// cx.set_global(ext);
+    /// ```
+    ///
+    /// — our palette chosen by asking gpui-component what mode *it* was in,
+    /// with a companion `sync_to_theme` wired to `observe_global::<Theme>` to
+    /// keep chasing it. Three things follow from that direction of flow, and
+    /// all three were real:
+    ///
+    /// - The set of possible themes was exactly two, because the input was a
+    ///   boolean. A third theme had nothing to be selected *by*.
+    /// - gpui-component's own colours were never ours. Its `Kbd`, `Button` and
+    ///   scrollbars read its `Theme`, which we only ever read from, so half the
+    ///   pixels in the window were outside the design system.
+    /// - `ThemeMode::default()` is `Light` and `main.rs` never chose, so the
+    ///   application's appearance was a property of the host machine.
+    ///
+    /// The flow is now palette → both globals. See
+    /// [`crate::theme::registry::ThemeRegistry`].
+    pub fn init(cx: &mut App) -> Result<(), crate::theme::spec::ThemeLoadError> {
+        crate::theme::registry::ThemeRegistry::init(cx)
     }
 
     // ── LD-8  "trust is chrome" ──────────────────────────────────────────────
@@ -178,6 +210,15 @@ impl NudoxThemeExt {
             background: self.colours.bg_base,
             foreground: self.colours.fg_default,
         }
+    }
+
+    /// Whether the live theme is a dark one.
+    ///
+    /// Prefer this to `cx.theme().is_dark()`: that asks gpui-component, which
+    /// is now downstream of this value rather than upstream of it.
+    #[inline(always)]
+    pub fn is_dark(&self) -> bool {
+        self.appearance.is_dark()
     }
 
     // ── Derived geometry ─────────────────────────────────────────────────────
@@ -283,27 +324,73 @@ impl ThemeExtAccessor for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::resolve::resolve;
+    use crate::theme::spec::parse_bundled;
+
+    fn every_theme() -> Vec<NudoxThemeExt> {
+        parse_bundled()
+            .expect("bundled themes parse")
+            .iter()
+            .map(resolve)
+            .collect()
+    }
 
     /// `for_provenance` must be total: every `Provenance` variant returns a
-    /// non-zero-alpha colour.
+    /// non-zero-alpha colour, in every theme — not just in the two that used to
+    /// be the only ones that could exist.
     #[test]
-    fn for_provenance_is_total() {
-        use crate::theme::themes::{dark_theme, light_theme};
-
+    fn for_provenance_is_total_in_every_bundled_theme() {
         let variants = [
             Provenance::TrustedLocal,
             Provenance::SyncedLocal,
             Provenance::Remote,
             Provenance::Stale,
         ];
-
-        for theme in [light_theme(), dark_theme()] {
+        for theme in every_theme() {
             for p in variants {
                 let style = theme.for_provenance(p);
                 assert!(
                     style.colour.a > 0.0,
-                    "for_provenance({p:?}) returned transparent colour in theme"
+                    "{}: for_provenance({p:?}) returned a transparent colour",
+                    theme.theme_key
                 );
+            }
+        }
+    }
+
+    /// The four trust levels must be told apart by hue, in every theme.
+    ///
+    /// Provenance is the one piece of chrome whose whole job is to be
+    /// distinguishable at a glance (LD-8). A theme author is free to recolour
+    /// it and not free to collapse it, and before the palette restructure
+    /// nothing said so — `remote` and `warn` shared a hue in both shipped
+    /// themes by copy-paste, which is fine, but nothing would have caught
+    /// `local` and `synced` doing the same.
+    #[test]
+    fn trust_levels_stay_distinguishable_in_every_theme() {
+        for theme in every_theme() {
+            let hues = [
+                ("local", theme.trust.local.colour),
+                ("synced", theme.trust.synced.colour),
+                ("remote", theme.trust.remote.colour),
+                ("stale", theme.trust.stale.colour),
+            ];
+            for i in 0..hues.len() {
+                for j in (i + 1)..hues.len() {
+                    let (an, a) = hues[i];
+                    let (bn, b) = hues[j];
+                    // `stale` is deliberately desaturated, so hue distance is
+                    // meaningless for it; saturation is what separates it.
+                    let separated = {
+                        let d = (a.h - b.h).abs();
+                        d.min(1.0 - d) > 10.0 / 360.0 || (a.s - b.s).abs() > 0.3
+                    };
+                    assert!(
+                        separated,
+                        "{}: trust levels `{an}` and `{bn}` are not distinguishable",
+                        theme.theme_key
+                    );
+                }
             }
         }
     }
@@ -311,9 +398,7 @@ mod tests {
     /// `reduced_motion()` is true iff `motion_scale == 0.0`.
     #[test]
     fn reduced_motion_matches_scale() {
-        use crate::theme::themes::light_theme;
-
-        let mut ext = light_theme();
+        let mut ext = every_theme().remove(0);
         ext.motion_scale = 1.0;
         assert!(!ext.reduced_motion());
 
@@ -327,10 +412,9 @@ mod tests {
     /// `scale_duration` clamps to zero when `motion_scale == 0`.
     #[test]
     fn scale_duration_zero() {
-        use crate::theme::themes::light_theme;
         use std::time::Duration;
 
-        let mut ext = light_theme();
+        let mut ext = every_theme().remove(0);
         ext.motion_scale = 0.0;
         assert_eq!(ext.scale_duration(Duration::from_millis(160)), Duration::ZERO);
 

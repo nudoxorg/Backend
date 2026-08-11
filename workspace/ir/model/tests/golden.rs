@@ -4,11 +4,20 @@
 // PURPOSE
 // -------
 // This file gates the cutover from `workspace/ir` (~300 call sites) to
-// `nudox-ir`. If any of these pins fails, either:
-//   (a) you changed the IntroId preimage layout intentionally → bump
-//       `change::FORMAT_VERSION`, re-run the regeneration command below, paste
-//       the new values in, and update the comment on the relevant const; or
-//   (b) you changed something accidentally → investigate before merging.
+// `nudox-ir`. If any of these pins fails, it is one of three things:
+//   (a) you changed the IntroId preimage layout, or what producers put into
+//       it, intentionally → re-run the regeneration command below, paste the
+//       new values in, and update the comment on the relevant const; or
+//   (b) you bumped `intro::INTRO_DOMAIN` → every pin here that is or contains
+//       an IntroId moves at once, by construction. That is the bump working,
+//       not a regression; regenerate the same way; or
+//   (c) you changed something accidentally → investigate before merging.
+//
+// Note that (a) and (b) do NOT imply a `change::FORMAT_VERSION` bump. That
+// constant versions the serde representation of an `Entry` — whether v1 bytes
+// can be decoded as v2 — and the IntroId is domain-separated from it. An
+// earlier version of this header said (a) required one; it does not, and
+// `change::FORMAT_VERSION`'s own docs say so.
 //
 // REGENERATION
 // ------------
@@ -345,34 +354,37 @@ fn build_fixture() -> PristineIntroTable {
 /// Protects: the complete identity surface — any addition/removal/rename of a
 /// fixture entry will be caught here, as will any change to the preimage
 /// layout.
-/// Regenerated after adding `Option<Variance>` to `GenericParam::Type`: the
-/// inherent `impl<T>` block's TraitImpl skeleton now includes the `0x00`
-/// variance byte, shifting its IntroId from `392cad...` to `b590aea5...`.
-/// All `draw` overload and non-generic-parametric entry IntroIds are unchanged.
-const GOLDEN_ALL_INTROS: &str = "0db8e8727ceffd1424c3656928bc328d45ad4e676151a98af72d92d51a6aa234
-1ecafde6ce9a38a6b9f81fac9818d0fc1394f8a86bce38915a4d9da4ded3f13a
-31d07cc13bc7b9c954a36f3272d16f278cbaa084dd74fea8f570483bcf4437bd
-34ad74b14409309951ec1beb0cf7ef83dcb19d4729c7bb8c19ed7130ae52e8fd
-415ff0ee5aebafd620c63bddf6b3c93fdec19047be64c2dfdffb8ac5c0942e26
-464aa98d0046ff2d7925ae908b3d96d81caf45eb6dfcbfcbe55841c56429b930
-5637e6cdce5893c15e0570432bd8feb18a4168e580fdfab0b5e4b427180b56d5
-595f509906af9691d389991c85ad317aba7e804030bd9382cdcc20531234806c
-5bd0258a2cde2c68306a8e5f45cfa24f306923392a2d0046f2fbb37ab6c3e457
-673e9f36f04000791f0949523f1eedc37366895d72135a410ecfb966c253d71f
-7900e5fbf119f34766b266cc766ab2e2127d1bf17896160086c83c84a0adfafc
-79521b7add8030ace46e0681f07b377c7e0ad76a7e219decb1c58259f67e4f00
-7d7c21a284d5c46d76253816a2d79b8ff147d52bb88af729dbbc9ac9902c3933
-80c6f136155f3a506215f6ed9ad915721109e5d4e48a7b8b83d4990f9fbcb359
-81b7b7ffbc5a4aef2bdc91032294ed56e2a32ac60d1a4bcf21d2ca7aa4da558d
-87d7416585b01f74750fdb030a7f74c05abe2c245b090f89d28e08467a8275d9
-89f0c4ea5f7e3449cbb07048f29f9c2a03d1367c284b87eff54f78c3ac1c9259
-8ce16cd5acd2174ab0e6c81d626362a32560d4b3f2e86fe8633af7fe005c7eb2
-9d41eb994a7d4e5813007bc72c27611a6ba4a6713a0aad197a53e2b0ee47c226
-a0290c53b52d20c7eb692a6c099b32c0f903515c1e7cd2f8d792a664635e3c16
-b0d0aa9008b66d2a518cf7fd336e4118cf0b0530555b60973d78bc1a53f619fe
-c8c41dd8c8c41ee6ae105535793b90f7a30a397c56719095f2574beee870466b
-cb1d5e986b78efe73097f556612a0a097b071cd8379f1ca761f4efc9ee3a9e5d
-f5d2bd6554182544e5ffb01f7f5300fe212c66b7c79b01339d45e74e5ca48780";
+/// Regenerated 2026-08-09 for the `intro::INTRO_DOMAIN` v4 → v5 bump. **All 24
+/// values moved and none was added or removed** — which is the property worth
+/// reading off this diff. A domain bump re-hashes every preimage and cannot,
+/// short of a BLAKE3 collision, change how many distinct identities the fixture
+/// mints; a count that had moved would have meant two declarations merged or
+/// one split, and would be a defect in the bump rather than a consequence of
+/// it. The fixture itself is untouched.
+const GOLDEN_ALL_INTROS: &str = "0505f1af94a9caf4c1425c0afde599f79930e7601bfff9286e1e0c4a31ebb78a
+0e4a6cd55c0dca6f604a2daba07fd782f44b5c6901bc86386099368fb0adf61b
+2fe4c71c611b4a84d2acee1d4608d458bf0411dbf9f4244290f32d0a10bde252
+30b8218867187824c35018e84e340f690e52946820212fc6ca5577b47d9cfc37
+5131d300dab4e384739ae7e47d1a57fd271be3a1de6634d4b99e7d95dfe70ec4
+51868c0d96134f9aff0174b1f36618a1b79ddaf35364a2d3728aa398d636535f
+53ad3304fddf21df4ca704de074b7f4da6baf683bf483de01d313b4c87eccb1f
+5fbccc1e6918b631463c9f579222acb861bd1b862968b940fb6e4c8a74d6f68b
+6e7129ddac9459f82dfd1f12a272d480be9417a7506c47188e7e0fd60e26e9dc
+73eed5b5e8088e9409de62b563640699c208bfa405ef5725778cebfb91702b41
+91ac8d0f79f05308d33b438728d89b0fa019b989722822e9640a5aaa421b9698
+91e780139801ba1ef5b78f940f9cea7306d01478958fa4a4de7273f6c756a959
+9b2a65ab6f9179077fb585232d7a38320d745a3e086e69080a7ce5ece97db467
+a59d2ef39ebb1d68031561fc82715c55a48a7be8c9d055fe4a5f577104fe4e1a
+ab7bff408af98771efdbfaaaf0ee2a4a822dc6060eca24e9e697d5cb429493a3
+ad98eb56fd2f306f6ba0efd330b0cd958530b820c7d0eee03d9daa825c0ae627
+b84d08b7cf30a715ce774a880f986fd1ab594eaa76c4b7ea3cdf59082c1a50a8
+c4d60bfcc813877a330c30afaf70000f3025bbfc5c4b1ba4a020ced61561f788
+d1ec7521194289853490792685c35410f1f99555c70c93d953787ff80a9e0a23
+d20314472fcc2d861d1c7ddd13b1c01c4fba3be123f75d56ca6dd0b83f74d50c
+dfa086f5c6e85c07fb2e5d5d60e5ced65dd2b5619b9602973b1934b2e3f27a36
+eb884b242b62ed0b32bb4e2594c9311a707e6973f935cfc1c1adc1fdf0866b0d
+f52264048d971643a264a23f4bf735a30f8aa3fbf9657240848ebd5d298fcd2e
+fa6a6170d0f22f5822a965b11ed4a73d86420c8e7c23cf1e36aaff808d6f6ae6";
 
 /// BLAKE3 hex of the JSON serialization of the sorted (intro_hex, entry_json)
 /// pairs. We use JSON (via the existing `serde_json` dev-dep) rather than
@@ -384,30 +396,39 @@ f5d2bd6554182544e5ffb01f7f5300fe212c66b7c79b01339d45e74e5ca48780";
 // serde representation this digest pins. `GOLDEN_ALL_INTROS` and the impl/draw
 // digests are unchanged, which is the check that matters: identity did not
 // move, only the encoding grew a field.
-const GOLDEN_ENTRIES_B3: &str = "181e071a68d4cd52cba9a6199f6f1bba51acb011fc0072a9e50760ad167711f7";
+//
+// Regenerated again 2026-08-09 for the `INTRO_DOMAIN` v4 → v5 bump — the exact
+// mirror image of the note above. This digest is taken over (intro_hex,
+// entry_json) PAIRS, so it moves when either half moves. Here every intro_hex
+// moved and no entry_json did: identity moved, the encoding did not, and
+// `change::FORMAT_VERSION` correctly stays at 2.
+const GOLDEN_ENTRIES_B3: &str = "fa5b94487536f76ad15a8013ea619c4cf6c482231635f3d5618bb93f119927eb";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run
 /// UPDATE_GOLDEN=1 to find out. What matters is that both pins are stable.
 /// Protects: the FnOverload disambiguator for one of the two i32/i64 overloads.
-const GOLDEN_DRAW_FIRST: &str = "5bd0258a2cde2c68306a8e5f45cfa24f306923392a2d0046f2fbb37ab6c3e457";
+const GOLDEN_DRAW_FIRST: &str = "6e7129ddac9459f82dfd1f12a272d480be9417a7506c47188e7e0fd60e26e9dc";
 
 /// IntroId of the sorted-second `draw` overload.
 /// Protects: the FnOverload disambiguator for the other i32/i64 overload.
-const GOLDEN_DRAW_SECOND: &str = "8ce16cd5acd2174ab0e6c81d626362a32560d4b3f2e86fe8633af7fe005c7eb2";
+const GOLDEN_DRAW_SECOND: &str = "73eed5b5e8088e9409de62b563640699c208bfa405ef5725778cebfb91702b41";
 
 /// IntroId of the sorted-first `impl` entry.
 /// Protects: the TraitImpl disambiguator for one of the two impl variants.
 /// Regenerated: the inherent impl's skeleton changed (variance byte added to
 /// GenericParam::Type encoding), producing a new IntroId `b590aea5...`. The
 /// negative blanket impl has no generics so its IntroId `8010fb61...` is stable.
-const GOLDEN_IMPL_FIRST: &str = "673e9f36f04000791f0949523f1eedc37366895d72135a410ecfb966c253d71f";
+/// Regenerated again 2026-08-09 for the `INTRO_DOMAIN` v4 → v5 bump: unlike the
+/// variance change, this one moves BOTH impls, because a domain bump reaches
+/// every digest regardless of whether its skeleton has generics to change.
+const GOLDEN_IMPL_FIRST: &str = "d20314472fcc2d861d1c7ddd13b1c01c4fba3be123f75d56ca6dd0b83f74d50c";
 
 /// IntroId of the sorted-second `impl` entry.
 /// Protects: the TraitImpl disambiguator — specifically that `negative=true`
 /// and `blanket=true` produce a distinct skeleton from the inherent impl.
 /// Regenerated: see GOLDEN_IMPL_FIRST note above.
-const GOLDEN_IMPL_SECOND: &str = "80c6f136155f3a506215f6ed9ad915721109e5d4e48a7b8b83d4990f9fbcb359";
+const GOLDEN_IMPL_SECOND: &str = "dfa086f5c6e85c07fb2e5d5d60e5ced65dd2b5619b9602973b1934b2e3f27a36";
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Helpers shared by the regeneration path and the assertion path

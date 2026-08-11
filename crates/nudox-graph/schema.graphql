@@ -59,7 +59,7 @@ type Package {
 #                its output. A report is the mitigation; it is not stability."
 #
 # Separately, no key is stable across IR schema versions: the hash domain is
-# itself versioned (`INTRO_DOMAIN = "nudox.intro.v4"`), and its own
+# itself versioned (`INTRO_DOMAIN = "nudox.intro.v5"`), and its own
 # documentation states that every persisted `IntroId` in the corpus is
 # invalidated by a bump.
 #

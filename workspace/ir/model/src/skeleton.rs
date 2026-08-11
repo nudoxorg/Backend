@@ -893,7 +893,13 @@ mod tests {
 
     /// `Type::Any` keeps opcode `0x09` — the top type's encoding is unchanged
     /// by CC-2, so an entry whose signature genuinely mentions `Object` /
-    /// `interface{}` / `unknown` keeps its v4-shaped preimage.
+    /// `interface{}` / `unknown` keeps a byte-identical preimage across the
+    /// v4 → v5 boundary.
+    ///
+    /// Its *digest* still moves, because `INTRO_DOMAIN` is hashed as a prefix
+    /// of that preimage. Preimage stability is the property worth pinning here:
+    /// it is what says the `Unknown` split did not quietly redefine the top
+    /// type as well.
     #[test]
     fn any_opcode_is_unchanged_by_the_unknown_split() {
         assert_eq!(type_skeleton(&Type::Any), &[0x09]);

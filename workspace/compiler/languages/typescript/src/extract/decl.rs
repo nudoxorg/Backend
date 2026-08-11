@@ -19,10 +19,10 @@
 use std::path::Path;
 
 use oxc_ast::ast::{
-    AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern, Class,
-    ClassElement, Declaration, ExportDefaultDeclarationKind, Expression, Function,
-    MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey, Statement,
-    TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
+    AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern,
+    CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
+    Function, MethodDefinitionKind, MethodDefinitionType, PropertyDefinitionType, PropertyKey,
+    Statement, TSAccessibility, TSEnumDeclaration, TSEnumMemberName, TSInterfaceDeclaration,
     TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature,
     VariableDeclaration, VariableDeclarationKind,
 };
@@ -130,6 +130,7 @@ pub fn extract_module<'a>(
         declarations,
         exports,
         imports,
+        source_len: source.len(),
     }
 }
 
@@ -176,20 +177,67 @@ fn is_module_dot_exports(expr: &Expression) -> bool {
     )
 }
 
-/// True when `expr` is exactly a call `require("specifier")` — callee a
-/// bare identifier named `require`, one string-literal argument. Mirrors
-/// `graph.rs`'s `as_require_call` (which additionally extracts the
-/// specifier, needed there for graph edges and not here); kept as a
-/// separate, smaller check in this module rather than sharing code across
-/// the `entry`/`extract`/`graph` boundary for a four-line predicate.
-fn is_require_call(expr: &Expression) -> bool {
-    let Expression::CallExpression(call) = expr else {
-        return false;
-    };
+/// True when `expr` is a CommonJS *import* expression — something that binds
+/// a required module (or a name reached off one) to a local identifier, never
+/// a real value the declaring package computed. Three shapes, all confirmed
+/// live in real npm packages:
+///
+/// - `require("specifier")` — the bare call. Mirrors `graph.rs`'s
+///   `as_require_call` (which additionally extracts the specifier, needed
+///   there for graph edges and not here); kept as a separate, smaller check
+///   in this module rather than sharing code across the
+///   `entry`/`extract`/`graph` boundary. `ws`'s `const WebSocket =
+///   require('./lib/websocket');` is this shape.
+/// - `__importDefault(require("specifier"))` / `__importStar(require("specifier"))`
+///   — `tsc`'s own `esModuleInterop`-compiled output for `import x from "y"` /
+///   `import * as x from "y"`. Recognizing only the bare call left every one
+///   of these fabricated as a `Const` whose "value" was the interop-wrapped
+///   require call rendered as if it were a string literal —
+///   `class-validator`'s bundled `bundles/class-validator.umd.js` is
+///   wall-to-wall this shape (`const isEmail_1 =
+///   __importDefault(require("validator/lib/isEmail"));`, ~70 occurrences in
+///   that one file).
+/// - `require("specifier").propertyName` — a property read directly off the
+///   required module, no intermediate binding. `commander`'s
+///   `const EventEmitter = require('events').EventEmitter;` is this shape.
+///
+/// Recursion covers combinations of these that occur in practice
+/// (`__importDefault(require("x")).default`, not observed in the npm corpus
+/// swept so far but the same rule for free). Anything else — a computed
+/// specifier, a renamed `require`, an arbitrary function call whose argument
+/// is not itself one of these three shapes — is `false`; a specifier this
+/// crate cannot read is not one it should guess at.
+fn is_commonjs_import_expr(expr: &Expression) -> bool {
+    match expr {
+        Expression::CallExpression(call) => is_commonjs_import_call(call),
+        Expression::StaticMemberExpression(mem) => is_commonjs_import_expr(&mem.object),
+        _ => false,
+    }
+}
+
+/// `is_commonjs_import_expr`'s counterpart over `Argument` — needed because
+/// `__importDefault(...)`/`__importStar(...)`'s own argument is an `Argument`
+/// node, a different (if variant-compatible) type from `Expression`.
+fn is_commonjs_import_argument(arg: &Argument) -> bool {
+    match arg {
+        Argument::CallExpression(call) => is_commonjs_import_call(call),
+        Argument::StaticMemberExpression(mem) => is_commonjs_import_expr(&mem.object),
+        _ => false,
+    }
+}
+
+fn is_commonjs_import_call(call: &CallExpression) -> bool {
     let Expression::Identifier(callee) = &call.callee else {
         return false;
     };
-    callee.name == "require" && matches!(call.arguments.first(), Some(Argument::StringLiteral(_)))
+    match callee.name.as_str() {
+        "require" => matches!(call.arguments.first(), Some(Argument::StringLiteral(_))),
+        "__importDefault" | "__importStar" => call
+            .arguments
+            .first()
+            .is_some_and(is_commonjs_import_argument),
+        _ => false,
+    }
 }
 
 /// `expr` reduced to a plain identifier name, or `None` for anything else
@@ -720,6 +768,7 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
 
     let is_async = f.r#async;
     let is_generator = f.generator;
+    let span = f.span();
 
     FunctionBody {
         generics,
@@ -729,6 +778,8 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         is_generator,
         has_body,
         receiver,
+        span_start: span.start,
+        span_end: span.end,
     }
 }
 
@@ -751,12 +802,15 @@ fn lower_formal_parameters<'a>(
             .as_ref()
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
         let is_readonly = param.readonly;
+        let span = param.span();
         out.push(ParamFact {
             name,
             ty,
             is_optional: param.optional,
             is_rest: false,
             is_readonly,
+            span_start: span.start,
+            span_end: span.end,
         });
     }
     if let Some(rest) = &params.rest {
@@ -766,12 +820,15 @@ fn lower_formal_parameters<'a>(
             .map(|ann| lower_ts_type(&ann.type_annotation, source));
         let name =
             binding_pattern_name(&rest.rest.argument).unwrap_or_else(|| "...rest".to_string());
+        let span = rest.span();
         out.push(ParamFact {
             name,
             ty,
             is_optional: false,
             is_rest: true,
             is_readonly: false,
+            span_start: span.start,
+            span_end: span.end,
         });
     }
     out
@@ -899,12 +956,15 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
                 .type_annotation
                 .as_ref()
                 .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            let span = param.span();
             members.push(MemberFact {
                 name,
                 kind: MemberKind::Property { ty },
                 modifiers,
                 doc: DocFacts::default(),
                 decorators: Vec::new(),
+                span_start: span.start,
+                span_end: span.end,
             });
         }
 
@@ -925,12 +985,15 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
                         && synth_seen.insert(prop_name.clone())
                     {
                         declared_field_names.insert(prop_name.clone());
+                        let span = assign.span();
                         members.push(MemberFact {
                             name: prop_name,
                             kind: MemberKind::Property { ty: None },
                             modifiers: MemberModifiers::default(),
                             doc: DocFacts::default(),
                             decorators: Vec::new(),
+                            span_start: span.start,
+                            span_end: span.end,
                         });
                     }
                 }
@@ -994,6 +1057,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 })
                 .collect();
             let sig = lower_function(&m.value, source);
+            let span = m.span();
             Some(MemberFact {
                 name,
                 kind: match m.kind {
@@ -1003,6 +1067,8 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 modifiers,
                 doc: DocFacts::default(),
                 decorators,
+                span_start: span.start,
+                span_end: span.end,
             })
         }
 
@@ -1037,12 +1103,15 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                     token: d.span.source_text(source).to_string(),
                 })
                 .collect();
+            let span = p.span();
             Some(MemberFact {
                 name,
                 kind: MemberKind::Property { ty },
                 modifiers,
                 doc: DocFacts::default(),
                 decorators,
+                span_start: span.start,
+                span_end: span.end,
             })
         }
 
@@ -1083,12 +1152,15 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
             decorators.push(AttrTok {
                 token: "accessor".to_string(),
             });
+            let span = ap.span();
             Some(MemberFact {
                 name,
                 kind: MemberKind::Accessor { ty },
                 modifiers,
                 doc: DocFacts::default(),
                 decorators,
+                span_start: span.start,
+                span_end: span.end,
             })
         }
 
@@ -1096,9 +1168,10 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
         // No type-level surface, but must not be silently dropped.
         // Emit as `MemberKind::StaticBlock` with a synthetic name; emit.rs
         // will translate this to a synthetic Function child.
-        ClassElement::StaticBlock(_sb) => {
+        ClassElement::StaticBlock(sb) => {
             // The caller (`lower_class`) assigns the unique __static[_N] name.
             // We emit a placeholder here; lower_class re-names them in order.
+            let span = sb.span();
             Some(MemberFact {
                 name: "__static_placeholder".to_string(),
                 kind: MemberKind::StaticBlock {
@@ -1113,6 +1186,8 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                 },
                 doc: DocFacts::default(),
                 decorators: Vec::new(),
+                span_start: span.start,
+                span_end: span.end,
             })
         }
 
@@ -1181,6 +1256,7 @@ fn lower_interface<'a>(
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
                     .unwrap_or_default();
+                let m_span = m.span();
                 let sig = FunctionBody {
                     generics,
                     params,
@@ -1189,6 +1265,8 @@ fn lower_interface<'a>(
                     is_generator: false,
                     has_body: false,
                     receiver: ReceiverKind::SharedRef,
+                    span_start: m_span.start,
+                    span_end: m_span.end,
                 };
                 methods.push(MethodFact {
                     name,
@@ -1211,11 +1289,14 @@ fn lower_interface<'a>(
                     is_optional: p.optional,
                     is_abstract: false,
                 };
+                let p_span = p.span();
                 properties.push(PropertyFact {
                     name,
                     ty,
                     modifiers,
                     doc: DocFacts::default(),
+                    span_start: p_span.start,
+                    span_end: p_span.end,
                 });
             }
             TSSignature::TSCallSignatureDeclaration(c) => {
@@ -1229,6 +1310,7 @@ fn lower_interface<'a>(
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
                     .unwrap_or_default();
+                let c_span = c.span();
                 call_signatures.push(FunctionBody {
                     generics,
                     params,
@@ -1237,6 +1319,8 @@ fn lower_interface<'a>(
                     is_generator: false,
                     has_body: false,
                     receiver: ReceiverKind::None,
+                    span_start: c_span.start,
+                    span_end: c_span.end,
                 });
             }
             // ── Item 5: Index signatures (`[k: string]: T`) ───────────────
@@ -1248,10 +1332,13 @@ fn lower_interface<'a>(
                     let key_name = param.name.as_str().to_string();
                     let key_ty = lower_ts_type(&param.type_annotation.type_annotation, source);
                     let value_ty = lower_ts_type(&idx.type_annotation.type_annotation, source);
+                    let idx_span = idx.span();
                     index_signatures.push(IndexSignatureFact {
                         key_name,
                         key_ty,
                         value_ty,
+                        span_start: idx_span.start,
+                        span_end: idx_span.end,
                     });
                 }
             }
@@ -1267,6 +1354,7 @@ fn lower_interface<'a>(
                     .as_ref()
                     .map(|tp| lower_type_params(tp, source))
                     .unwrap_or_default();
+                let cs_span = cs.span();
                 construct_signatures.push(FunctionBody {
                     generics,
                     params,
@@ -1275,6 +1363,8 @@ fn lower_interface<'a>(
                     is_generator: false,
                     has_body: false,
                     receiver: ReceiverKind::None,
+                    span_start: cs_span.start,
+                    span_end: cs_span.end,
                 });
             }
         }
@@ -1312,7 +1402,13 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
                 }
                 other => format!("{:?}", other),
             });
-            VariantFact { name, discriminant }
+            let span = m.span();
+            VariantFact {
+                name,
+                discriminant,
+                span_start: span.start,
+                span_end: span.end,
+            }
         })
         .collect();
     EnumBody { is_const, variants }
@@ -1336,22 +1432,30 @@ fn lower_variable<'a>(
             continue;
         };
 
-        // `const X = require('./y');` is CommonJS's import syntax, not a
-        // real constant — the same relationship `import X from './y';` has
-        // to a `Const`. Before this check, the initializer's raw source
-        // text was captured as the declared "value" regardless of what it
-        // was, so `ws`'s `index.js` (`const WebSocket =
-        // require('./lib/websocket');`) produced a `Const { ty: Any, value:
-        // Some("\"require('./lib/websocket')\"") }` — a require call
-        // rendered as if it were a string literal constant, sitting
+        // `const X = require('./y');` — and the two wider CommonJS-import
+        // shapes `is_commonjs_import_expr` also recognizes — are CommonJS's
+        // import syntax, not a real constant, the same relationship
+        // `import X from './y';` has to a `Const`. Before the first check,
+        // the initializer's raw source text was captured as the declared
+        // "value" regardless of what it was, so `ws`'s `index.js` (`const
+        // WebSocket = require('./lib/websocket');`) produced a `Const { ty:
+        // Any, value: Some("\"require('./lib/websocket')\"") }` — a require
+        // call rendered as if it were a string literal constant, sitting
         // alongside the real `WebSocket` class `graph.rs`'s `require()`
         // edges (and `wrapper.mjs`'s real ESM chain) already resolve to.
-        // Skipped exactly like an ESM import: no `DeclFact` at all, not a
+        // Widened after the bare-call check alone left two further real
+        // shapes fabricating the same way: `class-validator`'s bundled
+        // `.umd.js` (`const isEmail_1 =
+        // __importDefault(require("validator/lib/isEmail"));` — `tsc`'s own
+        // `esModuleInterop` output, ~70 occurrences in that one file) and
+        // `commander`'s `const EventEmitter = require('events').EventEmitter;`
+        // (a property read off a require call). Skipped exactly like an ESM
+        // import in all three shapes: no `DeclFact` at all, not a
         // `Const`/`Static` with a fabricated value. `ExpressionStatement`
         // forms (`module.exports = require('./y');`) never had this bug —
         // `extract_statement` has no dispatch arm for a bare
         // `ExpressionStatement`, so they already produce no `DeclFact`.
-        if d.init.as_ref().is_some_and(is_require_call) {
+        if d.init.as_ref().is_some_and(is_commonjs_import_expr) {
             continue;
         }
 
@@ -1541,6 +1645,8 @@ fn build_export_table<'a>(
             module_request,
             import_name,
             export_name,
+            span_start: e.statement_span.start,
+            span_end: e.statement_span.end,
         });
     }
 
@@ -1548,7 +1654,11 @@ fn build_export_table<'a>(
         let Some(module_request) = e.module_request.as_ref().map(|n| n.name.to_string()) else {
             continue;
         };
-        star.push(StarExport { module_request });
+        star.push(StarExport {
+            module_request,
+            span_start: e.statement_span.start,
+            span_end: e.statement_span.end,
+        });
     }
 
     let mut locals = build_local_export_map(module_record, declarations);
@@ -1568,15 +1678,27 @@ fn build_export_table<'a>(
     // a real ESM local export — there should never be one under "default" in
     // a file that also has `module.exports = …`, but this keeps ESM
     // authoritative if some future syntax mix produced one anyway.
+    // CommonJS values have no TS-overload syntax, but the *name* a
+    // `module.exports`/`exports.X` assignment names can still legitimately
+    // collect more than one declaration the same way any other top-level
+    // name can (declaration merging, or simply two unrelated declarations
+    // that happen to share a name) — so this counts `declarations` exactly
+    // like `build_local_export_map`'s own `overload_count_of` above, rather
+    // than assuming 1.
+    let cjs_overload_count = |name: &str| -> u32 {
+        declarations.iter().filter(|d| d.name == name).count().max(1) as u32
+    };
     if let Some(local_name) = &cjs_exports.whole_module {
-        locals
-            .entry("default".to_string())
-            .or_insert_with(|| LocalExport::Named(local_name.clone()));
+        locals.entry("default".to_string()).or_insert_with(|| LocalExport::Named {
+            overload_count: cjs_overload_count(local_name),
+            local_name: local_name.clone(),
+        });
     }
     for (export_name, local_name) in &cjs_exports.named {
-        locals
-            .entry(export_name.clone())
-            .or_insert_with(|| LocalExport::Named(local_name.clone()));
+        locals.entry(export_name.clone()).or_insert_with(|| LocalExport::Named {
+            overload_count: cjs_overload_count(local_name),
+            local_name: local_name.clone(),
+        });
     }
 
     ExportTable {
@@ -1622,6 +1744,22 @@ fn build_local_export_map<'a>(
     let declared_names: std::collections::HashSet<&str> =
         declarations.iter().map(|d| d.name.as_str()).collect();
 
+    // How many declarations this module's own emitter will give each name —
+    // `LocalExport::Named`'s `overload_count`. `bump_count` (this module's
+    // discriminant assignment) hands out `0..count` for a same-named group,
+    // so counting occurrences in `declarations` here reconstructs exactly
+    // that count without re-deriving it a second, possibly-inconsistent way.
+    let mut overload_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    for d in declarations {
+        *overload_counts.entry(d.name.as_str()).or_insert(0) += 1;
+    }
+    // A name with no declaration at all (only possible for the synthetic
+    // "default" key inserted below, when it names something CommonJS-only)
+    // still needs a valid, non-zero count — 1, matching the pre-existing
+    // single-target behaviour, is the honest fallback since nothing here
+    // observed more than one.
+    let overload_count_of = |name: &str| overload_counts.get(name).copied().unwrap_or(1).max(1);
+
     let mut locals = std::collections::HashMap::new();
 
     for e in module_record.local_export_entries.iter() {
@@ -1640,15 +1778,19 @@ fn build_local_export_map<'a>(
         let resolution = match local_name {
             Some(name) => match namespace_imports.get(name) {
                 Some(&module_request) => LocalExport::NamespaceOf(module_request.to_string()),
-                None => LocalExport::Named(name.to_string()),
+                None => LocalExport::Named {
+                    local_name: name.to_string(),
+                    overload_count: overload_count_of(name),
+                },
             },
             // Identifier and named-declaration defaults are covered by the
             // `Some` arm above (their `local_name` names the declaration);
             // this is `export default <expression>;` with no attached
             // identifier at all.
-            None if declared_names.contains("default") => {
-                LocalExport::Named("default".to_string())
-            }
+            None if declared_names.contains("default") => LocalExport::Named {
+                local_name: "default".to_string(),
+                overload_count: overload_count_of("default"),
+            },
             None => LocalExport::Unresolvable,
         };
 

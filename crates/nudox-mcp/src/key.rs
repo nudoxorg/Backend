@@ -205,26 +205,46 @@ mod tests {
 
     #[test]
     fn symbol_key_rejects_every_malformed_shape() {
+        // Doctrine §4: an assertion that some error came back is a tautology
+        // a stub would also pass. Each case pins the *content* of `reason` —
+        // the exact text an agent would read to self-correct — not merely
+        // that `to_wire` returned `Err`.
         let cases = [
-            ("", "empty"),
-            ("cargo:serde", "no '#'"),
-            ("serde#abcd", "no ':'"),
-            (":serde#abcd", "empty ecosystem"),
-            ("cargo:#abcd", "empty name"),
-            ("cargo:serde#", "empty intro"),
-            ("cargo:serde#zz", "non-hex intro"),
+            ("", "no '#' found"),
+            ("cargo:serde", "no '#' found"),
+            ("serde#abcd", "no ':' found"),
+            (":serde#abcd", "ecosystem segment is empty"),
+            ("cargo:#abcd", "package name segment is empty"),
+            ("cargo:serde#", "intro segment must be exactly 64 hex characters"),
+            ("cargo:serde#zz", "intro segment must be exactly 64 hex characters"),
         ];
-        for (input, why) in cases {
-            assert!(
-                SymbolKeyDto(input.to_owned()).to_wire().is_err(),
-                "should have rejected {input:?} ({why})"
-            );
+        for (input, expected_reason_substring) in cases {
+            let err = SymbolKeyDto(input.to_owned())
+                .to_wire()
+                .expect_err(&format!("should have rejected {input:?}"));
+            match err {
+                McpError::MalformedKey { key, reason } => {
+                    assert_eq!(key, input, "the rejected input must be echoed back verbatim");
+                    assert!(
+                        reason.contains(expected_reason_substring),
+                        "input {input:?}: expected reason to mention {expected_reason_substring:?}, \
+                         got {reason:?}"
+                    );
+                }
+                other => panic!("expected MalformedKey for {input:?}, got {other:?}"),
+            }
         }
         let short = format!("cargo:serde#{}", "a".repeat(63));
-        assert!(
-            SymbolKeyDto(short).to_wire().is_err(),
-            "truncated intro must not resolve"
-        );
+        match SymbolKeyDto(short).to_wire() {
+            Err(McpError::MalformedKey { reason, .. }) => {
+                assert!(
+                    reason.contains("64 hex characters"),
+                    "a truncated intro must be rejected as the wrong length, not silently \
+                     accepted: got {reason:?}"
+                );
+            }
+            other => panic!("truncated intro must not resolve, got {other:?}"),
+        }
     }
 
     #[test]
@@ -248,16 +268,29 @@ mod tests {
     #[test]
     fn package_lineage_rejects_every_malformed_shape() {
         let cases = [
-            ("", "empty"),
-            ("cargo", "no ':'"),
-            (":serde", "empty ecosystem"),
-            ("cargo:", "empty name"),
+            ("", "no ':' found"),
+            ("cargo", "no ':' found"),
+            (":serde", "ecosystem segment is empty"),
+            ("cargo:", "package name segment is empty"),
         ];
-        for (input, why) in cases {
-            assert!(
-                PackageLineageDto(input.to_owned()).to_wire().is_err(),
-                "should have rejected {input:?} ({why})"
-            );
+        for (input, expected_reason_substring) in cases {
+            let err = PackageLineageDto(input.to_owned())
+                .to_wire()
+                .expect_err(&format!("should have rejected {input:?}"));
+            match err {
+                McpError::MalformedPackage { package, reason } => {
+                    assert_eq!(
+                        package, input,
+                        "the rejected input must be echoed back verbatim"
+                    );
+                    assert!(
+                        reason.contains(expected_reason_substring),
+                        "input {input:?}: expected reason to mention {expected_reason_substring:?}, \
+                         got {reason:?}"
+                    );
+                }
+                other => panic!("expected MalformedPackage for {input:?}, got {other:?}"),
+            }
         }
     }
 }

@@ -84,6 +84,10 @@ pub struct ModuleData {
     pub deprecation: Option<DeprecationData>,
     /// All top-level items in declaration order.
     pub items: Vec<ItemData>,
+    /// Byte offsets of the whole file, `0..source.len()`. A module has no
+    /// narrower "declaration" in the source than the file itself. See
+    /// `ItemData::span`.
+    pub span: std::ops::Range<usize>,
 }
 
 /// One top-level or nested item.
@@ -103,6 +107,14 @@ pub struct ItemData {
     pub deprecation: Option<DeprecationData>,
     /// Decorator names collected from the source.
     pub decorators: Vec<String>,
+    /// Byte offsets of this declaration's own header (the `def`/`class`
+    /// keyword through the statement's own range — never the body), in
+    /// `Symbol::source`'s UTF-8 bytes. This is what feeds
+    /// `nudox_ir::intro::Disambiguator::Span` when a structural skeleton
+    /// collides; see `syntax.rs`'s extraction sites for where each variant
+    /// gets it from ruff's `TextRange` (already UTF-8-byte, not char,
+    /// offsets — `ruff_text_size::TextSize`'s own doc comment says so).
+    pub span: std::ops::Range<usize>,
     /// The item body.
     pub body: ItemBody,
 }
@@ -167,15 +179,32 @@ pub struct FieldData {
     pub is_property: bool,
     pub has_default: bool,
     pub documentation: Option<String>,
+    /// Byte offsets of the assignment/annotation statement that declared this
+    /// field, in `Symbol::source`'s UTF-8 bytes. See `ItemData::span`.
+    pub span: std::ops::Range<usize>,
 }
 
 #[derive(Debug)]
 pub struct FunctionData {
     /// Overload index (0 for the first / only branch, N for the Nth overload).
     pub overload_index: usize,
+    /// Byte offsets of this specific branch's own `def` statement, in
+    /// `Symbol::source`'s UTF-8 bytes. See `ItemData::span`.
+    ///
+    /// Carried per-branch (not just on the containing `ItemData`) because an
+    /// `@overload` group emits one declaration per branch
+    /// (`oracle.rs`'s `PythonId` scheme, `base#0`/`base#1`/…) and each needs
+    /// its own span, not the first branch's borrowed for all of them.
+    pub span: std::ops::Range<usize>,
     pub receiver: ReceiverKind,
     pub params: Vec<ParamData>,
     pub return_ty: Option<TypeData>,
+    /// Byte offsets of the `-> ReturnType` expression, when `return_ty` is
+    /// `Some`. `emit/mod.rs` gives the synthesized return-type child entry
+    /// this span (falling back to the function's own span in the one case
+    /// where `return_ty` is filled in by the pyrefly tier — which infers a
+    /// type but does not invent source text to point at).
+    pub return_span: Option<std::ops::Range<usize>>,
     pub generics: Vec<GenericParamData>,
     pub is_async: bool,
     pub is_abstract: bool,
@@ -201,6 +230,10 @@ pub struct ParamData {
     pub kind: ParamKind,
     pub has_default: bool,
     pub doc_description: Option<String>,
+    /// Byte offsets of the parameter itself (name plus annotation and
+    /// default, per ruff's `Parameter`/`ParameterWithDefault` range), in
+    /// `Symbol::source`'s UTF-8 bytes. See `ItemData::span`.
+    pub span: std::ops::Range<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

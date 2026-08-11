@@ -31,6 +31,7 @@ use crate::bridge::slot::{Display as SlotDisplay, SKELETON_GRACE, SlotError, Str
 use crate::motion::declarative::shimmer;
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::MotionTokens;
+use crate::theme::tokens::AlphaTokens;
 use crate::ui::error_state::ErrorState;
 
 // ── SlotContentState ─────────────────────────────────────────────────────────
@@ -119,13 +120,16 @@ where
                 shimmer(strip, "ui.slot_view.stale_strip").into_any_element()
             } else {
                 // Census full: static at midpoint opacity (§5.4 load shedding).
-                strip.opacity(0.55).into_any_element()
+                // No `cx` in this free function, so the ladder is reached via
+                // its canonical constant rather than `ext.alpha` — the value
+                // is the same in every theme by construction.
+                strip.opacity(AlphaTokens::STANDARD.half).into_any_element()
             };
 
             div()
                 .w_full()
                 .v_flex()
-                .child(div().w_full().opacity(0.7).child(content))
+                .child(div().w_full().opacity(AlphaTokens::STANDARD.dim).child(content))
                 .child(animated_strip)
                 .into_any_element()
         }
@@ -172,7 +176,7 @@ where
             div()
                 .w_full()
                 .v_flex()
-                .child(div().w_full().opacity(0.7).child(content))
+                .child(div().w_full().opacity(AlphaTokens::STANDARD.dim).child(content))
                 .child(error_bar)
                 .into_any_element()
         }
@@ -214,6 +218,7 @@ impl RenderOnce for SlimErrorBar {
         let theme = cx.theme();
         let sp = ext.space;
         let ts = ext.type_scale;
+        let al = ext.alpha;
 
         div()
             .w_full()
@@ -221,9 +226,9 @@ impl RenderOnce for SlimErrorBar {
             .gap(sp.space_2)
             .px(sp.space_3)
             .py(sp.space_1)
-            .bg(theme.danger.opacity(0.08))
+            .bg(theme.danger.opacity(al.hairline))
             .border_t_1()
-            .border_color(theme.danger.opacity(0.3))
+            .border_color(theme.danger.opacity(al.tint))
             .child(
                 div()
                     .text_size(ts.dense.size)

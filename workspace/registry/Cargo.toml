@@ -71,6 +71,19 @@ name = "vector_onnx_live"
 path = "tests/vector/onnx_live.rs"
 required-features = ["onnx"]
 
+# The semantic search section, end to end, through `nudox-engine`'s embedder
+# port and against the real model. `required-features` for the same reason
+# `vector_onnx_live` has it — and additionally because its `nudox-engine`
+# dev-dependency is only worth resolving when the ONNX plane is on.
+#
+# This is a DEV dependency in one direction only (registry[dev] → nudox-engine),
+# so no shipping edge exists between the two crates and `AGENTS-DOCTRINE.md` §1
+# is unchanged. See the test file's module docs for the full argument.
+[[test]]
+name = "vector_engine_relevance"
+path = "tests/vector/engine_relevance.rs"
+required-features = ["onnx"]
+
 [[test]]
 name = "vector_adversarial_depshard"
 path = "tests/vector/adversarial_depshard.rs"
@@ -168,6 +181,16 @@ fastembed   = { version = "5.17.3", optional = true }
 tokenizers  = { version = "0.22.2", optional = true }
 
 [dev-dependencies]
+# Used by `tests/vector/engine_relevance.rs` only, to drive the real search
+# sections through the engine's `Embedder` port. A dev-dependency creates no
+# edge in any consumer's graph — `driver` and `index` are unaffected — which is
+# what lets the bridge be tested without `nudox-engine` ever naming `registry`.
+#
+# The IR crate is NOT re-declared here: `registry` already depends on it as
+# `ir` (`ir = { package = "nudox-ir", … }` above), and naming the same package
+# twice under two names is a hard cargo error, not a style question. The test
+# uses `ir::change::…`.
+nudox-engine = { path = "../../crates/nudox-engine" }
 # `test-util` is NOT part of `full`, and without it `#[tokio::test(start_paused =
 # true)]` expands to a `Builder::start_paused` call that does not exist — 17
 # errors across the gate/scheduler/stage suites, all reported against unrelated

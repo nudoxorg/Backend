@@ -176,6 +176,7 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog) *D
 		Exported: obj.Exported(),
 		Doc:      docs.declDoc[obj.Name()],
 		Pos:      s.position(obj.Pos()),
+		Span:     s.declSpan(docs, obj.Name()),
 	}
 
 	switch obj := obj.(type) {
@@ -201,7 +202,7 @@ func extractObject(pkg *packages.Package, obj types.Object, docs *docCatalog) *D
 		base.TypeParams = s.typeParams(named.TypeParams())
 		base.Underlying = s.typ(named.Underlying())
 		base.Methods = s.declaredMethods(named, docs)
-		base.PromotedMethods = s.promotedMethods(named)
+		base.PromotedMethods = s.promotedMethods(named, docs)
 		base.FieldDocs = docs.fieldDocs[obj.Name()]
 		base.MethodDocs = docs.ifaceMethodDocs[obj.Name()]
 		// In-package interfaces this concrete type satisfies.

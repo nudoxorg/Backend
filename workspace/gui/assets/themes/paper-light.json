@@ -1,0 +1,28 @@
+{
+  "key": "paper-light",
+  "name": "Paper",
+  "blurb": "Daylight. A warm-white page; chrome recedes, popovers lift to white.",
+  "appearance": "light",
+
+  "neutral": { "hue": 240, "chroma": 0.11, "kind": "neutral" },
+  "accent":  { "hue": 243, "chroma": 0.80, "solid": 0.48 },
+  "ok":      { "hue": 142, "chroma": 0.75, "solid": 0.34 },
+  "warn":    { "hue":  38, "chroma": 0.92, "solid": 0.46 },
+  "danger":  { "hue":   0, "chroma": 0.84, "solid": 0.44 },
+  "info":    { "hue": 211, "chroma": 0.86, "solid": 0.43 },
+
+  "trust": [
+    { "hue": 148, "chroma": 0.78, "solid": 0.32 },
+    { "hue": 205, "chroma": 0.88, "solid": 0.40 },
+    { "hue":  38, "chroma": 0.92, "solid": 0.46 },
+    { "hue": 240, "chroma": 0.05, "solid": 0.52 }
+  ],
+
+  "kinds": {
+    "hues": [192, 206, 220, 158, 48, 276, 290, 26, 14, 318, 338, 168, 238],
+    "chroma": 0.72,
+    "lightness": 0.38
+  },
+
+  "surfaces": { "sunken": 0.900, "base": 0.970, "raised": 0.935, "overlay": 1.000 }
+}

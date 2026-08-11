@@ -9,7 +9,7 @@
 mod types;
 mod values;
 
-use std::{collections::HashSet, path::PathBuf};
+use std::{collections::HashSet, ops::Range, path::PathBuf};
 
 use nudox_ir::build::*;
 
@@ -227,28 +227,67 @@ fn parse_link_def(line: &str) -> Option<DocLink> {
 
 /// Build a [`Symbol`] for a declaration, parsing the doc string for
 /// deprecation notices and link definitions.
-fn sym_for(name: &str, doc: &str, exported: bool, pos: Option<&oracle::Pos>) -> Symbol {
+///
+/// `span` is the oracle's full-declaration byte range when it has one (every
+/// package-level `Decl` and every method declared in the package being
+/// lowered — see `oracle/docs.go::declSpan`/`methodSpan`). `pos` is always
+/// the declaring identifier's position; `resolve_span` falls back to it
+/// (narrowed to just the identifier's own bytes) when `span` is `None` —
+/// interface method signatures and promoted methods whose origin lives
+/// outside this package, per the same doc comment.
+fn sym_for(
+    name: &str,
+    doc: &str,
+    exported: bool,
+    pos: Option<&oracle::Pos>,
+    span: Option<&oracle::Span>,
+) -> Symbol {
     let vis = if exported {
         Visibility::Public
     } else {
         Visibility::Package
     };
     let source = pos.map(|p| PathBuf::from(&p.file)).unwrap_or_default();
-    // Span: we only have line/col from the oracle, not byte offsets.
-    // Store 0..0 — downstream consumers that need byte spans will re-parse.
+    let span = resolve_span(name, pos, span);
     let (deprecation, doc_links) = parse_doc(doc);
     Symbol {
         name: name.to_owned(),
         visibility: vis,
         documentation: doc.to_owned(),
         source,
-        span: 0..0,
+        span,
         aliases: Box::new([]),
         deprecation,
         doc_links,
         attrs: Box::new([]),
         cfg: None,
     }
+}
+
+/// Resolve a declaration's byte span from what the oracle recorded.
+///
+/// Prefers `span` — the full declaration's AST range (`fset.Position(...).
+/// Offset` on both ends; see `oracle/serialize.go`). When the oracle has no
+/// such range for this symbol, falls back to `pos`'s identifier offset,
+/// narrowed to just the identifier's own byte length: still a genuine,
+/// non-empty span (real file, real bytes, a real substring of the
+/// declaration), which is what distinguishes it from the historical `0..0`
+/// sentinel this replaces. Only degrades to `0..0` when the oracle recorded
+/// no position at all — the synthesized root module, and struct fields
+/// (`oracle::StructField` carries no position; see `types::lower_struct`).
+fn resolve_span(name: &str, pos: Option<&oracle::Pos>, span: Option<&oracle::Span>) -> Range<usize> {
+    if let Some(span) = span
+        && let (Ok(start), Ok(end)) = (usize::try_from(span.start), usize::try_from(span.end))
+        && end > start
+    {
+        return start..end;
+    }
+    if let Some(pos) = pos
+        && let Ok(start) = usize::try_from(pos.offset)
+    {
+        return start..start + name.len();
+    }
+    0..0
 }
 
 /// Build the four search-entry-point aliases for a method.
@@ -322,7 +361,7 @@ pub fn lower_output(
     // ready; we do not seal here.
     _lineage: &PackageLineageId,
 ) -> Result<IrPackage<GoId>> {
-    let root_sym = sym_for("(root)", "", true, None);
+    let root_sym = sym_for("(root)", "", true, None, None);
     let mut low: Lowering<GoId> = Lowering::new(pkg_id, root_sym);
 
     lower_into(output, &mut low)?;
@@ -337,7 +376,7 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSe
         import_path: pkg.import_path.clone(),
     };
 
-    let pkg_sym = sym_for(&pkg.import_path, &pkg.doc, true, None);
+    let pkg_sym = sym_for(&pkg.import_path, &pkg.doc, true, None, None);
     // Declare the package as a Module, child of root (None).
     low.declare(pkg_id.clone(), None, pkg_sym, Module);
 
@@ -457,7 +496,7 @@ fn lower_one_method(
         method.doc.clone()
     };
 
-    let mut msym = sym_for(&method.name, &doc, method.exported, method.pos.as_ref());
+    let mut msym = sym_for(&method.name, &doc, method.exported, method.pos.as_ref(), method.span.as_ref());
     // Populate the four search-entry-point aliases so the method can be
     // found by short name, dotted form, and fully-qualified variants.
     msym.aliases = method_aliases(&pkg.import_path, &type_decl.name, &method.name);
@@ -548,7 +587,7 @@ fn lower_sig_params_into_lowering(
             .as_ref()
             .map(|t| go_types::lower_type_with_lowering(t, low, local));
         let pname = if is_blank { format!("_{i}") } else { p.name.clone() };
-        let psym = sym_for(&pname, "", true, None);
+        let psym = sym_for(&pname, "", true, None, None);
         let param_kind = Param::builder().maybe_ty(ty).attributes(attrs).build();
         input_refs.push(low.refer(param_id.clone()));
         low.declare(param_id, Some(fn_id.clone()), psym, param_kind);
@@ -570,7 +609,7 @@ fn lower_sig_params_into_lowering(
             .as_ref()
             .map(|t| go_types::lower_type_with_lowering(t, low, local));
         let rname = if is_blank { format!("_{i}") } else { r.name.clone() };
-        let rsym = sym_for(&rname, "", true, None);
+        let rsym = sym_for(&rname, "", true, None, None);
         let result_kind = Param::builder().maybe_ty(ty).build();
         output_refs.push(low.refer(result_id.clone()));
         low.declare(result_id, Some(fn_id.clone()), rsym, result_kind);

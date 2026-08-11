@@ -154,6 +154,7 @@ fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &Kn
         module.documentation.as_deref().unwrap_or(""),
         module.deprecation.as_ref(),
         &[],
+        module.span.clone(),
     );
     out.declare(module_id.clone(), None, sym, Module);
 
@@ -180,7 +181,11 @@ fn emit_item(
         ItemBody::Class(cls) => emit_class(item, cls, parent, out, known_ids),
         ItemBody::Function(func) => emit_function(item, func, parent, out, known_ids),
         ItemBody::Overloaded(branches) => {
-            // Each overload is a separate declaration with id = `base#N`.
+            // Each overload is a separate declaration with id = `base#N`,
+            // and — unlike `name`/`documentation`/`decorators`, which are
+            // shared from the group's first branch (`syntax.rs`'s
+            // `build_function_group`) — each branch carries its *own* span,
+            // because each is its own `def` statement in the source.
             for (i, branch) in branches.iter().enumerate() {
                 let overload_id = PythonId::overload(item.id.as_str(), i);
                 let sym = make_sym(
@@ -189,6 +194,7 @@ fn emit_item(
                     item.documentation.as_deref().unwrap_or(""),
                     item.deprecation.as_ref(),
                     &item.decorators,
+                    branch.span.clone(),
                 );
                 let fn_kind = build_function_kind(branch, out, known_ids);
                 out.declare(overload_id, parent.clone(), sym, fn_kind);
@@ -361,7 +367,7 @@ fn emit_function(
             visibility: Visibility::Private,
             documentation: param.doc_description.clone().unwrap_or_default(),
             source: PathBuf::new(),
-            span: 0..0,
+            span: param.span.clone(),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -416,7 +422,15 @@ fn emit_function(
             visibility: Visibility::Private,
             documentation: String::new(),
             source: PathBuf::new(),
-            span: 0..0,
+            // `return_span` is `Some` whenever the source itself wrote a
+            // `-> ReturnType` annotation (`syntax.rs::function_data`). The
+            // one case it can be `None` while `return_ty` is `Some` is the
+            // pyrefly semantic tier inferring a return type for a function
+            // that wrote none at all (`context.rs::merge_type`) — there is
+            // no annotation text to point at, so fall back to the whole
+            // function's own span rather than fabricate a more precise
+            // location than the source actually has.
+            span: func.return_span.clone().unwrap_or_else(|| item.span.clone()),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -526,6 +540,7 @@ fn make_sym_item(item: &ItemData) -> Symbol {
         item.documentation.as_deref().unwrap_or(""),
         item.deprecation.as_ref(),
         &item.decorators,
+        item.span.clone(),
     )
 }
 
@@ -535,6 +550,7 @@ fn make_sym(
     documentation: &str,
     deprecation: Option<&DeprecationData>,
     decorators: &[String],
+    span: std::ops::Range<usize>,
 ) -> Symbol {
     let visibility = if is_private {
         Visibility::Private
@@ -557,7 +573,7 @@ fn make_sym(
         visibility,
         documentation: documentation.to_owned(),
         source: PathBuf::new(),
-        span: 0..0,
+        span,
         aliases: Box::new([]),
         deprecation,
         doc_links: Box::new([]),
@@ -577,7 +593,7 @@ fn make_field_sym(field: &FieldData, class_name: &str) -> Symbol {
         },
         documentation: field.documentation.clone().unwrap_or_default(),
         source: PathBuf::new(),
-        span: 0..0,
+        span: field.span.clone(),
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([DocLink {

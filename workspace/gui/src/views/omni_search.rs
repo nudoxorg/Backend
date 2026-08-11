@@ -111,19 +111,11 @@ const VISIBLE_ROWS_PER_SECTION: usize = 8;
 /// Rows in the semantic section's loading shimmer (§15 states).
 const SEMANTIC_SHIMMER_ROWS: usize = 3;
 
-/// Static opacity for a shimmer that could not obtain a loop permit (§5.4).
-const SHIMMER_SHED_OPACITY: f32 = 0.55;
-
-/// Alpha of the selection bar's fill. Low enough that the row's text stays
-/// fully legible, since `uniform_list` paints decorations *after* items.
-const SELECTION_FILL_ALPHA: f32 = 0.16;
-
-/// Opacity of the faint module path beside a hit's name.
-const PATH_OPACITY: f32 = 0.75;
-
-/// Opacity of the per-row package label — quiet enough not to compete with
-/// the symbol name, visible enough to read at a glance.
-const PACKAGE_OPACITY: f32 = 0.55;
+// Private alpha constants (`SHIMMER_SHED_OPACITY`, `SELECTION_FILL_ALPHA`,
+// `PATH_OPACITY`, `PACKAGE_OPACITY`) previously lived here, each re-inventing
+// a private rung of the transparency ladder. They are gone: their call sites
+// now reach `ext.alpha`'s named rungs (or, for `SELECTION_FILL_ALPHA`, the
+// opaque `colours.accent_wash` role) directly. See `AlphaTokens` for why.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resting-bar (auto-reveal) constants
@@ -447,6 +439,62 @@ pub enum OmniSearchEvent {
     },
     /// `esc` on an already-empty input: pop this overlay.
     Dismiss,
+    /// The input is a package URL, and the user asked to index it.
+    ///
+    /// # Why this is an event and not a call into a store from here
+    ///
+    /// Same reason as [`Self::Open`]: the overlay reports what happened and the
+    /// shell decides what it means (§13.5). Indexing is also *not a search* —
+    /// it mutates the corpus and takes tens of seconds — so routing it through
+    /// the search store would have made a view that reads the corpus into one
+    /// that grows it.
+    IndexPurl {
+        /// The parsed, canonicalized package URL. Parsed here rather than
+        /// passed as text so the shell cannot receive something that only
+        /// looked like a PURL.
+        purl: nudox_engine::Purl,
+    },
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PURL intent — pure, and therefore testable without a window
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the omni-search should do with an input that begins `pkg:`.
+///
+/// # Why a `pkg:` prefix switches the whole panel
+///
+/// A package URL is *unambiguous*: no symbol in any corpus is named
+/// `pkg:cargo/serde@1.0.196`, so searching for it as text is guaranteed to
+/// return nothing, and the "No matches here" state would be a true statement
+/// that answers the wrong question. Detecting it and offering to index is not a
+/// heuristic on ambiguous input — it is refusing to run a search whose result is
+/// known in advance to be empty.
+///
+/// The detection is `starts_with("pkg:")` and nothing cleverer, which is the
+/// same test [`nudox_engine::Purl::parse`] applies. Anything a user could
+/// plausibly be searching for — `serde`, `Vec::push`, `pkg`, `package:serde` —
+/// falls through to search untouched; `purl::tests::a_plain_search_query_is_not_
+/// mistaken_for_a_purl` in the engine pins that.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PurlIntent {
+    /// A complete, indexable package URL.
+    Indexable(nudox_engine::Purl),
+    /// It begins `pkg:` but is not (yet) valid. The message is the parser's
+    /// own, which is written to be read by a person mid-typing.
+    Incomplete(SharedString),
+}
+
+/// Classify `input` as a package URL, or `None` if it is an ordinary query.
+pub fn purl_intent(input: &str) -> Option<PurlIntent> {
+    let trimmed = input.trim();
+    if !trimmed.starts_with("pkg:") && !trimmed.starts_with("PKG:") {
+        return None;
+    }
+    Some(match nudox_engine::Purl::parse(trimmed) {
+        Ok(purl) => PurlIntent::Indexable(purl),
+        Err(e) => PurlIntent::Incomplete(SharedString::from(e.to_string())),
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1135,6 +1183,16 @@ impl<S: SearchAccess> OmniSearch<S> {
 
     fn commit(&mut self, disposition: OpenDisposition, cx: &mut Context<Self>) {
         let snapshot = self.store.read(cx).snapshot();
+
+        // A package URL is checked before the selection, not after: there are
+        // no rows to select when the input is a PURL, so the ordinary path
+        // below would return early and `enter` would do nothing at all — the
+        // one outcome worse than doing the wrong thing.
+        if let Some(PurlIntent::Indexable(purl)) = purl_intent(&snapshot.input) {
+            cx.emit(OmniSearchEvent::IndexPurl { purl });
+            return;
+        }
+
         let cursor = snapshot.selection.or_else(|| {
             let counts = snapshot.counts();
             first_populated_from(&counts, 0).map(|section| Cursor { section, row: 0 })
@@ -1512,9 +1570,13 @@ impl<S: SearchAccess> OmniSearch<S> {
         // The text display.  When there is an active selection, three runs are
         // rendered: prefix · [highlighted selection] · suffix.  When there is no
         // selection the single `suffix` run holds the entire query.
+        // `flex_shrink` + `min_w_0`, never `flex_1`: this element must be as
+        // wide as its text and no wider, because the caret is laid out
+        // immediately after it. See `field` below for what `flex_1` here cost.
         let text_run: gpui::AnyElement = if has_selection && !query_is_empty {
             h_flex()
-                .flex_1()
+                .flex_shrink(1.0)
+                .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(ts.title.size)
@@ -1523,7 +1585,10 @@ impl<S: SearchAccess> OmniSearch<S> {
                 .child(div().child(prefix))
                 .child(
                     div()
-                        .bg(colours.accent.opacity(0.28))
+                        // Selection background: opaque `accent_wash`, not
+                        // `accent.opacity(0.28)` — a ramp step composites
+                        // predictably against the query text behind it.
+                        .bg(colours.accent_wash)
                         .rounded(sp.r_sm)
                         .child(selected),
                 )
@@ -1536,7 +1601,8 @@ impl<S: SearchAccess> OmniSearch<S> {
                 suffix // == full query in non-selection branch
             };
             div()
-                .flex_1()
+                .flex_shrink(1.0)
+                .min_w_0()
                 .overflow_hidden()
                 .whitespace_nowrap()
                 .text_size(ts.title.size)
@@ -1545,6 +1611,52 @@ impl<S: SearchAccess> OmniSearch<S> {
                 .child(placeholder_or_text)
                 .into_any_element()
         };
+
+        // The caret. Static rather than blinking: a blink is an infinite
+        // animation and §5.4 only allows three in the whole app — a search
+        // caret is not worth one of them. Hidden when a selection is active
+        // because the selection highlight is the visual anchor.
+        let caret = (!query_is_empty && !has_selection).then(|| {
+            div()
+                .flex_none()
+                .w(sp.caret_width)
+                .h(ts.title.line_height)
+                .rounded(sp.caret_width)
+                .bg(colours.accent)
+        });
+
+        // The field: icon, then text-and-caret as one group.
+        //
+        // # The bug this shape fixes
+        //
+        // The caret used to be a direct sibling of the text inside the row's
+        // `h_flex`, and the text carried `.flex_1()`. Flex does exactly what it
+        // was told: the text expanded to fill every available pixel and the
+        // caret was pushed to the far right edge of a 640 px panel, four
+        // hundred pixels from the end of the word it was supposed to be
+        // marking. `.shots/fixtures/04-search-hits.png` shows it against the
+        // panel's right border while the query `Point` sits at the left. Read
+        // as a UI, it says the insertion point is somewhere it is not.
+        //
+        // The fix is structural rather than positional: the *group* takes the
+        // free space, and the text inside it shrink-wraps, so the caret sits
+        // where the text ends by construction. There is no arithmetic that
+        // could be off by anything.
+        //
+        // Known limit, stated rather than hidden: for a query longer than the
+        // field, the text truncates at its tail and the caret goes with it.
+        // A real text field scrolls its content to keep the caret in view;
+        // doing that here needs a measured text width GPUI will not give a
+        // non-element, and the overlay is 640 px against symbol names that do
+        // not approach it. If a query ever does, this is the comment to find.
+        let field = h_flex()
+            .flex_1()
+            .min_w_0()
+            .items_center()
+            .gap(sp.space_1)
+            .overflow_hidden()
+            .child(text_run)
+            .children(caret);
 
         let query_line = h_flex()
             .w_full()
@@ -1555,19 +1667,7 @@ impl<S: SearchAccess> OmniSearch<S> {
             .child(
                 Icon::new(IconName::Search).text_color(colours.fg_faint),
             )
-            .child(text_run)
-            // The caret. Static rather than blinking: a blink is an infinite
-            // animation and §5.4 only allows three in the whole app — a search
-            // caret is not worth one of them.  Hidden when a selection is active
-            // because the selection highlight is the visual anchor.
-            .when(!query_is_empty && !has_selection, |el| {
-                el.child(
-                    div()
-                        .w(sp.border_width)
-                        .h(ts.title.line_height)
-                        .bg(colours.accent),
-                )
-            });
+            .child(field);
 
         let mode = snapshot.mode;
         let mut chips = Toolbar::new("search.chips").chips(SearchMode::ALL.iter().map(|m| {
@@ -1611,7 +1711,7 @@ impl<S: SearchAccess> OmniSearch<S> {
     /// holds the prefix including the package name (`"tokio::runtime::"`).  We
     /// extract the package name from the leading segment of `path` and render it
     /// as a quiet inline label on the *same tier as the name* (tier 1, `title`
-    /// size but `fg_faint` and `PACKAGE_OPACITY`), placed after the leaf name
+    /// size but `fg_faint` and `al.half`), placed after the leaf name
     /// separated by a `·` separator.  This matches the visual hierarchy the task
     /// requests: secondary, not competing, same line rather than a fourth tier.
     ///
@@ -1629,6 +1729,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
+        let al = ext.alpha;
 
         // `PreparedRow::package` — computed once at ingest, which is where the
         // §1.1.4 note that used to live here said it belonged. Nothing is
@@ -1678,7 +1779,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                     .overflow_hidden()
                     // Tier 1 — the name (leaf), at `title`, plus the owning
                     // package as a quiet inline secondary element on the same
-                    // baseline.  The package is dimmed (`PACKAGE_OPACITY`) so
+                    // baseline.  The package is dimmed (`al.half`) so
                     // the eye jumps to the name first and drops to the package
                     // only when disambiguating across packages.
                     .child(
@@ -1706,7 +1807,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                                         .text_size(ts.ui.size)
                                         .line_height(ts.title.line_height)
                                         .text_color(colours.fg_muted)
-                                        .opacity(PACKAGE_OPACITY)
+                                        .opacity(al.half)
                                         .flex()
                                         .items_baseline()
                                         .gap(sp.space_1)
@@ -1738,7 +1839,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                                 .text_size(ts.caption.size)
                                 .line_height(ts.caption.line_height)
                                 .text_color(colours.fg_faint)
-                                .opacity(PATH_OPACITY)
+                                .opacity(al.dim)
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .child(tail),
@@ -1770,7 +1871,11 @@ impl<S: SearchAccess> OmniSearch<S> {
         let radius = sp.r_sm;
         let edge_width = sp.focus_ring_width;
         let accent = colours.accent;
-        let fill = accent.opacity(SELECTION_FILL_ALPHA);
+        // Opaque `accent_wash`, not `accent.opacity(0.16)`: the selection bar
+        // is a background painted after the row's text, so a ramp step gives
+        // a predictable fill instead of one that shifts with whatever the
+        // panel sits over.
+        let fill = colours.accent_wash;
 
         let row_height_px = self.row_height;
         let row_height = px(row_height_px);
@@ -1811,8 +1916,22 @@ impl<S: SearchAccess> OmniSearch<S> {
                             .child(text),
                     )
                 })
+                // Latency, when there is one worth reporting — the store
+                // suppresses anything under the perceptual-instant threshold,
+                // so this slot is empty for every local search. When it does
+                // appear it is preceded by a separator, because the defect
+                // here was never the latency itself: it was `2  0 ms`, two
+                // unlabelled numbers butted together reading as one broken
+                // one. A `·` is the smallest mark that makes them two facts.
                 .when(!data.latency.is_empty(), |el| {
                     el.child(
+                        div()
+                            .text_size(ts.caption.size)
+                            .line_height(ts.caption.line_height)
+                            .text_color(colours.fg_faint)
+                            .child(SharedString::from("·")),
+                    )
+                    .child(
                         div()
                             .text_size(ts.caption.size)
                             .line_height(ts.caption.line_height)
@@ -1833,6 +1952,19 @@ impl<S: SearchAccess> OmniSearch<S> {
                 .into_any_element();
         }
 
+        // This build cannot answer this section at all — no embedding model is
+        // installed. Distinct from both the shimmer (rows are coming) and the
+        // bare empty `div` below (we searched and found nothing): neither of
+        // those is true, and rendering either would be a claim about the corpus
+        // the engine never made. See `nudox_engine::semantic::SectionState`.
+        if data.status == SectionStatus::Unavailable {
+            return v_flex()
+                .w_full()
+                .child(header)
+                .child(Self::render_unavailable_notice(cx))
+                .into_any_element();
+        }
+
         // §15 states: the semantic section — and only it — shimmers while the
         // local sections are already painted.
         if count == 0 && data.status == SectionStatus::Loading {
@@ -1843,7 +1975,20 @@ impl<S: SearchAccess> OmniSearch<S> {
                 .into_any_element();
         }
 
+        // A section that is still indexing has *real* rows to show and a caveat
+        // to attach to them. It deliberately falls through to the row rendering
+        // below rather than returning a placeholder — the whole point of
+        // building incrementally is that partial answers are usable — but when
+        // it has nothing yet it still says what it is doing, because zero rows
+        // plus silence reads as "no matches".
         if count == 0 {
+            if let SectionStatus::Building { covered, total } = data.status {
+                return v_flex()
+                    .w_full()
+                    .child(header)
+                    .child(Self::render_building_notice(covered, total, cx))
+                    .into_any_element();
+            }
             return div().into_any_element();
         }
 
@@ -1949,6 +2094,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         let sp = ext.space;
         let colours = ext.colours;
         let ts = ext.type_scale;
+        let al = ext.alpha;
         // No permit (census full, §5.4) or reduced motion: render at the
         // pulse's midpoint so a shed shimmer looks like a still frame of one,
         // never a differently-styled element (§6.2).
@@ -1993,7 +2139,7 @@ impl<S: SearchAccess> OmniSearch<S> {
                 if animate {
                     shimmer(block, ("search.shimmer", ix)).into_any_element()
                 } else {
-                    block.opacity(SHIMMER_SHED_OPACITY).into_any_element()
+                    block.opacity(al.half).into_any_element()
                 }
             }))
             .into_any_element()
@@ -2023,6 +2169,70 @@ impl<S: SearchAccess> OmniSearch<S> {
                     .child(SharedString::from(
                         "Offline — semantic results unavailable; local matches shown above",
                     )),
+            )
+            .into_any_element()
+    }
+
+    /// "This build has no model" — the semantic section's honest empty state.
+    ///
+    /// Deliberately worded as a statement about *this build*, not about the
+    /// corpus and not about connectivity. The offline notice above says the
+    /// backend is unreachable, which is a transient condition a reader might
+    /// retry; this one is a permanent property of how the application was
+    /// assembled, and telling the reader to wait would waste their time. See
+    /// `AGENTS-DOCTRINE.md` §1 (capability ports) for why no build in this
+    /// repository currently installs one.
+    fn render_unavailable_notice(cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(sp.space_2)
+            .px(sp.space_3)
+            .py(sp.space_2)
+            .child(
+                div()
+                    .text_size(ts.dense.size)
+                    .line_height(ts.dense.line_height)
+                    .text_color(ext.colours.fg_muted)
+                    .child(SharedString::from(
+                        "Semantic search is not configured in this build — \
+                         name and type matches are shown above",
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// "Indexed *n* of *m* packages" — the caveat that turns a partial ranking
+    /// from a lie into a usable answer.
+    ///
+    /// The counts are shown rather than a spinner because they are the part a
+    /// reader can act on: a package indexed later can outrank everything
+    /// currently on screen, so "3 of 20" tells them how much weight to put on
+    /// what they are looking at, and a spinner tells them only that something
+    /// is happening.
+    fn render_building_notice(covered: u32, total: u32, cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+
+        h_flex()
+            .w_full()
+            .items_center()
+            .gap(sp.space_2)
+            .px(sp.space_3)
+            .py(sp.space_2)
+            .child(
+                div()
+                    .text_size(ts.dense.size)
+                    .line_height(ts.dense.line_height)
+                    .text_color(ext.colours.fg_muted)
+                    .child(SharedString::from(format!(
+                        "Ranking over {covered} of {total} packages — still indexing"
+                    ))),
             )
             .into_any_element()
     }
@@ -2121,6 +2331,70 @@ impl<S: SearchAccess> OmniSearch<S> {
             .into_any_element()
     }
 
+    /// The panel body when the input is a package URL.
+    ///
+    /// Replaces the section list rather than sitting above it, because there is
+    /// nothing to sit above: a PURL matches no symbol, so the sections below
+    /// would be three empty headers under an offer.
+    ///
+    /// Both states are honest about cost. Indexing runs a real compiler front
+    /// end over freshly downloaded sources and takes tens of seconds; an
+    /// affordance that said only "Index" would be inviting the user to press a
+    /// button whose price they cannot see.
+    fn render_purl_offer(&self, intent: &PurlIntent, cx: &Context<Self>) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let motion = MotionTokens::new(ext.motion_scale);
+
+        match intent {
+            PurlIntent::Indexable(purl) => {
+                let label = SharedString::from(format!("Index {}", purl.render()));
+                let ecosystem = purl.ty().registry();
+                let version = purl.version().unwrap_or_default().to_owned();
+                let name = purl.lineage_name();
+                let purl = purl.clone();
+                let this = cx.weak_entity();
+
+                div()
+                    .w_full()
+                    .p(sp.space_6)
+                    .child(
+                        EmptyState::new(
+                            IconName::Inbox,
+                            SharedString::from(format!("{name} {version}")),
+                            SharedString::from(format!(
+                                "Not in this corpus. nudox can fetch it from {ecosystem}, check it \
+                                 against the digest published there, and build documentation from \
+                                 its sources — that takes a while, and progress appears in Jobs.",
+                            )),
+                            motion,
+                        )
+                        .action(label, move |_, cx| {
+                            this.update(cx, |_view, cx| {
+                                cx.emit(OmniSearchEvent::IndexPurl { purl: purl.clone() });
+                            })
+                            .ok();
+                        }),
+                    )
+                    .into_any_element()
+            }
+            // Mid-typing is the common case here — this state is on screen for
+            // every character of `pkg:cargo/ser`. So it shows the parser's own
+            // message and offers no action, rather than an error styling that
+            // would make normal typing look like a mistake.
+            PurlIntent::Incomplete(reason) => div()
+                .w_full()
+                .p(sp.space_6)
+                .child(EmptyState::new(
+                    IconName::Inbox,
+                    SharedString::from("Package URL"),
+                    reason.clone(),
+                    motion,
+                ))
+                .into_any_element(),
+        }
+    }
+
     /// The footer hint row (§15 layout).
     fn render_footer(&self, cx: &App) -> AnyElement {
         let ext = cx.theme_ext();
@@ -2154,6 +2428,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
+        let al = ext.alpha;
 
         h_flex()
             .id("search.resting")
@@ -2164,10 +2439,10 @@ impl<S: SearchAccess> OmniSearch<S> {
             .px(sp.space_3)
             // Softer background than the revealed overlay — visually present
             // but not demanding attention.
-            .bg(colours.bg_raised.opacity(0.72))
+            .bg(colours.bg_raised.opacity(al.dim))
             .rounded(sp.r_xl)
             .border(sp.border_width)
-            .border_color(colours.border_default.opacity(0.5))
+            .border_color(colours.border_default.opacity(al.half))
             .cursor_pointer()
             .child(Icon::new(IconName::Search).text_color(colours.fg_faint))
             .child(
@@ -2207,6 +2482,10 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
         // Hold a loop permit for exactly as long as the shimmer is on screen
         // (§5.4). Acquired from the *global* census, not a local clone, or the
         // cap would not be a cap.
+        // Only `Loading` shimmers. `Building` must not: it means rows are
+        // *here* and partial, so a shimmer would either sit under real content
+        // promising more of it, or replace answers the reader can already use.
+        // `Unavailable` must not either — there is nothing to wait for.
         let wants_shimmer = snapshot.sections[Section::Semantic.index()].status
             == SectionStatus::Loading
             && snapshot.sections[Section::Semantic.index()].rows.is_empty();
@@ -2226,7 +2505,7 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
         let sp = ext.space;
         let colours = ext.colours;
         let elevation = ext.elev.overlay.shadows.clone();
-        let dark_border = ext.elev.overlay.dark_border;
+        let overlay_border = ext.elev.overlay.border;
         let opacity = self.enter_opacity.value();
         let rise = self.enter_rise.value();
 
@@ -2243,8 +2522,15 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
             .sum();
         let no_hits = !showing_recents && visible_hits == 0;
 
+        // Checked before `no_hits`: a PURL is *known* to match nothing, so
+        // waiting for `any_section_settled()` to confirm it would show an
+        // in-progress search for a query that cannot succeed.
+        let purl = purl_intent(&snapshot.input);
+
         let body: AnyElement = if showing_recents {
             self.render_recents(&snapshot, cx)
+        } else if let Some(intent) = &purl {
+            self.render_purl_offer(intent, cx)
         } else if no_hits && snapshot.any_section_settled() {
             self.render_no_hits(cx)
         } else {
@@ -2316,7 +2602,7 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
                 .bg(colours.bg_overlay)
                 .rounded(sp.r_xl)
                 .border(sp.border_width)
-                .border_color(dark_border)
+                .border_color(overlay_border)
                 .shadow(elevation)
                 .child(self.render_input_row(&snapshot, cx))
                 .child(
@@ -2382,6 +2668,75 @@ mod tests {
 
     fn counts(a: usize, b: usize, c: usize) -> [usize; SECTION_COUNT] {
         [a, b, c]
+    }
+
+    // ── PURL detection ───────────────────────────────────────────────────────
+
+    /// The detection runs on every keystroke, so the cost of a false positive
+    /// is that a real query becomes un-searchable. Nothing a user could
+    /// plausibly be *searching for* may be taken as a package URL.
+    #[test]
+    fn an_ordinary_query_is_never_taken_for_a_package_url() {
+        for query in [
+            "serde",
+            "Vec::push",
+            "pkg",
+            "package:serde",
+            "http://example.com/pkg:cargo/serde",
+            "pkgconfig",
+            "",
+            "  ",
+            "fn pkg:",
+        ] {
+            assert!(
+                purl_intent(query).is_none(),
+                "{query:?} must fall through to search",
+            );
+        }
+    }
+
+    /// A complete package URL is offered for indexing rather than searched
+    /// for — searching would return nothing, always, by construction.
+    #[test]
+    fn a_complete_package_url_is_offered_for_indexing() {
+        for query in [
+            "pkg:cargo/serde@1.0.196",
+            "  pkg:npm/@types/node@20.11.0  ",
+            "pkg:maven/com.google.guava/guava@33.0.0-jre",
+            "pkg:golang/github.com/pkg/errors@v0.9.1",
+        ] {
+            assert!(
+                matches!(purl_intent(query), Some(PurlIntent::Indexable(_))),
+                "{query:?} must be indexable",
+            );
+        }
+    }
+
+    /// Every prefix of a package URL is on screen while it is being typed, so
+    /// the incomplete state is the *common* one and must never be treated as an
+    /// error the user made.
+    #[test]
+    fn a_partially_typed_package_url_is_incomplete_and_not_a_search() {
+        for query in ["pkg:", "pkg:car", "pkg:cargo/", "pkg:maven/guava@1"] {
+            match purl_intent(query) {
+                Some(PurlIntent::Incomplete(reason)) => {
+                    assert!(!reason.is_empty(), "{query:?} must explain itself");
+                }
+                other => panic!("{query:?} must be Incomplete, got {other:?}"),
+            }
+        }
+    }
+
+    /// A versionless PURL parses, so it reaches the *engine*, which answers by
+    /// listing the versions that exist. Classifying it as `Incomplete` here
+    /// would replace that useful answer with "it is incomplete", which the user
+    /// can already see.
+    #[test]
+    fn a_versionless_package_url_is_indexable_so_the_engine_can_list_versions() {
+        assert!(matches!(
+            purl_intent("pkg:cargo/serde"),
+            Some(PurlIntent::Indexable(_))
+        ));
     }
 
     #[test]

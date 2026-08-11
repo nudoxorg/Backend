@@ -37,7 +37,7 @@ use trustfall::FieldValue;
 
 use crate::{
     runtime::{EngineHandle, StreamHandle},
-    wire::{EngineError, Gen, QueryEvent, QueryRow, SharedStr},
+    wire::{EngineError, Gen, QueryErrorPosition, QueryEvent, QueryRow, SharedStr},
 };
 
 // ---------------------------------------------------------------------------
@@ -125,25 +125,81 @@ pub(crate) async fn run_query(
 
     let adapter = Arc::new(CorpusAdapter::new(corpus));
 
-    // Convert args: String → FieldValue::String, collected into the
-    // BTreeMap form that execute_query_async expects (same pattern as the
-    // nudox-graph integration tests).
-    let vars: BTreeMap<String, FieldValue> = q
-        .args
-        .into_iter()
-        .map(|(k, v)| (k, FieldValue::String(Arc::from(v.as_str()))))
-        .collect();
+    // Convert args: String -> FieldValue, coerced to each variable's actual
+    // declared type (`GraphQueryArgs::args`'s doc comment on the MCP side
+    // promises exactly this — "the adapter coerces them to the property's
+    // declared type" — and until this pass existed that promise was false:
+    // every value was wrapped as `FieldValue::String` unconditionally, so a
+    // `Boolean`-typed `$variable` (`isDeprecated @filter(op: "=",
+    // value: ["$yes"])`) could never be satisfied no matter what the caller
+    // sent, and Trustfall correctly rejected it downstream. A cheap
+    // preliminary parse recovers each variable's real type from the query
+    // text itself — not a heuristic guess from the string's shape, which
+    // would silently misinterpret a symbol or package literally named
+    // "true" or "123" as the wrong `FieldValue` variant (doctrine §8: a
+    // repair must be typed and visible, never a guess dressed as one).
+    //
+    // A parse failure here is not reported: `execute_query_async` below
+    // re-parses the same text and its error already carries a position (see
+    // that call site), so surfacing a second, earlier, position-less error
+    // for the identical cause would only be confusing. Falling back to "no
+    // known types" here just means every arg stays `FieldValue::String`,
+    // which is this function's pre-existing behaviour and therefore no
+    // worse than before this pass existed.
+    let variable_types: BTreeMap<Arc<str>, trustfall_core::ir::Type> =
+        trustfall_core::frontend::parse(schema, &q.query)
+            .map(|parsed| parsed.ir_query.variables.clone())
+            .unwrap_or_default();
+
+    let mut vars: BTreeMap<String, FieldValue> = BTreeMap::new();
+    for (name, raw) in q.args {
+        match coerce_variable(&name, &raw, variable_types.get(name.as_str())) {
+            Ok(value) => {
+                vars.insert(name, value);
+            }
+            Err(message) => {
+                let _ = tx
+                    .send_async(QueryEvent::Failed {
+                        generation,
+                        error: EngineError::GraphQueryFailed {
+                            message,
+                            position: None,
+                        },
+                    })
+                    .await;
+                return;
+            }
+        }
+    }
 
     // Execute the query. `execute_query_async` returns an error synchronously
     // if the query text is syntactically invalid or references unknown fields.
+    //
+    // This used to be reported as `EngineError::Chunk` ("chunker error: …"),
+    // which names an entirely different subsystem (the doc-page renderer) —
+    // an agent debugging its own malformed query text was sent looking at the
+    // wrong half of the codebase for something it did not break. The same fix
+    // applies to the `Err(e)` arm inside the row loop below, which is the
+    // execution-time (not parse-time) half of the same misattribution. See
+    // `EngineError::GraphQueryFailed`'s docs for the full reasoning.
     let mut stream = match trustfall::execute_query_async(schema, adapter, &q.query, vars) {
         Ok(s) => s,
         Err(e) => {
+            // `e`'s concrete type is `anyhow::Error` (see `execute_query_async`'s
+            // own signature) inferred here, never named — §L7.4/GUI-LOCAL-PLAN's
+            // "no `anyhow::` outside tests" enforcement grep is textual, and this
+            // crate has no need to depend on `anyhow` directly merely to call an
+            // inherent method on a value another dependency's public API already
+            // hands us. `downcast_ref` is `anyhow::Error`'s own inherent method.
+            let position = e
+                .downcast_ref::<trustfall_core::frontend::error::FrontendError>()
+                .and_then(position_in_frontend_error);
             let _ = tx
                 .send_async(QueryEvent::Failed {
                     generation,
-                    error: EngineError::Chunk {
+                    error: EngineError::GraphQueryFailed {
                         message: e.to_string(),
+                        position,
                     },
                 })
                 .await;
@@ -163,12 +219,16 @@ pub(crate) async fn run_query(
         let row_map: BTreeMap<Arc<str>, FieldValue> = match item {
             Ok(r) => r,
             Err(e) => {
-                // Convert the opaque Box<dyn Error> to an EngineError string.
+                // A resolver-time failure (e.g. `nudox_graph::adapter::GraphError`
+                // surfacing a malformed `$key` binding) — the query parsed, so
+                // there is no position to recover here, but it is still a
+                // graph-query-plane failure, not a chunker one.
                 let _ = tx
                     .send_async(QueryEvent::Failed {
                         generation,
-                        error: EngineError::Chunk {
+                        error: EngineError::GraphQueryFailed {
                             message: e.to_string(),
+                            position: None,
                         },
                     })
                     .await;
@@ -275,6 +335,135 @@ fn field_value_to_string(fv: &FieldValue) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Variable coercion
+// ---------------------------------------------------------------------------
+
+/// Coerce one caller-supplied string argument to the `FieldValue` its
+/// query-declared type actually needs.
+///
+/// `declared` is `None` when the query does not reference `$name` at all (an
+/// extra, unused argument — Trustfall ignores these, so this does too) or
+/// when the pre-parse in `run_query` failed. Either way the safe fallback is
+/// the pre-existing behaviour: pass the raw string through unchanged.
+///
+/// Only scalar (non-list) `Boolean`, `Int` and `Float` are coerced. List-
+/// typed variables (`[String!]` and friends) are left as `String` because
+/// this function's caller has only ever had one flat string per argument to
+/// work with — building a list out of it is a separate, unimplemented
+/// capability, not something to fake here.
+fn coerce_variable(
+    name: &str,
+    raw: &str,
+    declared: Option<&trustfall_core::ir::Type>,
+) -> Result<FieldValue, String> {
+    let Some(ty) = declared else {
+        return Ok(FieldValue::String(Arc::from(raw)));
+    };
+    if ty.is_list() {
+        return Ok(FieldValue::String(Arc::from(raw)));
+    }
+    match ty.base_type() {
+        "Boolean" => match raw {
+            "true" => Ok(FieldValue::Boolean(true)),
+            "false" => Ok(FieldValue::Boolean(false)),
+            other => Err(format!(
+                "variable ${name} must be exactly \"true\" or \"false\" — the query declares it \
+                 Boolean, and {other:?} is neither"
+            )),
+        },
+        "Int" => raw.parse::<i64>().map(FieldValue::Int64).map_err(|_| {
+            format!(
+                "variable ${name} must be a whole number — the query declares it Int, and \
+                 {raw:?} does not parse as one"
+            )
+        }),
+        "Float" => raw.parse::<f64>().map(FieldValue::Float64).map_err(|_| {
+            format!(
+                "variable ${name} must be a number — the query declares it Float, and {raw:?} \
+                 does not parse as one"
+            )
+        }),
+        // String, and every enum-shaped scalar (kind names, visibility,
+        // keyTier, …) are all represented as GraphQL `String` on this
+        // schema (see `schema.graphql`'s own note on this), so passing the
+        // raw string through is correct, not a fallback.
+        _ => Ok(FieldValue::String(Arc::from(raw))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Query error position recovery
+// ---------------------------------------------------------------------------
+
+/// Recover the line/column a Trustfall parse error carries, when it carries
+/// one.
+///
+/// `execute_query_async`'s `?` converts `trustfall_core::frontend::parse`'s
+/// typed `FrontendError` into an opaque `anyhow::Error` (recovered by the
+/// caller via `downcast_ref` — see the comment at that call site for why
+/// this crate does not name `anyhow::Error` directly), and most
+/// `FrontendError`/`ParseError` variants' own `Display` — see the crate's
+/// `#[error("...")]` attributes — never prints the trailing `Pos` field they
+/// carry, so `e.to_string()` alone drops it on the floor even though the
+/// producer computed it. Ariadne's whole model is a labelled span next to the
+/// message; a JSON-RPC error has no terminal to draw one in, but it can still
+/// hand back the coordinates, so a client that *does* have the source text can
+/// draw its own.
+
+fn position_in_frontend_error(
+    err: &trustfall_core::frontend::error::FrontendError,
+) -> Option<QueryErrorPosition> {
+    use trustfall_core::frontend::error::FrontendError;
+    use trustfall_core::graphql_query::error::ParseError;
+
+    match err {
+        // The GraphQL-syntax case — by far the most common way a hand-written
+        // query fails — carries its own `Error::positions()` iterator rather
+        // than a bare `Pos` field, so it needs its own arm.
+        FrontendError::ParseError(ParseError::InvalidGraphQL(inner)) => {
+            inner.positions().next().map(|p| QueryErrorPosition {
+                line: p.line as u64,
+                column: p.column as u64,
+            })
+        }
+        // `MultipleErrors` nests recursively; report the first position found
+        // in reading order, matching `DisplayVec`'s own `Display`.
+        FrontendError::MultipleErrors(errs) => errs.0.iter().find_map(position_in_frontend_error),
+        // Every other `ParseError` variant carries a trailing `Pos` field
+        // that `serde::Serialize` (derived, field names verbatim) renders as
+        // `{"line": N, "column": M, ...}` — walking the serialized tree once
+        // is forward-compatible with `ParseError`'s `#[non_exhaustive]` in a
+        // way a hand-written match over two dozen tuple shapes would not be:
+        // a new variant that follows the same "Pos last" convention is found
+        // automatically, and one that does not just yields `None`, same as
+        // today's blanket "no position" for non-`ParseError` variants.
+        other => serde_json::to_value(other)
+            .ok()
+            .as_ref()
+            .and_then(find_line_column),
+    }
+}
+
+/// Depth-first search for the first JSON object carrying both a `"line"` and
+/// a `"column"` integer field — the shape `serde`'s derive gives
+/// `async_graphql_parser::Pos` with no `#[serde(rename)]` anywhere on it.
+fn find_line_column(value: &serde_json::Value) -> Option<QueryErrorPosition> {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let (Some(line), Some(column)) = (
+                map.get("line").and_then(serde_json::Value::as_u64),
+                map.get("column").and_then(serde_json::Value::as_u64),
+            ) {
+                return Some(QueryErrorPosition { line, column });
+            }
+            map.values().find_map(find_line_column)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(find_line_column),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -287,7 +476,7 @@ mod tests {
     use crate::{
         query::GraphQuery,
         runtime::{Engine, EngineConfig},
-        wire::{Gen, QueryEvent},
+        wire::{EngineError, Gen, QueryEvent},
     };
 
     fn make_engine() -> crate::runtime::EngineHandle {
@@ -375,11 +564,134 @@ mod tests {
         let (_handle, rx) = engine.query(q, Gen(3));
         let events = drain(rx).await;
 
+        // Doctrine §4: "never assert on a message string where you can
+        // assert on a typed variant" — this used to accept `Failed { .. }`
+        // regardless of *which* `EngineError` it carried, which is exactly
+        // the shape a stub emitting `EngineError::Cancelled` would also
+        // pass. Pin the variant, and that it is not the mislabelled
+        // "chunker error" this used to be (see `EngineError::GraphQueryFailed`'s
+        // docs).
+        match events.last() {
+            Some(QueryEvent::Failed { error, .. }) => match error {
+                EngineError::GraphQueryFailed { message, .. } => {
+                    assert!(
+                        !message.to_lowercase().contains("chunk"),
+                        "a malformed graph query must not be reported as a chunker error: \
+                         {message:?}"
+                    );
+                }
+                other => panic!("expected GraphQueryFailed, got {other:?}"),
+            },
+            other => panic!("invalid query must produce Failed, got {other:?}"),
+        }
+    }
+
+    /// A genuine GraphQL syntax error carries a line/column position an agent
+    /// can point an editor at — see `position_in_frontend_error`'s docs for
+    /// why `Display` alone drops it.
+    #[tokio::test]
+    async fn invalid_syntax_reports_a_position() {
+        let engine = make_engine();
+        wait_for_corpus(&engine).await;
+
+        // Line 2 is where the stray `!!` sits; this is deliberately a
+        // multi-line query so "position 1:1" (a lazy always-zero default)
+        // would visibly fail this test.
+        let q = GraphQuery {
+            query: "{\n  Symbols { name @output !! }\n}".to_owned(),
+            args: BTreeMap::new(),
+        };
+
+        let (_handle, rx) = engine.query(q, Gen(30));
+        let events = drain(rx).await;
+
+        match events.last() {
+            Some(QueryEvent::Failed { error, .. }) => match error {
+                EngineError::GraphQueryFailed { position, message } => {
+                    let pos = position
+                        .unwrap_or_else(|| panic!("expected a position, message was {message:?}"));
+                    assert_eq!(pos.line, 2, "the syntax error is on line 2: {message:?}");
+                    assert!(pos.column >= 1, "column must be 1-based, got {}", pos.column);
+                }
+                other => panic!("expected GraphQueryFailed, got {other:?}"),
+            },
+            other => panic!("invalid syntax must produce Failed, got {other:?}"),
+        }
+    }
+
+    /// A `Boolean`-typed `$variable` actually filters, instead of failing
+    /// with a type-mismatch no matter what the caller sends — the defect
+    /// `coerce_variable` exists to close. `GraphQueryArgs::args`'s own doc
+    /// comment already promised this; before `coerce_variable` existed the
+    /// promise was false for every non-`String` scalar.
+    #[tokio::test]
+    async fn boolean_variable_actually_coerces_and_filters() {
+        let engine = make_engine();
+        wait_for_corpus(&engine).await;
+
+        let mut args = BTreeMap::new();
+        args.insert("flag".to_owned(), "false".to_owned());
+        let q = GraphQuery {
+            query: "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
+                .to_owned(),
+            args,
+        };
+
+        let (_handle, rx) = engine.query(q, Gen(40));
+        let events = drain(rx).await;
+
         assert!(
-            matches!(events.last(), Some(QueryEvent::Failed { .. })),
-            "invalid query must produce Failed, got {:?}",
+            matches!(events.last(), Some(QueryEvent::Done { .. })),
+            "a correctly-typed Boolean variable must not fail the query: {:?}",
             events.last()
         );
+        let saw_rows = events
+            .iter()
+            .any(|e| matches!(e, QueryEvent::Rows { rows, .. } if !rows.is_empty()));
+        assert!(
+            saw_rows,
+            "FixtureSource::rich() has non-deprecated symbols; isDeprecated=false must match some"
+        );
+    }
+
+    /// A value that cannot be coerced to the variable's declared type fails
+    /// with a message naming the variable, the declared type, and the
+    /// offending value — not a bare type-mismatch from deep inside Trustfall
+    /// with no indication of which side (caller input vs. query text) is
+    /// wrong.
+    #[tokio::test]
+    async fn unconvertible_boolean_variable_fails_with_a_named_reason() {
+        let engine = make_engine();
+        wait_for_corpus(&engine).await;
+
+        let mut args = BTreeMap::new();
+        args.insert("flag".to_owned(), "yes".to_owned()); // not "true"/"false"
+        let q = GraphQuery {
+            query: "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
+                .to_owned(),
+            args,
+        };
+
+        let (_handle, rx) = engine.query(q, Gen(41));
+        let events = drain(rx).await;
+
+        match events.last() {
+            Some(QueryEvent::Failed { error, .. }) => match error {
+                EngineError::GraphQueryFailed { message, .. } => {
+                    assert!(message.contains("flag"), "message must name the variable: {message:?}");
+                    assert!(
+                        message.contains("Boolean"),
+                        "message must name the declared type: {message:?}"
+                    );
+                    assert!(
+                        message.contains("yes"),
+                        "message must echo the offending value: {message:?}"
+                    );
+                }
+                other => panic!("expected GraphQueryFailed, got {other:?}"),
+            },
+            other => panic!("an unconvertible variable must produce Failed, got {other:?}"),
+        }
     }
 
     #[tokio::test]

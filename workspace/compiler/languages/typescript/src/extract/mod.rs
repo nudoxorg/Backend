@@ -129,12 +129,25 @@ pub struct IndirectExport {
     pub module_request: String,
     pub import_name: String,
     pub export_name: String,
+    /// Byte span of the whole `export { .. } from "m";` statement
+    /// (`oxc_syntax::module_record::ExportEntry::statement_span`), used as
+    /// the re-export's own declared span so it does not fall back to a
+    /// degenerate `0..0` (see `emit.rs::emit_reexports`).
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 /// A star re-export (`export * from "m"`).
 #[derive(Debug, Clone)]
 pub struct StarExport {
     pub module_request: String,
+    /// Byte span of the whole `export * from "m";` statement. Every name
+    /// fanned out from one star export shares this span — they are distinct
+    /// declarations (different names) sharing one real source location, not
+    /// distinct locations, so a shared span cannot introduce a collision: the
+    /// identity key includes the name.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 /// How an externally-visible export name — one this module exports without
@@ -159,9 +172,23 @@ pub struct StarExport {
 /// "referred but never declared".
 #[derive(Debug, Clone)]
 pub enum LocalExport {
-    /// Target `TsId::new(<this module>, local_name, 0)` — this module's own
-    /// emitter declared something under `local_name`.
-    Named(String),
+    /// Target `TsId::new(<this module>, local_name, d)` for every
+    /// `d in 0..overload_count` — this module's own emitter declared
+    /// `overload_count` declaration(s) under `local_name`.
+    ///
+    /// `overload_count` is greater than 1 exactly when `local_name` is a
+    /// top-level overloaded function (`bump_count`'s discriminants run
+    /// `0..overload_count` for such a group; see `TsId`'s doc comment).
+    /// Before this carried the count, `resolve_export_target` (emit.rs)
+    /// hardcoded discriminant `0` for every named re-export target, so a
+    /// re-export of an overloaded function could only ever reach its first
+    /// overload — real cost on rxjs, whose public root re-exports
+    /// `combineLatest` (13 real overloads in
+    /// `internal/observable/combineLatest.d.ts`) by name.
+    Named {
+        local_name: String,
+        overload_count: u32,
+    },
     /// Target the *root* of the module reached from this module by the
     /// specifier `module_request` — the namespace object itself has no
     /// per-symbol `TsId`.
@@ -291,6 +318,13 @@ pub struct FunctionBody {
     /// True for the implementation signature; false for overload signatures.
     pub has_body: bool,
     pub receiver: ReceiverKind,
+    /// Byte span of the declaring node: the `Function` AST node for a
+    /// top-level function or a class method/constructor's value, or the
+    /// whole signature node (`TSMethodSignature`, `TSCallSignatureDeclaration`,
+    /// `TSConstructSignatureDeclaration`) for an interface member. Real bytes
+    /// from OXC, not a placeholder — see `emit.rs`'s `span: 0..0` removal.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -322,6 +356,9 @@ pub struct IndexSignatureFact {
     pub key_ty: TypeOwned,
     /// The value type.
     pub value_ty: TypeOwned,
+    /// Byte span of the `TSIndexSignature` node.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 /// A decorator stored on a class or member.
@@ -335,6 +372,9 @@ pub struct AttrTok {
 pub struct VariantFact {
     pub name: String,
     pub discriminant: Option<String>,
+    /// Byte span of the `TSEnumMember` node.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 #[derive(Debug)]
@@ -343,6 +383,9 @@ pub struct PropertyFact {
     pub ty: Option<TypeOwned>,
     pub modifiers: MemberModifiers,
     pub doc: DocFacts,
+    /// Byte span of the `TSPropertySignature` node.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 #[derive(Debug)]
@@ -363,6 +406,12 @@ pub struct MemberFact {
     pub doc: DocFacts,
     /// Decorators on the member (e.g. `@readonly`, `@Column()`).
     pub decorators: Vec<AttrTok>,
+    /// Byte span of the declaring class-element node (`MethodDefinition`,
+    /// `PropertyDefinition`, `AccessorProperty`, `StaticBlock`), or of the
+    /// synthesizing constructor-parameter / `this.x = ...` assignment for a
+    /// synthesized field. Real bytes, not `0..0` — see `emit.rs`.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 #[derive(Debug)]
@@ -389,6 +438,10 @@ pub struct ParamFact {
     pub is_optional: bool,
     pub is_rest: bool,
     pub is_readonly: bool,
+    /// Byte span of the `FormalParameter` (or `BindingRestElement` for a
+    /// rest parameter) node.
+    pub span_start: u32,
+    pub span_end: u32,
 }
 
 // ── Owned type expressions ────────────────────────────────────────────────────
@@ -538,4 +591,15 @@ pub struct ModuleFacts {
     pub declarations: Vec<DeclFact>,
     pub exports: ExportTable,
     pub imports: Vec<ImportFact>,
+    /// Byte length of the source file (`source.len()` — `str::len()` is
+    /// always a byte count in Rust, never a char or UTF-16 count). Used as
+    /// the module entry's own span (`0..source_len`), a real, whole-file
+    /// span rather than the previous degenerate `0..0`, so two files sharing
+    /// a basename (e.g. rxjs's `internal/observable/combineLatest.d.ts` and
+    /// `internal/operators/combineLatest.d.ts`, both named "combineLatest"
+    /// by `specifier_to_module_name`, which keeps only the file's last path
+    /// segment) collide on their base identity key but no longer collide on
+    /// span too, so the `Span` disambiguation tier can actually tell them
+    /// apart instead of falling through to order-dependent `Ordinal`.
+    pub source_len: usize,
 }

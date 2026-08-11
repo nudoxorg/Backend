@@ -19,7 +19,7 @@ use nudox_engine::wire::{
 use nudox_mcp::SymbolKeyDto;
 use nudox_mcp::tools::{
     DiffVersionsResult, FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, GraphSchemaArgs,
-    ListPackagesArgs,
+    IndexPackageResult, ListPackagesArgs,
     ListVersionsArgs, ListVersionsResult, PackageSummary, PackagesResult, QueryResult,
     QueryResultRow, SchemaResult, SearchResult, SearchSymbolsArgs, SelectVersionArgs,
     SelectVersionResult, SymbolDoc, UsageRow, UsagesResult, VersionSummary,
@@ -133,6 +133,10 @@ fn every_tool_result_schema_declares_a_root_object_type() {
         ),
         ("QueryResult", serde_json::to_value(schema_for!(QueryResult)).unwrap()),
         ("SchemaResult", serde_json::to_value(schema_for!(SchemaResult)).unwrap()),
+        (
+            "IndexPackageResult",
+            serde_json::to_value(schema_for!(IndexPackageResult)).unwrap(),
+        ),
     ];
     for (name, schema) in cases {
         assert_eq!(
@@ -144,6 +148,85 @@ fn every_tool_result_schema_declares_a_root_object_type() {
              {schema}"
         );
     }
+}
+
+/// The list above must not be the only thing standing between a new result type
+/// and a panicking server.
+///
+/// # Why this exists
+///
+/// `every_tool_result_schema_declares_a_root_object_type` was written on
+/// 2026-08-09 after `SelectVersionResult` shipped a bare `oneOf` and took down
+/// every endpoint test. It was written as a **hand-maintained list**. Hours
+/// later `IndexPackageResult` was added by a different track, was not on the
+/// list, and reproduced the identical failure: the guard passed, and
+/// `NudoxMcpServer::new` panicked at router construction — killing
+/// `tests/endpoint.rs` (0/6), `tests/host_lifecycle.rs` (0/7) and the GUI
+/// screenshot harness, none of which touch the offending type.
+///
+/// A guard that enumerates its own subjects by hand does not fail when someone
+/// forgets it; it goes quiet. That is the failure mode this repository keeps
+/// finding, so the list needs a keeper.
+///
+/// This test reads `src/tools.rs` and asserts that every type carrying
+/// `#[serde(tag = …)]` — the exact construct schemars renders without a root
+/// `type` — appears in the case list above. It is a source scan for the same
+/// reason `theme_law.rs` and `checkout_completeness.rs` are: the property is
+/// about *what exists in the tree*, and no amount of exercising the types that
+/// were remembered can speak for the one that was not.
+#[test]
+fn every_internally_tagged_result_type_is_covered_by_the_root_type_guard() {
+    let tools_src = include_str!("../src/tools.rs");
+    let this_test = include_str!("schemas.rs");
+
+    // `#[serde(tag = "…")]` on a `pub enum` is precisely the shape that emits a
+    // bare `oneOf`. Untagged or externally-tagged enums render differently and
+    // are not at risk, so this deliberately does not flag them.
+    let mut tagged: Vec<&str> = Vec::new();
+    let lines: Vec<&str> = tools_src.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        if !line.trim_start().starts_with("#[serde(tag") {
+            continue;
+        }
+        // Walk forward past any further attributes to the declaration itself.
+        for decl in lines.iter().skip(i + 1).take(6) {
+            if let Some(rest) = decl.trim_start().strip_prefix("pub enum ") {
+                let name = rest
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    tagged.push(name);
+                }
+                break;
+            }
+        }
+    }
+
+    assert!(
+        !tagged.is_empty(),
+        "found no `#[serde(tag = …)]` enums in src/tools.rs — either they were \
+         all removed (in which case delete this test) or the scan broke, which \
+         would make it pass forever without checking anything"
+    );
+
+    let missing: Vec<&str> = tagged
+        .iter()
+        .copied()
+        .filter(|name| !this_test.contains(&format!("schema_for!({name})")))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "internally-tagged result type(s) {missing:?} are not in \
+         `every_tool_result_schema_declares_a_root_object_type`'s case list. \
+         schemars emits a bare `oneOf` for these and rmcp rejects it when the \
+         router is built, so the server panics before serving anything — and \
+         the failure appears in endpoint, host-lifecycle and screenshot tests \
+         that have nothing to do with the type. Add \
+         `#[schemars(extend(\"type\" = \"object\"))]` to it and a \
+         `schema_for!(…)` row above."
+    );
 }
 
 /// §L2.5 / the capability-probe's "critical honesty requirement": a tool that

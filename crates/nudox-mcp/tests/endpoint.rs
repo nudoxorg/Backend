@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use nudox_engine::{Engine, EngineConfig, EngineHandle};
-use nudox_mcp::{McpEndpoint, NudoxMcpServer, SessionToken};
+use nudox_mcp::{AccountGate, McpEndpoint, NudoxMcpServer, SessionToken};
 use nudox_store::source::fixtures::FixtureSource;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -26,6 +26,19 @@ use tokio::runtime::Runtime;
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
 
 /// Build a runtime and an engine over the deterministic fixture corpus.
+/// The account gate these tests run under.
+///
+/// Unmetered, and stated rather than defaulted. Every assertion in this file is
+/// about the *session token* — the loopback transport credential — and about
+/// HTTP status lines. The `ndx_` account key is a different secret with a
+/// different lifetime (see `nudox_mcp::account::credential`), and its behaviour
+/// is covered by `tests/account_against_a_fake_service.rs` against a fake this
+/// process controls. Wiring a real account gate in here would make a transport
+/// test depend on a paid service.
+fn test_gate() -> AccountGate {
+    AccountGate::unmetered("transport test: asserts on session-token auth, not on account auth")
+}
+
 fn harness() -> (Runtime, EngineHandle) {
     let runtime = Runtime::new().expect("test runtime must build");
     let engine = Engine::start(EngineConfig::default(), FixtureSource::rich());
@@ -77,7 +90,7 @@ fn binds_loopback_on_an_ephemeral_port_and_reports_it() {
     let (runtime, engine) = harness();
 
     let (addr, url) = runtime.block_on(async {
-        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone()))
+        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone(), test_gate()))
             .await
             .expect("server must bind loopback");
         let observed = (endpoint.addr(), endpoint.url());
@@ -111,10 +124,10 @@ fn two_servers_get_different_ports() {
     let (runtime, engine) = harness();
 
     let (first, second) = runtime.block_on(async {
-        let a = McpEndpoint::start(NudoxMcpServer::new(engine.clone()))
+        let a = McpEndpoint::start(NudoxMcpServer::new(engine.clone(), test_gate()))
             .await
             .expect("first server must bind");
-        let b = McpEndpoint::start(NudoxMcpServer::new(engine.clone()))
+        let b = McpEndpoint::start(NudoxMcpServer::new(engine.clone(), test_gate()))
             .await
             .expect("second server must bind");
         let ports = (a.addr().port(), b.addr().port());
@@ -134,7 +147,7 @@ fn a_request_without_the_session_token_is_rejected() {
     let (runtime, engine) = harness();
 
     let status = runtime.block_on(async {
-        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone()))
+        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone(), test_gate()))
             .await
             .expect("server must bind");
         let status = post_status_line(endpoint.addr(), None, INITIALIZE).await;
@@ -157,7 +170,7 @@ fn a_request_with_the_wrong_token_is_rejected() {
 
     let status = runtime.block_on(async {
         let endpoint = McpEndpoint::start_with_token(
-            NudoxMcpServer::new(engine.clone()),
+            NudoxMcpServer::new(engine.clone(), test_gate()),
             SessionToken::from_secret("the-real-token"),
         )
         .await
@@ -185,7 +198,7 @@ fn a_request_with_the_correct_token_is_not_rejected() {
     let status = runtime.block_on(async {
         let token = SessionToken::generate();
         let secret = token.expose().to_owned();
-        let endpoint = McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone()), token)
+        let endpoint = McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone(), test_gate()), token)
             .await
             .expect("server must bind");
         let status = post_status_line(endpoint.addr(), Some(&secret), INITIALIZE).await;
@@ -213,7 +226,7 @@ fn the_client_config_snippet_carries_the_live_url_and_token() {
     let (runtime, engine) = harness();
 
     let (snippet, url, secret) = runtime.block_on(async {
-        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone()))
+        let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine.clone(), test_gate()))
             .await
             .expect("server must bind");
         let observed = (

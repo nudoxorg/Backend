@@ -579,6 +579,7 @@ impl<P: PackageAccess> ProjectPanel<P> {
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
+        let al = ext.alpha;
 
         // Status line: text + colour, arc-cloned from pre-built strings (§1.1.4).
         let (status_text, status_colour): (SharedString, gpui::Hsla) = match &row.status {
@@ -619,14 +620,18 @@ impl<P: PackageAccess> ProjectPanel<P> {
                         .px(sp.space_1)
                         .py(px(1.0))
                         .rounded(sp.r_sm)
+                        // Opaque wash instead of `accent.opacity(0.15)`: this
+                        // is a chip background, and a ramp step composites
+                        // predictably instead of muddying against whatever the
+                        // panel happens to sit on.
                         .bg(if picker_open {
-                            colours.accent.opacity(0.15)
+                            colours.accent_wash
                         } else {
                             colours.bg_hover
                         })
                         .border(sp.border_width)
                         .border_color(if picker_open {
-                            colours.accent.opacity(0.5)
+                            colours.accent.opacity(al.half)
                         } else {
                             colours.border_default
                         })
@@ -634,7 +639,7 @@ impl<P: PackageAccess> ProjectPanel<P> {
                         .line_height(ts.caption.line_height)
                         .text_color(colours.fg_muted)
                         .cursor_pointer()
-                        .hover(|s| s.bg(colours.accent.opacity(0.10)))
+                        .hover(|s| s.bg(colours.accent_wash_hover))
                         .child(v_label.clone())
                         .on_click(move |_event, _window, cx| {
                             let _ = this_chip.update(cx, |panel, cx| {
@@ -735,9 +740,9 @@ impl<P: PackageAccess> ProjectPanel<P> {
                         .px(sp.space_1)
                         .py(px(2.0))
                         .rounded(sp.r_sm)
-                        .bg(colours.danger.opacity(0.15))
+                        .bg(colours.danger.opacity(al.wash))
                         .border(sp.border_width)
-                        .border_color(colours.danger.opacity(0.40))
+                        .border_color(colours.danger.opacity(al.veil))
                         .text_size(ts.caption.size)
                         .line_height(ts.caption.line_height)
                         .font_weight(gpui::FontWeight(ts.caption.weight as f32))
@@ -792,8 +797,11 @@ impl<P: PackageAccess> ProjectPanel<P> {
                     .flex()
                     .items_center()
                     .gap(sp.space_2)
+                    // Selection background: opaque `accent_wash` rather than
+                    // `accent.opacity(0.12)`, for the same reason as the
+                    // version chip above.
                     .bg(if is_current {
-                        colours.accent.opacity(0.12)
+                        colours.accent_wash
                     } else {
                         colours.bg_overlay
                     })
@@ -921,6 +929,7 @@ impl<P: PackageAccess> Render for ProjectPanel<P> {
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
+        let al = ext.alpha;
         let theme = cx.theme();
 
         let this = cx.weak_entity();
@@ -945,7 +954,10 @@ impl<P: PackageAccess> Render for ProjectPanel<P> {
             )
             .child(
                 div()
-                    .text_color(theme.muted_foreground.opacity(0.6))
+                    // `fg_faint`, not a fade of `muted_foreground`: this count
+                    // sits a rank below the "PACKAGES" header text, which is
+                    // exactly what the faint role names.
+                    .text_color(colours.fg_faint)
                     .text_size(ts.caption.size)
                     .line_height(ts.caption.line_height)
                     .child(count_label),
@@ -960,9 +972,9 @@ impl<P: PackageAccess> Render for ProjectPanel<P> {
                 .w_full()
                 .px(sp.space_3)
                 .py(sp.space_1)
-                .bg(colours.danger.opacity(0.10))
+                .bg(colours.danger.opacity(al.hairline))
                 .border_b(sp.border_width)
-                .border_color(colours.danger.opacity(0.30))
+                .border_color(colours.danger.opacity(al.tint))
                 .child(
                     div()
                         .text_size(ts.dense.size)

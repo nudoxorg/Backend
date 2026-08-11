@@ -21,9 +21,12 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberI
 
 use lindsey::app::corpus::{self, CorpusChoice};
 use lindsey::app::keymaps;
+use lindsey::app::lifecycle::{self, WindowSession};
+use lindsey::app::account::AccountService;
 use lindsey::app::mcp::McpService;
 use lindsey::highlight::TreeSitterHighlighter;
 use lindsey::motion::tokens::MotionTokens;
+use lindsey::stores::index_jobs::IndexJobStore;
 use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
 use lindsey::theme::ext::NudoxThemeExt;
 use lindsey::workspace::shell::Shell;
@@ -97,14 +100,26 @@ fn main() {
     // has no `new()`, only `with_platform`. `gpui_platform::application()`
     // supplies the right platform for the target; its sibling `headless()` is
     // what the §25.3 perf harness will drive.
-    gpui_platform::application()
-        .with_assets(Assets)
-        .run(move |cx: &mut App| {
-            // gpui-component's theme must exist before ours: `NudoxThemeExt`
-            // picks light or dark by asking `cx.theme().is_dark()` (LD-14 — we
-            // layer over it rather than replacing it).
+    let app = gpui_platform::application().with_assets(Assets);
+
+    // The dock-click route back (`app::lifecycle`). Registered on the
+    // `Application` rather than inside `run`, because `on_reopen` lives on the
+    // builder and `run` consumes it.
+    lifecycle::wire_reopen(&app);
+
+    app.run(move |cx: &mut App| {
+            // gpui-component's globals must exist before ours, because
+            // `ThemeRegistry::init` writes *into* them — the palette is now
+            // upstream of both theme globals rather than a reaction to one.
+            //
+            // This comment used to read "`NudoxThemeExt` picks light or dark by
+            // asking `cx.theme().is_dark()`". That was accurate, and it was the
+            // defect: `ThemeMode::default()` is `Light` and nothing here chose,
+            // so the application's appearance was a property of the host
+            // machine, and the set of themes it could ever have was two,
+            // because the input was a boolean.
             gpui_component::init(cx);
-            NudoxThemeExt::init(cx);
+            NudoxThemeExt::init(cx).expect("bundled themes parse and install");
 
             // The motion global carries `MotionScale` and the loop-permit
             // census (§5.4). Every animation helper reads it, so it must be
@@ -129,7 +144,26 @@ fn main() {
             //
             // A GPUI global rather than shell state: §L6 is one endpoint per
             // process, and the server must outlive any particular window.
-            cx.set_global(McpService::start(&engine));
+            // The account gate is installed *before* the MCP server, because
+            // the server takes it as a mandatory constructor argument: a
+            // `NudoxMcpServer` with no gate would serve a paid product for
+            // free, and `nudox-mcp` makes that unrepresentable rather than
+            // discouraged. One gate, two readers — the server admits tool calls
+            // through it and the status bar renders it. See `auth.md`.
+            cx.set_global(AccountService::start(&engine));
+            let gate = cx.global::<AccountService>().gate();
+
+            cx.set_global(McpService::start(&engine, gate));
+
+            // Flush unreported usage on quit, for the same reason the MCP
+            // server drains: the user's last few tool calls are billable, and
+            // stranding them in a file that the *next* launch has to reconcile
+            // works but bills late for no reason.
+            cx.on_app_quit(|cx| {
+                cx.update_global::<AccountService, _>(|service, _| service.stop());
+                async {}
+            })
+            .detach();
 
             // Stop it on quit. GPUI runs quit handlers with a bounded timeout
             // before the process exits, which is the only hook that reliably
@@ -160,27 +194,53 @@ fn main() {
             let symbols = cx.new(|_| SymbolStore::new(engine.clone()));
             let packages =
                 cx.new(|cx| PackageStore::new(engine.clone(), &requested, cx));
+            // Starts empty and stays empty until someone types a package URL
+            // into ⌘K. That is the honest initial state: nothing has been
+            // requested, so nothing is running.
+            let index_jobs = cx.new(|_| IndexJobStore::new(engine.clone()));
 
+            // ── The window, as a thing that can come back (§L6) ─────────────
+            //
+            // `QuitMode::Default` is `Explicit` on macOS
+            // (`gpui/src/app.rs:1683-1685`), so lindsey has always survived its
+            // window closing — and until now that was a *defect*, because there
+            // was no route back and no menu bar to quit from. `app::lifecycle`
+            // is that route; see its module docs for the state table and for
+            // why dismissal destroys the window rather than hiding it.
+            //
+            // The window constructor is handed to the session rather than
+            // called here, so launching and restoring are literally the same
+            // code path. A second `cx.open_window` in this file would be a
+            // second definition of "lindsey's window" that could drift from
+            // this one without any test noticing.
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
-            cx.open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    ..Default::default()
+            WindowSession::install(
+                bounds,
+                move |bounds, cx| {
+                    let search = search.clone();
+                    let symbols = symbols.clone();
+                    let packages = packages.clone();
+                    let index_jobs = index_jobs.clone();
+                    cx.open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(bounds)),
+                            ..Default::default()
+                        },
+                        |window, cx| {
+                            cx.new(|cx| Shell::new(search, symbols, packages, index_jobs, window, cx))
+                        },
+                    )
+                    .map(Into::into)
                 },
-                |window, cx| {
-                    cx.new(|cx| {
-                        Shell::new(
-                            search.clone(),
-                            symbols.clone(),
-                            packages.clone(),
-                            window,
-                            cx,
-                        )
-                    })
-                },
-            )
-            .expect("failed to open window");
+                cx,
+            );
 
+            // Global actions, the dock-click hook, and the menu bar — all of
+            // which must work with zero windows. Installed *before* the first
+            // window so the windowless state is never a special case.
+            lifecycle::wire(cx);
+
+            WindowSession::open_first(cx);
             cx.activate(true);
         });
 }

@@ -36,6 +36,7 @@ use gpui::{
     AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, UniformListScrollHandle, Window, div, uniform_list,
 };
+use gpui::prelude::FluentBuilder as _;
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _};
 use nudox_engine::wire::{ImplsPage, RefRow, RefsPage, SymbolKey};
 
@@ -97,15 +98,20 @@ fn precision_chrome(
     precision: Precision,
     kind: &SharedString,
     colours: &ColourRoles,
+    alpha: &crate::theme::tokens::AlphaTokens,
 ) -> (Hsla, Hsla, SharedString) {
     match precision {
+        // `al.tint` rather than the invented 0.18 these carried. The badge
+        // always sits on a known surface (a table row on `bg_base`), so a
+        // ladder rung is honest here — but the rung is the point: 0.18 was one
+        // of sixteen distinct alphas across the crate, none of which agreed.
         Precision::Precise => (
-            colours.ok.opacity(0.18),
+            colours.ok.opacity(alpha.tint),
             colours.ok_fg,
             SharedString::from("precise"),
         ),
         Precision::Textual => (
-            colours.warn.opacity(0.18),
+            colours.warn.opacity(alpha.tint),
             colours.warn_fg,
             SharedString::from("textual"),
         ),
@@ -165,14 +171,52 @@ fn group_boundary(last: Option<&str>, file: &str) -> bool {
     }
 }
 
+/// Whether a group is large enough to be worth a header of its own.
+///
+/// # A group of one is not a group
+///
+/// The References table groups references by file, which is right when a
+/// symbol is used eleven times across four files and absurd when it is used
+/// once. In the single-reference case the header and the row carried *the same
+/// string*: `11-refs-tab.png` showed
+/// `⌄ nudox-fixture-rich.format_point  1` above
+/// `nudox-fixture-rich.format_point  Function  [Function]`, two rows of chrome
+/// and one fact, plus a disclosure triangle for hiding a row you can already
+/// see.
+///
+/// A header earns its line by telling the reader something the rows beneath it
+/// do not. With one row beneath, it cannot. So it is not drawn, the row stands
+/// at depth zero carrying its own path, and the table gets shorter exactly when
+/// there was nothing to organise.
+///
+/// The threshold is 2 and not a tuning knob: it is the smallest number of rows
+/// for which "these share a file" is a fact about more than one of them.
+const GROUP_HEADER_MIN_ROWS: usize = 2;
+
+/// Whether this group draws a header.
+#[inline]
+fn group_has_header(row_count: usize) -> bool {
+    row_count >= GROUP_HEADER_MIN_ROWS
+}
+
 /// How many flat entries a set of `(collapsed, row_count)` groups produces.
 ///
 /// Used to size the flat index exactly, and separately testable — the collapse
 /// arithmetic is the one thing here that can silently desynchronise the list's
 /// item count from what `render` will produce.
+///
+/// A headerless group (see [`group_has_header`]) contributes only its rows, and
+/// cannot be collapsed: there is no header to click, so `collapsed` is not
+/// reachable for it and is ignored rather than honoured. Honouring it would let
+/// a group vanish with no way to bring it back.
 fn flat_len(groups: impl Iterator<Item = (bool, usize)>) -> usize {
     groups
-        .map(|(collapsed, n)| 1 + if collapsed { 0 } else { n })
+        .map(|(collapsed, n)| {
+            if !group_has_header(n) {
+                return n;
+            }
+            1 + if collapsed { 0 } else { n }
+        })
         .sum()
 }
 
@@ -197,7 +241,20 @@ enum FlatRow {
         count: SharedString,
         collapsed: bool,
     },
-    Row(RefRowView),
+    /// A reference, and whether it sits under a header.
+    ///
+    /// Carried on the row rather than recomputed in `render` because the
+    /// renderer walks a flat index and has no idea what preceded item `n` — it
+    /// would have to scan backwards for a header, per row, per frame. Depth is
+    /// a property of the row; the projection knows it; so the projection says
+    /// it.
+    Row {
+        /// The reference itself.
+        row: RefRowView,
+        /// `true` when a group header is drawn above this row, and the row is
+        /// therefore indented under it.
+        nested: bool,
+    },
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -309,12 +366,16 @@ impl RefsTable {
     /// Toggle a file group. Returns `true` if the flat index changed.
     pub fn toggle_group(&mut self, group_ix: usize) -> bool {
         match self.groups.get_mut(group_ix) {
-            Some(group) => {
+            // A headerless group has no affordance to collapse it, so nothing
+            // can toggle it — and if something did, the rows would disappear
+            // with no header left behind to bring them back. Refusing here
+            // means that state is unreachable rather than merely unlikely.
+            Some(group) if group_has_header(group.rows.len()) => {
                 group.collapsed = !group.collapsed;
                 self.rebuild_flat();
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -322,15 +383,25 @@ impl RefsTable {
         let len = flat_len(self.groups.iter().map(|g| (g.collapsed, g.rows.len())));
         let mut flat = Vec::with_capacity(len);
         for (gx, group) in self.groups.iter().enumerate() {
-            flat.push(FlatRow::Header {
-                group: gx,
-                file: group.file.clone(),
-                count: group.count.clone(),
-                collapsed: group.collapsed,
-            });
-            if !group.collapsed {
-                flat.extend(group.rows.iter().cloned().map(FlatRow::Row));
+            let nested = group_has_header(group.rows.len());
+            if nested {
+                flat.push(FlatRow::Header {
+                    group: gx,
+                    file: group.file.clone(),
+                    count: group.count.clone(),
+                    collapsed: group.collapsed,
+                });
+                if group.collapsed {
+                    continue;
+                }
             }
+            flat.extend(
+                group
+                    .rows
+                    .iter()
+                    .cloned()
+                    .map(|row| FlatRow::Row { row, nested }),
+            );
         }
         debug_assert_eq!(flat.len(), len, "flat_len disagrees with rebuild_flat");
         self.flat = Arc::from(flat);
@@ -412,15 +483,53 @@ impl RefsTable {
                                 } => {
                                     let group = *group;
                                     let toggle = toggle.clone();
+                                    // `w_full` is load-bearing, not tidiness.
+                                    //
+                                    // Without it this row shrink-wraps its
+                                    // content, so `bg_raised` painted a filled
+                                    // rectangle that stopped dead partway
+                                    // across the table — visible in the old
+                                    // `11-refs-tab.png` as a hard vertical
+                                    // edge mid-row — and the hover fill was
+                                    // clipped to the same width. `flex_1` on
+                                    // the label could not save it: there is no
+                                    // free space to claim inside a container
+                                    // that sized itself to its children. Same
+                                    // family as doctrine §8's dropped
+                                    // `relative()`.
                                     div()
                                         .id(("symbol.refs.group", ix))
+                                        .w_full()
                                         .flex()
                                         .flex_row()
                                         .items_center()
                                         .gap(sp.space_1)
                                         .h(row_h)
                                         .px(sp.space_2)
-                                        .bg(colours.bg_raised)
+                                        // No fill.
+                                        //
+                                        // The header used to be `bg_raised`
+                                        // over unfilled rows, which is a
+                                        // legitimate pattern and was the wrong
+                                        // one here: `bg_raised` is also the
+                                        // plane the section header above it
+                                        // sits on, so a group header and the
+                                        // "References" header read as the same
+                                        // kind of object, and the rows beneath
+                                        // — bare, but hovering to `bg_hover`,
+                                        // a *lighter* colour — read as more
+                                        // prominent than the thing containing
+                                        // them. Hierarchy ran backwards.
+                                        //
+                                        // Type and colour carry it instead:
+                                        // the header is muted and set in the
+                                        // UI face, the rows are default-weight
+                                        // monospace, and only rows take a
+                                        // fill. This is how Linear and Notion
+                                        // separate a section from its contents
+                                        // in a dense panel, and how Primer's
+                                        // ActionList group heading works —
+                                        // small, muted, unfilled.
                                         .cursor_pointer()
                                         .hover(|s| s.bg(colours.bg_hover))
                                         .on_click(move |_, window, cx| toggle(group, window, cx))
@@ -438,10 +547,12 @@ impl RefsTable {
                                                 .flex_1()
                                                 .overflow_hidden()
                                                 .truncate()
-                                                .font_family("monospace")
                                                 .text_size(ts.dense.size)
                                                 .line_height(ts.dense.line_height)
-                                                .text_color(colours.fg_default)
+                                                .font_weight(gpui::FontWeight(
+                                                    ts.caption.weight as f32,
+                                                ))
+                                                .text_color(colours.fg_muted)
                                                 .child(file.clone()),
                                         )
                                         .child(
@@ -453,25 +564,92 @@ impl RefsTable {
                                                 .child(count.clone()),
                                         )
                                 }
-                                FlatRow::Row(row) => {
+                                FlatRow::Row { row, nested } => {
                                     let key = row.target.clone();
                                     let open = open.clone();
                                     let (badge_bg, badge_fg, badge_label) =
-                                        precision_chrome(row.precision, &row.kind, &colours);
+                                        precision_chrome(row.precision, &row.kind, &colours, &ext.alpha);
+
+                                    // The engine's raw kind tag, shown only
+                                    // when the precision badge is not already
+                                    // showing it.
+                                    //
+                                    // `precision_chrome` returns the kind tag
+                                    // *as the badge label* for
+                                    // `Precision::Other` — that is LD-7 doing
+                                    // its job, surfacing a claim we do not
+                                    // recognise in the engine's own words. But
+                                    // the row also had a dedicated kind
+                                    // column, so for every unrecognised tag —
+                                    // which is most of them — the same string
+                                    // was printed twice, once dim and once in
+                                    // a chip, four pixels apart:
+                                    // `Function [Function]` in the old
+                                    // `11-refs-tab.png`. Duplication is not a
+                                    // styling problem; it makes the reader
+                                    // look for a difference that is not there.
+                                    let show_kind_column =
+                                        !matches!(row.precision, Precision::Other);
+
+                                    // A row under a header is indented by one
+                                    // step and carries an indent guide; a row
+                                    // in a headerless group is at depth zero
+                                    // and carries none.
+                                    //
+                                    // One `indent` step (8 px, Primer's
+                                    // TreeView value) rather than the
+                                    // `space_5` (20 px) this used: the table
+                                    // is two levels deep at most, and 20 px
+                                    // per level spends a fifth of a narrow
+                                    // column saying "still the same file".
+                                    // What actually communicates depth is the
+                                    // guide, not the distance.
+                                    let indent = if *nested {
+                                        sp.space_2 + sp.indent
+                                    } else {
+                                        sp.space_2
+                                    };
 
                                     div()
                                         .id(("symbol.refs.row", ix))
+                                        // See the group header above: without
+                                        // `w_full` the hover and active fills
+                                        // clip to the content width.
+                                        .w_full()
                                         .flex()
                                         .flex_row()
                                         .items_center()
                                         .gap(sp.space_2)
                                         .h(row_h)
-                                        .pl(sp.space_5)
+                                        .pl(indent)
                                         .pr(sp.space_2)
                                         .cursor_pointer()
                                         .hover(|s| s.bg(colours.bg_hover))
                                         .active(|s| s.bg(colours.bg_active))
                                         .on_click(move |_, window, cx| open(&key, window, cx))
+                                        // The indent guide: a hairline in the
+                                        // gutter, running the full height of
+                                        // the row so consecutive rows draw one
+                                        // continuous line down the group.
+                                        //
+                                        // Borrowed from Primer's TreeView,
+                                        // which paints a 1 px
+                                        // `borderColor-muted` rule per level.
+                                        // It is `border_subtle` here — the
+                                        // role that exists for marks the
+                                        // reader is not meant to notice — and
+                                        // it is what makes "these rows belong
+                                        // to that header" legible without
+                                        // spending 20 px on it.
+                                        .when(*nested, |el| {
+                                            el.child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .w(sp.border_width)
+                                                    .h_full()
+                                                    .bg(colours.border_subtle),
+                                            )
+                                        })
                                         // line
                                         .child(
                                             div()
@@ -495,15 +673,17 @@ impl RefsTable {
                                                 .text_color(colours.fg_muted)
                                                 .child(row.path.clone()),
                                         )
-                                        // kind
-                                        .child(
-                                            div()
-                                                .flex_shrink_0()
-                                                .text_size(ts.caption.size)
-                                                .line_height(ts.caption.line_height)
-                                                .text_color(colours.fg_faint)
-                                                .child(row.kind.clone()),
-                                        )
+                                        // kind — see `show_kind_column`
+                                        .when(show_kind_column, |el| {
+                                            el.child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .text_size(ts.caption.size)
+                                                    .line_height(ts.caption.line_height)
+                                                    .text_color(colours.fg_faint)
+                                                    .child(row.kind.clone()),
+                                            )
+                                        })
                                         // precision badge
                                         .child(div().flex_shrink_0().child(Badge::custom(
                                             ("symbol.refs.precision", ix),
@@ -1350,10 +1530,72 @@ mod tests {
     /// being flattened into "textual" (LD-7).
     #[test]
     fn unknown_precision_shows_the_engines_words() {
-        let colours = crate::theme::themes::dark_theme().colours;
+        let theme = crate::theme::default_theme();
         let kind = SharedString::from("call-site");
-        let (_, _, label) = precision_chrome(Precision::Other, &kind, &colours);
+        let (_, _, label) =
+            precision_chrome(Precision::Other, &kind, &theme.colours, &theme.alpha);
         assert_eq!(&*label, "call-site");
+    }
+
+    /// A group of one reference draws no header.
+    ///
+    /// The defect: with a single reference the header and the row printed the
+    /// same string, one above the other, with a disclosure triangle for hiding
+    /// a row the reader could already see. This is the arithmetic half of the
+    /// fix — `render` cannot draw a header the flat index does not contain.
+    #[test]
+    fn a_group_of_one_reference_contributes_no_header_row() {
+        // (collapsed, row_count)
+        assert_eq!(flat_len([(false, 1)].into_iter()), 1, "one row, no header");
+        assert_eq!(
+            flat_len([(false, 2)].into_iter()),
+            3,
+            "two rows earn a header"
+        );
+        assert_eq!(
+            flat_len([(true, 1)].into_iter()),
+            1,
+            "a headerless group cannot be collapsed away"
+        );
+        assert_eq!(
+            flat_len([(true, 5)].into_iter()),
+            1,
+            "a collapsed group is its header alone"
+        );
+        assert_eq!(
+            flat_len([(false, 1), (false, 3), (true, 4)].into_iter()),
+            1 + 4 + 1,
+            "mixed groups sum correctly"
+        );
+    }
+
+    /// A group with no header cannot be collapsed, because there would be
+    /// nothing left on screen to expand it again.
+    #[test]
+    fn toggling_a_headerless_group_is_refused() {
+        use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
+        let lid = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("t"));
+        let mut table = RefsTable::new();
+        table.append_page(&RefsPage {
+            total: 1,
+            refs: vec![RefRow {
+                target: SymbolKey::new(lid, IntroId::from_raw([0u8; 32])),
+                path: "src/only.rs:9".into(),
+                kind_tag: "call-site".into(),
+            }]
+            .into(),
+        });
+        table.rebuild_flat();
+        let before = table.flat.len();
+        assert!(
+            !table.toggle_group(0),
+            "a single-reference group has no header to click, so nothing can toggle it"
+        );
+        assert_eq!(
+            table.flat.len(),
+            before,
+            "a refused toggle must not change the flat index"
+        );
     }
 
     /// Counts are formatted once, on arrival, never in `render`.

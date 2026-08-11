@@ -76,6 +76,9 @@ pub fn rise_in<E: IntoElement + Styled + 'static>(
         // `Duration::ZERO` is not meaningful for an Animation, we render the
         // element directly at opacity 1 with no offset by just returning it
         // unchanged. Use the unstable `EitherElement` trick by boxing.
+        // `.opacity(1.0)` / `.opacity(0.0)` throughout this file are animation
+        // identity endpoints — fully shown / fully hidden — not tints, so they
+        // stay off the `AlphaTokens` ladder deliberately.
         return el
             .opacity(1.0)
             .with_animation(

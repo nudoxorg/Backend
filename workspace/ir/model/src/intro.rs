@@ -19,25 +19,55 @@ use crate::{
 
 /// Domain tag for the IntroId preimage.
 ///
-/// `v4` — the cross-package-reference boundary.
+/// `v5` — the type-lattice boundary.
 ///
-/// Two changes move digests relative to `v3`, and the bump exists so that
-/// divergence is an explicit version boundary rather than a silent one:
+/// `v4` was the cross-package-reference boundary, and both of its changes
+/// remain in force: [`skeleton::ref_`](crate::skeleton) encodes a cross-package
+/// reference as `0x02` plus the reference's canonical key bytes rather than the
+/// single placeholder `0x00`, and [`Disambiguator::Ordinal`] exists as tag `4`.
+/// What follows is what moved *since* v4.
 ///
-/// 1. [`skeleton::ref_`](crate::skeleton) used to encode *every* cross-package
-///    reference as the single placeholder byte `0x00` (it had no way to name
-///    one). It now encodes `0x02` plus the reference's canonical key bytes. The
-///    `TraitImpl` disambiguator is applied to **every** impl unconditionally, so
-///    this moves the `IntroId` of every impl whose trait or self type mentions a
-///    foreign type — in practice, most trait impls in the corpus.
-/// 2. [`Disambiguator::Ordinal`] is a new tag. Existing tags `0..=3` are
-///    untouched, so an entry that neither collides nor names a foreign type
-///    keeps a v3-shaped preimage — but it is hashed under a new domain and its
-///    digest still moves.
+/// Three changes landed independently, each of which invalidates persisted ids
+/// on its own. They deliberately share **one** bump, so the corpus is
+/// re-derived once rather than three times:
+///
+/// 1. **The type lattice split.** [`Type::Any`](crate::kinds::Type) was
+///    narrowed to a genuine top type, and `Type::Unknown` was added carrying
+///    one of seven [`UnknownType`](crate::kinds::UnknownType) reasons. In
+///    skeleton bytes an absent type moved from opcode `0x09` to `0x18` plus a
+///    reason opcode — plus the source spelling, for the three reasons that
+///    carry one. Separately, a `Param`/`Field` slot that was `None` under
+///    `opt_seq` is now `Some(..)`, moving its tag from `0x00` to `0x01`
+///    followed by the encoded type. Java's `TypeMirror::Null` now lowers to
+///    `Type::Never`, and Go's `byte` to `Type::U8`. Any entry whose signature
+///    mentions one of these moves.
+/// 2. **clang's unresolved named types.** `OracleType::Named` lowered to
+///    `Type::TypeVar(name)`, which the skeleton encodes as the bare byte `0x0c`
+///    with the name deliberately dropped for alpha-equivalence. It now lowers
+///    to `Type::Unknown(UnresolvedExternal { name })`, which keeps the
+///    spelling — so two overloads differing only in which external type they
+///    name stop colliding.
+/// 3. **Python's `TypeData::Unsupported`.** Now
+///    `Type::Unknown(NoIrRepresentation { construct })` rather than the
+///    dynamic-typing fallback.
+///
+/// `skeleton::tests::unknown_reason_opcodes_are_frozen` pins the reason
+/// opcodes, which is what makes (1) a one-time boundary rather than recurring
+/// drift: a later edit that reordered them would silently move every affected
+/// id again.
 ///
 /// **Every persisted `IntroId` in the corpus is invalidated by this bump.**
 /// Manifest stamps, archives and any stored table must be re-derived once.
-pub const INTRO_DOMAIN: &str = "nudox.intro.v4";
+///
+/// # This is a domain change, not a preimage-layout change
+///
+/// The byte layout [`bootstrap_intro_id`] writes is identical to v4's; what
+/// moved is the *content* producers put into it, plus the domain prefix. So
+/// [`FORMAT_VERSION`](crate::change::FORMAT_VERSION) — which versions the serde
+/// representation of an `Entry` — is deliberately **not** bumped alongside it.
+/// The two numbers answer different questions, and coupling them would force a
+/// wire-incompatibility claim that is not true.
+pub const INTRO_DOMAIN: &str = "nudox.intro.v5";
 
 /// Collision-scoped disambiguator selected per §4.3: `None` for the common
 /// unique case (so a unique name's id is signature-stable), a signature
@@ -211,7 +241,7 @@ mod tests {
     }
 
     /// GOLDEN: freeze the exact preimage layout. Independently reproducible as
-    /// blake3("nudox.intro.v4" ‖ encode_str("cargo") ‖ encode_str("demo") ‖
+    /// blake3("nudox.intro.v5" ‖ encode_str("cargo") ‖ encode_str("demo") ‖
     /// u16le(4) ‖ u32le(1) ‖ encode_str("m") ‖ encode_str("f") ‖ 0x00).
     #[test]
     fn bootstrap_golden() {
@@ -224,8 +254,11 @@ mod tests {
         );
         assert_eq!(
             id.to_hex(),
-            "ebb5afd66f97c25b9dbf60c3deade5fd27a67438a5981ba482f8c153b47a0618",
-            "IntroId preimage layout regression (update only with a FORMAT_VERSION bump)"
+            "15933b42e3a94e1923644866f9c51fc37e20bd99d2e1c26c4fa514e3bfdb0095",
+            "IntroId digest regression. Update only alongside a deliberate change to \
+             INTRO_DOMAIN or to the preimage layout above — NOT with a FORMAT_VERSION \
+             bump, which versions the serde shape of an `Entry` and does not reach this \
+             digest (see INTRO_DOMAIN's docs)."
         );
     }
 }

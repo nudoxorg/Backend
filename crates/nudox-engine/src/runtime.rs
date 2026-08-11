@@ -26,8 +26,61 @@ use nudox_store::{
 };
 
 use crate::{
-    PackageHistorySpec, PackageLoadEvent, PackageSpec, ProducerLanguage, versions::VersionRegistry,
+    PackageHistorySpec, PackageLoadEvent, PackageSpec, versions::VersionRegistry,
+    wire::SharedStr,
 };
+
+// ---------------------------------------------------------------------------
+// LoadFailures
+// ---------------------------------------------------------------------------
+
+/// Durable record of package loads that were attempted and failed, keyed by
+/// lineage.
+///
+/// # Why this exists
+///
+/// `EngineHandle::packages()` broadcasts `PackageLoadEvent::LoadFailed` once,
+/// live, to whoever happens to be subscribed at that moment (§the type's own
+/// docs: "capacity 64 ... a slow subscriber may lag"). An MCP tool call is
+/// not a subscriber — it typically arrives well after seeding has finished —
+/// so without a durable copy, `EngineError::PackageNotLoaded` could never
+/// tell "this lineage was attempted and broke" apart from "this lineage was
+/// never named at all", and both surfaced as the identical bare "not
+/// loaded". This is the durable half; the broadcast stays the live half for
+/// a GUI toast.
+#[derive(Clone, Default)]
+pub(crate) struct LoadFailures(Arc<std::sync::RwLock<HashMap<PackageLineageId, SharedStr>>>);
+
+impl LoadFailures {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record that loading `lineage` failed with `reason`.
+    ///
+    /// A later record for the same lineage overwrites the earlier one — a
+    /// reload attempt's outcome is the one worth reporting, not its history.
+    fn record(&self, lineage: PackageLineageId, reason: SharedStr) {
+        let mut guard = self
+            .0
+            .write()
+            .expect("load-failure lock is never held across a panic");
+        guard.insert(lineage, reason);
+    }
+
+    /// The recorded failure reason for `lineage`, or `None` if no load for
+    /// it was ever recorded as failed (either it succeeded, or it was never
+    /// attempted — this type cannot tell those two apart, which is exactly
+    /// why `EngineError::PackageNotLoaded::attempted` is itself an
+    /// `Option`).
+    pub(crate) fn get(&self, lineage: &PackageLineageId) -> Option<SharedStr> {
+        let guard = self
+            .0
+            .read()
+            .expect("load-failure lock is never held across a panic");
+        guard.get(lineage).cloned()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // EngineConfig
@@ -47,6 +100,21 @@ pub struct EngineConfig {
     /// §9.3 ordering; the host decides *how*. See [`crate::highlight`] for why
     /// this cannot simply be a dependency of this crate.
     pub highlighter: crate::highlight::SharedHighlighter,
+    /// Where [`EngineHandle::index_purl`] unpacks packages it fetches.
+    ///
+    /// `None` → [`crate::acquire::default_cache_dir`], which honours
+    /// `NUDOX_PACKAGE_CACHE` and then `XDG_CACHE_HOME`. A host with its own
+    /// notion of where user data lives sets this instead of exporting an
+    /// environment variable behind its own back.
+    pub package_cache: Option<PathBuf>,
+    /// Text embedder for the semantic search section, if the host supplies one.
+    ///
+    /// Same seam and same reason as `highlighter`, plus one more: the embedding
+    /// stack is a 483-crate dependency graph whose runtime downloads itself at
+    /// build time unless externally provisioned. See [`crate::semantic`] for
+    /// the full argument, and for why `None` is the *ordinary* configuration
+    /// rather than a degraded one.
+    pub embedder: crate::semantic::SharedEmbedder,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -57,6 +125,8 @@ impl std::fmt::Debug for EngineConfig {
             .field("workspace_root", &self.workspace_root)
             .field("worker_threads", &self.worker_threads)
             .field("highlighter", &self.highlighter.is_some())
+            .field("embedder", &self.embedder.is_some())
+            .field("package_cache", &self.package_cache)
             .finish()
     }
 }
@@ -101,6 +171,384 @@ pub(crate) struct EngineInner {
     /// explicitly in `EngineHandle::packages()` rather than being allowed to
     /// kill the stream.
     pub(crate) pkg_tx: broadcast::Sender<PackageLoadEvent>,
+    /// Durable record of package loads that were attempted and failed — see
+    /// [`LoadFailures`].
+    pub(crate) load_failures: LoadFailures,
+    /// The HTTP client and package cache used by [`EngineHandle::index_purl`].
+    ///
+    /// Held on the engine rather than built per call because a
+    /// `reqwest::Client` owns a connection pool: resolving one PURL makes up to
+    /// four requests to the same host, and a fresh client per call would open a
+    /// fresh TLS session for each.
+    pub(crate) acquire: Arc<crate::acquire::AcquireContext>,
+    /// The host's embedder, if this build has one.
+    pub(crate) embedder: crate::semantic::SharedEmbedder,
+    /// Vectors for every package that has finished embedding.
+    ///
+    /// Grows as packages land (see [`spawn_semantic_indexer`]); read by
+    /// `run_search` without ever waiting for it. The two together are what make
+    /// the semantic section usable the instant *any* package is resident rather
+    /// than after the corpus finishes.
+    pub(crate) semantic: crate::semantic::SemanticIndex,
+    /// Where [`drive_load`] hands a newly-resident package to the embedder.
+    ///
+    /// `Some` exactly when an embedder is installed. **Unbounded on purpose**,
+    /// and this is the single most load-bearing decision in the incremental
+    /// design: the requirement is that embedding never blocks IR availability,
+    /// and a bounded queue would make the load loop wait for the model as soon
+    /// as it filled — turning "search is usable the instant a package is
+    /// resident" into "the ninth package waits for the first eight to embed".
+    ///
+    /// Unbounded is safe here because the producer is not a user: the queue's
+    /// depth is bounded by the number of packages the corpus will ever hold,
+    /// each entry is one `Arc` clone, and the consumer drains strictly faster
+    /// than a producer can lower new IR.
+    pub(crate) semantic_tx: Option<flume::Sender<Arc<nudox_store::package::PackageView>>>,
+}
+
+// ---------------------------------------------------------------------------
+// drive_load — the one place a produced package enters the corpus
+// ---------------------------------------------------------------------------
+
+/// Drive an [`IrSource`] to completion, recording every package it produces and
+/// broadcasting the outcome.
+///
+/// # Why this is a function and not the body of `Engine::start`
+///
+/// It used to be the body of `Engine::start`, and that was the *actual*
+/// blocker behind `EngineCapability::ProjectResolution`, whose `blocked_on`
+/// reads: "today packages can only be supplied to `Engine::start_with_producer`,
+/// so a resolved list could not be acted on". Nothing about the loop needed to
+/// be start-time; it was simply written inline, so the only way to run it was
+/// to start a new engine.
+///
+/// Extracting it — rather than writing a second insertion path for on-demand
+/// packages — is what guarantees a package indexed from a PURL at minute ten is
+/// indistinguishable from one named at minute zero: the same
+/// `Discovered`-to-`Ready` version pairing, the same
+/// [`VersionRegistry::record`] arbitration over which generation becomes
+/// resident, the same durable [`LoadFailures`] copy, and the same `pkg_tx`
+/// broadcast that `EngineHandle::packages()` fuses into its snapshot. A second
+/// path would have had to re-derive all four, and the first one it got wrong
+/// would be a lineage that behaves differently depending on when it arrived.
+///
+/// Returns the events it broadcast, in order, so a caller loading a known set
+/// of packages can inspect the outcome without subscribing to a channel it
+/// shares with everyone else.
+pub(crate) async fn drive_load(
+    source: impl IrSource,
+    inner: &EngineInner,
+) -> Vec<PackageLoadEvent> {
+    use futures::StreamExt as _;
+
+    // Version strings awaiting their `Ready`, keyed by lineage.
+    //
+    // `LoadEvent::Ready` carries only an `Arc<PackageView>`, and
+    // `PackageView` has no version field — a `PackageLineageId` is
+    // version-free by design and nothing downstream of it ever needed
+    // the number. The only place the version appears in the load
+    // protocol is `LoadEvent::Discovered { hint: PackageHint { version } }`.
+    //
+    // Recovering it here is sound because the `IrSource` contract
+    // requires `Discovered` before `Ready` for every package, and both
+    // in-tree sources are strictly sequential per package
+    // (`ProducerSource::load` drives descriptors with `then`, which
+    // awaits each in turn). A FIFO per lineage therefore pairs each
+    // `Ready` with its own `Discovered` even when several generations
+    // of the same lineage are being loaded.
+    //
+    // A hypothetical source that interleaved *two generations of the
+    // same lineage* could mispair them; a source that interleaves
+    // different lineages cannot, because the queues are per-lineage.
+    // The durable fix is a `version` field on `PackageView` (or on
+    // `LoadEvent::Ready`), which is a `nudox-store` change and so out
+    // of scope here.
+    let mut pending: HashMap<PackageLineageId, VecDeque<Option<String>>> = HashMap::new();
+    let mut outcomes = Vec::new();
+
+    let mut stream = source.load(LoadRequest::default());
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(LoadEvent::Discovered { lineage, hint }) => {
+                pending.entry(lineage).or_default().push_back(hint.version);
+            }
+            Ok(LoadEvent::Ready { package }) => {
+                // Count symbols before the package is handed on.
+                let symbol_count = package.view().table().len() as u64;
+                let lineage = package.lineage().clone();
+                let name = lineage.name.as_str().to_owned();
+                let ecosystem = lineage.ecosystem.as_str().to_owned();
+                let version = pending
+                    .get_mut(&lineage)
+                    .and_then(|q| q.pop_front())
+                    .flatten();
+
+                // Record the generation first. The registry decides
+                // whether this generation becomes the resident one —
+                // it is the single place that rule lives, so the
+                // corpus cannot drift from the version list.
+                //
+                // This also fixes a latent ordering bug: previously
+                // every `Ready` was inserted unconditionally, so with
+                // several generations of one package the corpus ended
+                // up holding whichever finished producing last rather
+                // than the newest.
+                if let Some(resident) =
+                    inner
+                        .versions
+                        .record(&lineage, version.clone(), Arc::clone(&package))
+                {
+                    inner.corpus.insert(Arc::clone(&resident)).await;
+                    // Hand the *resident* generation — not `package` — to the
+                    // embedder. They differ whenever an older generation
+                    // arrives after a newer one, and indexing the arriving one
+                    // would embed symbols that no search can resolve, because
+                    // every lookup goes through the corpus.
+                    //
+                    // `send` (not `send_async`) on an unbounded channel never
+                    // blocks, which is what keeps this line off the critical
+                    // path. `Err` means the indexer has shut down; the package
+                    // is still fully loaded and searchable by name and type,
+                    // and `SectionState::Building` already reports it as
+                    // uncovered, so there is nothing to recover here.
+                    if let Some(tx) = &inner.semantic_tx {
+                        let _ = tx.send(resident);
+                    }
+                }
+
+                let event = PackageLoadEvent::Loaded {
+                    name: name.into(),
+                    ecosystem: ecosystem.into(),
+                    version,
+                    symbol_count,
+                    root: package_root_key(&package),
+                };
+                // Ignore `Err`: no subscribers yet is fine.
+                let _ = inner.pkg_tx.send(event.clone());
+                outcomes.push(event);
+            }
+            Ok(LoadEvent::Failed { lineage, error }) => {
+                // Consume this package's queued version so the FIFO
+                // stays aligned for the lineage's later generations.
+                // `Discovered` is emitted for the failing package too.
+                if let Some(q) = pending.get_mut(&lineage) {
+                    q.pop_front();
+                }
+                tracing::warn!(
+                    package = %lineage,
+                    "package load failed: {error}",
+                );
+                let reason: SharedStr = error.to_string().into();
+                // Durable copy — see `LoadFailures` docs for why the
+                // broadcast below is not enough on its own.
+                inner.load_failures.record(lineage.clone(), reason.clone());
+                let event = PackageLoadEvent::LoadFailed {
+                    name: lineage.name.as_str().to_owned().into(),
+                    ecosystem: lineage.ecosystem.as_str().to_owned().into(),
+                    error: reason,
+                };
+                let _ = inner.pkg_tx.send(event.clone());
+                outcomes.push(event);
+            }
+            Ok(_) => {} // Progress — informational only
+            Err(e) => {
+                tracing::error!("stream-level load error: {e}");
+                break;
+            }
+        }
+    }
+    outcomes
+}
+
+// ---------------------------------------------------------------------------
+// Semantic indexing — incremental, off the load path
+// ---------------------------------------------------------------------------
+
+/// The largest document text handed to a model, in bytes.
+///
+/// The recipe's token budget is frozen at `MAX_SEQ_LEN = 1024`, and every
+/// tokenizer this repo can be pointed at truncates beyond it *silently*. Cutting
+/// here instead means the truncation happens somewhere a reader can see it and
+/// somewhere the cost is bounded before the batch is built, rather than inside a
+/// runtime whose behaviour we would be inferring. Four bytes per token is the
+/// conservative ratio for code, which is denser than prose.
+const MAX_DOCUMENT_BYTES: usize = 4 * 1024;
+
+/// Consume newly-resident packages and embed them, one package at a time.
+///
+/// # Why this is a task and not a step in `drive_load`
+///
+/// The requirement is that a package is searchable by name and type the instant
+/// it is resident, and that embedding — 250 ms to 1.1 s per package for
+/// inference-grade work — never delays that. Doing it inline would serialise
+/// the two: the second package could not begin lowering until the first had
+/// finished embedding. Here the load loop's only obligation is one non-blocking
+/// `send`.
+///
+/// # Why packages are embedded serially
+///
+/// Embedding is CPU-saturating: `FastembedOrt` runs a CPU execution provider
+/// with an intra-op thread pool already sized to the machine. Two packages
+/// embedding concurrently do not finish sooner, they finish *later* — they
+/// contend for the same cores and each one's completion is pushed back behind
+/// the other's. Serialising means the first package's vectors land as early as
+/// they possibly can, which is what `SectionState::Building` reports on and
+/// what makes partial coverage useful rather than merely honest.
+async fn semantic_indexer(
+    rx: flume::Receiver<Arc<nudox_store::package::PackageView>>,
+    embedder: Arc<dyn crate::semantic::Embedder>,
+    index: crate::semantic::SemanticIndex,
+) {
+    let info = embedder.info();
+    // A host that advertises a zero batch size would make `chunks(0)` panic.
+    // Clamping rather than trusting keeps a bad host's misconfiguration from
+    // becoming this task's crash.
+    let batch = info.max_batch.max(1);
+
+    while let Ok(package) = rx.recv_async().await {
+        let lineage = package.lineage().clone();
+        let documents = documents_of(&package);
+        let started = std::time::Instant::now();
+
+        let mut vectors: Vec<(nudox_ir::change::IntroId, Vec<f32>)> =
+            Vec::with_capacity(documents.len());
+        let mut failed = false;
+
+        for chunk in documents.chunks(batch) {
+            let texts: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
+            match embedder
+                .embed_batch(&texts, crate::semantic::EmbedRole::Document)
+                .await
+            {
+                Ok(batch_vectors) if batch_vectors.len() == chunk.len() => {
+                    for ((intro, _), vector) in chunk.iter().zip(batch_vectors) {
+                        vectors.push((*intro, vector));
+                    }
+                }
+                Ok(batch_vectors) => {
+                    // A host that returns a different number of vectors than it
+                    // was given has broken the positional pairing the trait
+                    // documents, and there is no way to tell *which* symbol each
+                    // vector belongs to. Pairing them anyway would produce an
+                    // index that is confidently wrong — every row correct-looking
+                    // and attached to the wrong symbol.
+                    tracing::error!(
+                        package = %lineage,
+                        sent = chunk.len(),
+                        got = batch_vectors.len(),
+                        "embedder broke positional pairing; abandoning this package"
+                    );
+                    failed = true;
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(package = %lineage, "embedding failed: {error}");
+                    failed = true;
+                    break;
+                }
+            }
+        }
+
+        if failed {
+            // Deliberately *not* recorded as covered. The package stays in
+            // `SectionState::Building`'s uncovered count, which is exactly true:
+            // the semantic section has not searched it and never will this run.
+            // Marking it covered would be the silent-repair failure of §8 —
+            // presenting a degraded case as the good one.
+            continue;
+        }
+
+        let count = vectors.len();
+        match index.insert_package(lineage.clone(), vectors, info.dimensions) {
+            // `info!`, not `debug!`: this is the single most expensive thing the
+            // engine does per package (measured at 246.8 s for real `memchr` on
+            // a CPU execution provider), and a cost that is only visible at
+            // `debug` is a cost nobody measures. It is one line per package, at
+            // the same level as "corpus seeding complete".
+            Ok(()) => tracing::info!(
+                package = %lineage,
+                symbols = count,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "semantic index updated"
+            ),
+            Err(error) => tracing::error!(
+                package = %lineage,
+                "embedder produced unusable vectors: {error}"
+            ),
+        }
+    }
+}
+
+/// The text embedded for each symbol of `package`, in `IntroId` order.
+///
+/// # What is embedded, and what is not
+///
+/// Public symbols only. A semantic search over documentation is a search over
+/// the *documented surface*, and a private helper that happens to be
+/// semantically close to the query is an answer the reader cannot use — they
+/// cannot call it, and its page exists only because the crate was lowered
+/// whole. It is also the difference between embedding memchr's full 11 329
+/// entries and its public API, which is the difference between a per-package
+/// cost measured in minutes and one measured in seconds.
+///
+/// `Param` entries are excluded for the reason `typerefs_of_entry` excludes
+/// them: a parameter is part of a signature, not a destination, and its text is
+/// already carried by the function's own document.
+///
+/// # Why the document is assembled here and not by the host
+///
+/// The host supplies a model; deciding *what a symbol is, as text* is a
+/// question about the IR, and the IR is this crate's business. It also keeps
+/// the answer stable across hosts, so two embedders can be compared on the same
+/// documents rather than on their own idea of what a symbol says.
+fn documents_of(
+    package: &nudox_store::package::PackageView,
+) -> Vec<(nudox_ir::change::IntroId, String)> {
+    use nudox_ir::entry::Visibility;
+
+    let view = package.view();
+    let indexes = package.indexes();
+    let mut out = Vec::new();
+
+    for (intro, entry) in view.entries_sorted() {
+        if entry.sym().visibility != Visibility::Public {
+            continue;
+        }
+        let Some(discriminant) = entry.kind().discriminant() else {
+            continue;
+        };
+        if discriminant == nudox_ir::kind::KindDiscriminant::Param {
+            continue;
+        }
+
+        // Path first, then kind, then documentation. Leading with the
+        // fully-qualified path means the model sees the module context before
+        // it is truncated away, which is what separates `io::Error` from
+        // `fmt::Error` when the doc comments are both one line.
+        let path = indexes
+            .path_of(intro)
+            .map(|p| p.as_ref().to_owned())
+            .unwrap_or_else(|| entry.sym().name.clone());
+        let mut text = format!("{path}\n{discriminant:?}\n");
+        let documentation = entry.sym().documentation.trim();
+        if !documentation.is_empty() {
+            text.push_str(documentation);
+        }
+
+        // Truncate on a char boundary — `String::truncate` panics otherwise,
+        // and doc comments are full of non-ASCII.
+        if text.len() > MAX_DOCUMENT_BYTES {
+            let mut end = MAX_DOCUMENT_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            text.truncate(end);
+        }
+
+        out.push((intro, text));
+    }
+
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -141,132 +589,63 @@ impl Engine {
                 .expect("Tokio runtime creation must succeed"),
         ));
 
-        let corpus = Corpus::new();
-        let schema = nudox_graph::schema();
-        let versions = Arc::new(VersionRegistry::new());
-
         // Capacity 64: broadcast channel for package load notifications.  See
         // `EngineInner::pkg_tx` for the capacity rationale.
         let (pkg_tx, _initial_rx) = broadcast::channel::<PackageLoadEvent>(64);
         // `_initial_rx` is immediately dropped; real subscribers are created
         // inside `EngineHandle::packages()` before they read the snapshot.
 
+        // The semantic queue exists only when there is something to consume it.
+        // `None` rather than an always-present channel with no reader: a queue
+        // that silently accumulates packages nobody will embed is a leak whose
+        // only symptom is memory, and `Option` makes "this build does not embed"
+        // a fact the type carries rather than one the reader has to reconstruct
+        // from whether a task was spawned.
+        let semantic = crate::semantic::SemanticIndex::new();
+        let semantic_tx = config.embedder.as_ref().map(|embedder| {
+            let (tx, rx) = flume::unbounded();
+            runtime.spawn(semantic_indexer(
+                rx,
+                Arc::clone(embedder),
+                semantic.clone(),
+            ));
+            tx
+        });
+
         let inner = Arc::new(EngineInner {
-            corpus: corpus.clone(),
-            versions: Arc::clone(&versions),
-            schema,
+            corpus: Corpus::new(),
+            versions: Arc::new(VersionRegistry::new()),
+            schema: nudox_graph::schema(),
             highlighter: config.highlighter.clone(),
-            pkg_tx: pkg_tx.clone(),
+            pkg_tx,
+            load_failures: LoadFailures::new(),
+            acquire: crate::acquire::AcquireContext::new(config.package_cache.clone()),
+            embedder: config.embedder.clone(),
+            semantic,
+            semantic_tx,
         });
 
         // Seed the corpus from the source on the runtime's thread pool.
         // We do this eagerly on start so that searches issued immediately
         // after `start` return (possibly empty) rather than blocking.
         //
-        // Every `LoadEvent::Ready` and `LoadEvent::Failed` is also broadcast
-        // on `pkg_tx` so that `EngineHandle::packages()` subscribers receive
-        // live notifications.  `send` returns `Err` only when there are no
-        // receivers (which is fine at startup — we just drop the notification).
-        let seed_corpus = corpus.clone();
-        let seed_versions = Arc::clone(&versions);
+        // The body is [`drive_load`] — shared verbatim with
+        // `EngineHandle::load_one`, which is how a package fetched from a PURL
+        // ten minutes after start-up is loaded by *the same* rules as one named
+        // at start-up. See that function's docs.
+        let seed_inner = Arc::clone(&inner);
         runtime.spawn(async move {
-            use futures::StreamExt as _;
-
-            // Version strings awaiting their `Ready`, keyed by lineage.
-            //
-            // `LoadEvent::Ready` carries only an `Arc<PackageView>`, and
-            // `PackageView` has no version field — a `PackageLineageId` is
-            // version-free by design and nothing downstream of it ever needed
-            // the number. The only place the version appears in the load
-            // protocol is `LoadEvent::Discovered { hint: PackageHint { version } }`.
-            //
-            // Recovering it here is sound because the `IrSource` contract
-            // requires `Discovered` before `Ready` for every package, and both
-            // in-tree sources are strictly sequential per package
-            // (`ProducerSource::load` drives descriptors with `then`, which
-            // awaits each in turn). A FIFO per lineage therefore pairs each
-            // `Ready` with its own `Discovered` even when several generations
-            // of the same lineage are being loaded.
-            //
-            // A hypothetical source that interleaved *two generations of the
-            // same lineage* could mispair them; a source that interleaves
-            // different lineages cannot, because the queues are per-lineage.
-            // The durable fix is a `version` field on `PackageView` (or on
-            // `LoadEvent::Ready`), which is a `nudox-store` change and so out
-            // of scope here.
-            let mut pending: HashMap<PackageLineageId, VecDeque<Option<String>>> = HashMap::new();
-
-            let mut stream = source.load(LoadRequest::default());
-            while let Some(event) = stream.next().await {
-                match event {
-                    Ok(LoadEvent::Discovered { lineage, hint }) => {
-                        pending.entry(lineage).or_default().push_back(hint.version);
-                    }
-                    Ok(LoadEvent::Ready { package }) => {
-                        // Count symbols before the package is handed on.
-                        let symbol_count = package.view().table().len() as u64;
-                        let lineage = package.lineage().clone();
-                        let name = lineage.name.as_str().to_owned();
-                        let ecosystem = lineage.ecosystem.as_str().to_owned();
-                        let version = pending
-                            .get_mut(&lineage)
-                            .and_then(|q| q.pop_front())
-                            .flatten();
-
-                        // Record the generation first. The registry decides
-                        // whether this generation becomes the resident one —
-                        // it is the single place that rule lives, so the
-                        // corpus cannot drift from the version list.
-                        //
-                        // This also fixes a latent ordering bug: previously
-                        // every `Ready` was inserted unconditionally, so with
-                        // several generations of one package the corpus ended
-                        // up holding whichever finished producing last rather
-                        // than the newest.
-                        if let Some(resident) =
-                            seed_versions.record(&lineage, version.clone(), Arc::clone(&package))
-                        {
-                            seed_corpus.insert(resident).await;
-                        }
-
-                        let event = PackageLoadEvent::Loaded {
-                            name: name.into(),
-                            ecosystem: ecosystem.into(),
-                            version,
-                            symbol_count,
-                            root: package_root_key(&package),
-                        };
-                        // Ignore `Err`: no subscribers yet is fine.
-                        let _ = pkg_tx.send(event);
-                    }
-                    Ok(LoadEvent::Failed { lineage, error }) => {
-                        // Consume this package's queued version so the FIFO
-                        // stays aligned for the lineage's later generations.
-                        // `Discovered` is emitted for the failing package too.
-                        if let Some(q) = pending.get_mut(&lineage) {
-                            q.pop_front();
-                        }
-                        tracing::warn!(
-                            package = %lineage,
-                            "package load failed: {error}",
-                        );
-                        let event = PackageLoadEvent::LoadFailed {
-                            name: lineage.name.as_str().to_owned().into(),
-                            ecosystem: lineage.ecosystem.as_str().to_owned().into(),
-                            error: error.to_string().into(),
-                        };
-                        let _ = pkg_tx.send(event);
-                    }
-                    Ok(_) => {} // Progress — informational only
-                    Err(e) => {
-                        tracing::error!("stream-level load error: {e}");
-                        break;
-                    }
-                }
-            }
+            let outcomes = drive_load(source, &seed_inner).await;
             info!(
-                "corpus seeding complete; {} package(s) loaded",
-                seed_corpus.len().await
+                "corpus seeding complete; {} package(s) loaded, {} failed",
+                outcomes
+                    .iter()
+                    .filter(|e| matches!(e, PackageLoadEvent::Loaded { .. }))
+                    .count(),
+                outcomes
+                    .iter()
+                    .filter(|e| matches!(e, PackageLoadEvent::LoadFailed { .. }))
+                    .count(),
             );
         });
 
@@ -371,11 +750,27 @@ impl std::fmt::Debug for EngineHandle {
 ///
 /// Dropping the handle cancels the corresponding engine work (LR-9, §2.3).
 /// The caller never touches the cancellation token directly.
+///
+/// # Why the canceller is `Sync` and not merely `Send`
+///
+/// It was `Box<dyn Fn() + Send>`, which made `StreamHandle` itself `!Sync`, and
+/// that propagated to *anything holding one*. Holding a handle is exactly what
+/// a caller does when it owns a long-running job rather than draining a stream
+/// inline — `nudox_mcp`'s index-job registry is the first such caller, and the
+/// failure landed on rmcp's `ServerHandler: Sync` bound, several types away from
+/// the cause and with no mention of cancellation in the message.
+///
+/// Requiring `Sync` on the closure instead of adding a `Mutex` at that call site
+/// is the fix at the right level: every canceller in the system is
+/// `CancellationToken::cancel`, `cancel` takes `&self`, and `CancellationToken`
+/// is `Sync` — so no existing construction loses anything, and a future
+/// canceller that genuinely could not be shared across threads would now say so
+/// at its own definition rather than at a distant holder's.
 pub struct StreamHandle {
     /// The generation this stream answers.
     pub generation: crate::wire::Gen,
     /// Invoked on drop to signal cancellation.
-    canceller: Box<dyn Fn() + Send>,
+    canceller: Box<dyn Fn() + Send + Sync>,
 }
 
 impl StreamHandle {
@@ -385,7 +780,12 @@ impl StreamHandle {
     /// system — the GUI re-exports this type rather than wrapping it — so
     /// anything that stands in for the engine (a test double, an alternative
     /// search backend) has to be able to produce one.
-    pub fn new(generation: crate::wire::Gen, canceller: impl Fn() + Send + 'static) -> Self {
+    ///
+    /// `Sync` on `canceller` is load-bearing — see the type-level docs.
+    pub fn new(
+        generation: crate::wire::Gen,
+        canceller: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         Self {
             generation,
             canceller: Box::new(canceller),
@@ -436,6 +836,27 @@ impl EngineHandle {
         self.inner.corpus.clone()
     }
 
+    /// The growing semantic index — see [`crate::semantic`].
+    pub(crate) fn semantic_index(&self) -> crate::semantic::SemanticIndex {
+        self.inner.semantic.clone()
+    }
+
+    /// The host's embedder, if this build has one.
+    pub(crate) fn embedder(&self) -> crate::semantic::SharedEmbedder {
+        self.inner.embedder.clone()
+    }
+
+    /// How many packages the semantic index currently covers.
+    ///
+    /// Public because "is the index finished?" is a question a *test* has to be
+    /// able to ask without racing — polling `search` until the section stops
+    /// saying `Building` works, but it conflates "not yet indexed" with "the
+    /// query matched nothing", which is the exact conflation this whole change
+    /// exists to remove.
+    pub fn semantic_coverage(&self) -> usize {
+        self.inner.semantic.covered()
+    }
+
     /// A clone of the version registry handle.
     ///
     /// Used by `doc.rs` to build timelines and by `crate::versions` to serve
@@ -443,6 +864,79 @@ impl EngineHandle {
     /// the registry deals in `Arc<PackageView>`, which must not cross §L0.
     pub(crate) fn versions_registry(&self) -> Arc<VersionRegistry> {
         Arc::clone(&self.inner.versions)
+    }
+
+    /// A clone of the durable load-failure record — see [`LoadFailures`].
+    ///
+    /// Used by `doc.rs` to enrich `EngineError::PackageNotLoaded` with why a
+    /// package is missing, when that is known.
+    pub(crate) fn load_failures(&self) -> LoadFailures {
+        self.inner.load_failures.clone()
+    }
+
+    /// The shared HTTP client used to reach package registries.
+    pub(crate) fn http_client(&self) -> &reqwest::Client {
+        &self.inner.acquire.client
+    }
+
+    /// Where fetched packages are unpacked.
+    pub(crate) fn package_cache(&self) -> &std::path::Path {
+        &self.inner.acquire.cache
+    }
+
+    /// Produce one on-disk package and insert it into the **running** corpus.
+    ///
+    /// This is the live-insertion path. It builds the same `ProducerSource`
+    /// `Engine::start_with_versions` builds — one descriptor rather than a
+    /// workspace's worth — and drives it through [`drive_load`], so the package
+    /// lands in the corpus by exactly the rules a start-up load uses. In
+    /// particular, indexing a *second* version of a lineage that is already
+    /// loaded goes through [`VersionRegistry::record`] and therefore appears in
+    /// `versions()` and becomes current only if it is the newest — the same
+    /// arbitration as `start_with_versions`, not a blind `Corpus::insert` that
+    /// would silently demote whatever was resident.
+    ///
+    /// `Err` carries the store's flattened failure text; the caller decides
+    /// what kind of failure it was (see
+    /// `crate::acquire::classify_load_failure`).
+    pub(crate) async fn load_one(
+        &self,
+        spec: crate::PackageSpec,
+    ) -> Result<crate::acquire::LoadedPackage, SharedStr> {
+        use nudox_store::source::producer::{ProducerRegistry, ProducerSource};
+
+        let descriptor = crate::descriptor_for(spec);
+        let source = ProducerSource::new(
+            Arc::new(ProducerRegistry::with_all_available()),
+            vec![descriptor],
+        );
+
+        let outcomes = drive_load(source, &self.inner).await;
+        match outcomes.into_iter().next() {
+            Some(PackageLoadEvent::Loaded {
+                name,
+                ecosystem,
+                version,
+                symbol_count,
+                root,
+            }) => Ok(crate::acquire::LoadedPackage {
+                name,
+                ecosystem,
+                version: version.unwrap_or_default().into(),
+                symbol_count,
+                root,
+            }),
+            Some(PackageLoadEvent::LoadFailed { error, .. }) => Err(error),
+            // `ProducerSource` emits exactly one `Ready` or `Failed` per
+            // descriptor, so an empty outcome list means the stream ended
+            // early. Reporting it as a failure rather than as a success with
+            // nothing loaded is the same call `IrSource`'s own contract makes:
+            // "load MUST emit Failed (not panic, not hang) when a single
+            // package fails".
+            _ => Err(SharedStr::from(
+                "the producer stream ended without emitting a result for this package",
+            )),
+        }
     }
 
     /// Spawn a future on the engine's multi-thread runtime.
@@ -829,48 +1323,22 @@ impl Engine {
         use nudox_store::source::producer::{PackageDescriptor, ProducerRegistry, ProducerSource};
 
         let registry = Arc::new(ProducerRegistry::with_all_available());
+        // Every generation of a package produces the *same* `PackageLineageId`
+        // — that is the point: the lineage is version-free, so the two
+        // generations are recognisably the same package and their `IntroId`s
+        // are comparable.
         let descriptors: Vec<PackageDescriptor> = packages
             .into_iter()
             .flat_map(|history| {
                 let name = history.name;
                 let language = history.language;
                 history.versions.into_iter().map(move |v| {
-                    // Convert the engine-owned spec into the store-owned
-                    // `PackageDescriptor`. Every generation of a package
-                    // produces the *same* `PackageLineageId` — that is the
-                    // point: the lineage is version-free, so the two
-                    // generations are recognisably the same package and their
-                    // `IntroId`s are comparable.
-                    //
-                    // One `PackageDescriptor` constructor per ecosystem, not
-                    // one `Language` for all of them: pairing the wrong
-                    // ecosystem id with a language here would build a
-                    // descriptor that no registered producer (or the wrong
-                    // one) ever answers, and this match is the one place that
-                    // pairing is decided.
-                    match language {
-                        ProducerLanguage::Rust => {
-                            PackageDescriptor::cargo(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::Go => {
-                            PackageDescriptor::go(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::Java => {
-                            PackageDescriptor::maven(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::CSharp => {
-                            PackageDescriptor::nuget(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::Python => {
-                            PackageDescriptor::pypi(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::TypeScript => {
-                            PackageDescriptor::npm(v.root, name.clone(), v.version)
-                        }
-                        ProducerLanguage::Cpp => {
-                            PackageDescriptor::cpp(v.root, name.clone(), v.version)
-                        }
-                    }
+                    crate::descriptor_for(PackageSpec {
+                        root: v.root,
+                        name: name.clone(),
+                        version: v.version,
+                        language,
+                    })
                 })
             })
             .collect();
@@ -888,6 +1356,12 @@ impl Engine {
 mod tests {
     use super::*;
     use crate::{
+        // `ProducerLanguage` used to arrive through the module-level
+        // `use crate::{…}` and was dropped from it by an unrelated refactor,
+        // which broke only this module (the non-test callers fully qualify it).
+        // Named here rather than re-added above so the two import lists cannot
+        // fight over it.
+        ProducerLanguage,
         test_support::{lineage, package_with, start_and_settle},
         wire::{Gen, VersionEvent},
     };

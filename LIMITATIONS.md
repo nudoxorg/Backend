@@ -1464,7 +1464,29 @@ likely to look when something seems stuck.
 `TODO(` or `FIXME` — a one-line guard that closes the class permanently. Check
 the `Logs` tab for the same pattern.
 
-**Status:** OPEN. Filed as F9 in `GUI-WORKORDER-2.md`.
+**Status: RESOLVED for Jobs, 2026-08-10; the guard test is still owed.**
+
+The `TODO(views):` text was already replaced by an honest empty state (the
+`placeholder_panel!` macro in `workspace/gui/src/workspace/shell.rs`). What
+changed now is that Jobs is no longer a placeholder at all:
+`JobsPanel` reads `stores::index_jobs::IndexJobStore` and renders on-demand
+`pkg:` index jobs — stage, byte progress, and, on failure, the engine's own
+message *and* its separate "what to do next".
+
+Its empty state is deliberately narrow, and the wording is the point:
+
+> No package indexed this session
+
+**not** "no jobs are running". `EngineHandle::jobs()` still returns
+`Err(Unimplemented)` (L37), so the engine's general job plane remains unbuilt and
+this panel is authoritative over exactly one set — the index jobs `lindsey`
+started itself. Claiming the wider set would re-introduce this entry's defect in
+better prose.
+
+`Logs` remains a `placeholder_panel!` with an honest empty state. The
+"no rendered text node contains `TODO(`" guard test is **still not written**, and
+that is the part of this entry that is genuinely still open: nothing structurally
+prevents the next placeholder from naming a module path at the user.
 
 ---
 
@@ -1919,6 +1941,24 @@ identical immediately-`Done`-stream defect and was outside the assigned four. It
 has no callers, and its doc comment now says so. The daemon and file watching
 remain unbuilt; no `notify` dependency was added.
 
+### Update 2026-08-10 — the "add a package to a running corpus" half is built
+
+`resolve_project`'s blocker above was a conjunction: *a filesystem walk* **and**
+*a way to act on what it found*. The second half now exists as
+`EngineHandle::index_purl` (`crates/nudox-engine/src/acquire/`), which fetches,
+verifies, produces and inserts a package named by a PURL into a corpus that is
+already running. It is not a special case bolted beside the seeding path: that
+path was extracted into `runtime::drive_load` and both callers go through it, so
+a package that arrives at minute ten obeys the same `VersionRegistry::record`
+arbitration, the same lineage rules and the same `packages()` broadcast as one
+named at start-up. `EngineCapability::ProjectResolution::blocked_on` has been
+narrowed to say discovery, and only discovery, is what is left.
+
+**`jobs()` is unchanged and still returns `Err(Unimplemented)`.** Producer work
+is still observable only as `PackageLoadEvent`, which still carries no job
+identity, so the general job plane is exactly as unbuilt as this entry says.
+What changed for L29 is narrower and is recorded there.
+
 ---
 
 ## L38 — 88% of memchr's IR was `core`, not memchr. Every entry count is ~8× inflated.
@@ -2340,6 +2380,58 @@ artifact**. The empty state stays: it is the only honest rendering, and the
 alternative — fabricating matches — is the doctrine §6 failure this entry was
 originally filed to avoid. Pinned by `semantic_section_is_empty_by_design`, so
 "reserved" cannot quietly decay into "broken" while the bridge is built.
+
+### Update 2026-08-09: the engine half is built; the artifact half is not
+
+**Status: PARTIALLY RESOLVED — engine complete, no shipping build installs a
+model.**
+
+What landed:
+
+- `nudox_engine::semantic` defines an **object-safe `Embedder` port** plus a
+  live in-memory index. `run_search` fans out to it and ranks by cosine.
+- The index is built **incrementally as packages load**, off the load path —
+  `drive_load` hands each newly-resident package to a serial indexer over an
+  unbounded channel, so a package is searchable by name and type the instant it
+  is resident regardless of how long embedding takes.
+- `SearchEvent::SectionState` carries `Complete` / `Building { covered, total }`
+  / `Unavailable { reason }`, which is what removes the ambiguity this entry was
+  really about. **The old "empty is the honest rendering" framing was too
+  generous to itself**: an empty `Section` is not neutral, it is the claim *we
+  searched and found nothing*. An engine with no model was in no position to
+  make it. The honest rendering is `Unavailable`, and it is now a typed value on
+  the wire rather than an absence a reader has to interpret.
+
+Three corrections to the text above, each of which made the work look different
+than it is:
+
+- **"a ~162 MB pinned JinaCodeV2 ONNX"** — the canonical artifact is
+  `model.onnx` at **641,517,466 bytes** (fp32). 162 MB was `model_quantized.onnx`,
+  which was subsequently disqualified: it is *dynamically* quantized, so the same
+  text embedded beside different neighbours differs by ~0.0154 per component
+  against ~1e-7 for fp32. `Quantization::is_batch_invariant` now enforces this.
+- **"a §1 amendment for the new edge"** — no edge was needed. §1 was amended to
+  record the *port* pattern instead, and `registry` is still not in the
+  dependency graph. See `AGENTS-DOCTRINE.md` §1, "Capability ports".
+- **"an acceptance that one section becomes online-dependent"** — not true of
+  this design. The model runs locally on CPU; verified on 2026-08-09 by
+  `cargo test -p registry --features onnx --test vector_onnx_live -- --ignored`,
+  4/4 passing in 30.3 s, including batch-invariance.
+
+**What remains open, and it is the whole product gap:** nothing in the shipping
+tree constructs an `Embedder`. `lindsey` may not name `registry` (§1), and no
+production adapter crate exists yet. So every real build reports
+`SectionState::Unavailable { NoEmbedder }` and the GUI renders "Semantic search
+is not configured in this build". That is honest and it is not a feature.
+
+**Also unresolved and newly measured**: `ORT_LIB_LOCATION` /
+`ORT_PREFER_DYNAMIC_LINK` are referenced **nowhere** in this repository —
+not in `flake.nix`, not in `.cargo/config.toml`, not in any `package.nix` — and
+`onnxruntime` is not in the nix store. The live tests linked against
+`ort-sys`'s **own build-time download**, cached at
+`~/Library/Caches/ort.pyke.io/`. That is the no-network-at-build-time violation
+this repo's standard forbids, and it is currently load-bearing for the only
+route by which the model can be run. Provisioning is unsolved.
 
 ---
 
@@ -3222,4 +3314,39 @@ is partly generator-emitted documents only its hand-written half, with nothing
 in the extraction's diagnostics naming what a generator would have added.
 
 **Status:** OPEN. Unrecorded before this entry.
+
+---
+
+## L56 — The GUI account gate does not re-check posture while a window stays open
+
+**Blast radius:** any signed-in user who leaves lindsey's window open across a
+grace-window boundary — most commonly, offline for the full 7 days
+`nudox_mcp::account::state::GRACE_WINDOW` allows without ever dismissing the
+window or signing out. The window keeps showing the shell, unblocked, past the
+moment the account has actually moved to `Posture::GraceExpired`.
+
+**What is NOT affected:** MCP tool calls. `AccountGate::admit`
+(`crates/nudox-mcp/src/account/gate.rs`) re-derives the posture from
+`SystemTime::now()` on every call, independent of anything the GUI caches — a
+stale gate can only ever be too permissive about what the *human* sees on
+screen; it cannot let an agent's tool call through. This is presentation-layer
+staleness, not an enforcement gap.
+
+**Evidence:** `workspace/gui/src/workspace/shell.rs`'s `Shell::gate` is set once
+at construction from `AccountService::refresh()` — cold launch, and every
+rebuild after a dismissal (`app::lifecycle::WindowSession::show`, e.g. a dock
+click) — and again after an explicit sign-in or sign-out
+(`Shell::on_sign_in_event`). Nothing re-evaluates it on a timer while the
+window stays open, and none of those four events fires on its own. A user who
+signs in and never touches the window again sees an unblocked shell for as
+long as the process runs, even after grace expires underneath it — and the
+first sign anything is wrong is an MCP-backed action failing, which reads as a
+bug in whatever feature made that call rather than as an account problem,
+because nothing in the still-open window said otherwise.
+
+**Status:** OPEN, disclosed rather than fixed at the same time the gate itself
+landed (2026-08-10). Closing it needs a periodic re-check — something already
+absent for the status bar's account chip, which reads the same cached
+`AccountService::status` this gate does — scoped out as a separate concern
+from wiring the gate to the posture machinery that already exists.
 

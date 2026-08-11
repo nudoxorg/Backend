@@ -122,17 +122,49 @@ type Inferred = HashMap<SlotKey, TypeData>;
 /// any type the author actually wrote. pyrefly contributes only to slots the
 /// syntactic tier left unresolvable.
 ///
-/// A pyrefly failure is not fatal: the syntactic oracle is returned unchanged,
-/// with a warning. That mirrors `syntax.rs`'s own discipline — only a failure
-/// to read the package root itself is a hard error, because only that means the
-/// producer was handed something it cannot see at all.
+/// # The fallback decision, made deliberately
+///
+/// A pyrefly failure — `infer` producing zero solved slots for the whole
+/// package — is not fatal: the syntactic oracle is returned unchanged, and the
+/// degradation is logged at `error`, not silently swallowed. Two choices were
+/// available (see the mission brief this module was written under, "decide
+/// deliberately what happens: hard failure, or fall back … with the
+/// degradation recorded"), and this is the fallback, for one reason: hard-
+/// failing here would take a package that the syntactic tier alone can
+/// document — real declarations, real docstrings, real written-annotation
+/// types — and turn it into total silence, over a semantic-tier problem the
+/// syntactic tier never had. That is a worse outcome for the mission ("render
+/// documentation... visibly better than docs.rs") than shipping without the
+/// enrichment. This mirrors `syntax.rs`'s own discipline for a single bad
+/// file: only a failure to read the package root itself is a hard error,
+/// because only that means the producer was handed something it cannot see at
+/// all.
+///
+/// This path is *not* silent in the doctrine sense (typed/counted/bounded/
+/// visible degradation): it does not merge a per-value repair into the output
+/// indistinguishably, it discards the entire enrichment pass and returns
+/// exactly what the syntax-only build (`--no-default-features`) would have
+/// produced — a shape every consumer of this producer already knows how to
+/// read, not a new, quietly-degraded variant of the enriched one. What is
+/// missing is an in-band signal on `PythonOracle` itself that this package hit
+/// the fallback path rather than genuinely having nothing to infer (an empty
+/// package). Adding one is future work, out of the change that added this
+/// comment: it would mean threading a new field through every consumer of
+/// `PythonOracle` (`emit/mod.rs`, every test) for a path this module's own
+/// `fallback_path_does_not_fire_on_any_provisioned_corpus_package` test
+/// confirms does not fire on any of the six zero-annotation corpus packages
+/// (the sharpest check available — a package with no written annotations
+/// anywhere gains *zero* type positions if and only if the fallback fired).
+/// The `tracing::error!` below is the interim signal; escalate this — add the
+/// in-band field — the day a real corpus package is found to hit it.
 pub fn invoke_oracle(src: &PackageSource) -> Result<PythonOracle, ProducerError> {
     let mut oracle = crate::syntax::build_oracle(src)?;
     let inferred = infer(src.root());
     if inferred.is_empty() {
-        tracing::warn!(
+        tracing::error!(
             root = %src.root().display(),
-            "pyrefly produced no solved types; falling back to the syntactic tier alone"
+            "pyrefly produced no solved types; falling back to the syntactic tier alone — \
+             this package will document with no semantic-tier enrichment"
         );
         return Ok(oracle);
     }
@@ -694,6 +726,89 @@ mod tests {
             }
         }
         None
+    }
+
+    /// Count every filled slot the same way `apply` does, without mutating a
+    /// real oracle — used only to check whether `invoke_oracle` took its
+    /// fallback branch (`inferred.is_empty()`) on a given package, since
+    /// `apply`'s `filled` count is not otherwise observable from outside this
+    /// module.
+    fn any_type_position(oracle: &PythonOracle) -> bool {
+        fn item_has_type(item: &ItemData) -> bool {
+            match &item.body {
+                ItemBody::Function(f) => f.return_ty.is_some() || f.params.iter().any(|p| p.ty.is_some()),
+                ItemBody::Overloaded(fs) => fs
+                    .iter()
+                    .any(|f| f.return_ty.is_some() || f.params.iter().any(|p| p.ty.is_some())),
+                ItemBody::Const(c) => c.ty.is_some(),
+                ItemBody::Alias(a) => a.target.is_some(),
+                ItemBody::Class(c) => {
+                    c.fields.iter().any(|f| f.ty.is_some())
+                        || c.methods.iter().any(item_has_type)
+                        || c.nested.iter().any(item_has_type)
+                }
+                ItemBody::Module => false,
+            }
+        }
+        oracle.modules.iter().any(|m| m.items.iter().any(item_has_type))
+    }
+
+    /// **Corpus-scale check that the fallback path in `invoke_oracle`'s own
+    /// doc comment is not just theoretical.** The doc comment on
+    /// `invoke_oracle` claims the `inferred.is_empty()` fallback has not been
+    /// observed to fire on any of the 22 provisioned corpus packages; this is
+    /// what actually checks that claim, rather than leaving it asserted only
+    /// in prose. It does not inspect `infer`'s private `inferred` map
+    /// directly (that would require exposing internals just for a test); it
+    /// instead re-derives the same signal `type_lattice_census.rs` implies:
+    /// if the fallback fired, `invoke_oracle`'s result would be pointwise
+    /// identical to `syntax::build_oracle`'s (see
+    /// `enrichment_never_removes_a_syntactic_declaration` above — the
+    /// declaration *set* is always identical either way, so this checks
+    /// *types*, not names). A package with zero annotations anywhere and a
+    /// working pyrefly pass must still gain at least one resolved type
+    /// position; a package that hit the fallback would gain none.
+    #[test]
+    fn fallback_path_does_not_fire_on_any_provisioned_corpus_package() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates");
+        let Ok(root) = root.canonicalize() else {
+            eprintln!("SKIP: no .real-crates/ checkout — see corpus/README.md");
+            return;
+        };
+        // Mirrors `type_lattice_census.rs::ENTRIES`, restricted to the six
+        // zero-annotation packages plus a couple of heavily-annotated ones as
+        // a control — the zero-annotation packages are the ones where, if
+        // the fallback fired, `invoke_oracle` would produce an oracle with
+        // *no* resolved types at all (every other package has at least some
+        // written annotations even without pyrefly, so this is the sharper
+        // check).
+        const ZERO_ANNOTATION: &[(&str, &str, &str)] = &[
+            ("six-1.16.0", "six", "1.16.0"),
+            ("pyyaml-6.0.1", "pyyaml", "6.0.1"),
+            ("python-dateutil-2.8.2", "python-dateutil", "2.8.2"),
+            ("requests-2.31.0", "requests", "2.31.0"),
+            ("beautifulsoup4-4.12.3", "beautifulsoup4", "4.12.3"),
+            ("more-itertools-10.2.0", "more-itertools", "10.2.0"),
+        ];
+        let mut checked = 0;
+        for (dir, name, version) in ZERO_ANNOTATION {
+            let pkg_root = root.join(dir);
+            if !pkg_root.join("setup.py").is_file() && !pkg_root.join("pyproject.toml").is_file() {
+                eprintln!("SKIP {dir}: not provisioned");
+                continue;
+            }
+            let src = PackageSource::new(&pkg_root, *name, *version);
+            let enriched = invoke_oracle(&src).unwrap_or_else(|e| panic!("{dir}: invoke_oracle failed: {e}"));
+            assert!(
+                any_type_position(&enriched),
+                "{dir}: invoke_oracle produced zero resolved type positions — this is exactly \
+                 the shape the fallback branch produces on a zero-annotation package, so either \
+                 pyrefly genuinely failed on a real corpus package (escalate per the doc comment \
+                 on invoke_oracle) or this check itself regressed"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 6, "expected all 6 zero-annotation corpus packages provisioned; got {checked}");
     }
 }
 

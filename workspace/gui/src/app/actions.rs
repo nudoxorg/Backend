@@ -52,10 +52,73 @@ gpui::actions!(
         OpenCommandPalette,
         /// Open the settings page (§21) as a WorkspaceItem.
         OpenSettings,
+        /// Open the account overlay: sign in, or see the account you are signed
+        /// in as (`auth.md`).
+        ///
+        /// One action for both, because they are one surface. A separate
+        /// `SignIn`/`ViewAccount` pair would need the caller to know which
+        /// state the account is in before it could pick — and the whole point
+        /// of `AccountPresentation` is that nobody outside `app::account` has
+        /// to.
+        OpenAccount,
         /// Open a project folder via the OS file picker (§14).
         OpenProject,
         /// Toggle the `?` shortcuts overlay (§23.3). Only fires when no input is focused.
         ToggleShortcutsOverlay,
+        /// Advance to the next bundled theme and apply it immediately.
+        ///
+        /// # Why a cycle and not a picker
+        ///
+        /// A picker is the right affordance once there are twenty themes. With
+        /// four, a picker costs a modal, a list, a selection model and a
+        /// dismissal path to do what one key does — and it puts a scrim over
+        /// the thing you are trying to judge. The whole point of switching a
+        /// theme is to *look at the application in it*, which a modal prevents.
+        /// The status bar names the live theme, so the cycle is not blind.
+        CycleTheme,
+        /// Go back one theme in the cycle.
+        ///
+        /// Present because a cycle without a reverse makes "I liked the last
+        /// one" cost three more presses, and because a four-element ring is
+        /// exactly the size where that is annoying rather than trivial.
+        CycleThemeBack,
+    ]
+);
+
+// ── Application lifecycle (macOS background residency) ────────────────────────
+//
+// These four are the only actions in this file whose handlers are registered on
+// the *App* (`cx.on_action`) rather than on an element, and that is not a style
+// choice. GPUI dispatches a keystroke down the focused element's ancestor chain,
+// so with the window dismissed there is no chain and no element — every other
+// action here is unreachable. `App::dispatch_action` falls through to the global
+// listeners when `active_window()` is `None` (`gpui/src/app.rs:2230-2240`), which
+// is what lets a menu item still work when the whole UI is gone.
+//
+// They are therefore reached from the menu bar first and the keymap second,
+// which is the reverse of every other action in lindsey.
+
+gpui::actions!(
+    lindsey,
+    [
+        /// Rebuild and activate the window after it was dismissed (dock click,
+        /// or Window ▸ Show lindsey). Idempotent — see `app::lifecycle`.
+        ShowWindow,
+        /// Tear the window down while leaving the engine and the hosted MCP
+        /// endpoint running. Distinct from `CloseTab`, which closes a document.
+        DismissWindow,
+        /// Hide the application, keeping the window intact (`cmd-H`).
+        HideApp,
+        /// Quit for real, running the `on_app_quit` drain of in-flight agent
+        /// requests first. Nothing bound this before: lindsey installed no menu
+        /// bar, and gpui binds no default `cmd-Q`, so the app could only be
+        /// killed from outside.
+        Quit,
+        /// Put the hosted MCP endpoint on the clipboard.
+        ///
+        /// Reachable from the app menu, so a reader whose window is dismissed
+        /// can still hand the address to an agent without summoning the UI.
+        CopyMcpEndpoint,
     ]
 );
 

@@ -135,6 +135,13 @@ vfs = "0.13"
 # real `Adapter::Error` channel (LR-6) and the `AsyncAdapter` stream engine,
 # whose result stream is `!Send` and therefore drives the engine's LocalSet.
 trustfall = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997", features = ["async"] }
+# `trustfall_core` is already resolved transitively through `trustfall` above
+# (same git rev — see LD-10 note); named directly here only so
+# `nudox-engine::query` can downcast `execute_query_async`'s `anyhow::Error`
+# to `trustfall_core::frontend::error::FrontendError` and recover the
+# line/column a parse error carries but `Display` drops. No new source is
+# fetched — this pins the *name*, not a second copy of the crate.
+trustfall_core = { git = "https://github.com/philocalyst/trustfall", rev = "7e71e35715dfac561e3453c834b469a200330997" }
 futures = "0.3"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["simd"] }
 flume = "0.11"

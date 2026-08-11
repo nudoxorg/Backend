@@ -77,6 +77,10 @@ tree-sitter-python = "0.25"
 tree-sitter-go = "0.25"
 
 anyhow = "1"
+# Typed errors, per AGENTS-DOCTRINE §3. Added with the palette restructure for
+# `ThemeLoadError`, whose whole value is naming *which* bundled theme failed
+# and how; an `anyhow` string could not carry that as a matchable variant.
+thiserror = "2"
 flume = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -148,3 +152,57 @@ dead_code = "warn"
 
 [profile.release]
 lto = "thin"
+
+# ── macOS packaging (cargo-bundle 0.11, `cargo install cargo-bundle`) ────────
+#
+# Consumed by `cargo bundle --release --format osx|dmg`, run from *this*
+# directory (workspace/gui), never with `--workspace`/`--all-features` per
+# AGENTS-DOCTRINE and this task's build-scope rule. Paths below are relative
+# to that CWD, which is how cargo-bundle resolves both glob-based `icon` and
+# the plain `osx_dmg_background` path (see `Settings::icon_files` /
+# `osx_dmg_background` in cargo-bundle's `src/bundle/settings.rs`).
+#
+# The GUI needs no `resources` entry: the four bundled themes are compiled in
+# via `include_str!` (src/theme/spec.rs) and gpui-component's icon SVGs are
+# `rust_embed`-d into the binary (gpui-component's `crates/assets`), so the
+# shipped binary is self-contained — nothing is read from a Resources
+# directory at runtime, and the MCP server it hosts (`nudox-mcp`) binds a
+# loopback socket rather than reading files.
+[package.metadata.bundle]
+name = "lindsey"
+identifier = "com.nudox.lindsey"
+version = "0.1.0"
+copyright = "Copyright (c) 2026 the nudox project"
+category = "Developer Tool"
+short_description = "Local-first documentation and code intelligence for seven languages."
+long_description = """
+lindsey renders documentation for real packages in Rust, Go, Java, Python, \
+TypeScript, C#, and C/C++, streamed from a local nudox-engine over a typed \
+wire protocol — real search, real version lineage, working hyperlinks, no \
+network round trip to docs.rs.
+"""
+# The one brand mark (repo root). SVG in, not a pre-rendered PNG/ICNS: cargo-
+# bundle's `create_icns_from_svg` rasterises this via `resvg` at every
+# required iconset size (16/16@2x/32/32@2x/128/128@2x/256/256@2x/512/512@2x —
+# the last of which *is* the 1024px tile) and writes a real .icns into
+# Contents/Resources. A logo change needs no other step.
+icon = ["../../logo.svg"]
+# Measured, not aspirational: `otool -l target/release/lindsey`'s
+# LC_BUILD_VERSION reports `minos 14.0` for a binary built with no
+# MACOSX_DEPLOYMENT_TARGET override, i.e. this toolchain's default deployment
+# target against the installed 14.4 SDK. Zed's own build (this GUI's gpui/
+# gpui_platform pin) sets MACOSX_DEPLOYMENT_TARGET=10.15.7 in *its* build.rs,
+# but that script is Zed's, not gpui_platform's, and does not run for this
+# crate — nothing here overrides the toolchain default, so claiming 10.15
+# would describe a binary that was never actually built. 14.0 (Sonoma,
+# shipped September 2023) is what this binary actually requires; lowering it
+# is possible but unverified, so it is not claimed here.
+osx_minimum_system_version = "14.0"
+# SVG with two elements named `app` and `applications`; cargo-bundle's
+# `dmg_finder::decorate_volume` reads their bounding-box centers as icon
+# positions, rasterises the whole file to `.background/background.tiff` at 2x,
+# and writes a matching `.DS_Store` (window size/position, icon size, hidden
+# toolbar/sidebar) directly — no AppleScript, no `create-dmg`. Generated from
+# /logo.svg by generate_dmg_background.py in this directory; rerun that
+# script after a logo change, this path does not change.
+osx_dmg_background = "packaging/dmg-background.svg"

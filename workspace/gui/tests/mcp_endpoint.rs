@@ -40,10 +40,38 @@ use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::time::{Duration, Instant};
 
-use gpui::{AppContext as _, BorrowAppContext as _, SharedString, TestAppContext};
+use gpui::{
+    App, AppContext as _, BorrowAppContext as _, Bounds, Entity, SharedString, TestAppContext,
+    WindowBounds, WindowOptions, point, px, size,
+};
+use lindsey::app::keymaps;
+use lindsey::app::lifecycle::{self, Presence, WindowSession};
 use lindsey::app::mcp::{McpService, McpStatus};
+
+/// The account gate these tests run under.
+///
+/// Unmetered, and stated rather than defaulted. Every assertion in this file is
+/// about *transport reachability* — that the URL the status bar displays is one
+/// a client can open a socket to and get a JSON-RPC answer from. Wiring a real
+/// account gate in would additionally make each of them depend on
+/// `api.nudox.org` being up, which AGENTS-DOCTRINE §4 rules out. Account
+/// behaviour has its own suite, against a fake this process controls:
+/// `crates/nudox-mcp/tests/account_against_a_fake_service.rs`.
+fn test_gate() -> nudox_mcp::AccountGate {
+    nudox_mcp::AccountGate::unmetered(
+        "gui transport test: asserts the displayed endpoint is reachable, not billing",
+    )
+}
+use lindsey::motion::tokens::MotionTokens;
+use lindsey::stores::events::OpenDisposition;
+use lindsey::stores::search_model::SearchAccess as _;
+use lindsey::stores::symbol::TabId as DocTabId;
+use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
+use lindsey::theme::ext::NudoxThemeExt;
+use lindsey::workspace::shell::Shell;
 use lindsey::workspace::status_bar::StatusBar;
 use nudox_engine::runtime::{Engine, EngineConfig};
+use nudox_engine::wire::SymbolKey;
 use serde_json::Value;
 
 // ---------------------------------------------------------------------------
@@ -236,7 +264,7 @@ fn displayed_endpoint(
     engine: &nudox_engine::EngineHandle,
 ) -> (SharedString, SharedString, Option<SharedString>) {
     cx.update(|cx| {
-        cx.set_global(McpService::start(engine));
+        cx.set_global(McpService::start(engine, test_gate()));
 
         let status = McpStatus::from_app(cx);
         let bar = cx.new(|cx| {
@@ -414,6 +442,343 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
         cx.update_global::<McpService, _>(|service, _| service.stop());
     });
     drop(engine);
+}
+
+// ---------------------------------------------------------------------------
+// Background residency
+// ---------------------------------------------------------------------------
+
+/// Boot the theme/motion/keymap globals a real [`Shell`] needs, then install a
+/// [`WindowSession`] whose constructor builds exactly the window `main` builds.
+///
+/// The stores are created here, on the `App`, and only *cloned* into the
+/// window's constructor — which is the property the whole restore story rests
+/// on. If they were owned by the window, dismissing it would take the corpus
+/// with it and no amount of lifecycle code could put the reader back.
+fn install_shell_session(
+    cx: &mut TestAppContext,
+    engine: &nudox_engine::EngineHandle,
+) -> (Entity<SearchStore>, Entity<SymbolStore>) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        NudoxThemeExt::init(cx).expect("bundled themes parse and install");
+        cx.set_global(MotionTokens::new(1.0));
+        cx.bind_keys(keymaps::all_bindings());
+
+        let search = cx.new(|_| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
+        let index_jobs =
+            cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
+
+        let handles = (search.clone(), symbols.clone());
+        WindowSession::install(
+            Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(1440.0), px(900.0)),
+            },
+            move |bounds, cx| {
+                let (search, symbols, packages, index_jobs) = (
+                    search.clone(),
+                    symbols.clone(),
+                    packages.clone(),
+                    index_jobs.clone(),
+                );
+                cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        focus: false,
+                        show: false,
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        cx.new(|cx| {
+                            Shell::new(search, symbols, packages, index_jobs, window, cx)
+                        })
+                    },
+                )
+                .map(Into::into)
+            },
+            cx,
+        );
+        lifecycle::wire(cx);
+        handles
+    })
+}
+
+/// Read the endpoint out of the *live window's* status bar.
+///
+/// Deliberately not out of the global: the invariant is that what the reader
+/// sees and what a client can dial are the same string, and after a restore
+/// that means the *rebuilt* status bar has to be showing it. A rebuilt window
+/// that painted `Absent` while the server kept listening would be L35 again,
+/// one layer up.
+fn endpoint_in_the_window(cx: &mut TestAppContext) -> McpStatus {
+    let handle = cx
+        .update(|cx| cx.windows().first().copied())
+        .expect("a window to read the status bar out of");
+    cx.update(|cx| {
+        cx.update_window(handle, |root, _window, cx| {
+            let shell = root
+                .downcast::<Shell>()
+                .expect("the session builds exactly one kind of window");
+            shell.read(cx).status_bar().read(cx).mcp().clone()
+        })
+        .expect("read the live window")
+    })
+}
+
+/// Ask the endpoint a real question and return the display names it answered
+/// with. Panics — loudly, with the transport detail — on anything short of a
+/// decoded JSON-RPC result.
+fn search_over_the_wire(url: &str, token: &str, query: &str) -> Vec<String> {
+    let init = post_json_rpc(
+        url,
+        token,
+        None,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"lindsey-residency-test","version":"0"}}}"#,
+    );
+    assert_eq!(init.status, 200, "initialize must succeed against {url}");
+    let session = init
+        .headers
+        .get("mcp-session-id")
+        .cloned()
+        .expect("initialize must return an Mcp-Session-Id");
+    post_json_rpc(
+        url,
+        token,
+        Some(&session),
+        r#"{"method":"notifications/initialized","jsonrpc":"2.0"}"#,
+    );
+
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"search_symbols","arguments":{{"query":"{query}","limit":50}}}}}}"#,
+    );
+    let response = post_json_rpc(url, token, Some(&session), &body);
+    assert_eq!(response.status, 200, "search_symbols must succeed");
+    let message = sse_json_messages(&response.body)
+        .into_iter()
+        .find(|m| m.get("id").and_then(Value::as_i64) == Some(7))
+        .expect("search_symbols must answer the id it was asked with");
+    assert!(
+        message.get("error").is_none(),
+        "search_symbols must not return a JSON-RPC error: {message}",
+    );
+    message
+        .pointer("/result/structuredContent/hits")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("search_symbols must carry structuredContent.hits: {message}"))
+        .iter()
+        .filter_map(|hit| hit.get("display_name").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The whole point of §L6 residency, as one invariant: **an agent's connection
+/// does not depend on the human keeping a window open.**
+///
+/// The dismissal here is real in the only sense that matters — after it,
+/// `cx.windows()` is empty and the `Shell` entity that owned every view is
+/// dropped. There is no window to be "merely hidden". And the proof that the
+/// endpoint survived is a socket opened after that point, carrying a real
+/// `tools/call` whose answer names a symbol that really exists in the corpus
+/// this process loaded. An assertion that `McpStatus` is still `Listening`
+/// would pass against a server that had stopped accepting connections; this
+/// cannot.
+#[gpui::test]
+async fn dismissing_the_window_leaves_the_endpoint_answering(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+
+    let engine = Engine::start_with_fixtures(EngineConfig::default());
+    let _stores = install_shell_session(cx, &engine);
+
+    // ── Onscreen ────────────────────────────────────────────────────────────
+    cx.update(|cx| {
+        cx.set_global(McpService::start(&engine, test_gate()));
+        assert_eq!(Presence::of(cx), Presence::Dismissed, "no window yet");
+        assert_eq!(WindowSession::open_first(cx), Presence::Onscreen);
+    });
+    cx.run_until_parked();
+
+    let McpStatus::Listening { url, client_config } = endpoint_in_the_window(cx) else {
+        panic!("the window must be showing a listening server before we dismiss it");
+    };
+    let token = bearer_from(&client_config);
+
+    // Give the corpus a moment to seed, so a later empty result cannot be
+    // blamed on timing. The same retry `the_endpoint_the_status_bar_displays…`
+    // uses, for the same reason.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while search_over_the_wire(&url, &token, "Point").is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "precondition: the corpus must answer *before* the dismissal, or \
+             this test proves nothing about the dismissal",
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // ── Dismissed ───────────────────────────────────────────────────────────
+    let after_dismiss = cx.update(WindowSession::dismiss);
+    assert_eq!(after_dismiss, Presence::Dismissed);
+    cx.update(|cx| {
+        assert!(
+            cx.windows().is_empty(),
+            "the window must really be gone — a hidden window would make the \
+             request below prove nothing",
+        );
+    });
+    cx.run_until_parked();
+
+    // The load-bearing request: a real socket, a real handshake, a real
+    // `tools/call`, against a process that currently has no user interface.
+    let names = search_over_the_wire(&url, &token, "Point");
+    assert!(
+        names.iter().any(|n| n.contains("Point")),
+        "an agent must still find `Point` in the corpus of a lindsey whose \
+         window has been dismissed; got {names:?}",
+    );
+
+    // ── Restored ────────────────────────────────────────────────────────────
+    let after_show = cx.update(WindowSession::show);
+    assert_eq!(after_show, Presence::Onscreen, "there must be a way back");
+    cx.run_until_parked();
+
+    assert_eq!(
+        endpoint_in_the_window(cx),
+        McpStatus::Listening {
+            url: url.clone(),
+            client_config: client_config.clone(),
+        },
+        "the rebuilt window must advertise the same endpoint that stayed up — \
+         a fresh `Absent` would tell the reader the server died when it did not",
+    );
+
+    cx.update(|cx| {
+        cx.update_global::<McpService, _>(|service, _| service.stop());
+    });
+    drop(engine);
+}
+
+/// A restored window is not a *new* window: the documents the reader had open
+/// come back, in the order they opened them, with the one they were reading
+/// active.
+///
+/// This is the property that makes destroying the window an acceptable way to
+/// dismiss it (`app::lifecycle`). Without it, "dismiss" would quietly mean
+/// "throw away the reader's session", and the defect would be invisible in
+/// review because `Shell::new` is perfectly correct for a cold launch.
+#[gpui::test]
+async fn a_restored_window_brings_back_the_documents_that_were_open(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+
+    let engine = Engine::start_with_fixtures(EngineConfig::default());
+    let (search, symbols) = install_shell_session(cx, &engine);
+    cx.update(|cx| {
+        WindowSession::open_first(cx);
+    });
+    cx.run_until_parked();
+
+    // Open two real documents through the store, exactly as the search overlay
+    // does. The keys come out of a real search rather than being hard-coded, so
+    // this cannot pass against a corpus that stopped containing them
+    // (doctrine §4).
+    let keys = wait_for_two_fixture_symbols(cx, &search);
+    let opened: Vec<DocTabId> = cx.update(|cx| {
+        symbols.update(cx, |store, cx| {
+            keys.iter()
+                .map(|key| store.open(key.clone(), OpenDisposition::Background, cx))
+                .collect()
+        })
+    });
+    cx.run_until_parked();
+    assert_eq!(opened.len(), 2, "two distinct fixture symbols must open");
+
+    let before = cx.update(|cx| shell_of(cx).read(cx).open_documents(cx));
+    assert_eq!(
+        before, opened,
+        "precondition: the pane must be showing both documents in open order",
+    );
+
+    cx.update(WindowSession::dismiss);
+    cx.run_until_parked();
+    cx.update(WindowSession::show);
+    cx.run_until_parked();
+
+    let after = cx.update(|cx| shell_of(cx).read(cx).open_documents(cx));
+    assert_eq!(
+        after, before,
+        "a restored window must come back with the same documents in the same \
+         order, not as an empty shell over a store that still holds them",
+    );
+
+    drop(engine);
+}
+
+/// The live window's `Shell`.
+fn shell_of(cx: &mut App) -> Entity<Shell> {
+    let handle = cx.windows().first().copied().expect("a live window");
+    handle
+        .downcast::<Shell>()
+        .expect("the session builds exactly one kind of window")
+        .root(cx)
+        .expect("the window's root view")
+}
+
+/// Two distinct symbol keys that really exist in the fixture corpus.
+///
+/// # Why the retry is coarse
+///
+/// The corpus seeds on the engine's own Tokio threads, so a query issued in the
+/// first few milliseconds legitimately finds nothing and the store does not
+/// re-issue it. The query therefore has to be repeated — but `set_input`
+/// *restarts the debounce and supersedes the in-flight generation*, so a tight
+/// retry loop cancels every query with the next one and finds nothing forever.
+/// The first draft of this helper did exactly that and passed only by luck.
+///
+/// So: re-issue at most once per full round-trip window, and inside that window
+/// move both clocks (AGENTS-DOCTRINE, "Two clocks have to move") — the
+/// simulated one to fire the 24 ms debounce, and real time to let the engine's
+/// threads actually answer.
+fn wait_for_two_fixture_symbols(
+    cx: &mut TestAppContext,
+    search: &Entity<SearchStore>,
+) -> Vec<SymbolKey> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        cx.update(|cx| {
+            search.update(cx, |store, cx| store.set_input("Point".into(), cx));
+        });
+
+        for _ in 0..20 {
+            cx.run_until_parked();
+            cx.executor().advance_clock(Duration::from_millis(30));
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        cx.run_until_parked();
+
+        let mut distinct: Vec<SymbolKey> = Vec::new();
+        cx.update(|cx| {
+            for section in search.read(cx).snapshot().sections.iter() {
+                for row in section.rows.iter() {
+                    if !distinct.contains(&row.key) {
+                        distinct.push(row.key.clone());
+                    }
+                }
+            }
+        });
+        if distinct.len() >= 2 {
+            distinct.truncate(2);
+            return distinct;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the fixture corpus must offer at least two distinct symbols for \
+             `Point`; found {}",
+            distinct.len(),
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

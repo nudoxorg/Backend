@@ -1429,6 +1429,93 @@ pub struct QueryRow {
 // Error type  (§L7.4)
 // ---------------------------------------------------------------------------
 
+/// The disambiguator tier that minted a `SymbolKey`'s `IntroId`.
+///
+/// Mirrors `Symbol.keyTier` in `schema.graphql` field-for-field (same three
+/// names) so an agent that has already learned this vocabulary from a
+/// `graph_query` result recognises it here rather than parsing a fourth
+/// spelling. `Unrecorded` has no variant here — see [`KeyStaleness::tier`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "PascalCase")]
+pub enum KeyTierName {
+    /// Minted from the declaration's own content. The common case.
+    Structural,
+    /// Minted from byte offsets; an unrelated edit above the declaration
+    /// moves it.
+    Span,
+    /// Minted from the declaration's index among colliding siblings; a
+    /// producer reordering its output moves it.
+    Ordinal,
+}
+
+impl From<nudox_ir::package::KeyTier> for KeyTierName {
+    fn from(tier: nudox_ir::package::KeyTier) -> Self {
+        match tier {
+            nudox_ir::package::KeyTier::Structural => Self::Structural,
+            nudox_ir::package::KeyTier::Span => Self::Span,
+            nudox_ir::package::KeyTier::Ordinal => Self::Ordinal,
+        }
+    }
+}
+
+impl fmt::Display for KeyTierName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Structural => f.write_str("Structural"),
+            Self::Span => f.write_str("Span"),
+            Self::Ordinal => f.write_str("Ordinal"),
+        }
+    }
+}
+
+/// Evidence that a [`SymbolKey`] which failed to resolve in the *current*
+/// generation is not necessarily deleted — it resolved in some other loaded
+/// generation of the same lineage.
+///
+/// # The defect this closes
+///
+/// A key that stops resolving after `select_version` was previously
+/// indistinguishable from a deleted symbol: [`EngineError::SymbolNotFound`]
+/// carried no fields at all. `graph_query` could already answer "how fragile
+/// is this key" via `Symbol.keyTier` *while the key still resolved*, but by
+/// the time a lookup actually failed there was no vertex left to ask. This
+/// type is the same answer, reached the only way still possible after the
+/// fact: by checking whether the key resolves under a *different* loaded
+/// generation of the same package and reporting the tier it was minted at
+/// there.
+#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+pub struct KeyStaleness {
+    /// A loaded generation (not necessarily the current one) of the same
+    /// package lineage in which this exact key *does* resolve. Pass this to
+    /// `select_version` to see it, or to `diff_versions` alongside the
+    /// current version to see what it became.
+    pub seen_in_version: SharedStr,
+    /// The disambiguator tier that minted the key in `seen_in_version`, or
+    /// `None` when that generation carries no seal report (`Unrecorded` —
+    /// see `KeyProvenance`). `Some(KeyTierName::Structural)` here is still
+    /// informative: it means the key is not supposed to move, so its absence
+    /// from the current generation is more likely a real deletion or rename
+    /// than a disambiguator collision — `diff_versions` is the next call to
+    /// make either way.
+    pub tier: Option<KeyTierName>,
+}
+
+/// A `(line, column)` position inside a `graph_query` query string, both
+/// 1-based to match every editor's own numbering.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct QueryErrorPosition {
+    /// 1-based line number.
+    pub line: u64,
+    /// 1-based column number.
+    pub column: u64,
+}
+
+impl fmt::Display for QueryErrorPosition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.line, self.column)
+    }
+}
+
 /// Engine-level errors that reach the GUI so `ErrorState` can branch on them
 /// (LD-16).
 ///
@@ -1453,15 +1540,50 @@ pub enum EngineError {
         #[serde(serialize_with = "serialize_lineage_id")]
         #[schemars(with = "String")]
         package: PackageLineageId,
+        /// `Some(reason)` when a load for this exact lineage was attempted
+        /// and failed — distinguishing "we tried and it broke" from "we
+        /// never saw this name at all". `None` covers both "never
+        /// requested" and "does not exist"; the engine has no external
+        /// registry to tell those two apart, so it does not pretend to.
+        /// Call `list_packages` either way to see what *is* loaded.
+        attempted: Option<SharedStr>,
     },
 
     #[error("symbol not found")]
-    SymbolNotFound,
+    SymbolNotFound {
+        /// Set when this key resolves under a different loaded generation
+        /// of the same package — see [`KeyStaleness`]. `None` means either
+        /// the key never existed, the package has only one generation
+        /// loaded, or no other loaded generation has ever seen it either.
+        possibly_stale: Option<KeyStaleness>,
+    },
 
     #[error("chunker error: {message}")]
     Chunk {
         /// The underlying error message from the chunker.
         message: String,
+    },
+
+    /// The Trustfall query text failed to parse, failed schema validation, or
+    /// failed while executing (a malformed `$variable` binding, an edge
+    /// parameter of the wrong type, etc).
+    ///
+    /// Distinct from [`Self::Chunk`]: a graph query is caller-supplied text
+    /// that can be syntactically or semantically wrong, and calling that a
+    /// "chunker error" (the previous behaviour — every query-plane failure
+    /// was reported through `Chunk`, whose own message names an entirely
+    /// different subsystem, the doc-page renderer) sent an agent looking at
+    /// the wrong half of the codebase for something it did not break.
+    #[error("graph query failed: {message}")]
+    GraphQueryFailed {
+        /// The parser/validator/executor's own message.
+        message: String,
+        /// Where in `query` the problem was found, when the underlying
+        /// parser reported one. Most syntax errors do; schema-validation
+        /// errors (an unknown field name, an incompatible filter) and
+        /// execution-time errors (a resolver rejecting `$variable`'s value)
+        /// do not, because by then there is no single token to blame.
+        position: Option<QueryErrorPosition>,
     },
 
     #[error("stream cancelled")]
@@ -1550,6 +1672,29 @@ pub enum SearchEvent {
         generation: Gen,
         section: SearchSectionId,
         elapsed: Duration,
+    },
+    /// What one section's rows *mean* — complete, partial, or not run at all.
+    ///
+    /// # Why an empty `Section` was not enough
+    ///
+    /// `Section { rows: [] }` is a claim: it says "we searched and found
+    /// nothing". For the semantic section that claim was false in two distinct
+    /// ways — the index may still be building over the corpus, or there may be
+    /// no embedder in this build at all — and a consumer had no way to tell
+    /// either from a genuine zero-hit answer. The GUI's `SectionStatus` flips
+    /// to `Ready` on any `Section` event, so this was not a rendering bug to be
+    /// fixed above the wire; the information was simply absent from it.
+    ///
+    /// Emitted **before** the section's `Section` event, so a consumer that
+    /// renders on first paint already knows how to caption the rows it is about
+    /// to receive. Sent for every section on every query, including
+    /// [`SectionState::Complete`] for the local ones — a state that is only
+    /// sent when it is interesting is a state a consumer has to infer the
+    /// absence of.
+    SectionState {
+        generation: Gen,
+        section: SearchSectionId,
+        state: crate::semantic::SectionState,
     },
     /// Terminal — all sections are complete.
     Done { generation: Gen },

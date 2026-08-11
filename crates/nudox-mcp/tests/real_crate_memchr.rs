@@ -72,7 +72,7 @@ use std::time::Duration;
 use nudox_engine::{
     Engine, EngineConfig, EngineHandle, PackageLoadEvent, PackageSpec, ProducerLanguage, SharedStr,
 };
-use nudox_mcp::{McpEndpoint, NudoxMcpServer, SessionToken};
+use nudox_mcp::{AccountGate, McpEndpoint, NudoxMcpServer, SessionToken};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -319,7 +319,9 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
                 let token = SessionToken::generate();
                 let secret = token.expose().to_owned();
                 let endpoint =
-                    McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone()), token)
+                    McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone(), AccountGate::unmetered(
+                            "real-crate transport test: this file measures the corpus, not billing",
+                        )), token)
                         .await
                         .expect("endpoint must bind loopback");
                 let addr = endpoint.addr();

@@ -625,6 +625,29 @@ pub enum SectionStatus {
     /// The backend is unreachable; this section is replaced by a `trust.stale`
     /// notice rather than an error (§15 offline state).
     Offline,
+    /// Rows delivered, but over **part** of the resident corpus.
+    ///
+    /// Distinct from `Loading` on purpose, and the distinction is the reason
+    /// this variant exists. `Loading` means *these rows are not here yet* — the
+    /// right rendering is a shimmer where they will appear. This means *these
+    /// rows are here and they are the whole truth about `covered` of `total`
+    /// packages* — the right rendering is the rows themselves, plus a caption
+    /// saying what they are a ranking over. Showing a shimmer for this would
+    /// hide real answers the reader can already use; showing nothing at all
+    /// would be the worse half of the same mistake.
+    ///
+    /// A package indexed later can outrank everything currently shown, which is
+    /// why the caption carries counts rather than a spinner: "3 of 20 packages"
+    /// is a caveat a reader can weigh.
+    Building { covered: u32, total: u32 },
+    /// This build cannot answer this section at all.
+    ///
+    /// Not an error and not a zero-hit result. The semantic section reports it
+    /// when no embedding model is installed — which is every build in this
+    /// repository today (`AGENTS-DOCTRINE.md` §1, capability ports). Rendering
+    /// it as "no results" would be a claim about the corpus that the engine is
+    /// in no position to make.
+    Unavailable,
 }
 
 /// One section's render-ready state.

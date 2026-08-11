@@ -72,6 +72,43 @@ pub struct SpaceTokens {
     /// 2 px — focus ring only (§10.3 `ring`)
     pub focus_ring_width: Pixels,
 
+    /// 2 px — the text insertion caret.
+    ///
+    /// # Why this is not `border_width`
+    ///
+    /// Because it was. The search field drew its caret with `border_width`,
+    /// which is a defensible-looking reuse and a wrong one: a hairline is the
+    /// thinnest mark the design admits *as a boundary*, and a caret is not a
+    /// boundary — it is a glyph-scale indicator that has to survive being
+    /// scanned for. At 1 px on a 2× display an accent-coloured caret next to
+    /// 15 px text reads as a rendering artefact. Naming it separately is also
+    /// what lets it change without every hairline in the app changing with it.
+    pub caret_width: Pixels,
+
+    /// 8 px — one level of tree indentation.
+    ///
+    /// Taken from GitHub Primer's TreeView, which computes its spacer as
+    /// `(level - 1) * (toggle_width / 2)` with a 16 px toggle — 8 px per level
+    /// exactly (`primer/react` `TreeView.module.css`). Chosen over zed's 20 px
+    /// `indent_size` default because this app's deepest tree is three levels
+    /// and a 20 px step spends 60 px of a 200 px rail on indentation alone.
+    ///
+    /// The References table previously indented its rows by `space_5` (20 px)
+    /// while its own group headers sat *outdented* from the section above them,
+    /// so depth ran backwards. A named step is what makes depth arithmetic
+    /// instead of judgement.
+    pub indent: Pixels,
+
+    /// 28 px — the height of a dense list row's hit target.
+    ///
+    /// Primer's TreeView uses a 32 px minimum on pointer devices and 44 px on
+    /// coarse pointers; Primer's own `control.medium` is 32 px and
+    /// `control.small` 28 px. This app is pointer-only, desktop, and its rows
+    /// carry 12 px `dense` text, so it sits on the small control size rather
+    /// than the medium one. Below ~28 px the pointer starts missing rows in a
+    /// long list, which is the number this token exists to stop drifting under.
+    pub row_min_hit: Pixels,
+
     /// 640 px — the **measure**: the widest a run of prose is allowed to get.
     ///
     /// This is a typographic constraint, not a layout preference. A line of
@@ -138,6 +175,9 @@ impl SpaceTokens {
 
         border_width: px(1.0),
         focus_ring_width: px(2.0),
+        caret_width: px(2.0),
+        indent: px(8.0),
+        row_min_hit: px(28.0),
 
         measure: px(640.0),
 
@@ -286,11 +326,21 @@ impl TypeScale {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColourRoles {
     // ── Background surfaces ──────────────────────────────────────────────────
+    /// Below the page: the inside of a well, the body of the bottom dock.
+    ///
+    /// Added with the palette restructure. Before it, surfaces that wanted to
+    /// read as *recessed* had nothing to ask for and used `bg_raised`, which is
+    /// why the bottom dock and the project panel — one sunken, one raised —
+    /// rendered on the same plane.
+    pub bg_sunken: Hsla,
     /// Base window / content background.
     pub bg_base: Hsla,
     /// One-level-raised surface (cards, sidebars at rest).
     pub bg_raised: Hsla,
-    /// Overlay scrim / dialog / popover background.
+    /// Dialog / popover / overlay-panel background.
+    ///
+    /// **Opaque.** See [`crate::theme::palette::SurfaceSpec::overlay`] for why
+    /// this is a contract and not a preference.
     pub bg_overlay: Hsla,
     /// Row / cell hover tint (+4 % lightness from bg_base in light; −4 % in dark).
     pub bg_hover: Hsla,
@@ -306,13 +356,41 @@ pub struct ColourRoles {
     pub fg_faint: Hsla,
 
     // ── Interactive / accent ─────────────────────────────────────────────────
-    /// Interactive colour — links, active tabs underline, focus ring fill.
+    /// Interactive colour as a **fill** — a pressed chip, an active tab's
+    /// underline, a filled button.
     pub accent: Hsla,
+    /// [`ColourRoles::accent`] under the pointer.
+    pub accent_hover: Hsla,
+    /// Interactive colour as **text** — a link inside a paragraph.
+    ///
+    /// Not the same value as [`ColourRoles::accent`], and the difference is the
+    /// point: a solid step is tuned to be a background, and using a background
+    /// colour as body text is the standard way a link ends up at 3:1 on the
+    /// page. Views that were writing `accent` on text should read this.
+    pub accent_text: Hsla,
+    /// The tinted surface behind something chosen: a selected row, an active
+    /// mode chip, a live drop target.
+    ///
+    /// An opaque ramp step rather than `accent.opacity(0.15)`. Alpha over an
+    /// unknown backdrop composites to an unknown colour, which is how a
+    /// selection wash that looked right on the page turned muddy inside a
+    /// raised card.
+    pub accent_wash: Hsla,
+    /// [`ColourRoles::accent_wash`] under the pointer.
+    pub accent_wash_hover: Hsla,
     /// Text colour on an `accent`-filled surface (button label, etc.).
     pub accent_fg_on: Hsla,
 
     // ── Borders ──────────────────────────────────────────────────────────────
-    /// Default 1 px separator / outline.
+    /// A separator the reader should not notice: the rule between two rows of
+    /// one table, the hairline under a section header.
+    ///
+    /// Distinct from [`ColourRoles::border_default`], which is the visible edge
+    /// of a component. Both existed in the design; only one had a name, so
+    /// every in-table rule was drawn with the component-edge colour and dense
+    /// tables read as grids.
+    pub border_subtle: Hsla,
+    /// The visible edge of a component: a card, an input, a popover.
     pub border_default: Hsla,
     /// Stronger border for emphasis (selected row, active input).
     pub border_strong: Hsla,
@@ -336,6 +414,107 @@ pub struct ColourRoles {
     pub info: Hsla,
     /// Info foreground.
     pub info_fg: Hsla,
+
+    // ── Scrim ─────────────────────────────────────────────────────────────────
+    /// The dimming layer painted between a modal and the window behind it.
+    ///
+    /// This is the role that did not exist, so `workspace/shell.rs` wrote
+    /// `gpui::black().opacity(…)` — the last raw colour constructor in any
+    /// view, and the reason the light theme dimmed as hard as the dark one when
+    /// a light page needs a gentler veil to stay readable underneath.
+    pub scrim: Hsla,
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// §10.3 (tail)  Alpha
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The transparency ladder.
+///
+/// # Why this exists
+///
+/// A sweep of `workspace/gui/src` found colour literals almost entirely absent
+/// outside the theme — real discipline — and **fifty-one** numeric
+/// `.opacity(N)` call sites inside views, spanning sixteen distinct values
+/// between 0.08 and 0.85, plus seven per-file `const`s each re-inventing a
+/// private alpha scale (`SHIMMER_SHED_OPACITY`, `SELECTION_FILL_ALPHA`,
+/// `PATH_OPACITY`, `PACKAGE_OPACITY`, `SCRIM_ALPHA`, `BREATHE_MIN`,
+/// `BREATHE_MAX`).
+///
+/// That is not a discipline failure by the view authors. It is the scale
+/// reporting a gap: the design system named every colour and no
+/// transparency, so a view that needed "the same colour, quieter" had nowhere
+/// to get the number from and had to invent one. Sixteen invented values is
+/// what "nowhere else to get a number from" looks like when the *from* is
+/// missing.
+///
+/// # Why these six rungs
+///
+/// Each rung is roughly a doubling, because that is the smallest step at which
+/// two tints are reliably told apart on the same surface; anything finer is
+/// two names for one appearance. The sixteen observed values collapse onto
+/// these six with a maximum error of 0.06, which is below the just-noticeable
+/// difference for a tint over a mid surface — i.e. nothing in the app looks
+/// different for having been put on the ladder, which is the outcome you want
+/// from a consolidation.
+///
+/// # Prefer a step to an alpha
+///
+/// Where the backdrop is known — a selected row on the page, a chip on a panel
+/// — the better answer is an opaque ramp step ([`ColourRoles::accent_wash`]),
+/// not a translucent fill. Alpha composites against whatever happens to be
+/// behind, so the same expression yields a different colour in a card than on
+/// the page; a step yields the colour it names. Reach for this ladder when the
+/// backdrop genuinely is unknown, or when the *thing being faded* is the point
+/// (a shimmer, a disabled control, a scrim).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlphaTokens {
+    /// 0.06 — visible only as a change of surface: zebra striping, the resting
+    /// fill of an inactive control, a dark theme's vestigial shadow.
+    pub hairline: f32,
+    /// 0.12 — reads as a tint: a hover wash over unknown content.
+    pub wash: f32,
+    /// 0.22 — reads as a colour: an emphasis fill, a live drop target.
+    pub tint: f32,
+    /// 0.38 — a translucent element that must stay legible over anything:
+    /// hatching, a rule over media, a focus ring's halo.
+    pub veil: f32,
+    /// 0.55 — half-present: a shimmer at rest, a de-emphasised glyph.
+    pub half: f32,
+    /// 0.72 — quiet but fully readable text: a hint, a secondary label that
+    /// must not compete with the row it annotates.
+    pub dim: f32,
+
+    /// 0.42 — the modal scrim in a **light** appearance.
+    ///
+    /// Off the ladder deliberately. Every other rung is a ratio chosen so two
+    /// tints differ; a scrim is chosen by looking at a photograph of the app
+    /// and asking whether the page behind is legible-but-clearly-inactive.
+    /// That is a different kind of decision and pretending it is a rung would
+    /// invite someone to "tidy" it onto one.
+    pub scrim: f32,
+    /// 0.62 — the modal scrim in a **dark** appearance.
+    ///
+    /// Heavier than the light one, because a dark scrim over a dark page has
+    /// less contrast to work with and a 0.42 veil over near-black is nearly
+    /// invisible — the overlay then appears to float over a live UI rather than
+    /// over a suspended one.
+    pub scrim_dark: f32,
+}
+
+impl AlphaTokens {
+    /// The single canonical ladder — same in every theme, because it describes
+    /// how much of a thing is present, not what colour the thing is.
+    pub const STANDARD: AlphaTokens = AlphaTokens {
+        hairline: 0.06,
+        wash: 0.12,
+        tint: 0.22,
+        veil: 0.38,
+        half: 0.55,
+        dim: 0.72,
+        scrim: 0.42,
+        scrim_dark: 0.62,
+    };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -353,6 +532,10 @@ pub struct TrustStyle {
     pub colour: Hsla,
     /// Foreground (label text) on a surface filled with `colour`.
     pub fg_on: Hsla,
+    /// The quiet version: a tinted surface in this trust level's hue, for
+    /// banners and row backgrounds that must carry provenance without being as
+    /// loud as a badge. An opaque ramp step, not `colour.opacity(…)`.
+    pub wash: Hsla,
     /// The Unicode glyph for the badge icon (hexagon family).
     /// `⬢` = filled hex (local/synced), `⬡` = outline hex (remote/stale).
     pub badge_glyph: char,
@@ -397,9 +580,24 @@ pub struct TrustTokens {
 pub struct ElevLevel {
     /// The GPUI box-shadow values for this level.
     pub shadows: Vec<BoxShadow>,
-    /// Extra border colour applied in dark mode (transparent in light mode).
-    /// Views should apply this as a `border_color` whenever `Theme::is_dark()`.
-    pub dark_border: Hsla,
+    /// The border that goes with this elevation.
+    ///
+    /// # Renamed from `dark_border`, and why that mattered
+    ///
+    /// It used to be `dark_border`, documented as "extra border colour applied
+    /// in dark mode (transparent in light mode). Views should apply this as a
+    /// `border_color` whenever `Theme::is_dark()`." That name pushed a
+    /// *conditional* into every call site: a view had to know the appearance,
+    /// ask whether it was dark, and decide. Views got it wrong by omission —
+    /// several applied it unconditionally, which in a light theme drew a fully
+    /// transparent border and therefore no border at all, so light-theme
+    /// popovers had shadows and no edge.
+    ///
+    /// Now every level always has a real border and the appearance decides its
+    /// *strength* inside [`crate::theme::resolve`], not its existence. A view
+    /// applies `border_color(level.border)` unconditionally and cannot be
+    /// wrong.
+    pub border: Hsla,
 }
 
 /// The three elevation levels from GUI-PLAN §10.5.

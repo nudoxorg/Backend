@@ -1010,12 +1010,27 @@ impl<E: SymbolEngine> SymbolPage<E> {
             .py(sp.space_2)
             .bg(colours.bg_raised)
             .border_t_1()
-            .border_color(colours.border_default)
+            // `border_subtle`, not `border_default`. This rule separates two
+            // sections of one page; `border_default` is the role for the
+            // *outline of a component*, and using it here drew the page as a
+            // stack of boxes. The distinction did not exist as a token before
+            // the palette restructure, so every rule in the app was drawn at
+            // component-edge strength.
+            .border_color(colours.border_subtle)
             .cursor_pointer()
             .hover(|s| s.bg(colours.bg_hover))
             .on_click(cx.listener(move |page, _, window, cx| on_toggle(page, window, cx)))
             // Chevron: ▼ expanded, ▶ collapsed. Both are the same width so the
             // label never shifts position when the section is toggled.
+            //
+            // Apple's HIG says a disclosure triangle "points inward from the
+            // leading edge when its content is hidden and down when its content
+            // is visible", and describes the triangle itself as the control.
+            // The whole header row is the hit target here instead, which is a
+            // deliberate divergence: zed's project panel and Primer's TreeView
+            // both make the row clickable, the row is ~40× the area of the
+            // glyph, and a 12 px triangle is a Fitts's-law tax on an action
+            // readers perform constantly.
             .child(
                 Icon::new(if expanded {
                     IconName::ChevronDown
@@ -1025,11 +1040,40 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 .text_color(colours.fg_faint)
                 .with_size(gpui_component::Size::XSmall),
             )
+            // The section landmark accent.
+            //
+            // A `Fields` table inside the document body draws its heading with
+            // a leading kind-hue swatch and calls it "a landmark and not a
+            // caption". These headers are the same kind of object — a section
+            // of the page, a target of the outline rail — and drew themselves
+            // completely differently, which is the concrete form of "the
+            // collapsibles do not make much sense": the page carried two
+            // unrelated grammars for "section" and the reader had to learn
+            // which meant what.
+            //
+            // They now share one: a leading accent rule, then the label in
+            // `title`.
             .child(
                 div()
-                    .text_size(ts.ui.size)
-                    .line_height(ts.ui.line_height)
-                    .font_weight(gpui::FontWeight(ts.caption.weight as f32))
+                    .flex_shrink_0()
+                    .w(sp.focus_ring_width)
+                    .h(ts.title.line_height)
+                    .rounded(sp.focus_ring_width)
+                    .bg(colours.accent),
+            )
+            .child(
+                // `ts.title`, which is what `docs.rs::render_rows` already
+                // asserts these headers use — "the same token the disclosure
+                // headers use, because they are the same kind of thing". They
+                // did not: they were `ts.ui.size` at `ts.caption.weight`, two
+                // points smaller and a weight lighter than the body heading
+                // they were supposed to match. A comment describing behaviour
+                // is a claim, and this one had rotted (doctrine §8); the code
+                // is now what the comment says.
+                div()
+                    .text_size(ts.title.size)
+                    .line_height(ts.title.line_height)
+                    .font_weight(gpui::FontWeight(ts.title.weight as f32))
                     .text_color(colours.fg_default)
                     .child(label),
             )
@@ -1184,6 +1228,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// The slim retry bar shown when a refresh failed over readable content
     /// (LD-16: errors are states, not dialogs).
     fn render_error_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         if self.state != PageState::StaleError {
             return None;
         }
@@ -1208,9 +1255,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 // same left edge.
                 .px(sp.space_4)
                 .py(sp.space_1)
-                .bg(colours.danger.opacity(0.08))
+                .bg(colours.danger.opacity(al.hairline))
                 .border_t_1()
-                .border_color(colours.danger.opacity(0.3))
+                .border_color(colours.danger.opacity(al.tint))
                 .child(
                     div()
                         .flex_1()
@@ -1228,12 +1275,12 @@ impl<E: SymbolEngine> SymbolPage<E> {
                         .py(sp.space_1 / 2.0)
                         .rounded(sp.r_sm)
                         .border_1()
-                        .border_color(colours.danger.opacity(0.4))
+                        .border_color(colours.danger.opacity(al.veil))
                         .text_size(ts.caption.size)
                         .line_height(ts.caption.line_height)
                         .text_color(colours.danger)
                         .cursor_pointer()
-                        .hover(|s| s.bg(colours.danger.opacity(0.15)))
+                        .hover(|s| s.bg(colours.danger.opacity(al.wash)))
                         .on_click(cx.listener(|page, _, _window, cx| {
                             let tab = page.tab;
                             page.store.update(cx, |store, cx| store.reload(tab, cx));
@@ -1256,6 +1303,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// stub.  See the "Selecting a different version" note in the module docs for
     /// what needs to be added to complete the navigation.
     fn render_versions_strip(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         let rows = self.timeline_rows.as_ref()?;
         if rows.is_empty() {
             return None;
@@ -1299,12 +1349,12 @@ impl<E: SymbolEngine> SymbolPage<E> {
                         .rounded(sp.r_sm)
                         .border_1()
                         .border_color(if is_current {
-                            colours.accent.opacity(0.5)
+                            colours.accent.opacity(al.half)
                         } else {
                             colours.border_default
                         })
                         .bg(if is_current {
-                            colours.accent.opacity(0.08)
+                            colours.accent_wash
                         } else {
                             colours.bg_base
                         })
@@ -1346,6 +1396,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// `None` once `COPY_FEEDBACK_DURATION` has elapsed, so a stale
     /// confirmation never lingers on screen after the reader has moved on.
     fn render_copy_feedback(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         let fired_at = self.copied_at?;
         if fired_at.elapsed() >= COPY_FEEDBACK_DURATION {
             return None;
@@ -1362,9 +1415,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 .w_full()
                 .px(sp.space_4)
                 .py(sp.space_1 / 2.0)
-                .bg(colours.ok.opacity(0.08))
+                .bg(colours.ok.opacity(al.hairline))
                 .border_b_1()
-                .border_color(colours.ok.opacity(0.3))
+                .border_color(colours.ok.opacity(al.tint))
                 .text_size(ts.caption.size)
                 .line_height(ts.caption.line_height)
                 .text_color(colours.ok)
@@ -1658,6 +1711,9 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// header, the copy confirmation, the version strip, the scrolling body,
     /// and the retry bar are still direct siblings sharing the root's column.
     fn page_body(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         let colours = cx.theme_ext().colours;
         let stale = self.state.is_stale();
 
@@ -1994,7 +2050,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 // push the error bar off the bottom of the page.
                 .min_h(gpui::px(0.0))
                 .overflow_hidden()
-                .when(stale, |el| el.opacity(0.7))
+                .when(stale, |el| el.opacity(al.dim))
                 .child(column)
                 .when(has_outline, |el| el.child(outline))
                 .into_any_element(),

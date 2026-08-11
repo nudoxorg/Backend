@@ -821,19 +821,84 @@ mod baseline {
 /// (`workspace/compiler/languages/*/tests/corpus_sweep.rs`) each hardcode their
 /// own copy of the package list, which is the duplication this file is meant to
 /// end — folding them in is what should drive this number down.
-/// Lowered 131 → 109 on 2026-08-08, when nuget was measured for the first time.
+/// Lowered 131 → 44 on 2026-08-08. Every ecosystem now has recorded outcomes:
+/// nuget, go and cpp were measured for the first time, then npm and pypi
+/// followed. A row carrying a *recorded producer failure* is an outcome too, and
+/// so also retires debt — "we tried and it broke" and "nobody ever tried" are
+/// exactly the distinction this file exists to keep apart.
 ///
-/// All 22 nuget rows had read "not yet measured" since this mechanism was built,
-/// for a reason that was not measurement debt at all: the harness resolved
-/// fixtures under `.real-crates/` while every nuget checkout lives in
-/// `.real-csharp/`, so it found nothing and the producer reported
-/// `no .cs files found under .real-crates/…` — a diagnostic naming the wrong
-/// subject. Sixteen of the 22 now carry real counts (StackExchange.Redis 22,664;
-/// AutoMapper 22,384; Newtonsoft.Json 18,886); the other six carry a recorded
-/// producer failure, which is an outcome and so also retires the debt.
+/// Most of what remains is not debt at all: maven's `role = "dependency"`
+/// artifacts are fetched so other packages compile and are not themselves under
+/// test. They only stopped counting as debt once `role` became a typed manifest
+/// field earlier the same day; before that the distinction lived in a prose
+/// comment and nothing enforced it.
 ///
-/// go and cpp remain unmeasured — genuine debt, not a path bug.
-const UNMEASURED_CORPUS_VERSIONS: usize = 109;
+/// **None of the three was blocked by anything resembling measurement effort.**
+/// Each was an artifact that was present and unreachable, behind a diagnostic
+/// that named the wrong subject:
+///
+/// * **nuget** — the harness resolved `.real-crates/` while all 24 checkouts
+///   live in `.real-csharp/`. It reported `no .cs files found under
+///   .real-crates/…`, which reads as a provisioning failure. 16 of 22 lower
+///   (StackExchange.Redis 22,664; AutoMapper 22,384); the other 6 fail with
+///   `declared more than once` — a real C# `member_id` collision, and the first
+///   hard consequence of the identity work rather than an abstract statistic.
+/// * **go** — `oracle spawn failed: No such file or directory`, while a 7 MB
+///   `nudox-go-oracle` built on 2026-08-05 sat in the tree. It resolves through
+///   `NUDOX_GO_ORACLE_BIN` or `PATH`, and neither was set. 22/22 lower
+///   (go-redis 61,503; x/text 12,631).
+/// * **cpp** — needed only `LIBCLANG_PATH`, already set by the devshell.
+///   21/21 lower (zstd 13,696; fmt 7,485).
+///
+/// The go diagnostic is worth remembering: it only became readable earlier the
+/// same day, when `source/producer.rs::chain` was extended to every
+/// `ProducerError` variant. Before that it rendered as a bare "oracle failed"
+/// with no `No such file or directory` at all. Fixing error plumbing paid for
+/// itself within the hour by making the next bug self-diagnosing.
+///
+/// Lowered 44 → 0 on 2026-08-10. The two ecosystems this comment previously
+/// named as "real debt" — maven's 22 representative versions and pypi's 22 —
+/// are both now recorded outcomes; npm had already been retired by the time
+/// this comment was last touched, so the "pypi and npm" text above was stale
+/// by one ecosystem.
+///
+/// * **maven** — 16/22 lower (`jackson-databind` 2.16.1 27,400;
+///   `com.h2database:h2` 38,150). The other 6 are *recorded producer
+///   failures*, each a real `javadoc` compile error against the sourcepath
+///   this corpus provisions, not a harness defect: `retrofit` and
+///   `httpclient5`/`kafka-clients` need Maven artifacts this corpus does not
+///   carry (`kotlin`, `okhttp3`, a newer `jackson-databind` transitively, a
+///   JPMS-exported `sun.security.x509`); `vavr` 0.10.4 uses `yield` as a
+///   plain identifier, which is a restricted identifier under the JDK 21
+///   toolchain this producer runs on; `lombok` 1.18.30 declares an
+///   `@interface var`, and `var` is a restricted type name as of JDK 10;
+///   `assertj-core` needs `org.junit.jupiter.api.extension`, not on this
+///   sourcepath. All six are genuine "we tried and it broke" outcomes, not
+///   provisioning gaps — see each row's `producer_error` in
+///   `corpus/entry-baseline.toml` for the exact `javadoc` diagnostic.
+/// * **pypi** — 22/22 lower, but only once `nudox-store`'s own `pyrefly`
+///   Cargo feature is passed to the measurement binary
+///   (`cargo test -p nudox-store --features fixtures,pyrefly …`). Without it,
+///   `ProducerRegistry::with_all_available` does not register `Language::Python`
+///   at all (L33) and every pypi package records `producer_error = "toolchain
+///   missing for python"` instead — which is what a first pass at this
+///   ecosystem produced and is *not* what stayed in the file. Recording that
+///   result would have been honest but low-value: 22 byte-identical rows that
+///   prove only that a flag was left off, not that the packages were
+///   measured. `nudox-producer-python` has defaulted its own `pyrefly`
+///   feature on since 2026-08-09 (see that crate's `Cargo.toml`), and L43's
+///   blocking `blake3` conflict was independently re-verified resolved here:
+///   `cargo check -p nudox-store --features fixtures,pyrefly --tests` is
+///   clean. **What this does NOT change**: neither `nudox-engine` nor
+///   `workspace/gui` forwards a `pyrefly` feature to `nudox-store` today, so
+///   the shipping `lindsey` binary still cannot document a single Python
+///   package — L33's "Python registers a producer that cannot produce" is
+///   unresolved in the product, only in this measurement. Wiring that
+///   forward is a separate, undone change outside this file's scope.
+///
+/// Debt is now zero: every representative version in `corpus/manifest.toml`
+/// has a recorded `entries` or `producer_error` row.
+const UNMEASURED_CORPUS_VERSIONS: usize = 0;
 
 /// Every package version in `corpus/manifest.toml` must have a row in
 /// `corpus/entry-baseline.toml`, and vice versa.

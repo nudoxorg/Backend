@@ -2,7 +2,15 @@
 //!
 //! # Oracle strategy (two modes)
 //!
-//! **Without `pyrefly` feature (default):** `invoke` calls
+//! **With `pyrefly` feature (default since 2026-08-09):** `invoke` calls
+//! [`crate::context::invoke_oracle`], which runs the same syntactic walk for
+//! structure and then loads every discovered module into a pyrefly `State`,
+//! commits one transaction so imports resolve across files, and fills the
+//! type slots the syntactic tier left unresolvable. The `State` is dropped
+//! before `invoke` returns, so no pyrefly lifetime escapes into the owned
+//! `PythonOracle` — the same discipline `oracle.rs` documents.
+//!
+//! **Without `pyrefly` feature (`--no-default-features`):** `invoke` calls
 //! [`crate::syntax::build_oracle`], which walks every `.py` file under the
 //! package root, parses each with `ruff_python_parser` in-process, and
 //! extracts a real `PythonOracle` from the syntax tree — see `syntax.rs` for
@@ -11,14 +19,6 @@
 //! run that ends with only the synthesized root is now a genuine failure,
 //! not a documented degradation, exactly like every other producer on this
 //! program.
-//!
-//! **With `pyrefly` feature:** `invoke` calls [`crate::context::invoke_oracle`],
-//! which runs the same syntactic walk for structure and then loads every
-//! discovered module into a pyrefly `State`, commits one transaction so imports
-//! resolve across files, and fills the type slots the syntactic tier left
-//! unresolvable. The `State` is dropped before `invoke` returns, so no pyrefly
-//! lifetime escapes into the owned `PythonOracle` — the same discipline
-//! `oracle.rs` documents.
 //!
 //! Both modes therefore produce declarations, and both are held to the same
 //! `YieldContract::Declarations`. The tests below deliberately carry no

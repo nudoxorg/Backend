@@ -1,0 +1,28 @@
+{
+  "key": "slate-contrast",
+  "name": "Slate High Contrast",
+  "blurb": "Pure grey, deeper page, brighter signals — for glare and for low vision.",
+  "appearance": "dark",
+
+  "neutral": { "hue": 220, "chroma": 0.02, "kind": "neutral" },
+  "accent":  { "hue": 195, "chroma": 0.95, "solid": 0.74 },
+  "ok":      { "hue": 140, "chroma": 0.85, "solid": 0.62 },
+  "warn":    { "hue":  44, "chroma": 1.00, "solid": 0.68 },
+  "danger":  { "hue":   4, "chroma": 0.95, "solid": 0.66 },
+  "info":    { "hue": 205, "chroma": 0.95, "solid": 0.68 },
+
+  "trust": [
+    { "hue": 140, "chroma": 0.85, "solid": 0.60 },
+    { "hue": 200, "chroma": 0.92, "solid": 0.66 },
+    { "hue":  44, "chroma": 1.00, "solid": 0.68 },
+    { "hue": 220, "chroma": 0.04, "solid": 0.56 }
+  ],
+
+  "kinds": {
+    "hues": [192, 206, 220, 158, 48, 276, 290, 26, 14, 318, 338, 168, 238],
+    "chroma": 0.92,
+    "lightness": 0.70
+  },
+
+  "surfaces": { "sunken": 0.000, "base": 0.025, "raised": 0.080, "overlay": 0.135 }
+}

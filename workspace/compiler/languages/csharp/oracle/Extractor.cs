@@ -28,6 +28,158 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
     private readonly TypeSigWriter _types = new();
 
     /// <summary>
+    /// Per-file UTF-16-code-unit → UTF-8-byte cumulative offset table, built
+    /// once per <see cref="SyntaxTree"/> and reused for every symbol declared
+    /// in it.
+    /// </summary>
+    /// <remarks>
+    /// Roslyn's <see cref="TextSpan"/> counts UTF-16 code units — a .NET
+    /// <c>string</c>'s native unit — but <c>nudox_ir::entry::Symbol::span</c>
+    /// is documented as a byte range, matching every other producer in this
+    /// workspace (rust-analyzer's own <c>TextSize</c> is UTF-8 bytes). The two
+    /// units are identical only while every character so far in the file is
+    /// ASCII; a single non-ASCII character anywhere earlier in the file — an
+    /// author's name in a copyright header, a curly quote in a doc comment —
+    /// silently shifts every later offset if the units are conflated. Building
+    /// this table once per file, rather than re-walking from offset 0 for
+    /// every symbol, keeps that correctness free: a file with N declarations
+    /// pays for the conversion once, not N times.
+    /// </remarks>
+    private readonly Dictionary<SyntaxTree, int[]> _byteOffsets = new();
+
+    /// <summary>The UTF-8 byte offset of UTF-16 code-unit position <paramref name="utf16Position"/> in <paramref name="tree"/>.</summary>
+    private int ByteOffset(SyntaxTree tree, int utf16Position)
+    {
+        if (!_byteOffsets.TryGetValue(tree, out var offsets))
+        {
+            offsets = BuildByteOffsets(tree);
+            _byteOffsets[tree] = offsets;
+        }
+
+        // Roslyn spans are always end-exclusive and code-point-aligned in
+        // practice, but a defensive clamp is cheap insurance against ever
+        // indexing past the table on a boundary this extractor did not
+        // anticipate.
+        return offsets[Math.Clamp(utf16Position, 0, offsets.Length - 1)];
+    }
+
+    /// <summary>Builds the cumulative-byte-offset table described on <see cref="_byteOffsets"/>.</summary>
+    /// <remarks>
+    /// Starts counting from <see cref="BomLength"/>, not zero. <see
+    /// cref="SourceLoader"/> reads every file with <c>File.ReadAllText</c>,
+    /// which strips a leading UTF-8 byte-order mark before Roslyn ever sees
+    /// the text — so position 0 in <c>tree.GetText()</c> is *not* byte 0 of
+    /// the file on disk when the file has one. `nudox_ir::entry::Symbol::span`
+    /// is a byte range into `Symbol::source`, and any real consumer (this
+    /// extractor's own tests included) opens that path and slices its raw
+    /// bytes — the ones still carrying the BOM. Omitting this correction was
+    /// caught by exactly that kind of check: a real NLog source file
+    /// (`Annotations.cs`, which starts with a UTF-8 BOM) sliced three bytes
+    /// short of the identifier its own location claimed.
+    /// </remarks>
+    private static int[] BuildByteOffsets(SyntaxTree tree)
+    {
+        var text = tree.GetText().ToString();
+
+        // One extra slot: offsets[text.Length] is the file's total UTF-8
+        // byte count, needed for a span whose end is end-of-file.
+        var offsets = new int[text.Length + 1];
+        var byteCount = BomLength(tree.FilePath);
+        var i = 0;
+
+        while (i < text.Length)
+        {
+            offsets[i] = byteCount;
+            var c = text[i];
+
+            if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+            {
+                // One codepoint spread across two UTF-16 code units; both
+                // units map to the byte offset *before* the codepoint, since
+                // Roslyn never legitimately splits a span between them.
+                offsets[i + 1] = byteCount;
+                byteCount += System.Text.Rune.GetRuneAt(text, i).Utf8SequenceLength;
+                i += 2;
+            }
+            else if (char.IsSurrogate(c))
+            {
+                // An unpaired surrogate is not valid UTF-16, but source text
+                // is attacker-adjacent (it is a third party's package); it
+                // must degrade, not throw. .NET's own UTF-8 encoder replaces
+                // it with U+FFFD, which is 3 bytes.
+                byteCount += 3;
+                i += 1;
+            }
+            else
+            {
+                byteCount += new System.Text.Rune(c).Utf8SequenceLength;
+                i += 1;
+            }
+        }
+
+        offsets[text.Length] = byteCount;
+        return offsets;
+    }
+
+    /// <summary>The byte length of a leading UTF-8 BOM on <paramref name="path"/>, or 0.</summary>
+    /// <remarks>
+    /// Reads only the first three bytes, not the whole file again — this
+    /// class already paid for one full read via <c>File.ReadAllText</c> in
+    /// <see cref="SourceLoader"/>, and re-reading everything a second time
+    /// per file just to answer "does it start with EF BB BF" would be a real
+    /// cost for no benefit. <c>SourceLoader</c> only ever hands Roslyn text
+    /// that round-tripped through <c>File.ReadAllText</c>, and every
+    /// encoding that method auto-detects from a byte-order mark is a UTF
+    /// encoding whose non-UTF-8 forms (<c>UTF-16LE/BE</c>, <c>UTF-32</c>)
+    /// would already have failed to parse as C# — the BOM bytes would show up
+    /// as `\0`-interleaved garbage — so UTF-8's 3-byte mark is the only one
+    /// worth detecting here.
+    /// </remarks>
+    private static int BomLength(string? path)
+    {
+        if (string.IsNullOrEmpty(path))
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(path);
+            Span<byte> head = stackalloc byte[3];
+            var read = stream.Read(head);
+            return read == 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF ? 3 : 0;
+        }
+        catch (IOException)
+        {
+            return 0;
+        }
+    }
+
+    /// <summary>
+    /// Writes the <c>"location"</c> key: <c>{ file, start, end }</c> in UTF-8
+    /// bytes, or <c>null</c> when <paramref name="symbol"/> has no source
+    /// location (a compiler-synthesized member, or a symbol resolved purely
+    /// from a reference assembly).
+    /// </summary>
+    private void WriteLocation(Utf8JsonWriter json, ISymbol symbol)
+    {
+        var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+        if (location?.SourceTree is not { } tree)
+        {
+            json.WriteNull("location");
+            return;
+        }
+
+        var span = location.SourceSpan;
+
+        json.WriteStartObject("location");
+        json.WriteString("file", tree.FilePath);
+        json.WriteNumber("start", ByteOffset(tree, span.Start));
+        json.WriteNumber("end", ByteOffset(tree, span.End));
+        json.WriteEndObject();
+    }
+
+    /// <summary>
     /// Method kinds that are an accessor for some other member.
     /// </summary>
     /// <remarks>
@@ -317,6 +469,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         json.WriteBoolean("hidden", IsHidden(type.GetAttributes()));
         json.WriteBoolean("forwarded", false);
         WriteDocs(json, docs);
+        WriteLocation(json, type);
 
         // A C# 14 `extension(T receiver)` block is compiled to a container type
         // whose receiver is not otherwise recoverable from its members.
@@ -626,6 +779,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         WriteDeprecated(json, attributes);
         json.WriteBoolean("hidden", IsHidden(attributes));
         WriteDocs(json, docs);
+        WriteLocation(json, field);
 
         json.WriteEndObject();
     }
@@ -662,6 +816,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         WriteDeprecated(json, attributes);
         json.WriteBoolean("hidden", IsHidden(attributes));
         WriteDocs(json, docs);
+        WriteLocation(json, property);
 
         json.WriteEndObject();
     }
@@ -687,6 +842,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         WriteDeprecated(json, attributes);
         json.WriteBoolean("hidden", IsHidden(attributes));
         WriteDocs(json, docs);
+        WriteLocation(json, evt);
 
         json.WriteEndObject();
     }
@@ -751,6 +907,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         WriteDeprecated(json, attributes);
         json.WriteBoolean("hidden", IsHidden(attributes));
         WriteDocs(json, docs);
+        WriteLocation(json, method);
 
         json.WriteEndObject();
     }
@@ -926,6 +1083,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
 
             json.WriteBoolean("scoped", parameter.ScopedKind != ScopedKind.None);
             WriteAttributes(json, parameter.GetAttributes());
+            WriteLocation(json, parameter);
             json.WriteEndObject();
         }
 

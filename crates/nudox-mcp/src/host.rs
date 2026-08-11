@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use nudox_engine::EngineHandle;
 
+use crate::account::AccountGate;
 use crate::endpoint::McpEndpoint;
 use crate::error::McpError;
 use crate::server::NudoxMcpServer;
@@ -91,8 +92,14 @@ impl McpHost {
     /// window in which a caller holds an [`McpHost`] whose address is not yet
     /// accepting connections, so a status bar fed from
     /// [`url`](Self::url) can never advertise a port that is not listening.
-    pub fn start(engine: &EngineHandle) -> Result<Self, McpError> {
-        Self::start_with_token(engine, SessionToken::generate())
+    ///
+    /// `gate` is the account gate every tool call is admitted through. It is a
+    /// parameter rather than something this function constructs because the
+    /// same gate is also what `lindsey`'s account view renders and what its
+    /// sign-in flow drives — one gate, several readers, exactly as one
+    /// `EngineHandle` has several.
+    pub fn start(engine: &EngineHandle, gate: AccountGate) -> Result<Self, McpError> {
+        Self::start_with_token(engine, gate, SessionToken::generate())
     }
 
     /// Bind with a caller-supplied token.
@@ -101,9 +108,10 @@ impl McpHost {
     /// reason [`McpEndpoint::start_with_token`] exists.
     pub fn start_with_token(
         engine: &EngineHandle,
+        gate: AccountGate,
         token: SessionToken,
     ) -> Result<Self, McpError> {
-        let server = NudoxMcpServer::new(engine.clone());
+        let server = NudoxMcpServer::new(engine.clone(), gate);
         // `block_on` puts us inside the engine's runtime for the duration, so
         // the `tokio::spawn` inside `McpEndpoint::start` has a reactor to
         // attach the listener to. That is why this borrows the engine's

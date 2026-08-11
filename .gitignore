@@ -111,6 +111,41 @@
 !/corpus/**/*.toml
 !/corpus/**/*.nu
 
+# lindsey's bundled themes. A theme is *data* — `workspace/gui/src/theme/spec.rs`
+# deserialises these and `registry.rs` `include_str!`s them into `BUNDLED`, so a
+# theme is added by dropping a file here, with no Rust change.
+#
+# That makes them source, and this deny-all list would otherwise swallow them:
+# `include_str!` reads the working tree, so the build stays green locally while
+# `git add -A` silently skips the files and the tree fails to compile for anyone
+# else. Exactly the packaging defect class that produced "HEAD did not compile"
+# on 2026-08-08 — a file present locally, absent from the index, and no signal
+# until someone clones.
+!/workspace/gui/assets/
+!/workspace/gui/assets/themes/*.json
+
+# The brand mark. Every visual artefact lindsey ships with — app icon, DMG
+# volume icon, DMG background art — is generated FROM this one file (see
+# workspace/gui/packaging/), so it is source, not a build output. It was
+# caught by the deny-all above with no allow-list entry of its own: `git
+# check-ignore -v logo.svg` reported it ignored, and `git status` could not
+# see it, which is the exact same trap the theme JSONs hit above — a file
+# present locally, invisible to the index, gone on a fresh clone.
+!/logo.svg
+
+# lindsey's macOS packaging: cargo-bundle's `osx_dmg_background` key
+# (workspace/gui/Cargo.toml) reads dmg-background.svg directly off disk at
+# `cargo bundle` time, and generate_dmg_background.py is what derives it from
+# /logo.svg. Both are source for the same reason the themes above are: no
+# Rust reads them, so nothing forces them to be tracked except this rule, and
+# without it a fresh clone builds a DMG with no background and no one is told
+# why. The generated .icns/.tiff/.dmg themselves are NOT allow-listed — those
+# are build output under workspace/gui/target/bundle/, already denied by
+# `**/target/` above.
+!/workspace/gui/packaging/
+!/workspace/gui/packaging/*.svg
+!/workspace/gui/packaging/*.py
+
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
 !/**/example.json

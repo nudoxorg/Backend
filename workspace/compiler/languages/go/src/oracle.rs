@@ -141,6 +141,13 @@ pub struct Decl {
     #[serde(default)]
     pub pos: Option<Pos>,
 
+    /// Byte range of this declaration's full source text.  See
+    /// `oracle/serialize.go`'s `Decl.Span` doc for exactly what it covers
+    /// (the whole declaration, or — for one member of a grouped
+    /// `const`/`var`/`type` block — just that member's own spec).
+    #[serde(default)]
+    pub span: Option<Span>,
+
     /// Generic type parameters with constraints (`kind` type/func).
     #[serde(default)]
     pub type_params: Box<[TypeParamDecl]>,
@@ -221,6 +228,13 @@ pub struct Method {
     #[serde(default)]
     pub pos: Option<Pos>,
 
+    /// Byte range of this method's full `func (recv T) Name(...) { ... }`
+    /// declaration.  `None` when the oracle could not find the declaring
+    /// `*ast.FuncDecl` — true of every method promoted from a type outside
+    /// the package being lowered (see `oracle/serialize.go::methodSpan`).
+    #[serde(default)]
+    pub span: Option<Span>,
+
     /// Receiver binding name (`s` in `(s *Server)`).
     #[serde(default)]
     pub recv_name: String,
@@ -264,7 +278,8 @@ pub struct TypeParamDecl {
 // Pos
 // ---------------------------------------------------------------------------
 
-/// A `file:line:column` source position.
+/// A `file:line:column` source position, plus the byte offset the oracle's
+/// `token.FileSet` resolved it to.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Pos {
@@ -274,6 +289,18 @@ pub struct Pos {
     pub line: i64,
     #[serde(default)]
     pub col: i64,
+    /// 0-based byte offset of this position within `file`.
+    #[serde(default)]
+    pub offset: i64,
+}
+
+/// A byte range `[start, end)` into the file named by the enclosing
+/// [`Pos`], covering a declaration's full source text (see `Decl::span`).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Span {
+    pub start: i64,
+    pub end: i64,
 }
 
 // ---------------------------------------------------------------------------

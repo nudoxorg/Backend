@@ -91,12 +91,18 @@ impl MotionColor {
     /// Hue is normalised to `[0.0, 1.0)` before returning so the value is
     /// always a valid `Hsla`.
     pub fn value(&self) -> Hsla {
-        Hsla {
-            h: self.h.value().rem_euclid(1.0),
-            s: self.s.value().clamp(0.0, 1.0),
-            l: self.l.value().clamp(0.0, 1.0),
-            a: self.a.value().clamp(0.0, 1.0),
-        }
+        // Assembled by the palette, not here. This was an `Hsla { .. }` struct
+        // literal — the last place in the crate outside `src/theme/` that
+        // constructed a colour, and the one `tests/theme_law.rs` found. The
+        // literal was innocent in intent and still worth removing: a guard that
+        // has to make an exception for "but this one is only interpolating"
+        // can no longer answer "where do colours come from?" in one word.
+        crate::theme::palette::from_channels(
+            self.h.value(),
+            self.s.value(),
+            self.l.value(),
+            self.a.value(),
+        )
     }
 
     /// `true` when all four channels have settled.

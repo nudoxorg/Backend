@@ -24,6 +24,7 @@ use gpui::{
     Context, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
 };
 
+use crate::app::account::AccountStatus;
 use crate::app::mcp::McpStatus;
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use crate::ui::ProvenanceDot;
@@ -63,6 +64,18 @@ pub struct StatusBar {
     /// Pre-rendered MCP segment, refreshed on transition rather than per frame
     /// (§1.1.4). `None` hides the segment.
     mcp_label: Option<SharedString>,
+    /// What the account gate is doing (`auth.md`).
+    ///
+    /// An [`AccountStatus`], for the same reason `mcp` is an `McpStatus` and
+    /// not an `Option<SharedString>`: "no account service in this process",
+    /// "signed out", "offline with four days left" and "over quota" are four
+    /// different facts, and a status bar that renders three of them as an
+    /// absent segment is one where a user first learns they are signed out from
+    /// a failed agent call.
+    account: AccountStatus,
+    /// Pre-rendered account segment. `None` only when this process hosts no
+    /// account gate at all.
+    account_label: Option<SharedString>,
     /// Rolling p95 frame time, debug builds only (§25.2).
     frame_p95_ms: Option<f32>,
     /// Cached rendering of `frame_p95_ms`, refreshed at 4 Hz by the HUD sampler.
@@ -86,6 +99,10 @@ impl StatusBar {
             // true statement in that case rather than a placeholder.
             mcp: McpStatus::Absent,
             mcp_label: None,
+            // Same reasoning as `mcp` above: a cold-start bar hosts nothing,
+            // and `Absent` is the true statement rather than a placeholder.
+            account: AccountStatus::Absent,
+            account_label: None,
             frame_p95_ms: None,
             frame_label: SharedString::from("—"),
         }
@@ -141,6 +158,32 @@ impl StatusBar {
         self.mcp_label.as_ref()
     }
 
+    /// Publish what the account gate is doing (`auth.md`).
+    ///
+    /// The label is derived from the status here, once, so the painted text is
+    /// a pure function of the state — the same rule [`Self::set_mcp`] follows,
+    /// and for the same reason: a segment reading "signed in" beside a status
+    /// of `Revoked` is the drift the status type exists to remove.
+    pub fn set_account(&mut self, status: AccountStatus, cx: &mut Context<Self>) {
+        self.account_label = status.label();
+        self.account = status;
+        cx.notify();
+    }
+
+    /// What the status bar currently believes about the account.
+    ///
+    /// Exposed for the screenshot harness and for `tests/`, which assert on
+    /// *what the reader sees* rather than on what a global holds — the same
+    /// reachability discipline `mcp()` exists for.
+    pub fn account(&self) -> &AccountStatus {
+        &self.account
+    }
+
+    /// The exact text painted in the account segment, or `None` when hidden.
+    pub fn account_label(&self) -> Option<&SharedString> {
+        self.account_label.as_ref()
+    }
+
     /// Update the frame-time readout. Called at 4 Hz, not per frame — the
     /// readout exists to be *read*, and a number changing 120 times a second
     /// cannot be.
@@ -165,6 +208,7 @@ impl Render for StatusBar {
         let space = ext.space;
         let colours = ext.colours;
         let caption = ext.type_scale.caption;
+        let theme_name = ext.theme_name.clone();
 
         // Frame time is over budget when it exceeds the §1.2 8.3 ms target.
         let frame_colour = match self.frame_p95_ms {
@@ -246,8 +290,75 @@ impl Render for StatusBar {
             );
         }
 
+        // The account.
+        //
+        // Painted for *every* posture the process actually has, including a
+        // healthy one — the segment is hidden only when there is no account
+        // gate at all. A signed-in state that renders as nothing is a
+        // signed-out state that renders as nothing, and the first time the user
+        // would learn the difference is when an agent's tool call is refused.
+        if let Some(label) = &self.account_label {
+            let account_colour = if self.account.is_urgent() {
+                colours.warn
+            } else {
+                colours.fg_muted
+            };
+            bar = bar.child(
+                div()
+                    .id("status.account")
+                    .px(space.space_2)
+                    .rounded(space.r_sm)
+                    .text_color(account_colour)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(colours.bg_hover).text_color(colours.fg_default))
+                    .child(label.clone())
+                    // This was the reported defect: `cursor_pointer()` and a
+                    // hover state with no click handler at all — every visual
+                    // cue of a button, wired to nothing. Compare
+                    // `status.theme` below, which is the pattern this segment
+                    // was missing.
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        window.dispatch_action(Box::new(crate::app::actions::OpenAccount), cx);
+                    }),
+            );
+        }
+
+        // The live theme, named.
+        //
+        // # Why the theme belongs in the status bar
+        //
+        // `cmd-shift-T` recolours the entire window, which is unmistakable —
+        // and tells the reader nothing about *which* of four themes they have
+        // landed on, or that there are four. A one-word segment makes the
+        // cycle navigable instead of a slot machine, and it is the only place
+        // in the application where the theme's name is written down.
+        //
+        // Clicking it cycles, so the feature is discoverable without knowing
+        // the binding — the same reason the dock toggles are also buttons.
+        bar = bar.child(
+            div()
+                .id("status.theme")
+                .px(space.space_2)
+                .rounded(space.r_sm)
+                .cursor_pointer()
+                .hover(|s| s.bg(colours.bg_hover).text_color(colours.fg_default))
+                .child(theme_name)
+                .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                    window.dispatch_action(Box::new(crate::app::actions::CycleTheme), cx);
+                }),
+        );
+
+        // The frame-time readout, in debug builds, **only once there is a
+        // measurement**.
+        //
+        // It used to render unconditionally, and `set_frame_p95(None)`
+        // formats as `"—"`, so a build with no frame sampler wired showed a
+        // bare em-dash pinned to the right edge of the window for the whole
+        // session. That is visible in every frame in `.shots/fixtures/` and
+        // reads as a broken widget rather than as an absent measurement. A
+        // readout with nothing to read out should not be a readout.
         #[cfg(debug_assertions)]
-        {
+        if self.frame_p95_ms.is_some() {
             bar = bar.child(
                 div()
                     .id("status.frame")

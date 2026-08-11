@@ -17,7 +17,18 @@
 //! undiscoverable, which is the failure mode every app with a growing keymap
 //! eventually reaches.
 
+//! # The windowless half (`lifecycle` + `menus`)
+//!
+//! lindsey hosts an MCP endpoint (`mcp`), which means the process has to outlive
+//! its window and still be reachable and still be quittable. [`lifecycle`] owns
+//! that state machine and [`menus`] owns the only input surface that survives a
+//! dismissal — they live here rather than under `workspace::` because neither
+//! may depend on `Shell`: the window is rebuilt *by* them.
+
+pub mod account;
 pub mod actions;
 pub mod corpus;
 pub mod keymaps;
+pub mod lifecycle;
 pub mod mcp;
+pub mod menus;

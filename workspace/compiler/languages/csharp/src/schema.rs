@@ -99,6 +99,29 @@ pub struct Namespace {
     pub doc: Option<String>,
 }
 
+/// Where a declaration lives in its source file.
+///
+/// `start`/`end` are **UTF-8 byte offsets**, matching
+/// [`nudox_ir::entry::Symbol::span`]'s documented unit. Roslyn's own
+/// `Location.SourceSpan` is in UTF-16 code units (a .NET `string` is UTF-16),
+/// so the oracle converts before ever writing this out — see
+/// `Extractor.Utf8ByteOffsets` in `oracle/Extractor.cs`. Doing the conversion
+/// oracle-side means every consumer of this schema, in Rust or otherwise,
+/// gets a byte range it can slice `Field::type`'s file directly with no unit
+/// bug to rediscover.
+///
+/// [`nudox_ir::entry::Symbol::span`]: nudox_ir::entry::Symbol
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Location {
+    /// Absolute path to the source file, as Roslyn's `SyntaxTree.FilePath`
+    /// reports it (the same path the oracle was pointed at under `--root`).
+    pub file: String,
+    /// Inclusive-start, exclusive-end UTF-8 byte offset into `file`.
+    pub start: usize,
+    pub end: usize,
+}
+
 /// A type declaration: class, struct, interface, enum, delegate, or record.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -143,6 +166,11 @@ pub struct TypeDecl {
     pub doc_links: Option<BTreeMap<String, String>>,
     /// The receiver type for a C# 14 extension block.
     pub extension_receiver: Option<TypeSig>,
+    /// Where the type is declared. `#[serde(default)]` so hand-written
+    /// fixtures that predate this field still parse — they simply lower
+    /// with no location, same as a symbol the oracle itself could not place.
+    #[serde(default)]
+    pub location: Option<Location>,
     #[serde(default)]
     pub members: Members,
 }
@@ -243,6 +271,8 @@ pub struct Param {
     pub scoped: bool,
     #[serde(default)]
     pub attributes: Vec<Attr>,
+    #[serde(default)]
+    pub location: Option<Location>,
 }
 
 /// A field declaration.
@@ -278,6 +308,8 @@ pub struct Field {
     #[serde(default)]
     pub doc_inherited: bool,
     pub doc_links: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub location: Option<Location>,
 }
 
 /// A property or indexer.
@@ -320,6 +352,8 @@ pub struct Property {
     #[serde(default)]
     pub doc_inherited: bool,
     pub doc_links: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub location: Option<Location>,
 }
 
 /// An event declaration.
@@ -347,6 +381,8 @@ pub struct Event {
     #[serde(default)]
     pub doc_inherited: bool,
     pub doc_links: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub location: Option<Location>,
 }
 
 /// A method, constructor, operator, or conversion.
@@ -410,6 +446,8 @@ pub struct Method {
     #[serde(default)]
     pub doc_inherited: bool,
     pub doc_links: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub location: Option<Location>,
 }
 
 /// An attribute use (`[Foo(1, Name = "x")]`).

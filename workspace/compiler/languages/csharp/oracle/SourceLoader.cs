@@ -70,14 +70,19 @@ internal static class SourceLoader
 
     public static LoadedCompilation Load(OracleOptions options)
     {
-        var files = CollectSourceFiles(options.Roots);
+        // Narrow to the one project the caller actually asked for, when the
+        // evidence to do so unambiguously exists. See `ScopeToMatchingProject`
+        // for why this exists and what it deliberately does not do.
+        var roots = ScopeToMatchingProject(options.Roots, options.AssemblyName);
+
+        var files = CollectSourceFiles(roots);
         if (files.Count == 0)
         {
             throw new OracleFailure(
-                $"no .cs files found under: {string.Join(", ", options.Roots)}");
+                $"no .cs files found under: {string.Join(", ", roots)}");
         }
 
-        var assemblyName = options.AssemblyName ?? InferAssemblyName(options.Roots);
+        var assemblyName = options.AssemblyName ?? InferAssemblyName(roots);
         var targetFramework = TargetFrameworkMoniker();
 
         var parseOptions = new CSharpParseOptions(
@@ -116,7 +121,7 @@ internal static class SourceLoader
             // suppressed keeps the diagnostic bag small and fast.
             generalDiagnosticOption: ReportDiagnostic.Suppress);
 
-        var globalUsings = GlobalUsings(options);
+        var globalUsings = GlobalUsings(options, roots);
 
         var (compilation, accepted) = BuildWithGlobalUsings(
             assemblyName, sourceTrees, references, compilationOptions, parseOptions, globalUsings);
@@ -185,6 +190,146 @@ internal static class SourceLoader
         var files = ApplyTfmPreference(seen.ToList());
         files.Sort(StringComparer.Ordinal);
         return files;
+    }
+
+    /// <summary>
+    /// If exactly one project under the given roots declares the
+    /// <c>AssemblyName</c> the caller passed via <c>--assembly-name</c>,
+    /// return that project's own directory as the sole effective root instead
+    /// of every root the caller supplied. Otherwise return <paramref
+    /// name="roots"/> unchanged.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A NuGet package's GitHub source checkout is usually a monorepo, and
+    /// nothing above stops <see cref="CollectSourceFiles"/> from walking all
+    /// of it: NLog's ships 44 sample console apps under <c>examples/</c>, all
+    /// declaring a top-level <c>class Example</c> with the same <c>Main</c>
+    /// signature; Polly's repo builds <c>Polly</c>, <c>Polly.Core</c>,
+    /// <c>Polly.Extensions</c>, … as separate NuGet packages from sibling
+    /// project directories, a few of which carry their own copy of small
+    /// internal helper types (<c>CircuitStateController</c>,
+    /// <c>TelemetryUtil</c>); and dotnet/runtime libraries such as
+    /// <c>System.Text.Json</c> ship a hand-maintained <c>ref/</c>
+    /// reference-assembly project beside the real <c>src/</c> implementation,
+    /// declaring the identical public surface with <c>throw null;</c> bodies.
+    /// None of that is the package <c>--assembly-name</c> names, and walking
+    /// it unconditionally is not merely "extra content" in the document — it
+    /// hands Roslyn two distinct declarations with the same fully-qualified
+    /// name and signature, so <c>DocumentationCommentId</c> (correctly)
+    /// assigns them the identical id, which is a real duplicate declaration
+    /// downstream, not a lowering bug. This was reached in practice: six
+    /// real nuget-corpus packages failed
+    /// <c>Lowering::finish</c> with <c>LoweringError::Duplicate</c> for
+    /// exactly this reason before this method existed.
+    /// </para>
+    /// <para>
+    /// This is deliberately NOT a directory-name heuristic of the kind
+    /// <see cref="ExcludedDirectories"/>'s own remarks forbid — it never
+    /// guesses whether a directory "is the library". The producer already
+    /// knows the package's name (it is <c>PackageSource::name</c>, forwarded
+    /// as <c>--assembly-name</c> on every real invocation); this only asks
+    /// each project file, via its own <c>&lt;AssemblyName&gt;</c> (or the
+    /// MSBuild default of the project file's own base name), whether it is
+    /// the one the caller meant. That is exact evidence, not a guess. A tie
+    /// between two projects with the same declared name — the <c>ref/</c> vs
+    /// <c>src/</c> shape above — prefers whichever project is NOT under a
+    /// path segment literally named <c>ref</c>, because that convention is
+    /// unambiguous across the whole dotnet SDK, not specific to any one
+    /// package. Any other kind of tie, or no match at all, leaves the roots
+    /// untouched: picking between two equally-named real candidates by
+    /// fiat would be exactly the mistake this class already declines to
+    /// make, and a caller that already scoped <c>--root</c> to a single
+    /// project (as this crate's own tests do) will simply find that one
+    /// project and narrow to itself — a no-op.
+    /// </para>
+    /// </remarks>
+    private static IReadOnlyList<string> ScopeToMatchingProject(
+        IReadOnlyList<string> roots, string? assemblyName)
+    {
+        if (string.IsNullOrWhiteSpace(assemblyName))
+        {
+            return roots;
+        }
+
+        var candidates = new List<string>();
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            var full = Path.GetFullPath(root);
+            foreach (var csproj in Directory.EnumerateFiles(full, "*.csproj", SearchOption.AllDirectories))
+            {
+                if (IsExcluded(full, csproj))
+                {
+                    continue;
+                }
+
+                if (string.Equals(ProjectAssemblyName(csproj), assemblyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    var dir = Path.GetDirectoryName(csproj);
+                    if (dir is not null)
+                    {
+                        candidates.Add(dir);
+                    }
+                }
+            }
+        }
+
+        candidates = candidates.Distinct(StringComparer.Ordinal).ToList();
+
+        if (candidates.Count == 1)
+        {
+            return [candidates[0]];
+        }
+
+        if (candidates.Count > 1)
+        {
+            var nonRef = candidates.Where(d => !HasPathSegment(d, "ref")).ToList();
+            if (nonRef.Count == 1)
+            {
+                return nonRef;
+            }
+        }
+
+        return roots;
+    }
+
+    /// <summary>Whether any path component of <paramref name="dir"/> is exactly <paramref name="segment"/>.</summary>
+    private static bool HasPathSegment(string dir, string segment)
+    {
+        var parts = dir.Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        return parts.Any(p => string.Equals(p, segment, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A project's effective <c>AssemblyName</c>: the explicit MSBuild
+    /// property if the file declares one, else the MSBuild default — the
+    /// project file's own base name.
+    /// </summary>
+    private static string ProjectAssemblyName(string csprojPath)
+    {
+        try
+        {
+            var document = System.Xml.Linq.XDocument.Load(csprojPath);
+            var explicitName = document.Descendants("AssemblyName").FirstOrDefault()?.Value?.Trim();
+            if (!string.IsNullOrEmpty(explicitName))
+            {
+                return explicitName;
+            }
+        }
+        catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+        {
+            // Fall through to the filename default below — an unparsable
+            // project file is not evidence either way, not a fatal error.
+        }
+
+        return Path.GetFileNameWithoutExtension(csprojPath);
     }
 
     /// <summary>Matches a per-TFM source-file variant's trailing tag.</summary>
@@ -416,7 +561,7 @@ internal static class SourceLoader
     /// <c>System</c> types to nothing and the extraction quietly degrades into
     /// error types rather than failing.
     /// </remarks>
-    private static List<string> GlobalUsings(OracleOptions options)
+    private static List<string> GlobalUsings(OracleOptions options, IReadOnlyList<string> roots)
     {
         var usings = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -437,7 +582,7 @@ internal static class SourceLoader
             }
         }
 
-        var (included, removed) = ProjectUsings(options.Roots);
+        var (included, removed) = ProjectUsings(roots);
 
         foreach (var ns in included)
         {

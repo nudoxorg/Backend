@@ -350,7 +350,7 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
     // Boot in the exact order main.rs does.
     cx.update(|cx: &mut App| {
         gpui_component::init(cx);
-        NudoxThemeExt::init(cx);
+        NudoxThemeExt::init(cx).expect("bundled themes parse and install");
         cx.set_global(MotionTokens::new(1.0));
         cx.bind_keys(keymaps::all_bindings());
     });
@@ -359,6 +359,8 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
     let search = cx.new(|_cx| SearchStore::new(engine.clone()));
     let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
     let packages = cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
+    let index_jobs =
+        cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
     // Capture the root Entity<Shell>: the window constructor closure runs
     // synchronously inside open_window, so by the time we return from
@@ -368,7 +370,14 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
     let window = cx
         .update(|cx: &mut App| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
-                let entity = cx.new(|cx| Shell::new(search.clone(), symbols.clone(), packages.clone(), window, cx));
+                let entity = cx.new(|cx| Shell::new(
+                    search.clone(),
+                    symbols.clone(),
+                    packages.clone(),
+                    index_jobs.clone(),
+                    window,
+                    cx,
+                ));
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
                 entity
             })
@@ -413,7 +422,7 @@ async fn escape_closes_the_overlay(cx: &mut TestAppContext) {
 
     cx.update(|cx: &mut App| {
         gpui_component::init(cx);
-        NudoxThemeExt::init(cx);
+        NudoxThemeExt::init(cx).expect("bundled themes parse and install");
         cx.set_global(MotionTokens::new(1.0));
         cx.bind_keys(keymaps::all_bindings());
     });
@@ -422,13 +431,22 @@ async fn escape_closes_the_overlay(cx: &mut TestAppContext) {
     let search = cx.new(|_cx| SearchStore::new(engine.clone()));
     let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
     let packages = cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
+    let index_jobs =
+        cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
     let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<gpui::Entity<Shell>>));
     let shell_cell_w = shell_cell.clone();
     let window = cx
         .update(|cx: &mut App| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
-                let entity = cx.new(|cx| Shell::new(search.clone(), symbols.clone(), packages.clone(), window, cx));
+                let entity = cx.new(|cx| Shell::new(
+                    search.clone(),
+                    symbols.clone(),
+                    packages.clone(),
+                    index_jobs.clone(),
+                    window,
+                    cx,
+                ));
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
                 entity
             })

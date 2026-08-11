@@ -21,7 +21,7 @@ pub(super) fn lower_struct(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> Result<()> {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     // Collect field Refs (forward-refer them — declare will happen below).
     let underlying = decl.underlying.as_ref();
@@ -72,7 +72,7 @@ pub(super) fn lower_struct(
             .get(&f.name)
             .map(|s| s.as_str())
             .unwrap_or("");
-        let mut fsym = sym_for(&f.name, fdoc, f.exported, None);
+        let mut fsym = sym_for(&f.name, fdoc, f.exported, None, None);
 
         // Item 5: Struct field tags and embedded markers.
         let mut attrs: Vec<AttrTok> = Vec::new();
@@ -122,7 +122,7 @@ pub(super) fn lower_interface(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> Result<()> {
-    let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let generics: Vec<GenericParam> = decl
         .type_params
@@ -186,7 +186,7 @@ pub(super) fn lower_interface(
                 mdoc.to_owned()
             };
 
-            let msym = sym_for(&sig.name, &actual_doc, sig.exported, sig.pos.as_ref());
+            let msym = sym_for(&sig.name, &actual_doc, sig.exported, sig.pos.as_ref(), None);
 
             let (input_refs, output_refs) = lower_sig_params_into_lowering(
                 pkg,
@@ -221,7 +221,7 @@ pub(super) fn lower_newtype(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> Result<()> {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let inner_id = GoId::Member {
         import_path: pkg.import_path.clone(),
@@ -248,7 +248,7 @@ pub(super) fn lower_newtype(
         .underlying
         .as_ref()
         .map(|t| types::lower_type_with_lowering(t, low, local));
-    let inner_sym = sym_for("(inner)", "(underlying type field)", decl.exported, None);
+    let inner_sym = sym_for("(inner)", "(underlying type field)", decl.exported, None, None);
     let inner_field = Field::builder()
         .key(FieldKey::Positional(0))
         .maybe_ty(underlying_ty)
@@ -269,7 +269,7 @@ pub(super) fn lower_iota_enum(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> Result<()> {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref());
+    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(variants.len());
     for v in variants.iter() {
@@ -299,7 +299,7 @@ pub(super) fn lower_iota_enum(
             type_name: decl.name.clone(),
             variant_name: v.name.clone(),
         };
-        let vsym = sym_for(&v.name, &v.doc, v.exported, v.pos.as_ref());
+        let vsym = sym_for(&v.name, &v.doc, v.exported, v.pos.as_ref(), v.span.as_ref());
         let discr = if v.value.is_empty() {
             None
         } else {

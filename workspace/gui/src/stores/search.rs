@@ -34,7 +34,7 @@ use std::time::Instant;
 
 use gpui::{Context, SharedString, Task};
 use nudox_engine::wire::{Gen, HitRow, SearchEvent, SearchSectionId};
-use nudox_engine::{EngineHandle, SearchQuery};
+use nudox_engine::{EngineHandle, SearchQuery, SectionState};
 
 use crate::bridge::drain::drain;
 use crate::bridge::generation::GenSource;
@@ -62,6 +62,15 @@ const DEBOUNCE_MS: u64 = 24;
 // Search scope
 // ---------------------------------------------------------------------------
 
+/// Below this, a search's duration is not reported.
+///
+/// 100 ms is Nielsen's first response-time limit — "the limit for having the
+/// user feel that the system is reacting instantaneously". A duration under it
+/// describes an event the reader did not perceive, so printing it puts a number
+/// on the screen that can only ever be noise. See the `Latency` arm of
+/// `apply_event` for the defect this removed.
+const PERCEPTIBLE_LATENCY_MS: u128 = 100;
+
 /// Restricts the search to a subset of the corpus.
 #[derive(Clone, Debug, Default)]
 pub struct SearchScope {
@@ -86,6 +95,20 @@ struct SectionBuf {
     latency: SharedString,
     /// Current phase, for `SectionData::status`.
     status: SectionStatus,
+    /// What the engine said this section's rows *mean*, if it has said yet.
+    ///
+    /// # Why this is kept rather than folded straight into `status`
+    ///
+    /// `SearchEvent::SectionState` arrives **before** the section's rows, and
+    /// the `Section` handler unconditionally set `status = Ready`. Folding the
+    /// state in on arrival would therefore have it overwritten a moment later
+    /// by the rows it was describing — the caveat would be delivered, stored,
+    /// and then silently dropped, which is a worse failure than never sending
+    /// it because the wire would look correct.
+    ///
+    /// So the engine's claim is recorded here and `status` is *derived* from it
+    /// when rows land. One value, one owner, no chance for the two to disagree.
+    declared: Option<SectionState>,
 }
 
 impl SectionBuf {
@@ -95,6 +118,22 @@ impl SectionBuf {
             complete: false,
             latency: SharedString::default(),
             status: SectionStatus::Idle,
+            declared: None,
+        }
+    }
+
+    /// The status this section should show now that its rows have arrived.
+    ///
+    /// `Ready` when the engine claimed completeness or said nothing at all —
+    /// the latter keeps an older engine, or a section that predates
+    /// `SectionState`, rendering exactly as it did before.
+    fn status_for_delivered_rows(&self) -> SectionStatus {
+        match self.declared {
+            Some(SectionState::Building { covered, total }) => {
+                SectionStatus::Building { covered, total }
+            }
+            Some(SectionState::Unavailable { .. }) => SectionStatus::Unavailable,
+            _ => SectionStatus::Ready,
         }
     }
 
@@ -303,7 +342,7 @@ impl<E: SearchEngine> SearchStore<E> {
                     // The engine already sorts by score descending before sending
                     // (see nudox_engine::search), so we preserve that order.
                     self.sections[idx].rows = PreparedRow::prepare(&rows);
-                    self.sections[idx].status = SectionStatus::Ready;
+                    self.sections[idx].status = self.sections[idx].status_for_delivered_rows();
                     // LD-15: only this section is touched.
                 }
                 self.clamp_selection();
@@ -325,9 +364,31 @@ impl<E: SearchEngine> SearchStore<E> {
                     let new_rows = PreparedRow::prepare(&rows);
                     combined.extend_from_slice(&new_rows);
                     self.sections[idx].rows = Arc::from(combined.as_slice());
-                    self.sections[idx].status = SectionStatus::Ready;
+                    self.sections[idx].status = self.sections[idx].status_for_delivered_rows();
                 }
                 self.clamp_selection();
+                cx.notify();
+            }
+
+            // What a section's rows *mean*. Arrives before them (see
+            // `SectionBuf::declared`), so it is recorded rather than applied.
+            //
+            // `Unavailable` is applied to `status` immediately as well as
+            // recorded: unlike the other states it is knowable before any rows
+            // exist and there may never be a `Section` event worth waiting for
+            // — and until it lands the section is still showing `Loading`,
+            // i.e. a shimmer promising rows that are not coming.
+            SearchEvent::SectionState { generation, section, state } => {
+                if generation.0 != self.generation {
+                    return;
+                }
+                let idx = section.0 as usize;
+                if idx < SECTION_COUNT {
+                    if matches!(state, SectionState::Unavailable { .. }) {
+                        self.sections[idx].status = SectionStatus::Unavailable;
+                    }
+                    self.sections[idx].declared = Some(state);
+                }
                 cx.notify();
             }
 
@@ -338,9 +399,35 @@ impl<E: SearchEngine> SearchStore<E> {
                 let idx = section.0 as usize;
                 if idx < SECTION_COUNT {
                     // Pre-format here — §1.1.4 forbids formatting in render.
+                    //
+                    // # Why fast searches report no latency at all
+                    //
+                    // The results header used to read `2  0 ms`: a count and a
+                    // duration, adjacent, both unlabelled, the second of them
+                    // always zero because a local fixture search takes under a
+                    // millisecond. Two numbers side by side with no separator
+                    // do not read as two numbers — they read as one damaged
+                    // one, which is what made that header cryptic.
+                    //
+                    // Nielsen's threshold is the reason to drop it rather than
+                    // to punctuate it: 0.1 s is "the limit for having the user
+                    // feel that the system is reacting instantaneously"
+                    // (nngroup.com/articles/response-times-3-important-limits).
+                    // Below that, the reader did not experience a wait, so a
+                    // duration explains nothing that happened to them — it is
+                    // instrumentation shown to the wrong audience. Above it,
+                    // they felt something and the number says what.
+                    //
+                    // Elastic's Search UI ships no latency component at all;
+                    // Algolia's Stats widget shows one by default. This splits
+                    // the difference on the honest axis: show it when it is
+                    // information.
                     let ms = elapsed.as_millis();
-                    self.sections[idx].latency =
-                        SharedString::from(format!("{ms} ms"));
+                    self.sections[idx].latency = if ms >= PERCEPTIBLE_LATENCY_MS {
+                        SharedString::from(format!("{ms} ms"))
+                    } else {
+                        SharedString::default()
+                    };
                 }
                 cx.notify();
             }
@@ -349,10 +436,14 @@ impl<E: SearchEngine> SearchStore<E> {
                 if generation.0 != self.generation {
                     return;
                 }
-                // Mark all sections that are still Loading as Ready (stream closed).
+                // Mark all sections that are still Loading as settled (stream
+                // closed). "Settled" is not always `Ready`: a section that
+                // declared `Building` or `Unavailable` and then delivered no
+                // rows must keep saying so, or the close of the stream would
+                // quietly upgrade a caveat into a completed empty search.
                 for s in &mut self.sections {
                     if s.status == SectionStatus::Loading {
-                        s.status = SectionStatus::Ready;
+                        s.status = s.status_for_delivered_rows();
                     }
                 }
                 self.stream_handle = None;

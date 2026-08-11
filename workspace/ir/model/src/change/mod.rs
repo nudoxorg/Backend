@@ -27,7 +27,10 @@ pub use ids::{EcosystemId, PackageLineageId, PackageName, StableRef};
 /// (`LIMITATIONS.md` L31/L42). The declaration plane is postcard over serde, so
 /// the new field is on the wire and v1 bytes cannot be decoded as v2. The
 /// IntroId preimage is unaffected — it is domain-separated by
-/// `"nudox.intro.v4"` and does not read this constant.
+/// `"nudox.intro.v5"` and does not read this constant. The converse also
+/// holds: the v4 → v5 IntroId domain bump moved every symbol identity and
+/// deliberately did **not** touch this constant, because no `Entry`'s serde
+/// shape changed with it.
 pub const FORMAT_VERSION: u16 = 2;
 
 #[cfg(test)]

@@ -190,7 +190,7 @@ fn main() {
         // is stated explicitly — and *before* `NudoxThemeExt::init`, which
         // picks its palette by asking `cx.theme().is_dark()`.
         gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
-        NudoxThemeExt::init(cx);
+        NudoxThemeExt::init(cx).expect("bundled themes parse and install");
     });
 
     let mut shoot = |runs: Vec<InlineRun>, slug: &str| -> RgbaImage {

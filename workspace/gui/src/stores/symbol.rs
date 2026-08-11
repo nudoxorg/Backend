@@ -58,7 +58,14 @@ use crate::stores::events::{
 ///
 /// Newtypes the raw `u64` so accidental conversions / comparisons against other
 /// `u64` ids are caught at compile time (LR-1 / GUI-PLAN LD-18 hygiene).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// `Ord` is meaningful here rather than incidental: ids come from a monotonic
+/// counter, so their order *is* the order the reader opened the documents in.
+/// `Shell` rebuilds its tab strip in that order when a dismissed window is
+/// restored (`workspace::shell::rehydrate_tabs`) — sorting by id is what stops
+/// the strip coming back shuffled by `HashMap` iteration order, which varies
+/// run to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TabId(pub u64);
 
 // ---------------------------------------------------------------------------
@@ -379,6 +386,17 @@ impl<E: SymbolEngine> SymbolStore<E> {
             // doc.slot_meta.handle is dropped here → cancels the engine stream.
         }
         cx.notify();
+    }
+
+    /// Which tab a `Replace` open would supersede — i.e. the document the
+    /// reader is currently on.
+    ///
+    /// Exposed for window rebuilding (`app::lifecycle`): a `Shell` constructed
+    /// over a store that already holds documents has to put the reader back on
+    /// the one they were reading, and the store is the only thing that survived
+    /// the dismissal to know which that was.
+    pub fn active(&self) -> Option<TabId> {
+        self.active
     }
 
     /// Keep the store's Replace target aligned with the pane's active tab.

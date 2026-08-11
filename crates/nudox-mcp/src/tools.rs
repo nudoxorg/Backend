@@ -70,6 +70,57 @@ const DEFAULT_LIMIT: usize = 50;
 /// query or paginate with `graph_query`.
 const MAX_LIMIT: usize = 500;
 
+/// How long `index_package` waits by default before reporting a job as still
+/// running.
+///
+/// Two minutes covers a cold fetch and lowering of most single packages
+/// (`serde` is well under it) without approaching the timeouts an HTTP client
+/// or proxy is likely to impose.
+const DEFAULT_INDEX_WAIT_SECONDS: u32 = 120;
+
+/// Ceiling on `index_package`'s wait, whatever the caller asks for.
+///
+/// Beyond ten minutes the request is a liability rather than a convenience: the
+/// job runs to completion regardless, and polling is free.
+const MAX_INDEX_WAIT_SECONDS: u32 = 600;
+
+/// Flatten [`nudox_engine::Integrity`] into the tool's report shape.
+///
+/// The two variants must not collapse: `verified_against_published_digest` is
+/// the whole distinction, and `detail` carries either the endpoint that
+/// substantiates it or the specific reason none exists.
+fn report_integrity(integrity: &nudox_engine::Integrity) -> IntegrityReport {
+    match integrity {
+        nudox_engine::Integrity::RegistryDigest {
+            algorithm,
+            digest,
+            published_by,
+        } => IntegrityReport {
+            verified_against_published_digest: true,
+            algorithm: algorithm.clone(),
+            digest: digest.clone(),
+            detail: format!("matched the digest published by {published_by}"),
+        },
+        nudox_engine::Integrity::TransportOnly { sha256, why } => IntegrityReport {
+            verified_against_published_digest: false,
+            algorithm: "sha256".to_owned(),
+            digest: sha256.clone(),
+            detail: format!(
+                "computed locally; no published digest was available to compare against — {why}"
+            ),
+        },
+        // `Integrity` is `#[non_exhaustive]`: a third tier must not be silently
+        // reported as verified.
+        _ => IntegrityReport {
+            verified_against_published_digest: false,
+            algorithm: "unknown".to_owned(),
+            digest: String::new(),
+            detail: "this build does not recognise the integrity tier this fetch reported"
+                .to_owned(),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tool arguments
 // ---------------------------------------------------------------------------
@@ -206,6 +257,113 @@ pub struct GraphQueryArgs {
 /// Arguments to `graph_schema`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GraphSchemaArgs {}
+
+/// Arguments to `index_package`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IndexPackageArgs {
+    /// A package URL: `pkg:<type>/[<namespace>/]<name>@<version>`.
+    ///
+    /// Types: `cargo`, `npm`, `pypi`, `golang`, `maven`, `nuget`. The version
+    /// is required and must be the registry's own spelling — omit it and the
+    /// error lists the versions that exist.
+    pub purl: String,
+
+    /// How long to wait, in seconds, before returning with the job still
+    /// running. Defaults to 120, capped at 600.
+    ///
+    /// Returning early is not a failure: the job keeps running, and calling
+    /// `index_package` again with the same `purl` attaches to it rather than
+    /// starting a second one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<u32>,
+}
+
+/// What is known about the bytes a package's documentation was produced from.
+///
+/// Mirrors [`nudox_engine::Integrity`] into the tool schema rather than
+/// re-exporting it, because an MCP result type must be `JsonSchema`-derivable
+/// as a flat, self-describing shape an agent can read without a discriminated
+/// union — and because collapsing the two cases to a boolean would lose
+/// precisely the part that matters.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct IntegrityReport {
+    /// True only when the registry published a digest of these exact bytes on
+    /// a separate endpoint and it matched what was downloaded.
+    ///
+    /// False does **not** mean a check failed — a failed check discards the
+    /// download and returns an error. It means no digest was available to
+    /// check against; read `detail` for which registry and why.
+    pub verified_against_published_digest: bool,
+    /// `"sha256"`, `"sha512"` or `"sha1"` when verified; the algorithm of the
+    /// locally computed digest otherwise.
+    pub algorithm: String,
+    /// The digest value: the registry's when verified, ours when not.
+    pub digest: String,
+    /// Where the digest came from, or why none was available.
+    pub detail: String,
+}
+
+/// The state of an `index_package` job.
+///
+/// # Why the `schemars(extend)` attribute is load-bearing
+///
+/// This is an internally-tagged enum, so schemars emits a bare `oneOf` with no
+/// root `"type"`. rmcp validates every tool's `outputSchema` when the router is
+/// *constructed*, so a missing root type does not fail this tool — it panics
+/// `NudoxMcpServer::new`, taking down every endpoint test, every host-lifecycle
+/// test, and the GUI screenshot harness (which starts `McpService` before the
+/// first frame). The failure surfaces nowhere near its cause.
+///
+/// `"type": "object"` is a true statement schemars simply omits for tagged
+/// enums: every variant serialises as an object carrying a `status` field.
+///
+/// `SelectVersionResult` and `DiffVersionsResult` were fixed for this exact
+/// reason earlier the same day, and a guard test was added — but as a
+/// hand-maintained list of types, so this enum, added hours later by another
+/// track, was not in it. The guard passed while the server panicked. See
+/// `tests/schemas.rs`, where the list is now derived rather than written out.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+#[schemars(extend("type" = "object"))]
+pub enum IndexPackageResult {
+    /// The package is in the corpus and every other tool can now see it.
+    Indexed {
+        /// The canonical package URL that was indexed.
+        purl: String,
+        /// The `ecosystem:name` lineage key — what `search_symbols`'s
+        /// `packages` filter and `list_versions` accept.
+        package: String,
+        /// The version that was indexed.
+        version: String,
+        /// Public API symbols now searchable from this package.
+        symbol_count: u64,
+        /// The package's root symbol key, to pass straight to `get_symbol`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        root_key: Option<String>,
+        /// What is known about the bytes this documentation came from.
+        integrity: IntegrityReport,
+    },
+
+    /// The job is still running. Call again with the same `purl` to keep
+    /// waiting; it will attach to this job, not start another.
+    Running {
+        /// The canonical package URL being indexed.
+        purl: String,
+        /// What the job is doing right now: `resolving`, `downloading`,
+        /// `verifying`, `extracting`, `producing`, or `cached`.
+        stage: String,
+        /// Bytes downloaded so far, once the download has started.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        received_bytes: Option<u64>,
+        /// Total bytes, when the registry advertised a length.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        total_bytes: Option<u64>,
+        /// How long the job has been running, in seconds.
+        elapsed_seconds: u64,
+        /// True when this call attached to a job an earlier call started.
+        joined_existing_job: bool,
+    },
+}
 
 // ---------------------------------------------------------------------------
 // Tool results
@@ -515,6 +673,13 @@ pub struct NudoxTools {
     /// the `Gen` it answers; giving each tool call a fresh one keeps two
     /// concurrent MCP calls from reading each other's events.
     generation: std::sync::Arc<AtomicU64>,
+    /// Index jobs in flight, keyed by canonical PURL — see [`crate::index`].
+    ///
+    /// On `NudoxTools` and not on the server, because rmcp builds one
+    /// `NudoxMcpServer` per MCP *session*: a registry living there would let
+    /// two agents (or one agent reconnecting) each start their own producer run
+    /// for the same package.
+    jobs: std::sync::Arc<crate::index::IndexJobs>,
 }
 
 impl std::fmt::Debug for NudoxTools {
@@ -529,6 +694,7 @@ impl NudoxTools {
         Self {
             engine,
             generation: std::sync::Arc::new(AtomicU64::new(1)),
+            jobs: std::sync::Arc::new(crate::index::IndexJobs::default()),
         }
     }
 
@@ -591,10 +757,20 @@ impl NudoxTools {
                 }
                 let mut out = Vec::with_capacity(names.len());
                 for name in names {
-                    let lineage = PackageLineageDto(name.clone()).to_wire().map_err(|_| {
+                    // Preserve the specific reason `PackageLineageDto::to_wire`
+                    // already computed (empty ecosystem vs. empty name vs. no
+                    // ':' at all) rather than discarding it for one generic
+                    // message — doctrine's `map_err(|_|)` callout applies here
+                    // exactly: the reason existed one line up and this used to
+                    // throw it away.
+                    let lineage = PackageLineageDto(name.clone()).to_wire().map_err(|e| {
+                        let reason = match e {
+                            McpError::MalformedPackage { reason, .. } => reason,
+                            _ => "not 'ecosystem:name'",
+                        };
                         McpError::InvalidArgument {
                             argument: "packages",
-                            reason: format!("{name:?} is not 'ecosystem:name'"),
+                            reason: format!("{name:?} is not 'ecosystem:name': {reason}"),
                         }
                     })?;
                     out.push(lineage);
@@ -867,6 +1043,83 @@ impl NudoxTools {
             .collect();
 
         Ok(PackagesResult { packages })
+    }
+
+    /// `index_package`, minus the MCP wrapping.
+    ///
+    /// # Why this returns before the work does
+    ///
+    /// Every other tool in this file answers from data that is already
+    /// resident, so "drain the stream to a terminal event" is bounded by
+    /// milliseconds. This one runs a network fetch and a language producer —
+    /// seconds at best. A tool that blocked for the whole of it would stall the
+    /// agent's turn and hand every HTTP proxy on the path a vote on how long an
+    /// index is allowed to take.
+    ///
+    /// So the wait is bounded by an argument the *caller* chooses, and a job
+    /// still running when it expires is reported as
+    /// [`IndexPackageResult::Running`] with its current stage — a true answer,
+    /// not a timeout error. Calling again joins the same job (see
+    /// [`crate::index`]), which is what makes polling safe rather than a way to
+    /// start N producer runs.
+    pub async fn do_index_package(
+        &self,
+        args: IndexPackageArgs,
+    ) -> Result<IndexPackageResult, McpError> {
+        use crate::index::JobProgress;
+
+        let purl = nudox_engine::Purl::parse(&args.purl).map_err(|reason| McpError::Index {
+            // Parse failures are `IndexError::MalformedPurl`, so an agent sees
+            // one taxonomy for every way indexing can fail rather than a
+            // parse-shaped error here and an index-shaped one everywhere else.
+            error: Box::new(nudox_engine::IndexError::from(reason)),
+        })?;
+        let rendered = purl.render();
+
+        let wait = std::time::Duration::from_secs(
+            args.wait_seconds
+                .unwrap_or(DEFAULT_INDEX_WAIT_SECONDS)
+                .min(MAX_INDEX_WAIT_SECONDS)
+                .into(),
+        );
+
+        let (progress, joined) = self
+            .jobs
+            .run(&self.engine, purl, self.next_gen(), wait)
+            .await;
+
+        match progress {
+            JobProgress::Indexed(done) => Ok(IndexPackageResult::Indexed {
+                purl: done.purl,
+                package: format!("{}:{}", done.ecosystem, done.name),
+                version: done.version,
+                symbol_count: done.symbol_count,
+                root_key: done.root.map(|k| SymbolKeyDto::from_wire(&k).0),
+                integrity: report_integrity(&done.integrity),
+            }),
+            JobProgress::Failed(error) => Err(McpError::Index {
+                error: Box::new(error),
+            }),
+            JobProgress::Running {
+                stage,
+                received,
+                total,
+            } => Ok(IndexPackageResult::Running {
+                stage: stage.to_string(),
+                // Zero received bytes before the download starts is absence,
+                // not a measurement — reporting `0` would read as "the download
+                // has produced nothing", which is a different claim.
+                received_bytes: (received > 0).then_some(received),
+                total_bytes: total,
+                elapsed_seconds: self
+                    .jobs
+                    .elapsed(&rendered)
+                    .map(|d| d.as_secs())
+                    .unwrap_or_default(),
+                joined_existing_job: joined,
+                purl: rendered,
+            }),
+        }
     }
 
     /// `list_versions`, minus the MCP wrapping.
@@ -1202,7 +1455,7 @@ fn known_kinds() -> impl Iterator<Item = KindDiscriminant> {
 }
 
 /// The names accepted by the `kinds` argument.
-fn known_kind_names() -> Vec<String> {
+pub(crate) fn known_kind_names() -> Vec<String> {
     known_kinds().map(|k| format!("{k:?}")).collect()
 }
 

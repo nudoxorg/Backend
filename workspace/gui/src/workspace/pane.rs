@@ -495,6 +495,16 @@ impl Pane {
         self.slots.get(self.active_ix).map(|s| s.item.view())
     }
 
+    /// Every open tab, in strip order (left to right).
+    ///
+    /// Exposed because "the same tabs, in the same order" is the assertion a
+    /// restored window has to satisfy (`app::lifecycle`), and the alternative —
+    /// inverting `Shell::tabs`, a `HashMap` — cannot answer a question about
+    /// order at all.
+    pub fn tab_ids(&self) -> Vec<TabId> {
+        self.slots.iter().map(|slot| slot.id).collect()
+    }
+
     /// The id of the currently active tab.
     pub fn active_id(&self) -> Option<TabId> {
         self.slots.get(self.active_ix).map(|s| s.id)

@@ -1,16 +1,23 @@
-//! Python producer for the nudox-ir pipeline (ruff syntactic tier, default;
-//! pyrefly semantic tier, gated and not yet reachable — see below).
+//! Python producer for the nudox-ir pipeline (ruff syntactic tier always
+//! runs; pyrefly semantic tier layered on top, on by default since
+//! 2026-08-09 — see below).
 //!
 //! # Architecture
 //!
 //! ```text
-//! invoke():                                          (default: no feature needed)
-//!   syntax::build_oracle()                  → PythonOracle { modules: Vec<ModuleData> }
-//!     └─ ruff_python_parser::parse_module per .py file → owned data, all arenas dropped
+//! invoke():                                          (default: pyrefly feature on)
+//!   context::invoke_oracle()
+//!     ├─ syntax::build_oracle()              → PythonOracle { modules: Vec<ModuleData> }
+//!     │    └─ ruff_python_parser::parse_module per .py file → owned data, all arenas dropped
+//!     └─ pyrefly State/Bindings               → fills the type slots the syntax tier cannot
 //!
 //! lower():
 //!   emit::emit_package(&oracle, out)        → one-pass into Lowering<PythonId>
 //! ```
+//!
+//! `--no-default-features` drops straight to the syntactic tier alone
+//! (`syntax::build_oracle()` with no pyrefly pass) — see "pyrefly feature
+//! gate" below.
 //!
 //! `PythonOracle` (`oracle.rs`) and the lowering layer (`emit/`, `types.rs`,
 //! `docstring.rs`) were built oracle-agnostic from the start: no
@@ -19,10 +26,10 @@
 //! any of that ~2,100 lines — the same "extract to owned data, drop the
 //! arena" shape `nudox-producer-typescript`'s OXC front end uses.
 //!
-//! # pyrefly feature gate (off by default — now a choice, not a breakage)
+//! # pyrefly feature gate (ON by default since 2026-08-09)
 //!
 //! ```text
-//! invoke() with --features pyrefly:
+//! invoke() with the default feature set (pyrefly on):
 //!   context::invoke_oracle()
 //!     ├─ syntax::build_oracle()  → structure, docstrings, written annotations
 //!     └─ pyrefly State/Bindings  → fills the type slots the syntax tier cannot
@@ -37,11 +44,20 @@
 //! is committed in the pyrefly repo and therefore inside cargo's own git
 //! checkout; see the accounting in `Cargo.toml`.
 //!
-//! It stays off by default because of what it costs versus what it adds: 77
-//! extra lock entries for 4,607 of 16,025 corpus annotation positions gaining a
-//! resolvable type — and roughly a third of that gain is also reachable by
-//! matching bare type names against same-package ids, with no dependency at
-//! all. `context.rs`'s module doc carries the full split.
+//! It was off by default for a day on the grounds of what it costs versus
+//! what it adds: 77 extra lock entries for 4,607 of 16,025 corpus annotation
+//! positions gaining a resolvable type — and roughly a third of that gain is
+//! also reachable by matching bare type names against same-package ids, with
+//! no dependency at all. That framing was overruled on 2026-08-09: this
+//! producer's job is to be a documentation index, and the packages where
+//! pyrefly matters most are exactly the ones where the syntactic tier alone
+//! resolves nothing (six, pyyaml, python-dateutil, requests, beautifulsoup4,
+//! more-itertools all measure 0% annotation coverage; pyrefly recovers
+//! roughly half of their positions from nothing). `Cargo.toml`'s
+//! `[features]` comment carries the full decision record; `context.rs`'s
+//! module doc carries the per-bucket numbers. `--no-default-features` still
+//! builds the syntax-only tier, for anyone who needs to shed the git
+//! dependency.
 //!
 //! # Id scheme: `PythonId`
 //!

@@ -56,20 +56,25 @@ use gpui::{
     StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
     prelude::FluentBuilder as _,
 };
-use gpui_component::IconName;
+use gpui_component::{IconName, h_flex, v_flex};
 use gpui_component::dock::{
         DockArea, DockEvent, DockItem, DockPlacement, Panel, PanelEvent, PanelState,
         PanelView, PanelInfo, DockAreaState, TitleStyle, register_panel,
     };
 use serde_json::Value as JsonValue;
 
+use crate::app::account::{AccountService, AccountStatus};
 use crate::app::actions::{
-    OpenCommandPalette, OpenOmniSearch, ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
+    CycleTheme, CycleThemeBack, OpenAccount, OpenCommandPalette, OpenOmniSearch, ToggleBottomDock,
+    ToggleLeftDock, ToggleShortcutsOverlay,
 };
+use crate::app::lifecycle;
+use crate::views::sign_in::{SignInEvent, SignInView};
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
 use crate::stores::symbol::TabId as DocTabId;
 use crate::stores::events::{PackageActivated, PackagesChanged};
+use crate::stores::index_jobs::{IndexJobState, IndexJobStore, IndexJobsChanged};
 use crate::stores::{PackageStore, SearchStore, SymbolStore};
 use crate::views::project_panel::ProjectPanel;
 use crate::app::mcp::McpStatus;
@@ -261,19 +266,18 @@ placeholder_panel!(
 
 // Bottom dock panels.
 //
-// `JobsPanel` has no data source to render even when the reader is loading a
-// package: `EngineHandle::jobs()` hands back an already-closed receiver
+// `JobsPanel` used to be a placeholder, and its comment said why:
+// "`EngineHandle::jobs()` hands back an already-closed receiver
 // (LIMITATIONS.md L37), so the engine's job stream is a documented stub and
-// there is nothing here for `lindsey` to subscribe to. That is a backend gap;
-// what this crate owns is not lying about it.
-placeholder_panel!(
-    JobsPanel,
-    "jobs-panel",
-    "Jobs",
-    "No running jobs",
-    IconName::LayoutDashboard,
-    "Package loads, re-indexing and version switches appear here while they run."
-);
+// there is nothing here for `lindsey` to subscribe to."
+//
+// `EngineHandle::jobs()` is still `Err(Unimplemented)` — that gap is unchanged.
+// What changed is that there is now one kind of long-running work `lindsey`
+// starts itself, and therefore owns a stream for: an on-demand `pkg:` index
+// (`EngineHandle::index_purl`). So this panel renders exactly that set and says
+// so in its empty state. "No package has been indexed this session" is a claim
+// about a set `IndexJobStore` is authoritative over; "no jobs are running"
+// would have been a claim about a plane that still does not exist.
 
 placeholder_panel!(
     LogsPanel,
@@ -283,6 +287,166 @@ placeholder_panel!(
     IconName::SquareTerminal,
     "Diagnostics from the engine and its producers appear here."
 );
+
+/// The Jobs dock: on-demand package indexing, and how far each one has got.
+///
+/// Reads [`IndexJobStore`] and computes nothing (§13.3) — every string on
+/// screen was formatted in the store when the event arrived, not here on every
+/// frame. A download emits a byte-count update per chunk; formatting
+/// "2.3 MB of 4.1 MB" in `render` would be that work multiplied by the frame
+/// rate.
+pub struct JobsPanel {
+    focus: FocusHandle,
+    store: Entity<IndexJobStore<nudox_engine::EngineHandle>>,
+    /// Held so the panel repaints when the store changes. Dropping it would
+    /// leave the dock frozen at whatever it last drew (LD-18).
+    _subscription: gpui::Subscription,
+}
+
+impl JobsPanel {
+    pub fn new(
+        store: Entity<IndexJobStore<nudox_engine::EngineHandle>>,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subscription = cx.subscribe(&store, |_this, _store, _e: &IndexJobsChanged, cx| {
+            cx.notify();
+        });
+        Self {
+            focus: cx.focus_handle(),
+            store,
+            _subscription: subscription,
+        }
+    }
+}
+
+impl EventEmitter<PanelEvent> for JobsPanel {}
+
+impl Focusable for JobsPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Panel for JobsPanel {
+    fn panel_name(&self) -> &'static str {
+        "jobs-panel"
+    }
+
+    fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().child(SharedString::from("Jobs"))
+    }
+
+    fn title_style(&self, cx: &App) -> Option<TitleStyle> {
+        Some(cx.theme_ext().panel_title_style())
+    }
+
+    fn closable(&self, _: &App) -> bool {
+        false
+    }
+
+    fn dump(&self, _: &App) -> PanelState {
+        PanelState {
+            panel_name: "jobs-panel".to_string(),
+            children: Vec::new(),
+            info: PanelInfo::Panel(JsonValue::Null),
+        }
+    }
+}
+
+impl Render for JobsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+        let motion = crate::motion::tokens::MotionTokens::new(ext.motion_scale);
+
+        let store = self.store.read(cx);
+        if store.is_empty() {
+            return div().size_full().child(crate::ui::EmptyState::new(
+                IconName::LayoutDashboard,
+                SharedString::from("No package indexed this session"),
+                SharedString::from(
+                    "Type a package URL such as pkg:cargo/serde@1.0.196 into ⌘K to fetch and \
+                     document a package that is not in this corpus. Its progress appears here.",
+                ),
+                motion,
+            ));
+        }
+
+        let rows: Vec<_> = store.rows().to_vec();
+        div().size_full().p(sp.space_3).child(
+            v_flex().w_full().gap(sp.space_2).children(
+                rows.into_iter().map(move |row| {
+                    let (headline, detail, tone) = match &row.state {
+                        IndexJobState::Running { stage, detail } => {
+                            (stage.clone(), detail.clone(), colours.fg_muted)
+                        }
+                        IndexJobState::Done { detail, .. } => {
+                            (SharedString::from("Indexed"), detail.clone(), colours.fg_muted)
+                        }
+                        IndexJobState::Failed { detail, .. } => {
+                            (SharedString::from("Failed"), detail.clone(), colours.danger)
+                        }
+                    };
+                    // The `help` line is rendered *below* the failure and in a
+                    // quieter role: "what happened" and "what to do next" are
+                    // different sentences and the panel must not run them
+                    // together (the same split the MCP error vocabulary makes).
+                    let help = match &row.state {
+                        IndexJobState::Failed { help, .. } => help.clone(),
+                        _ => None,
+                    };
+
+                    v_flex()
+                        .w_full()
+                        .gap(sp.space_1)
+                        .px(sp.space_2)
+                        .py(sp.space_2)
+                        .rounded(sp.r_md)
+                        .bg(colours.bg_raised)
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .items_center()
+                                .gap(sp.space_2)
+                                .child(
+                                    div()
+                                        .text_size(ts.ui.size)
+                                        .line_height(ts.ui.line_height)
+                                        .text_color(colours.fg_default)
+                                        .child(row.purl.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(ts.dense.size)
+                                        .line_height(ts.dense.line_height)
+                                        .text_color(tone)
+                                        .child(headline),
+                                ),
+                        )
+                        .when(!detail.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .text_size(ts.dense.size)
+                                    .line_height(ts.dense.line_height)
+                                    .text_color(colours.fg_muted)
+                                    .child(detail),
+                            )
+                        })
+                        .children(help.map(|help| {
+                            div()
+                                .text_size(ts.dense.size)
+                                .line_height(ts.dense.line_height)
+                                .text_color(colours.fg_faint)
+                                .child(help)
+                        }))
+                }),
+            ),
+        )
+    }
+}
 
 // Right dock panel.
 placeholder_panel!(
@@ -368,6 +532,8 @@ enum OverlayView {
     OmniSearch(Entity<OmniSearch<SearchStore>>),
     /// `?` cheat sheet and `cmd-shift-P` palette — one view, two modes.
     Command(Entity<CommandOverlay>),
+    /// `cmd-shift-A` account panel: sign in, see the account, sign out.
+    SignIn(Entity<SignInView>),
 }
 
 impl OverlayView {
@@ -376,6 +542,7 @@ impl OverlayView {
         match self {
             Self::OmniSearch(view) => view.clone().into(),
             Self::Command(view) => view.clone().into(),
+            Self::SignIn(view) => view.clone().into(),
         }
     }
 
@@ -384,6 +551,7 @@ impl OverlayView {
         match self {
             Self::OmniSearch(view) => view.read(cx).focus_handle(cx),
             Self::Command(view) => view.read(cx).focus_handle(cx),
+            Self::SignIn(view) => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -414,6 +582,92 @@ const LEFT_DOCK_DEFAULT_W: f32 = 240.0;
 const RIGHT_DOCK_DEFAULT_W: f32 = 220.0;
 const BOTTOM_DOCK_DEFAULT_H: f32 = 200.0;
 
+/// One dock's persisted state: whether it is showing, and how big it is when it
+/// is.
+///
+/// Two fields rather than one signed number because they are independent facts
+/// — a closed dock still remembers the width it will re-open to, and collapsing
+/// that into "size 0 means closed" is how the re-open size gets lost.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DockState {
+    /// Whether the dock is currently showing.
+    pub open: bool,
+    /// The size it occupies when open — width for left/right, height for bottom.
+    pub size: f32,
+}
+
+impl DockState {
+    /// The size the dock's spring should be sitting at right now: its own size
+    /// when open, zero when closed.
+    ///
+    /// A method rather than a `match` repeated at three call sites, because
+    /// getting it wrong at one of them produces a window that renders a dock
+    /// the layout says is closed.
+    pub fn rendered_size(self) -> f32 {
+        if self.open { self.size } else { 0.0 }
+    }
+}
+
+/// Dock geometry that has to outlive any particular window.
+///
+/// # Why this is a `Global` and not just `Shell` state
+///
+/// It *was* just `Shell` state, and dismissing the window threw it away.
+/// `28-restored.png` caught it on the first run: every document came back, the
+/// active tab came back, the endpoint came back — and the bottom dock came back
+/// closed, because `Shell::new` hardcoded `false`.
+///
+/// The general rule that follows, and the reason this type is worth its weight:
+/// **once the window can be rebuilt, anything the reader would notice missing
+/// has to live on the `App`.** A store is the usual home for that; dock
+/// geometry is not corpus data and has no store, so it lives here. The
+/// screenshot suite's `28-restored` frame is the guard — it asserts the rebuilt
+/// frame *matches* the dismissed one, so the next piece of `Shell` state that
+/// silently fails to survive shows up as a pixel diff rather than as a
+/// complaint six months later.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DockLayout {
+    /// Project panel. Open at first launch — it is the corpus, and LR-10 says
+    /// local content is not something you go and find.
+    pub left: DockState,
+    /// Jobs + Logs.
+    pub bottom: DockState,
+    /// Outline.
+    pub right: DockState,
+}
+
+impl Default for DockLayout {
+    fn default() -> Self {
+        Self {
+            left: DockState {
+                open: true,
+                size: LEFT_DOCK_DEFAULT_W,
+            },
+            bottom: DockState {
+                open: false,
+                size: BOTTOM_DOCK_DEFAULT_H,
+            },
+            right: DockState {
+                open: false,
+                size: RIGHT_DOCK_DEFAULT_W,
+            },
+        }
+    }
+}
+
+impl gpui::Global for DockLayout {}
+
+impl DockLayout {
+    /// What the next window should be built with.
+    ///
+    /// [`Default`] on a cold launch, and whatever the last window published on
+    /// a rebuild — so a first launch and a restore go through the same code
+    /// path with different data, rather than through two code paths.
+    pub fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().copied().unwrap_or_default()
+    }
+}
+
 /// The main application chrome.
 ///
 /// `Shell` is a GPUI `Entity` that:
@@ -440,6 +694,21 @@ pub struct Shell {
     /// subscribed to) because dropping it would cancel its drain task and the
     /// status bar would freeze at whatever it last showed (LD-18).
     packages: Entity<PackageStore>,
+    /// On-demand `pkg:` index jobs. Held for the same reason as `packages`:
+    /// dropping it would cancel every running fetch and its drain task.
+    index_jobs: Entity<IndexJobStore<nudox_engine::EngineHandle>>,
+
+    // ── Account gate (`auth.md`) ─────────────────────────────────────────────
+    /// `Some` when the account posture cannot work: the corpus, the docks, the
+    /// omni-search overlay and every document surface are behind this until it
+    /// clears. `render` returns *only* this view's tree while it is set —
+    /// there is no branch that renders both, which is what makes the gate a
+    /// gate rather than a banner. `None` for [`AccountStatus::Absent`] (no
+    /// account service in this process at all — every `#[gpui::test]` app):
+    /// there is nothing to gate against, and [`SignInView`]'s own
+    /// `Unavailable` phase is what a reader would see if they asked for it,
+    /// not this field.
+    gate: Option<Entity<SignInView>>,
 
     // ── Overlays (§13.5) ─────────────────────────────────────────────────────
     /// Which overlays are open, innermost last.
@@ -504,9 +773,67 @@ pub struct Shell {
     _subs: Vec<Subscription>,
 }
 
-/// Scrim alpha at full strength (§13.5). Dark enough to push the page back,
-/// light enough that the reader keeps their place in it.
-const SCRIM_ALPHA: f32 = 0.42;
+
+/// Give a freshly-built pane a tab for every document the store still holds.
+///
+/// # Why a window rebuild has to do this
+///
+/// `SearchStore`, `SymbolStore` and `PackageStore` are app-scoped, not
+/// window-scoped (see `main.rs`), so dismissing lindsey's window destroys the
+/// *view* of the corpus and nothing else. The pane, though, is built empty
+/// every time. Restoring without this step would hand the reader a shell with
+/// no documents while the store underneath still had all of them — and worse,
+/// `SymbolStore::open` dedupes by key, so re-opening one from search would
+/// re-activate an invisible tab and appear to do nothing.
+///
+/// # Ordering
+///
+/// Tabs come back in `TabId` order, which is open order — `next_tab_id` is a
+/// monotonic counter — so the strip reads the way the reader left it rather
+/// than in `HashMap` iteration order, which varies per run.
+///
+/// Each tab is opened with [`Activation::Preserve`] so the keyboard is not
+/// dragged across the strip once per document; the reader's actual tab is
+/// focused once, at the end, from the store's own record of it.
+fn rehydrate_tabs(
+    pane: &Entity<Pane>,
+    symbols: &Entity<SymbolStore>,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) -> HashMap<DocTabId, PaneTabId> {
+    let (mut resident, active) = {
+        let store = symbols.read(cx);
+        (
+            store.docs.keys().copied().collect::<Vec<DocTabId>>(),
+            store.active(),
+        )
+    };
+    if resident.is_empty() {
+        return HashMap::new();
+    }
+    resident.sort_unstable();
+
+    let mut tabs = HashMap::with_capacity(resident.len());
+    for doc in resident {
+        let store = symbols.clone();
+        let page = cx.new(|cx| SymbolPage::new(doc, store, window, cx));
+        let opened = pane.update(cx, |pane, cx| {
+            pane.open_item(page, Vec::new(), Activation::Preserve, window, cx)
+        });
+        tabs.insert(doc, opened);
+    }
+
+    // Put the reader back on the document they were reading. `Focus` here and
+    // nowhere else in this function: exactly one tab should own the keyboard,
+    // and it is this one.
+    if let Some(restored) = active.and_then(|doc| tabs.get(&doc).copied()) {
+        pane.update(cx, |pane, cx| {
+            pane.activate_tab(restored, Activation::Focus, window, cx);
+        });
+    }
+
+    tabs
+}
 
 impl Shell {
     /// Construct the shell, wiring up the `DockArea` and all placeholder panels.
@@ -518,6 +845,7 @@ impl Shell {
         search: Entity<SearchStore>,
         symbols: Entity<SymbolStore>,
         packages: Entity<PackageStore>,
+        index_jobs: Entity<IndexJobStore<nudox_engine::EngineHandle>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -535,8 +863,9 @@ impl Shell {
         register_panel(cx, "search-panel", |_, _, _, window, cx| {
             Box::new(cx.new(|cx| SearchPanel::new(window, cx)))
         });
-        register_panel(cx, "jobs-panel", |_, _, _, window, cx| {
-            Box::new(cx.new(|cx| JobsPanel::new(window, cx)))
+        let panel_jobs = index_jobs.clone();
+        register_panel(cx, "jobs-panel", move |_, _, _, window, cx| {
+            Box::new(cx.new(|cx| JobsPanel::new(panel_jobs.clone(), window, cx)))
         });
         register_panel(cx, "logs-panel", |_, _, _, window, cx| {
             Box::new(cx.new(|cx| LogsPanel::new(window, cx)))
@@ -579,7 +908,7 @@ impl Shell {
         );
 
         // ── Bottom dock (Jobs + Logs) ──────────────────────────────────────────
-        let jobs_panel = cx.new(|cx| JobsPanel::new(window, cx));
+        let jobs_panel = cx.new(|cx| JobsPanel::new(index_jobs.clone(), window, cx));
         let logs_panel = cx.new(|cx| LogsPanel::new(window, cx));
         let bottom_item = DockItem::tabs(
             vec![
@@ -598,26 +927,32 @@ impl Shell {
         // ── Centre content ─────────────────────────────────────────────────────
         let center_item = DockItem::tab(center_panel, &weak_dock, window, cx);
 
+        // Dock geometry comes from the app, not from constants: on a cold
+        // launch `DockLayout::current` is `Default` (left open, the other two
+        // closed — the values that used to be hardcoded here), and on a window
+        // rebuild it is whatever the dismissed window last published. See
+        // [`DockLayout`] for why this cannot live in `Shell`.
+        let layout = DockLayout::current(cx);
         dock_area.update(cx, |da, cx| {
             da.set_center(center_item, window, cx);
             da.set_left_dock(
                 left_item,
-                Some(px(LEFT_DOCK_DEFAULT_W)),
-                true,
+                Some(px(layout.left.size)),
+                layout.left.open,
                 window,
                 cx,
             );
             da.set_bottom_dock(
                 bottom_item,
-                Some(px(BOTTOM_DOCK_DEFAULT_H)),
-                false, // closed by default
+                Some(px(layout.bottom.size)),
+                layout.bottom.open,
                 window,
                 cx,
             );
             da.set_right_dock(
                 right_item,
-                Some(px(RIGHT_DOCK_DEFAULT_W)),
-                false, // closed by default
+                Some(px(layout.right.size)),
+                layout.right.open,
                 window,
                 cx,
             );
@@ -637,15 +972,77 @@ impl Shell {
         // `app::mcp` and LIMITATIONS.md L35.
         let initial_packages = packages.read(cx).summary_label();
         let initial_mcp = McpStatus::from_app(cx);
+        // Same reasoning for the account as for MCP above, with one addition:
+        // this calls `refresh()` rather than reading `status()`, so the gate
+        // this constructor is about to build is judged against the posture
+        // *now*, not whatever was last cached.
+        //
+        // The difference is not cosmetic. `AccountService::status` is a cache
+        // that only `refresh()` updates, and this `Shell` is rebuilt on every
+        // dock-click / `Window ▸ Show lindsey` after a dismissal
+        // (`app::lifecycle`) — a window can sit dismissed for a week while its
+        // grace quietly expires underneath it. Reading the cached status here
+        // would show the *last-known* posture and could rebuild straight into
+        // an ungated shell for a session that has, in fact, lapsed: a fail-open
+        // on exactly the gesture (`app::lifecycle::WindowSession::show`) most
+        // likely to follow a long absence. `refresh()` costs one clock read and
+        // no network — [`nudox_mcp::AccountGate::posture`] is pure — so there is
+        // no reason to prefer the stale value.
+        //
+        // This still does not make the gate live *while a window stays open*:
+        // nothing here re-derives the posture on a timer, so a grace window
+        // that expires mid-session is not caught until the next sign-in,
+        // sign-out, or rebuild. The tool-call boundary is unaffected either
+        // way — `AccountGate::admit` re-derives the posture from the clock on
+        // every call, in `nudox-mcp`, independent of anything this view caches.
+        // A stale GUI gate can only be *too permissive about what the human
+        // sees*, never about what an agent's tool call is allowed to do.
+        let initial_account = if cx.try_global::<AccountService>().is_some() {
+            cx.update_global::<AccountService, _>(|service, _| service.refresh())
+        } else {
+            AccountStatus::Absent
+        };
         let status_bar = cx.new(|cx| {
             let mut bar = StatusBar::new(cx);
             bar.set_packages(initial_packages, cx);
             bar.set_mcp(initial_mcp, cx);
+            // Cloned rather than moved: the gate built just below also reads
+            // `initial_account`, and constructing it *from* the presentation
+            // the status bar just rendered is what guarantees the chip and the
+            // gate cannot disagree about which posture launch found.
+            bar.set_account(initial_account.clone(), cx);
             bar
         });
 
         // ── Subscribe to layout changes ───────────────────────────────────────
         let mut subs = Vec::new();
+
+        // ── Account gate (`auth.md`) ──────────────────────────────────────────
+        //
+        // Built here, at launch, from the same `initial_account` the status
+        // bar was just seeded from — see the field doc on `Shell::gate` for
+        // what `Some`/`None` mean. `SignedOut`, `StoreUnavailable`,
+        // `AwaitingFirstVerification`, `NeverVerified`, `GraceExpired`,
+        // `Revoked` and `OverLimit` all gate; only `Active` and
+        // `GraceOffline` — the two postures whose `can_work` is `true` — do
+        // not. That is `AccountPresentation::can_work` verbatim: the gate
+        // asks `app::account`'s own derivation, not a second opinion on the
+        // posture.
+        let gate = match &initial_account {
+            AccountStatus::Live(p) if !p.can_work => {
+                let view = cx.new(|cx| SignInView::new(Some(p.clone()), window, cx));
+                subs.push(cx.subscribe_in(
+                    &view,
+                    window,
+                    |shell, view, event: &SignInEvent, window, cx| {
+                        shell.on_sign_in_event(view.clone(), event, window, cx);
+                    },
+                ));
+                Some(view)
+            }
+            AccountStatus::Live(_) | AccountStatus::Absent => None,
+        };
+
         // Keep the store's Replace target aligned with the pane. Without this
         // edge, selecting an older tab and then opening a new symbol could close
         // the last-opened document instead of the document being read.
@@ -742,11 +1139,33 @@ impl Shell {
             }),
         );
 
+        // ── Rehydrate whatever the store still holds ──────────────────────────
+        //
+        // A cold launch finds an empty `SymbolStore` and this is a no-op. A
+        // *rebuilt* window — the reader dismissed lindsey, the process kept
+        // hosting its MCP endpoint, and they clicked the dock icon
+        // (`app::lifecycle`) — finds every document still resident, because the
+        // stores live on the `App` and only the pixels were thrown away.
+        //
+        // Without this, restoring would silently produce an empty shell, and
+        // the failure would be invisible in code review: `Shell::new` is
+        // *correct* for a cold launch, and it was the only caller until now.
+        // Making the shell a pure projection of the stores is what makes
+        // "destroy the window and rebuild it" safe as a design, rather than
+        // safe by luck.
+        let tabs = rehydrate_tabs(&pane, &symbols, window, cx);
+
         // Focus the pane so the very first keystroke has somewhere to land.
         // Actions dispatch from the focused element upward; with nothing
         // focused, `cmd-K` on a fresh window would do nothing at all.
-        let pane_focus = pane.read(cx).focus_handle(cx);
-        window.focus(&pane_focus, cx);
+        //
+        // After the pane, not before: `rehydrate_tabs` focuses the document the
+        // reader was on, and focusing the pane root afterwards would take it
+        // straight back off again.
+        if tabs.is_empty() {
+            let pane_focus = pane.read(cx).focus_handle(cx);
+            window.focus(&pane_focus, cx);
+        }
 
         Self {
             dock_area,
@@ -756,24 +1175,31 @@ impl Shell {
             search,
             symbols,
             packages,
+            index_jobs,
+
+            gate,
 
             overlays: OverlayStack::new(),
             presented: None,
             scrim: Motion::new(0.0, Spring::SNAPPY),
 
-            tabs: HashMap::new(),
+            tabs,
 
-            left_w:   Motion::new(LEFT_DOCK_DEFAULT_W,  Spring::DEFAULT),
-            bottom_h: Motion::new(0.0,                  Spring::DEFAULT),
-            right_w:  Motion::new(0.0,                  Spring::DEFAULT),
+            // Springs start *settled* at the layout's current size rather than
+            // animating in: a rebuilt window has to be the frame the reader
+            // dismissed, and a dock sliding open on restore would both look
+            // wrong and make the restored frame differ from the dismissed one.
+            left_w:   Motion::new(layout.left.rendered_size(),   Spring::DEFAULT),
+            bottom_h: Motion::new(layout.bottom.rendered_size(), Spring::DEFAULT),
+            right_w:  Motion::new(layout.right.rendered_size(),  Spring::DEFAULT),
 
-            left_w_open:   LEFT_DOCK_DEFAULT_W,
-            bottom_h_open: BOTTOM_DOCK_DEFAULT_H,
-            right_w_open:  RIGHT_DOCK_DEFAULT_W,
+            left_w_open:   layout.left.size,
+            bottom_h_open: layout.bottom.size,
+            right_w_open:  layout.right.size,
 
-            left_open:   true,
-            bottom_open: false,
-            right_open:  false,
+            left_open:   layout.left.open,
+            bottom_open: layout.bottom.open,
+            right_open:  layout.right.open,
 
             banner_h: Motion::new(0.0, Spring::SNAPPY),
             current_banner: None,
@@ -970,6 +1396,243 @@ impl Shell {
         );
     }
 
+    // ── Account overlay (`auth.md`) ──────────────────────────────────────────
+
+    /// The key `OverlayKind::Modal` identity for the account panel.
+    ///
+    /// `Modal` rather than a bespoke variant because it *is* one: it does not
+    /// dismiss on a scrim click (`OverlayKind::dismiss_on_scrim_click`), which
+    /// is right for a surface where a stray click mid-paste would throw away a
+    /// key the user just fetched from a browser.
+    fn account_overlay_kind() -> OverlayKind {
+        OverlayKind::Modal(SharedString::from("account"))
+    }
+
+    /// `cmd-shift-A`: open the account panel.
+    ///
+    /// One surface for sign-in and signed-in. `SignInView::new` derives which
+    /// it shows from the presentation it is handed, so the shell does not have
+    /// to know — and cannot get it wrong by asking the wrong question.
+    fn open_account(&mut self, _: &OpenAccount, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = Self::account_overlay_kind();
+        if self.refocus_presented(&kind, window, cx) {
+            return;
+        }
+
+        let presentation = AccountStatus::from_app(cx).presentation().cloned();
+        let view = cx.new(|cx| SignInView::new(presentation, window, cx));
+        let subs = vec![cx.subscribe_in(
+            &view,
+            window,
+            |shell, view, event: &SignInEvent, window, cx| {
+                shell.on_sign_in_event(view.clone(), event, window, cx);
+            },
+        )];
+        self.present_overlay(kind, OverlayView::SignIn(view), subs, window, cx);
+    }
+
+    /// What the account panel reports upward.
+    ///
+    /// The **shell owns every effect**; the view owns none. That split is not
+    /// ceremony — `SignInView` has no access to the `AccountService` global, so
+    /// it can be constructed and driven in a test app that has no account
+    /// service at all, which is exactly what `tests/screenshots.rs` needs for
+    /// the frames it takes before one is installed.
+    fn on_sign_in_event(
+        &mut self,
+        view: Entity<SignInView>,
+        event: &SignInEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SignInEvent::Dismiss => self.close_overlay(window, cx),
+
+            SignInEvent::Submit(key) => {
+                let key = (**key).clone();
+                // The result arrives on the engine's runtime. Hop back onto the
+                // GPUI thread before touching any entity — the same rule every
+                // other async result in this app follows (`crate::bridge`).
+                let (tx, rx) = flume::bounded(1);
+                if let Some(service) = cx.try_global::<AccountService>() {
+                    service.sign_in(key, move |outcome| {
+                        let _ = tx.send(outcome);
+                    });
+                } else {
+                    let _ = tx.send(Err(nudox_mcp::SignInFailure::NoService));
+                }
+
+                cx.spawn_in(window, async move |_shell, cx| {
+                    let outcome = match rx.into_recv_async().await {
+                        Ok(outcome) => outcome,
+                        // The sender was dropped without answering. That is a
+                        // bug on our side, not a rejection of the user's key,
+                        // and saying "rejected" would send them to regenerate a
+                        // key that is fine.
+                        Err(_) => Err(nudox_mcp::SignInFailure::NoService),
+                    };
+                    let rendered = cx.update(|_window, cx| {
+                        let status =
+                            cx.update_global::<AccountService, _>(|service, _| service.refresh());
+                        // The menu bar's account line is a function of this
+                        // same status (`app::menus`); refresh it in the same
+                        // update so a reader who opens the menu right after
+                        // signing in never sees the stale "Sign in…" line.
+                        lifecycle::refresh_menus(cx);
+                        status
+                    });
+                    let presentation = rendered
+                        .ok()
+                        .and_then(|status| status.presentation().cloned());
+
+                    let _ = view.update_in(cx, |view, _window, cx| {
+                        view.settle(
+                            match (outcome, presentation) {
+                                (Ok(posture), Some(p)) => Ok((posture, p)),
+                                // Verified, but the service could not re-derive
+                                // a presentation — impossible in practice and
+                                // not worth a fabricated one.
+                                (Ok(_), None) => Err(nudox_mcp::SignInFailure::NoService),
+                                (Err(e), _) => Err(e),
+                            },
+                            cx,
+                        );
+                    });
+                })
+                .detach();
+            }
+
+            SignInEvent::SignOut => {
+                if cx.try_global::<AccountService>().is_some() {
+                    cx.update_global::<AccountService, _>(|service, _| {
+                        service.sign_out();
+                    });
+                }
+                self.refresh_account(cx);
+                lifecycle::refresh_menus(cx);
+                view.update(cx, |view, cx| view.reset_to_form(cx));
+                // "Sign out returns to the gate": re-block the corpus behind
+                // the same view, reset to its empty form, whether sign-out was
+                // requested from the gate itself or from the dismissable
+                // `cmd-shift-A` overlay. See `Self::engage_gate` for why an
+                // overlay-triggered sign-out must not leave a dismissable
+                // escape hatch back to a shell the reader is no longer signed
+                // in to.
+                self.engage_gate(view, window, cx);
+            }
+        }
+    }
+
+    /// The account overlay, when it is the presented one.
+    ///
+    /// Exposed for the screenshot harness, which drives the *real* view — typing
+    /// into it and submitting through it — rather than photographing a
+    /// hand-built stand-in. Same reachability discipline as
+    /// `StatusBar::mcp()`: a test that asserts on what the reader sees has to
+    /// be able to reach what the reader sees (AGENTS-DOCTRINE §6 — never
+    /// fabricate UI).
+    pub fn presented_sign_in(&self) -> Option<Entity<SignInView>> {
+        match self.presented.as_ref()?.view {
+            OverlayView::SignIn(ref view) => Some(view.clone()),
+            OverlayView::OmniSearch(_) | OverlayView::Command(_) => None,
+        }
+    }
+
+    /// Re-read the account status into the status bar.
+    ///
+    /// Called after every transition rather than polled: the presentation is
+    /// derived on change (GUI-PLAN §1.1.4), and a status bar that recomputed it
+    /// per frame would allocate on every one of the 120 frames a second it is
+    /// visible.
+    fn refresh_account(&mut self, cx: &mut Context<Self>) {
+        let status = if cx.try_global::<AccountService>().is_some() {
+            cx.update_global::<AccountService, _>(|service, _| service.refresh())
+        } else {
+            AccountStatus::Absent
+        };
+        self.publish_account_status(status, cx);
+    }
+
+    /// Push an already-derived account status into the status bar.
+    ///
+    /// Public because the screenshot harness drives `SignInView::submit`
+    /// directly — it has to, in order to await the round trip before capturing
+    /// — and so does not go through the subscription that would otherwise call
+    /// [`Self::refresh_account`]. Exposing the *publish* half rather than
+    /// letting the harness reach into `status_bar` keeps the status bar's
+    /// invariant (label derived from status, in one place) intact.
+    pub fn publish_account_status(&mut self, status: AccountStatus, cx: &mut Context<Self>) {
+        self.status_bar
+            .update(cx, |bar, cx| bar.set_account(status, cx));
+    }
+
+    // ── Account gate (`auth.md`) ──────────────────────────────────────────────
+
+    /// Whether the corpus is currently behind the gate.
+    ///
+    /// Exposed for tests and for the screenshot harness — asserting "the
+    /// corpus is unreachable" has to be able to ask the shell what it is
+    /// actually rendering, the same reachability discipline
+    /// `presented_sign_in` and `StatusBar::mcp` already follow.
+    pub fn is_gated(&self) -> bool {
+        self.gate.is_some()
+    }
+
+    /// The gate's own `SignInView`, when the gate is up.
+    ///
+    /// Distinct from [`Self::presented_sign_in`]: that one is the dismissable
+    /// `cmd-shift-A` overlay, which does not exist while the gate is up — see
+    /// [`Self::engage_gate`]. A caller driving the real sign-in flow through
+    /// the launch surface (rather than the overlay) needs this one.
+    pub fn gate_view(&self) -> Option<Entity<SignInView>> {
+        self.gate.clone()
+    }
+
+    /// Re-block the corpus behind the sign-in surface.
+    ///
+    /// The only caller is [`Self::on_sign_in_event`]'s `SignOut` arm, and it
+    /// is called whether the sign-out was requested from the gate itself or
+    /// from the dismissable `cmd-shift-A` overlay. That second case is why
+    /// this exists as its own step rather than just setting `self.gate`: if
+    /// an overlay is presented, it is torn down here rather than left
+    /// dismissable. Leaving it up would mean `escape` — or a stray click on
+    /// the scrim — reveals the shell behind it to a reader who is no longer
+    /// signed in, which is exactly the "screen you must pass" the gate exists
+    /// to be.
+    fn engage_gate(&mut self, view: Entity<SignInView>, window: &mut Window, cx: &mut Context<Self>) {
+        if self.presented.take().is_some() {
+            self.overlays.pop();
+            self.scrim.snap_to(0.0);
+        }
+        let focus = view.read(cx).focus_handle(cx);
+        self.gate = Some(view);
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Clear the gate once its acceptance animation has actually finished
+    /// playing.
+    ///
+    /// Called at the top of every `render` while the gate is up. Not called
+    /// the instant `settle` reports success: `SignInView::accepted` is the
+    /// spring that "says the thing you typed became the thing you now are"
+    /// (see its module docs), and swapping the gate away for the real shell
+    /// mid-collapse would mean nobody ever sees the one animation this
+    /// surface exists to show. `SignInView::accepted_and_settled` is true
+    /// immediately for a reduced-motion viewer (the spring snaps), so this is
+    /// correct in both modes with no branch of its own.
+    fn settle_gate_if_ready(&mut self, cx: &mut Context<Self>) {
+        let Some(gate) = self.gate.clone() else {
+            return;
+        };
+        if !gate.read(cx).accepted_and_settled() {
+            return;
+        }
+        self.gate = None;
+        self.refresh_account(cx);
+        lifecycle::refresh_menus(cx);
+    }
+
     /// What the overlay reports upward (§15 — the view never closes itself).
     fn on_omni_event(
         &mut self,
@@ -990,6 +1653,24 @@ impl Shell {
                 // you can open several hits from one query without retyping it.
                 if disposition == OpenDisposition::Replace {
                     self.close_overlay(window, cx);
+                }
+            }
+            OmniSearchEvent::IndexPurl { purl } => {
+                // Start the fetch, then close the overlay and open the Jobs
+                // dock. Closing is right here and not for `Open`'s `Stay`/
+                // `Background` dispositions, because there is nothing more to
+                // do in a search panel whose query cannot match anything — and
+                // because the work takes tens of seconds, so the user needs to
+                // be looking at where it is reported rather than at a panel
+                // that will sit empty.
+                let purl = purl.clone();
+                self.index_jobs.update(cx, |store, cx| store.start(purl, cx));
+                self.close_overlay(window, cx);
+                // Only *open* it — never toggle. A user who already had Jobs
+                // open and pressed enter would otherwise have it close on them
+                // at the exact moment it acquired something to show.
+                if !self.bottom_open {
+                    self.toggle_bottom_dock(window, cx);
                 }
             }
             OmniSearchEvent::Dismiss => self.close_overlay(window, cx),
@@ -1150,7 +1831,33 @@ impl Shell {
         self.dock_area.update(cx, |da, cx| {
             da.toggle_dock(DockPlacement::Left, window, cx);
         });
+        self.publish_layout(cx);
         cx.notify();
+    }
+
+    /// Advance to the next bundled theme, live.
+    ///
+    /// # Why this handler does almost nothing
+    ///
+    /// Everything that has to happen — resolving the palette, writing both
+    /// theme globals, marking every window dirty — happens inside
+    /// [`ThemeRegistry::cycle`]. The handler's whole job is to not add a
+    /// fourth thing that also has to happen and could be forgotten. In
+    /// particular it does **not** call `cx.notify()` on the shell: notifying
+    /// one entity would redraw one entity, which is precisely the partial
+    /// update that leaves half the window in the old theme.
+    pub fn cycle_theme(&mut self, _: &CycleTheme, _window: &mut Window, cx: &mut Context<Self>) {
+        crate::theme::ThemeRegistry::cycle(cx);
+    }
+
+    /// Go back one theme in the cycle. See [`Shell::cycle_theme`].
+    pub fn cycle_theme_back(
+        &mut self,
+        _: &CycleThemeBack,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        crate::theme::ThemeRegistry::cycle_back(cx);
     }
 
     /// Toggle the bottom dock.
@@ -1166,6 +1873,7 @@ impl Shell {
         self.dock_area.update(cx, |da, cx| {
             da.toggle_dock(DockPlacement::Bottom, window, cx);
         });
+        self.publish_layout(cx);
         cx.notify();
     }
 
@@ -1182,7 +1890,31 @@ impl Shell {
         self.dock_area.update(cx, |da, cx| {
             da.toggle_dock(DockPlacement::Right, window, cx);
         });
+        self.publish_layout(cx);
         cx.notify();
+    }
+
+    /// Publish the current dock geometry to the app, so the next window built
+    /// comes back looking like this one.
+    ///
+    /// Derived from the live fields at the moment it is called, never
+    /// accumulated in parallel with them (doctrine §8) — the global is a
+    /// *projection* of `Shell`, so the two cannot disagree.
+    fn publish_layout(&self, cx: &mut Context<Self>) {
+        cx.set_global(DockLayout {
+            left: DockState {
+                open: self.left_open,
+                size: self.left_w_open,
+            },
+            bottom: DockState {
+                open: self.bottom_open,
+                size: self.bottom_h_open,
+            },
+            right: DockState {
+                open: self.right_open,
+                size: self.right_w_open,
+            },
+        });
     }
 
     /// Push a banner into view (§13.2).  At most one banner at a time.
@@ -1252,6 +1984,37 @@ impl Shell {
     pub fn pane_tab_for_document(&self, doc: DocTabId) -> Option<PaneTabId> {
         self.tabs.get(&doc).copied()
     }
+
+    /// Which documents the pane is showing, **in strip order**.
+    ///
+    /// The inverse of [`pane_tab_for_document`](Self::pane_tab_for_document),
+    /// ordered by the pane rather than by the `HashMap`. It exists because
+    /// "the reader gets their tabs back, in their order" is the property a
+    /// rebuilt window has to satisfy (`app::lifecycle`), and a set comparison
+    /// would pass on a strip that came back shuffled.
+    pub fn open_documents(&self, cx: &App) -> Vec<DocTabId> {
+        self.pane
+            .read(cx)
+            .tab_ids()
+            .into_iter()
+            .filter_map(|pane_tab| {
+                self.tabs
+                    .iter()
+                    .find(|(_, mapped)| **mapped == pane_tab)
+                    .map(|(doc, _)| *doc)
+            })
+            .collect()
+    }
+
+    /// The status bar entity (§13.3).
+    ///
+    /// Exposed so a test can read the MCP endpoint out of *the thing the reader
+    /// looks at* rather than out of the global behind it — see
+    /// `tests/mcp_endpoint.rs` for why that distinction is the whole point of
+    /// L35.
+    pub fn status_bar(&self) -> &Entity<StatusBar> {
+        &self.status_bar
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1290,6 +2053,36 @@ impl Render for Shell {
         }
 
         let theme = cx.theme_ext().clone();
+
+        // ── Account gate (`auth.md`) ───────────────────────────────────────────
+        //
+        // Checked, and possibly cleared, before anything else renders — see
+        // `Self::settle_gate_if_ready` for why this is not done the instant
+        // sign-in succeeds. While `self.gate` is `Some`, this branch returns
+        // the gate's tree and *nothing else*: no dock area, no status bar, no
+        // overlay layer. That is what makes the omni-search overlay, the
+        // corpus, and every document surface actually unreachable rather than
+        // merely hidden behind a banner — there is no `on_action` listener
+        // anywhere in this tree for `OpenOmniSearch`, `OpenAccount`,
+        // `ToggleLeftDock`, or any of the shell's other actions, because the
+        // element that would have carried them was never built this frame.
+        //
+        // The wrapping div paints the theme's own background so the gate does
+        // not sit on undrawn window backing outside `SignInView`'s own
+        // centred panel; it declares no `key_context` and no `track_focus` of
+        // its own, because `SignInView::render` already is a sole root
+        // producer (its own doc comment) and a second claim on either would
+        // be the doctrine §8 defect this file's own module docs warn about.
+        self.settle_gate_if_ready(cx);
+        if let Some(gate) = self.gate.clone() {
+            return div()
+                .id("gate")
+                .size_full()
+                .bg(theme.colours.bg_base)
+                .child(gate)
+                .into_any_element();
+        }
+
         let banner_h = self.banner_h.value();
 
         // ── Banner strip (§13.2, §5.3 `banner.drop`) ─────────────────────────
@@ -1322,6 +2115,7 @@ impl Render for Shell {
         // the dock area, so an overlay covers the docks and status bar too —
         // a search panel that a sidebar can occlude is not a modal surface.
         let scrim_opacity = self.scrim.value();
+        let scrim_colour = theme.colours.scrim;
         // One field, so there is no priority order to get wrong between two
         // live views — see `PresentedOverlay`.
         let overlay_view: Option<AnyView> =
@@ -1351,7 +2145,20 @@ impl Render for Shell {
                             .top_0()
                             .left_0()
                             .size_full()
-                            .bg(gpui::black().opacity(scrim_opacity * SCRIM_ALPHA))
+                            // The scrim is a theme role, not a colour written here.
+                            //
+                            // This was `gpui::black().opacity(…)` — the last
+                            // raw colour constructor in any view in the crate.
+                            // Two things were wrong with it beyond the rule.
+                            // Absolute black belongs to no theme, so a warm
+                            // theme dimmed to a cold grey; and one alpha served
+                            // both appearances, so a light page was veiled as
+                            // hard as a dark one when a light page needs less
+                            // to read as suspended. `colours.scrim` carries the
+                            // theme's own darkest neutral at the right strength
+                            // for its appearance; the multiply is the spring's
+                            // fade-in, which is motion, not colour.
+                            .bg(scrim_colour.opacity(scrim_opacity))
                             // A modal refuses this (§13.5): a destructive
                             // confirmation that a stray click dismisses trains
                             // people to click through the next one.
@@ -1383,12 +2190,20 @@ impl Render for Shell {
             .on_action(cx.listener(Self::open_omni_search))
             .on_action(cx.listener(Self::toggle_shortcuts_overlay))
             .on_action(cx.listener(Self::open_command_palette))
+            .on_action(cx.listener(Self::open_account))
             .on_action(cx.listener(|shell, _: &ToggleLeftDock, window, cx| {
                 shell.toggle_left_dock(window, cx);
             }))
             .on_action(cx.listener(|shell, _: &ToggleBottomDock, window, cx| {
                 shell.toggle_bottom_dock(window, cx);
             }))
+            // Theme cycling. Handled on the shell rather than globally so it
+            // sits in the same dispatch path as every other `global` binding —
+            // a window-level `on_action` for one action would be a second way
+            // for actions to reach handlers, and doctrine §8's `render` note is
+            // about exactly what a second path costs.
+            .on_action(cx.listener(Self::cycle_theme))
+            .on_action(cx.listener(Self::cycle_theme_back))
             .size_full()
             // The overlay layer is absolute; without this it would position
             // against the window rather than the shell.
@@ -1414,6 +2229,7 @@ impl Render for Shell {
                     .child(self.status_bar.clone()),
             )
             .children(overlay)
+            .into_any_element()
     }
 }
 
@@ -1445,7 +2261,7 @@ mod tests {
         cx.executor().allow_parking();
         cx.update(|cx: &mut App| {
             gpui_component::init(cx);
-            crate::theme::ext::NudoxThemeExt::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
             cx.set_global(crate::motion::tokens::MotionTokens::new(1.0));
             cx.bind_keys(crate::app::keymaps::all_bindings());
         });
@@ -1454,14 +2270,15 @@ mod tests {
         let search = cx.new(|_cx| SearchStore::new(engine.clone()));
         let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
         let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+        let index_jobs = cx.new(|_c| IndexJobStore::new(engine.clone()));
 
         let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
-        let (s2, y2, p2) = (search.clone(), symbols.clone(), packages.clone());
+        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
         let window = cx
             .update(|cx: &mut App| {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-                    let entity = cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), window, cx));
+                    let entity = cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     entity
                 })
@@ -1541,6 +2358,201 @@ mod tests {
         vcx.run_until_parked();
         let len_after_first_close = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
         assert_eq!(len_after_first_close, 1, "cmd-w must close the newly-active tab");
+    }
+
+    /// A pre-rendered presentation for a posture, built the same way
+    /// `AccountService::status_of` builds one — through
+    /// `AccountPresentation::derive` — rather than by hand, so a passing
+    /// assertion is evidence about the real derivation.
+    fn presentation_for(posture: &nudox_mcp::Posture) -> crate::app::account::AccountPresentation {
+        crate::app::account::AccountPresentation::derive(
+            posture,
+            None,
+            None,
+            &nudox_mcp::account::host::UsageReport {
+                pending: 0,
+                dropped: nudox_mcp::account::ledger::DroppedTally::default(),
+                persistent: false,
+            },
+        )
+    }
+
+    fn active_posture() -> nudox_mcp::Posture {
+        nudox_mcp::Posture::Active {
+            account: nudox_mcp::account::state::Account {
+                user: nudox_mcp::account::state::UserId(24),
+                fingerprint: nudox_mcp::ApiKey::parse(
+                    "ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517",
+                )
+                .expect("sample key parses")
+                .fingerprint(),
+                verified_at: std::time::SystemTime::now(),
+            },
+            source: nudox_mcp::account::store::KeySource::Keychain,
+            quota: nudox_mcp::account::state::QuotaKnowledge::Unknown,
+        }
+    }
+
+    /// The gate, end to end: a `SignedOut` launch blocks the omni-search
+    /// overlay entirely (not merely hides it — dispatching the action while
+    /// gated is a no-op because no element in that frame's tree carries an
+    /// `on_action` listener for it), a successful sign-in clears the gate and
+    /// the *same* dispatch now opens the overlay for real, and signing back
+    /// out re-blocks it.
+    ///
+    /// This is the test AGENTS-DOCTRINE §4 asks for over "the button exists":
+    /// it asserts on the actually-observable effect of a dispatched action —
+    /// whether an overlay came up — not on the presence of a handler.
+    #[gpui::test]
+    async fn corpus_is_unreachable_while_gated_and_reachable_once_signed_in(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::app::actions::OpenOmniSearch;
+
+        cx.executor().allow_parking();
+        cx.update(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
+            // Reduced motion, forced directly on the theme global rather than
+            // via `MotionTokens` — `NudoxThemeExt::motion_scale` is what
+            // `ThemeExtAccessor::reduced_motion` actually reads
+            // (`crate::theme::resolve` hardcodes it to `1.0` at init, and
+            // `MotionTokens` governs a separate, unrelated loop-permit
+            // budget). With it forced to `0.0`, `SignInView::accepted` snaps
+            // rather than animates, so `accepted_and_settled` is true the
+            // instant `settle` runs and the gate clears deterministically
+            // without a clock-advancing loop.
+            cx.update_global::<crate::theme::ext::NudoxThemeExt, _>(|ext, _| {
+                ext.motion_scale = 0.0;
+            });
+            cx.set_global(crate::motion::tokens::MotionTokens::new(0.0));
+            cx.bind_keys(crate::app::keymaps::all_bindings());
+        });
+
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(
+            nudox_engine::runtime::EngineConfig::default(),
+        );
+
+        // A real, unmetered-free gate — `AccountGate::in_state_for_tests`, not
+        // `unmetered`. An unmetered gate has no posture to gate on at all
+        // (`admit` short-circuits before ever reading it), so it would prove
+        // nothing about the launch-time branch under test here.
+        cx.update(|cx| {
+            let gate = nudox_mcp::AccountGate::in_state_for_tests(
+                nudox_mcp::account::state::GateState::SignedOut,
+            );
+            cx.set_global(AccountService::start_with_gate(&engine, gate));
+        });
+
+        let search = cx.new(|_cx| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+        let index_jobs = cx.new(|_c| IndexJobStore::new(engine.clone()));
+
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
+        let shell_cell_w = shell_cell.clone();
+        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let window = cx
+            .update(|cx: &mut App| {
+                cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let entity =
+                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    *shell_cell_w.lock().unwrap() = Some(entity.clone());
+                    entity
+                })
+            })
+            .expect("window must open");
+        let shell = shell_cell.lock().unwrap().take().expect("shell set");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        vcx.run_until_parked();
+
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.is_gated()),
+            "a SignedOut launch must construct the shell already gated",
+        );
+
+        vcx.dispatch_action(OpenOmniSearch);
+        vcx.run_until_parked();
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.presented.is_none()),
+            "cmd-K must do nothing while the corpus is gated — there is no \
+             `on_action` listener for it anywhere in the gated tree",
+        );
+
+        // Drive the real view the gate is showing, the way the shell itself
+        // would after a successful `POST v1/authorize` round trip — see
+        // `Shell::on_sign_in_event`'s `Submit` arm, which this reproduces the
+        // second half of without a network.
+        let gate_view = shell
+            .read_with(&mut vcx, |s, _| s.gate.clone())
+            .expect("the gate must be showing a SignInView while SignedOut");
+        let posture = active_posture();
+        let presentation = presentation_for(&posture);
+        gate_view.update(&mut vcx, |view, cx| {
+            view.settle(Ok((posture, presentation)), cx);
+        });
+
+        let mut cleared = false;
+        for _ in 0..50 {
+            vcx.run_until_parked();
+            if shell.read_with(&mut vcx, |s, _| !s.is_gated()) {
+                cleared = true;
+                break;
+            }
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
+        }
+        assert!(cleared, "the gate must clear once sign-in settles and the acceptance spring is settled");
+
+        vcx.dispatch_action(OpenOmniSearch);
+        vcx.run_until_parked();
+        assert!(
+            matches!(
+                shell.read_with(&mut vcx, |s, _| s
+                    .presented
+                    .as_ref()
+                    .map(|p| matches!(p.view, OverlayView::OmniSearch(_)))),
+                Some(true)
+            ),
+            "the identical dispatch must open the real omni-search overlay now that the account can work",
+        );
+
+        // Close it before driving sign-out through the account overlay below,
+        // so the only presented overlay by the time sign-out fires is the
+        // account one — `engage_gate` tears down whatever is presented, and
+        // the assertion below is specifically about that overlay's teardown.
+        vcx.update(|window, cx| {
+            shell.update(cx, |s, cx| s.close_overlay(window, cx));
+        });
+        vcx.run_until_parked();
+
+        vcx.dispatch_action(crate::app::actions::OpenAccount);
+        vcx.run_until_parked();
+        let account_view = shell
+            .read_with(&mut vcx, |s, _| s.presented_sign_in())
+            .expect("cmd-shift-A must present the account overlay once signed in");
+        account_view.update(&mut vcx, |_view, cx| {
+            cx.emit(SignInEvent::SignOut);
+        });
+        vcx.run_until_parked();
+
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.is_gated()),
+            "signing out must return to the gate",
+        );
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.presented.is_none()),
+            "sign-out must not leave a dismissable overlay behind — that would be an \
+             escape hatch back to the shell for a reader who is no longer signed in",
+        );
+
+        vcx.dispatch_action(OpenOmniSearch);
+        vcx.run_until_parked();
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.presented.is_none()),
+            "the corpus must be unreachable again after signing out",
+        );
     }
 
     // ── Banner queue holds at most one ────────────────────────────────────────

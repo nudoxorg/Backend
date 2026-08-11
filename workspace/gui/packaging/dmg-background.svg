@@ -1,0 +1,212 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="420" viewBox="0 0 660 420">
+  <defs>
+    <linearGradient id="bg-wash" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14172a"/>
+      <stop offset="1" stop-color="#0b0d16"/>
+    </linearGradient>
+    <radialGradient id="icon-plinth" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#6b82d6" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#6b82d6" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8" refY="5"
+            markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#6b82d6"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="660" height="420" fill="url(#bg-wash)"/>
+
+  <!-- Brand watermark, derived from /logo.svg verbatim (not redrawn), fully
+       inside the canvas so the gem reads whole rather than cropped. -->
+  <svg x="180.0" y="24" width="300" height="300"
+       viewBox="-4 -9 48 48" opacity="0.16">
+    <defs>
+    <style>
+      .shadow { fill: #04050a; opacity: 0.25; }
+    </style>
+
+    <linearGradient id="base-letter" gradientUnits="userSpaceOnUse" x1="0" y1="800" x2="0" y2="0" />
+    <linearGradient id="base-facet" x1="0" y1="0" x2="1" y2="1" />
+    <radialGradient id="base-shade" cx="0.5" cy="0.5" r="0.6" />
+
+    <linearGradient id="grad-n" href="#base-letter">
+      <stop offset="0" stop-color="#f1f2f4"/>
+      <stop offset="1" stop-color="#c2c6d6"/>
+    </linearGradient>
+    
+    <linearGradient id="grad-n-stem" href="#grad-n" x1="0" y1="0.4" x2="0" y2="2.0" />
+
+    <linearGradient id="grad-u" href="#base-letter">
+      <stop offset="0" stop-color="#e4e8ec"/>
+      <stop offset="1" stop-color="#9cb5c9"/>
+    </linearGradient>
+
+    <linearGradient id="grad-d" href="#base-letter">
+      <stop offset="0" stop-color="#d5e4e6"/>
+      <stop offset="1" stop-color="#70b8c2"/>
+    </linearGradient>
+
+    <linearGradient id="grad-o" href="#base-letter">
+      <stop offset="0" stop-color="#c5e2dc"/>
+      <stop offset="1" stop-color="#40bfa4"/>
+    </linearGradient>
+
+    <linearGradient id="grad-x" href="#base-letter">
+      <stop offset="0" stop-color="#b3e0c7"/>
+      <stop offset="1" stop-color="#29a360"/>
+    </linearGradient>
+
+    <radialGradient id="shade-u" href="#base-shade">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shade-d" href="#base-shade" cx="0.58" r="0.62">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.15"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shade-o" href="#base-shade" r="0.55">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.13"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shade-x" href="#base-shade">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.11"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="facet-tl" href="#base-facet">
+      <stop offset="0" stop-color="#495683"/>
+      <stop offset="1" stop-color="#3b4568"/>
+    </linearGradient>
+    <linearGradient id="facet-tr" href="#base-facet">
+      <stop offset="0" stop-color="#39446a"/>
+      <stop offset="1" stop-color="#2d3553"/>
+    </linearGradient>
+    <linearGradient id="facet-bl" href="#base-facet">
+      <stop offset="0" stop-color="#2a3251"/>
+      <stop offset="1" stop-color="#1f263d"/>
+    </linearGradient>
+    <linearGradient id="facet-br" href="#base-facet">
+      <stop offset="0" stop-color="#1d233a"/>
+      <stop offset="1" stop-color="#141929"/>
+    </linearGradient>
+
+    <radialGradient id="inner-pool" cx="0.5" cy="0.36" r="0.8">
+      <stop offset="0" stop-color="#1f222e"/>
+      <stop offset="0.55" stop-color="#12141c"/>
+      <stop offset="1" stop-color="#0c0d13"/>
+    </radialGradient>
+    <linearGradient id="inner-sweep" gradientUnits="userSpaceOnUse" x1="8" y1="2" x2="30" y2="26">
+      <stop offset="0" stop-color="#bcc1d2" stop-opacity="0.10"/>
+      <stop offset="0.45" stop-color="#bcc1d2" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#bcc1d2" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="rim-grad" gradientUnits="userSpaceOnUse" x1="6" y1="1" x2="34" y2="29">
+      <stop offset="0" stop-color="#d0d7f1"/>
+      <stop offset="0.5" stop-color="#536cc6"/>
+      <stop offset="1" stop-color="#273568"/>
+    </linearGradient>
+
+    <filter id="gem-aura" x="-60%" y="-60%" width="220%" height="220%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="1.6" stdDeviation="1.6" flood-color="#08090d" flood-opacity="0.45"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="2.4" flood-color="#536cc6" flood-opacity="0.30"/>
+    </filter>
+    <filter id="rim-bloom" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="0.7"/>
+    </filter>
+    <filter id="grain" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" seed="11" result="noise"/>
+      <feColorMatrix in="noise" type="matrix" values="0 0 0 0 0.62  0 0 0 0 0.65  0 0 0 0 0.75  0 0 0 0.10 0" result="tint"/>
+      <feComposite in="tint" in2="SourceAlpha" operator="in"/>
+    </filter>
+
+    <polygon id="outer-diamond" points="20,-5 40,15 20,35 0,15" />
+    <polygon id="inner-diamond" points="20,0 35,15 20,30 5,15" />
+
+    <path id="g-n-body" transform="translate(0 2) scale(0.002 -0.002)" d="M9 300V785L28 755V300H37V739L55 709V300L64 300V693L83 663V299.7L92 299.3V647L110 616V298.2L120 297.3V601L138 570V295.2L147 293.9V555L166 524V290.6L175 288.8V509L193 478V284.4L202 281.9V463L221 432V275.9L230 272.7V417L248 386V265.3L258 260.7V371L276 340V251.4L285 246.3V325L304 294V234L313 227.4V279L331 248V212.8L340 204.7V233L348 219.9V538.4L340 551V799H331V567L313 597V799H304V613L285 644V799H276V659L258 690V799H248V705L230 736V799H221V751L202 782V800H193L0 799V300ZM348 219.9L359 202V179H368V187L372.6 179H478V799H469V336L451 367V799H442V382L423 413V799H414V428L396 459V799H386V475L368 505V799H359V521L348 538.4Z" />
+    <path id="g-u" transform="translate(0.956 2) scale(0.0014 -0.0014)" d="M320 800V253Q320 235 314 211V799H304V192Q297 180 286 174V799H277V169Q268 165 259 163V799H250V162H243Q236 162 232 163V799H223V164Q211 167 205 171V799H195V176Q184 186 177 196V799H168V215Q163 233 163 253L161 800H0V217Q0 142 69 74Q145 0 247 0Q340 0 415 76Q485 148 485 225V800Z" />
+    <path id="g-d" transform="translate(0 2.73) scale(0.0017 -0.0017)" d="M0 799V642H4V158H1L2 0H85Q267 0 390 109Q518 222 518 404Q518 567 411 677Q291 800 74 800Q61 800 30 799Q2 799 0 799ZM330 295Q323 280 312 264V539Q323 525 330 511ZM139 637V164Q134 163 122 161V640Q134 638 139 637ZM94 159V642Q106 642 112 641V160Q109 160 103 160Q97 159 94 159ZM167 632V169Q155 167 149 165V636Q155 634 167 632ZM194 623V177Q182 173 176 172V629ZM221 612V188Q218 187 212.0 184.5Q206 182 203 181V620Q206 619 212.0 616.5Q218 614 221 612ZM248 597V203Q245 202 239.0 198.5Q233 195 230 193V608Q233 606 239.0 602.5Q245 599 248 597ZM275 578V224Q266 215 257 210V591Q263 588 275 578ZM58 158H40V643H58ZM31 643V158H13V642Q19 643 31 643ZM67 643H85V159Q83 159 76 159Q69 158 67 158ZM285 569 303 551V252Q291 238 285 232ZM339 491Q355 449 355 410Q355 362 339 317Z" />
+    <path id="g-o" transform="translate(0.42 2.73) scale(0.0011 -0.0011)" d="M0 400Q0 234 115.5 117.0Q231 0 395 0Q559 0 674.5 117.0Q790 234 790 400Q790 566 674.5 683.0Q559 800 395 800Q268 800 161 722Q86 667 44 584Q0 498 0 400ZM157 411H170V475Q178 496 188 513V411H197V528Q205 540 215 552V411H224V562Q227 565 233.0 570.5Q239 576 242 579V411H252V586Q260 592 270 598V411H279V604L297 613V411H306V617L324 623V411H334V626Q340 628 352 630V411H361V632Q364 633 370.0 633.5Q376 634 379 634V411H388V634H407V411H416V633Q422 633 434 631V411H443V630Q446 629 452.0 627.5Q458 626 461 625V411H471V623Q474 622 480.5 619.5Q487 617 490 615V411H499V611L517 602V411H526V596Q537 590 545 583V411H554V575Q560 570 572 558V411H581V547Q592 534 599 522V411H609V506Q619 485 627 459V411H635V398Q635 300 565.0 230.5Q495 161 396 161Q297 161 227.0 230.5Q157 300 157 398Z" />
+    <path id="g-x" transform="translate(0.696 2.73) scale(0.001498 -0.00136)" d="M230 400 0 0H189L207 31V0H216V47L234 79V0H243V95L261 126V0H270V142L288 174V0H297V190L315 221V0H325V237L343 268V0H352V284L370 316V0H379V332L397 363V0H406V379L418 399L407 417V800H398V433L380 465V800H371V481L353 513V800H344V529L326 561V800H316V577L298 609V800H289V625L271 657V800H262V673L244 705V800H235V721L217 752V800H207V769L190 799H2ZM425 0H434V800H425ZM489 521V800H480V521ZM516 576V800H507V576ZM462 463V800H452V463ZM545 628V800H536V628ZM599 742V800H590V742ZM617 780H627V800H617ZM572 687V800H563V687ZM488 0V284H479V0ZM515 0V235H506V0ZM461 0V332H452V0ZM544 0V182H535V0ZM599 0V77H589V0ZM626 0V25H617V0ZM571 0V133H562L563 0Z" />
+  </defs>
+
+  <use href="#outer-diamond" fill="#3d445c" filter="url(#gem-aura)" />
+
+  <g id="facets">
+    <polygon points="20,-5 20,0 5,15 0,15" fill="url(#facet-tl)" />
+    <polygon points="20,-5 40,15 35,15 20,0" fill="url(#facet-tr)" />
+    <polygon points="40,15 20,35 20,30 35,15" fill="url(#facet-br)" />
+    <polygon points="0,15 20,35 20,30 5,15" fill="url(#facet-bl)" />
+  </g>
+
+  <g id="rim-lights">
+    <use href="#outer-diamond" fill="none" stroke="#9cabe2" stroke-width="1.3" opacity="0.4" filter="url(#rim-bloom)" />
+    <use href="#outer-diamond" fill="none" stroke="url(#rim-grad)" stroke-width="0.45" />
+  </g>
+
+  <g id="inner-core">
+    <use href="#inner-diamond" fill="url(#inner-pool)" />
+    <use href="#inner-diamond" fill="url(#inner-sweep)" />
+    <use href="#inner-diamond" fill="#0e0f16" filter="url(#grain)" />
+  </g>
+
+  <g id="seams">
+    <polyline points="5,15 20,0 35,15" fill="none" stroke="#05060a" stroke-width="0.3" opacity="0.6" />
+    <polyline points="35,15 20,30 5,15" fill="none" stroke="#8f99bc" stroke-width="0.25" opacity="0.35" />
+  </g>
+
+  <g id="glyphs" transform="translate(9.1282 -5.8956) scale(13.2)">
+    
+    <g id="glyph-n">
+      <g class="shadow">
+        <use href="#g-n-body" x="0.012" y="0.036" />
+        <rect x="0.012" y="0.436" width="0.22" height="0.934" />
+        <rect x="0.748" y="0.436" width="0.22" height="1.206" />
+      </g>
+      <use href="#g-n-body" fill="url(#grad-n)" />
+      <rect x="0" y="0.4" width="0.22" height="0.97" fill="url(#grad-n-stem)" />
+      <rect x="0.736" y="0.4" width="0.22" height="1.242" fill="url(#grad-n-stem)" />
+    </g>
+
+    <g id="glyph-u">
+      <use href="#g-u" x="0.012" y="0.036" class="shadow" />
+      <use href="#g-u" fill="url(#grad-u)" />
+      <use href="#g-u" fill="url(#shade-u)" />
+    </g>
+
+    <g id="glyph-d">
+      <use href="#g-d" x="0.012" y="0.036" class="shadow" />
+      <use href="#g-d" fill="url(#grad-d)" />
+      <use href="#g-d" fill="url(#shade-d)" />
+    </g>
+
+    <g id="glyph-o">
+      <use href="#g-o" x="0.012" y="0.036" class="shadow" />
+      <use href="#g-o" fill="url(#grad-o)" />
+      <use href="#g-o" fill="url(#shade-o)" />
+    </g>
+
+    <g id="glyph-x">
+      <use href="#g-x" x="0.012" y="0.036" class="shadow" />
+      <use href="#g-x" fill="url(#grad-x)" />
+      <use href="#g-x" fill="url(#shade-x)" />
+    </g>
+
+  </g>
+  </svg>
+
+  <!-- Soft plinths under each icon slot, centered on the same points named "app" / "applications" below -->
+  <circle cx="180" cy="205" r="48.0" fill="url(#icon-plinth)"/>
+  <circle cx="480" cy="205" r="48.0" fill="url(#icon-plinth)"/>
+
+  <path d="M 242.0 205 L 410.0 205"
+        stroke="#6b82d6" stroke-width="2.5" fill="none" opacity="0.9"
+        marker-end="url(#arrowhead)"/>
+
+  <!-- Position markers cargo-bundle's dmg_finder::decorate_volume reads by id.
+       Invisible (opacity 0) but real geometry, so the bounding box is correct
+       and nothing doubles up with the plinths drawn above. -->
+  <rect id="app" x="132.0" y="157.0" width="96" height="96"
+        fill="none" opacity="0"/>
+  <rect id="applications" x="432.0" y="157.0" width="96" height="96"
+        fill="none" opacity="0"/>
+</svg>

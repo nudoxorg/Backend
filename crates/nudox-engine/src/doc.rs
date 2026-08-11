@@ -27,8 +27,8 @@ use crate::{
     timeline,
     versions::{VersionRegistry, VersionSlice},
     wire::{
-        DocEvent, EngineError, Gen, HighlightSpan, ImplRow, ImplsPage, RefRow, RefsPage, SharedStr,
-        SymbolKey,
+        DocEvent, EngineError, Gen, HighlightSpan, ImplRow, ImplsPage, KeyStaleness, KeyTierName,
+        RefRow, RefsPage, SharedStr, SymbolKey,
     },
 };
 
@@ -118,9 +118,11 @@ impl EngineHandle {
         let corpus = self.corpus();
         let highlighter = self.highlighter();
         let versions = self.versions_registry();
+        let load_failures = self.load_failures();
         self.spawn(stream_symbol(
             corpus,
             versions,
+            load_failures,
             highlighter,
             key,
             generation,
@@ -139,6 +141,7 @@ impl EngineHandle {
 async fn stream_symbol(
     corpus: nudox_store::corpus::Corpus,
     versions: Arc<VersionRegistry>,
+    load_failures: crate::runtime::LoadFailures,
     highlighter: crate::highlight::SharedHighlighter,
     key: SymbolKey,
     _generation: Gen,
@@ -154,9 +157,20 @@ async fn stream_symbol(
     let pkg_arc = match corpus.package(&key.package).await {
         Some(p) => p,
         None => {
+            // Distinguish "we tried to load this and it broke" from "we
+            // never saw this name at all" — see `EngineError::PackageNotLoaded`
+            // and doctrine's callout on `map_err(|_|)`-shaped information
+            // loss: the failure reason already exists in `load_failures`
+            // (recorded by the seeding task in `runtime.rs`), so silently
+            // reporting a bare "not loaded" here would be throwing away
+            // exactly the fact an agent needs to decide whether retrying
+            // (pointless — the lower already ran and failed) or re-checking
+            // the name (useful — it was never attempted) is the next step.
+            let attempted = load_failures.get(&key.package);
             let _ = tx
                 .send_async(DocEvent::Failed(EngineError::PackageNotLoaded {
                     package: key.package.clone(),
+                    attempted,
                 }))
                 .await;
             return;
@@ -165,8 +179,22 @@ async fn stream_symbol(
 
     // Verify the entry exists before we start emitting.
     if pkg_arc.view().entry(key.intro).is_none() {
+        // The key does not resolve in the *current* generation. Before
+        // reporting a bare not-found — indistinguishable from "this symbol
+        // was deleted" — check whether it resolves under some other loaded
+        // generation of the same lineage (§L7: the reason `select_version`'s
+        // and `list_versions`' docs had to say this in prose is that nothing
+        // downstream of a failed lookup could check it; this is that check).
+        let possibly_stale = versions
+            .slices(&key.package)
+            .into_iter()
+            .find(|slice| slice.package.view().entry(key.intro).is_some())
+            .map(|slice| KeyStaleness {
+                seen_in_version: slice.version,
+                tier: slice.package.key_tier(key.intro).map(KeyTierName::from),
+            });
         let _ = tx
-            .send_async(DocEvent::Failed(EngineError::SymbolNotFound))
+            .send_async(DocEvent::Failed(EngineError::SymbolNotFound { possibly_stale }))
             .await;
         return;
     }

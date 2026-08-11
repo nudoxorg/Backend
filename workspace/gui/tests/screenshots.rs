@@ -39,13 +39,15 @@ use gpui::{
 use image::RgbaImage;
 
 use lindsey::app::actions::{
-    ActivateTab2, ConfirmOverlay, CopySymbolUri, DismissOverlay, FilterAuto, FilterName,
-    FilterSemantic, GoToDocsTab,
+    ActivateTab2, ConfirmOverlay, CopySymbolUri, CycleTheme, DismissOverlay, DismissWindow,
+    FilterAuto,
+    FilterName, FilterSemantic, GoToDocsTab,
     GoToRefsTab, GoToSourceTab, GoToTimelineTab, MoveSelectionDown, MoveSelectionUp,
-    OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenVersionPicker, ToggleBottomDock,
-    ToggleLeftDock, ToggleShortcutsOverlay,
+    OpenAccount, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenVersionPicker, ShowWindow,
+    ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
 };
 use lindsey::app::keymaps;
+use lindsey::app::mcp::McpService;
 use lindsey::motion::tokens::MotionTokens;
 use lindsey::stores::search_model::SearchAccess as _;
 use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
@@ -364,6 +366,110 @@ struct Stage {
     previous: Option<RgbaImage>,
     shots: Vec<ShotRecord>,
     perf_totals: Vec<lindsey::perf::Sample>,
+    /// The loopback stand-in for `api.nudox.org`. Held so it outlives the
+    /// frames that talk to it.
+    fake_api: FakeApi,
+    /// Where the account cache and usage ledger for this run live. Removed in
+    /// `finish`; a suite that left state behind would make the *next* run start
+    /// signed in and photograph a sign-in that never happened.
+    account_dir: PathBuf,
+}
+
+/// A loopback stand-in for `api.nudox.org`, in about fifty lines of
+/// `std::net`.
+///
+/// # Why not the fake from `crates/nudox-mcp/tests`
+///
+/// Because that one is an integration test of another crate, and this one has
+/// to run inside a GPUI harness that links no `axum` and no async runtime of
+/// its own. Raw HTTP/1.1 over a blocking socket needs neither, and the client
+/// under test is a real `reqwest` client either way — which is the half that
+/// matters. Every request it answers is a real request over a real socket, so
+/// the "Signed in" frame is a photograph of a sign-in that actually happened.
+struct FakeApi {
+    addr: std::net::SocketAddr,
+    /// Set on drop so the accept loop exits rather than outliving the process's
+    /// interest in it.
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FakeApi {
+    /// The one key this fake accepts. Not a credential: it is 40 characters of
+    /// fixed text that only this process's own socket will ever see.
+    const KEY: &'static str = "ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517";
+
+    fn start() -> Self {
+        use std::io::{Read as _, Write as _};
+
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("the fake api must bind loopback");
+        let addr = listener.local_addr().expect("bound address");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        {
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                    let Ok(mut stream) = stream else { continue };
+
+                    // Read only as far as the request line: that is all this
+                    // fake routes on, and a POST body left unread is fine —
+                    // HTTP allows a server to answer before draining it.
+                    let mut buf = [0_u8; 2048];
+                    let read = stream.read(&mut buf).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..read]).to_string();
+                    let target = head.lines().next().unwrap_or_default().to_owned();
+
+                    let body = if target.contains("/v1/authorize") {
+                        Some(r#"{"allowed":true,"user_id":24,"scopes":[]}"#.to_owned())
+                    } else if target.contains("/v1/usage/record") {
+                        None
+                    } else if target.contains("/v1/usage") {
+                        Some(
+                            r#"{"tier":"free","period_start":"2026-08-01T00:00:00Z",
+                             "api_requests":300,"tool_calls":412,"used":712,"limit":1000,
+                             "remaining":288,"over_limit":false}"#
+                                .replace(['\n', ' '], ""),
+                        )
+                    } else {
+                        Some("{}".to_owned())
+                    };
+
+                    let response = match body {
+                        Some(body) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        ),
+                        // 204, exactly as `auth.md` specifies for a recorded
+                        // batch: no body, and therefore no `Content-Length`.
+                        None => {
+                            "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_owned()
+                        }
+                    };
+                    let _ = stream.write_all(response.as_bytes());
+                    let _ = stream.flush();
+                }
+            });
+        }
+
+        Self { addr, stop }
+    }
+
+    fn base_url(&self) -> String {
+        format!("http://{}", self.addr)
+    }
+}
+
+impl Drop for FakeApi {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // Unblock the accept loop so the thread can observe the flag.
+        let _ = std::net::TcpStream::connect(self.addr);
+    }
 }
 
 /// One recorded frame, for the manifest the report is built from.
@@ -434,7 +540,7 @@ impl Stage {
             // Must follow the mode change: `NudoxThemeExt::init` picks its
             // palette by asking `cx.theme().is_dark()`, so initialising it first
             // would install the light extension over a dark base.
-            NudoxThemeExt::init(cx);
+            NudoxThemeExt::init(cx).expect("bundled themes parse and install");
             cx.set_global(MotionTokens::new(1.0));
             cx.bind_keys(keymaps::all_bindings());
         });
@@ -442,20 +548,114 @@ impl Stage {
         let search = cx.new(|_| SearchStore::new(engine.clone()));
         let symbols = cx.new(|_| SymbolStore::new(engine.clone()));
         let packages = cx.new(|cx| PackageStore::new(engine.clone(), &requested, cx));
+        let index_jobs =
+            cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
-        let window = {
+        // ── Boot the window through `WindowSession`, exactly as `main` does ──
+        //
+        // Not `HeadlessAppContext::open_window`, which hardcodes its bounds and
+        // bypasses the session entirely. Going through the session is what lets
+        // the last two scenes dismiss the window and rebuild it *by the
+        // production path* rather than by a harness-only shortcut — and it is
+        // also the only way to photograph a restored window at all.
+        //
+        // `focus: false, show: false` mirrors what `HeadlessAppContext` used to
+        // set: there is no window server here, and `render_to_image` rasterises
+        // the scene without either.
+        {
             let search = search.clone();
             let symbols = symbols.clone();
             let packages = packages.clone();
-            cx.open_window(size(px(1440.), px(900.)), move |window, cx| {
-                cx.new(|cx| Shell::new(search, symbols, packages, window, cx))
+            let index_jobs = index_jobs.clone();
+            cx.update(|cx| {
+                lindsey::app::lifecycle::WindowSession::install(
+                    gpui::Bounds {
+                        origin: gpui::point(px(0.), px(0.)),
+                        size: size(px(1440.), px(900.)),
+                    },
+                    move |bounds, cx| {
+                        let (search, symbols, packages, index_jobs) = (
+                            search.clone(),
+                            symbols.clone(),
+                            packages.clone(),
+                            index_jobs.clone(),
+                        );
+                        cx.open_window(
+                            gpui::WindowOptions {
+                                window_bounds: Some(gpui::WindowBounds::Windowed(bounds)),
+                                focus: false,
+                                show: false,
+                                ..Default::default()
+                            },
+                            |window, cx| {
+                                cx.new(|cx| Shell::new(search, symbols, packages, index_jobs, window, cx))
+                            },
+                        )
+                        .map(Into::into)
+                    },
+                    cx,
+                );
+            });
+        }
+
+        // The hosted MCP endpoint (§L6). `main` starts this before the window;
+        // this suite never did, which is why every frame it has ever produced
+        // showed no MCP segment at all — the status bar branches on
+        // `McpStatus`, and `Absent` renders nothing. Starting it here is a
+        // fidelity fix as well as the precondition for photographing
+        // requirement 4: the reader has to be able to see the endpoint is up.
+        // The account gate (`auth.md`). Installed before `McpService` because
+        // the MCP server takes one as a mandatory argument — a server with no
+        // gate would serve a paid product for free, and `nudox-mcp` makes that
+        // unrepresentable rather than discouraged.
+        //
+        // A **real** gate pointed at a **real** loopback HTTP server this
+        // process runs ([`FakeApi`]), not `AccountGate::unmetered`. The frames
+        // this suite records are evidence that a sign-in works, and a sign-in
+        // against a gate that admits everything would be evidence of nothing.
+        // Nothing here resolves `api.nudox.org`.
+        let fake_api = FakeApi::start();
+        let account_dir = std::env::temp_dir().join(format!(
+            "nudox-shots-account-{}-{}",
+            std::process::id(),
+            fake_api.addr.port()
+        ));
+        let _ = std::fs::remove_dir_all(&account_dir);
+        std::fs::create_dir_all(&account_dir).expect("account scratch dir");
+
+        cx.update(|cx| {
+            let gate = nudox_mcp::AccountGate::new(
+                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+                Arc::new(
+                    nudox_mcp::account::service::HttpAccountService::with_base_url(
+                        fake_api.base_url(),
+                    )
+                    .expect("a loopback client builds"),
+                ),
+                Some(account_dir.clone()),
+            );
+            cx.set_global(lindsey::app::account::AccountService::start_with_gate(
+                &engine,
+                gate.clone(),
+            ));
+            cx.set_global(McpService::start(&engine, gate));
+            // Global lifecycle actions + the menu bar. `TestPlatform::set_menus`
+            // is a no-op, so the menu itself is not photographable here — but
+            // registering the actions is what makes `DismissWindow` /
+            // `ShowWindow` dispatch for real in the last two scenes.
+            lindsey::app::lifecycle::wire(cx);
+        });
+
+        let window = cx
+            .update(|cx| {
+                lindsey::app::lifecycle::WindowSession::open_first(cx);
+                cx.windows().first().copied()
             })
-            .expect("open headless window")
-        };
+            .expect("the session must open the first window");
 
         Self {
             cx,
-            window: window.into(),
+            window,
             search,
             symbols,
             packages,
@@ -464,7 +664,248 @@ impl Stage {
             previous: None,
             shots: Vec::new(),
             perf_totals: Vec::new(),
+            fake_api,
+            account_dir,
         }
+    }
+
+    // ── Account (`auth.md`) ──────────────────────────────────────────────────
+
+    /// Whichever `SignInView` is currently on screen: the launch gate, or the
+    /// dismissable `cmd-shift-A` overlay.
+    ///
+    /// Checks the gate first because a caller signing in for the first time
+    /// (`sign_in_for_boot`) has never dispatched `OpenAccount` at all — the
+    /// gate is up because `Shell::new` put it there, not because anything
+    /// opened it. Panics if neither is showing, because every caller is
+    /// either mid-boot (gated) or has just dispatched `OpenAccount` — a
+    /// `None` here means the sign-in surface silently failed to present,
+    /// which is exactly the class of failure a screenshot suite exists to
+    /// catch, and which would otherwise show up as a caption describing a
+    /// frame that does not contain what it says.
+    fn sign_in_view(&mut self) -> gpui::Entity<lindsey::views::sign_in::SignInView> {
+        let window = self.window;
+        self.cx
+            .update_window(window, |root, _window, cx| {
+                let shell = root
+                    .downcast::<Shell>()
+                    .expect("the window root is the Shell");
+                shell
+                    .read(cx)
+                    .gate_view()
+                    .or_else(|| shell.read(cx).presented_sign_in())
+            })
+            .expect("update window")
+            .expect("neither the gate nor the account overlay is showing a SignInView")
+    }
+
+    /// Whether the corpus is currently behind the launch gate.
+    fn is_gated(&mut self) -> bool {
+        let window = self.window;
+        self.cx
+            .update_window(window, |root, _window, cx| {
+                root.downcast::<Shell>()
+                    .expect("the window root is the Shell")
+                    .read(cx)
+                    .is_gated()
+            })
+            .expect("update window")
+    }
+
+    /// Sign in once, for real, before anything else is photographed.
+    ///
+    /// `boot` installs a **real**, `SignedOut` account gate — see its own doc
+    /// comment for why a real gate rather than `AccountGate::unmetered`. Every
+    /// scene this suite has ever recorded before scene 32 photographs the
+    /// working shell: search, the corpus, symbol pages, the graph view. Those
+    /// were only ever compatible with a `SignedOut` process because nothing
+    /// gated on it — `Shell::new` now renders *only* the gate for a posture
+    /// that cannot work, so a suite that stayed `SignedOut` through scene 01
+    /// would photograph the sign-in form thirty times over with thirty
+    /// unrelated captions. This restores the assumption every one of those
+    /// scenes always depended on, through the same real path scenes 32-34
+    /// exercise: a real `POST /v1/authorize` against `FakeApi`, driven through
+    /// `SignInView::on_key` and `SignInView::submit`, never a hand-set flag.
+    fn sign_in_for_boot(&mut self) {
+        assert!(
+            self.is_gated(),
+            "Stage::boot must construct a SignedOut — and therefore gated — shell; \
+             if this fails, the account gate changed shape underneath this harness",
+        );
+
+        self.type_key(FakeApi::KEY);
+        let view = self.sign_in_view();
+        self.cx.update(|cx| {
+            view.update(cx, |view, cx| view.submit(cx));
+        });
+
+        let mut phase_is_accepted = false;
+        for _ in 0..40 {
+            self.settle();
+            phase_is_accepted = {
+                let view = view.clone();
+                self.cx.update(|cx| {
+                    matches!(
+                        view.read(cx).phase(),
+                        lindsey::views::sign_in::SignInPhase::Accepted { .. }
+                    )
+                })
+            };
+            if phase_is_accepted {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        assert!(
+            phase_is_accepted,
+            "the boot sign-in must actually have been accepted by the fake service",
+        );
+
+        // Let the acceptance spring finish and the gate's own settle check
+        // (`Shell::settle_gate_if_ready`) clear it — `settle` both re-draws
+        // and sleeps real wall-clock time, which is what the spring animates
+        // against.
+        let mut cleared = false;
+        for _ in 0..40 {
+            self.settle();
+            if !self.is_gated() {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(
+            cleared,
+            "the gate must clear once the boot sign-in settles, or every later scene \
+             would be photographing the launch gate instead of the shell",
+        );
+
+        self.refresh_account_status();
+    }
+
+    /// Push the live account status into the status bar.
+    ///
+    /// The shell does this itself on every transition it initiates; this exists
+    /// because the harness drives `SignInView::submit` directly (to be able to
+    /// await the round trip) and so bypasses the shell's own subscription.
+    fn refresh_account_status(&mut self) {
+        // `update_global` lives on the `BorrowAppContext` trait, which this
+        // file does not blanket-import (it takes named `gpui` items so the
+        // harness's surface stays readable).
+        use gpui::BorrowAppContext as _;
+        let status = self.cx.update(|cx| {
+            cx.update_global::<lindsey::app::account::AccountService, _>(|service, _| {
+                service.refresh()
+            })
+        });
+        let window = self.window;
+        self.cx
+            .update_window(window, |root, _window, cx| {
+                let shell = root
+                    .downcast::<Shell>()
+                    .expect("the window root is the Shell");
+                shell.update(cx, |shell, cx| shell.publish_account_status(status, cx));
+            })
+            .expect("update window");
+        self.settle();
+    }
+
+    /// Type a key into the sign-in field, character by character.
+    ///
+    /// Through the view's own `on_key`, not by assigning to a field: the
+    /// masking rule, the "typing clears the previous rejection" rule and the
+    /// read-only-while-checking rule all live in that method, and a harness
+    /// that bypassed it would photograph a state the product cannot reach.
+    fn type_key(&mut self, key: &str) {
+        let view = self.sign_in_view();
+        self.cx.update(|cx| {
+            view.update(cx, |view, cx| {
+                for ch in key.chars() {
+                    let keystroke = gpui::Keystroke {
+                        modifiers: gpui::Modifiers::default(),
+                        key: ch.to_string(),
+                        key_char: Some(ch.to_string()),
+                    };
+                    view.on_key(&keystroke, cx);
+                }
+            });
+        });
+        self.settle();
+    }
+
+    /// Dismiss the window the way the app menu's `Close Window` item does, and
+    /// prove the process is still hosting its endpoint while it is gone.
+    ///
+    /// The dismissal is a real `DismissWindow` dispatch through the live
+    /// window's dispatch tree, landing on the app-level handler
+    /// `app::lifecycle::wire` registered — the same handler an AppKit menu
+    /// click reaches. Afterwards `cx.windows()` is empty and there is nothing
+    /// left to photograph, which is the honest state: a dismissed lindsey has
+    /// no frame, and inventing one would be exactly the fabricated UI
+    /// AGENTS-DOCTRINE §6 forbids.
+    ///
+    /// The residency check here is deliberately the weak one — "the socket
+    /// still accepts a connection". A full JSON-RPC `tools/call` against a
+    /// windowless process is proved in `tests/mcp_endpoint.rs`
+    /// (`dismissing_the_window_leaves_the_endpoint_answering`); repeating the
+    /// HTTP/SSE reader here would duplicate ~150 lines to say less.
+    fn dismiss_window(&mut self) {
+        let endpoint = self.cx.update(|cx| {
+            lindsey::app::mcp::McpStatus::from_app(cx)
+                .url()
+                .cloned()
+                .expect("the endpoint must be up before we dismiss the window")
+        });
+
+        self.act(&DismissWindow);
+
+        let presence = self
+            .cx
+            .update(|cx| lindsey::app::lifecycle::Presence::of(cx));
+        assert!(
+            presence.is_dismissed(),
+            "DismissWindow must really destroy the window; presence is {presence:?}",
+        );
+
+        let authority = endpoint
+            .strip_prefix("http://")
+            .and_then(|rest| rest.split('/').next())
+            .unwrap_or_else(|| panic!("the advertised endpoint must be an http url: {endpoint}"));
+        let addr: std::net::SocketAddr = authority
+            .parse()
+            .unwrap_or_else(|e| panic!("advertised authority {authority:?} must be dialable: {e}"));
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap_or_else(|e| {
+            panic!(
+                "the MCP endpoint at {addr} must still accept connections with \
+                 zero windows open — that is the whole point of §L6 residency: {e}"
+            )
+        });
+        println!("residency: {endpoint} accepted a connection with 0 windows open");
+    }
+
+    /// Summon the window back the way the dock click and the `Show lindsey`
+    /// menu item do.
+    ///
+    /// Dispatched through `App::dispatch_action` rather than a window, because
+    /// there *is* no window — which is precisely the path AppKit takes for a
+    /// menu item when `active_window()` is `None`
+    /// (`gpui/src/app.rs:2230-2240`). It is the closest a test can get to the
+    /// real gesture: `TestPlatform::on_reopen` is an empty stub, so a simulated
+    /// dock click is not expressible, and both routes call the same
+    /// `WindowSession::show` anyway.
+    fn summon_window(&mut self) {
+        self.cx.update(|cx| cx.dispatch_action(&ShowWindow));
+        // `app::lifecycle::wire`'s handler defers, so nothing is built until
+        // the next effect flush. `HeadlessAppContext::update` does not perform
+        // one — `App::update` does, and `settle`'s redraw goes through
+        // `update_window`, which wraps itself in exactly that
+        // (`gpui/src/app.rs:1647-1651`). The redraw targets the *stale* handle
+        // and fails harmlessly; the flush is the point.
+        self.settle();
+        self.window = self
+            .cx
+            .update(|cx| cx.windows().first().copied())
+            .expect("ShowWindow must rebuild the window");
+        self.settle();
     }
 
     fn accumulate_perf(&mut self, samples: &[lindsey::perf::Sample]) {
@@ -525,7 +966,14 @@ impl Stage {
             previous: _previous,
             shots: _shots,
             perf_totals: _perf_totals,
+            fake_api,
+            account_dir,
         } = self;
+        // Remove the run's account state. A suite that left it behind would
+        // make the *next* run start already signed in and photograph a
+        // sign-in that never happened.
+        let _ = std::fs::remove_dir_all(&account_dir);
+        drop(fake_api);
         drop(search);
         drop(symbols);
         drop(packages);
@@ -749,6 +1197,19 @@ impl Stage {
         });
     }
 
+    /// The live theme's display name, read from the theme global.
+    ///
+    /// Asserted on rather than inferred from pixels: "the frame changed" does
+    /// not tell you *which* theme you landed in, and a caption that names a
+    /// theme the frame is not in is the two-byte-identical-frames failure in a
+    /// different costume.
+    fn theme_name(&mut self) -> String {
+        self.cx.update(|cx| {
+            use lindsey::theme::ThemeExtAccessor as _;
+            cx.theme_ext().theme_name.to_string()
+        })
+    }
+
     /// Dispatch a real action — the same one the keybinding dispatches.
     fn act(&mut self, action: &dyn Action) {
         let boxed = action.boxed_clone();
@@ -843,6 +1304,29 @@ impl Stage {
     /// How many generations the header's version picker offers (real lineage).
     fn version_option_count(&mut self) -> usize {
         self.with_symbol_page("version_option_count", |page| page.version_count())
+    }
+
+    /// The exact text the status bar's MCP segment is painting, or `None` when
+    /// the segment is hidden.
+    ///
+    /// Read off the live `StatusBar` entity rather than off the global, because
+    /// the claim being made about the restored frame is about what the *reader*
+    /// sees — the same reason `tests/mcp_endpoint.rs` reads through the status
+    /// bar instead of through `McpHost`.
+    fn mcp_segment_text(&mut self) -> Option<String> {
+        self.cx
+            .update_window(self.window, |root_view, _window, cx| {
+                let shell = root_view
+                    .downcast::<Shell>()
+                    .expect("screenshot window's root view is always Shell");
+                shell
+                    .read(cx)
+                    .status_bar()
+                    .read(cx)
+                    .mcp_label()
+                    .map(ToString::to_string)
+            })
+            .expect("read the status bar")
     }
 
     /// Capture, validate, and record one frame.
@@ -1029,6 +1513,12 @@ fn main() {
     lindsey::perf::set_enabled(true);
 
     let mut stage = Stage::boot(&corpus, out_dir);
+
+    // `Stage::boot` installs a real, SignedOut account gate, so the shell it
+    // just built is rendering nothing but the sign-in surface (`auth.md`).
+    // Sign in once, for real, before scene 01 — see `Stage::sign_in_for_boot`
+    // for why every scene below this line depends on it.
+    stage.sign_in_for_boot();
 
     // ── 01 — the shell, corpus still arriving ────────────────────────────────
     stage.settle();
@@ -1796,6 +2286,262 @@ fn main() {
         "cmd-B again brings the left dock back — the toggle is reversible",
         Change::Major,
     );
+
+    // ── Background residency (app::lifecycle) ────────────────────────────────
+    //
+    // Three steps, only two of which have a frame — and that asymmetry is the
+    // honest part. Between them lindsey has **no window**, so there is nothing
+    // to photograph; §6 forbids inventing a picture of a state that does not
+    // render. What exists instead is the assertion inside `dismiss_window`
+    // that the endpoint accepted a socket while zero windows were open.
+    let before_dismiss = stage.mcp_segment_text();
+    assert!(
+        before_dismiss.is_some(),
+        "requirement 4: the reader must be able to see the endpoint is up \
+         before we take the window away — the status bar shows nothing",
+    );
+    stage.shoot(
+        "27-before-dismiss",
+        "The window about to be dismissed, with the hosted MCP endpoint visible \
+         in the status bar (the first frame in this suite's history to show it: \
+         the harness never started the server before, so `McpStatus::Absent` \
+         hid the segment)",
+        // `KnownNoOp` with a zero ceiling, not `Minor { min_fraction: 0.0 }`.
+        // The latter asserts "at least 0% changed", which is no claim at all —
+        // exactly the `expect_change: false` weakness `Change`'s own docs were
+        // written to close. Nothing was dispatched since frame 26, so the
+        // falsifiable statement is that this frame is byte-identical to it.
+        Change::KnownNoOp {
+            max_fraction: 0.0,
+            reason: "no action was dispatched since the previous frame; this \
+                     shot exists only to be the baseline the restored frame is \
+                     compared against, so it must be identical to 26",
+        },
+    );
+
+    // Window gone. The endpoint answers anyway — asserted, not assumed.
+    stage.dismiss_window();
+
+    // …and back, by the same action the `Show lindsey` menu item dispatches.
+    stage.summon_window();
+
+    let after_restore = stage.mcp_segment_text();
+    assert_eq!(
+        after_restore, before_dismiss,
+        "the rebuilt status bar must advertise the same endpoint that stayed \
+         up — a fresh `Absent` would tell the reader the server died when it \
+         did not",
+    );
+
+    // `KnownNoOp` is the strong claim here, not a weak one. `differing_pixels`
+    // returns `None` on a dimension mismatch, which would skip the check
+    // entirely — but a mismatch is impossible to reach silently, because a
+    // window rebuilt at different bounds rasterises at different dimensions and
+    // `shoot`'s own opacity/colour checks still run. What the tolerance bounds
+    // is the only thing allowed to differ across a dismiss: sub-pixel raster
+    // noise. Tabs, docks, scroll position, the active document and the endpoint
+    // segment all have to come back identical, and any of them being lost moves
+    // far more than 0.5% of the frame.
+    stage.shoot(
+        "28-restored",
+        "The same window, destroyed and rebuilt: dismissed with Close Window, \
+         summoned back with Show lindsey (the action a dock click also fires). \
+         Same bounds, same tabs, same active document, same live endpoint — the \
+         frame is the one the reader dismissed",
+        Change::KnownNoOp {
+            max_fraction: 0.005,
+            reason: "restoring must reproduce the dismissed frame; anything \
+                     more than raster noise means the rebuild lost state that \
+                     lived in `Shell` rather than in a store",
+        },
+    );
+
+    // ── Theme cycling ────────────────────────────────────────────────────────
+    //
+    // The palette restructure's claim is that a theme is data and switching is
+    // total. Two frames are what make that checkable rather than asserted: the
+    // same window, the same document, the same scroll position, in two themes.
+    //
+    // `Change::Major` is the right bar and it is a real one. A theme switch
+    // that left *any* cached colour behind would move less of the frame than
+    // the floor demands, because the stale regions would not repaint — which
+    // is exactly the failure mode the restructure is supposed to make
+    // impossible. This is the pixel half of the guarantee;
+    // `tests/theme_law.rs` is the structural half.
+    stage.act(&CycleTheme);
+    let paper = stage.theme_name();
+    assert_eq!(
+        paper, "Paper",
+        "the bundle's cycle order puts Paper second; a different name here \
+         means the order changed and these captions no longer describe the \
+         frames",
+    );
+    stage.shoot(
+        "29-theme-paper-light",
+        "cmd-shift-T cycles to `Paper`, the light theme. Every surface, border,          badge and syntax colour in this frame was resolved from four ramp          specs in `assets/themes/paper-light.json` through the same role table          the dark theme uses — no view was touched to make this exist",
+        Change::Major,
+    );
+
+    stage.act(&CycleTheme);
+    let slate = stage.theme_name();
+    assert_eq!(slate, "Slate High Contrast", "third in cycle order");
+    stage.shoot(
+        "30-theme-slate-contrast",
+        "A third press: `Slate High Contrast` — a pure-grey neutral over a          near-black page with brighter signal hues. The same twelve-step ramps,          different numbers; the thirteen kind hues are unchanged across all          four themes so a colour keeps meaning the same kind",
+        Change::Major,
+    );
+
+    stage.act(&CycleTheme);
+    let ember = stage.theme_name();
+    assert_eq!(ember, "Ember", "fourth in cycle order");
+    stage.shoot(
+        "31-theme-ember-dark",
+        "`Ember`: a warm dark. The neutral ramp's hue moved from 240° to 28°,          so every grey in the window — surfaces, borders, rules, the scrim, the          key caps gpui-component draws — warmed together, because they are all          steps of one ramp rather than ninety independent literals",
+        Change::Major,
+    );
+
+    // Back to where we started. A cycle that does not close is a cycle the
+    // reader cannot use to compare two themes.
+    stage.act(&CycleTheme);
+    assert_eq!(
+        stage.theme_name(),
+        "Ink",
+        "the cycle must wrap to the first theme",
+    );
+
+    // ── Account: the launch gate (`auth.md`) ─────────────────────────────────
+    //
+    // Every scene up to this point ran signed in — `sign_in_for_boot` put the
+    // process in that state before scene 01. These three exercise the other
+    // half: sign out, and prove the gate that comes back is the *launch*
+    // surface (`Shell::render` returns nothing else while `Shell::gate` is
+    // `Some`), not the dismissable `cmd-shift-A` overlay. Every frame below is
+    // driven through the real path — a real "Sign out" click via a real
+    // `SignInEvent`, the real `SignInView::on_key`, and a real
+    // `POST /v1/authorize` over a real socket to `FakeApi`. Nothing is set by
+    // hand, which is what makes these photographs rather than mock-ups
+    // (AGENTS-DOCTRINE §6).
+
+    stage.act(&OpenAccount);
+    {
+        let view = stage.sign_in_view();
+        // There is no synthetic "sign out" helper on `Stage`: this emits the
+        // identical event the "Sign out" button's own `on_click` emits
+        // (`views::sign_in::SignInView`'s `Accepted` branch), so the frame
+        // that follows is evidence of `Shell::on_sign_in_event`'s `SignOut`
+        // arm — and, specifically, of `Shell::engage_gate` tearing this very
+        // overlay down rather than leaving it dismissable.
+        stage.cx.update(|cx| {
+            view.update(cx, |_view, cx| {
+                cx.emit(lindsey::views::sign_in::SignInEvent::SignOut);
+            });
+        });
+    }
+    stage.settle();
+    assert!(
+        stage.is_gated(),
+        "signing out must return to the gate — a frame captioned as the gate over a \
+         shell that is still reachable would be exactly the fabricated claim \
+         AGENTS-DOCTRINE §6 forbids",
+    );
+    stage.shoot(
+        "32-account-signed-out",
+        "Signing out returns to the gate — the screen you must pass before nudox          works at all, not a panel you can dismiss. This is the *launch*          surface: `Shell::render` returns nothing else while the account          cannot work, so the corpus, the docks and cmd-K are all unreachable          behind it, the same as at a cold launch. `Posture::SignedOut` is a          named state, not an absence — the status bar painted the identical          fact a moment ago, from the same derivation",
+        Change::Major,
+    );
+
+    stage.type_key(FakeApi::KEY);
+    stage.shoot(
+        "33-account-key-masked",
+        "The pasted key, as the field renders it: the `ndx_` prefix and the          last four characters in clear, everything between them masked. A          sign-in form is the most photographed surface in any application — it          is in every screen recording of a first run — so the field shows          enough to confirm the paste landed and nothing more",
+        Change::Minor {
+            min_fraction: 0.0005,
+            reason: "only the key field's text changes; the panel around it is identical",
+        },
+    );
+
+    {
+        let view = stage.sign_in_view();
+        stage.cx.update(|cx| {
+            view.update(cx, |view, cx| view.submit(cx));
+        });
+        // Two clocks, both driven: `settle` advances the test dispatcher *and*
+        // real time, which is what lets the `authorize` round trip complete and
+        // the acceptance spring finish travelling. Photographing between them
+        // is how a frame comes out mid-animation (doctrine §8, GPUI testing).
+        for _ in 0..40 {
+            stage.settle();
+            let phase_is_accepted = {
+                let view = view.clone();
+                stage.cx.update(|cx| {
+                    matches!(
+                        view.read(cx).phase(),
+                        lindsey::views::sign_in::SignInPhase::Accepted { .. }
+                    )
+                })
+            };
+            if phase_is_accepted {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let phase_is_accepted = stage.cx.update(|cx| {
+            matches!(
+                view.read(cx).phase(),
+                lindsey::views::sign_in::SignInPhase::Accepted { .. }
+            )
+        });
+        assert!(
+            phase_is_accepted,
+            "the sign-in must actually have been accepted by the fake service — a \
+             frame captioned 'Signed in' over a form that never got an answer is \
+             exactly the fabricated UI AGENTS-DOCTRINE §6 forbids",
+        );
+        // Let the acceptance spring finish *and* let
+        // `Shell::settle_gate_if_ready` clear the gate — `settle` both
+        // re-draws and sleeps real wall-clock time, which is what the spring
+        // animates against and what the gate's own settle check runs on.
+        // Unlike the old overlay-only flow, this frame is no longer "the
+        // destination the panel animates to": the gate clearing *is* the
+        // destination, and the panel is gone by the time it happens. Scene 34
+        // photographs what is actually true after a real sign-in — the
+        // corpus is reachable again — not the panel that got it there.
+        let mut cleared = false;
+        for _ in 0..40 {
+            stage.settle();
+            if !stage.is_gated() {
+                cleared = true;
+                break;
+            }
+        }
+        assert!(
+            cleared,
+            "the gate must clear once this sign-in settles, exactly as it did during boot",
+        );
+    }
+
+    stage.refresh_account_status();
+    stage.shoot(
+        "34-account-signed-in",
+        "The gate is gone. This is the behaviour the previous two frames exist          to contrast with: signing in does not just change a status-bar label,          it hands the corpus back. The status bar's `account · signed in`          segment is real — read off the same `AccountPresentation` a          `GET /v1/usage` populated a moment earlier — and cmd-K, the docks and          every document surface work again, which the next scene proves rather          than states",
+        Change::Major,
+    );
+
+    // ── Account: the overlay, once past the gate ──────────────────────────────
+    //
+    // `cmd-shift-A` still works once signed in — it is how a reader reviews
+    // usage or signs out again without leaving what they were doing, and it
+    // is the only place the usage meter and the key hint are shown. This is
+    // the content the pre-gate scene 34 used to capture; it did not stop
+    // being true, it just stopped being what "34" is about once 34 became the
+    // gate's own destination frame above.
+    stage.act(&OpenAccount);
+    stage.shoot(
+        "35-account-panel",
+        "cmd-shift-A over a working shell: the same `SignInView`, in the same          `Accepted` phase the gate showed a moment ago, now reachable as a          dismissable overlay instead of a launch requirement. The row is a real          `GET /v1/usage` — 412 of 1000 tool calls, the key named as `ndx_…4517`,          and where it is stored. No credential appears in this frame, in the          status bar, or on disk",
+        Change::Major,
+    );
+    stage.act(&DismissOverlay);
 
     stage.write_manifest();
     stage.report_perf();

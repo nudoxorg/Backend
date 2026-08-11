@@ -173,312 +173,312 @@ versions = [
 ecosystem = "go"
 name = "github.com/BurntSushi/toml"
 versions = [
-  { version = "v1.6.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.6.0", entries = 1074 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/fsnotify/fsnotify"
 versions = [
-  { version = "v1.10.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.10.1", entries = 386 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/gin-gonic/gin"
 versions = [
-  { version = "v1.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.12.0", entries = 2271 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/golang-jwt/jwt/v5"
 versions = [
-  { version = "v5.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v5.3.1", entries = 787 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/google/go-cmp"
 versions = [
-  { version = "v0.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v0.7.0", entries = 1862 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/google/uuid"
 versions = [
-  { version = "v1.6.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.6.0", entries = 258 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/hashicorp/go-multierror"
 versions = [
-  { version = "v1.1.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.1.1", entries = 63 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/mattn/go-sqlite3"
 versions = [
-  { version = "v1.14.49", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.14.49", entries = 1514 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/pkg/errors"
 versions = [
-  { version = "v0.8.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
-  { version = "v0.9.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v0.8.1", entries = 93 },
+  { version = "v0.9.1", entries = 116 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/prometheus/client_golang"
 versions = [
-  { version = "v1.24.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.24.1", entries = 3607 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/redis/go-redis/v9"
 versions = [
-  { version = "v9.22.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v9.22.0", entries = 61503 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/robfig/cron/v3"
 versions = [
-  { version = "v3.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v3.0.1", entries = 255 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/samber/lo"
 versions = [
-  { version = "v1.53.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.53.0", entries = 3422 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/spf13/cobra"
 versions = [
-  { version = "v1.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.10.2", entries = 975 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/spf13/viper"
 versions = [
-  { version = "v1.21.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.21.0", entries = 893 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "github.com/stretchr/testify"
 versions = [
-  { version = "v1.11.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
-  { version = "v1.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.11.1", entries = 4854 },
+  { version = "v1.9.0", entries = 4667 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "go.uber.org/zap"
 versions = [
-  { version = "v1.28.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v1.28.0", entries = 2943 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "golang.org/x/sync"
 versions = [
-  { version = "v0.22.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v0.22.0", entries = 88 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "golang.org/x/text"
 versions = [
-  { version = "v0.40.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v0.40.0", entries = 12631 },
 ]
 
 [[packages]]
 ecosystem = "go"
 name = "gopkg.in/yaml.v3"
 versions = [
-  { version = "v3.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=go" },
+  { version = "v3.0.1", entries = 1523 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "ch.qos.logback:logback-classic"
 versions = [
-  { version = "1.4.14", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "1.4.14", entries = 3122 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.fasterxml.jackson.core:jackson-databind"
 versions = [
-  { version = "2.15.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
-  { version = "2.16.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.15.4", entries = 27043 },
+  { version = "2.16.1", entries = 27400 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.google.code.gson:gson"
 versions = [
-  { version = "2.10.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.10.1", entries = 2041 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.google.dagger:dagger"
 versions = [
-  { version = "2.51", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.51", entries = 383 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.google.guava:guava"
 versions = [
-  { version = "32.1.3-jre", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
-  { version = "33.0.0-jre", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "32.1.3-jre", entries = 17972 },
+  { version = "33.0.0-jre", entries = 18225 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.h2database:h2"
 versions = [
-  { version = "2.2.224", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.2.224", entries = 38150 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "com.squareup.retrofit2:retrofit"
 versions = [
-  { version = "2.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.9.0", producer_error = "oracle failed for maven:com.squareup.retrofit2:retrofit: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/BuiltInConverters.java:22: error: package kotlin does not exist import kotlin.Unit;              ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/BuiltInConverters.java:23: error: package okhttp3 does not exist import okhttp3.RequestBody;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/BuiltInConverters.java:24: error: package okhttp3 does not exist import okhttp3.ResponseBody;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/Converter.java:23: error: package okhttp3 does not exist import okhttp3.RequestBody;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/Converter.java:24: error: package okhttp3 does not exist import okhttp3.ResponseBody;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/Retrofit.java:37: error: package okhttp3 does not exist import okhttp3.HttpUrl;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/Retrofit.java:38: error: package okhttp3 does not exist import okhttp3.OkHttpClient;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/retrofit2/Retrofit.java:39: error: package okhttp3 does not exist import okhttp3.RequestBody;               ^ /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.squareup.retrofit2__retrofit-2.9.0/r… [truncated: 2048 of 30680 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "io.reactivex.rxjava3:rxjava"
 versions = [
-  { version = "3.1.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "3.1.8", entries = 16443 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "io.vavr:vavr"
 versions = [
-  { version = "0.10.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "0.10.4", producer_error = "oracle failed for maven:io.vavr:vavr: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/io.vavr__vavr-0.10.4/io/vavr/API.java:3263: error: invalid use of a restricted identifier 'yield'              return yield(Function.identity());                     ^   (to invoke a method called yield, qualify the yield with a receiver or type name) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/io.vavr__vavr-0.10.4/io/vavr/API.java:3562: error: invalid use of a restricted identifier 'yield'              return yield(Function.identity());                     ^   (to invoke a method called yield, qualify the yield with a receiver or type name) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/io.vavr__vavr-0.10.4/io/vavr/API.java:3861: error: invalid use of a restricted identifier 'yield'              return yield(Function.identity());                     ^   (to invoke a method called yield, qualify the yield with a receiver or type name) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/io.vavr__vavr-0.10.4/io/vavr/API.java:4160: error: invalid use of a restricted identifier 'yield'              return yield(Function.identity());                     ^   (to invoke a method called yield, qualify the yield with a receiver or type name) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/io.vavr__vavr-0.10.4/io/vavr/API.java:4459: error: invalid use of a restricted identifier 'yield'              return yield(Function.identity());                     ^   (to invoke a method called yield, qualify the yield with a receiver or type name) 5 errors" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "jakarta.validation:jakarta.validation-api"
 versions = [
-  { version = "3.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "3.0.2", entries = 1101 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "junit:junit"
 versions = [
-  { version = "4.13.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "4.13.2", entries = 3939 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.apache.commons:commons-lang3"
 versions = [
-  { version = "3.14.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "3.14.0", entries = 12725 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.apache.httpcomponents.client5:httpclient5"
 versions = [
-  { version = "5.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "5.3.1", producer_error = "oracle failed for maven:org.apache.httpcomponents.client5:httpclient5: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.conscrypt__conscrypt-openjdk-2.5.2/org/conscrypt/Platform.java:84: error: package sun.security.x509 is not visible import sun.security.x509.AlgorithmId;                    ^   (package sun.security.x509 is declared in module java.base, which does not export it to the unnamed module) 1 error" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.apache.kafka:kafka-clients"
 versions = [
-  { version = "3.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "3.7.0", producer_error = "oracle failed for maven:org.apache.kafka:kafka-clients: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/com.fasterxml.jackson.core__jackson-databind-2.15.4/com/fasterxml/jackson/databind/util/internal/PrivateMaxEntriesMap.java:861: error: cannot find symbol             implements Linked<Node<K, V>> {                        ^   symbol:   class Linked   location: class PrivateMaxEntriesMap<K,V>   where K,V are type-variables:     K extends Object declared in class PrivateMaxEntriesMap     V extends Object declared in class PrivateMaxEntriesMap 1 error" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.assertj:assertj-core"
 versions = [
-  { version = "3.25.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "3.25.3", producer_error = "oracle failed for maven:org.assertj:assertj-core: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.assertj__assertj-core-3.25.3/org/assertj/core/api/JUnitJupiterBDDSoftAssertions.java:19: error: package org.junit.jupiter.api.extension is not visible import org.junit.jupiter.api.extension.AfterEachCallback;                             ^   (package org.junit.jupiter.api.extension is declared in module org.junit.jupiter.api, which is not in the module graph) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.assertj__assertj-core-3.25.3/org/assertj/core/api/JUnitJupiterBDDSoftAssertions.java:20: error: package org.junit.jupiter.api.extension is not visible import org.junit.jupiter.api.extension.ExtensionContext;                             ^   (package org.junit.jupiter.api.extension is declared in module org.junit.jupiter.api, which is not in the module graph) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.assertj__assertj-core-3.25.3/org/assertj/core/api/JUnitJupiterSoftAssertions.java:19: error: package org.junit.jupiter.api.extension is not visible import org.junit.jupiter.api.extension.AfterEachCallback;                             ^   (package org.junit.jupiter.api.extension is declared in module org.junit.jupiter.api, which is not in the module graph) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.assertj__assertj-core-3.25.3/org/assertj/core/api/JUnitJupiterSoftAssertions.java:20: error: package org.junit.jupiter.api.extension is not visible import org.junit.jupiter.api.extension.ExtensionContext;                             ^   (package org.junit.jupiter.api.extension is declared in module org.junit.jupiter.api, which is not in the module graph) /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.assertj__assertj-core-3.25.3/org/assertj/core/api/junit/jupiter/SoftAssertionsExtension.ja… [truncated: 2048 of 18082 bytes shown; re-run the producer directly for the full chain]" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.junit.jupiter:junit-jupiter-api"
 versions = [
-  { version = "5.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "5.10.2", entries = 2190 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.mapstruct:mapstruct"
 versions = [
-  { version = "1.5.5.Final", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "1.5.5.Final", entries = 396 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.mockito:mockito-core"
 versions = [
-  { version = "5.10.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "5.10.0", entries = 6556 },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.projectlombok:lombok"
 versions = [
-  { version = "1.18.30", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "1.18.30", producer_error = "oracle failed for maven:org.projectlombok:lombok: oracle `java-javadoc/1 javadoc` exited with status 1: Picked up _JAVA_OPTIONS: -Dawt.useSystemAAFontSettings=on -Dswing.aatext=true /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.projectlombok__lombok-1.18.30/lombok/experimental/var.java:30: error: 'var' not allowed here public @interface var {                   ^   as of release 10, 'var' is a restricted type name and cannot be used for type declarations /Users/mileswirht/Downloads/backend/crates/nudox-store/../../.real-crates/org.projectlombok__lombok-1.18.30/lombok/var.java:34: error: 'var' not allowed here public @interface var {                   ^   as of release 10, 'var' is a restricted type name and cannot be used for type declarations 2 errors" },
 ]
 
 [[packages]]
 ecosystem = "maven"
 name = "org.slf4j:slf4j-api"
 versions = [
-  { version = "2.0.12", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=maven" },
+  { version = "2.0.12", entries = 1969 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "AutoMapper"
 versions = [
-  { version = "13.0.1", entries = 22384 },
+  { version = "13.0.1", entries = 4057 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "CsvHelper"
 versions = [
-  { version = "30.0.1", entries = 6755 },
+  { version = "30.0.1", entries = 3137 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Dapper"
 versions = [
-  { version = "2.1.35", entries = 5636 },
+  { version = "2.1.35", entries = 2776 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "FluentValidation"
 versions = [
-  { version = "11.9.0", entries = 4506 },
+  { version = "11.9.0", entries = 2694 },
 ]
 
 [[packages]]
@@ -492,35 +492,35 @@ versions = [
 ecosystem = "nuget"
 name = "MediatR"
 versions = [
-  { version = "12.2.0", entries = 2257 },
+  { version = "12.2.0", entries = 506 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Microsoft.Bcl.AsyncInterfaces"
 versions = [
-  { version = "8.0.0", producer_error = "lowering failed for nuget:Microsoft.Bcl.AsyncInterfaces: lowering failed: declared more than once: [\\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Create~System.Runtime.CompilerServices.AsyncIteratorMethodBuilder#ret\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Create~System.Runtime.CompilerServices.AsyncIteratorMethodBuilder\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.MoveNext``1(``0@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.MoveNext``1(``0@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)#p1\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitOnCompleted``2(``0@,``1@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)#p0\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)#p1\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.AwaitUnsafeOnCompleted``2(``0@,``1@)\\\", \\\"M:System.Runtime.CompilerServices.AsyncIteratorMethodBuilder.Complete\\\", \\\"T:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1#F:_result\\\", \\\"P:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.RunContinuationsAsynchronously\\\", \\\"P:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.Version\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.Reset\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetResult(`0)#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetResult(`0)\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetException(System.Exception)#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.SetException(System.Exception)\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValueTaskSourceCore`1.GetStatus(System.Int16)~System.Threading.Tasks.Sources.ValueTaskSourceStatus#p0\\\", \\\"M:System.Threading.Tasks.Sources.ManualResetValu… [truncated: 2048 of 3606 bytes shown; re-run the producer directly for the full chain]" },
+  { version = "8.0.0", entries = 51 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Microsoft.Extensions.DependencyInjection.Abstractions"
 versions = [
-  { version = "8.0.1", producer_error = "lowering failed for nuget:Microsoft.Extensions.DependencyInjection.Abstractions: lowering failed: declared more than once: [\\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p1\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#p2\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance(System.IServiceProvider,System.Type,System.Object[])~System.Object\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#p1\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory(System.Type,System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}#p0\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}#ret\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateFactory``1(System.Type[])~Microsoft.Extensions.DependencyInjection.ObjectFactory{``0}\\\", \\\"M:Microsoft.Extensions.DependencyInjection.ActivatorUtilities.CreateInstance``1(System.IServiceProvider,System.Object[])~``0… [truncated: 2048 of 147828 bytes shown; re-run the producer directly for the full chain]" },
+  { version = "8.0.1", entries = 935 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Moq"
 versions = [
-  { version = "4.20.70", entries = 9242 },
+  { version = "4.20.70", entries = 4290 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "NLog"
 versions = [
-  { version = "5.2.8", producer_error = "lowering failed for nuget:NLog: lowering failed: declared more than once: [\\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p0\\\", \\\"M:Example.Main(System.String[])\\\", \\\"M:Example.Main(System.String[])#p… [truncated: 2048 of 3784 bytes shown; re-run the producer directly for the full chain]" },
+  { version = "5.2.8", entries = 15514 },
 ]
 
 [[packages]]
@@ -534,58 +534,58 @@ versions = [
 ecosystem = "nuget"
 name = "Newtonsoft.Json"
 versions = [
-  { version = "12.0.3", entries = 18503 },
-  { version = "13.0.3", entries = 18886 },
+  { version = "12.0.3", entries = 7632 },
+  { version = "13.0.3", entries = 7763 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Polly"
 versions = [
-  { version = "8.3.0", producer_error = "lowering failed for nuget:Polly: lowering failed: declared more than once: [\\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_onHalfOpen\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_lock\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_circuitState\\\", \\\"T:Polly.CircuitBreaker.CircuitStateController`1#F:_lastOutcome\\\", \\\"P:Polly.CircuitBreaker.CircuitStateController`1.CircuitState\\\", \\\"P:Polly.CircuitBreaker.CircuitStateController`1.LastException\\\", \\\"T:Polly.Telemetry.TelemetryUtil#CF:PollyDiagnosticSource\\\"]" },
+  { version = "8.3.0", entries = 5290 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Refit"
 versions = [
-  { version = "7.0.0", entries = 3238 },
+  { version = "7.0.0", entries = 909 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "RestSharp"
 versions = [
-  { version = "111.2.0", entries = 4161 },
+  { version = "111.2.0", entries = 2195 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "Serilog"
 versions = [
-  { version = "2.12.0", entries = 4331 },
-  { version = "3.1.1", entries = 4319 },
+  { version = "2.12.0", entries = 2778 },
+  { version = "3.1.1", entries = 2730 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "StackExchange.Redis"
 versions = [
-  { version = "2.7.33", entries = 22664 },
+  { version = "2.7.33", entries = 18326 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "System.Text.Json"
 versions = [
-  { version = "8.0.2", producer_error = "lowering failed for nuget:System.Text.Json: lowering failed: declared more than once: [\\\"P:SerializerTrimmingTest.ClassWithDay.Day\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#p0\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.String[])~System.Int32#ret\\\", \\\"M:SerializerTrimmingTest.Program.Main(System.Strin… [truncated: 2048 of 269739 bytes shown; re-run the producer directly for the full chain]" },
+  { version = "8.0.2", entries = 9045 },
 ]
 
 [[packages]]
 ecosystem = "nuget"
 name = "protobuf-net"
 versions = [
-  { version = "3.2.30", producer_error = "lowering failed for nuget:protobuf-net: lowering failed: declared more than once: [\\\"T:BarClass#F:__pbn__extensionData\\\", \\\"P:BarClass.String\\\", \\\"P:BarClass.Double\\\", \\\"P:BarClass.Float\\\", \\\"P:BarClass.Bool\\\", \\\"P:BarClass.Int32\\\", \\\"P:BarClass.Sint32\\\", \\\"P:BarClass.Uint32\\\", \\\"P:BarClass.Int64\\\", \\\"P:BarClass.Sint64\\\", \\\"P:BarClass.Uint64\\\", \\\"P:BarClass.Fooclass\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#p0\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#ret\\\", \\\"M:BarClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension\\\", \\\"T:BarClass.FooClass#F:__pbn__extensionData\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#p0\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension#ret\\\", \\\"M:BarClass.FooClass.global::ProtoBuf#IExtensible#GetExtensionObject(System.Boolean)~ProtoBuf.IExtension\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"P:DAL.AssociationAttribute.Storage\\\", \\\"P:DAL.AssociationAttribute.Name\\\", \\\"P:DAL.AssociationAttribute.OtherKey\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"T:DAL.AutoSync\\\", \\\"T:DAL.AutoSync#V:OnInsert\\\", \\\"P:DAL.ColumnAttribute.DbType\\\", \\\"P:DAL.ColumnAttribute.Storage\\\", \\\"P:DAL.ColumnAttribute.IsDbGenerated\\\", \\\"P:DAL.ColumnAttribute.IsPrimaryKey\\\", \\\"P:DAL.ColumnAttribute.AutoSync\\\", \\\"P:DAL.ColumnAttribute.DbType\\\", \\\"P:DAL.ColumnAttribute.Storage\\\", \\\"P:DAL.ColumnAttribute.IsDbGenerated\\\", \\\"P:DAL.ColumnAttribute.IsPrimaryKey\\\", \\\"P:DAL.ColumnAttribute.AutoSync\\\", \\\"P:DAL.ColumnAttribute.DbType\\\"… [truncated: 2048 of 45229 bytes shown; re-run the producer directly for the full chain]" },
+  { version = "3.2.30", entries = 3530 },
 ]
 
 [[packages]]
@@ -599,423 +599,423 @@ versions = [
 ecosystem = "npm"
 name = "@types/node"
 versions = [
-  { version = "20.11.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "20.11.0", entries = 36748 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "axios"
 versions = [
-  { version = "1.6.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "1.6.7", entries = 1973 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "chalk"
 versions = [
-  { version = "5.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "5.3.0", entries = 189 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "class-validator"
 versions = [
-  { version = "0.14.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "0.14.1", entries = 5022 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "commander"
 versions = [
-  { version = "12.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "12.0.0", entries = 947 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "date-fns"
 versions = [
-  { version = "3.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "3.3.1", entries = 5561 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "dayjs"
 versions = [
-  { version = "1.11.10", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "1.11.10", entries = 2136 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "debug"
 versions = [
-  { version = "4.3.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "4.3.4", entries = 27 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "fp-ts"
 versions = [
-  { version = "2.16.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "2.16.5", entries = 26880 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "immer"
 versions = [
-  { version = "10.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "10.0.3", entries = 225 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "left-pad"
 versions = [
-  { version = "1.3.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "1.3.0", entries = 26 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "lodash"
 versions = [
-  { version = "4.17.20", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
-  { version = "4.17.21", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "4.17.20", entries = 3479 },
+  { version = "4.17.21", entries = 3486 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "p-limit"
 versions = [
-  { version = "5.0.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "5.0.0", entries = 6 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "reflect-metadata"
 versions = [
-  { version = "0.2.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "0.2.1", entries = 231 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "rxjs"
 versions = [
-  { version = "7.8.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "7.8.1", entries = 6960 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "type-fest"
 versions = [
-  { version = "4.10.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "4.10.2", entries = 673 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "uuid"
 versions = [
-  { version = "9.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "9.0.1", entries = 230 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "ws"
 versions = [
-  { version = "8.16.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "8.16.0", entries = 425 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "yup"
 versions = [
-  { version = "1.4.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "1.4.0", entries = 2143 },
 ]
 
 [[packages]]
 ecosystem = "npm"
 name = "zod"
 versions = [
-  { version = "3.22.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
-  { version = "3.23.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=npm" },
+  { version = "3.22.4", entries = 2064 },
+  { version = "3.23.8", entries = 2158 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "attrs"
 versions = [
-  { version = "23.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "23.2.0", entries = 754 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "beautifulsoup4"
 versions = [
-  { version = "4.12.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "4.12.3", entries = 1276 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "black"
 versions = [
-  { version = "24.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "24.2.0", entries = 2521 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "cattrs"
 versions = [
-  { version = "23.2.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "23.2.3", entries = 751 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "click"
 versions = [
-  { version = "8.0.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
-  { version = "8.1.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "8.0.4", entries = 1877 },
+  { version = "8.1.7", entries = 1864 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "dataclasses-json"
 versions = [
-  { version = "0.6.4", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "0.6.4", entries = 345 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "flask"
 versions = [
-  { version = "3.0.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "3.0.2", entries = 1379 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "httpx"
 versions = [
-  { version = "0.27.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "0.27.0", entries = 1968 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "jsonschema"
 versions = [
-  { version = "4.21.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "4.21.1", entries = 868 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "more-itertools"
 versions = [
-  { version = "10.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "10.2.0", entries = 783 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "pydantic"
 versions = [
-  { version = "1.10.14", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
-  { version = "2.6.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "1.10.14", entries = 2698 },
+  { version = "2.6.1", entries = 6494 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "python-dateutil"
 versions = [
-  { version = "2.8.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "2.8.2", entries = 1056 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "pyyaml"
 versions = [
-  { version = "6.0.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "6.0.1", entries = 1344 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "requests"
 versions = [
-  { version = "2.31.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "2.31.0", entries = 840 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "rich"
 versions = [
-  { version = "13.7.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "13.7.0", entries = 3762 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "six"
 versions = [
-  { version = "1.16.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "1.16.0", entries = 154 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "sqlalchemy"
 versions = [
-  { version = "2.0.27", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "2.0.27", entries = 34451 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "structlog"
 versions = [
-  { version = "24.1.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "24.1.0", entries = 1322 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "tenacity"
 versions = [
-  { version = "8.2.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "8.2.3", entries = 436 },
 ]
 
 [[packages]]
 ecosystem = "pypi"
 name = "typer"
 versions = [
-  { version = "0.9.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=pypi" },
+  { version = "0.9.0", entries = 1307 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "abseil-cpp"
 versions = [
-  { version = "20260526.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "20260526.0", entries = 2544 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "argparse"
 versions = [
-  { version = "v3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.2", entries = 865 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "catch2"
 versions = [
-  { version = "v3.15.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.15.3", entries = 5106 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "cereal"
 versions = [
-  { version = "v1.3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.3.2", entries = 2575 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "cli11"
 versions = [
-  { version = "v2.7.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v2.7.2", entries = 3153 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "cpp-httplib"
 versions = [
-  { version = "v0.52.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v0.52.0", entries = 5065 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "cxxopts"
 versions = [
-  { version = "v3.3.1", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.3.1", entries = 644 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "date"
 versions = [
-  { version = "v3.0.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.0.5", entries = 6684 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "fmt"
 versions = [
-  { version = "12.2.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "12.2.0", entries = 7485 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "glm"
 versions = [
-  { version = "1.0.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "1.0.3", entries = 2040 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "googletest"
 versions = [
-  { version = "v1.17.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.17.0", entries = 5717 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "lz4"
 versions = [
-  { version = "v1.10.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.10.0", entries = 3089 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "magic-enum"
 versions = [
-  { version = "v0.9.8", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v0.9.8", entries = 1192 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "nlohmann-json"
 versions = [
-  { version = "v3.10.5", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
-  { version = "v3.11.3", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.10.5", entries = 2582 },
+  { version = "v3.11.3", entries = 2915 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "range-v3"
 versions = [
-  { version = "0.12.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "0.12.0", entries = 919 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "simdjson"
 versions = [
-  { version = "v4.6.6", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v4.6.6", entries = 4300 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "spdlog"
 versions = [
-  { version = "v1.17.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.17.0", entries = 6384 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "tomlplusplus"
 versions = [
-  { version = "v3.4.0", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v3.4.0", entries = 2496 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "zlib"
 versions = [
-  { version = "v1.3.2", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.3.2", entries = 2221 },
 ]
 
 [[packages]]
 ecosystem = "cpp"
 name = "zstd"
 versions = [
-  { version = "v1.5.7", unmeasured = "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS=cpp" },
+  { version = "v1.5.7", entries = 13696 },
 ]

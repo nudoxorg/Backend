@@ -93,7 +93,21 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 visibility: Visibility::Public,
                 documentation: module.module_doc.clone().unwrap_or_default(),
                 source: module.path.clone(),
-                span: 0..0,
+                // The whole file, not `0..0`. `module.module_name` keeps
+                // only the file's last path segment
+                // (`specifier_to_module_name`), so two files sharing a
+                // basename in different directories (real case: rxjs's
+                // `internal/observable/combineLatest.d.ts` and
+                // `internal/operators/combineLatest.d.ts`) collide on the
+                // seal's base identity key `(Module, [], name)` — every
+                // `Module` entry is declared with `parent: None`, so the
+                // ancestor path is always empty regardless of directory.
+                // A degenerate `0..0` span made every such collision
+                // identical on the `Span` tier too, forcing escalation to
+                // order-dependent `Ordinal`; a real whole-file span breaks
+                // the tie unless two colliding files happen to be exactly
+                // the same byte length.
+                span: 0..module.source_len,
                 aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
@@ -259,7 +273,7 @@ fn emit_interface(
             visibility: accessibility_to_visibility(method.modifiers.accessibility),
             documentation: method.doc.doc.clone().unwrap_or_default(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (method.sig.span_start as usize)..(method.sig.span_end as usize),
             aliases: Box::new([]),
             deprecation: method.doc.deprecation.clone().map(|d| d.into_ir()),
             doc_links: Box::new([]),
@@ -277,7 +291,7 @@ fn emit_interface(
             visibility: accessibility_to_visibility(prop.modifiers.accessibility),
             documentation: prop.doc.doc.clone().unwrap_or_default(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (prop.span_start as usize)..(prop.span_end as usize),
             aliases: Box::new([]),
             deprecation: prop.doc.deprecation.clone().map(|d| d.into_ir()),
             doc_links: Box::new([]),
@@ -314,7 +328,7 @@ fn emit_interface(
             visibility: Visibility::Public,
             documentation: String::new(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (idx_sig.span_start as usize)..(idx_sig.span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -322,12 +336,20 @@ fn emit_interface(
             cfg: None,
         };
         // Emit as a Function with the key as param and value as return type.
+        // Both the synthetic param and the synthetic function reuse the real
+        // `TSIndexSignature` span (`idx_sig.span_start/end`) — there is no
+        // narrower real span for a param or return type this producer
+        // extracts (`TypeOwned` carries no span of its own; see
+        // `extract/mod.rs`'s `TypeOwned` doc comment), but the whole
+        // `[k: string]: T` node's real bytes are honest and available.
         let key_param_body = crate::extract::ParamFact {
             name: idx_sig.key_name.clone(),
             ty: Some(idx_sig.key_ty.clone()),
             is_optional: false,
             is_rest: false,
             is_readonly: false,
+            span_start: idx_sig.span_start,
+            span_end: idx_sig.span_end,
         };
         let index_fn_body = FunctionBody {
             generics: Vec::new(),
@@ -337,6 +359,8 @@ fn emit_interface(
             is_generator: false,
             has_body: false,
             receiver: crate::extract::ReceiverKind::SharedRef,
+            span_start: idx_sig.span_start,
+            span_end: idx_sig.span_end,
         };
         emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out);
     }
@@ -358,7 +382,7 @@ fn emit_interface(
             visibility: Visibility::Public,
             documentation: String::new(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (cs.span_start as usize)..(cs.span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -404,7 +428,7 @@ fn emit_class(
                     visibility: accessibility_to_visibility(member.modifiers.accessibility),
                     documentation: member.doc.doc.clone().unwrap_or_default(),
                     source: id.module.clone(),
-                    span: 0..0,
+                    span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
                     deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
                     doc_links: Box::new([]),
@@ -461,7 +485,15 @@ fn emit_class(
                         visibility: accessibility_to_visibility(member.modifiers.accessibility),
                         documentation: member.doc.doc.clone().unwrap_or_default(),
                         source: id.module.clone(),
-                        span: 0..0,
+                        // `member.span_start/end`, not `sig`'s: each
+                        // `MethodDefinition` AST node produces exactly one
+                        // `MemberFact` with a singleton `Vec<FunctionBody>`
+                        // (class-method overloads are separate top-level
+                        // `MethodDefinition`s, each its own `MemberFact`), so
+                        // the member's own span is the whole method
+                        // declaration including its name — `sig`'s span
+                        // (the `Function` value node) omits the name.
+                        span: (member.span_start as usize)..(member.span_end as usize),
                         aliases: Box::new([]),
                         deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
                         doc_links: Box::new([]),
@@ -482,7 +514,7 @@ fn emit_class(
                     visibility: accessibility_to_visibility(member.modifiers.accessibility),
                     documentation: member.doc.doc.clone().unwrap_or_default(),
                     source: id.module.clone(),
-                    span: 0..0,
+                    span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
                     deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
                     doc_links: Box::new([]),
@@ -503,7 +535,7 @@ fn emit_class(
                     visibility: Visibility::Private,
                     documentation: String::new(),
                     source: id.module.clone(),
-                    span: 0..0,
+                    span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
                     deprecation: None,
                     doc_links: Box::new([]),
@@ -518,6 +550,8 @@ fn emit_class(
                     is_generator: false,
                     has_body: true,
                     receiver: ReceiverKind::None,
+                    span_start: member.span_start,
+                    span_end: member.span_end,
                 };
                 emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out);
             }
@@ -571,7 +605,7 @@ fn emit_enum(
             visibility: Visibility::Public,
             documentation: String::new(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (v.span_start as usize)..(v.span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -643,7 +677,10 @@ fn emit_function(
 
     // Collect param refs before declaring params as children.
     let mut param_refs: Vec<Ref<Param>> = Vec::with_capacity(body.params.len());
-    let mut param_ids: Vec<(TsId, Param)> = Vec::with_capacity(body.params.len());
+    // Carries each param's real byte span (`ParamFact::span_start/end`)
+    // alongside its `Param` payload, so the symbol declared below can use it
+    // instead of a degenerate `0..0`.
+    let mut param_ids: Vec<(TsId, Param, u32, u32)> = Vec::with_capacity(body.params.len());
 
     for (idx, p) in body.params.iter().enumerate() {
         // The discriminant must fold in `id.discriminant`, not just the
@@ -677,6 +714,8 @@ fn emit_function(
                 .maybe_ty(p.ty.as_ref().map(lower_type))
                 .attributes(attrs)
                 .build(),
+            p.span_start,
+            p.span_end,
         ));
     }
 
@@ -702,7 +741,12 @@ fn emit_function(
             visibility: Visibility::Public,
             documentation: String::new(),
             source: id.module.clone(),
-            span: 0..0,
+            // Synthetic entry: `TypeOwned` carries no span of its own (see
+            // `extract/mod.rs`), so there is no independent byte range for
+            // "just the return type". The enclosing declaration's span is
+            // real, honest bytes that do contain the return type, not a
+            // precise sub-span of it — a superset, not a wrong range.
+            span: (body.span_start as usize)..(body.span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -731,13 +775,13 @@ fn emit_function(
     );
 
     // Declare params as children after declaring the function.
-    for (param_id, param) in param_ids {
+    for (param_id, param, span_start, span_end) in param_ids {
         let param_sym = Symbol {
             name: param_name_from_id(&param_id.name),
             visibility: Visibility::Public,
             documentation: String::new(),
             source: id.module.clone(),
-            span: 0..0,
+            span: (span_start as usize)..(span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -796,8 +840,22 @@ fn emit_static(
 // ── Re-exports ─────────────────────────────────────────────────────────────────
 
 /// Resolve `name`, as exported *without* a `from` clause by the module at
-/// `table_path` (whose export surface is `table`), to the `TsId` a
-/// `refer()` elsewhere should target.
+/// `table_path` (whose export surface is `table`), to the `TsId`(s) a
+/// `refer()` elsewhere should target — **plural**, because `name` can name
+/// an *overloaded* top-level declaration in the target module. Each
+/// overload is its own IR entry (`TsId`'s `discriminant`; see `id.rs`), and
+/// a re-export must be able to reach all of them, not just the first.
+///
+/// This used to return a single `TsId::new(table_path, name, 0)` — a
+/// hardcoded `0` — which is where `LocalExport::Named`'s `overload_count`
+/// used to be lost: `resolve_export_target` had no way to know whether
+/// `local_name` was declared once or many times, so it could only ever
+/// point at the first declaration in source order. Confirmed cost on a real
+/// package: rxjs's public root (`dist/types/index.d.ts`) does `export {
+/// combineLatest } from './internal/observable/combineLatest';`, and
+/// `combineLatest` is declared 13 times (real TS overloads) in that file —
+/// every consumer reaching `combineLatest` through the package root used to
+/// see only the first signature.
 ///
 /// Both re-export paths below (`export { x } from "m"` and `export * from
 /// "m"`) used to build `TsId::new(table_path, name, 0)` directly — correct
@@ -808,33 +866,39 @@ fn emit_static(
 /// renamed or namespace-import export via either form resolves identically
 /// instead of one path working and the other dangling.
 ///
-/// Returns `None` when nothing should be referred at all: either `name`
-/// resolves to a value with no identifier
-/// (`LocalExport::Unresolvable` — e.g. `export default "literal";`), or the
-/// target module's own re-export chain (`resolve_module_path`) doesn't
-/// resolve. When `name` is absent from `table.locals` entirely, it is a
-/// genuine indirect re-export (`export { x } from "m2"` inside the target
-/// module) — using `name` unchanged is *correct* there, not a fallback
-/// guess, because the target module's own `emit_reexports` call declares
-/// it under that exact alias via `declare_ref`.
+/// Returns an empty `Vec` when nothing should be referred at all: either
+/// `name` resolves to a value with no identifier (`LocalExport::Unresolvable`
+/// — e.g. `export default "literal";`), or the target module's own
+/// re-export chain (`resolve_module_path`) doesn't resolve. When `name` is
+/// absent from `table.locals` entirely, it is a genuine indirect re-export
+/// (`export { x } from "m2"` inside the target module) — using `name`
+/// unchanged is *correct* there, not a fallback guess, because the target
+/// module's own `emit_reexports` call declares it under that exact alias
+/// via `declare_ref`. That chained case is always single-valued: a
+/// downstream `emit_reexports` call always declares its own reexport id
+/// under discriminant `0` (see the call sites below), regardless of the
+/// original declaration's discriminant, so there is nothing to fan out here
+/// — the fan-out already happened, if at all, at the module that owns the
+/// real declaration.
 fn resolve_export_target(
     resolver: &Resolver,
     table_path: &Path,
     table: &crate::extract::ExportTable,
     name: &str,
-) -> Option<TsId> {
+) -> Vec<TsId> {
     use crate::extract::LocalExport;
 
     match table.locals.get(name) {
-        Some(LocalExport::Named(local_name)) => {
-            Some(TsId::new(table_path.to_path_buf(), local_name.clone(), 0))
-        }
+        Some(LocalExport::Named { local_name, overload_count }) => (0..*overload_count)
+            .map(|discriminant| TsId::new(table_path.to_path_buf(), local_name.clone(), discriminant))
+            .collect(),
         Some(LocalExport::NamespaceOf(module_request)) => {
             resolve_module_path(resolver, table_path, module_request)
-                .map(|ns_path| TsId::new(ns_path, MODULE_ROOT_NAME, 0))
+                .map(|ns_path| vec![TsId::new(ns_path, MODULE_ROOT_NAME, 0)])
+                .unwrap_or_default()
         }
-        Some(LocalExport::Unresolvable) => None,
-        None => Some(TsId::new(table_path.to_path_buf(), name.to_string(), 0)),
+        Some(LocalExport::Unresolvable) => Vec::new(),
+        None => vec![TsId::new(table_path.to_path_buf(), name.to_string(), 0)],
     }
 }
 
@@ -870,29 +934,33 @@ fn emit_reexports(
             continue;
         }
 
-        // The reexport ID in the current module.
-        let reexport_id = TsId::new(module.path.clone(), export_name, 0);
-        // The target ID in the source module — resolved against *its own*
+        // The target ID(s) in the source module — resolved against *its own*
         // export surface (`resolve_export_target`), since `target_name` is
         // the name `m` exports this under, not necessarily what `m` itself
         // `declare()`d it as (a bare rename or namespace-import passthrough
         // inside `m`; see that function's doc comment). `uuid`'s
         // `dist/esm-node/index.js` hits this directly: `export { default as
         // v1 } from "./v1.js"` needs `v1.js`'s "default" resolved to the
-        // `v1` function it actually declares.
-        let target_id = target_path.as_ref().and_then(|p| {
-            match export_index.get(p.as_path()) {
+        // `v1` function it actually declares. Plural because `target_name`
+        // can be an overloaded declaration (`resolve_export_target`'s doc
+        // comment) — every overload gets its own reexport entry below.
+        let target_ids: Vec<TsId> = target_path
+            .as_ref()
+            .map(|p| match export_index.get(p.as_path()) {
                 Some(target_table) => resolve_export_target(resolver, p, target_table, target_name),
-                None => Some(TsId::new(p.clone(), target_name, 0)),
-            }
-        });
+                None => vec![TsId::new(p.clone(), target_name, 0)],
+            })
+            .unwrap_or_default();
 
         let sym = Symbol {
             name: export_name.clone(),
             visibility: Visibility::Public,
             documentation: String::new(),
             source: module.path.clone(),
-            span: 0..0,
+            // Real span of the whole `export { .. } from "m";` statement
+            // (`ExportEntry::statement_span`, threaded through as
+            // `IndirectExport::span_start/end`), not `0..0`.
+            span: (indirect.span_start as usize)..(indirect.span_end as usize),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -900,9 +968,17 @@ fn emit_reexports(
             cfg: None,
         };
 
-        if let Some(tid) = target_id {
+        // The reexport ID in the current module: one per resolved overload,
+        // discriminant `0..target_ids.len()` — mirroring how `emit_class`'s
+        // method loop and `emit_interface`'s method loop each give sibling
+        // overloads distinct discriminants under a shared name, so this is
+        // consistent with how overloads are represented everywhere else in
+        // this producer, not a special case invented for re-exports.
+        for (discriminant, tid) in target_ids.into_iter().enumerate() {
+            let reexport_id = TsId::new(module.path.clone(), export_name, discriminant as u32);
             let target_ref: Ref<Module> = out.refer(tid);
-            let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+            let _: Ref<Module> =
+                out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
         }
     }
 
@@ -924,26 +1000,40 @@ fn emit_reexports(
                 if !reexported.insert(export_name.clone()) {
                     continue;
                 }
-                let Some(target_id) =
-                    resolve_export_target(resolver, tp.as_path(), target_table, export_name)
-                else {
+                let target_ids =
+                    resolve_export_target(resolver, tp.as_path(), target_table, export_name);
+                if target_ids.is_empty() {
                     continue;
-                };
-                let reexport_id = TsId::new(module.path.clone(), export_name, 0);
+                }
                 let sym = Symbol {
                     name: export_name.clone(),
                     visibility: Visibility::Public,
                     documentation: String::new(),
                     source: module.path.clone(),
-                    span: 0..0,
+                    // Real span of the `export * from "m";` statement
+                    // (`StarExport::span_start/end`). Every name fanned out
+                    // from this one statement shares it — see
+                    // `StarExport`'s doc comment for why that cannot
+                    // introduce a collision (the identity key includes the
+                    // name, which differs per fanned-out entry).
+                    span: (star.span_start as usize)..(star.span_end as usize),
                     aliases: Box::new([]),
                     deprecation: None,
                     doc_links: Box::new([]),
                     attrs: Box::new([]),
                     cfg: None,
                 };
-                let target_ref: Ref<Module> = out.refer(target_id);
-                let _: Ref<Module> = out.declare_ref(reexport_id, parent.clone(), sym, target_ref);
+                // One reexport entry per resolved overload — see the named
+                // re-export loop above for why this mirrors
+                // `emit_class`/`emit_interface`'s own overload-discriminant
+                // convention rather than inventing a new one.
+                for (discriminant, target_id) in target_ids.into_iter().enumerate() {
+                    let reexport_id =
+                        TsId::new(module.path.clone(), export_name, discriminant as u32);
+                    let target_ref: Ref<Module> = out.refer(target_id);
+                    let _: Ref<Module> =
+                        out.declare_ref(reexport_id, parent.clone(), sym.clone(), target_ref);
+                }
             }
         }
     }

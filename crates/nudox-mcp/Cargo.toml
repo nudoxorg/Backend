@@ -45,6 +45,32 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macro
 tokio-util = { version = "0.7", default-features = false }
 tracing = { workspace = true }
 
+# ── Account authentication (`src/account`, see `auth.md`) ────────────────────
+#
+# `reqwest` talks to `api.nudox.org`. Same version, same feature set and the
+# same `rustls-tls` (not native-tls) choice already made by `driver`, `index`
+# and `registry`, so the workspace resolves one HTTP client and one TLS stack
+# rather than two of each. `default-features = false` keeps the blocking client,
+# cookies and charset detection out; none of the three endpoints needs them.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# `sha2` for `KeyFingerprint` — a truncated SHA-256 of the key, which is what
+# lets the on-disk cache and the usage ledger *name* a credential without
+# *holding* one.
+sha2 = "0.10"
+
+# The macOS Keychain, for the account key at rest. Target-gated because there is
+# no Keychain anywhere else; `account::store::platform_store` returns a store
+# that reports `Unavailable` and points at `NUDOX_API_KEY` on other platforms,
+# rather than inventing a plaintext dotfile.
+#
+# `security-framework` directly, not `keyring`: `keyring`'s macOS backend *is*
+# this crate, so the abstraction buys nothing for a macOS-only app, and this
+# version is already in the workspace lockfile via the TLS stack — adding
+# `keyring` would pull a second, parallel dependency tree to reach the same
+# `SecItem*` calls.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
 [dev-dependencies]
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }

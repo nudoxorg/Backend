@@ -22,7 +22,7 @@ fn root_sym() -> Symbol {
 }
 
 fn simple_module(name: &str, items: Vec<ItemData>) -> ModuleData {
-    ModuleData { name: name.to_owned(), documentation: None, deprecation: None, items }
+    ModuleData { name: name.to_owned(), documentation: None, deprecation: None, items, span: 0..0 }
 }
 
 fn simple_function(id: &str, name: &str, is_async: bool) -> ItemData {
@@ -34,11 +34,14 @@ fn simple_function(id: &str, name: &str, is_async: bool) -> ItemData {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Function(FunctionData {
             overload_index: 0,
+            span: 0..0,
             receiver: ReceiverKind::None,
             params: vec![],
             return_ty: None,
+            return_span: None,
             generics: vec![],
             is_async,
             is_abstract: false,
@@ -87,10 +90,10 @@ fn emit_overloads_as_separate_declarations() {
     use crate::oracle::ParamData;
 
     let params0 = vec![ParamData {
-        name: "x".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("int".to_owned())), kind: ParamKind::Normal, has_default: false, doc_description: None,
+        name: "x".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("int".to_owned())), kind: ParamKind::Normal, has_default: false, doc_description: None, span: 0..0,
     }];
     let params1 = vec![ParamData {
-        name: "x".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("str".to_owned())), kind: ParamKind::Normal, has_default: false, doc_description: None,
+        name: "x".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("str".to_owned())), kind: ParamKind::Normal, has_default: false, doc_description: None, span: 0..0,
     }];
 
     let overloaded_item = ItemData {
@@ -101,9 +104,10 @@ fn emit_overloads_as_separate_declarations() {
         documentation: None,
         deprecation: None,
         decorators: vec!["overload".to_owned()],
+        span: 0..0,
         body: ItemBody::Overloaded(vec![
-            FunctionData { overload_index: 0, receiver: ReceiverKind::None, params: params0, return_ty: None, generics: vec![], is_async: false, is_abstract: false, is_stub: false },
-            FunctionData { overload_index: 1, receiver: ReceiverKind::None, params: params1, return_ty: None, generics: vec![], is_async: false, is_abstract: false, is_stub: false },
+            FunctionData { overload_index: 0, span: 0..0, receiver: ReceiverKind::None, params: params0, return_ty: None, return_span: None, generics: vec![], is_async: false, is_abstract: false, is_stub: false },
+            FunctionData { overload_index: 1, span: 1..1, receiver: ReceiverKind::None, params: params1, return_ty: None, return_span: None, generics: vec![], is_async: false, is_abstract: false, is_stub: false },
         ]),
     };
 
@@ -128,11 +132,14 @@ fn emit_class_with_methods() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Function(FunctionData {
             overload_index: 0,
+            span: 0..0,
             receiver: ReceiverKind::SharedRef,
             params: vec![],
             return_ty: Some(crate::oracle::TypeData::Nominal("float".to_owned())),
+            return_span: None,
             generics: vec![],
             is_async: false,
             is_abstract: false,
@@ -148,6 +155,7 @@ fn emit_class_with_methods() {
         documentation: Some("A 2D point.".to_owned()),
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Plain, fields: vec![], methods: vec![method_item], nested: vec![],
         }),
@@ -174,11 +182,12 @@ fn emit_enum_subclass() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Enum,
             fields: vec![
-                FieldData { name: "RED".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("int".to_owned())), is_class_var: false, is_final: false, is_property: false, has_default: false, documentation: None },
-                FieldData { name: "GREEN".to_owned(), ty: None, is_class_var: false, is_final: false, is_property: false, has_default: false, documentation: None },
+                FieldData { name: "RED".to_owned(), ty: Some(crate::oracle::TypeData::Nominal("int".to_owned())), is_class_var: false, is_final: false, is_property: false, has_default: false, documentation: None, span: 0..0 },
+                FieldData { name: "GREEN".to_owned(), ty: None, is_class_var: false, is_final: false, is_property: false, has_default: false, documentation: None, span: 0..0 },
             ],
             methods: vec![], nested: vec![],
         }),
@@ -210,6 +219,7 @@ fn emit_type_alias() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Alias(AliasData {
             target: Some(crate::oracle::TypeData::Apply {
                 base: Box::new(crate::oracle::TypeData::Nominal("list".to_owned())),
@@ -238,6 +248,7 @@ fn emit_const_in_module() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Const(ConstData { ty: Some(crate::oracle::TypeData::Nominal("int".to_owned())), value: Some("3".to_owned()) }),
     };
 
@@ -263,6 +274,7 @@ fn emit_protocol() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Protocol, fields: vec![],
             methods: vec![simple_function("my_module.Drawable.draw", "draw", false)],
@@ -306,6 +318,7 @@ fn method_returning_sibling_class_resolves_to_nominal() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Plain, fields: vec![],
             methods: vec![ItemData {
@@ -316,9 +329,11 @@ fn method_returning_sibling_class_resolves_to_nominal() {
                 documentation: None,
                 deprecation: None,
                 decorators: vec![],
+                span: 0..0,
                 body: ItemBody::Function(FunctionData {
-                    overload_index: 0, receiver: ReceiverKind::SharedRef, params: vec![],
+                    overload_index: 0, span: 0..0, receiver: ReceiverKind::SharedRef, params: vec![],
                     return_ty: Some(TypeData::Nominal("my_pkg.Payload".to_owned())),
+                    return_span: None,
                     generics: vec![], is_async: false, is_abstract: false, is_stub: false,
                 }),
             }],
@@ -334,6 +349,7 @@ fn method_returning_sibling_class_resolves_to_nominal() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Plain, fields: vec![], methods: vec![], nested: vec![],
         }),
@@ -363,6 +379,7 @@ fn same_package_class_in_generic_apply_is_nominal() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Plain, fields: vec![], methods: vec![], nested: vec![],
         }),
@@ -376,6 +393,7 @@ fn same_package_class_in_generic_apply_is_nominal() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Class(ClassData {
             super_types: vec![], generics: vec![], form: ClassForm::Plain, fields: vec![], methods: vec![], nested: vec![],
         }),
@@ -389,6 +407,7 @@ fn same_package_class_in_generic_apply_is_nominal() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Alias(AliasData {
             target: Some(TypeData::Apply {
                 base: Box::new(TypeData::Nominal("my_pkg.Container".to_owned())),
@@ -434,8 +453,10 @@ fn keyword_only_param_carries_keyword_only_attribute() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Function(FunctionData {
             overload_index: 0,
+            span: 0..0,
             receiver: ReceiverKind::None,
             params: vec![ParamData {
                 name: "timeout".to_owned(),
@@ -443,8 +464,10 @@ fn keyword_only_param_carries_keyword_only_attribute() {
                 kind: ParamKind::KeywordOnly,
                 has_default: false,
                 doc_description: None,
+                span: 0..0,
             }],
             return_ty: None,
+            return_span: None,
             generics: vec![],
             is_async: false,
             is_abstract: false,
@@ -486,8 +509,10 @@ fn positional_only_param_does_not_carry_inout() {
         documentation: None,
         deprecation: None,
         decorators: vec![],
+        span: 0..0,
         body: ItemBody::Function(FunctionData {
             overload_index: 0,
+            span: 0..0,
             receiver: ReceiverKind::None,
             params: vec![ParamData {
                 name: "raw".to_owned(),
@@ -495,8 +520,10 @@ fn positional_only_param_does_not_carry_inout() {
                 kind: ParamKind::PositionalOnly,
                 has_default: false,
                 doc_description: None,
+                span: 0..0,
             }],
             return_ty: None,
+            return_span: None,
             generics: vec![],
             is_async: false,
             is_abstract: false,

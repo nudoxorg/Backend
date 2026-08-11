@@ -161,6 +161,7 @@ fn lower_ts_type_impl<'a>(
                 .as_ref()
                 .map(|tp| lower_type_params(tp, source))
                 .unwrap_or_default();
+            let span = f.span();
             TypeOwned::Function(Box::new(FunctionBody {
                 generics,
                 params,
@@ -169,6 +170,8 @@ fn lower_ts_type_impl<'a>(
                 is_generator: false,
                 has_body: false,
                 receiver: ReceiverKind::None,
+                span_start: span.start,
+                span_end: span.end,
             }))
         }
 
@@ -353,6 +356,19 @@ fn lower_ts_type_impl<'a>(
                             .return_type
                             .as_ref()
                             .map(|r| lower_ts_type_impl(&r.type_annotation, source, type_params));
+                        // Anonymous method member inside an object-type literal
+                        // (`{ foo(x: number): void }` as a type annotation, not
+                        // a declaration): the per-parameter type is all that
+                        // survived the earlier `params` map (it discarded each
+                        // `FormalParameter` node), so there is no independent
+                        // per-parameter span here. The whole `TSMethodSignature`
+                        // node's span (`m.span()`) is used for both the
+                        // synthetic `FunctionBody` and each synthetic
+                        // `ParamFact` it wraps — real bytes that do contain the
+                        // parameter, not a precise sub-span of it, and neither
+                        // is a declared IR entry needing identity (this feeds
+                        // `AnonFieldOwned`, never `emit.rs`'s `declare()`).
+                        let span = m.span();
                         members.push(AnonFieldOwned {
                             name,
                             ty: TypeOwned::Function(Box::new(FunctionBody {
@@ -365,6 +381,8 @@ fn lower_ts_type_impl<'a>(
                                         is_optional: false,
                                         is_rest: false,
                                         is_readonly: false,
+                                        span_start: span.start,
+                                        span_end: span.end,
                                     })
                                     .collect(),
                                 return_type: ret,
@@ -372,6 +390,8 @@ fn lower_ts_type_impl<'a>(
                                 is_generator: false,
                                 has_body: false,
                                 receiver: ReceiverKind::None,
+                                span_start: span.start,
+                                span_end: span.end,
                             })),
                             optional: m.optional,
                             readonly: false,
@@ -410,6 +430,7 @@ fn lower_ts_type_impl<'a>(
                 .as_ref()
                 .map(|tp| lower_type_params(tp, source))
                 .unwrap_or_default();
+            let span = c.span();
             TypeOwned::Function(Box::new(FunctionBody {
                 generics,
                 params,
@@ -418,6 +439,8 @@ fn lower_ts_type_impl<'a>(
                 is_generator: false,
                 has_body: false,
                 receiver: ReceiverKind::None,
+                span_start: span.start,
+                span_end: span.end,
             }))
         }
 
@@ -614,12 +637,15 @@ fn lower_formal_params<'a>(
             .type_annotation
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
+        let span = param.span();
         out.push(ParamFact {
             name: name.unwrap_or_else(|| "_".to_string()),
             ty,
             is_optional: param.optional,
             is_rest: false,
             is_readonly: false,
+            span_start: span.start,
+            span_end: span.end,
         });
     }
 
@@ -629,12 +655,15 @@ fn lower_formal_params<'a>(
             .as_ref()
             .map(|ann| lower_ts_type_impl(&ann.type_annotation, source, type_params));
         let name = binding_pattern_name(&rest.rest.argument);
+        let span = rest.span();
         out.push(ParamFact {
             name: name.unwrap_or_else(|| "...rest".to_string()),
             ty,
             is_optional: false,
             is_rest: true,
             is_readonly: false,
+            span_start: span.start,
+            span_end: span.end,
         });
     }
 

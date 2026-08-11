@@ -4,8 +4,13 @@
 //!
 //! Name and type hits **must** be emitted before any semantic (embedding-based)
 //! work starts.  The implementation satisfies this structurally: name and type
-//! tasks send their `Section` events and `Done` before the semantic section
-//! slot is even opened.
+//! send their `Section` events before the semantic arm — which is the only one
+//! that `await`s a model — is reached at all.
+//!
+//! The same requirement applies to *building* the index, and is met the same
+//! way: packages are embedded by a task fed from `drive_load` over an unbounded
+//! channel, so a package is searchable by name and type the instant it becomes
+//! resident, however long its vectors take. See [`crate::semantic`].
 //!
 //! A slow semantic section must never delay or clear a fast name/type section.
 //! Each section is independent: the receiver sees three independent
@@ -18,8 +23,18 @@
 //! | `SearchSectionId` | Content |
 //! |---|---|
 //! | `SECTION_NAME` (`0`) | Exact and prefix name matches from [`NameIndex`] |
-//! | `SECTION_TYPE` (`1`) | Kind-filtered symbols matching the query as a kind label |
-//! | `SECTION_SEMANTIC` (`2`) | Reserved — emits empty for now (no embedding store yet) |
+//! | `SECTION_TYPE` (`1`) | Signature matches (`return:Result`, `param:Path` — see [`crate::typequery`]); falls back to the kind facet when the query names no facet |
+//! | `SECTION_SEMANTIC` (`2`) | Nearest neighbours in [`crate::semantic::SemanticIndex`], when the host installed an [`Embedder`](crate::semantic::Embedder) |
+//!
+//! # Every section says what its rows mean
+//!
+//! Each section is preceded by a [`SearchEvent::SectionState`] carrying
+//! [`SectionState`](crate::semantic::SectionState). This is not decoration: an
+//! empty `Section` is a *claim* — "we searched and there is no match" — and for
+//! the semantic section that claim is false whenever the index is still
+//! building or no model is installed. The local sections report `Complete`,
+//! which they are entitled to because they read the resident corpus
+//! synchronously.
 //!
 //! # Hit rows
 //!
@@ -76,7 +91,12 @@ use crate::{
 pub const SECTION_NAME: SearchSectionId = SearchSectionId(0);
 /// Type/kind-filter section.
 pub const SECTION_TYPE: SearchSectionId = SearchSectionId(1);
-/// Semantic / embedding section (reserved, always empty in this rev).
+/// Semantic / embedding section.
+///
+/// Empty in any build that installs no [`Embedder`](crate::semantic::Embedder),
+/// which is every build in this repository today — but empty *and stated*, via
+/// [`SectionState::Unavailable`](crate::semantic::SectionState::Unavailable),
+/// never empty and silent.
 pub const SECTION_SEMANTIC: SearchSectionId = SearchSectionId(2);
 
 // ---------------------------------------------------------------------------
@@ -164,12 +184,24 @@ impl EngineHandle {
     /// `SECTION_NAME` and `SECTION_TYPE` events are always sent before any
     /// semantic work begins. The receiver sees:
     ///
-    /// 1. `Section { section: SECTION_NAME, rows: [...] }` — local name hits.
-    /// 2. `Latency { section: SECTION_NAME, elapsed: ... }` — timing.
-    /// 3. `Section { section: SECTION_TYPE, rows: [...] }` — kind-filter hits.
-    /// 4. `Latency { section: SECTION_TYPE, elapsed: ... }` — timing.
-    /// 5. `Section { section: SECTION_SEMANTIC, rows: [] }` — empty placeholder.
-    /// 6. `Done { generation }` — terminal.
+    /// 1. `SectionState { SECTION_NAME, Complete }` and
+    ///    `SectionState { SECTION_TYPE, Complete }` — both local sections read
+    ///    the resident corpus synchronously, so they are complete before either
+    ///    has run.
+    /// 2. `Section { section: SECTION_NAME, rows: [...] }` — local name hits.
+    /// 3. `Latency { section: SECTION_NAME, elapsed: ... }` — timing.
+    /// 4. `Section { section: SECTION_TYPE, rows: [...] }` — signature or
+    ///    kind-facet hits.
+    /// 5. `Latency { section: SECTION_TYPE, elapsed: ... }` — timing.
+    /// 6. `SectionState { SECTION_SEMANTIC, .. }` — `Complete`, `Building` or
+    ///    `Unavailable`. Sent **before** the rows it describes, so a consumer
+    ///    that paints on first delivery already knows how to caption them.
+    /// 7. `Section { section: SECTION_SEMANTIC, rows: [...] }`.
+    /// 8. `Latency { section: SECTION_SEMANTIC, elapsed: ... }` — timing.
+    /// 9. `Done { generation }` — terminal.
+    ///
+    /// Steps 1–5 never await anything but the corpus lock, so the semantic
+    /// arm's model call in step 6–7 cannot delay the first frame.
     pub fn search(
         &self,
         query: SearchQuery,
@@ -179,8 +211,18 @@ impl EngineHandle {
         let (cancel_token, cancel_fn) = Self::make_cancel();
         let handle = StreamHandle::new(generation, cancel_fn);
         let corpus = self.corpus();
+        let semantic = self.semantic_index();
+        let embedder = self.embedder();
 
-        self.spawn(run_search(corpus, query, generation, tx, cancel_token));
+        self.spawn(run_search(
+            corpus,
+            semantic,
+            embedder,
+            query,
+            generation,
+            tx,
+            cancel_token,
+        ));
 
         (handle, rx)
     }
@@ -192,6 +234,8 @@ impl EngineHandle {
 
 async fn run_search(
     corpus: Corpus,
+    semantic: crate::semantic::SemanticIndex,
+    embedder: crate::semantic::SharedEmbedder,
     query: SearchQuery,
     generation: Gen,
     tx: flume::Sender<SearchEvent>,
@@ -203,6 +247,21 @@ async fn run_search(
 
     // Collect all packages synchronously (corpus is an in-memory Arc map).
     let packages = corpus.packages().await;
+
+    // Both local sections read the resident corpus directly, so they are
+    // complete the moment they run — whatever is resident *is* the world they
+    // claim to have searched. Saying so explicitly, rather than letting the
+    // consumer infer completeness from the absence of a caveat, is what makes
+    // the semantic section's caveat legible when it appears.
+    for section in [SECTION_NAME, SECTION_TYPE] {
+        let _ = tx
+            .send_async(SearchEvent::SectionState {
+                generation,
+                section,
+                state: crate::semantic::SectionState::Complete,
+            })
+            .await;
+    }
 
     // ── Section 0: Name search ─────────────────────────────────────────────
     let name_start = Instant::now();
@@ -265,20 +324,211 @@ async fn run_search(
         return;
     }
 
-    // ── Section 2: Semantic (stub — always empty) ──────────────────────────
-    // LR-10: local hits were already emitted above. The semantic section is a
-    // placeholder; when a real embedding store is wired in, it will fan-out
-    // here without ever blocking the local sections.
-    let ev = SearchEvent::Section {
-        generation,
-        section: SECTION_SEMANTIC,
-        rows: Arc::from([] as [HitRow; 0]),
-    };
-    let _ = tx.send_async(ev).await;
+    // ── Section 2: Semantic ────────────────────────────────────────────────
+    //
+    // LR-10 is satisfied structurally, exactly as before: every local row and
+    // both local latencies are already on the wire above, so nothing below this
+    // line can delay the first frame. The one new hazard is that this arm now
+    // *awaits* a model, so it must be the last thing in the function and must
+    // never be able to fail the stream — a semantic section that cannot run is
+    // a caption, not an error.
+    let semantic_start = Instant::now();
+    let (state, rows) =
+        collect_semantic_hits(&packages, &semantic, embedder.as_deref(), &query).await;
+    let semantic_elapsed = semantic_start.elapsed();
+
+    if cancel.is_cancelled() {
+        return;
+    }
+
+    let _ = tx
+        .send_async(SearchEvent::SectionState {
+            generation,
+            section: SECTION_SEMANTIC,
+            state,
+        })
+        .await;
+    let _ = tx
+        .send_async(SearchEvent::Section {
+            generation,
+            section: SECTION_SEMANTIC,
+            rows: Arc::from(rows.as_slice()),
+        })
+        .await;
+    let _ = tx
+        .send_async(SearchEvent::Latency {
+            generation,
+            section: SECTION_SEMANTIC,
+            elapsed: semantic_elapsed,
+        })
+        .await;
 
     if !cancel.is_cancelled() {
         let _ = tx.send_async(SearchEvent::Done { generation }).await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Semantic-hit collection
+// ---------------------------------------------------------------------------
+
+/// The semantic section's rows **and what they mean**.
+///
+/// Returning the two together is the point: there is no way to obtain rows from
+/// this function without also obtaining the state that captions them, so a call
+/// site cannot render a partial ranking as a complete one by forgetting to ask.
+/// That is the §8 "typed, not logged" rule applied to a caveat instead of a
+/// repair.
+async fn collect_semantic_hits(
+    packages: &[std::sync::Arc<nudox_store::package::PackageView>],
+    semantic: &crate::semantic::SemanticIndex,
+    embedder: Option<&dyn crate::semantic::Embedder>,
+    query: &SearchQuery,
+) -> (crate::semantic::SectionState, Vec<HitRow>) {
+    use crate::semantic::{SectionState, Unavailable};
+
+    let Some(embedder) = embedder else {
+        return (
+            SectionState::Unavailable {
+                reason: Unavailable::NoEmbedder,
+            },
+            Vec::new(),
+        );
+    };
+    if packages.is_empty() {
+        return (
+            SectionState::Unavailable {
+                reason: Unavailable::EmptyCorpus,
+            },
+            Vec::new(),
+        );
+    }
+
+    // Coverage is computed against the packages this query is actually allowed
+    // to answer from, not against the whole corpus: with `packages: [memchr]`,
+    // "3 of 20 indexed" would be a caveat about 19 packages the reader excluded
+    // themselves and is not waiting for.
+    let in_scope: Vec<&std::sync::Arc<nudox_store::package::PackageView>> = packages
+        .iter()
+        .filter(|pkg| query.package_matches(pkg.lineage()))
+        .collect();
+    let total = in_scope.len() as u32;
+    let covered = in_scope
+        .iter()
+        .filter(|pkg| semantic.contains(pkg.lineage()))
+        .count() as u32;
+
+    let state = if covered == total {
+        SectionState::Complete
+    } else {
+        SectionState::Building { covered, total }
+    };
+
+    let text = query.text.trim();
+    if text.is_empty() || covered == 0 {
+        return (state, Vec::new());
+    }
+
+    let limit = if query.limit == 0 { 50 } else { query.limit };
+
+    // One text, so one batch — `max_batch` cannot be exceeded by construction.
+    let queries = [text.to_owned()];
+    let embedded = match embedder
+        .embed_batch(&queries, crate::semantic::EmbedRole::Query)
+        .await
+    {
+        Ok(vectors) => vectors,
+        Err(error) => {
+            // A model that fails on *this* query has not invalidated the index,
+            // and it has certainly not invalidated the local sections that are
+            // already painted. Degrade this section only, and say so with the
+            // reason a reader can act on.
+            debug!("semantic: query embedding failed: {error}");
+            return (
+                SectionState::Unavailable {
+                    reason: Unavailable::ModelFailed,
+                },
+                Vec::new(),
+            );
+        }
+    };
+    let Some(vector) = embedded.first() else {
+        debug!("semantic: embedder returned no vector for a one-text batch");
+        return (
+            SectionState::Unavailable {
+                reason: Unavailable::ModelFailed,
+            },
+            Vec::new(),
+        );
+    };
+
+    // Over-fetch, because kind and package filters are applied *after* scoring
+    // and would otherwise silently shorten the section: a reader who filters to
+    // `Function` should get `limit` functions, not the functions that happened
+    // to survive within the first `limit` symbols of any kind.
+    let nearest = semantic.nearest(vector, limit.saturating_mul(4).max(limit));
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+    for (lineage, intro, cosine) in nearest {
+        if candidates.len() >= limit {
+            break;
+        }
+        let Some(pkg) = in_scope.iter().find(|p| *p.lineage() == lineage) else {
+            continue;
+        };
+        let Some(ir_entry) = pkg.view().entry(intro) else {
+            continue;
+        };
+        let Some(disc) = ir_entry.kind().discriminant() else {
+            continue;
+        };
+        if !query.kind_matches(disc) {
+            continue;
+        }
+
+        let indexes = pkg.indexes();
+        let pkg_name = pkg.lineage().name.as_str();
+        let leaf_str = ir_entry.sym().name.as_str();
+
+        candidates.push(Candidate {
+            row: HitRow {
+                key: nudox_ir::change::StableRef::new(lineage.clone(), intro),
+                display_name: SharedStr::from(leaf_str),
+                sig_preview: signature::tokens(ir_entry, pkg),
+                kind: KindTag::Known(disc),
+                provenance: pkg.provenance().into(),
+                score: score_of(
+                    cosine_to_relevance(cosine),
+                    ir_entry.sym().visibility,
+                    disc,
+                ),
+            },
+            qualified: qualified_display_name(indexes, intro, leaf_str, pkg_name),
+        });
+    }
+
+    candidates.sort_by(compare_candidates);
+    candidates.truncate(limit);
+    (state, finalize_candidates(candidates))
+}
+
+/// Map a cosine in `[-1, 1]` onto the wire's `(0, 1]` relevance contract.
+///
+/// `HitRow::score` documents that an exact match is `1.0` and that every score
+/// is in `(0, 1]`; a raw cosine satisfies neither bound, and a negative one
+/// would multiply through `score_of`'s weights to produce a *less* negative
+/// number for a *worse* symbol — inverting the ranking among the rows nobody
+/// should be looking at anyway, which is exactly the kind of quiet wrongness
+/// that survives review.
+///
+/// The map is affine and monotone, so it cannot reorder anything: it is a
+/// change of units, not a re-ranking. `f32::EPSILON` rather than `0.0` at the
+/// bottom keeps the result strictly positive, because a `0.0` score would make
+/// `score_of`'s product zero regardless of visibility and collapse every
+/// maximally-dissimilar row into one tie.
+fn cosine_to_relevance(cosine: f32) -> f32 {
+    let clamped = cosine.clamp(-1.0, 1.0);
+    ((clamped + 1.0) / 2.0).max(f32::EPSILON)
 }
 
 // ---------------------------------------------------------------------------
@@ -567,11 +817,172 @@ fn collect_name_hits(
 // Type / kind-filter hit collection
 // ---------------------------------------------------------------------------
 
+/// Section 1's entry point: signature search where the query is one, kind facet
+/// otherwise.
+///
+/// # Why both live behind one section
+///
+/// They answer the same reader question — "show me things shaped like this" —
+/// at two levels of precision, and the reader does not switch sections when
+/// they get more specific. `struct` and `return:Result` are both type questions;
+/// only the second is a *signature* question, and only the second was missing.
+///
+/// The kind path is unchanged and still runs for every query that names no
+/// facet, so nothing that worked before stops working. See
+/// [`crate::typequery`] for the grammar and for why it is a grammar rather than
+/// free text.
+fn collect_type_hits(
+    packages: &[std::sync::Arc<nudox_store::package::PackageView>],
+    query: &SearchQuery,
+) -> Vec<HitRow> {
+    if let Some(type_query) = crate::typequery::TypeQuery::parse(&query.text) {
+        return collect_signature_hits(packages, query, &type_query);
+    }
+    collect_kind_facet_hits(packages, query)
+}
+
+/// Declarations whose signature satisfies **every** facet of `type_query`.
+///
+/// # Shape of the walk
+///
+/// Postings are per-package: `PackageIndexes::type_refs` maps a target
+/// `StableRef` to owners *in that same package*. So the intersection is taken
+/// per package, and a package contributes nothing unless it satisfies the whole
+/// conjunction on its own — which is correct, because a declaration lives in
+/// exactly one package and it is declarations that are being selected.
+///
+/// A type *name* may resolve to several declarations (two packages both
+/// declaring `Error`), and those are a union: `return:Error` means "returns
+/// anything called `Error`", because the reader typed a name and names are what
+/// they have. The resolved set is computed once over the whole corpus rather
+/// than per package, so a package that merely *uses* a type declared elsewhere
+/// still matches.
+fn collect_signature_hits(
+    packages: &[std::sync::Arc<nudox_store::package::PackageView>],
+    query: &SearchQuery,
+    type_query: &crate::typequery::TypeQuery,
+) -> Vec<HitRow> {
+    use nudox_ir::change::StableRef;
+
+    let limit = if query.limit == 0 {
+        usize::MAX
+    } else {
+        query.limit
+    };
+
+    // ── Resolve every facet's type name to declarations, corpus-wide ────────
+    //
+    // Resolution deliberately ignores `query.packages`: that filter restricts
+    // which packages may *answer*, not which may *declare the type asked
+    // about*. Filtering here as well would make `packages: [memchr]` +
+    // `param:Path` silently mean "a `Path` declared inside memchr", which is
+    // never what the reader meant.
+    let mut resolved: Vec<Vec<StableRef>> = Vec::with_capacity(type_query.facets.len());
+    for facet in &type_query.facets {
+        let mut targets: Vec<StableRef> = Vec::new();
+        for pkg in packages {
+            for entry in pkg.indexes().by_name.get_exact(&facet.type_name) {
+                targets.push(StableRef::new(pkg.lineage().clone(), entry.intro));
+            }
+        }
+        // A facet naming a type no loaded package declares can never be
+        // satisfied, so the whole conjunction is empty. Returning early keeps
+        // that a cheap answer rather than an empty intersection computed the
+        // long way — and it is the common case for foreign types (see the
+        // module docs on what the index cannot see).
+        if targets.is_empty() {
+            return Vec::new();
+        }
+        targets.sort_unstable();
+        targets.dedup();
+        resolved.push(targets);
+    }
+
+    let mut candidates: Vec<Candidate> = Vec::new();
+
+    for pkg in packages {
+        if !query.package_matches(pkg.lineage()) {
+            continue;
+        }
+        let indexes = pkg.indexes();
+
+        // ── Intersect the facets inside this package ─────────────────────────
+        let mut owners: Option<std::collections::BTreeSet<nudox_ir::change::IntroId>> = None;
+        for (facet, targets) in type_query.facets.iter().zip(resolved.iter()) {
+            let mut this_facet: std::collections::BTreeSet<nudox_ir::change::IntroId> =
+                std::collections::BTreeSet::new();
+            for target in targets {
+                for &position in facet.positions {
+                    this_facet.extend(indexes.type_refs_in(target, position));
+                }
+            }
+            owners = Some(match owners {
+                None => this_facet,
+                Some(previous) => previous.intersection(&this_facet).copied().collect(),
+            });
+            // Nothing left to intersect with — stop probing this package.
+            if owners.as_ref().is_some_and(|o| o.is_empty()) {
+                break;
+            }
+        }
+        let Some(owners) = owners else {
+            continue;
+        };
+
+        let provenance: Provenance = pkg.provenance().into();
+        let pkg_name = pkg.lineage().name.as_str();
+
+        for intro in owners {
+            let Some(ir_entry) = pkg.view().entry(intro) else {
+                continue;
+            };
+            let Some(disc) = ir_entry.kind().discriminant() else {
+                continue;
+            };
+            // The kind filter still applies. `kinds: [Function]` +
+            // `param:Path` is a legitimate narrowing, and dropping it here
+            // would make the filter mean different things in section 0 and 1.
+            if !query.kind_matches(disc) {
+                continue;
+            }
+
+            let key = nudox_ir::change::StableRef::new(pkg.lineage().clone(), intro);
+            let sig_preview = signature::tokens(ir_entry, pkg);
+            let leaf_str = ir_entry.sym().name.as_str();
+            let leaf: SharedStr = SharedStr::from(leaf_str);
+            let qualified = qualified_display_name(indexes, intro, leaf_str, pkg_name);
+
+            candidates.push(Candidate {
+                row: HitRow {
+                    key,
+                    display_name: leaf,
+                    sig_preview,
+                    kind: KindTag::Known(disc),
+                    provenance: provenance.clone(),
+                    // A signature hit is an *exact structural* match: the
+                    // declaration really does name that type in that position.
+                    // So it takes the same 1.0 reference relevance an exact
+                    // name match takes, discounted by the same two quality
+                    // factors. There is nothing to tune here — every row in the
+                    // section satisfies every facet, so relevance cannot
+                    // separate them and visibility/kind are what remain.
+                    score: score_of(1.0, ir_entry.sym().visibility, disc),
+                },
+                qualified,
+            });
+        }
+    }
+
+    candidates.sort_by(compare_candidates);
+    candidates.truncate(limit);
+    finalize_candidates(candidates)
+}
+
 /// Collect hits from the kind facet index.
 ///
 /// If the query text matches a kind label (e.g. `"fn"` → `Function`) we emit
 /// all symbols of that kind. Otherwise we use the kind filter from the query.
-fn collect_type_hits(
+fn collect_kind_facet_hits(
     packages: &[std::sync::Arc<nudox_store::package::PackageView>],
     query: &SearchQuery,
 ) -> Vec<HitRow> {

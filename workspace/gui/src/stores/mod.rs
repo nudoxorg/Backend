@@ -22,8 +22,10 @@
 //! | `registry` | §12.5      | Corpus-generation sync status                   |
 //! | `job`      | §12.6      | Background job lifecycle and pipeline stages    |
 //! | `package`  | §L10       | Which packages are loaded, loading, or failed   |
+//! | `index_jobs` | —        | On-demand `pkg:` fetches, and how far each got   |
 
 pub mod events;
+pub mod index_jobs;
 pub mod job;
 pub mod nav;
 pub mod package;

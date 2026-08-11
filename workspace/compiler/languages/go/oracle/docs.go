@@ -24,6 +24,14 @@ type constGroupInfo struct {
 	hasIota bool
 }
 
+// posRange is a raw [start, end) pair of token.Pos values, resolved to byte
+// offsets later by the serializer (which owns the FileSet). Kept as
+// token.Pos rather than resolved eagerly because docCatalog is built before
+// a serializer exists for this package.
+type posRange struct {
+	start, end token.Pos
+}
+
 // docCatalog maps declared names to their harvested doc comments.
 type docCatalog struct {
 	// packageDoc is the package comment (joined across files).
@@ -39,6 +47,16 @@ type docCatalog struct {
 	ifaceMethodDocs map[string]map[string]string
 	// constGroup maps a constant name to its declaration block.
 	constGroup map[string]constGroupInfo
+	// declSpan maps a package-level identifier to the token.Pos range of
+	// its full declaration: for an ungrouped decl, from its leading
+	// keyword (`func`/`type`/`const`/`var`) through its end; for one
+	// member of a grouped decl (`const ( A; B )`), just that spec's own
+	// range, mirroring the declDoc-vs-spec-doc split in harvestGenDecl —
+	// the keyword documents (and spans) the group, not any one member.
+	declSpan map[string]posRange
+	// methodSpan maps "TypeName.MethodName" to the token.Pos range of
+	// that method's full `func (recv T) Name(...) { ... }` declaration.
+	methodSpan map[string]posRange
 }
 
 // harvestDocs walks every syntax file of pkg and collects doc comments
@@ -50,6 +68,8 @@ func harvestDocs(pkg *packages.Package) *docCatalog {
 		fieldDocs:       map[string]map[string]string{},
 		ifaceMethodDocs: map[string]map[string]string{},
 		constGroup:      map[string]constGroupInfo{},
+		declSpan:        map[string]posRange{},
+		methodSpan:      map[string]posRange{},
 	}
 
 	var pkgDocs []string
@@ -76,8 +96,21 @@ func harvestDocs(pkg *packages.Package) *docCatalog {
 	return c
 }
 
-// harvestFuncDecl records a function or method doc comment.
+// harvestFuncDecl records a function or method doc comment, and — always,
+// doc comment or not — the token.Pos range of the whole declaration
+// (`func` keyword through the end of the signature or body).
 func (c *docCatalog) harvestFuncDecl(decl *ast.FuncDecl) {
+	span := posRange{start: decl.Pos(), end: decl.End()}
+	if decl.Recv != nil && len(decl.Recv.List) > 0 {
+		recvType := receiverTypeName(decl.Recv.List[0].Type)
+		if recvType == "" {
+			return
+		}
+		c.methodSpan[recvType+"."+decl.Name.Name] = span
+	} else {
+		c.declSpan[decl.Name.Name] = span
+	}
+
 	if decl.Doc == nil {
 		return
 	}
@@ -104,9 +137,14 @@ func (c *docCatalog) harvestGenDecl(decl *ast.GenDecl, groupID int) {
 
 	// The decl-level doc only documents a spec when the declaration has
 	// exactly one (go/doc convention); in a grouped block it documents
-	// the group, not each member.
+	// the group, not each member. The same split applies to the span: a
+	// single `const Foo = 1` declaration's meaningful range includes the
+	// `const` keyword, but in `const ( Foo = 1; Bar = 2 )` that keyword
+	// (and the parens) belong to the group, not to Foo or Bar alone — so
+	// each member's span is just its own spec.
 	declDoc := decl.Doc
-	if len(decl.Specs) > 1 {
+	grouped := len(decl.Specs) > 1
+	if grouped {
 		declDoc = nil
 	}
 
@@ -114,6 +152,7 @@ func (c *docCatalog) harvestGenDecl(decl *ast.GenDecl, groupID int) {
 		switch spec := spec.(type) {
 		case *ast.TypeSpec:
 			c.recordSpecDoc(spec.Name.Name, spec.Doc, spec.Comment, declDoc)
+			c.declSpan[spec.Name.Name] = declSpecSpan(decl, spec, grouped)
 			switch st := spec.Type.(type) {
 			case *ast.StructType:
 				c.harvestStructFields(spec.Name.Name, st)
@@ -122,14 +161,35 @@ func (c *docCatalog) harvestGenDecl(decl *ast.GenDecl, groupID int) {
 			}
 
 		case *ast.ValueSpec:
+			// A ValueSpec can bind several names to one line (`var a, b
+			// int`); the whole-spec span would then be identical for both
+			// and could not distinguish them, so multi-name specs record
+			// each identifier's own (narrower, but distinct) range instead.
+			shared := declSpecSpan(decl, spec, grouped)
 			for _, name := range spec.Names {
 				c.recordSpecDoc(name.Name, spec.Doc, spec.Comment, declDoc)
+				if len(spec.Names) > 1 {
+					c.declSpan[name.Name] = posRange{start: name.Pos(), end: name.End()}
+				} else {
+					c.declSpan[name.Name] = shared
+				}
 				if decl.Tok == token.CONST {
 					c.constGroup[name.Name] = group
 				}
 			}
 		}
 	}
+}
+
+// declSpecSpan returns the token.Pos range documenting one spec of a
+// GenDecl: the whole declaration (keyword through end) when it is the
+// declaration's only spec, or just the spec's own range when the
+// declaration is grouped and the keyword covers siblings too.
+func declSpecSpan(decl *ast.GenDecl, spec ast.Spec, grouped bool) posRange {
+	if grouped {
+		return posRange{start: spec.Pos(), end: spec.End()}
+	}
+	return posRange{start: decl.Pos(), end: decl.End()}
 }
 
 // recordSpecDoc stores the best available doc for a spec'd name: the

@@ -123,6 +123,35 @@ impl McpStatus {
         }
     }
 
+    /// The line the **application menu** shows for this state.
+    ///
+    /// # Why this is not [`label`](Self::label)
+    ///
+    /// Two differences, both forced by where the text appears rather than by
+    /// taste:
+    ///
+    /// * It is **total**. `label` returns `None` for [`Absent`](Self::Absent)
+    ///   so the status bar can drop the segment — correct there, because the
+    ///   rest of the bar still tells the reader the app is alive. The menu is
+    ///   the *only* surface left once the window is dismissed
+    ///   (`app::lifecycle`), so a hidden line there reproduces exactly the
+    ///   silence L35 was: a process running with an endpoint nobody can see.
+    /// * It is **prose**. `label` is chrome text under a 11 px caption token in
+    ///   a crowded bar, so it reads `mcp …`. A menu row has room for a
+    ///   sentence, and is read once rather than glanced at continuously.
+    ///
+    /// Both derive from the same `self`, in the same file, so a state that
+    /// gains a variant breaks both at once — which is the only reason having
+    /// two renderings is safe.
+    pub fn menu_label(&self) -> SharedString {
+        match self {
+            Self::Absent => SharedString::from("No MCP endpoint in this process"),
+            Self::Listening { url, .. } => SharedString::from(format!("MCP endpoint: {url}")),
+            Self::Failed { .. } => SharedString::from("MCP endpoint unavailable"),
+            Self::Stopped => SharedString::from("MCP endpoint stopped"),
+        }
+    }
+
     /// Whether this state is a failure the reader should be able to see is a
     /// failure. Drives the segment's colour; kept here so "which states are
     /// bad" is answered once instead of in a `match` inside `render`.
@@ -172,8 +201,13 @@ impl McpService {
     /// visible [`McpStatus::Failed`] rather than a refusal to open the window.
     /// That choice is only defensible *because* it is visible — an unstarted
     /// server that rendered like an absent one is exactly what L35 was.
-    pub fn start(engine: &EngineHandle) -> Self {
-        match McpHost::start(engine) {
+    ///
+    /// `gate` is the account gate every tool call is admitted through
+    /// (`auth.md`). It is a parameter because `NudoxMcpServer` requires one and
+    /// because the same gate is what `app::account` renders — a second gate
+    /// would be a second answer to "is this user signed in?".
+    pub fn start(engine: &EngineHandle, gate: nudox_mcp::AccountGate) -> Self {
+        match McpHost::start(engine, gate) {
             Ok(host) => {
                 let status = Self::status_of(&host);
                 tracing::info!(

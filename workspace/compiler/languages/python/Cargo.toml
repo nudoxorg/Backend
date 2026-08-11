@@ -49,16 +49,40 @@ license.workspace = true
 #       between 1.1.1 and here was `ClassFields::names()` → `::fields()`. These
 #       are `#[doc(hidden)]` modules; treat a rev bump as a code change.
 #
-# The feature is still **off by default** — not because it does not work, but
+# The feature used to be **off by default** — not because it did not work, but
 # because 77 crates buy a measured +22% of annotation positions, of which the
 # half that comes from unqualified same-package names is also reachable with no
 # dependency at all. See `src/context.rs` for the per-bucket numbers.
+#
+#   OVERRULED 2026-08-09. Decision: pyrefly is now ON by default — "make
+#   pyrefly the only Python pipeline", an explicit instruction from the
+#   operator directing this change, given despite the cost/benefit framing
+#   above and stated to override it. The reasoning above is not wrong — it was
+#   an honest trade — but the trade itself has been rejected: this producer's
+#   whole point is to be a documentation index, and shipping one that resolves
+#   0% of types on a zero-annotation package (six, pyyaml, python-dateutil,
+#   requests, beautifulsoup4, more-itertools all measured at 0%) when a
+#   committed, network-free, monotone enrichment pass resolves roughly half of
+#   them is a worse product than the extra lock entries and compile time cost.
+#   Per doctrine §8 ("the reasoning outlives the decision"), this paragraph
+#   stays rather than being deleted, because the next person to reconsider
+#   this trade needs both the original number and the reason it stopped being
+#   the deciding one. ruff remains the front end for everything pyrefly is
+#   worse at (structure, docstrings, overload grouping, decorator handling) —
+#   see `src/context.rs`'s module doc for why this stays an enrichment tier,
+#   not a replacement front end. The `pyrefly` feature flag itself is left in
+#   place (not collapsed into an unconditional dependency), so
+#   `--no-default-features` remains a real escape hatch if the git dependency
+#   or one of its 77 transitive crates ever becomes a hard blocker again.
 
 [features]
-default = []
-# Enable the pyrefly semantic tier (`src/context.rs`). Builds fully offline —
-# the typeshed is committed inside the pyrefly git checkout (see blocker 1
-# above). Costs 77 extra lock entries and ~1m40s of cold compile.
+default = ["pyrefly"]
+# The pyrefly semantic tier (`src/context.rs`). ON by default as of
+# 2026-08-09 — see the note above the `[features]` table. Builds fully
+# offline — the typeshed is committed inside the pyrefly git checkout (see
+# blocker 1 above). Costs 77 extra lock entries and ~1m40s of cold compile
+# from a clean lock; re-measured cost against a warm registry cache is in
+# this crate's build notes.
 pyrefly = [
   "dep:pyrefly",
   "dep:pyrefly_build",

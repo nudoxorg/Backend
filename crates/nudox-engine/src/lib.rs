@@ -28,6 +28,12 @@
 //!                 package, and choosing which one the corpus serves.
 //! * [`timeline`] — a symbol's history across those generations, keyed on
 //!                 `IntroId`.
+//! * [`purl`]     — the one thing a *user* can type that names a package this
+//!                 corpus has never seen. An input parser and a rendering, not
+//!                 a second identity beside `PackageLineageId`.
+//! * [`acquire`]  — resolve → fetch → verify → extract, and the typed failure
+//!                 vocabulary for each. Read its module docs before assuming
+//!                 anything about what a fetch guarantees.
 //!
 //! # `EngineHandle` public surface (§7.1 + §L5)
 //!
@@ -42,6 +48,7 @@
 //! EngineHandle::sync()                  -> Result<Receiver<SyncEvent>, Unimplemented>
 //! EngineHandle::jobs()                  -> Result<Receiver<JobEvent>, Unimplemented>
 //! EngineHandle::command(cmd)            -> Result<(), Unimplemented>
+//! EngineHandle::index_purl(purl, gen)   -> (StreamHandle, Receiver<IndexEvent>)
 //! EngineHandle::query(q, gen)           -> (StreamHandle, Receiver<QueryEvent>)
 //! EngineHandle::schema()                -> &'static Schema
 //! EngineHandle::runtime_handle()        -> tokio::runtime::Handle                  // sync
@@ -62,14 +69,18 @@
 //! a failure converted into a success with the cause parked where nobody
 //! looked. See [`EngineCapability`] and LIMITATIONS.md L37.
 
+pub mod acquire;
 pub mod chunk;
 pub mod diff;
 pub mod doc;
 pub mod highlight;
+pub mod purl;
 pub mod query;
 pub mod runtime;
 pub mod search;
+pub mod semantic;
 pub mod timeline;
+pub mod typequery;
 pub mod versions;
 pub mod wire;
 
@@ -78,9 +89,18 @@ pub(crate) mod test_support;
 
 // Re-export the primary public surface so callers can `use nudox_engine::*`
 // if they prefer.
+pub use acquire::{IndexError, IndexEvent, IndexStage, Integrity};
+pub use purl::{Purl, PurlParseError, PurlType};
 pub use query::GraphQuery;
 pub use runtime::{Engine, EngineConfig, EngineHandle, StreamHandle};
 pub use search::SearchQuery;
+// The embedding seam. `lindsey` names these to install a host embedder, in
+// exactly the way it names `Highlighter` to install a host highlighter — no IR
+// type crosses the seam, so §1 is satisfied by the same argument.
+pub use semantic::{
+    EmbedError, EmbedRole, Embedder, EmbedderInfo, SectionState, SharedEmbedder, Unavailable,
+};
+pub use typequery::{TypeFacet, TypeQuery};
 pub use wire::{
     DocEvent, EngineError, Gen, GenerationId, HitRow, KindTag, Provenance, QueryEvent, QueryRow,
     RenderSection, SearchEvent, SearchSectionId, SectionId, SharedStr, SymbolHead, SymbolKey,
@@ -201,6 +221,44 @@ pub struct PackageSpec {
     pub version: String,
     /// The source language.  Determines which producer is used.
     pub language: ProducerLanguage,
+}
+
+/// Translate one [`PackageSpec`] into the store-owned `PackageDescriptor`.
+///
+/// # Why this is a function and not an inline `match`
+///
+/// It was an inline `match` inside `Engine::start_with_versions`, which meant
+/// the *only* way to produce a descriptor was to start an engine.
+/// [`EngineHandle::index_purl`] needs exactly one descriptor for a package that
+/// arrives long after start-up, and copying the `match` would have created a
+/// second place where an ecosystem is paired with a language — the pairing
+/// `PackageDescriptor`'s private `new` and its seven named constructors exist
+/// to make unmistakable, because getting it wrong builds a descriptor no
+/// registered producer answers and surfaces at runtime as `ToolchainMissing`
+/// rather than as a compile error.
+///
+/// One function, one pairing, and a new [`ProducerLanguage`] variant is a
+/// compile error here rather than a silent `ToolchainMissing` there.
+pub(crate) fn descriptor_for(
+    spec: PackageSpec,
+) -> nudox_store::source::producer::PackageDescriptor {
+    use nudox_store::source::producer::PackageDescriptor;
+
+    let PackageSpec {
+        root,
+        name,
+        version,
+        language,
+    } = spec;
+    match language {
+        ProducerLanguage::Rust => PackageDescriptor::cargo(root, name, version),
+        ProducerLanguage::Go => PackageDescriptor::go(root, name, version),
+        ProducerLanguage::Java => PackageDescriptor::maven(root, name, version),
+        ProducerLanguage::CSharp => PackageDescriptor::nuget(root, name, version),
+        ProducerLanguage::Python => PackageDescriptor::pypi(root, name, version),
+        ProducerLanguage::TypeScript => PackageDescriptor::npm(root, name, version),
+        ProducerLanguage::Cpp => PackageDescriptor::cpp(root, name, version),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -512,9 +570,11 @@ impl EngineCapability {
     pub fn blocked_on(self) -> &'static str {
         match self {
             Self::ProjectResolution => {
-                "a filesystem walk in the engine plus an `EngineHandle` method that can add a \
-                 discovered package to a running corpus; today packages can only be supplied to \
-                 `Engine::start_with_producer`, so a resolved list could not be acted on"
+                "a filesystem walk in the engine that discovers on-disk packages and infers their \
+                 language from the manifest present. The second half of this blocker — an \
+                 `EngineHandle` method that can add a package to a *running* corpus — is now built \
+                 (`EngineHandle::index_purl` and the `load_one`/`drive_load` path beneath it), so \
+                 what remains is discovery, not insertion"
             }
             Self::Sync => {
                 "a file-watching subsystem — no watcher dependency is present in this workspace \
@@ -596,11 +656,11 @@ impl EngineHandle {
     /// Resolve a project workspace and stream package discovery events.
     ///
     /// **Always `Err`** ([`EngineCapability::ProjectResolution`]). The engine
-    /// has no filesystem walk, and — decisively — no way to add a discovered
-    /// package to a corpus that is already running, so even a correct list
-    /// could not be opened. Returning `Ok` with an empty stream would report
-    /// "this directory contains no packages" about a directory nobody looked
-    /// at.
+    /// has no filesystem walk. It *can* now add a package to a corpus that is
+    /// already running — [`EngineHandle::index_purl`] does exactly that — so
+    /// the remaining gap is discovery alone. Returning `Ok` with an empty
+    /// stream would report "this directory contains no packages" about a
+    /// directory nobody looked at.
     pub fn resolve_project(
         &self,
         _root: PathBuf,

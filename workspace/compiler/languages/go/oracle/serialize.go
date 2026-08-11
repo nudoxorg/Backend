@@ -41,6 +41,16 @@ type Decl struct {
 	// (kind == "type" or "func").
 	TypeParams []*TypeParamDecl `json:"typeParams,omitempty"`
 
+	// Span is the byte range of this declaration's full source text — for
+	// a single (non-grouped) declaration, from its leading keyword
+	// (`func`/`type`/`const`/`var`) to its end; for one member of a
+	// grouped declaration (`const ( A; B )`), just that spec, since the
+	// keyword documents the group rather than the member. See
+	// docCatalog.declSpan in docs.go for how this is computed, and
+	// serializer.span for how it is resolved to byte offsets. Nil when
+	// the oracle could not find an enclosing AST node (should not happen
+	// for anything with a non-nil Pos).
+	Span *Span `json:"span,omitempty"`
 	// Underlying is the structural underlying type (kind == "type").
 	Underlying *Type `json:"underlying,omitempty"`
 	// Methods are the methods DECLARED on this named type.
@@ -90,6 +100,14 @@ type Method struct {
 	Doc string `json:"doc,omitempty"`
 	// Pos is the declaring position.
 	Pos *Pos `json:"pos,omitempty"`
+	// Span is the byte range of the method's full declaration — the
+	// `func (recv T) Name(...) ... { ... }` text, start to end (or, for a
+	// promoted method, the same range on the *embedded* type's method,
+	// since that is where the text actually lives). Nil when the
+	// declaring `*ast.FuncDecl` could not be found (should not happen for
+	// anything the oracle discovered via source, as opposed to purely
+	// synthetic promotion bookkeeping).
+	Span *Span `json:"span,omitempty"`
 	// RecvName is the receiver binding name (e.g. "s" in `(s *Server)`).
 	RecvName string `json:"recvName,omitempty"`
 	// PointerRecv distinguishes `func (t *T)` from `func (t T)`.
@@ -113,11 +131,24 @@ type TypeParamDecl struct {
 	Constraint *Type `json:"constraint,omitempty"`
 }
 
-// Pos is a file:line:column source position.
+// Pos is a file:line:column source position, plus the byte offset the
+// FileSet resolves it to. Line/Col remain 1-based and human-facing; Offset
+// is the 0-based byte index into File that `Span` is expressed in terms of.
 type Pos struct {
 	File string `json:"file"`
 	Line int    `json:"line"`
 	Col  int    `json:"col"`
+	// Offset is the 0-based byte offset of this position within File.
+	Offset int `json:"offset"`
+}
+
+// Span is a byte range `[Start, End)` into the file named by the
+// declaration's Pos. Unlike Pos (which marks a single point — conventionally
+// the declared identifier), Span covers the declaration's full source text,
+// so that slicing File[Start:End] reproduces it.
+type Span struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
 }
 
 // Type is the recursive structural type tree, discriminated by Kind.
@@ -234,7 +265,21 @@ func (s *serializer) position(pos token.Pos) *Pos {
 		return nil
 	}
 	p := s.fset.Position(pos)
-	return &Pos{File: p.Filename, Line: p.Line, Col: p.Column}
+	return &Pos{File: p.Filename, Line: p.Line, Col: p.Column, Offset: p.Offset}
+}
+
+// span resolves a [start, end) pair of token.Pos values (as recorded by
+// docCatalog.declSpan / methodSpan) into byte offsets via the FileSet.
+// Returns nil if either bound is invalid, so a caller with no recorded
+// range simply omits Span rather than emitting a false 0..0.
+func (s *serializer) span(start, end token.Pos) *Span {
+	if !start.IsValid() || !end.IsValid() || s.fset == nil {
+		return nil
+	}
+	return &Span{
+		Start: s.fset.Position(start).Offset,
+		End:   s.fset.Position(end).Offset,
+	}
 }
 
 // typ serializes any go/types.Type into the JSON tree.
@@ -429,6 +474,7 @@ func (s *serializer) declaredMethods(named *types.Named, docs *docCatalog) []*Me
 			Exported:  f.Exported(),
 			Doc:       docs.methodDoc[typeName+"."+f.Name()],
 			Pos:       s.position(f.Pos()),
+			Span:      s.methodSpan(docs, typeName, f.Name()),
 			Signature: s.signatureDepth(sig, 0),
 		}
 		if recv := sig.Recv(); recv != nil {
@@ -445,9 +491,37 @@ func (s *serializer) declaredMethods(named *types.Named, docs *docCatalog) []*Me
 	return out
 }
 
+// declSpan resolves the recorded AST range for a package-level declaration
+// named name (see docCatalog.declSpan in docs.go) into a byte-offset Span.
+// Returns nil when no range was recorded — struct fields and other
+// declarations with no top-level ast.Decl of their own never populate
+// declSpan, and this is how that absence survives into the JSON as "no
+// span" rather than a fabricated one.
+func (s *serializer) declSpan(docs *docCatalog, name string) *Span {
+	r, ok := docs.declSpan[name]
+	if !ok {
+		return nil
+	}
+	return s.span(r.start, r.end)
+}
+
+// methodSpan resolves the recorded AST range for a method declared on
+// typeName (see docCatalog.methodSpan in docs.go) into a byte-offset Span.
+// Returns nil when typeName's package was never harvested — true of every
+// method promoted from a type outside the current package (e.g. an embedded
+// stdlib type), whose declaring source this oracle invocation never parsed
+// a docCatalog for.
+func (s *serializer) methodSpan(docs *docCatalog, typeName, methodName string) *Span {
+	r, ok := docs.methodSpan[typeName+"."+methodName]
+	if !ok {
+		return nil
+	}
+	return s.span(r.start, r.end)
+}
+
 // promotedMethods serializes methods reachable on *T through embedded
 // fields but not declared on T itself, recording the embedded origin.
-func (s *serializer) promotedMethods(named *types.Named) []*Method {
+func (s *serializer) promotedMethods(named *types.Named, docs *docCatalog) []*Method {
 	declared := map[string]bool{}
 	for i := 0; i < named.NumMethods(); i++ {
 		declared[named.Method(i).Name()] = true
@@ -474,6 +548,7 @@ func (s *serializer) promotedMethods(named *types.Named) []*Method {
 			Name:      f.Name(),
 			Exported:  f.Exported(),
 			Pos:       s.position(f.Pos()),
+			Span:      s.methodSpan(docs, originTypeName(sig), f.Name()),
 			Signature: s.signatureDepth(sig, 0),
 			Origin:    originOf(sig),
 		}
@@ -514,6 +589,24 @@ func (s *serializer) implementsInterfaces(named *types.Named, pkg *types.Package
 		}
 	}
 	return out
+}
+
+// originTypeName returns the bare (unqualified) name of a promoted method's
+// declaring receiver type, for keying into docCatalog.methodSpan — the same
+// key harvestFuncDecl uses when it recorded that method's AST range.
+func originTypeName(sig *types.Signature) string {
+	recv := sig.Recv()
+	if recv == nil {
+		return ""
+	}
+	t := recv.Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	if n, ok := t.(*types.Named); ok {
+		return n.Obj().Name()
+	}
+	return ""
 }
 
 // originOf renders the qualified defining type of a promoted method's

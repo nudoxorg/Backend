@@ -43,6 +43,10 @@ use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use gpui::prelude::*;
 
 /// Alpha range of the breathing pulse, from GUI-PLAN §5.1 `status.breathe`.
+///
+/// Not on the `AlphaTokens` ladder and not a candidate for it: this is an
+/// animation envelope (how far a pulse swings between frames), not a surface
+/// tint. A later sweep for stray alpha literals should leave these alone.
 const BREATHE_MIN: f32 = 0.45;
 const BREATHE_MAX: f32 = 0.9;
 

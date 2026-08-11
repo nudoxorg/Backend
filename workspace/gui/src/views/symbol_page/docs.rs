@@ -1319,6 +1319,9 @@ impl DocsBody {
         blocks: &[BlockView],
         cx: &App,
     ) -> AnyElement {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         let (sp, colours) = {
             let ext = cx.theme_ext();
             (ext.space, ext.colours)
@@ -1340,7 +1343,11 @@ impl DocsBody {
             .pl(sp.space_3)
             .py(sp.space_2)
             .rounded(sp.r_md)
-            .bg(accent.opacity(0.08))
+            // `al.hairline`. `accent` here is the callout's level colour
+            // (info / warn / danger / ok), so there is no single role to reach
+            // for — this is the case the ladder exists for: the same colour,
+            // quieter, by a named amount rather than an invented one.
+            .bg(accent.opacity(al.hairline))
             .border_l_2()
             .border_color(accent)
             .children(
@@ -1596,12 +1603,12 @@ mod tests {
     }
 
     fn palette() -> (ColourRoles, KindColours) {
-        let theme = crate::theme::themes::dark_theme();
+        let theme = crate::theme::default_theme();
         (theme.colours, theme.kind_colours)
     }
 
     fn palette_syntax() -> SyntaxColours {
-        crate::theme::themes::dark_theme().syntax
+        crate::theme::default_theme().syntax
     }
 
     /// §9.4.1: `Lines(n)` reserves `n` line heights, plus the section's own

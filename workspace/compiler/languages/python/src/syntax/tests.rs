@@ -62,6 +62,44 @@ fn param_kinds_cover_positional_only_normal_varargs_keyword_only_kwargs() {
     );
 }
 
+/// `ItemData::span` must be a real byte range into the source text, not the
+/// `0..0` placeholder every declaration used to carry — and it must be a
+/// **byte** range, not a char range, since `ruff_text_size::TextSize` is
+/// documented as UTF-8 bytes. A non-ASCII docstring sits before the
+/// declaration under test: if `syntax.rs` ever confused byte offsets with
+/// char offsets, slicing `source[item.span.clone()]` would either panic (a
+/// non-char-boundary byte index lands mid-codepoint) or silently return text
+/// shifted from where the declaration actually starts.
+#[test]
+fn item_span_covers_the_declaration_and_is_a_real_byte_range_past_non_ascii_source() {
+    let source = "\"\"\"café ☕ — a tiny module.\"\"\"\n\ndef greet(name):\n    return name\n";
+    let m = oracle_for(source);
+    let item = only_item(&m, "greet");
+    let text = &source[item.span.clone()];
+    assert!(
+        text.starts_with("def greet(name):"),
+        "span must start at the def statement's own text; got {text:?}"
+    );
+    assert!(text.contains("return name"), "span must cover the full def statement; got {text:?}");
+}
+
+/// A parameter's span covers the parameter itself (name, annotation, and
+/// default together for `ParameterWithDefault`), not the whole function.
+#[test]
+fn param_span_covers_only_that_parameter() {
+    let m = oracle_for("def f(a: int, b: str = \"x\"):\n    pass\n");
+    let item = only_item(&m, "f");
+    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let source = "def f(a: int, b: str = \"x\"):\n    pass\n";
+    let a_text = &source[fd.params[0].span.clone()];
+    let b_text = &source[fd.params[1].span.clone()];
+    assert_eq!(a_text, "a: int", "first param's span must cover only `a: int`; got {a_text:?}");
+    assert_eq!(
+        b_text, "b: str = \"x\"",
+        "second param's span must cover name, annotation, and default; got {b_text:?}"
+    );
+}
+
 #[test]
 fn async_def_sets_is_async() {
     let m = oracle_for("async def f():\n    pass\n");

@@ -87,6 +87,8 @@ impl RenderOnce for EmptyState {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
+        let colours = ext.colours;
+        let al = ext.alpha;
         let theme = cx.theme();
 
         let action_label = self.action_label;
@@ -99,7 +101,11 @@ impl RenderOnce for EmptyState {
             // Icon — large, faint
             .child(
                 Icon::new(self.icon)
-                    .text_color(theme.muted_foreground.opacity(0.5))
+                    // `fg_faint`, not `muted_foreground.opacity(0.5)`: this is
+                    // a rank-below-muted fade, and an opaque step composites
+                    // predictably wherever the empty state is mounted, unlike
+                    // an alpha over an unknown backdrop.
+                    .text_color(colours.fg_faint)
                     .with_size(gpui_component::Size::Large),
             )
             // Title
@@ -135,8 +141,11 @@ impl RenderOnce for EmptyState {
                         .px(sp.space_4)
                         .py(sp.space_2)
                         .text_size(ts.ui.size)
-                        .hover(|s| s.opacity(0.85))
-                        .active(|s| s.opacity(0.7))
+                        // 0.85 → `al.dim`: the nearest rung is 0.72, more
+                        // than 0.05 away, but within the just-noticeable-
+                        // difference the ladder is built around.
+                        .hover(|s| s.opacity(al.dim))
+                        .active(|s| s.opacity(al.dim))
                         .on_click(move |_, window, cx| on_click(window, cx))
                         .child(label),
                 )

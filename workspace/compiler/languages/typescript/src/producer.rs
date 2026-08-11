@@ -99,13 +99,43 @@ where
     const LANGUAGE: Language = Language::TypeScript;
 
     fn invoke(&self, src: &PackageSource) -> Result<O, ProducerError> {
+        // Canonicalize once, up front, and use the canonical path for BOTH
+        // discovery passes below — this is not cosmetic.
+        //
+        // `discover_entry_points`'s `deep_import_roots` builds every path by
+        // joining onto whatever `root` it is given (`WalkDir::new(root)`,
+        // `entry.path().to_path_buf()`), so any literal `..` component in
+        // `root` survives unchanged into every path it returns. `graph.rs`'s
+        // import-edge BFS instead resolves paths through `oxc_resolver`,
+        // which normalizes `..`/`.` as part of Node module resolution. When
+        // the caller's `root` still carries a literal `..` — the real case
+        // that surfaced this: `nudox-store`'s `corpus_contract.rs` builds its
+        // fixture root as `CARGO_MANIFEST_DIR.join("../..")`, never resolved
+        // — those two passes produce two different `PathBuf` *strings* for
+        // the identical physical file. `discover_entry_points_with`'s
+        // `BTreeSet<PathBuf>` dedup compares strings, not inodes, so it
+        // cannot catch this: the same file was walked and lowered twice,
+        // producing two `Module` entries with the same name and identical
+        // content (and, since real spans landed, identical spans too — the
+        // identity gate correctly reported that pair as order-dependent;
+        // the gate was never wrong, the input handed to it was). Found via
+        // lodash 4.17.21's `deburr.js`, reachable both directly
+        // (deep-import-root) and, through `fp/deburr.js`'s
+        // `require('../deburr')`, via the resolver. Canonicalizing `root`
+        // once here makes both passes agree on one path per file, so the
+        // `BTreeSet` dedup actually works and the duplicate stops existing.
+        let root = std::fs::canonicalize(src.root()).map_err(|e| ProducerError::OracleSpawn {
+            command: "oxc-canonicalize-root".to_string(),
+            reason: e,
+        })?;
+
         let entry_points =
-            discover_entry_points(src.root()).map_err(|e| ProducerError::OracleSpawn {
+            discover_entry_points(&root).map_err(|e| ProducerError::OracleSpawn {
                 command: "oxc-entry-discovery".to_string(),
                 reason: std::io::Error::other(e),
             })?;
 
-        let modules = build_and_extract(&entry_points, src.root()).map_err(|e| {
+        let modules = build_and_extract(&entry_points, &root).map_err(|e| {
             ProducerError::OracleSpawn {
                 command: "oxc-extract".to_string(),
                 reason: std::io::Error::other(e),

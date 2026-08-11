@@ -70,14 +70,22 @@
 
 #![warn(missing_docs)]
 
+pub mod account;
 pub mod endpoint;
 pub mod error;
 pub mod host;
+/// The job registry behind `index_package`. Private: it is machinery, not
+/// vocabulary — nothing outside this crate needs to name a job.
+mod index;
 pub mod key;
 pub mod server;
 pub mod session;
 pub mod tools;
 
+pub use account::{
+    AccountGate, AccountHost, AccountSummary, ApiKey, ApiKeyError, KeySource, Posture,
+    SignInFailure,
+};
 pub use endpoint::{LOOPBACK_BIND, MCP_PATH, McpEndpoint};
 pub use error::McpError;
 pub use host::{DRAIN_TIMEOUT, McpHost, ShutdownOutcome};

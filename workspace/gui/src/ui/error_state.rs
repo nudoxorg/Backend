@@ -72,6 +72,7 @@ impl RenderOnce for ErrorState {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
+        let al = ext.alpha;
         let theme = cx.theme();
 
         // Error message — pre-computed via Display impl on SlotError (not format! in render).
@@ -110,16 +111,16 @@ impl RenderOnce for ErrorState {
                     gpui::div()
                         .id("ui.error_state.retry")
                         .cursor_pointer()
-                        .bg(theme.danger.opacity(0.1))
+                        .bg(theme.danger.opacity(al.hairline))
                         .text_color(theme.danger)
                         .rounded(sp.r_md)
                         .px(sp.space_4)
                         .py(sp.space_2)
                         .text_size(ts.ui.size)
                         .border_1()
-                        .border_color(theme.danger.opacity(0.4))
-                        .hover(|s| s.bg(theme.danger.opacity(0.15)))
-                        .active(|s| s.bg(theme.danger.opacity(0.2)))
+                        .border_color(theme.danger.opacity(al.veil))
+                        .hover(|s| s.bg(theme.danger.opacity(al.wash)))
+                        .active(|s| s.bg(theme.danger.opacity(al.tint)))
                         .on_click(move |_, window, cx| on_click(window, cx))
                         .child(gpui::SharedString::from("Retry")),
                 )

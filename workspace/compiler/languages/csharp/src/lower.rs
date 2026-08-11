@@ -101,6 +101,32 @@ pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
 // Shared symbol helpers
 // ---------------------------------------------------------------------------
 
+/// Convert the oracle's [`schema::Location`] into the IR's `(source, span)`
+/// pair.
+///
+/// `None` — the oracle could not place this symbol in source at all (a
+/// compiler-synthesized member, or a symbol resolved only from a reference
+/// assembly) — becomes an empty path and a zero-width span at byte 0. That is
+/// deliberately the same shape `Symbol` used unconditionally before this
+/// function existed, so a caller with no location is no worse off than
+/// before; what changes is that a caller *with* one now gets it, instead of
+/// every symbol in the package being flattened to the same placeholder.
+///
+/// The oracle, not this function, performs the UTF-16-code-unit → UTF-8-byte
+/// conversion (`Extractor.ByteOffset` in `oracle/Extractor.cs`) — Roslyn's
+/// `TextSpan` is UTF-16 code units, and `Symbol::span` is documented as
+/// bytes. Redoing that conversion here would mean either shipping the raw
+/// file text through the JSON contract just to recompute it, or silently
+/// trusting the oracle's units without re-deriving them — the oracle already
+/// has the source text in hand while walking the compilation, so it is the
+/// only side that can do the conversion once instead of per-consumer.
+fn symbol_location(location: Option<&schema::Location>) -> (PathBuf, std::ops::Range<usize>) {
+    match location {
+        Some(loc) => (PathBuf::from(&loc.file), loc.start..loc.end),
+        None => (PathBuf::new(), 0..0),
+    }
+}
+
 /// Build the IR [`Symbol`] for a type-level entry.
 fn type_symbol(
     decl: &TypeDecl,
@@ -113,13 +139,14 @@ fn type_symbol(
     let doc_links = doc_links_from_map(decl.doc_links.as_ref(), parsed);
     let deprecation = deprecation_of(decl.deprecated.as_ref());
     let attrs = render_attrs(&decl.attributes);
+    let (source, span) = symbol_location(decl.location.as_ref());
 
     Symbol {
         name: decl.simple_name.clone(),
         visibility,
         documentation,
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases,
         deprecation,
         doc_links,
@@ -136,18 +163,20 @@ fn member_symbol(
     deprecated: Option<&schema::Deprecated>,
     attrs: &[schema::Attr],
     extra_sections: &[String],
+    location: Option<&schema::Location>,
 ) -> Symbol {
     let visibility = types::map_visibility(accessibility);
     let deprecation = deprecation_of(deprecated);
     let rendered_attrs = render_attrs(attrs);
     let documentation = build_documentation(parsed, extra_sections, deprecated);
+    let (source, span) = symbol_location(location);
 
     Symbol {
         name: name.to_string(),
         visibility,
         documentation,
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: Box::new([]),
         deprecation,
         doc_links: Box::new([]),
@@ -746,6 +775,7 @@ fn lower_field(
         f.deprecated.as_ref(),
         &f.attributes,
         &extra,
+        f.location.as_ref(),
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -789,6 +819,7 @@ fn lower_const_field(
         f.deprecated.as_ref(),
         &f.attributes,
         &extra,
+        f.location.as_ref(),
     );
 
     // The constant value is stored as a rendered display string (the oracle's
@@ -834,6 +865,7 @@ fn lower_property(
         p.deprecated.as_ref(),
         &p.attributes,
         &extra,
+        p.location.as_ref(),
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -892,6 +924,7 @@ fn lower_indexer(
         p.deprecated.as_ref(),
         &p.attributes,
         &extra,
+        p.location.as_ref(),
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -951,6 +984,7 @@ fn lower_event(
         e.deprecated.as_ref(),
         &e.attributes,
         &extra,
+        e.location.as_ref(),
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -1145,12 +1179,13 @@ fn lower_method(
     let rendered_attrs = render_attrs(&m.attributes);
     let documentation = build_documentation(parsed.as_ref(), &extra, m.deprecated.as_ref());
 
+    let (source, span) = symbol_location(m.location.as_ref());
     let sym = Symbol {
         name: method_display_name(m),
         visibility,
         documentation,
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: Box::new([]),
         deprecation,
         doc_links: method_doc_links.into_boxed_slice(),
@@ -1209,12 +1244,13 @@ fn lower_param(
         doc_parts.push(format!("default: `{default_text}`"));
     }
 
+    let (source, span) = symbol_location(p.location.as_ref());
     let sym = Symbol {
         name: p.name.clone(),
         visibility: Visibility::Public,
         documentation: doc_parts.join("; "),
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
@@ -1257,12 +1293,18 @@ fn lower_return_param(
         types::lower_type(ret, name_to_doc_id, out)
     };
 
+    // Roslyn has no symbol for "the return value" to attach a location to —
+    // it is a facet of the method, not a declaration of its own. The
+    // enclosing method's own location is the closest honest answer: it is
+    // where the return type is written, just not narrowed to the return-type
+    // token specifically.
+    let (source, span) = symbol_location(m.location.as_ref());
     let sym = Symbol {
         name: String::new(),
         visibility: Visibility::Public,
         documentation: returns_doc.clone().unwrap_or_default(),
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
@@ -1290,12 +1332,13 @@ fn lower_enum_variant(f: &schema::Field, parent_id: &str, out: &mut Lowering<Str
         doc_parts.push(format!("Value: `{val}`"));
     }
 
+    let (source, span) = symbol_location(f.location.as_ref());
     let sym = Symbol {
         name: f.name.clone(),
         visibility: Visibility::Public,
         documentation: doc_parts.join("\n\n"),
-        source: PathBuf::new(),
-        span: 0..0,
+        source,
+        span,
         aliases: if f.doc_id.is_empty() {
             Box::new([])
         } else {

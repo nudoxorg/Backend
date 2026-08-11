@@ -22,3 +22,4 @@ pub mod symbol_page;
 /// §23.3) — one view, two modes, both rendering from `app::keymaps`'s
 /// registry (LIMITATIONS.md L15).
 pub mod command_overlay;
+pub mod sign_in;

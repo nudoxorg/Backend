@@ -21,7 +21,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use nudox_engine::{Engine, EngineConfig, EngineHandle};
-use nudox_mcp::{McpHost, SessionToken, ShutdownOutcome};
+use nudox_mcp::{AccountGate, McpHost, SessionToken, ShutdownOutcome};
 use nudox_store::source::fixtures::FixtureSource;
 
 /// A JSON-RPC `initialize` call — the first thing any MCP client sends.
@@ -34,6 +34,18 @@ const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","param
 /// has none.
 fn engine() -> EngineHandle {
     Engine::start(EngineConfig::default(), FixtureSource::rich())
+}
+
+/// The account gate these tests run under.
+///
+/// Unmetered on purpose, and stated rather than defaulted. This file is about
+/// the *lifecycle* — bind, advertise, stop, drop — and every one of its
+/// assertions is on whether a socket is reachable. Wiring a real account gate
+/// in would make each of them additionally depend on `api.nudox.org` being up,
+/// which is the shape doctrine §4 rules out. Account behaviour has its own
+/// suite: `tests/account_against_a_fake_service.rs`.
+fn test_gate() -> AccountGate {
+    AccountGate::unmetered("lifecycle test: asserts on socket reachability, not on billing")
 }
 
 fn case_dir() -> &'static Path {
@@ -112,7 +124,7 @@ fn a_host_without_a_runtime_starts_a_server_a_client_can_talk_to() {
             let token = SessionToken::generate();
             let secret = token.expose().to_owned();
 
-            let mut host = McpHost::start_with_token(&engine, token)
+            let mut host = McpHost::start_with_token(&engine, test_gate(), token)
                 .expect("a host must be able to start the server without owning a runtime");
 
             let url = host.url().expect("a running host must advertise a url");
@@ -141,8 +153,8 @@ fn a_host_without_a_runtime_starts_a_server_a_client_can_talk_to() {
 fn two_hosts_in_one_process_bind_different_ports() {
     let engine = engine();
 
-    let mut first = McpHost::start(&engine).expect("first host must bind");
-    let mut second = McpHost::start(&engine).expect("second host must bind");
+    let mut first = McpHost::start(&engine, test_gate()).expect("first host must bind");
+    let mut second = McpHost::start(&engine, test_gate()).expect("second host must bind");
 
     let a = first.addr().expect("first host must report its address");
     let b = second.addr().expect("second host must report its address");
@@ -172,7 +184,7 @@ fn two_hosts_in_one_process_bind_different_ports() {
 #[test]
 fn stopping_closes_the_socket_and_retracts_the_advertised_address() {
     let engine = engine();
-    let mut host = McpHost::start(&engine).expect("host must bind");
+    let mut host = McpHost::start(&engine, test_gate()).expect("host must bind");
 
     let url = host.url().expect("a running host advertises a url");
     let addr = dial_target(&url);
@@ -206,7 +218,7 @@ fn stopping_closes_the_socket_and_retracts_the_advertised_address() {
 #[test]
 fn stopping_twice_reports_that_the_second_call_did_nothing() {
     let engine = engine();
-    let mut host = McpHost::start(&engine).expect("host must bind");
+    let mut host = McpHost::start(&engine, test_gate()).expect("host must bind");
 
     assert_eq!(host.stop(), ShutdownOutcome::Drained);
     assert_eq!(host.stop(), ShutdownOutcome::AlreadyStopped);
@@ -224,7 +236,7 @@ fn dropping_a_host_closes_the_listener_even_without_stop() {
     let engine = engine();
 
     let addr = {
-        let host = McpHost::start(&engine).expect("host must bind");
+        let host = McpHost::start(&engine, test_gate()).expect("host must bind");
         let addr = host.addr().expect("running host reports an address");
         assert!(
             TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok(),
@@ -254,7 +266,7 @@ fn dropping_a_host_closes_the_listener_even_without_stop() {
 #[test]
 fn stopping_from_inside_the_runtime_signals_rather_than_deadlocking() {
     let engine = engine();
-    let mut host = McpHost::start(&engine).expect("host must bind");
+    let mut host = McpHost::start(&engine, test_gate()).expect("host must bind");
     let addr = host.addr().expect("running host reports an address");
 
     let outcome = engine.runtime_handle().block_on(async { host.stop() });
@@ -288,7 +300,7 @@ fn stopping_from_inside_the_runtime_signals_rather_than_deadlocking() {
 #[test]
 fn the_pasted_client_config_authenticates_against_the_running_server() {
     let engine = engine();
-    let mut host = McpHost::start(&engine).expect("host must bind");
+    let mut host = McpHost::start(&engine, test_gate()).expect("host must bind");
 
     let snippet = host
         .client_config_snippet()

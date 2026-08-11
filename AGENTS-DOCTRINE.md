@@ -53,6 +53,60 @@ lindsey (GUI, gpui)
   *discusses* `nudox_ir` in doc comments where it mirrors a frozen wire enum —
   for a real import. A prose rule that only a reviewer can apply is the shape
   this codebase keeps finding rotted claims in (§8).
+- **Capability ports: the engine names a trait, the host supplies the runtime.**
+  Decided 2026-08-09, when semantic search needed an embedding model and the
+  obvious move was an edge `nudox-engine → workspace/registry`.
+
+  That edge is **not** taken, and the graph above is unchanged: `registry` is
+  still not in it. What was added instead is a second *port* on `nudox-engine`,
+  beside the one that already existed:
+
+  | port | trait | host supplies | `None` means |
+  |---|---|---|---|
+  | highlighting | `highlight::Highlighter` | a tree-sitter runtime | uncoloured code |
+  | embedding | `semantic::Embedder` | an ONNX/API model | `SectionState::Unavailable` |
+
+  The rule to apply when the next one comes up: **if the engine needs a
+  capability whose implementation would drag a runtime into its dependency
+  graph, the engine owns the trait and the decision of *when* to call it; the
+  host owns *how*.** The trait must be object-safe and must speak only in `std`
+  vocabulary, so that satisfying it never requires naming the implementor's
+  types. `Embedder` traffics in `Vec<f32>`, `usize` and `bool` for exactly that
+  reason.
+
+  Three things made the direct edge worse than it looks, and they are worth
+  recording because each one is invisible until you try it:
+
+  1. **`registry::vector::core::embed::Embedder` is not object-safe.** It has
+     `type Model: EmbeddingModel`, so there is no `dyn Embedder`. The engine
+     would have had to be *generic over the model*, putting a registry type
+     parameter into `EngineConfig` and `EngineHandle` — and therefore into
+     `lindsey`, which is the one crate §1 exists to keep clean.
+  2. **Cost, measured**: `registry` resolves to 325 crates on its default
+     features and **483** with `onnx`. `nudox-engine` is the single crate
+     `lindsey` depends on; a 483-crate graph beneath it is not a detail.
+  3. **`ort-sys` downloads a prebuilt runtime during `cargo build`** unless
+     `ORT_LIB_LOCATION` points at a local install — and as of 2026-08-09
+     nothing in this tree sets it (zero hits in `flake.nix`, `.cargo/config.toml`
+     and every `package.nix`). An unsolved provisioning problem must not be able
+     to break `cargo check -p nudox-engine`.
+
+  **Where an adapter lives.** Between the port and a runtime there is always a
+  ten-line adapter, and it belongs to neither crate. The one that exists today
+  is in `workspace/registry/tests/vector/engine_relevance.rs`, reached by a
+  **dev**-dependency `registry[dev] → nudox-engine`. A dev-dependency appears in
+  no consumer's graph — `driver` and `index` are untouched, and so is
+  `nudox-engine` in both directions — so it creates no edge that ships and needs
+  no amendment here. A *production* adapter has no home yet; when one is needed
+  it should be a crate that sits **beside** the engine on the `nudox-mcp`
+  argument (its seam vocabulary is the port's, and no IR type crosses it), not
+  beneath it.
+
+  **What this deliberately does not solve**: nothing in the shipping tree
+  constructs an `Embedder`, so `lindsey`'s semantic section reports
+  `Unavailable` in every build today. That is the honest state and it is
+  visible in a type rather than presented as a zero-hit result — see
+  LIMITATIONS.md L41.
 - **None** of engine/graph/store/ir/producer may link `gpui`. The whole protocol
   must be testable without a window.
 - `workspace/gui` is a standalone package with its own lockfile. That is

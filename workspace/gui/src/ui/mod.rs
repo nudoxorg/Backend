@@ -33,7 +33,7 @@ pub use badge::Badge;
 pub use count_label::CountLabel;
 pub use empty_state::EmptyState;
 pub use error_state::ErrorState;
-pub use key_hint::KeyHint;
+pub use key_hint::{KeyCap, KeyHint};
 pub use progress_row::ProgressRow;
 pub use provenance_dot::ProvenanceDot;
 pub use section_header::SectionHeader;

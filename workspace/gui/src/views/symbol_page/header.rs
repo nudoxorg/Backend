@@ -397,6 +397,9 @@ impl SymbolHeader {
 
 impl RenderOnce for SymbolHeader {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // The transparency ladder. Same in every theme — it says how much of a
+        // thing is present, not what colour the thing is.
+        let al = crate::theme::tokens::AlphaTokens::STANDARD;
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
@@ -529,7 +532,7 @@ impl RenderOnce for SymbolHeader {
             .border_b_1()
             .border_color(colours.border_default)
             // LD-15: a superseded generation dims, it never disappears.
-            .when(self.stale, |el| el.opacity(0.7))
+            .when(self.stale, |el| el.opacity(al.dim))
             .child(
                 h_flex()
                     .w_full()
@@ -548,9 +551,9 @@ impl RenderOnce for SymbolHeader {
                         .px(sp.space_2)
                         .py(sp.space_1)
                         .rounded(sp.r_sm)
-                        .bg(colours.warn.opacity(0.12))
+                        .bg(colours.warn.opacity(al.wash))
                         .border_1()
-                        .border_color(colours.warn.opacity(0.35))
+                        .border_color(colours.warn.opacity(al.veil))
                         .child(
                             Icon::new(IconName::TriangleAlert)
                                 .text_color(colours.warn)
