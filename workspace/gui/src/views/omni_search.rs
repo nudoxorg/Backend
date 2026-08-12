@@ -1846,11 +1846,79 @@ impl<S: SearchAccess> OmniSearch<S> {
                         )
                     }),
             )
+            // The similarity meter — only in the semantic section (see
+            // `render_relevance_meter`). Placed just before the trust badge so
+            // "how strong" and "how trustworthy" read as one right-aligned
+            // cluster, in that order: strength is the semantic section's own
+            // answer, provenance is the answer every section shares.
+            .when(section == Section::Semantic, |el| {
+                el.child(Self::render_relevance_meter(row.relevance, cx))
+            })
             .child(Badge::for_provenance(
                 ("search.row.trust", ix),
                 row.provenance,
                 cx,
             ))
+    }
+
+    /// A compact similarity meter: *how strong* a semantic match is, shown so
+    /// that trust in a match found by meaning rather than by spelling is visible
+    /// rather than asserted (the task the whole semantic section has to earn).
+    ///
+    /// Drawn only for the semantic section. The value is the wire relevance the
+    /// ranking already sorted on, so the bar and the order can never disagree —
+    /// a higher row is always a fuller bar. A determinate bar with a fixed
+    /// value, so it adds **no** animation and leaves the §5.4 loop-permit budget
+    /// (three, app-wide) untouched.
+    fn render_relevance_meter(relevance: f32, cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+        let al = ext.alpha;
+
+        // Relevance lands in `(0, 1]`; clamp defensively so a stray value can
+        // never paint the fill outside its track (the doctrine's "relative size
+        // needs a definite parent" note — the track below is that parent).
+        let frac = relevance.clamp(0.0, 1.0);
+        let pct = (frac * 100.0).round() as u32;
+
+        h_flex()
+            .items_center()
+            .gap(sp.space_1)
+            // A faint numeric readout for the reader who wants the exact figure,
+            // right-aligned to a fixed width so the bars below it line up into a
+            // column down the section rather than jittering with each value.
+            .child(
+                div()
+                    .w(sp.space_6)
+                    .text_size(ts.caption.size)
+                    .line_height(ts.caption.line_height)
+                    .text_color(colours.fg_faint)
+                    .opacity(al.dim)
+                    .text_right()
+                    .child(SharedString::from(format!("{pct}%"))),
+            )
+            // The track (definite width) and its fill (a fraction of it). The
+            // fill is a later sibling of nothing — it is the track's only child
+            // — so paint order is not in play here (unlike the L-noted overlay
+            // bugs); it simply sits inside a rounded, clipped track.
+            .child(
+                div()
+                    .w(px(40.))
+                    .h(px(4.))
+                    .rounded_full()
+                    .bg(colours.bg_hover)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(frac))
+                            .rounded_full()
+                            .bg(colours.accent),
+                    ),
+            )
+            .into_any_element()
     }
 
     /// One section: sticky caption header (count + latency) over a virtualized
@@ -2218,21 +2286,49 @@ impl<S: SearchAccess> OmniSearch<S> {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
+        let colours = ext.colours;
 
-        h_flex()
+        // A determinate proportion, drawn as a bar as well as said in words. The
+        // words carry the counts a reader acts on ("3 of 20" tells them how much
+        // weight to put on what is on screen); the bar makes the *proportion*
+        // legible at a glance, which is the part that answers "nearly done, or
+        // barely started?". It is determinate and fixed for this frame — no
+        // animation, so the §5.4 loop-permit budget is untouched — and it moves
+        // only because a later frame carries a larger `covered`.
+        let frac = if total == 0 {
+            0.0
+        } else {
+            (covered as f32 / total as f32).clamp(0.0, 1.0)
+        };
+
+        v_flex()
             .w_full()
-            .items_center()
-            .gap(sp.space_2)
+            .gap(sp.space_1)
             .px(sp.space_3)
             .py(sp.space_2)
             .child(
                 div()
                     .text_size(ts.dense.size)
                     .line_height(ts.dense.line_height)
-                    .text_color(ext.colours.fg_muted)
+                    .text_color(colours.fg_muted)
                     .child(SharedString::from(format!(
                         "Ranking over {covered} of {total} packages — still indexing"
                     ))),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .h(px(3.))
+                    .rounded_full()
+                    .bg(colours.bg_hover)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .h_full()
+                            .w(relative(frac))
+                            .rounded_full()
+                            .bg(colours.accent),
+                    ),
             )
             .into_any_element()
     }

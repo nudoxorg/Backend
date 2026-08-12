@@ -379,7 +379,9 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
                     cx,
                 ));
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
-                entity
+                // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                // window; see the identical comment in `main.rs`.
+                cx.new(|cx| gpui_component::Root::new(entity, window, cx))
             })
         })
         .expect("window must open");
@@ -448,7 +450,9 @@ async fn escape_closes_the_overlay(cx: &mut TestAppContext) {
                     cx,
                 ));
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
-                entity
+                // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                // window; see the identical comment in `main.rs`.
+                cx.new(|cx| gpui_component::Root::new(entity, window, cx))
             })
         })
         .expect("window must open");

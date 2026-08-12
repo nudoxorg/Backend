@@ -97,15 +97,32 @@ lindsey (GUI, gpui)
   **dev**-dependency `registry[dev] → nudox-engine`. A dev-dependency appears in
   no consumer's graph — `driver` and `index` are untouched, and so is
   `nudox-engine` in both directions — so it creates no edge that ships and needs
-  no amendment here. A *production* adapter has no home yet; when one is needed
-  it should be a crate that sits **beside** the engine on the `nudox-mcp`
-  argument (its seam vocabulary is the port's, and no IR type crosses it), not
-  beneath it.
+  no amendment here. A *production* adapter should be a crate that sits
+  **beside** the engine on the `nudox-mcp` argument (its seam vocabulary is the
+  port's, and no IR type crosses it), not beneath it.
 
-  **What this deliberately does not solve**: nothing in the shipping tree
-  constructs an `Embedder`, so `lindsey`'s semantic section reports
-  `Unavailable` in every build today. That is the honest state and it is
-  visible in a type rather than presented as a zero-hit result — see
+  **Update 2026-08-12: the production adapter now exists — `crates/nudox-embed`.**
+  It promotes that ten-line bridge (`FastembedOrt` → `nudox_engine::semantic::
+  Embedder`) to a shipping crate that sits beside the engine, exactly where the
+  paragraph above said one should. Its public surface is `SharedEmbedder`
+  (`Option<Arc<dyn Embedder>>`) plus a `&str` env-var name — the port's own
+  vocabulary — so no IR type and no vector-plane type crosses it, which is the
+  same test `nudox-mcp` passes. `lindsey`'s `main.rs` now calls
+  `nudox_embed::load_from_env()` and hands the result to `EngineConfig::embedder`,
+  so `nudox-embed` joins `nudox-engine`/`nudox-mcp` on the §1 allow-list
+  (`workspace/gui/tests/dependency_law.rs`, amended in the same commit). The
+  `registry`/`onnx` graph enters a build **only** behind `nudox-embed`'s
+  default-off `onnx` feature (and `lindsey`'s `-F semantic-onnx`), so a default
+  or CI build pulls neither the 483-crate graph nor `ort-sys`'s build-time
+  fetch, and `cargo check -p nudox-engine` is untouched in both directions.
+
+  **What this deliberately still defers**: the `ort-sys` runtime is provisioned
+  by its own build-time download unless externally supplied, and the fp32 model
+  (~641 MB) is operator-supplied via `NUDOX_EMBED_MODEL_DIR` and verified
+  against a pinned sha256 before load. Both are gated off by default rather than
+  solved in-tree — an honestly-scoped deferral, not a paper-over. A default
+  build's semantic section still reports `Unavailable`, and that remains an
+  honest state visible in a type rather than a zero-hit result — see
   LIMITATIONS.md L41.
 - **None** of engine/graph/store/ir/producer may link `gpui`. The whole protocol
   must be testable without a window.

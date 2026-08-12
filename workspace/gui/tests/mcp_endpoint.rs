@@ -492,9 +492,13 @@ fn install_shell_session(
                         ..Default::default()
                     },
                     |window, cx| {
-                        cx.new(|cx| {
+                        let shell = cx.new(|cx| {
                             Shell::new(search, symbols, packages, index_jobs, window, cx)
-                        })
+                        });
+                        // `Input` (`SignInView`'s field) requires a
+                        // `Root`-rooted window; see the identical comment in
+                        // `main.rs`.
+                        cx.new(|cx| gpui_component::Root::new(shell, window, cx))
                     },
                 )
                 .map(Into::into)
@@ -520,8 +524,13 @@ fn endpoint_in_the_window(cx: &mut TestAppContext) -> McpStatus {
     cx.update(|cx| {
         cx.update_window(handle, |root, _window, cx| {
             let shell = root
+                .downcast::<gpui_component::Root>()
+                .expect("the session builds exactly one kind of window")
+                .read(cx)
+                .view()
+                .clone()
                 .downcast::<Shell>()
-                .expect("the session builds exactly one kind of window");
+                .expect("Root's view is the Shell");
             shell.read(cx).status_bar().read(cx).mcp().clone()
         })
         .expect("read the live window")
@@ -716,13 +725,22 @@ async fn a_restored_window_brings_back_the_documents_that_were_open(cx: &mut Tes
 }
 
 /// The live window's `Shell`.
+///
+/// The window's first layer is `gpui_component::Root` now, not `Shell` —
+/// `Input` (`SignInView`'s field) requires it; see `main.rs`. One level
+/// deeper than it used to be.
 fn shell_of(cx: &mut App) -> Entity<Shell> {
     let handle = cx.windows().first().copied().expect("a live window");
-    handle
-        .downcast::<Shell>()
+    let root = handle
+        .downcast::<gpui_component::Root>()
         .expect("the session builds exactly one kind of window")
         .root(cx)
-        .expect("the window's root view")
+        .expect("the window's root view");
+    root.read(cx)
+        .view()
+        .clone()
+        .downcast::<Shell>()
+        .expect("Root's view is the Shell")
 }
 
 /// Two distinct symbol keys that really exist in the fixture corpus.

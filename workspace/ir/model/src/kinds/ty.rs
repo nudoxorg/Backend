@@ -640,6 +640,48 @@ impl Type {
         }
     }
 
+    /// Visit every [`RawRef`] reachable from this type — the `Nominal` at
+    /// every position, however deeply nested: generic arguments, tuple
+    /// elements, union/intersection members, and the pointee of a
+    /// [`Primitive::Reference`], [`Primitive::MutPointer`] or
+    /// [`Primitive::ConstPointer`].
+    ///
+    /// # Why this exists
+    ///
+    /// Mirrors [`crate::entry::Entry::for_each_ref`], for the same reason:
+    /// the `Visitor` machinery is crate-private, so a caller outside
+    /// `nudox-ir` had no way to enumerate a type's references except by
+    /// hand-writing its own match over `Type`. `nudox-store`'s
+    /// `collect_stable_refs` did exactly that, and its match's leaf arm
+    /// swallowed `Type::Primitive(_)` whole under a comment claiming nothing
+    /// nominal could be reached through it — false for `Reference`,
+    /// `MutPointer` and `ConstPointer`, which each nest a `Type`. Nothing
+    /// caught it because a hand-written match's failure mode on a forgotten
+    /// case is silence: it compiles clean and simply never produces the
+    /// posting. `&Config`, `*const T` and `*mut T` were invisible to the
+    /// reverse index as a result — "who takes a `&Config`" returned empty
+    /// and read as a true negative rather than a gap.
+    ///
+    /// This method closes that hole structurally rather than by patching the
+    /// three missing arms into the caller's match. `#[derive(Visitor)]` on
+    /// `Type` and on `Primitive` generates its walk fresh from whatever
+    /// fields whatever variants have *today*, visiting every field of every
+    /// variant unconditionally — there is no `_ => {}` in it, and no case
+    /// list to fall out of sync with the enum. A future variant that nests a
+    /// `Type` anywhere in the tree is therefore walked automatically; a
+    /// field type the derive cannot walk (e.g. a bare `HashMap<K, Type>`,
+    /// which has no `Visitor` impl) fails the *build*, not a reverse-index
+    /// query at runtime. Delegating here is what extends that guarantee to
+    /// every external caller instead of just to `nudox-ir`'s own internals.
+    ///
+    /// This walks a clone (`Visitor` exposes only `visit_mut`), so it is for
+    /// audits and index-building, not a hot path.
+    pub fn for_each_ref(&self, mut f: impl FnMut(&RawRef)) {
+        let sink = core::cell::RefCell::new(&mut f);
+        let mut probe = self.clone();
+        probe.visit_mut(&|r| (sink.borrow_mut())(r));
+    }
+
     pub const U8: Self = Type::Primitive(Primitive::Integer {
         signed: false,
         width: Width::W8,

@@ -313,6 +313,18 @@ pub struct PreparedRow {
     pub unknown_kind_label: SharedString,
     /// Trust chrome selector (LD-8).
     pub provenance: Provenance,
+    /// The engine's relevance for this hit, straight off the wire `score` in
+    /// `(0, 1]`.
+    ///
+    /// Kept because the semantic section renders it as a *similarity meter*: a
+    /// reader trusting a match found by meaning rather than by spelling needs to
+    /// see how strong it is, and the value the ranking already sorted on is the
+    /// honest source for that (§8 "counted, derived from the thing, not
+    /// alongside it"). Carried for every section, but drawn only for the
+    /// semantic one — for name/type rows `score` is a text-relevance product,
+    /// not a similarity, so a meter there would invite a comparison the number
+    /// does not support.
+    pub relevance: f32,
 }
 
 impl PreparedRow {
@@ -362,6 +374,7 @@ impl PreparedRow {
             kind,
             unknown_kind_label,
             provenance: prepare_provenance(&hit.provenance),
+            relevance: hit.score,
         }
     }
 

@@ -154,11 +154,54 @@ impl FakeService {
             saw_bad_credential: Arc::new(AtomicBool::new(false)),
         };
 
+        /// `POST /v1/authorize`.
+        ///
+        /// # The credential is read from the BODY here, and that is not a
+        /// stylistic choice
+        ///
+        /// The deployed `api.nudox.org` answers `400 "token is required"` to a
+        /// header-only `authorize`, and `200 {"allowed":true,…}` when the key
+        /// arrives as `{"token":"ndx_…"}` in the body — the opposite of
+        /// `/v1/usage`, which is header-authenticated. That asymmetry was
+        /// verified by probing the real service.
+        ///
+        /// This fake previously accepted the header alone, because it was
+        /// written from the same reading of `auth.md` that produced the client.
+        /// Both agreed; neither matched the server; **sign-in could not succeed
+        /// for any real user** and the whole suite stayed green. Enforcing the
+        /// real shape here is what stops that recurring: a client that reverts
+        /// to header-only now fails every sign-in test in this file, not just
+        /// the live-service suite that nobody runs by default.
+        ///
+        /// `body: String` rather than a typed extractor because `axum`'s `json`
+        /// feature is deliberately off (see [`json`] above).
         async fn authorize(
             State(s): State<Shared>,
             headers: HeaderMap,
+            body: String,
         ) -> axum::response::Response {
             s.authorize_requests.fetch_add(1, Ordering::SeqCst);
+
+            // Checked before the header, matching production: a request with a
+            // valid bearer and no body is a 400 there, not a 401.
+            let token = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v.get("token")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                });
+            let Some(token) = token else {
+                return (StatusCode::BAD_REQUEST, "token is required").into_response();
+            };
+            if token != GOOD_KEY {
+                s.saw_bad_credential.store(true, Ordering::SeqCst);
+                return json(serde_json::json!({
+                    "allowed": false,
+                    "reason": "invalid token",
+                }));
+            }
+
             if !s.check(&headers) {
                 return (StatusCode::UNAUTHORIZED, "").into_response();
             }
@@ -350,7 +393,40 @@ fn good_key() -> ApiKey {
 /// a new code hash on every build, which invalidates a keychain item's ACL and
 /// makes macOS prompt — and a headless runner cannot answer a prompt at all.
 /// See `account::store`'s module docs.
+/// Refuse to run if the ambient environment can reach the code under test.
+///
+/// [`AccountGate`] resolves credentials through
+/// `account::store::resolve_credential`, which consults `NUDOX_API_KEY`
+/// **before** the store it was handed. So a developer who exports a real key —
+/// which `tests/account_against_the_real_service.rs` requires — silently
+/// changes what this suite is testing: a gate built over `MemoryStore::empty()`
+/// then reports `awaiting_first_verification` rather than `signed_out`, and
+/// `KeySource::Environment` rather than `Keychain`.
+///
+/// That is not hypothetical. Two tests here failed exactly this way, and both
+/// failures read as product bugs — an assertion about a *fresh machine* was
+/// quietly being made about a machine with a credential. The premise of this
+/// whole file is a gate with no credential; if the environment supplies one,
+/// there is nothing left to test and saying so is better than proceeding.
+///
+/// Panics rather than skipping, for the same reason the live suite panics on a
+/// missing key: a suite that quietly tests nothing is worse than one that stops.
+fn require_a_clean_environment() {
+    if std::env::var_os(nudox_mcp::account::API_KEY_ENV).is_some() {
+        panic!(
+            "{} is set in this environment. This suite's subject is a gate with NO \
+             credential, and the gate reads that variable before the store it is given, so \
+             every 'fresh machine' assertion below would silently be testing something \
+             else.\n\nRun it without the variable:\n\n    env -u {} cargo test -p nudox-mcp \
+             --test account_against_a_fake_service\n",
+            nudox_mcp::account::API_KEY_ENV,
+            nudox_mcp::account::API_KEY_ENV,
+        );
+    }
+}
+
 fn gate_for(fake: &FakeService, dir: &Path) -> AccountGate {
+    require_a_clean_environment();
     let service = HttpAccountService::with_base_url(fake.base_url())
         .expect("building a client against a loopback base cannot fail");
     AccountGate::new(
@@ -524,9 +600,28 @@ fn a_malformed_key_never_reaches_the_network() {
         // And a well-formed key the service does not know still fails cleanly.
         let wrong = ApiKey::parse("ndx_ffffffffffffffffffffffffffffffffffff")
             .expect("well formed but wrong");
+        // The service answers an unknown token with `200 {"allowed":false,
+        // "reason":"invalid token"}` — NOT a 401. That was verified against the
+        // real `api.nudox.org`, and this assertion used to require "401" or
+        // "rejected" in the text because the fake authenticated from the header
+        // and 401'd instead. It was pinning the fake's behaviour, not the
+        // service's.
+        //
+        // What actually matters is asserted instead: the refusal is a *verdict*
+        // (`Rejected`, which is sticky) rather than an `Unreachable` that grace
+        // would paper over, it carries the service's own words so the user knows
+        // the key is wrong rather than the network, and it does not echo the
+        // credential back into a log line.
         match gate.sign_in(wrong).await {
             Err(SignInFailure::Rejected { reason }) => {
-                assert!(reason.contains("401") || reason.contains("rejected"), "{reason}");
+                assert!(
+                    !reason.trim().is_empty(),
+                    "a rejection must say something the user can act on"
+                );
+                assert!(
+                    !reason.contains("ffffffffffffffffffffffffffffffffffff"),
+                    "the rejection echoed the key: {reason}"
+                );
             }
             other => panic!("an unknown key must be rejected, got {other:?}"),
         }

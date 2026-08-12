@@ -2433,6 +2433,91 @@ not in `flake.nix`, not in `.cargo/config.toml`, not in any `package.nix` — an
 this repo's standard forbids, and it is currently load-bearing for the only
 route by which the model can be run. Provisioning is unsolved.
 
+### Update 2026-08-12: the shipping tree now constructs an `Embedder`
+
+**Status: RESOLVED for the product gap (a build can now do real semantic
+search), with the runtime-provisioning half honestly scoped behind a
+default-off feature rather than solved in-tree.**
+
+What landed, and what was *verified by running it* (doctrine §6 — commands and
+their output, not narrated confidence):
+
+- **A production adapter crate, `crates/nudox-embed`.** It promotes the
+  test-only `OrtBridge` to a shipping crate that sits beside the engine on
+  `lindsey`'s argument list (`AGENTS-DOCTRINE.md` §1, "Capability ports" — the
+  home that section said the adapter should have). Its whole public surface is
+  `nudox_embed::load_from_env() -> SharedEmbedder` and `MODEL_DIR_ENV: &str`; no
+  `registry` type, no IR type crosses it. The ORT session loads **lazily** on
+  the first embedding call (a `tokio::sync::OnceCell`), so engine startup never
+  blocks on a 641 MB read — the model is loaded off the load path, on the same
+  incremental indexer thread that was already there.
+- **`lindsey`'s `main.rs` now installs it.** One line —
+  `let embedder = nudox_embed::load_from_env();` — beside the highlighter, into
+  `EngineConfig::embedder`. `nudox-embed` is on the §1 allow-list
+  (`dependency_law.rs`), and because the MCP server is hosted off `lindsey`'s
+  *same* `EngineHandle` (`McpService::start(&engine, …)`), the agent endpoint
+  gets the identical embedder with no separate wiring. There is no other
+  shipping `EngineConfig` construction — the two in `nudox-mcp/src/index.rs` are
+  `#[cfg(test)]`.
+
+- **Real end-to-end proof, against the real model** (fp32 `model.onnx`,
+  641,517,466 bytes, sha256 `63363fc1…4256733b` — matches the pin in
+  `vector/core/model.rs` exactly):
+
+  ```
+  $ NUDOX_EMBED_MODEL_DIR=… cargo test -p nudox-embed --features onnx -- --include-ignored
+  test onnx::tests::info_is_answerable_without_loading_the_session ... ok
+  cost case=embed_ranks_related_above_unrelated related=0.8117 unrelated=-0.0545
+  test onnx::tests::the_real_model_embeds_text_and_ranks_related_above_unrelated ... ok
+  test onnx::tests::static_info_matches_the_loaded_runtime ... ok
+  test result: ok. 3 passed; 0 failed
+
+  $ NUDOX_EMBED_MODEL_DIR=… cargo test -p registry --features onnx \
+      --test vector_engine_relevance -- --ignored
+  observed Building { covered: 0, total: 1 }
+  PASS "find the position of a byte in a slice": memchr at rank 0
+  PASS "search backwards from the end": memrchr at rank 5
+  PASS "substring search for a needle in a haystack": Finder at rank 21
+  test result: ok. 2 passed; 0 failed
+  ```
+
+  The engine test is the load-bearing one: it boots a real `Engine` over a
+  `memchr` checkout, embeds it through the port, observes the `Building`
+  progress state mid-index, and asserts the model ranks a semantically relevant
+  symbol above a lexical near-miss — a claim no stub can satisfy.
+
+**The runtime-provisioning half, scoped honestly (option (b), not (a)).** The
+two provisioning problems this entry named are *not* solved in-tree; they are
+gated so they cannot break a default build:
+
+- **`ort-sys`'s build-time runtime download** is still unaddressed as a nix/
+  flake concern. It is now confined behind `nudox-embed/onnx` (and `lindsey`'s
+  `-F semantic-onnx`), both **off by default**. A from-a-fresh-clone build,
+  CI, and `cargo check --workspace` therefore never trigger it — verified: the
+  new crate is a workspace member and `RUSTC_BOOTSTRAP=1 cargo check --workspace
+  --all-targets --exclude driver` finishes clean without pulling `ort`/
+  `fastembed`, and `cargo check -p nudox-engine` is untouched (the doctrine's
+  non-negotiable). On a machine where the operator has accepted the fetch, the
+  cached `libonnxruntime.a` (~70 MB, `~/Library/Caches/ort.pyke.io/`) links the
+  feature-on build offline. **The clean solution remains open**: nixpkgs *does*
+  carry `onnxruntime` (1.27.1), so an `ORT_LIB_LOCATION` fed from a pinned nix
+  derivation is the obvious next step — the pieces (`flake.nix`'s `fetchurl`
+  fixed-output pattern, `corpus/fetch.nu`'s hash-verifier) exist and are simply
+  not yet wired to ort. That is infra work outside a single agent run and is
+  deliberately left as such rather than faked.
+- **The ~641 MB model** is operator-supplied via `NUDOX_EMBED_MODEL_DIR`, not
+  committed or auto-fetched. `registry`'s `WeightsSpec` already verifies it
+  against the pinned sha256 before a byte reaches ort, so a wrong or corrupt
+  file fails closed (→ `Unavailable::ModelFailed`, distinct from `NoEmbedder`).
+
+**Net**: a default build still reports `Unavailable(NoEmbedder)` and renders
+"not configured in this build" — unchanged, and still the honest state. A build
+made with the feature on and a model directory configured now does **real,
+ranked, incremental semantic search**, with a similarity meter on each row and a
+determinate coverage bar while the index fills (both static, no new §5.4
+animation permit). `semantic_section_is_empty_by_design` still pins the empty
+default, so this cannot silently decay.
+
 ---
 
 ## L42 — Three GUI defects whose fix is in the backend

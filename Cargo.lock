@@ -6795,6 +6795,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nudox-embed"
+version = "0.1.0"
+dependencies = [
+ "nudox-engine",
+ "registry",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "nudox-engine"
 version = "0.1.0"
 dependencies = [

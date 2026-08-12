@@ -18,13 +18,23 @@
 //! the state machine still use it, because spinning a socket to assert that
 //! `Denial::OverLimit` renders a particular `help` string would be ceremony.
 //!
-//! # The three endpoints, as this client understands them
+//! # The three endpoints, as verified against the deployed service
+//!
+//! Note that `authorize` takes the credential in its **body** while the other
+//! two take it in the `Authorization` header. That asymmetry is not a choice;
+//! it is what `api.nudox.org` accepts, confirmed by probing it directly. This
+//! block previously described `authorize` as header-authenticated, the client
+//! implemented that, and the fake service in
+//! `tests/account_against_a_fake_service.rs` was written to match — so all
+//! three agreed with each other and none of them agreed with the server. See
+//! [`AuthorizeRequest`].
 //!
 //! ```text
-//! POST {base}/v1/authorize      Authorization: Bearer ndx_…
+//! POST {base}/v1/authorize      body {"token":"ndx_…"}   ← NOT the header
 //!   200 {"allowed":true,"user_id":24,"scopes":[]}   → Authorized::Allowed
 //!   200 {"allowed":false,"reason":"invalid token"}  → Authorized::Denied
 //!   401/403                                         → Authorized::Denied
+//!   400 "token is required"                         → the credential was not in the body
 //!
 //! POST {base}/v1/usage/record   Authorization: Bearer ndx_…
 //!   body {"kind":"tool_call","count":N}
@@ -168,6 +178,37 @@ struct AuthorizeBody {
     reason: Option<String>,
 }
 
+/// `POST v1/authorize` **request** body.
+///
+/// # Why the key travels in the body here and in the header everywhere else
+///
+/// It is not a design choice; it is what the deployed service accepts, verified
+/// against `api.nudox.org` rather than inferred from `auth.md`:
+///
+/// ```text
+/// POST /v1/authorize  Authorization: Bearer ndx_…            → 400 "token is required"
+/// POST /v1/authorize  Authorization: Bearer ndx_…  body {}   → 400 "token is required"
+/// POST /v1/authorize  body {"token":"ndx_…"}                 → 200 {"allowed":true,"user_id":…}
+/// GET  /v1/usage      Authorization: Bearer ndx_…            → 200 {…}
+/// ```
+///
+/// So `authorize` reads the credential from this field and the other endpoints
+/// read it from the header. The `Authorization` header is still sent on
+/// `authorize` as well — verified to be accepted alongside the body — so that if
+/// the service later unifies on the header, this client already satisfies the
+/// stricter of the two shapes.
+///
+/// This mismatch shipped undetected because `tests/account_against_a_fake_service.rs`
+/// asserts against a fake built from the same reading of `auth.md` that produced
+/// the client: both sides shared the misreading, so both agreed. Sign-in could
+/// never have succeeded for any real user. It was caught by
+/// `tests/account_against_the_real_service.rs`, which exists for exactly this
+/// class and no other.
+#[derive(Debug, serde::Serialize)]
+struct AuthorizeRequest<'a> {
+    token: &'a str,
+}
+
 /// `POST v1/usage/record` request body.
 #[derive(Debug, serde::Serialize)]
 struct RecordBody<'a> {
@@ -268,6 +309,64 @@ fn classify(e: &reqwest::Error) -> ProbeFailure {
     }
 }
 
+/// How much of a service error body is worth carrying into a `ProbeFailure`.
+///
+/// Bounded for the reason `nudox_store::source::producer`'s `MAX_DETAIL_BYTES`
+/// is bounded: an unbounded error detail is one bad response away from a log
+/// line the size of an HTML error page. Long enough for any real API message,
+/// short enough that a proxy's stack trace is truncated rather than stored.
+const MAX_DETAIL_CHARS: usize = 200;
+
+/// Turn a non-2xx response into the right kind of failure, carrying the
+/// service's own explanation of it.
+///
+/// # Both halves of this were learned from a bug that shipped
+///
+/// **The body is included** because it is usually the only thing that says what
+/// is actually wrong. `POST /v1/authorize` answered `400 "token is required"`
+/// for every real user, and the client reported only `returned 400 Bad Request`
+/// — discarding the four words that named the defect. The mismatch was
+/// invisible for as long as that string was thrown away.
+///
+/// **A 4xx is not `Indeterminate`.** `Indeterminate` means *the request may or
+/// may not have been processed, and retrying is unsafe* — a timeout, a reset, a
+/// 5xx. A 4xx is the opposite: the service received the request, understood it,
+/// and refused it, and it will refuse the identical request forever. Reporting
+/// one as `Indeterminate` made a permanent client bug look like a transient
+/// network problem, so [`AccountGate`](super::gate::AccountGate) held the user
+/// in grace — papering over a sign-in that could never succeed instead of
+/// surfacing it. `MalformedResponse` is the honest bucket: its own docs say it
+/// means *our bug or a deployed mismatch*, which is exactly what a 4xx from our
+/// own client is.
+///
+/// 401/403 never reach here — callers translate those to a `Denied` verdict
+/// first, because they are the service saying no rather than the request being
+/// wrong.
+async fn non_success(
+    endpoint: &str,
+    status: reqwest::StatusCode,
+    response: reqwest::Response,
+) -> ProbeFailure {
+    let body = response.text().await.unwrap_or_default();
+    let body = body.trim();
+
+    let detail = if body.is_empty() {
+        format!("{endpoint} returned {status}")
+    } else {
+        let mut shown: String = body.chars().take(MAX_DETAIL_CHARS).collect();
+        if body.chars().count() > MAX_DETAIL_CHARS {
+            shown.push('…');
+        }
+        format!("{endpoint} returned {status}: {shown}")
+    };
+
+    if status.is_client_error() {
+        ProbeFailure::MalformedResponse { detail }
+    } else {
+        ProbeFailure::Indeterminate { detail }
+    }
+}
+
 impl AccountService for HttpAccountService {
     fn authorize<'a>(
         &'a self,
@@ -279,6 +378,11 @@ impl AccountService for HttpAccountService {
                 .post(self.url("/v1/authorize"))
                 .header(reqwest::header::AUTHORIZATION, key.bearer_header_value())
                 .header(reqwest::header::ACCEPT, "application/json")
+                // The credential must appear in the body for this endpoint; the
+                // header alone is a 400. See [`AuthorizeRequest`].
+                .json(&AuthorizeRequest {
+                    token: key.expose(),
+                })
                 .send()
                 .await
                 .map_err(|e| classify(&e))?;
@@ -298,9 +402,7 @@ impl AccountService for HttpAccountService {
             }
 
             if !status.is_success() {
-                return Err(ProbeFailure::Indeterminate {
-                    detail: format!("POST /v1/authorize returned {status}"),
-                });
+                return Err(non_success("POST /v1/authorize", status, response).await);
             }
 
             let body: AuthorizeBody = response.json().await.map_err(|e| classify(&e))?;
@@ -381,9 +483,7 @@ impl AccountService for HttpAccountService {
 
             let status = response.status();
             if !status.is_success() {
-                return Err(ProbeFailure::Indeterminate {
-                    detail: format!("GET /v1/usage returned {status}"),
-                });
+                return Err(non_success("GET /v1/usage", status, response).await);
             }
 
             let body: UsageBody = response.json().await.map_err(|e| classify(&e))?;

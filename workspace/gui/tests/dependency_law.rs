@@ -46,9 +46,18 @@ use std::path::{Path, PathBuf};
 /// `String`, so no IR type crosses it. Hosting it is what closes LIMITATIONS.md
 /// L35; without it the MCP server exists and is never started.
 ///
+/// `nudox-embed` sits beside the engine on its *other* seam — the capability
+/// ports (§1). It bridges an ONNX runtime to `nudox_engine::semantic::Embedder`,
+/// and the surface crossing the seam is `SharedEmbedder`
+/// (`Option<Arc<dyn Embedder>>`, whose vocabulary is `Vec<f32>`/`usize`/`bool`)
+/// plus a `&str` env-var name. No IR type crosses it, and no vector-plane type
+/// does either — which is the same test `nudox-mcp` passes. Installing it is
+/// what closes LIMITATIONS.md L41; without it the semantic section reports
+/// `Unavailable(NoEmbedder)` in every build.
+///
 /// Adding to this list is a doctrine change, not a build fix. Update
 /// `AGENTS-DOCTRINE.md` §1 in the same commit or the two disagree again.
-const ALLOWED_BACKEND_DEPENDENCIES: &[&str] = &["nudox-engine", "nudox-mcp"];
+const ALLOWED_BACKEND_DEPENDENCIES: &[&str] = &["nudox-engine", "nudox-mcp", "nudox-embed"];
 
 /// Crates whose types are the *shape of the IR*. A view that can name these can
 /// couple to them, which is the harm §1 exists to prevent.

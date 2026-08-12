@@ -66,6 +66,27 @@ nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
 # `src/app/mcp.rs`; L35 then reverts to OPEN with the reason recorded.
 nudox-mcp = { path = "../../crates/nudox-mcp" }
 
+# ── The embedder adapter lindsey installs (AGENTS-DOCTRINE §1, capability ports)
+#
+# THIS IS A THIRD BACKEND CRATE, admitted for the same reason as `nudox-mcp` and
+# under the same test (`tests/dependency_law.rs`, allow-list amended in the same
+# commit as this line). It sits BESIDE the engine on the capability-port
+# argument, not beneath it: `main.rs` calls `nudox_embed::load_from_env()` and
+# hands the result to `EngineConfig::embedder`. Its entire public surface is
+# `SharedEmbedder` (`Option<Arc<dyn Embedder>>`) and a `&str` env-var name — the
+# port's own vocabulary — so no `nudox-ir`/`-store`/`-graph` type, and nothing
+# of the vector plane, becomes visible here. That is precisely what keeps it a
+# legitimate sibling rather than a smuggled dependency; the harm §1 names (a
+# view coupling to the shape of the IR) cannot occur through this seam.
+#
+# `default-features = false` is load-bearing: the crate's `onnx` feature drags
+# in `registry` (483 crates) whose `ort-sys` fetches a runtime at build time.
+# With it off, this dependency is a few lines over `nudox-engine` and
+# `load_from_env` is a compile-time `None` — so a plain `cargo build` of lindsey,
+# the screenshot suite, and CI never touch the ort runtime. A build that wants
+# real semantic search opts in with `-F semantic-onnx` (see `[features]` below).
+nudox-embed = { path = "../../crates/nudox-embed", default-features = false }
+
 # ── Bridge & support ─────────────────────────────────────────────────────────
 # Syntax highlighting. Upstream tree-sitter rather than arborium because
 # gpui-component (pinned by rev) already owns links = "tree-sitter" in this
@@ -86,6 +107,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# OFF by default. Turning it on enables the ONNX embedder runtime behind the
+# capability port, so `NUDOX_EMBED_MODEL_DIR` (pointing at the pinned model)
+# gives the omni-search semantic section real ranked results instead of the
+# "not configured in this build" notice. It is opt-in because building it fetches
+# the ort runtime at build time (LIMITATIONS.md L41): a fresh clone, CI, and the
+# screenshot suite build lindsey with this off and remain network-free at build.
+#
+#   cargo build --manifest-path workspace/gui/Cargo.toml -F semantic-onnx
+default = []
+semantic-onnx = ["nudox-embed/onnx"]
 
 [dev-dependencies]
 # `test-support` is what makes GPUI testable without a display: it enables

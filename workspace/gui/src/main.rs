@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_component::Root;
 use gpui_component_assets::Assets;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
@@ -52,8 +53,27 @@ fn main() {
     // engine compiles into two workspaces whose graphs already have different,
     // mutually exclusive owners of the tree-sitter C library, so it cannot link
     // one itself. See `nudox_engine::highlight`.
+    //
+    // The embedder is the *second* capability port, wired the same way (§1
+    // "Capability ports"): `nudox-embed` sits beside the engine and speaks only
+    // the port's vocabulary, so this line makes semantic search real without
+    // `lindsey` ever naming `registry` or an IR type. `load_from_env` returns
+    // `None` — the honest `Unavailable(NoEmbedder)` state — when this build has
+    // no ONNX runtime (the default) or no model directory is configured; it
+    // returns a live, lazily-loaded embedder when `NUDOX_EMBED_MODEL_DIR` points
+    // at the pinned model in a build made with `--features onnx`. Handing the
+    // engine an embedder is *all* it takes: the incremental indexer, the
+    // `SectionState::{Building,Complete}` progress, and the ranked rows are
+    // already built behind the port. See LIMITATIONS.md L41.
+    let embedder = nudox_embed::load_from_env();
+    tracing::info!(
+        semantic = embedder.is_some(),
+        "engine config: semantic embedder {}",
+        if embedder.is_some() { "installed" } else { "not configured" }
+    );
     let config = EngineConfig {
         highlighter: Some(Arc::new(TreeSitterHighlighter)),
+        embedder,
         ..EngineConfig::default()
     };
 
@@ -227,7 +247,18 @@ fn main() {
                             ..Default::default()
                         },
                         |window, cx| {
-                            cx.new(|cx| Shell::new(search, symbols, packages, index_jobs, window, cx))
+                            let shell = cx.new(|cx| {
+                                Shell::new(search, symbols, packages, index_jobs, window, cx)
+                            });
+                            // `gpui_component::input::Input` (used by
+                            // `SignInView`) requires the window's first layer to
+                            // be a `Root` — its own paint path calls
+                            // `Root::read`/`Root::update` unconditionally, to
+                            // track which `InputState` in the whole window is
+                            // focused. `Shell` itself is still the actual
+                            // content; `Root` is a thin wrapper every window in
+                            // this app must carry now, not a second UI.
+                            cx.new(|cx| Root::new(shell, window, cx))
                         },
                     )
                     .map(Into::into)

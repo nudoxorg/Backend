@@ -41,68 +41,39 @@
 //!
 //! # The input field
 //!
-//! Hand-rolled `on_key_down`, matching `OmniSearch`. There is no reusable text
-//! input in this app; `gpui-component` ships one that nothing here has ever
-//! wired in, and a sign-in form is the wrong place to be the first. What this
-//! field needs is narrow — paste, type, backspace, select-all, enter — and a
-//! full editor would additionally swallow `escape`, which must close the
-//! overlay.
+//! `gpui_component::input::{Input, InputState}` — the library's own text
+//! input, not hand-rolled. An earlier version of this file hand-rolled
+//! `on_key_down` to match `OmniSearch`, on the theory that a sign-in form was
+//! the wrong place to be the first caller of a widget nothing here had ever
+//! wired in. That theory cost real functionality twice over before anyone
+//! noticed: the hand-rolled field never wired a caret and never wired
+//! `cmd-v`, because a bespoke reimplementation of a text field has to
+//! reinvent IME, selection, undo/redo, and clipboard integration one at a
+//! time, and this one had reinvented exactly the parts someone had gotten
+//! around to. `InputState` gives all of it for free — including the caret,
+//! via its own `blink_cursor`.
 //!
-//! **The field renders a mask, never the key.** `SignInView::masked` shows
-//! `ndx_` followed by one bullet per remaining character, plus the last four
-//! once there are enough. A sign-in form is the single most photographed
-//! surface in any application — it is in every screen recording of a
-//! first-run — and a plaintext secret in it is the same defect class as one in
-//! a log file (CWE-532), reached by a different route.
+//! **The field masks with `InputState::masked(true)`**, the library's own
+//! password mode (`•` per character, `input::MASK_CHAR`). This gives up the
+//! previous bespoke masking — `ndx_` in clear plus the last four characters
+//! once the value was long enough — in favour of the one no hand-rolled
+//! field has ever failed to wire correctly: uniform, on every character, all
+//! the time. A sign-in form is the single most photographed surface in any
+//! application, and a plaintext secret in it is the same defect class as one
+//! in a log file (CWE-532), reached by a different route.
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString, Window,
-    div, px,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString,
+    Subscription, Window, div, px,
 };
+use gpui_component::input::{Input, InputEvent, InputState};
 use nudox_mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
 
 use crate::app::account::AccountPresentation;
 use crate::app::actions::{ConfirmOverlay, DismissOverlay};
 use crate::motion::{Motion, Spring};
 use crate::theme::ext::ThemeExtAccessor as _;
-
-/// How much of the key is shown in clear once it is long enough.
-const TAIL_SHOWN: usize = 4;
-
-/// Render `typed` the way the field paints it.
-///
-/// A free function rather than a method body so the tests can exercise **this**
-/// rule rather than a copy of it. An earlier draft had the tests reimplement the
-/// masking in a shim struct, which is precisely the shape AGENTS-DOCTRINE §4
-/// rules out: it would have gone on passing after the real field started
-/// painting the key in clear.
-fn mask(typed: &str) -> String {
-    let chars: Vec<char> = typed.chars().collect();
-    if chars.is_empty() {
-        return String::new();
-    }
-    let prefix_len = if typed.starts_with(nudox_mcp::account::API_KEY_PREFIX) {
-        nudox_mcp::account::API_KEY_PREFIX.len()
-    } else {
-        0
-    };
-    // Below twice the tail length, showing the last four would reveal most of
-    // the value rather than merely identifying it.
-    let tail_len = if chars.len() >= prefix_len + TAIL_SHOWN * 2 {
-        TAIL_SHOWN
-    } else {
-        0
-    };
-    let hidden = chars.len().saturating_sub(prefix_len + tail_len);
-
-    let mut out: String = chars[..prefix_len].iter().collect();
-    out.extend(std::iter::repeat_n('•', hidden));
-    if tail_len > 0 {
-        out.extend(chars[chars.len() - tail_len..].iter());
-    }
-    out
-}
 
 /// What the sign-in surface is doing.
 ///
@@ -177,10 +148,12 @@ pub enum SignInEvent {
 
 /// The sign-in overlay.
 pub struct SignInView {
+    /// Focus target for phases that render no `Input` — `Accepted` and
+    /// `Unavailable`. `Focusable::focus_handle` picks between this and
+    /// `input`'s own handle by phase; see that impl for why both must exist.
     focus: FocusHandle,
+    input: Entity<InputState>,
     phase: SignInPhase,
-    /// The key as typed. Never rendered; see [`SignInView::masked`].
-    typed: String,
     /// Panel entrance.
     lift: Motion,
     /// Indeterminate activity while a check is out.
@@ -189,6 +162,7 @@ pub struct SignInView {
     accepted: Motion,
     /// Set when motion is reduced, so every spring snaps instead of animating.
     reduced: bool,
+    _subs: Vec<Subscription>,
 }
 
 impl SignInView {
@@ -223,22 +197,71 @@ impl SignInView {
             lift.animate_to(1.0);
         }
 
-        window.focus(&cx.focus_handle(), cx);
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("ndx_…")
+        });
+        let subs = vec![cx.subscribe_in(&input, window, Self::on_input_event)];
+
+        let focus = cx.focus_handle();
+        // Whichever handle this phase actually renders — see the struct doc
+        // and `Focusable::focus_handle` below. Not `view.focus_handle(cx)`,
+        // which does not exist until `Self` is constructed; this repeats
+        // that method's rule by hand for the one caller who cannot call it.
+        if matches!(phase, SignInPhase::Editing { .. }) {
+            window.focus(&input.read(cx).focus_handle(cx), cx);
+        } else {
+            window.focus(&focus, cx);
+        }
 
         Self {
-            focus: cx.focus_handle(),
+            focus,
+            input,
             phase,
-            typed: String::new(),
             lift,
             checking: Motion::new(0.0, Spring::GENTLE),
             accepted,
             reduced,
+            _subs: subs,
+        }
+    }
+
+    /// Route the field's own events: `Enter` submits, typing clears a stale
+    /// rejection message.
+    ///
+    /// Not wiring this up is the same failure mode as never wiring
+    /// `cmd-v` — `InputState` raises these, it does not act on them, and a
+    /// view that never subscribes has a field that edits itself and a
+    /// "Sign in" button that submits nothing new.
+    fn on_input_event(
+        &mut self,
+        _input: &Entity<InputState>,
+        event: &InputEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::Change => {
+                if let SignInPhase::Editing { problem: Some(_) } = &self.phase {
+                    self.phase = SignInPhase::Editing { problem: None };
+                    cx.notify();
+                }
+            }
+            InputEvent::PressEnter { .. } => self.submit(cx),
+            InputEvent::Focus | InputEvent::Blur => {}
         }
     }
 
     /// The current phase, for the shell and for tests.
     pub fn phase(&self) -> &SignInPhase {
         &self.phase
+    }
+
+    /// The `InputState` backing the field, for tests that need to assert on
+    /// what was actually typed rather than through this view's own phase.
+    pub(crate) fn input_state(&self) -> &Entity<InputState> {
+        &self.input
     }
 
     /// Whether the form→identity transition has finished playing.
@@ -254,63 +277,24 @@ impl SignInView {
         matches!(self.phase, SignInPhase::Accepted { .. }) && self.accepted.is_settled()
     }
 
-    /// The masked rendering of what has been typed.
-    ///
-    /// `ndx_` in clear (it is a public prefix), then one bullet per hidden
-    /// character, then the last [`TAIL_SHOWN`] in clear once the value is long
-    /// enough for that to reveal nothing useful. Users need to see that a paste
-    /// landed and that it is the key they meant; they do not need to see it.
-    pub fn masked(&self) -> SharedString {
-        SharedString::from(mask(&self.typed))
-    }
-
     /// Whether the field currently accepts input.
     fn editable(&self) -> bool {
         matches!(self.phase, SignInPhase::Editing { .. })
     }
 
-    /// Append typed text, or handle a control key.
-    ///
-    /// Returns `true` when the key was consumed.
-    pub fn on_key(&mut self, keystroke: &gpui::Keystroke, cx: &mut Context<Self>) -> bool {
-        if !self.editable() {
-            return false;
-        }
-        match keystroke.key.as_str() {
-            "backspace" => {
-                self.typed.pop();
-            }
-            // `cmd-v` arrives as a keystroke with no `key_char`; GPUI delivers
-            // the pasted text through the clipboard, which the shell reads and
-            // pushes in with `paste`.
-            _ => match keystroke.key_char.as_deref() {
-                Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => {
-                    self.typed.push_str(text);
-                }
-                _ => return false,
-            },
-        }
-        // Typing clears the previous rejection: a message about the *last*
-        // value shown next to a *different* one is worse than no message.
-        self.phase = SignInPhase::Editing { problem: None };
-        cx.notify();
-        true
-    }
-
-    /// Insert clipboard text.
-    pub fn paste(&mut self, text: &str, cx: &mut Context<Self>) {
+    /// Insert text into the field, as if pasted — for tests that need to get
+    /// a key into the form without simulating a real keystroke or clipboard
+    /// event. `InputState` owns real `cmd-v` itself now (`crate::input::Paste`,
+    /// bound in its own `"Input"` key context); this exists only for
+    /// programmatic use.
+    pub fn paste(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if !self.editable() {
             return;
         }
-        self.typed.push_str(text.trim());
-        self.phase = SignInPhase::Editing { problem: None };
-        cx.notify();
-    }
-
-    /// Clear the field.
-    pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.typed.clear();
-        cx.notify();
+        let mut next = self.input.read(cx).value().to_string();
+        next.push_str(text.trim());
+        self.input
+            .update(cx, |input, cx| input.set_value(next, window, cx));
     }
 
     /// Validate and emit [`SignInEvent::Submit`], or show the problem.
@@ -323,7 +307,8 @@ impl SignInView {
         if !self.editable() {
             return;
         }
-        match ApiKey::parse(&self.typed) {
+        let typed = self.input.read(cx).value();
+        match ApiKey::parse(&typed) {
             Ok(key) => {
                 self.phase = SignInPhase::Checking;
                 if self.reduced {
@@ -350,11 +335,13 @@ impl SignInView {
     pub fn settle(
         &mut self,
         outcome: Result<(Posture, AccountPresentation), SignInFailure>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match outcome {
             Ok((_posture, presentation)) => {
-                self.typed = String::new();
+                self.input
+                    .update(cx, |input, cx| input.set_value("", window, cx));
                 self.phase = SignInPhase::Accepted {
                     account: Box::new(presentation),
                 };
@@ -367,6 +354,11 @@ impl SignInView {
                     self.accepted.animate_to(1.0);
                     self.checking.animate_to(0.0);
                 }
+                // `Accepted` renders no `Input` — the field's own handle,
+                // focused while this phase showed it, would otherwise be a
+                // focus id absent from this frame's tree, the same failure
+                // `Shell::settle_gate_if_ready`'s own doc comment describes.
+                window.focus(&self.focus, cx);
             }
             Err(failure) => {
                 self.phase = SignInPhase::Editing {
@@ -377,27 +369,45 @@ impl SignInView {
                 } else {
                     self.checking.animate_to(0.0);
                 }
+                // Back in `Editing`; the field is visible again and is where
+                // a retry belongs.
+                window.focus(&self.input.read(cx).focus_handle(cx), cx);
             }
         }
         cx.notify();
     }
 
     /// Return to the form, after a sign-out.
-    pub fn reset_to_form(&mut self, cx: &mut Context<Self>) {
-        self.typed = String::new();
+    pub fn reset_to_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.input
+            .update(cx, |input, cx| input.set_value("", window, cx));
         self.phase = SignInPhase::Editing { problem: None };
         if self.reduced {
             self.accepted.snap_to(0.0);
         } else {
             self.accepted.animate_to(0.0);
         }
+        window.focus(&self.input.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
 }
 
 impl Focusable for SignInView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
+    /// `Editing`/`Checking` render the real `Input`; nothing else does. A
+    /// caller that focused `self.focus` while this phase is showing the
+    /// field would get a visible, styled, apparently-live text box that eats
+    /// every keystroke silently — focus would be sitting one level up, on an
+    /// ancestor `Input` never claims, so `Input`'s own `on_key_down` never
+    /// runs. This is the bug the launch-time gate actually shipped with:
+    /// `Shell::new` and `Shell::engage_gate` both refocus through this trait
+    /// after construction, so the answer has to be correct for whichever
+    /// phase is current, not fixed at construction.
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        if matches!(self.phase, SignInPhase::Editing { .. } | SignInPhase::Checking) {
+            self.input.read(cx).focus_handle(cx)
+        } else {
+            self.focus.clone()
+        }
     }
 }
 
@@ -423,6 +433,11 @@ impl Render for SignInView {
 
         div()
             .id("sign_in")
+            // Focused only for phases that render no `Input` of their own —
+            // see `Focusable::focus_handle`. Left in place (rather than
+            // conditionally applied) because `track_focus` only registers
+            // this node against `self.focus`'s id for whichever frame that
+            // id *is* the active focus; it is a no-op the rest of the time.
             .track_focus(&self.focus)
             .key_context("SignIn Overlay")
             .on_action(cx.listener(|_view, _: &DismissOverlay, _window, cx| {
@@ -430,11 +445,6 @@ impl Render for SignInView {
             }))
             .on_action(cx.listener(|view, _: &ConfirmOverlay, _window, cx| {
                 view.submit(cx);
-            }))
-            .on_key_down(cx.listener(|view, event: &gpui::KeyDownEvent, _window, cx| {
-                if view.on_key(&event.keystroke, cx) {
-                    cx.stop_propagation();
-                }
             }))
             .size_full()
             .flex()
@@ -648,7 +658,7 @@ impl SignInView {
                                  macOS Keychain, never in a file.",
                             ),
                     )
-                    .child(self.field(sp, ts, colours, false))
+                    .child(self.field(false))
                     .child(
                         div()
                             .id("sign_in.submit")
@@ -700,7 +710,7 @@ impl SignInView {
                             .text_color(colours.fg_default)
                             .child("Checking with nudox…"),
                     )
-                    .child(self.field(sp, ts, colours, true))
+                    .child(self.field(true))
                     .child(
                         // Indeterminate on purpose: the sweep travels, it does
                         // not fill. A bar that crept toward 100% would be
@@ -727,86 +737,10 @@ impl SignInView {
         panel
     }
 
-    /// The key field, masked.
-    fn field(
-        &self,
-        sp: crate::theme::tokens::SpaceTokens,
-        ts: crate::theme::tokens::TypeScale,
-        colours: crate::theme::tokens::ColourRoles,
-        dimmed: bool,
-    ) -> impl IntoElement {
-        let shown = self.masked();
-        let empty = shown.is_empty();
-        div()
-            .id("sign_in.field")
-            .w_full()
-            .px(sp.space_3)
-            .py(sp.space_2)
-            .rounded(sp.r_sm)
-            .bg(colours.bg_sunken)
-            .border_1()
-            .border_color(if dimmed {
-                colours.border_default
-            } else {
-                colours.accent
-            })
-            .text_size(ts.ui.size)
-            .line_height(ts.ui.line_height)
-            .text_color(if empty {
-                colours.fg_muted
-            } else {
-                colours.fg_default
-            })
-            .opacity(if dimmed { 0.6 } else { 1.0 })
-            .child(if empty {
-                SharedString::from("ndx_…")
-            } else {
-                shown
-            })
+    /// The key field. Caret, selection, IME and masking are `InputState`'s
+    /// own — nothing here paints any of them.
+    fn field(&self, dimmed: bool) -> impl IntoElement {
+        div().w_full().child(Input::new(&self.input).disabled(dimmed))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The masking rule under test is `mask` itself — the same function
-    /// `SignInView::masked` calls. See its doc comment for why this is not a
-    /// reimplementation.
-    #[test]
-    fn the_field_never_renders_the_body_of_a_key() {
-        let key = "ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517";
-        let shown = mask(key);
-        assert!(shown.starts_with("ndx_"), "the prefix is public: {shown}");
-        assert!(shown.ends_with("4517"), "the last four identify it: {shown}");
-        assert!(
-            !shown.contains("2f8c41a9"),
-            "the body of the key must never be painted: {shown}"
-        );
-        assert_eq!(
-            shown.chars().filter(|c| *c == '\u{2022}').count(),
-            key.chars().count() - 4 - TAIL_SHOWN,
-            "every hidden character must be accounted for"
-        );
-    }
-
-    #[test]
-    fn a_short_value_hides_everything_after_the_prefix() {
-        // With too few characters, showing the last four would reveal most of
-        // the value rather than merely identify it.
-        assert_eq!(mask("ndx_abcd"), "ndx_\u{2022}\u{2022}\u{2022}\u{2022}");
-    }
-
-    #[test]
-    fn an_empty_field_masks_to_nothing_rather_than_to_bullets() {
-        assert_eq!(mask(""), "");
-    }
-
-    #[test]
-    fn a_value_without_the_prefix_is_masked_entirely() {
-        // A loopback session token pasted into the wrong field is still a
-        // secret; it must not be shown just because it is the wrong kind.
-        let shown = mask("0123456789abcdef0123456789abcdef");
-        assert!(!shown.contains("0123"), "nothing recognisable may survive: {shown}");
-    }
-}

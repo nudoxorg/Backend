@@ -60,6 +60,20 @@ use nudox_engine::EngineHandle as PageEngine;
 use nudox_engine::runtime::{Engine, EngineConfig};
 use nudox_engine::{PackageHistorySpec, PackageVersionSpec, ProducerLanguage};
 
+/// The window's first layer is `gpui_component::Root` now, not `Shell` —
+/// `Input` (`SignInView`'s field) requires it; see `main.rs`. Every place
+/// this file used to `root.downcast::<Shell>()` on a window's literal root
+/// goes through here instead, one level deeper.
+fn shell_of(root: gpui::AnyView, cx: &gpui::App) -> gpui::Entity<Shell> {
+    root.downcast::<gpui_component::Root>()
+        .expect("the window root is gpui_component::Root")
+        .read(cx)
+        .view()
+        .clone()
+        .downcast::<Shell>()
+        .expect("Root's view is the Shell")
+}
+
 // ---------------------------------------------------------------------------
 // Frame validation
 // ---------------------------------------------------------------------------
@@ -588,7 +602,13 @@ impl Stage {
                                 ..Default::default()
                             },
                             |window, cx| {
-                                cx.new(|cx| Shell::new(search, symbols, packages, index_jobs, window, cx))
+                                let shell = cx.new(|cx| {
+                                    Shell::new(search, symbols, packages, index_jobs, window, cx)
+                                });
+                                // `Input` (`SignInView`'s field) requires a
+                                // `Root`-rooted window; see the identical
+                                // comment in `main.rs`.
+                                cx.new(|cx| gpui_component::Root::new(shell, window, cx))
                             },
                         )
                         .map(Into::into)
@@ -687,9 +707,7 @@ impl Stage {
         let window = self.window;
         self.cx
             .update_window(window, |root, _window, cx| {
-                let shell = root
-                    .downcast::<Shell>()
-                    .expect("the window root is the Shell");
+                let shell = shell_of(root, cx);
                 shell
                     .read(cx)
                     .gate_view()
@@ -703,12 +721,7 @@ impl Stage {
     fn is_gated(&mut self) -> bool {
         let window = self.window;
         self.cx
-            .update_window(window, |root, _window, cx| {
-                root.downcast::<Shell>()
-                    .expect("the window root is the Shell")
-                    .read(cx)
-                    .is_gated()
-            })
+            .update_window(window, |root, _window, cx| shell_of(root, cx).read(cx).is_gated())
             .expect("update window")
     }
 
@@ -725,7 +738,7 @@ impl Stage {
     /// unrelated captions. This restores the assumption every one of those
     /// scenes always depended on, through the same real path scenes 32-34
     /// exercise: a real `POST /v1/authorize` against `FakeApi`, driven through
-    /// `SignInView::on_key` and `SignInView::submit`, never a hand-set flag.
+    /// a dispatched `Keystroke` and `SignInView::submit`, never a hand-set flag.
     fn sign_in_for_boot(&mut self) {
         assert!(
             self.is_gated(),
@@ -800,9 +813,7 @@ impl Stage {
         let window = self.window;
         self.cx
             .update_window(window, |root, _window, cx| {
-                let shell = root
-                    .downcast::<Shell>()
-                    .expect("the window root is the Shell");
+                let shell = shell_of(root, cx);
                 shell.update(cx, |shell, cx| shell.publish_account_status(status, cx));
             })
             .expect("update window");
@@ -811,24 +822,32 @@ impl Stage {
 
     /// Type a key into the sign-in field, character by character.
     ///
-    /// Through the view's own `on_key`, not by assigning to a field: the
-    /// masking rule, the "typing clears the previous rejection" rule and the
-    /// read-only-while-checking rule all live in that method, and a harness
-    /// that bypassed it would photograph a state the product cannot reach.
+    /// Through a real dispatched `Keystroke` — `window.dispatch_keystroke`,
+    /// the same call a live keypress reaches — not by calling into the field
+    /// directly. The field is `gpui_component::input::InputState` now (an
+    /// earlier hand-rolled version routed straight through its own `on_key`
+    /// method, which both hid and would not have caught the launch-time
+    /// focus bug this suite's `sign_in_for_boot` exists partly to guard:
+    /// dispatch, unlike a direct method call, only reaches a character
+    /// where window focus actually is).
     fn type_key(&mut self, key: &str) {
-        let view = self.sign_in_view();
-        self.cx.update(|cx| {
-            view.update(cx, |view, cx| {
-                for ch in key.chars() {
-                    let keystroke = gpui::Keystroke {
-                        modifiers: gpui::Modifiers::default(),
-                        key: ch.to_string(),
-                        key_char: Some(ch.to_string()),
-                    };
-                    view.on_key(&keystroke, cx);
-                }
-            });
-        });
+        // Presence, not identity — the point of this call is that dispatch
+        // finds *something* focused to route to; `sign_in_view()` is used
+        // only to fail loudly beforehand if the surface never presented.
+        let _ = self.sign_in_view();
+        let window = self.window;
+        for ch in key.chars() {
+            let keystroke = gpui::Keystroke {
+                modifiers: gpui::Modifiers::default(),
+                key: ch.to_string(),
+                key_char: Some(ch.to_string()),
+            };
+            self.cx
+                .update_window(window, |_, window, cx| {
+                    window.dispatch_keystroke(keystroke, cx);
+                })
+                .expect("update window");
+        }
         self.settle();
     }
 
@@ -1260,9 +1279,7 @@ impl Stage {
                 // via `AnyWindowHandle::downcast(..).root(cx)` here fails with
                 // "window not found", so this downcasts the given root
                 // instead of re-fetching it.
-                let shell = root_view
-                    .downcast::<Shell>()
-                    .expect("screenshot window's root view is always Shell");
+                let shell = shell_of(root_view, cx);
                 let pane_focus = shell.read(cx).pane().read(cx).focus_handle(cx);
                 pane_focus.is_focused(window)
             })
@@ -1279,9 +1296,7 @@ impl Stage {
     fn with_symbol_page<R>(&mut self, what: &str, f: impl FnOnce(&SymbolPage<PageEngine>) -> R) -> R {
         self.cx
             .update_window(self.window, |root_view, _window, cx| {
-                let shell = root_view
-                    .downcast::<Shell>()
-                    .expect("screenshot window's root view is always Shell");
+                let shell = shell_of(root_view, cx);
                 let view = shell
                     .read(cx)
                     .pane()
@@ -1316,9 +1331,7 @@ impl Stage {
     fn mcp_segment_text(&mut self) -> Option<String> {
         self.cx
             .update_window(self.window, |root_view, _window, cx| {
-                let shell = root_view
-                    .downcast::<Shell>()
-                    .expect("screenshot window's root view is always Shell");
+                let shell = shell_of(root_view, cx);
                 shell
                     .read(cx)
                     .status_bar()
@@ -2119,7 +2132,7 @@ fn main() {
     {
         let window = stage.window;
         let still_open = stage.cx.update(|cx| {
-            let shell = window.downcast::<Shell>().unwrap().root(cx).unwrap();
+            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
             shell.read(cx).overlay_kind_on_top().cloned()
         });
         assert_eq!(
@@ -2211,7 +2224,7 @@ fn main() {
     let (pane_len, active_after_reveal) = {
         let window = stage.window;
         stage.cx.update(|cx| {
-            let shell = window.downcast::<Shell>().unwrap().root(cx).unwrap();
+            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
             let pane = shell.read(cx).pane().read(cx);
             (pane.len(), pane.active_id())
         })
@@ -2239,7 +2252,7 @@ fn main() {
     let active_after_activate = {
         let window = stage.window;
         stage.cx.update(|cx| {
-            let shell = window.downcast::<Shell>().unwrap().root(cx).unwrap();
+            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
             shell.read(cx).pane().read(cx).active_id()
         })
     };
@@ -2417,7 +2430,7 @@ fn main() {
     // surface (`Shell::render` returns nothing else while `Shell::gate` is
     // `Some`), not the dismissable `cmd-shift-A` overlay. Every frame below is
     // driven through the real path — a real "Sign out" click via a real
-    // `SignInEvent`, the real `SignInView::on_key`, and a real
+    // `SignInEvent`, real dispatched `Keystroke`s, and a real
     // `POST /v1/authorize` over a real socket to `FakeApi`. Nothing is set by
     // hand, which is what makes these photographs rather than mock-ups
     // (AGENTS-DOCTRINE §6).

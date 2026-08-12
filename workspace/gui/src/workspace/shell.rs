@@ -65,10 +65,11 @@ use serde_json::Value as JsonValue;
 
 use crate::app::account::{AccountService, AccountStatus};
 use crate::app::actions::{
-    CycleTheme, CycleThemeBack, OpenAccount, OpenCommandPalette, OpenOmniSearch, ToggleBottomDock,
-    ToggleLeftDock, ToggleShortcutsOverlay,
+    CycleTheme, CycleThemeBack, OpenAccount, OpenCommandPalette, OpenOmniSearch, OpenSettings,
+    ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
 };
 use crate::app::lifecycle;
+use crate::views::settings::{SettingsEvent, SettingsView};
 use crate::views::sign_in::{SignInEvent, SignInView};
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
@@ -534,6 +535,8 @@ enum OverlayView {
     Command(Entity<CommandOverlay>),
     /// `cmd-shift-A` account panel: sign in, see the account, sign out.
     SignIn(Entity<SignInView>),
+    /// `cmd-,` settings panel: Connection today, more sections later.
+    Settings(Entity<SettingsView>),
 }
 
 impl OverlayView {
@@ -543,6 +546,7 @@ impl OverlayView {
             Self::OmniSearch(view) => view.clone().into(),
             Self::Command(view) => view.clone().into(),
             Self::SignIn(view) => view.clone().into(),
+            Self::Settings(view) => view.clone().into(),
         }
     }
 
@@ -552,6 +556,7 @@ impl OverlayView {
             Self::OmniSearch(view) => view.read(cx).focus_handle(cx),
             Self::Command(view) => view.read(cx).focus_handle(cx),
             Self::SignIn(view) => view.read(cx).focus_handle(cx),
+            Self::Settings(view) => view.read(cx).focus_handle(cx),
         }
     }
 }
@@ -1038,6 +1043,24 @@ impl Shell {
                         shell.on_sign_in_event(view.clone(), event, window, cx);
                     },
                 ));
+                // `engage_gate` (the sign-out path) puts window focus on the
+                // view it just installed; this, the launch-time path, was the
+                // one case that did not. `SignInView::render` `track_focus`es
+                // its own handle and reads every keystroke through
+                // `on_key_down`, but neither fires unless the window's focus
+                // is actually on that handle — GPUI does not focus a view
+                // just because it is the only thing on screen. Without this,
+                // a fresh, never-signed-in launch renders a field that looks
+                // exactly like every other frame of it (cursor, hover, the
+                // same `track_focus`) and silently drops every keystroke,
+                // because nothing ever moved focus onto it in the first
+                // place. `tests/screenshots.rs`'s `Stage::boot` signs in
+                // before scene 01 specifically to get past this screen, so
+                // the only scenes that ever typed into the gate for real were
+                // 32-34, which go through `engage_gate` and were never
+                // missing this call.
+                let focus = view.read(cx).focus_handle(cx);
+                window.focus(&focus, cx);
                 Some(view)
             }
             AccountStatus::Live(_) | AccountStatus::Absent => None,
@@ -1162,7 +1185,18 @@ impl Shell {
         // After the pane, not before: `rehydrate_tabs` focuses the document the
         // reader was on, and focusing the pane root afterwards would take it
         // straight back off again.
-        if tabs.is_empty() {
+        //
+        // Skipped while `gate` is `Some`: this ran unconditionally until the
+        // bug this comment now documents — the gate-construction branch above
+        // already put window focus on the sign-in field, and this being
+        // unconditional stole it right back before `Shell::new` ever
+        // returned. The pane was never part of the frame the gate renders
+        // (see `Render for Shell`'s early `return` while `self.gate` is
+        // `Some`), so focusing it here bought nothing but a launch-time
+        // sign-in field that could never receive a keystroke — not from a
+        // click (`SignInView` never chases focus back, and nothing else in
+        // the gated tree would either), not from typing.
+        if tabs.is_empty() && gate.is_none() {
             let pane_focus = pane.read(cx).focus_handle(cx);
             window.focus(&pane_focus, cx);
         }
@@ -1431,6 +1465,35 @@ impl Shell {
         self.present_overlay(kind, OverlayView::SignIn(view), subs, window, cx);
     }
 
+    // ── Settings overlay ──────────────────────────────────────────────────
+
+    /// The key `OverlayKind::Modal` identity for the settings panel.
+    fn settings_overlay_kind() -> OverlayKind {
+        OverlayKind::Modal(SharedString::from("settings"))
+    }
+
+    /// `cmd-,`: open the settings panel.
+    ///
+    /// Currently one section (Connection) — see `views::settings` for why it
+    /// exists: without it there was no way to retrieve the per-launch MCP
+    /// session token at all.
+    fn open_settings(&mut self, _: &OpenSettings, window: &mut Window, cx: &mut Context<Self>) {
+        let kind = Self::settings_overlay_kind();
+        if self.refocus_presented(&kind, window, cx) {
+            return;
+        }
+
+        let view = cx.new(SettingsView::new);
+        let subs = vec![cx.subscribe_in(
+            &view,
+            window,
+            |shell, _view, event: &SettingsEvent, window, cx| match event {
+                SettingsEvent::Dismiss => shell.close_overlay(window, cx),
+            },
+        )];
+        self.present_overlay(kind, OverlayView::Settings(view), subs, window, cx);
+    }
+
     /// What the account panel reports upward.
     ///
     /// The **shell owns every effect**; the view owns none. That split is not
@@ -1485,7 +1548,7 @@ impl Shell {
                         .ok()
                         .and_then(|status| status.presentation().cloned());
 
-                    let _ = view.update_in(cx, |view, _window, cx| {
+                    let _ = view.update_in(cx, |view, window, cx| {
                         view.settle(
                             match (outcome, presentation) {
                                 (Ok(posture), Some(p)) => Ok((posture, p)),
@@ -1495,6 +1558,7 @@ impl Shell {
                                 (Ok(_), None) => Err(nudox_mcp::SignInFailure::NoService),
                                 (Err(e), _) => Err(e),
                             },
+                            window,
                             cx,
                         );
                     });
@@ -1510,7 +1574,7 @@ impl Shell {
                 }
                 self.refresh_account(cx);
                 lifecycle::refresh_menus(cx);
-                view.update(cx, |view, cx| view.reset_to_form(cx));
+                view.update(cx, |view, cx| view.reset_to_form(window, cx));
                 // "Sign out returns to the gate": re-block the corpus behind
                 // the same view, reset to its empty form, whether sign-out was
                 // requested from the gate itself or from the dismissable
@@ -1534,7 +1598,9 @@ impl Shell {
     pub fn presented_sign_in(&self) -> Option<Entity<SignInView>> {
         match self.presented.as_ref()?.view {
             OverlayView::SignIn(ref view) => Some(view.clone()),
-            OverlayView::OmniSearch(_) | OverlayView::Command(_) => None,
+            OverlayView::OmniSearch(_) | OverlayView::Command(_) | OverlayView::Settings(_) => {
+                None
+            }
         }
     }
 
@@ -1600,9 +1666,25 @@ impl Shell {
     /// signed in, which is exactly the "screen you must pass" the gate exists
     /// to be.
     fn engage_gate(&mut self, view: Entity<SignInView>, window: &mut Window, cx: &mut Context<Self>) {
-        if self.presented.take().is_some() {
+        if let Some(presented) = self.presented.take() {
             self.overlays.pop();
             self.scrim.snap_to(0.0);
+            // `view` is the *same entity* `presented` was showing — sign-out
+            // reuses it as the gate rather than building a new one (see the
+            // caller). `PresentedOverlay::_subs` holds the
+            // `cx.subscribe_in(&view, …)` that routes this view's future
+            // `SignInEvent`s back to `on_sign_in_event`. Dropping
+            // `PresentedOverlay` here the way `close_overlay` does would sever
+            // that subscription along with everything else the overlay
+            // owned — and because the view survives the drop (this function
+            // is holding another strong reference to it via `view`), the
+            // failure is silent: the next `submit()` emits `Submit` to no
+            // listener, `on_sign_in_event` never runs, and the gate simply
+            // never hears that a key was typed again. Re-homing onto
+            // `self._subs`, which lives exactly as long as `Shell` does, is
+            // what keeps that subscription alive as long as its view can
+            // still emit.
+            self._subs.extend(presented._subs);
         }
         let focus = view.read(cx).focus_handle(cx);
         self.gate = Some(view);
@@ -1621,16 +1703,71 @@ impl Shell {
     /// surface exists to show. `SignInView::accepted_and_settled` is true
     /// immediately for a reduced-motion viewer (the spring snaps), so this is
     /// correct in both modes with no branch of its own.
-    fn settle_gate_if_ready(&mut self, cx: &mut Context<Self>) {
+    fn settle_gate_if_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(gate) = self.gate.clone() else {
             return;
         };
         if !gate.read(cx).accepted_and_settled() {
             return;
         }
+        // `accepted_and_settled` proves the *view* finished its settle
+        // animation into `SignInPhase::Accepted` — it does not prove the
+        // account can work. `SignInView::new`'s own phase selection is
+        // `p.can_work || p.can_sign_out`, and `can_sign_out` is true for
+        // `GraceExpired`, `Revoked`, `OverLimit` and `NeverVerified` whenever
+        // the credential came from the Keychain (`AccountPresentation::derive`
+        // — none of those four ever clears `source`). All four are postures
+        // this gate was built *for*: none of them may work, and a keychain
+        // credential from a previous session is exactly what put the gate up
+        // in the first place. Their presentation still selects `Accepted`
+        // (correctly — the overlay needs to show the account and a "Sign
+        // out" button for a revoked or expired key, not a blank form), and
+        // `Motion::new` starts already at rest when the initial phase is
+        // `Accepted`, so `accepted_and_settled()` is true on the *very first
+        // render* — before any sign-in has been attempted this session.
+        // Trusting the view's phase alone here would clear the gate for a
+        // revoked key on sight. The account service's own, independently
+        // re-derived `can_work` is what actually decides — the same value
+        // that gated construction in `Shell::new` — and this re-reads it
+        // rather than inferring authorization from the display layer.
+        let can_work = cx
+            .try_global::<AccountService>()
+            .map(AccountService::status)
+            .and_then(AccountStatus::presentation)
+            .is_some_and(|p| p.can_work);
+        if !can_work {
+            return;
+        }
         self.gate = None;
         self.refresh_account(cx);
         lifecycle::refresh_menus(cx);
+        // The gate view held focus (`SignInView::new` and `Self::engage_gate`
+        // both grant it explicitly). It is not part of the tree `render`
+        // returns from here on, so without this, focus stays pinned to a
+        // handle absent from the current frame and GPUI's dispatch falls back
+        // to a context-free root — every action bound on the shell's own
+        // "Workspace global" context, `OpenOmniSearch` included, would go
+        // unanswered until *something else* moved focus.
+        //
+        // Found empirically: this file's own test signs in twice (once at
+        // construction, once after a sign-out), and only the *second*
+        // gate-clear demonstrably needed this — dispatching `OpenOmniSearch`
+        // right after the first gate-clear worked with no explicit refocus at
+        // all. That asymmetry is not explained here because it was not fully
+        // run to ground (a first-ever-frame difference in how GPUI resolves a
+        // focus target with no prior frame to compare against is the leading
+        // guess); what is confirmed, by reverting this block and rerunning
+        // the test, is that the second cycle fails without it and passes with
+        // it. Do not read the first cycle's success as evidence this call is
+        // optional — the second cycle is the one that is representative of a
+        // real repeated sign-out/sign-in, and this is the same fallback
+        // target `close_overlay` already uses, for the same reason.
+        let focus = self
+            .pane
+            .read(cx)
+            .active_item_focus_handle(cx)
+            .unwrap_or_else(|| self.pane.read(cx).focus_handle(cx));
+        window.focus(&focus, cx);
     }
 
     /// What the overlay reports upward (§15 — the view never closes itself).
@@ -2073,7 +2210,7 @@ impl Render for Shell {
         // its own, because `SignInView::render` already is a sole root
         // producer (its own doc comment) and a second claim on either would
         // be the doctrine §8 defect this file's own module docs warn about.
-        self.settle_gate_if_ready(cx);
+        self.settle_gate_if_ready(window, cx);
         if let Some(gate) = self.gate.clone() {
             return div()
                 .id("gate")
@@ -2191,6 +2328,7 @@ impl Render for Shell {
             .on_action(cx.listener(Self::toggle_shortcuts_overlay))
             .on_action(cx.listener(Self::open_command_palette))
             .on_action(cx.listener(Self::open_account))
+            .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(|shell, _: &ToggleLeftDock, window, cx| {
                 shell.toggle_left_dock(window, cx);
             }))
@@ -2280,7 +2418,9 @@ mod tests {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
                     let entity = cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
-                    entity
+                    // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                    // window; see the identical comment in `main.rs`.
+                    cx.new(|cx| gpui_component::Root::new(entity, window, cx))
                 })
             })
             .expect("window must open");
@@ -2364,64 +2504,160 @@ mod tests {
     /// `AccountService::status_of` builds one — through
     /// `AccountPresentation::derive` — rather than by hand, so a passing
     /// assertion is evidence about the real derivation.
-    fn presentation_for(posture: &nudox_mcp::Posture) -> crate::app::account::AccountPresentation {
-        crate::app::account::AccountPresentation::derive(
-            posture,
-            None,
-            None,
-            &nudox_mcp::account::host::UsageReport {
-                pending: 0,
-                dropped: nudox_mcp::account::ledger::DroppedTally::default(),
-                persistent: false,
-            },
-        )
-    }
+    /// An `AccountService` that allows every real sign-in it is asked to
+    /// verify, in-process — no socket, no thread of its own.
+    ///
+    /// Exists so the gate test below can drive `AccountGate::sign_in` for
+    /// real — through `Shell::on_sign_in_event`, `AccountHost::sign_in`
+    /// (spawned on the engine's own tokio runtime) and back — rather than
+    /// calling `SignInView::settle` directly to fake the outcome. The
+    /// difference is load-bearing: `settle` only ever updates the *view*.
+    /// The gate's actual authority (`Shell::settle_gate_if_ready`) reads
+    /// `AccountService::status`, which nothing but a real `sign_in` — through
+    /// `AccountGate` — ever updates. A test that shortcuts `sign_in` and
+    /// asserts the gate cleared is exactly the "test that would pass against
+    /// a stub" AGENTS-DOCTRINE §4 rules out: it is provably not a test of
+    /// what actually decides whether the gate opens, because it went on
+    /// passing right through the fail-open this file's own comments in
+    /// `settle_gate_if_ready` describe — the shortcut never touched the
+    /// value that bug was about.
+    struct AlwaysAllow;
 
-    fn active_posture() -> nudox_mcp::Posture {
-        nudox_mcp::Posture::Active {
-            account: nudox_mcp::account::state::Account {
-                user: nudox_mcp::account::state::UserId(24),
-                fingerprint: nudox_mcp::ApiKey::parse(
-                    "ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517",
-                )
-                .expect("sample key parses")
-                .fingerprint(),
-                verified_at: std::time::SystemTime::now(),
-            },
-            source: nudox_mcp::account::store::KeySource::Keychain,
-            quota: nudox_mcp::account::state::QuotaKnowledge::Unknown,
+    impl nudox_mcp::account::service::AccountService for AlwaysAllow {
+        fn authorize<'a>(
+            &'a self,
+            _key: &'a nudox_mcp::ApiKey,
+        ) -> nudox_mcp::account::service::ServiceFuture<
+            'a,
+            Result<
+                nudox_mcp::account::service::AuthorizeOutcome,
+                nudox_mcp::account::state::ProbeFailure,
+            >,
+        > {
+            Box::pin(async {
+                Ok(nudox_mcp::account::service::AuthorizeOutcome::Allowed {
+                    user: nudox_mcp::account::state::UserId(24),
+                })
+            })
+        }
+
+        fn record_usage<'a>(
+            &'a self,
+            _key: &'a nudox_mcp::ApiKey,
+            _count: u32,
+        ) -> nudox_mcp::account::service::ServiceFuture<
+            'a,
+            Result<
+                nudox_mcp::account::service::RecordOutcome,
+                nudox_mcp::account::state::ProbeFailure,
+            >,
+        > {
+            Box::pin(async { Ok(nudox_mcp::account::service::RecordOutcome::Accepted) })
+        }
+
+        fn usage<'a>(
+            &'a self,
+            _key: &'a nudox_mcp::ApiKey,
+        ) -> nudox_mcp::account::service::ServiceFuture<
+            'a,
+            Result<nudox_mcp::account::state::QuotaSnapshot, nudox_mcp::account::state::ProbeFailure>,
+        > {
+            Box::pin(async {
+                Ok(nudox_mcp::account::state::QuotaSnapshot {
+                    tier: "free".to_owned(),
+                    period_start: "2026-08-01T00:00:00Z".to_owned(),
+                    api_requests: 0,
+                    tool_calls: 0,
+                    used: 0,
+                    limit: 1000,
+                    remaining: 1000,
+                    over_limit: false,
+                    observed_at: std::time::SystemTime::now(),
+                })
+            })
+        }
+
+        fn base_url(&self) -> &str {
+            "fake://always-allow"
         }
     }
 
-    /// The gate, end to end: a `SignedOut` launch blocks the omni-search
-    /// overlay entirely (not merely hides it — dispatching the action while
-    /// gated is a no-op because no element in that frame's tree carries an
-    /// `on_action` listener for it), a successful sign-in clears the gate and
-    /// the *same* dispatch now opens the overlay for real, and signing back
-    /// out re-blocks it.
+    /// Type a key into `view` and submit it, then wait for the *real*
+    /// sign-in round trip — through `AlwaysAllow`, on the engine's own tokio
+    /// runtime — to land and the gate's acceptance spring to settle.
     ///
-    /// This is the test AGENTS-DOCTRINE §4 asks for over "the button exists":
-    /// it asserts on the actually-observable effect of a dispatched action —
-    /// whether an overlay came up — not on the presence of a handler.
+    /// `run_until_parked` alone does not wait for that round trip: it drains
+    /// GPUI's own queues and knows nothing about a task spawned on a
+    /// different runtime (the same reason `Stage::settle` in
+    /// `tests/screenshots.rs` sleeps for real between polls).
+    async fn sign_in_through(
+        cx: &mut gpui::TestAppContext,
+        vcx: &mut gpui::VisualTestContext,
+        view: &Entity<SignInView>,
+    ) {
+        view.update_in(vcx, |view, window, cx| {
+            view.paste("ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517", window, cx);
+            view.submit(cx);
+        });
+        for _ in 0..80 {
+            vcx.run_until_parked();
+            let accepted = view.read_with(vcx, |view, _| {
+                matches!(
+                    view.phase(),
+                    crate::views::sign_in::SignInPhase::Accepted { .. }
+                )
+            });
+            if accepted {
+                break;
+            }
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
+        }
+        assert!(
+            view.read_with(vcx, |view, _| matches!(
+                view.phase(),
+                crate::views::sign_in::SignInPhase::Accepted { .. }
+            )),
+            "AlwaysAllow must have accepted this sign-in within the budget",
+        );
+    }
+
+    /// The specific fail-open this session's investigation found: a gate
+    /// whose view has settled into `SignInPhase::Accepted` must not clear
+    /// itself unless the account service's own `can_work` agrees.
+    ///
+    /// `SignInView::new` puts a `Revoked` (or `GraceExpired`, `OverLimit`,
+    /// `NeverVerified`) presentation straight into `SignInPhase::Accepted` —
+    /// correctly, for the `cmd-shift-A` overlay, which needs to show *why*
+    /// and offer "Sign out" rather than a blank form, because
+    /// `AccountPresentation::derive` sets `can_sign_out: true` for all four
+    /// (a keychain credential is still loaded) alongside `can_work: false`.
+    /// `Motion::new` starts already at rest when the initial value equals the
+    /// target, which it does here (`Accepted` → `1.0` from construction), so
+    /// `accepted_and_settled()` is true before a single frame renders. If
+    /// `Shell::settle_gate_if_ready` trusted that alone, this posture would
+    /// wave itself through: no sign-in, no `POST /v1/authorize`, nothing.
+    ///
+    /// A real `Revoked` posture cannot be produced through
+    /// `AccountGate::in_state_for_tests` — it never populates the gate's
+    /// `credential` field regardless of `state`, so `can_sign_out` is always
+    /// `false` through that path and the precondition this test is about
+    /// cannot arise. This constructs the exact `AccountPresentation` by hand
+    /// instead and injects it as the gate directly, which is what actually
+    /// isolates the guard under test (`settle_gate_if_ready`'s `can_work`
+    /// re-check) from the derivation machinery around it.
     #[gpui::test]
-    async fn corpus_is_unreachable_while_gated_and_reachable_once_signed_in(
+    async fn a_revoked_key_still_showing_a_sign_out_button_does_not_wave_itself_through(
         cx: &mut gpui::TestAppContext,
     ) {
+        use crate::app::account::AccountPresentation;
         use crate::app::actions::OpenOmniSearch;
 
         cx.executor().allow_parking();
         cx.update(|cx: &mut App| {
             gpui_component::init(cx);
             crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
-            // Reduced motion, forced directly on the theme global rather than
-            // via `MotionTokens` — `NudoxThemeExt::motion_scale` is what
-            // `ThemeExtAccessor::reduced_motion` actually reads
-            // (`crate::theme::resolve` hardcodes it to `1.0` at init, and
-            // `MotionTokens` governs a separate, unrelated loop-permit
-            // budget). With it forced to `0.0`, `SignInView::accepted` snaps
-            // rather than animates, so `accepted_and_settled` is true the
-            // instant `settle` runs and the gate clears deterministically
-            // without a clock-advancing loop.
             cx.update_global::<crate::theme::ext::NudoxThemeExt, _>(|ext, _| {
                 ext.motion_scale = 0.0;
             });
@@ -2433,10 +2669,12 @@ mod tests {
             nudox_engine::runtime::EngineConfig::default(),
         );
 
-        // A real, unmetered-free gate — `AccountGate::in_state_for_tests`, not
-        // `unmetered`. An unmetered gate has no posture to gate on at all
-        // (`admit` short-circuits before ever reading it), so it would prove
-        // nothing about the launch-time branch under test here.
+        // `SignedOut` here only to give the shell *some* gate at construction
+        // (`can_sign_out` is unconditionally `false` for `SignedOut` — see
+        // `AccountPresentation::derive` — so this alone cannot trigger the
+        // bug; the global status staying `SignedOut`, `can_work: false`,
+        // for the rest of the test is exactly what makes it the correct
+        // authority for the re-check below to consult).
         cx.update(|cx| {
             let gate = nudox_mcp::AccountGate::in_state_for_tests(
                 nudox_mcp::account::state::GateState::SignedOut,
@@ -2458,7 +2696,158 @@ mod tests {
                     let entity =
                         cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
-                    entity
+                    // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                    // window; see the identical comment in `main.rs`.
+                    cx.new(|cx| gpui_component::Root::new(entity, window, cx))
+                })
+            })
+            .expect("window must open");
+        let shell = shell_cell.lock().unwrap().take().expect("shell set");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        vcx.run_until_parked();
+
+        // The exact combination `AccountPresentation::derive` produces for
+        // `Revoked` with a Keychain-sourced credential: `can_work: false`,
+        // `can_sign_out: true`.
+        let poisoned = AccountPresentation {
+            tag: "revoked",
+            segment: "account · key rejected".into(),
+            headline: "Key rejected".into(),
+            detail: "nudox says: key leaked, rotated by the account owner. Create a new \
+                      key in the dashboard and sign in again."
+                .into(),
+            key_hint: Some("ndx_…4517".into()),
+            source: Some("Keychain".into()),
+            user: None,
+            usage: None,
+            usage_fraction: None,
+            pending: None,
+            dropped: None,
+            can_work: false,
+            can_sign_out: true,
+            urgent: true,
+        };
+        let poisoned_view = vcx.update(|window, cx| {
+            cx.new(|cx| SignInView::new(Some(poisoned), window, cx))
+        });
+
+        // The precondition the whole test is about: this hand-built view
+        // really is already showing settled `Accepted` — the panel, key
+        // hint and "Sign out" button — before anything here does a single
+        // thing to move it there.
+        assert!(
+            poisoned_view.read_with(&mut vcx, |v, _| v.accepted_and_settled()),
+            "the precondition itself must hold, or this test is not exercising the case \
+             it claims to: SignInView::new must put can_sign_out-but-not-can_work \
+             straight into a settled Accepted phase",
+        );
+
+        vcx.update(|_window, cx| {
+            shell.update(cx, |s, cx| {
+                s.gate = Some(poisoned_view.clone());
+                cx.notify();
+            });
+        });
+
+        // Multiple renders — not one — because `settle_gate_if_ready` runs on
+        // every `render`, and a bug that only failed on the *first* call
+        // would still be a bug.
+        for _ in 0..5 {
+            vcx.run_until_parked();
+            assert!(
+                shell.read_with(&mut vcx, |s, _| s.is_gated()),
+                "a settled Accepted view must never clear the gate on its own when the \
+                 account service's own status still says can_work: false — no sign-in \
+                 happened in this test at all",
+            );
+        }
+
+        vcx.dispatch_action(OpenOmniSearch);
+        vcx.run_until_parked();
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.presented.is_none()),
+            "the corpus must stay unreachable behind a view that merely renders its \
+             settled 'Accepted' panel without the account service agreeing it can work",
+        );
+    }
+
+    /// The gate, end to end: a `SignedOut` launch blocks the omni-search
+    /// overlay entirely (not merely hides it — dispatching the action while
+    /// gated is a no-op because no element in that frame's tree carries an
+    /// `on_action` listener for it), a successful sign-in clears the gate and
+    /// the *same* dispatch now opens the overlay for real, and signing back
+    /// out re-blocks it.
+    ///
+    /// This is the test AGENTS-DOCTRINE §4 asks for over "the button exists":
+    /// it asserts on the actually-observable effect of a dispatched action —
+    /// whether an overlay came up — not on the presence of a handler. And,
+    /// per `AlwaysAllow`'s own doc comment, it drives sign-in through the
+    /// real `AccountGate`, not through `SignInView::settle` — the shortcut
+    /// this test used to take, and the reason an earlier version of it never
+    /// caught `settle_gate_if_ready` trusting the view's phase over the
+    /// account service's own `can_work`.
+    #[gpui::test]
+    async fn corpus_is_unreachable_while_gated_and_reachable_once_signed_in(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::app::actions::OpenOmniSearch;
+
+        cx.executor().allow_parking();
+        cx.update(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
+            // Reduced motion, forced directly on the theme global rather than
+            // via `MotionTokens` — `NudoxThemeExt::motion_scale` is what
+            // `ThemeExtAccessor::reduced_motion` actually reads
+            // (`crate::theme::resolve` hardcodes it to `1.0` at init, and
+            // `MotionTokens` governs a separate, unrelated loop-permit
+            // budget). With it forced to `0.0`, `SignInView::accepted` snaps
+            // rather than animates, so `accepted_and_settled` is true the
+            // instant the real sign-in below lands, deterministically, with
+            // no clock-advancing loop for the animation half.
+            cx.update_global::<crate::theme::ext::NudoxThemeExt, _>(|ext, _| {
+                ext.motion_scale = 0.0;
+            });
+            cx.set_global(crate::motion::tokens::MotionTokens::new(0.0));
+            cx.bind_keys(crate::app::keymaps::all_bindings());
+        });
+
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(
+            nudox_engine::runtime::EngineConfig::default(),
+        );
+
+        // A real gate over a real (in-process) service — not
+        // `AccountGate::unmetered`, which has no posture to gate on at all
+        // (`admit` short-circuits before ever reading it) and would prove
+        // nothing about the launch-time branch under test here — and not
+        // `AccountGate::in_state_for_tests`, which has no service at all and
+        // so cannot `sign_in` for real.
+        cx.update(|cx| {
+            let gate = nudox_mcp::AccountGate::new(
+                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+                std::sync::Arc::new(AlwaysAllow),
+                None,
+            );
+            cx.set_global(AccountService::start_with_gate(&engine, gate));
+        });
+
+        let search = cx.new(|_cx| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+        let index_jobs = cx.new(|_c| IndexJobStore::new(engine.clone()));
+
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
+        let shell_cell_w = shell_cell.clone();
+        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let window = cx
+            .update(|cx: &mut App| {
+                cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let entity =
+                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    *shell_cell_w.lock().unwrap() = Some(entity.clone());
+                    // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                    // window; see the identical comment in `main.rs`.
+                    cx.new(|cx| gpui_component::Root::new(entity, window, cx))
                 })
             })
             .expect("window must open");
@@ -2479,18 +2868,14 @@ mod tests {
              `on_action` listener for it anywhere in the gated tree",
         );
 
-        // Drive the real view the gate is showing, the way the shell itself
-        // would after a successful `POST v1/authorize` round trip — see
-        // `Shell::on_sign_in_event`'s `Submit` arm, which this reproduces the
-        // second half of without a network.
+        // Drive the real view the gate is showing, through the real
+        // `AlwaysAllow` service — a real `AccountGate::sign_in`, a real
+        // update of `AccountService::status`, and only then the gate's own
+        // `can_work` re-check in `settle_gate_if_ready`.
         let gate_view = shell
             .read_with(&mut vcx, |s, _| s.gate.clone())
             .expect("the gate must be showing a SignInView while SignedOut");
-        let posture = active_posture();
-        let presentation = presentation_for(&posture);
-        gate_view.update(&mut vcx, |view, cx| {
-            view.settle(Ok((posture, presentation)), cx);
-        });
+        sign_in_through(cx, &mut vcx, &gate_view).await;
 
         let mut cleared = false;
         for _ in 0..50 {
@@ -2552,6 +2937,145 @@ mod tests {
         assert!(
             shell.read_with(&mut vcx, |s, _| s.presented.is_none()),
             "the corpus must be unreachable again after signing out",
+        );
+
+        // Sign in a *second* time, through the gate that sign-out just
+        // re-engaged, reusing the same view the `cmd-shift-A` overlay was
+        // showing a moment ago (`Shell::engage_gate` does not build a new
+        // one). This is the case the first sign-in earlier in this test
+        // cannot cover: it caught a real bug — `engage_gate` dropped
+        // `PresentedOverlay` (and, with it, the `SignInEvent` subscription
+        // tied to the view it reused as the gate) without re-homing that
+        // subscription first, so a second `submit()` emitted `Submit` to no
+        // listener and `on_sign_in_event` never ran. Silent: nothing panics,
+        // the field just never becomes `Checking`. Only a *second* real
+        // round trip through the reused view exercises that path.
+        let second_gate_view = shell
+            .read_with(&mut vcx, |s, _| s.gate.clone())
+            .expect("sign-out must leave the gate showing a SignInView");
+        sign_in_through(cx, &mut vcx, &second_gate_view).await;
+
+        let mut cleared_again = false;
+        for _ in 0..50 {
+            vcx.run_until_parked();
+            if shell.read_with(&mut vcx, |s, _| !s.is_gated()) {
+                cleared_again = true;
+                break;
+            }
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(10))
+                .await;
+        }
+        assert!(
+            cleared_again,
+            "the gate must clear on a second sign-in through a reused view exactly as \
+             it did on the first — this is the assertion that fails if `engage_gate` \
+             regresses to dropping the reused view's subscription",
+        );
+
+        vcx.dispatch_action(OpenOmniSearch);
+        vcx.run_until_parked();
+        assert!(
+            matches!(
+                shell.read_with(&mut vcx, |s, _| s
+                    .presented
+                    .as_ref()
+                    .map(|p| matches!(p.view, OverlayView::OmniSearch(_)))),
+                Some(true)
+            ),
+            "the corpus must be reachable again after the second sign-in",
+        );
+    }
+
+    /// A launch-time gate must hold real window focus, not just look
+    /// focused.
+    ///
+    /// Every other test in this module drives the sign-in field through
+    /// `SignInView::paste`/`submit` called directly on the entity — which
+    /// proves the field's own logic works, but proves nothing about whether
+    /// a real keystroke would ever reach it, because that call skips the
+    /// window's key-dispatch path entirely. `vcx.simulate_keystrokes` is the
+    /// one API in this file that does not skip it: it is the same pipeline
+    /// GPUI uses for a real key event, dispatched to whatever the window's
+    /// focus is actually on. This is the test that would have caught
+    /// `Shell::new`'s gate-construction branch never calling `window.focus`
+    /// on the view it had just built and installed — `engage_gate` (the
+    /// sign-out path) always has, so every prior test that signs in a
+    /// *second* time through a reused gate view was, by construction, unable
+    /// to exercise the bug this test is about.
+    #[gpui::test]
+    async fn a_launch_time_gate_accepts_a_real_keystroke(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        cx.update(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
+            cx.update_global::<crate::theme::ext::NudoxThemeExt, _>(|ext, _| {
+                ext.motion_scale = 0.0;
+            });
+            cx.set_global(crate::motion::tokens::MotionTokens::new(0.0));
+            cx.bind_keys(crate::app::keymaps::all_bindings());
+        });
+
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(
+            nudox_engine::runtime::EngineConfig::default(),
+        );
+
+        cx.update(|cx| {
+            let gate = nudox_mcp::AccountGate::new(
+                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+                std::sync::Arc::new(AlwaysAllow),
+                None,
+            );
+            cx.set_global(AccountService::start_with_gate(&engine, gate));
+        });
+
+        let search = cx.new(|_cx| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+        let index_jobs = cx.new(|_c| IndexJobStore::new(engine.clone()));
+
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
+        let shell_cell_w = shell_cell.clone();
+        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let window = cx
+            .update(|cx: &mut App| {
+                cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let entity =
+                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    *shell_cell_w.lock().unwrap() = Some(entity.clone());
+                    // `Input` (`SignInView`'s field) requires a `Root`-rooted
+                    // window; see the identical comment in `main.rs`.
+                    cx.new(|cx| gpui_component::Root::new(entity, window, cx))
+                })
+            })
+            .expect("window must open");
+        let shell = shell_cell.lock().unwrap().take().expect("shell set");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        vcx.run_until_parked();
+
+        let gate_view = shell
+            .read_with(&mut vcx, |s, _| s.gate.clone())
+            .expect("a SignedOut launch must construct the shell already gated");
+        assert_eq!(
+            gate_view.read_with(&mut vcx, |v, cx| v.input_state().read(cx).value().to_string()),
+            "",
+            "precondition: nothing has been typed yet",
+        );
+
+        // Not `gate_view.update(..., |view, cx| view.input_state()...)` —
+        // that would call the field's logic directly, the exact shortcut
+        // this test exists to not take. `simulate_input` goes through the
+        // window's real input path, exactly as a real keypress would.
+        vcx.simulate_input("n");
+        vcx.run_until_parked();
+
+        assert_ne!(
+            gate_view.read_with(&mut vcx, |v, cx| v.input_state().read(cx).value().to_string()),
+            "",
+            "a keystroke dispatched through the window must reach the launch-time gate's \
+             field — if this is empty, window focus never landed on the gate when \
+             `Shell::new` built it, and every real keypress a user makes at a fresh, \
+             never-signed-in launch is silently dropped",
         );
     }
 

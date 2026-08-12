@@ -71,6 +71,11 @@ members = [
     "crates/nudox-engine",
     "crates/nudox-test-support",
     "crates/nudox-mcp",
+    # The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability
+    # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`
+    # port, beside the engine rather than beneath it. Its `onnx` feature is
+    # off by default, so a `--workspace` build never pulls the ort runtime.
+    "crates/nudox-embed",
 ]
 
 # `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default
