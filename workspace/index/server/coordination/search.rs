@@ -149,7 +149,9 @@ impl<M: EmbeddingModel> Server<M> {
                 &self.embedder,
                 &self.embedding_cache,
             );
-            let identities = surface.search(gate, query, limit, after.clone()).await?;
+            let identities = surface
+                .search(gate, query, &request.filter, limit, after.clone())
+                .await?;
             futures::pin_mut!(identities);
 
             let mut collected = Vec::new();
