@@ -36,6 +36,16 @@ pub struct Symbol {
     // I don't think we need to carry around Generation
 }
 
+/// A symbol's stable tiebreak key is its durable global id, so a score-tie
+/// between two symbols has one deterministic order (keyset pagination depends on
+/// this — see [`crate::score::RankKey`]).
+impl crate::score::RankKey for Symbol {
+    type Key = SymbolId;
+    fn rank_key(&self) -> SymbolId {
+        self.id
+    }
+}
+
 /// What kind of code entity a symbol represents.
 ///
 /// The `Display` token for each variant is its PascalCase name (e.g. `"Function"`).

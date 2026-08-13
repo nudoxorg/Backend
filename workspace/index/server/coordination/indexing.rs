@@ -146,7 +146,7 @@ impl<M: EmbeddingModel> Indexer<M> {
             crate::ecosystem::spec(record.package.coordinates.ecosystem()).archive();
         Ok(ingest_archive(
             package,
-            record.package.toolchain,
+            identity_toolchain(record.package.coordinates.ecosystem()),
             std::io::Cursor::new(archive_bytes),
             archive_format,
             ExtractionLimits::DEFAULT,
@@ -250,7 +250,22 @@ impl<M: EmbeddingModel> Indexer<M> {
             // frames are lowered into the blob `ReferenceSet` (oracle calls /
             // type mentions). The producer binary is provisioned in the golden
             // toolchain image; the on-wire framing contract is honored here.
-            let identifiers = ingest_ir_bytes(builder, &ir_bytes);
+            //
+            // W1: a broken producer stream (missing Hello, an `Abort` frame,
+            // a truncated stream that never reaches `Finish`, or a host-side
+            // (de)serialization failure while staging what was recovered)
+            // must not complete as an empty-but-"Stored" snapshot — that is
+            // indistinguishable from a genuinely empty package and silently
+            // corrupts the catalog. `degraded_reason` carries that signal;
+            // when set, fail the job loudly (idempotent retry) instead.
+            let outcome = ingest_ir_bytes(builder, &ir_bytes);
+            if let Some(reason) = outcome.degraded_reason {
+                return Err(ServerError::Internal(InternalError::IrStreamDegraded {
+                    package: name.clone(),
+                    reason,
+                }));
+            }
+            let identifiers = outcome.identifiers;
 
             tracing::info!(
                 %package,
@@ -370,13 +385,35 @@ impl<M: EmbeddingModel> Indexer<M> {
         use registry::upstream::UpstreamError;
         let url = self.archive_url(coordinates).await?;
         let lang = coordinates.ecosystem();
-        let archive = self
-            .acquisition
-            .get(lang, url.as_str())
+
+        // W4: `UpstreamClient::get` already retries a handful of times
+        // internally with its own short backoff+jitter (see
+        // `workspace/index/upstream/mod.rs`, out of this pass's edit
+        // boundary), but it only honors `Retry-After` on 429 and only the
+        // delta-seconds form — and a caller that exhausts *that* budget gets
+        // a single terminal `UpstreamError`. `retry_upstream_get` adds an
+        // outer, longer-horizon layer of politeness around the whole call
+        // (bounded attempts, bounded total wait, exponential backoff +
+        // jitter via the same `embedrs::BackoffConfig` the embedder already
+        // uses) — genuine extra patience for a source that is transiently
+        // rate-limiting or flaking, without retrying anything non-idempotent
+        // (this wraps only the archive GET).
+        let archive = retry_upstream_get(|| self.acquisition.get(lang, url.as_str()))
             .await
             .map_err(|e| match e {
                 UpstreamError::NotFound => not_found(coordinates),
-                other => ServerError::Internal(InternalError::UpstreamFetch {
+                // A response body that failed to parse as expected will not
+                // start parsing on a retry — permanent, not transient.
+                UpstreamError::Parse(reason) => {
+                    ServerError::Internal(InternalError::UpstreamFetch { reason })
+                }
+                // Transport/ServerError/RateLimited/RetriesExhausted: the
+                // outer retry loop already gave this every reasonable
+                // chance. Classify as Transient (not a bare UpstreamFetch)
+                // so `classify_failure` routes the *job* back onto the
+                // queue instead of dead-lettering a package purely because
+                // its registry was briefly unavailable.
+                other => ServerError::Internal(InternalError::UpstreamTransient {
                     reason: other.to_string(),
                 }),
             })?;
@@ -672,11 +709,76 @@ pub fn classify_failure(error: &ServerError) -> FailureKind {
         }
         ServerError::BadRequest(_) => FailureKind::Malformed,
         ServerError::Internal(InternalError::IndexingDeadlineExceeded) => FailureKind::Timeout,
+        // W4: an upstream archive fetch that exhausted its polite retry
+        // budget against a rate-limit/5xx/transport condition should come
+        // back around on the queue, not dead-letter — `InternalError` is not
+        // in `ServerError::is_retryable()`'s set, so this needs its own arm
+        // rather than falling through to the generic fallback below.
+        ServerError::Internal(InternalError::UpstreamTransient { .. }) => FailureKind::Transient,
         // (compile-daemon failure kinds removed with the daemon; the stubbed
         // compile phase surfaces as `Internal`, handled by the fallback below)
         _ if error.is_retryable() => FailureKind::Transient,
         _ => FailureKind::Internal,
     }
+}
+
+/// Bounded, polite outer retry around one upstream GET (W4).
+///
+/// `attempt_get` is retried with exponential backoff + jitter
+/// ([`embedrs::BackoffConfig`] — the same crate/pattern
+/// `search::semantic::embedder::HttpEmbedder` already uses for its own
+/// retryable HTTP calls) for any [`registry::upstream::UpstreamError`] except
+/// [`registry::upstream::UpstreamError::NotFound`] and
+/// [`registry::upstream::UpstreamError::Parse`], both of which are permanent
+/// (retrying the same URL will not make a 404 appear or a malformed body
+/// parse) and are returned immediately without consuming a retry.
+///
+/// Takes a closure (rather than depending on a trait `UpstreamClient` would
+/// need to grow) so it is unit-testable without any real network I/O: a test
+/// can hand it a closure returning a scripted sequence of `Err`s then `Ok`.
+async fn retry_upstream_get<F, Fut>(
+    mut attempt_get: F,
+) -> Result<bytes::Bytes, registry::upstream::UpstreamError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<bytes::Bytes, registry::upstream::UpstreamError>>,
+{
+    use registry::upstream::UpstreamError;
+
+    // Modest outer bound: `UpstreamClient::get` already burns up to 4
+    // attempts internally per call, so this multiplies worst-case attempts
+    // rather than adding an unbounded tail. `max_delay` keeps any single
+    // outer wait well under a typical job deadline.
+    const OUTER_ATTEMPTS: u32 = 3; // 1 initial + 2 outer retries
+    let backoff = embedrs::BackoffConfig {
+        base_delay: std::time::Duration::from_secs(1),
+        max_delay: std::time::Duration::from_secs(20),
+        jitter: true,
+        max_http_retries: OUTER_ATTEMPTS,
+    };
+
+    let mut last_err = None;
+    for attempt in 0..OUTER_ATTEMPTS {
+        match attempt_get().await {
+            Ok(bytes) => return Ok(bytes),
+            Err(UpstreamError::NotFound) => return Err(UpstreamError::NotFound),
+            Err(UpstreamError::Parse(msg)) => return Err(UpstreamError::Parse(msg)),
+            Err(retryable) => {
+                if attempt + 1 < OUTER_ATTEMPTS {
+                    let wait = backoff.delay_for(attempt);
+                    tracing::warn!(
+                        attempt,
+                        error = %retryable,
+                        wait_ms = wait.as_millis() as u64,
+                        "upstream archive fetch attempt failed; retrying after backoff"
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                last_err = Some(retryable);
+            }
+        }
+    }
+    Err(last_err.unwrap_or(UpstreamError::RetriesExhausted))
 }
 
 fn progressing(phase: Phase) -> JobProgress {
@@ -697,6 +799,41 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
         }
         .into(),
     )
+}
+
+/// The [`heart::Toolchain`] value fed into [`BlobBuilder::new`] (and, via the
+/// manifest it produces, into [`crate::blob::BlobManifest::identity_bytes`])
+/// for a package's snapshot identity (W9).
+///
+/// # Why not `record.package.toolchain`
+///
+/// `GlobalPackage::toolchain` (what `execute_acquire_phase` reads back off
+/// the store) is *provenance*, not identity: today it is always the
+/// deterministic per-ecosystem placeholder `initialization::provisional_toolchain`
+/// writes at `ensure_initialized` time (see that doc comment), but nothing
+/// prevents a future per-node toolchain-detection feature (e.g. reading the
+/// real compiler version out of the golden OCI image on a Linux forge node,
+/// `toolchain_images` at ~line 222) from starting to overwrite it with a real
+/// value — and only on nodes that *can* detect one. A macOS node running
+/// `compile_inprocess` never could. If the snapshot hash folded in whatever
+/// happened to be on the package record at extract time, two nodes compiling
+/// byte-identical source would produce two different snapshot hashes the
+/// moment that landed, silently defeating cross-node dedupe/freshness.
+///
+/// This function always returns the pure, ecosystem-only placeholder instead,
+/// so identity is provably invariant to *which node* (or which point in that
+/// future feature's rollout) produced the snapshot. The real/observed
+/// toolchain remains available as metadata via `GlobalPackage::toolchain` for
+/// display/provenance — it is simply never an input to content identity.
+///
+/// This does give up "re-index automatically when the real toolchain
+/// changes" for Linux, but that semantic does not exist in the codebase
+/// today either (no freshness check compares toolchains) — so nothing
+/// observable regresses, and the door stays open to reintroduce it later as
+/// an explicit freshness signal (comparing `GlobalPackage::toolchain` against
+/// a freshly-detected value) rather than as a silent identity perturbation.
+fn identity_toolchain(ecosystem: crate::ecosystem::Language) -> heart::Toolchain {
+    super::initialization::provisional_toolchain(ecosystem)
 }
 
 // ── Compile phase: cage lifecycle helpers ─────────────────────────────────
@@ -1062,13 +1199,28 @@ fn run_producer_in_cage(
 ///   durable, wire-stable identity that the IR-plane apply/checkout machinery
 ///   resolves to a symbol path on demand.
 ///
-/// # Aborted / empty streams
+/// # Aborted / truncated / undecodable streams (W1)
 ///
-/// An `Abort` frame is treated as a non-fatal producer failure: the builder
-/// sections are still attached with whatever was received so far (possibly
-/// empty) and an empty identifier list is returned. A failed stream decode
-/// (framing error, version mismatch) logs a warning and degrades the same way.
-fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
+/// Only a `Finish` frame is a legitimate end of stream — a well-behaved
+/// producer sends one even for a genuinely empty package (see
+/// [`ir_vcs::protocol::StreamFrame`]'s ordering rules). Every other way the
+/// stream can end is a producer/host breakage and is recorded in the
+/// returned [`IrIngestOutcome::degraded_reason`] rather than silently
+/// treated as success:
+///
+/// - a missing/malformed `Hello` handshake;
+/// - an explicit `Abort` frame;
+/// - a clean EOF that arrives *without* a prior `Finish` (a truncated
+///   stream — e.g. the cage or the vsock transport died mid-write);
+/// - a frame that fails to decode (framing/postcard corruption);
+/// - a host-side failure to serialize the recovered IR or reference
+///   sections.
+///
+/// Whatever was recovered before the break is still staged onto `builder`
+/// (partial-data capture for diagnostics) — the caller decides whether to
+/// use it, but must not report the job as a clean `Stored` success when
+/// `degraded_reason` is `Some`.
+fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrIngestOutcome {
     use ir::change::IntroId;
     use ir_vcs::protocol::{BodyWire, Received, StreamReceiver};
 
@@ -1076,13 +1228,13 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
 
     // Handshake: the Hello frame carries the job key and producer id.
     // A missing or malformed Hello means the producer wrote nothing usable.
-    match rx.accept() {
-        Ok(_) => {}
-        Err(err) => {
-            tracing::warn!(error = %err, "IR stream has no Hello frame; attaching empty IR section");
-            attach_empty_ir_sections(builder);
-            return Vec::new();
-        }
+    if let Err(err) = rx.accept() {
+        tracing::warn!(error = %err, "IR stream has no Hello frame; treating as producer breakage");
+        attach_empty_ir_sections(builder);
+        return IrIngestOutcome {
+            identifiers: Vec::new(),
+            degraded_reason: Some(format!("no Hello frame: {err}")),
+        };
     }
 
     let mut payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
@@ -1098,6 +1250,10 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
     // Bodies frames: accumulated across all batches for post-loop reference
     // extraction (they can arrive interleaved with Symbols).
     let mut bodies: Vec<BodyWire> = Vec::new();
+    // Set only on a genuine producer/host breakage (see doc comment above);
+    // `None` all the way through a clean `Finish` means honest success —
+    // including a legitimate zero-symbol package.
+    let mut degraded_reason: Option<String> = None;
 
     loop {
         match rx.recv() {
@@ -1131,42 +1287,72 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
                 // for provenance; not decoded here. SourceDigest provenance is
                 // similarly out of scope for the reference slot.
             }
-            Ok(Some(Received::Finish { .. })) | Ok(None) => {
+            Ok(Some(Received::Finish { .. })) => {
+                // The only legitimate end of stream — including for a
+                // producer that honestly emitted zero symbols.
+                break;
+            }
+            Ok(None) => {
+                // Clean EOF *without* ever seeing Finish or Abort: the
+                // transport closed mid-protocol. Never a legitimate empty
+                // signal — a well-behaved producer always sends Finish.
+                let reason = format!(
+                    "IR stream ended without a Finish frame ({} identifiers recovered before truncation)",
+                    identifiers.len()
+                );
+                tracing::warn!(reason, "IR stream truncated");
+                degraded_reason = Some(reason);
                 break;
             }
             Ok(Some(Received::Abort { failure, message })) => {
+                let reason = format!("producer aborted ({failure:?}): {message}");
                 tracing::warn!(
                     ?failure,
                     message,
-                    "IR stream producer aborted; identifiers recovered so far: {}",
-                    identifiers.len()
+                    identifiers = identifiers.len(),
+                    "IR stream producer aborted"
                 );
+                degraded_reason = Some(reason);
                 break;
             }
             Err(err) => {
+                let reason = format!("IR stream decode error: {err}");
                 tracing::warn!(
                     error = %err,
                     identifiers = identifiers.len(),
-                    "IR stream decode error; using identifiers recovered so far"
+                    "IR stream decode error"
                 );
+                degraded_reason = Some(reason);
                 break;
             }
         }
     }
 
-    // Serialize the collected payloads as the IR blob section.
+    // Serialize the collected (possibly partial) payloads as the IR blob
+    // section — preserved for diagnostics even when `degraded_reason` is
+    // set; the caller is responsible for failing the job in that case.
     match postcard::to_allocvec(&payloads) {
         Ok(ir_blob) => {
             if let Err(err) = builder.set_ir(bytes::Bytes::from(ir_blob)) {
                 tracing::warn!(error = %err, "set_ir failed; attaching empty IR section");
                 attach_empty_ir_sections(builder);
-                return Vec::new();
+                return IrIngestOutcome {
+                    identifiers,
+                    degraded_reason: Some(
+                        degraded_reason.unwrap_or_else(|| format!("set_ir failed: {err}")),
+                    ),
+                };
             }
         }
         Err(err) => {
             tracing::warn!(error = %err, "IR payload serialization failed; attaching empty IR section");
             attach_empty_ir_sections(builder);
-            return Vec::new();
+            return IrIngestOutcome {
+                identifiers,
+                degraded_reason: Some(degraded_reason.unwrap_or_else(|| {
+                    format!("IR payload serialization failed: {err}")
+                })),
+            };
         }
     }
 
@@ -1201,9 +1387,31 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
             by_file: Vec::new(),
         };
         let _ = builder.set_references(&empty_refs);
+        // A dropped reference set is a silent loss of real data (the cross-
+        // reference graph for this snapshot), not a cosmetic degrade — W1
+        // applies here too, unless the stream was already flagged degraded.
+        degraded_reason
+            .get_or_insert_with(|| format!("set_references failed: {err}"));
     }
 
-    identifiers
+    IrIngestOutcome {
+        identifiers,
+        degraded_reason,
+    }
+}
+
+/// The result of decoding one producer NdIrF1 stream (W1).
+///
+/// `degraded_reason` is `None` only when the stream ran cleanly to a
+/// `Finish` frame and every recovered section serialized successfully —
+/// including the legitimate case of a producer that honestly emits zero
+/// symbols. Any other outcome (missing Hello, `Abort`, truncation, decode
+/// error, or a host-side (de)serialization failure) sets it to a
+/// human-readable reason; the caller must fail the job rather than report a
+/// clean `Stored` success in that case.
+struct IrIngestOutcome {
+    identifiers: Vec<String>,
+    degraded_reason: Option<String>,
 }
 
 /// Derive a [`ReferenceSet`] from the accumulated `Bodies` frames.
@@ -1669,4 +1877,246 @@ fn extract_facets(
     );
 
     Some(facets)
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ir_vcs::protocol::{FailureKindWire, FrameWriter, ProducerId, StreamFrame, IR_STREAM_VERSION};
+
+    // ── W1: ingest_ir_bytes must distinguish producer breakage from a
+    // genuinely empty package ──────────────────────────────────────────────
+
+    fn test_package() -> heart::PackageId {
+        heart::PackageId::from_uuid(uuid::Uuid::from_bytes([7u8; 16]))
+    }
+
+    fn hello_frame() -> StreamFrame {
+        StreamFrame::Hello {
+            version: IR_STREAM_VERSION,
+            job: heart::content::JobKey::derive(b"producer", b"toolchain", b"source", b"deplock"),
+            producer: ProducerId::from_static("test-producer"),
+        }
+    }
+
+    fn encode_frames(frames: &[StreamFrame]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut w = FrameWriter::new(&mut buf);
+        for f in frames {
+            w.write_frame(f).expect("encode frame");
+        }
+        buf
+    }
+
+    /// A well-behaved producer that honestly emits zero symbols still closes
+    /// with `Finish`. This must succeed cleanly — it is the case the fix must
+    /// NOT break.
+    #[test]
+    fn w1_clean_finish_with_zero_symbols_is_not_degraded() {
+        let bytes = encode_frames(&[
+            hello_frame(),
+            StreamFrame::Finish {
+                emitted: 0,
+                producer_digest: heart::content::ContentHash::from_bytes([0u8; 32]),
+            },
+        ]);
+        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        assert_eq!(outcome.degraded_reason, None);
+        assert!(outcome.identifiers.is_empty());
+    }
+
+    /// Failing-first case (documents the pre-fix bug, now asserts the fix):
+    /// a stream that ends right after `Hello` — no `Finish`, no `Abort` —
+    /// is a truncated producer, not a legitimate empty package.
+    #[test]
+    fn w1_truncated_after_hello_is_degraded() {
+        let bytes = encode_frames(&[hello_frame()]);
+        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        assert!(
+            outcome.degraded_reason.is_some(),
+            "a stream truncated before Finish must be reported as degraded, not silent success"
+        );
+    }
+
+    /// An explicit `Abort` frame is a producer-signaled failure.
+    #[test]
+    fn w1_abort_frame_is_degraded() {
+        let bytes = encode_frames(&[
+            hello_frame(),
+            StreamFrame::Abort {
+                failure: FailureKindWire::Internal,
+                message: "producer crashed mid-parse".to_owned(),
+            },
+        ]);
+        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let reason = outcome.degraded_reason.expect("Abort must degrade the job");
+        assert!(reason.contains("aborted"), "reason: {reason}");
+    }
+
+    /// A corrupted postcard payload after a valid Hello must degrade, not
+    /// silently truncate to "whatever decoded before the corruption".
+    #[test]
+    fn w1_corrupt_frame_after_hello_is_degraded() {
+        let mut bytes = encode_frames(&[hello_frame()]);
+        // Append a frame whose declared length is 4 bytes of bytes that are
+        // not a valid postcard-encoded `StreamFrame`.
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        let reason = outcome.degraded_reason.expect("corrupt frame must degrade the job");
+        assert!(reason.contains("decode error"), "reason: {reason}");
+    }
+
+    /// A stream with no valid Hello at all (garbage from byte 0) must
+    /// degrade rather than silently attach an empty-but-"successful" IR
+    /// section.
+    #[test]
+    fn w1_missing_hello_is_degraded() {
+        let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02];
+        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let outcome = ingest_ir_bytes(&mut builder, &bytes);
+        assert!(outcome.degraded_reason.is_some());
+        assert!(outcome.identifiers.is_empty());
+    }
+
+    // ── W4: bounded, polite outer retry around the archive GET ────────────
+
+    use crate::server::registry::upstream::UpstreamError;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn w4_retry_succeeds_after_transient_failures_without_over_calling() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_upstream_get(|| {
+            let n = calls.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(UpstreamError::ServerError(503))
+                } else {
+                    Ok(bytes::Bytes::from_static(b"archive-bytes"))
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.expect("eventual success").as_ref(), b"archive-bytes");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "must stop calling as soon as it succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn w4_retry_does_not_retry_a_permanent_not_found() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_upstream_get(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(UpstreamError::NotFound) }
+        })
+        .await;
+        assert!(matches!(result, Err(UpstreamError::NotFound)));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "NotFound must not consume a retry");
+    }
+
+    #[tokio::test]
+    async fn w4_retry_does_not_retry_a_permanent_parse_error() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_upstream_get(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(UpstreamError::Parse("bad body".to_owned())) }
+        })
+        .await;
+        assert!(matches!(result, Err(UpstreamError::Parse(_))));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn w4_retry_is_bounded_and_surfaces_the_last_error() {
+        let calls = AtomicUsize::new(0);
+        let result = retry_upstream_get(|| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Err(UpstreamError::RateLimited) }
+        })
+        .await;
+        assert!(matches!(result, Err(UpstreamError::RateLimited)));
+        let made = calls.load(Ordering::SeqCst);
+        assert!(made <= 3, "must be bounded: made {made} calls");
+        assert!(made >= 1);
+    }
+
+    #[test]
+    fn w4_classify_failure_routes_exhausted_upstream_retries_to_transient() {
+        let error = ServerError::Internal(InternalError::UpstreamTransient {
+            reason: "503 x3".to_owned(),
+        });
+        assert_eq!(classify_failure(&error), FailureKind::Transient);
+    }
+
+    // ── W9: snapshot identity must not depend on which node compiled it ───
+
+    fn manifest_with_toolchain(toolchain: heart::Toolchain) -> BlobManifest {
+        let mut builder = BlobBuilder::new(test_package(), toolchain);
+        builder
+            .push_file(smol_str::SmolStr::new("src/lib.rs"), bytes::Bytes::from_static(b"fn main() {}"))
+            .expect("push file");
+        attach_empty_ir_sections(&mut builder);
+        builder.finalize().expect("finalize").0
+    }
+
+    #[test]
+    fn w9_identity_toolchain_is_deterministic_across_simulated_nodes() {
+        // Two independent calls (standing in for two different nodes — one
+        // "macOS", one "Linux" — both hitting `execute_extract_phase`) must
+        // agree, since the function takes no host/environment input.
+        let node_a = identity_toolchain(crate::ecosystem::Language::Rust);
+        let node_b = identity_toolchain(crate::ecosystem::Language::Rust);
+        assert_eq!(node_a, node_b);
+    }
+
+    #[test]
+    fn w9_same_source_bytes_hash_the_same_regardless_of_simulated_node() {
+        // What every node now actually feeds into the manifest, post-fix.
+        let toolchain_used_by_every_node = identity_toolchain(crate::ecosystem::Language::Rust);
+        let manifest_node_a = manifest_with_toolchain(toolchain_used_by_every_node.clone());
+        let manifest_node_b = manifest_with_toolchain(toolchain_used_by_every_node);
+        assert_eq!(
+            manifest_node_a.identity_bytes(),
+            manifest_node_b.identity_bytes(),
+            "same source bytes must hash the same regardless of which node computed it"
+        );
+    }
+
+    #[test]
+    fn w9_a_mutable_per_node_toolchain_would_have_perturbed_identity_this_demonstrates_why_the_fix_is_needed() {
+        // This is NOT the code path in use after the fix (execute_extract_phase
+        // no longer reads a mutable per-node toolchain at all) — it documents
+        // *why* routing through `identity_toolchain` matters: the underlying
+        // `BlobManifest::identity_bytes` still folds the toolchain field in,
+        // so a caller that went back to trusting a mutable per-node value
+        // would immediately reintroduce W9.
+        let macos_style = identity_toolchain(crate::ecosystem::Language::Rust);
+        let would_be_real_linux_toolchain = heart::Toolchain::Rust {
+            compiler: semver::Version::new(1, 92, 0),
+            edition: heart::Edition::E2024,
+        };
+        assert_ne!(
+            macos_style, would_be_real_linux_toolchain,
+            "fixture must simulate two genuinely different toolchains"
+        );
+
+        let manifest_macos = manifest_with_toolchain(macos_style);
+        let manifest_linux_style = manifest_with_toolchain(would_be_real_linux_toolchain);
+        assert_ne!(
+            manifest_macos.identity_bytes(),
+            manifest_linux_style.identity_bytes(),
+            "blob identity is toolchain-sensitive by construction — which is exactly \
+             why execute_extract_phase must never feed it a mutable per-node value"
+        );
+    }
 }

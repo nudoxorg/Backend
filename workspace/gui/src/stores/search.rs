@@ -42,9 +42,11 @@ use crate::bridge::generation::GenSource;
 use crate::bridge::handle::StreamHandle as BridgeStreamHandle;
 use crate::stores::events::{OpenDisposition, OpenSymbol};
 use crate::stores::search_model::{
-    Cursor, PreparedRow, RemoteStatus, SearchMode, SearchSnapshot, ScopeChip, SectionData,
-    SectionStatus, SECTION_COUNT,
+    Cursor, PreparedRow, RemoteFailure, RemoteStatus, SearchMode, SearchSnapshot, ScopeChip,
+    SectionData, SectionStatus, SECTION_COUNT,
 };
+use heart::client::http::ClientError;
+use heart::stream::WireError;
 
 // ---------------------------------------------------------------------------
 // Remote (`NudoxClient`) escape hatch — AGENTS-DOCTRINE.md §1, `heart` seam
@@ -416,18 +418,21 @@ impl<E: SearchEngine> SearchStore<E> {
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let _ = store.update(cx, |store, cx| {
                 store.remote_status = match outcome {
-                    Ok(hits) => RemoteStatus::Ready {
-                        hits: hits.len(),
-                        elapsed_ms,
-                    },
-                    Err(error) => RemoteStatus::Unreachable {
-                        // Capped: a connection-refused/DNS error is short, but
-                        // nothing guarantees that of every `ClientError::Status`
-                        // body, and this renders in one status line.
-                        reason: SharedString::from(
-                            error.to_string().chars().take(160).collect::<String>(),
-                        ),
-                    },
+                    Ok(hits) => {
+                        // Convert once, here, into the same render row the local
+                        // engine produces — the remote hits now flow into the
+                        // render model instead of being reduced to a count.
+                        let rows = PreparedRow::prepare_remote(&hits);
+                        RemoteStatus::Ready {
+                            hits: hits.len(),
+                            elapsed_ms,
+                            rows,
+                        }
+                    }
+                    Err(error) => {
+                        let (kind, detail) = classify_remote_error(&error);
+                        RemoteStatus::Unreachable { kind, detail }
+                    }
                 };
                 cx.notify();
             });
@@ -741,6 +746,54 @@ impl<E: SearchEngine> SearchAccess for SearchStore<E> {
 }
 
 impl<E: SearchEngine> gpui::EventEmitter<OpenSymbol> for SearchStore<E> {}
+
+// ---------------------------------------------------------------------------
+// Remote failure classification — the typed contract boundary
+// ---------------------------------------------------------------------------
+
+/// Map a structured `heart` [`ClientError`] onto the GUI's typed
+/// [`RemoteFailure`] decision plus a human caption.
+///
+/// This is the whole point of the typed error envelope: the *decision* (retry?
+/// offline? degraded?) is made here on typed variants — a mid-stream server
+/// error, a truncated stream, and a malformed line are three different classes
+/// with three different right answers — rather than by string-matching a
+/// flattened `Display`. The caption is derived last, and only for the human.
+///
+/// Both `ClientError` and `WireError` are `#[non_exhaustive]`, so the `_` arms
+/// fold any future class into the most conservative decision rather than failing
+/// to compile.
+fn classify_remote_error(error: &ClientError) -> (RemoteFailure, SharedString) {
+    let kind = match error {
+        // No route to the server: connect refused, timeout, DNS, or an unusable
+        // base URL. The query is fine; the server is not there right now.
+        ClientError::Transport(_) | ClientError::Url(_) => RemoteFailure::Offline,
+        // The server answered a non-2xx before streaming: 4xx is on the request,
+        // everything else is on the server.
+        ClientError::Status { status, .. } if (400..500).contains(status) => {
+            RemoteFailure::Rejected
+        }
+        ClientError::Status { .. } => RemoteFailure::ServerError,
+        // A malformed line, or frames after the terminal frame: protocol trouble.
+        ClientError::Decode(_) | ClientError::Protocol { .. } => RemoteFailure::Protocol,
+        // The stream was cut before its terminal frame: incomplete, not empty.
+        ClientError::Truncated { .. } => RemoteFailure::Truncated,
+        // A structured mid-stream failure the server *chose to send*: switch on
+        // the wire class to decide whether the query or the server is at fault.
+        ClientError::Wire { error, .. } => match error {
+            WireError::BadRequest(_) => RemoteFailure::Rejected,
+            WireError::Backend(_) | WireError::Timeout | WireError::Internal(_) => {
+                RemoteFailure::ServerError
+            }
+            _ => RemoteFailure::ServerError,
+        },
+        _ => RemoteFailure::Offline,
+    };
+    // Capped: a connection-refused/DNS message is short, but nothing guarantees
+    // that of every `ClientError::Status` body, and this renders in one line.
+    let detail = SharedString::from(error.to_string().chars().take(160).collect::<String>());
+    (kind, detail)
+}
 
 // ---------------------------------------------------------------------------
 // Pure cursor helpers (mirrors the view's policy; the view is authoritative)

@@ -104,6 +104,13 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     let generation = builder.provisional_generation();
     let table = &produced.table;
     let mut identifiers = Vec::new();
+    // W1: how many rows this package's table actually *offered* for upsert
+    // (passed the Public/kind/segments filters), independent of how many
+    // succeeded. Distinguishes "this package legitimately has zero public
+    // symbols" (attempted == 0, a clean success) from "the catalog rejected
+    // every row we tried" (attempted > 0, identifiers stays empty — a real
+    // breakage that must not look like a clean empty package).
+    let mut attempted: usize = 0;
 
     for (intro, entry) in table.live_entries() {
         if entry.sym().visibility != ir::entry::Visibility::Public {
@@ -128,6 +135,7 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         };
         let symbol_id = stores.global_store.symbol_id(&uri);
 
+        attempted += 1;
         if let Err(error) = stores
             .global_store
             .upsert_symbol(symbol_id, package, &fully_qualified_name, kind, generation)
@@ -135,6 +143,8 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         {
             // Non-fatal per symbol: one bad row must not sink the whole
             // package's indexing job when the rest can still be served.
+            // Whether *every* row failing should sink the job is decided
+            // once, after the loop — see `upserts_are_degraded`.
             tracing::warn!(
                 %package,
                 symbol = %fully_qualified_name,
@@ -144,6 +154,21 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
             continue;
         }
         identifiers.push(fully_qualified_name);
+    }
+
+    // W1: zero *successful* rows out of zero *attempted* rows is an honest
+    // empty package (e.g. a crate with no public items) — fine, proceed.
+    // Zero successful rows out of one-or-more *attempted* rows means the
+    // catalog rejected every single upsert (e.g. it's unreachable), which is
+    // producer/host breakage masquerading as an empty package. Fail the job
+    // loudly instead of completing as a false "Stored, 0 symbols".
+    if upserts_are_degraded(attempted, identifiers.len()) {
+        return Err(ServerError::Internal(InternalError::InProcessCompile {
+            package: name.clone(),
+            reason: format!(
+                "all {attempted} catalog symbol upserts failed; refusing to report this as an empty package"
+            ),
+        }));
     }
 
     // ── Empty-but-valid IR/reference sections ──────────────────────────────
@@ -159,6 +184,54 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     );
 
     Ok(identifiers)
+}
+
+/// Whether an in-process compile's catalog-upsert results indicate producer/
+/// catalog breakage rather than a legitimately empty package (W1).
+///
+/// `attempted` is how many rows this package's producer table offered for
+/// upsert (after the Public/kind/segments filters); `succeeded` is how many
+/// of those actually landed in the catalog. A package that genuinely has no
+/// public symbols attempts zero rows — that is a clean success. A package
+/// that attempted at least one row but landed none means every single
+/// upsert was rejected (e.g. the catalog was unreachable for the whole
+/// loop) — that must not be reported the same way as a clean empty package.
+/// A partial success (some rows landed, some didn't) stays non-fatal per
+/// existing per-row-resilience policy: the package is still usefully
+/// searchable on the symbols that did land.
+fn upserts_are_degraded(attempted: usize, succeeded: usize) -> bool {
+    attempted > 0 && succeeded == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::upserts_are_degraded;
+
+    #[test]
+    fn zero_attempted_is_a_clean_empty_package() {
+        // A package with no public symbols at all: nothing was ever
+        // attempted, so zero successes is the correct, honest outcome.
+        assert!(!upserts_are_degraded(0, 0));
+    }
+
+    #[test]
+    fn all_attempts_failing_is_degraded() {
+        // Every attempted upsert was rejected: this must not look like a
+        // clean empty package.
+        assert!(upserts_are_degraded(5, 0));
+    }
+
+    #[test]
+    fn partial_success_is_not_degraded() {
+        // Existing per-row resilience: some symbols landed, so the package
+        // is still usefully searchable — one bad row must not sink the job.
+        assert!(!upserts_are_degraded(5, 3));
+    }
+
+    #[test]
+    fn full_success_is_not_degraded() {
+        assert!(!upserts_are_degraded(5, 5));
+    }
 }
 
 /// Run the producer registered for `language` (mirrors

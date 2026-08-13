@@ -236,6 +236,100 @@ pub fn symbol_by_intro_id<E: CatalogEngine>(
     }))
 }
 
+// ── Archive conditional-GET cache (W4b) ────────────────────────────────────
+//
+// Durable substrate for "respect the source": persist the `ETag`/
+// `Last-Modified` observed on a version's last successful archive fetch so a
+// re-fetch can send `If-None-Match`/`If-Modified-Since` and treat a `304 Not
+// Modified` as "reuse the content we already have" instead of paying for
+// (and making the origin pay for) a full re-download.
+//
+// This lives on the `versions` row (one row per (stem, version) — the exact
+// granularity a source-archive fetch is keyed at) rather than a new sibling
+// table: `migrations::ddl::schema_v4_statements` derives each table's CREATE
+// TABLE straight from its SeaORM entity (`Schema::create_table_from_entity`),
+// so adding nullable columns to `entity::versions::Model` is picked up here
+// with no separate DDL registration. Nullable + defaulting to `NULL` also
+// means this never gates or fails a read/write path that predates it.
+//
+// No new trait was introduced for this: `CatalogEngine` (what every function
+// in this file is already generic over) *is* this codebase's persistence
+// abstraction — a bespoke `ArchiveCachePersistence` trait on top of it would
+// just be a second name for the same seam. `ArchiveCacheMeta` plus these two
+// functions are the "real catalog-backed impl" the durable substrate calls
+// for.
+
+/// Cached HTTP conditional-GET metadata for a version's upstream source
+/// archive fetch. Both fields are independently optional because an origin
+/// may send neither, either, or both validators.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArchiveCacheMeta {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+impl ArchiveCacheMeta {
+    /// `true` when there is no cached validator to send as a conditional-GET
+    /// precondition (never fetched, or the origin sent neither header).
+    pub fn is_empty(&self) -> bool {
+        self.etag.is_none() && self.last_modified.is_none()
+    }
+}
+
+/// Read the cached archive conditional-GET metadata for `version`.
+///
+/// Returns `ArchiveCacheMeta::default()` (both fields `None`) both when the
+/// version has never had a successful fetch recorded and when the origin
+/// never sent either header — the caller does not need to distinguish those
+/// cases, since both mean "nothing to send as a precondition".
+pub fn get_archive_cache_meta<E: CatalogEngine>(
+    engine: &E,
+    version: PackageId,
+) -> Result<ArchiveCacheMeta, MetaError> {
+    let stmt = versions::Entity::find()
+        .filter(versions::Column::Id.eq(*version.as_uuid()))
+        .select_only()
+        .column(versions::Column::ArchiveEtag)
+        .column(versions::Column::ArchiveLastModified)
+        .build(DbBackend::Sqlite);
+    let mut rows = engine::query(engine, stmt, &mut |row| {
+        Ok(ArchiveCacheMeta {
+            etag: row.get_optional_text(0)?,
+            last_modified: row.get_optional_text(1)?,
+        })
+    })?;
+    Ok(rows.pop().unwrap_or_default())
+}
+
+/// Persist the archive conditional-GET metadata observed on the most recent
+/// successful (non-304) fetch for `version`. Overwrites unconditionally —
+/// callers pass `ArchiveCacheMeta::default()` to clear a validator the
+/// origin stopped sending.
+pub fn set_archive_cache_meta<E: CatalogEngine>(
+    engine: &E,
+    version: PackageId,
+    meta: &ArchiveCacheMeta,
+) -> Result<(), MetaError> {
+    let stmt = versions::Entity::update_many()
+        .col_expr(
+            versions::Column::ArchiveEtag,
+            Expr::value(meta.etag.clone()),
+        )
+        .col_expr(
+            versions::Column::ArchiveLastModified,
+            Expr::value(meta.last_modified.clone()),
+        )
+        .filter(versions::Column::Id.eq(*version.as_uuid()))
+        .build(DbBackend::Sqlite);
+    let changed = engine::exec(engine, stmt)?;
+    if changed == 0 {
+        return Err(MetaError::MissingRow {
+            what: "versions row for archive cache metadata",
+        });
+    }
+    Ok(())
+}
+
 /// Overwrite a version's facet row and emit a Text outbox row.
 pub fn set_facets<E: CatalogEngine>(
     engine: &E,

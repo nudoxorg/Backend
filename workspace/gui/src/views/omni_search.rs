@@ -2431,15 +2431,21 @@ impl<S: SearchAccess> OmniSearch<S> {
     /// The "Search remote INDEX" button's own status line — a real
     /// `NudoxClient` request against a configured `nudox-serve` instance
     /// (`SearchStore::search_remote_inner`, `heart`'s off-by-default `client`
-    /// feature). Additive to the local-first sections; renders nothing that
-    /// claims to be a local corpus result.
+    /// feature). Additive to the local-first sections; a remote row is drawn
+    /// with `trust.remote` chrome (LD-8), so it never claims to be a local
+    /// corpus result.
+    ///
+    /// A `Ready` status now carries the render-ready hits, so this both reports
+    /// the count *and* lists the top rows — the remote results are rendered
+    /// rather than discarded. `Unreachable` renders a caption derived from a
+    /// typed [`RemoteFailure`], not from a flattened error string.
     fn render_remote_status(remote: &RemoteStatus, cx: &App) -> AnyElement {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let ts = ext.type_scale;
         let colours = ext.colours;
 
-        let Some(text) = (match remote {
+        let text: Option<SharedString> = match remote {
             // Nothing to say yet — no line at all rather than a permanent
             // "Idle" caption competing with the button above it.
             RemoteStatus::NotConfigured | RemoteStatus::Idle => None,
@@ -2447,25 +2453,58 @@ impl<S: SearchAccess> OmniSearch<S> {
             RemoteStatus::Ready { hits: 0, .. } => {
                 Some(SharedString::from("The remote INDEX has no matches either"))
             }
-            RemoteStatus::Ready { hits, elapsed_ms } => Some(SharedString::from(format!(
+            RemoteStatus::Ready { hits, elapsed_ms, .. } => Some(SharedString::from(format!(
                 "Remote INDEX: {hits} match{} ({elapsed_ms} ms)",
                 if *hits == 1 { "" } else { "es" }
             ))),
-            RemoteStatus::Unreachable { reason } => Some(SharedString::from(format!(
-                "Remote INDEX unreachable: {reason}"
+            RemoteStatus::Unreachable { kind, detail } => Some(SharedString::from(format!(
+                "Remote INDEX {}: {detail}",
+                kind.label()
             ))),
-        }) else {
+        };
+
+        let Some(text) = text else {
             return div().into_any_element();
         };
 
-        div()
-            .w_full()
-            .pt(sp.space_2)
-            .text_size(ts.dense.size)
-            .line_height(ts.dense.line_height)
-            .text_color(colours.fg_muted)
-            .child(text)
-            .into_any_element()
+        let mut column = v_flex().w_full().pt(sp.space_2).gap(sp.space_1).child(
+            div()
+                .text_size(ts.dense.size)
+                .line_height(ts.dense.line_height)
+                .text_color(colours.fg_muted)
+                .child(text),
+        );
+
+        // Render the remote hits (LD-16 augment: additive to the local
+        // sections). A compact row — kind chip, leaf, and package label — drawn
+        // from the same `PreparedRow` the local path renders, so there is one
+        // row vocabulary regardless of provenance.
+        if let RemoteStatus::Ready { rows, .. } = remote {
+            for row in rows.iter().take(VISIBLE_ROWS_PER_SECTION) {
+                let kind_label: SharedString = match row.kind {
+                    Some(k) => SharedString::from(k.short_label()),
+                    None => row.unknown_kind_label.clone(),
+                };
+                column = column.child(
+                    h_flex()
+                        .w_full()
+                        .gap(sp.space_2)
+                        .text_size(ts.dense.size)
+                        .line_height(ts.dense.line_height)
+                        .child(div().text_color(colours.fg_muted).child(kind_label))
+                        .child(div().text_color(colours.fg_default).child(row.leaf.clone()))
+                        .when(!row.package.is_empty(), |el| {
+                            el.child(
+                                div()
+                                    .text_color(colours.fg_muted)
+                                    .child(row.package.clone()),
+                            )
+                        }),
+                );
+            }
+        }
+
+        column.into_any_element()
     }
 
     /// The panel body when the input is a package URL.

@@ -247,6 +247,29 @@ pub enum InternalError {
     #[error("in-process compile failed for {package}: {reason}")]
     InProcessCompile { package: String, reason: String },
 
+    /// The producer's NdIrF1 IR stream broke before a clean `Finish` frame:
+    /// the handshake `Hello` was missing/malformed, the producer sent an
+    /// `Abort`, the stream was truncated (EOF without `Finish`), or the host
+    /// could not serialize the recovered IR/reference sections. Any of these
+    /// is a genuine producer/host breakage, never a legitimate "this package
+    /// has zero symbols" signal (a well-behaved producer always closes with
+    /// `Finish`, even for an empty package) — so the job must fail rather
+    /// than complete as an empty-but-"Stored" snapshot. See
+    /// `coordination::indexing::ingest_ir_bytes`.
+    #[error("IR stream degraded for {package}: {reason}")]
+    IrStreamDegraded { package: String, reason: String },
+
+    /// The upstream source-archive GET (`Indexer::fetch_archive`) exhausted
+    /// its bounded, polite retry budget against a retryable condition (429,
+    /// 5xx, or a transport hiccup). Unlike [`InternalError::UpstreamFetch`]
+    /// (a permanent/unclassified upstream failure), this is deliberately
+    /// classified [`heart::FailureKind::Transient`] by
+    /// `coordination::indexing::classify_failure` so the queue retries the
+    /// *job* later instead of dead-lettering a package whose source registry
+    /// was just being rate-limiting or briefly unavailable.
+    #[error("upstream archive fetch exhausted retries: {reason}")]
+    UpstreamTransient { reason: String },
+
     /// Catch-all for other truly internal breakages where a more specific
     /// variant has not yet been introduced. Prefer adding a new variant.
     #[error("internal error: {message}")]

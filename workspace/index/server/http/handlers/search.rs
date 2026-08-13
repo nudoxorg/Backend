@@ -23,7 +23,8 @@ use axum::{
 };
 use futures::TryStreamExt;
 use heart::query::{Query, QueryMode, Target};
-use heart::{Page, Score, Scored, Sourced, Symbol, SymbolId};
+use heart::stream::{StreamFrame, StreamSummary};
+use heart::{Page, PackageHit, Score, Scored, Sourced, Symbol, SymbolId};
 use crate::ecosystem::PackageNameExt as _;
 use registry::runtime::session::{SessionGraph, SessionId, SessionStore};
 use serde::Deserialize;
@@ -115,7 +116,7 @@ pub async fn search<M: EmbeddingModel>(
         .await?;
     tracing::debug!(%query_id, hits = hits.len(), "symbol search served");
     record_search_metrics(query_id, hits.len(), "symbols");
-    Ok(with_query_id(ndjson(hits), query_id))
+    Ok(with_query_id(hit_stream(hits), query_id))
 }
 
 /// `POST /search/semantic` — the explicit semantic opt-in surface. The same
@@ -144,7 +145,44 @@ pub async fn search_packages<M: EmbeddingModel>(
     let hits = page.items.len();
     tracing::debug!(%query_id, hits, "package search served");
     record_search_metrics(query_id, hits, "packages");
-    Ok(with_query_id(Json(page).into_response(), query_id))
+    // Project the internal `GlobalPackage` into the shared wire `PackageHit`
+    // before serialising. This is the *single* conversion point: the client
+    // decodes `Page<PackageHit>`, so any drift between what the server sends and
+    // what the client expects is a compile error right here, not a runtime
+    // `Value` index-panic in the GUI.
+    let projected = Page {
+        items: page
+            .items
+            .into_iter()
+            .map(|scored| scored.map(project_package_hit))
+            .collect(),
+        next: page.next,
+    };
+    Ok(with_query_id(Json(projected).into_response(), query_id))
+}
+
+/// Lower one internal `GlobalPackage` to the shared wire [`PackageHit`].
+///
+/// The coordinates / id / state are already `heart` vocabulary and move across
+/// untouched; only the rich `SearchFacets` are projected down to the lean
+/// ranking-visible signals a client renders.
+fn project_package_hit(package: crate::server::registry::GlobalPackage) -> PackageHit {
+    let (quality_ppm, description, downloads) = match &package.facets {
+        Some(facets) => (
+            Some(facets.quality_ppm),
+            facets.description.clone(),
+            facets.downloads,
+        ),
+        None => (None, None, None),
+    };
+    PackageHit {
+        id: package.id,
+        coordinates: package.package.coordinates,
+        state: package.state,
+        quality_ppm,
+        description,
+        downloads,
+    }
 }
 
 /// `POST /usages` — every recorded use of one symbol (`target: Usages { of }`),
@@ -334,11 +372,26 @@ mod tests {
     }
 }
 
-/// Serialize results as NDJSON — one JSON object per line, streamed — under
-/// `application/x-ndjson`.
-fn ndjson<T: serde::Serialize + Send + 'static>(items: Vec<T>) -> Response {
-    let lines = futures::stream::iter(items.into_iter().map(|item| {
-        serde_json::to_vec(&item).map(|mut line| {
+/// Serialize a ranked result set as the typed streaming envelope: one
+/// [`StreamFrame::Hit`] per line, terminated by a single [`StreamFrame::End`],
+/// streamed under `application/x-ndjson`.
+///
+/// The terminal `End` frame is the load-bearing part. It is what lets a reader
+/// tell a *complete* answer (ends with `End`) from a *truncated* one (the
+/// connection dropped, so no `End` arrives) — the latter is a distinguishable,
+/// typed error client-side rather than a silent empty success. Because hits are
+/// already collected before this is called, a failure surfaces as an HTTP error
+/// status *before* the stream begins; once the stream begins it always ends with
+/// `End`. (The envelope also admits a mid-stream `Error` frame for a future
+/// truly-streaming writer that fails after its first byte.)
+fn hit_stream<H: serde::Serialize + Send + 'static>(hits: Vec<H>) -> Response {
+    let summary = StreamSummary::new(hits.len() as u64);
+    let frames = hits
+        .into_iter()
+        .map(StreamFrame::Hit)
+        .chain(std::iter::once(StreamFrame::End(summary)));
+    let lines = futures::stream::iter(frames.map(|frame| {
+        serde_json::to_vec(&frame).map(|mut line| {
             line.push(b'\n');
             bytes::Bytes::from(line)
         })

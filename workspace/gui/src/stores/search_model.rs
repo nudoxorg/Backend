@@ -13,6 +13,7 @@ use gpui::{Context, SharedString};
 use crate::theme::ext::Provenance;
 use crate::theme::kind::LocalKindDiscriminant;
 use crate::ui::signature_line::{SigToken as UiSigToken, SymbolKey as UiSymbolKey};
+use heart::{Scored, Symbol, SymbolKind};
 use nudox_engine::wire::{
     HitRow, KindTag, Provenance as WireProvenance, SigToken as WireSigToken, SymbolKey,
 };
@@ -358,10 +359,7 @@ impl PreparedRow {
         // narrowing, and it survived because the knowledge of how a producer
         // separates path segments lived in three places and only two of them
         // were kept current.
-        let package = match path.find(separator_of(&path)) {
-            Some(end) => SharedString::from(path[..end].to_owned()),
-            None => SharedString::default(),
-        };
+        let package = package_of(&path);
 
         PreparedRow {
             key: hit.key.clone(),
@@ -392,51 +390,67 @@ impl PreparedRow {
     /// `tests/screenshots.rs` for the assertion over the real corpus.
     pub fn prepare(hits: &[HitRow]) -> Arc<[PreparedRow]> {
         let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest).collect();
+        let names: Vec<&str> = hits.iter().map(|h| &*h.display_name).collect();
+        disambiguate(&mut rows, &names);
+        rows.into()
+    }
 
-        // Segment every row's path once. `segments[i]` is the *path* only; the
-        // leaf lives in `rows[i].leaf`.
-        let segmented: Vec<(Vec<String>, &'static str)> = hits
-            .iter()
-            .map(|h| path_segments(&h.display_name))
-            .collect();
-
-        // Group row indices by leaf name. Only groups larger than one need a
-        // qualifier at all.
-        let mut by_leaf: std::collections::HashMap<SharedString, Vec<usize>> =
-            std::collections::HashMap::new();
-        for (ix, row) in rows.iter().enumerate() {
-            by_leaf.entry(row.leaf.clone()).or_default().push(ix);
+    /// Convert one **remote** hit (`heart::Scored<heart::Symbol>`, from the
+    /// `NudoxClient` escape hatch) into a render-ready row — the total,
+    /// no-`unwrap` adapter that lets remote results flow into the same render
+    /// model the local engine feeds, instead of being reduced to a count and
+    /// thrown away.
+    ///
+    /// # Why a second ingest rather than one shared path
+    ///
+    /// The local engine speaks `HitRow` (a wire `SymbolKey`, a tokenised
+    /// signature preview, a `KindTag`); the remote server speaks `heart::Symbol`
+    /// (a durable `SymbolId`, a `SymbolKind`, no signature). They are two
+    /// vocabularies for the same idea, and this is the *one* place the second is
+    /// lowered to the render row — after here everything is a `PreparedRow`, so
+    /// the GUI has a single row type regardless of where the hit came from. The
+    /// batch-wide disambiguation pass ([`disambiguate`]) is shared, so remote
+    /// namesakes are told apart by exactly the rule local ones are.
+    fn ingest_remote(hit: &Scored<Symbol>) -> PreparedRow {
+        let symbol = &hit.value;
+        let (path, leaf) = split_qualified_name(&symbol.name.fully_qualified);
+        let package = package_of(&path);
+        // `SymbolKind` is a closed enum; `Other` (and only `Other`) has no local
+        // discriminant, so it degrades to a visible "other" chip rather than a
+        // panic — the same LD-7 treatment an unknown `KindTag` gets locally.
+        let kind = local_kind_of(symbol.kind);
+        let unknown_kind_label = if kind.is_some() {
+            SharedString::default()
+        } else {
+            SharedString::from("other")
+        };
+        PreparedRow {
+            key: remote_symbol_key(symbol),
+            leaf,
+            path,
+            package,
+            // Overwritten by `prepare_remote`'s disambiguation pass.
+            qualifier: RowQualifier::UniqueLeaf,
+            // The remote surface carries no signature preview; an empty vector
+            // renders as no signature line, which is honest — we were not told
+            // one, so we do not invent one.
+            sig: Vec::new(),
+            kind,
+            unknown_kind_label,
+            // The escape hatch exists to reach packages the reader has *not*
+            // synced locally, so every remote row is, by construction, remote —
+            // LD-8 trust chrome shows that rather than dressing it as local.
+            provenance: Provenance::Remote,
+            relevance: hit.score.into_inner(),
         }
+    }
 
-        for (_leaf, group) in by_leaf {
-            if group.len() < 2 {
-                continue;
-            }
-            // Elide only the head that *every namesake with a path* shares,
-            // and never so much that one of them is left with nothing: the
-            // disambiguating segment is precisely the one that must survive.
-            let with_path: Vec<usize> = group
-                .iter()
-                .copied()
-                .filter(|&ix| !segmented[ix].0.is_empty())
-                .collect();
-            let common = common_head_len(&segmented, &with_path);
-
-            for &ix in &group {
-                let (segs, sep) = &segmented[ix];
-                let keep = &segs[common.min(segs.len())..];
-                let tail = if keep.is_empty() {
-                    SharedString::default()
-                } else {
-                    SharedString::from(format!("{}{sep}", keep.join(sep)))
-                };
-                rows[ix].qualifier = RowQualifier::Disambiguated {
-                    tail,
-                    elided_head: common > 0 && !segs.is_empty(),
-                };
-            }
-        }
-
+    /// Convert a whole batch of remote hits, and make them tell each other
+    /// apart — the remote analogue of [`PreparedRow::prepare`].
+    pub fn prepare_remote(hits: &[Scored<Symbol>]) -> Arc<[PreparedRow]> {
+        let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest_remote).collect();
+        let names: Vec<&str> = hits.iter().map(|h| &*h.value.name.fully_qualified).collect();
+        disambiguate(&mut rows, &names);
         rows.into()
     }
 
@@ -507,6 +521,119 @@ fn common_head_len(segmented: &[(Vec<String>, &'static str)], group: &[usize]) -
         common += 1;
     }
     common
+}
+
+/// The batch-wide row disambiguation pass, shared by the local
+/// ([`PreparedRow::prepare`]) and remote ([`PreparedRow::prepare_remote`])
+/// ingests so the "no two rows render the same text" invariant is enforced by
+/// one rule for both. `names[i]` is the fully-qualified display name of
+/// `rows[i]` (the source the path segments come from).
+fn disambiguate(rows: &mut [PreparedRow], names: &[&str]) {
+    // Segment every row's path once. `segments[i]` is the *path* only; the leaf
+    // lives in `rows[i].leaf`.
+    let segmented: Vec<(Vec<String>, &'static str)> =
+        names.iter().map(|n| path_segments(n)).collect();
+
+    // Group row indices by leaf name. Only groups larger than one need a
+    // qualifier at all.
+    let mut by_leaf: std::collections::HashMap<SharedString, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (ix, row) in rows.iter().enumerate() {
+        by_leaf.entry(row.leaf.clone()).or_default().push(ix);
+    }
+
+    for (_leaf, group) in by_leaf {
+        if group.len() < 2 {
+            continue;
+        }
+        // Elide only the head that *every namesake with a path* shares, and
+        // never so much that one of them is left with nothing: the
+        // disambiguating segment is precisely the one that must survive.
+        let with_path: Vec<usize> = group
+            .iter()
+            .copied()
+            .filter(|&ix| !segmented[ix].0.is_empty())
+            .collect();
+        let common = common_head_len(&segmented, &with_path);
+
+        for &ix in &group {
+            let (segs, sep) = &segmented[ix];
+            let keep = &segs[common.min(segs.len())..];
+            let tail = if keep.is_empty() {
+                SharedString::default()
+            } else {
+                SharedString::from(format!("{}{sep}", keep.join(sep)))
+            };
+            rows[ix].qualifier = RowQualifier::Disambiguated {
+                tail,
+                elided_head: common > 0 && !segs.is_empty(),
+            };
+        }
+    }
+}
+
+/// The owning package — the leading segment of a path prefix (`"tokio::runtime::"`
+/// → `"tokio"`), understanding both the `::` and `.` conventions. Empty path ⇒
+/// empty package. One definition, shared by both ingests.
+fn package_of(path: &str) -> SharedString {
+    match path.find(separator_of(path)) {
+        Some(end) => SharedString::from(path[..end].to_owned()),
+        None => SharedString::default(),
+    }
+}
+
+/// Map a remote [`SymbolKind`] onto the local kind discriminant used for the
+/// kind badge. Total: `SymbolKind::Other` has no local discriminant and returns
+/// `None`, which the row renders as a visible "other" chip (LD-7) — never a
+/// panic, never a silently-dropped kind.
+fn local_kind_of(kind: SymbolKind) -> Option<LocalKindDiscriminant> {
+    use LocalKindDiscriminant as K;
+    match kind {
+        SymbolKind::Function => Some(K::Function),
+        SymbolKind::Type => Some(K::Record),
+        SymbolKind::Module => Some(K::Module),
+        SymbolKind::Constant => Some(K::Const),
+        SymbolKind::Variable => Some(K::Static),
+        SymbolKind::Trait => Some(K::Trait),
+        SymbolKind::Impl => Some(K::Impl),
+        // The one kind with no local badge colour: a visible chip, not a guess.
+        SymbolKind::Other => None,
+    }
+}
+
+/// Synthesize a wire [`SymbolKey`] for a remote [`Symbol`], deterministically.
+///
+/// The local render row keys open-on-commit off a `SymbolKey` (ecosystem +
+/// package lineage + a 32-byte intro id). A remote `Symbol` carries a durable
+/// `SymbolId` (a UUID) and an ecosystem, but not the local intro-id scheme, so
+/// there is no *true* `SymbolKey` to recover — the two identity spaces are
+/// different. Rather than `unwrap` or fabricate randomly, we derive a **stable**
+/// key: the ecosystem token, the best available package label (the leading path
+/// segment, falling back to the bare name), and an intro id seeded from the
+/// symbol's own UUID bytes. Same remote symbol ⇒ same key, every time, with no
+/// panic path — which is all the render/selection model needs from it.
+fn remote_symbol_key(symbol: &Symbol) -> SymbolKey {
+    use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
+
+    let ecosystem = EcosystemId::new(symbol.ecosystem.as_token());
+    let (path, _leaf) = split_qualified_name(&symbol.name.fully_qualified);
+    let package = {
+        let leading = package_of(&path);
+        if leading.is_empty() {
+            symbol.name.plain.to_string()
+        } else {
+            leading.to_string()
+        }
+    };
+    // Seed the 32-byte intro id from the symbol's 16 UUID bytes (rest zero):
+    // deterministic and collision-free across distinct symbol ids.
+    let mut raw = [0u8; 32];
+    raw[..16].copy_from_slice(symbol.id.as_uuid().as_bytes());
+
+    SymbolKey::new(
+        PackageLineageId::new(ecosystem, PackageName::new(package)),
+        IntroId::from_raw(raw),
+    )
 }
 
 /// Split a display name into its path segments and the separator the producer
@@ -753,7 +880,65 @@ impl Default for SearchSnapshot {
 /// additive to (never a replacement for) the local-first `nudox-engine`
 /// sections above. See `SearchStore::search_remote` (AGENTS-DOCTRINE.md §1,
 /// `heart` capability-port seam).
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+/// Why a remote search failed, as a **typed decision**, not a rendered string.
+///
+/// The old `Unreachable { reason: SharedString }` flattened every failure into a
+/// truncated `Display` string, so the only thing the UI could do with a failure
+/// was print it — "should I offer a retry? is the query itself wrong? is the
+/// server degraded?" were all unanswerable without parsing prose. This enum is
+/// the answer: [`SearchStore`] maps a structured `heart` `ClientError` onto one
+/// of these variants, and the view decides behaviour from the *variant*. The
+/// human label is still a string, but it is derived from the decision, not the
+/// decision itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteFailure {
+    /// Connect / timeout / transport (or an unusable URL): the server is
+    /// unreachable. Retrying later is sensible; the query is fine.
+    Offline,
+    /// The server rejected the query (4xx, or a `WireError::BadRequest`).
+    /// Retrying the *same* query will not help — the caller must change it.
+    Rejected,
+    /// The server errored while (or before) answering (5xx, or a
+    /// `WireError::Backend`/`Timeout`/`Internal`). Degraded; a retry may help.
+    ServerError,
+    /// The stream ended without its terminal frame — an incomplete answer, not
+    /// an empty one. A retry may get a complete stream.
+    Truncated,
+    /// A frame/line could not be decoded, or arrived after the terminal frame —
+    /// a client/server protocol mismatch. Retrying is unlikely to help.
+    Protocol,
+}
+
+impl RemoteFailure {
+    /// A short human label for the status line. The *decision* is the variant;
+    /// this is only its caption.
+    pub fn label(self) -> &'static str {
+        match self {
+            RemoteFailure::Offline => "unreachable",
+            RemoteFailure::Rejected => "rejected the query",
+            RemoteFailure::ServerError => "errored",
+            RemoteFailure::Truncated => "sent a truncated answer",
+            RemoteFailure::Protocol => "spoke an unexpected protocol",
+        }
+    }
+
+    /// Whether offering the reader a "try again" makes sense for this class.
+    pub fn is_retriable(self) -> bool {
+        matches!(
+            self,
+            RemoteFailure::Offline | RemoteFailure::ServerError | RemoteFailure::Truncated
+        )
+    }
+}
+
+/// State of the remote search escape hatch.
+///
+/// Not `PartialEq`/`Eq`: `Ready` now carries the render-ready rows
+/// (`Arc<[PreparedRow]>`, which is not `Eq`), because the remote hits flow into
+/// the render model here rather than being reduced to a count. The *decision*
+/// half of a failure lives in [`RemoteFailure`], so the view still switches on a
+/// typed value, never on a string.
+#[derive(Clone, Debug, Default)]
 pub enum RemoteStatus {
     /// No `NUDOX_SERVER_URL` was reachable/parseable at store construction —
     /// distinct from `Unreachable`, which means a configured server was
@@ -765,11 +950,25 @@ pub enum RemoteStatus {
     Idle,
     /// A request is in flight.
     Loading,
-    /// The server answered: `hits` symbols in `elapsed_ms`.
-    Ready { hits: usize, elapsed_ms: u64 },
-    /// The configured server did not answer (connect/timeout/non-2xx). Holds
-    /// the client error's `Display`, truncated for the status line.
-    Unreachable { reason: SharedString },
+    /// The server answered: `hits` symbols in `elapsed_ms`, with `rows` the
+    /// render-ready hits (additive to the local sections; the remote path
+    /// augments, it does not replace).
+    Ready {
+        /// How many hits the server returned.
+        hits: usize,
+        /// Round-trip time in milliseconds.
+        elapsed_ms: u64,
+        /// The render-ready remote hits.
+        rows: Arc<[PreparedRow]>,
+    },
+    /// The configured server did not give a usable answer. `kind` is the typed
+    /// decision (retry? offline? degraded?); `detail` is the human caption.
+    Unreachable {
+        /// The typed failure class the view decides behaviour from.
+        kind: RemoteFailure,
+        /// A short human-readable detail for the status line.
+        detail: SharedString,
+    },
 }
 
 impl SearchSnapshot {

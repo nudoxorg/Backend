@@ -30,6 +30,18 @@ pub struct Model {
     pub source_rev: Option<String>,
     pub registry_checksum: Option<String>,
     pub registry_package_uri: Option<String>,
+    /// `ETag` observed on the most recent successful (non-304) fetch of this
+    /// version's upstream source archive. `NULL` until the first fetch, or
+    /// if the origin never sent one. Conditional-GET politeness (W4b): sent
+    /// back as `If-None-Match` on the next fetch so an unchanged archive
+    /// costs the origin a 304 instead of a full re-download. See
+    /// `store::lifecycle::{get_archive_cache_meta, set_archive_cache_meta}`.
+    pub archive_etag: Option<String>,
+    /// `Last-Modified` observed on the most recent successful fetch of this
+    /// version's upstream source archive, verbatim (RFC 7231 HTTP-date) so it
+    /// can be replayed unchanged as `If-Modified-Since`. `NULL` until the
+    /// first fetch, or if the origin never sent one.
+    pub archive_last_modified: Option<String>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

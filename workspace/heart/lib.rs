@@ -24,6 +24,9 @@ pub mod query;
 pub mod score;
 pub mod search;
 pub mod sink;
+/// The typed NDJSON streaming envelope ([`stream::StreamFrame`]) shared by the
+/// `index` server's search writer and the `heart::client::http` reader.
+pub mod stream;
 pub mod symbol;
 /// The generic content-addressed sync seam (`ContentIo`/`ApplyHook`), shared by
 /// the IR VCS change-sync and the object-pack member-sync planes.
@@ -63,9 +66,11 @@ pub use query::{
     QueryReach, RankSpecification, Routing, Scope, StableReference, StableReferenceError, Target,
     UnixMilliseconds,
 };
-pub use score::{Score, Scored};
+pub use package::{Coordinates, PackageHit, PackageName};
+pub use score::{RankKey, Score, Scored};
 pub use search::Page;
 pub use sink::DerivedStore;
+pub use stream::{StreamFrame, StreamSummary, SymbolFrame, WireError};
 pub use symbol::{Name, Symbol, SymbolKind};
 pub use tenant::{OwnerKind, Visibility};
 pub use version::Versioned;

@@ -70,7 +70,21 @@ pub fn provisional_global_package(coordinates: &PackageCoordinates) -> GlobalPac
 }
 
 /// The stand-in toolchain recorded before a package has ever been compiled.
-fn provisional_toolchain(ecosystem: Language) -> Toolchain {
+///
+/// # Also the fleet-wide content-hash identity anchor (W9)
+///
+/// This is a **pure function of `Language` alone** — no host/OS/environment
+/// input — so it returns byte-identical [`Toolchain`] values on every node in
+/// the fleet. `indexing::execute_extract_phase` calls this (not whatever is
+/// stored on the package record) to pick the `Toolchain` folded into
+/// [`crate::blob::BlobManifest::identity_bytes`] for the snapshot's content
+/// hash. That keeps snapshot identity a function of source bytes +
+/// coordinates only, so a macOS node (which never runs a real toolchain
+/// detection) and a Linux forge node (which, once per-node toolchain
+/// detection lands, could otherwise record a real compiler version here)
+/// compute the *same* hash for the *same* source — see `indexing.rs`'s
+/// `identity_toolchain` for the call site and full rationale.
+pub(super) fn provisional_toolchain(ecosystem: Language) -> Toolchain {
     match ecosystem {
         Language::Rust => Toolchain::Rust {
             compiler: semver::Version::new(1, 88, 0),

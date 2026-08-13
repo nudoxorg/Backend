@@ -375,6 +375,14 @@ fn upsert_version(
         source_rev: Set(source.and_then(|s| s.source_rev.clone())),
         registry_checksum: Set(source.and_then(|s| s.registry_checksum.clone())),
         registry_package_uri: Set(source.and_then(|s| s.registry_package_uri.clone())),
+        // W4b conditional-GET cache columns: not part of this metadata-only
+        // upsert's contract (see `store::lifecycle::set_archive_cache_meta`
+        // for the dedicated writer). `None` only matters for the INSERT arm
+        // (a fresh version starts with no cached validators); the UPDATE arm
+        // below deliberately omits both columns from `update_columns` so an
+        // existing row's cache is never clobbered by a metadata upsert.
+        archive_etag: Set(None),
+        archive_last_modified: Set(None),
     };
     let stmt = versions::Entity::insert(am)
         .on_conflict(

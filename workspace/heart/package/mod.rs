@@ -2,9 +2,70 @@ pub mod coordinates;
 
 pub use coordinates::{CoordinateError, Coordinates};
 
-use crate::{NameError, ecosystem::Language};
+use crate::{NameError, PackageId, ResolutionState, ecosystem::Language, score::RankKey};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
+
+/// The typed hit shape `POST /packages/search` serialises — the package
+/// analogue of `Scored<Symbol>` for the symbol surface.
+///
+/// # Why this type exists
+///
+/// The client's `search_packages` used to return `Vec<serde_json::Value>`: the
+/// server's rich `GlobalPackage` shape was flattened to untyped JSON the caller
+/// re-indexed by string key at runtime, so a schema change on the server became
+/// a runtime `Value` index-panic in the client rather than a compile error. And
+/// because it decoded the response as NDJSON while the server actually answers
+/// with a single JSON `Page` object, the two never even agreed on the framing.
+///
+/// `PackageHit` is the one shared shape both sides name. Its fields are all
+/// already-`heart` vocabulary ([`Coordinates`], [`PackageId`],
+/// [`ResolutionState`]) plus a lean projection of the server's search facets —
+/// so the server *projects into it* (the single conversion point) and the client
+/// *decodes it*, and any drift between the two is a compile error at the
+/// projection, never a silent runtime mismatch.
+///
+/// It deliberately does **not** mirror `GlobalPackage`'s full facet record: the
+/// heavy metadata lives server-side, and a client rendering a package row needs
+/// its coordinates, its pipeline state, and a couple of ranking-visible signals,
+/// not the reverse-dependency sweep. Adding a field here is a deliberate wire
+/// change, reviewed on both sides.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageHit {
+    /// The canonical, deterministic global identity of the package. Doubles as
+    /// the keyset tiebreak (see the [`RankKey`] impl).
+    pub id: PackageId,
+    /// The full addressing tuple (origin × name × version). Carries the
+    /// ecosystem, so the client filters/labels without a second lookup.
+    pub coordinates: Coordinates,
+    /// Where the package currently sits in the indexing pipeline.
+    pub state: ResolutionState,
+    /// Quality in parts-per-million (0..=1_000_000), when facets are known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality_ppm: Option<u32>,
+    /// The manifest description, when facets are known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<SmolStr>,
+    /// Monthly downloads, when the ecosystem reports them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downloads: Option<u64>,
+}
+
+impl PackageHit {
+    /// The package's ecosystem (delegates to the coordinate name).
+    pub const fn ecosystem(&self) -> Language {
+        self.coordinates.ecosystem()
+    }
+}
+
+/// A package hit's stable tiebreak key is its durable id — the same
+/// determinism guarantee symbols get, so `Scored<PackageHit>` pages keyset-cleanly.
+impl RankKey for PackageHit {
+    type Key = PackageId;
+    fn rank_key(&self) -> PackageId {
+        self.id
+    }
+}
 
 /// A validated, ecosystem-normalized package name.
 ///
