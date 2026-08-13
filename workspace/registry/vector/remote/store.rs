@@ -39,6 +39,12 @@ pub enum CollectionConfig {
     JinaParity,
     /// Premium: voyage-code-3, 1024-dim.
     VoyagePremium,
+    /// Dev-only: `nomic-embed-text` via a local Ollama instance, 768-dim.
+    /// Not a product schema — see `registry::vector::core::model::NomicEmbedText`.
+    /// Named `__dev_` (rather than reusing the parity name) precisely so it
+    /// can never collide with a real `JinaParity` deployment's collection on
+    /// a shared qdrant instance.
+    NomicDev,
 }
 
 impl CollectionConfig {
@@ -47,6 +53,7 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => "symbols__jina_v2_code_768",
             CollectionConfig::VoyagePremium => "symbols__voyage_code3_1024",
+            CollectionConfig::NomicDev => "symbols__dev_nomic_embed_text_768",
         }
     }
 
@@ -60,6 +67,11 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => SourceTag::IndexJina,
             CollectionConfig::VoyagePremium => SourceTag::IndexVoyage,
+            // Dev-only stand-in for the parity tier; there is no dedicated
+            // `SourceTag` for it and adding one would ripple into every
+            // exhaustive match over `SourceTag` for a brand that exists only
+            // to unblock local dev without provisioned ONNX weights.
+            CollectionConfig::NomicDev => SourceTag::IndexJina,
         }
     }
 
@@ -68,6 +80,7 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => 768,
             CollectionConfig::VoyagePremium => 1024,
+            CollectionConfig::NomicDev => 768,
         }
     }
 
@@ -76,6 +89,7 @@ impl CollectionConfig {
         match M::id().as_str() {
             "jinaai/jina-embeddings-v2-base-code" => CollectionConfig::JinaParity,
             "voyage/voyage-code-3" => CollectionConfig::VoyagePremium,
+            "nomic-embed-text" => CollectionConfig::NomicDev,
             other => panic!("no qdrant collection schema is defined for model brand {other:?}"),
         }
     }

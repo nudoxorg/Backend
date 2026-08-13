@@ -91,11 +91,17 @@ impl<M: EmbeddingModel> SourceStores<M> {
     /// Look one symbol up by its durable id within this source.
     ///
     /// Symbol identity used to be answered by the replica-local tantivy text
-    /// index. That plane is removed; catalog `symbols_proj` lookup is the
-    /// intended replacement and is not wired yet. Callers (resolve, semantic
-    /// hydrate) honestly get `None` rather than a wrong hit from a dead index.
-    pub async fn symbol_by_id(&self, _id: SymbolId) -> Result<Option<Symbol>, ServerError> {
-        Ok(None)
+    /// index. That plane is removed; catalog `symbols_proj` lookup
+    /// (`GlobalStore::symbol_by_id`) is the replacement — the only source of
+    /// symbol rows now is `coordination::compile_inprocess` /
+    /// `ingest_ir_bytes`'s catalog writes, read back through the same
+    /// `symbols_proj` projection `symbols_for` (the vector outbox consumer)
+    /// already reads.
+    pub async fn symbol_by_id(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {
+        self.global_store
+            .symbol_by_id(id)
+            .await
+            .map_err(|error| ServerError::Registry(crate::server::registry::RegistryError::from(error)))
     }
 }
 

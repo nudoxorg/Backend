@@ -79,9 +79,9 @@ use nudox_engine::wire::SymbolKey;
 // belongs in stores (§12), not views.  The re-exports keep every existing import
 // path and all 19 tests in this file compiling unchanged.
 pub use crate::stores::search_model::{
-    Cursor, PreparedRow, SECTION_COUNT, ScopeChip, SearchAccess, SearchMode, SearchSnapshot,
-    Section, SectionData, SectionStatus, split_qualified_name, prepare_provenance,
-    prepare_sig_token,
+    Cursor, PreparedRow, RemoteStatus, SECTION_COUNT, ScopeChip, SearchAccess, SearchMode,
+    SearchSnapshot, Section, SectionData, SectionStatus, split_qualified_name,
+    prepare_provenance, prepare_sig_token,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2402,7 +2402,7 @@ impl<S: SearchAccess> OmniSearch<S> {
 
     /// §15 zero-hit state: a designed screen with a remote-search escape hatch
     /// (LD-16 — an empty result is a state, not an absence).
-    fn render_no_hits(&self, cx: &Context<Self>) -> AnyElement {
+    fn render_no_hits(&self, snapshot: &SearchSnapshot, cx: &Context<Self>) -> AnyElement {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let motion = MotionTokens::new(ext.motion_scale);
@@ -2424,6 +2424,47 @@ impl<S: SearchAccess> OmniSearch<S> {
                     store.update(cx, |s, cx| s.search_remote(cx));
                 }),
             )
+            .child(Self::render_remote_status(&snapshot.remote, cx))
+            .into_any_element()
+    }
+
+    /// The "Search remote INDEX" button's own status line — a real
+    /// `NudoxClient` request against a configured `nudox-serve` instance
+    /// (`SearchStore::search_remote_inner`, `heart`'s off-by-default `client`
+    /// feature). Additive to the local-first sections; renders nothing that
+    /// claims to be a local corpus result.
+    fn render_remote_status(remote: &RemoteStatus, cx: &App) -> AnyElement {
+        let ext = cx.theme_ext();
+        let sp = ext.space;
+        let ts = ext.type_scale;
+        let colours = ext.colours;
+
+        let Some(text) = (match remote {
+            // Nothing to say yet — no line at all rather than a permanent
+            // "Idle" caption competing with the button above it.
+            RemoteStatus::NotConfigured | RemoteStatus::Idle => None,
+            RemoteStatus::Loading => Some(SharedString::from("Searching the remote INDEX…")),
+            RemoteStatus::Ready { hits: 0, .. } => {
+                Some(SharedString::from("The remote INDEX has no matches either"))
+            }
+            RemoteStatus::Ready { hits, elapsed_ms } => Some(SharedString::from(format!(
+                "Remote INDEX: {hits} match{} ({elapsed_ms} ms)",
+                if *hits == 1 { "" } else { "es" }
+            ))),
+            RemoteStatus::Unreachable { reason } => Some(SharedString::from(format!(
+                "Remote INDEX unreachable: {reason}"
+            ))),
+        }) else {
+            return div().into_any_element();
+        };
+
+        div()
+            .w_full()
+            .pt(sp.space_2)
+            .text_size(ts.dense.size)
+            .line_height(ts.dense.line_height)
+            .text_color(colours.fg_muted)
+            .child(text)
             .into_any_element()
     }
 
@@ -2628,7 +2669,7 @@ impl<S: SearchAccess> Render for OmniSearch<S> {
         } else if let Some(intent) = &purl {
             self.render_purl_offer(intent, cx)
         } else if no_hits && snapshot.any_section_settled() {
-            self.render_no_hits(cx)
+            self.render_no_hits(&snapshot, cx)
         } else {
             let mut column = v_flex().w_full();
             for section in Section::ALL {

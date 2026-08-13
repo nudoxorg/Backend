@@ -239,15 +239,13 @@ pub enum InternalError {
     #[error("producer exited non-zero in cage for {package}: {reason}")]
     ProducerFailed { package: String, reason: String },
 
-    /// IR production was requested on a host that cannot run the microVM cage.
-    /// The smolvm cage needs Linux KVM (libkrun); on a non-Linux host (e.g.
-    /// macOS) the in-process compile strategy owns IR production instead. This
-    /// is a typed, honest "no cage on this platform" — it names the real reason
-    /// rather than degrading to a generic internal error or an IR-less blob.
-    #[error(
-        "cage unavailable for {package} on {platform}: the smolvm microVM cage requires Linux KVM"
-    )]
-    CageUnavailable { package: String, platform: String },
+    /// Running a language producer in-process (the non-Linux compile
+    /// strategy — see `coordination::compile_inprocess`) failed: no producer
+    /// is registered for the package's language, the producer's own
+    /// toolchain is unavailable on this host, or the producer task itself
+    /// panicked.
+    #[error("in-process compile failed for {package}: {reason}")]
+    InProcessCompile { package: String, reason: String },
 
     /// Catch-all for other truly internal breakages where a more specific
     /// variant has not yet been introduced. Prefer adding a new variant.

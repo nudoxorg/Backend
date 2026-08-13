@@ -13,12 +13,13 @@
 //! - [`search`]: dispatch a read to the right surface;
 //! - [`health`]: parse-status + readiness.
 
-/// The Linux compile strategy (ephemeral SmolvmCage → NdIrF1 IR). Gated to
-/// `target_os = "linux"` because the microVM cage runtime needs KVM; the
-/// `#[cfg(not(target_os = "linux"))]` compile path is the sibling in-process
-/// strategy (`compile_inprocess`). See `indexing::Indexer::execute_compile_phase`.
-#[cfg(target_os = "linux")]
-pub(crate) mod compile_cage;
+// The macOS/non-Linux compile strategy `indexing::execute_compile_phase`
+// dispatches to (`// reconcile: in-process (macOS) vs cage (linux)`). Not
+// declared under `#[cfg(not(target_os = "linux"))]`: it is a small,
+// self-contained module and gating it would only relocate the same dead-code
+// question onto its Linux-side sibling (`compile_cage.rs`) without avoiding
+// it, since neither module is meaningfully useful cross-compiled anyway.
+pub(crate) mod compile_inprocess;
 pub mod health;
 pub mod indexing;
 pub mod initialization;

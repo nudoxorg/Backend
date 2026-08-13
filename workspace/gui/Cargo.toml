@@ -87,6 +87,28 @@ nudox-mcp = { path = "../../crates/nudox-mcp" }
 # real semantic search opts in with `-F semantic-onnx` (see `[features]` below).
 nudox-embed = { path = "../../crates/nudox-embed", default-features = false }
 
+# ── The remote-server client lindsey uses for the omni-search "also search a
+# server" section (AGENTS-DOCTRINE §1, capability ports) ────────────────────
+#
+# THIS IS A FOURTH BACKEND CRATE, admitted on the same `nudox-mcp`/`nudox-embed`
+# argument: it sits BESIDE the engine, not beneath it. `heart` is the shared
+# wire vocabulary `index::server` and `heart::client::http::NudoxClient` both
+# speak — `NudoxClient` (behind `heart`'s own off-by-default `client` feature,
+# see that crate's module docs) is a thin `reqwest` wrapper whose entire surface
+# lindsey touches is `NudoxClient::{connect, readyz, search}`,
+# `heart::query::Query`, and `heart::{Scored, Symbol}`. None of those are
+# `nudox-ir`/`-store`/`-graph` types — `heart::Symbol` is the server's own
+# already-lowered wire projection (name/kind/package), not the IR — so nothing
+# about the IR's shape crosses this seam, which is the same test `nudox-mcp`
+# and `nudox-embed` pass.
+#
+# The remote section is additive, never a replacement: `nudox-engine` stays the
+# only source of the local-first (offline) results; a remote server, when one
+# is configured and reachable, contributes a second, clearly-labelled result
+# group. `features = ["client"]` is what pulls `reqwest` in at all — bare
+# `heart` (as `index` itself depends on it) carries no transport.
+heart = { path = "../../workspace/heart", features = ["client"] }
+
 # ── Bridge & support ─────────────────────────────────────────────────────────
 # Syntax highlighting. Upstream tree-sitter rather than arborium because
 # gpui-component (pinned by rev) already owns links = "tree-sitter" in this

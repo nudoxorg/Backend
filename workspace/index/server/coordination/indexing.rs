@@ -39,25 +39,19 @@ pub struct Indexer<M: EmbeddingModel> {
     server: Arc<Server<M>>,
     acquisition: registry::upstream::UpstreamClient,
     fractions: Mutex<HashMap<PackageId, Percent>>,
-    /// OCI toolchain image metadata store. When `Some`, the Linux cage path
-    /// (`compile_cage::produce_ir`) looks up the real `ImageDigest` for each
-    /// language's toolchain before calling `prepare_golden`/`fork_golden` —
-    /// keying the golden pool by the content-addressed image rather than a
-    /// per-language placeholder. `None` (the default) keeps the deterministic
-    /// placeholder so the code path is exercised without provisioned images.
-    ///
-    /// Read only by the `#[cfg(target_os = "linux")]` cage branch; the
-    /// in-process (macOS) branch does not run the microVM, so on non-Linux the
-    /// field is set-but-unread until the sibling in-process strategy consumes it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// OCI toolchain image metadata store. When `Some`, `execute_compile_phase`
+    /// looks up the real `ImageDigest` for each language's toolchain before
+    /// calling `prepare_golden`/`fork_golden` — keying the golden pool by the
+    /// content-addressed image rather than a per-language placeholder.
+    /// `None` (the default) keeps the deterministic placeholder so the code
+    /// path is exercised without provisioned images.
     toolchain_images: Option<Arc<sandbox::ToolchainImageStore>>,
 }
 
 impl<M: EmbeddingModel> Indexer<M> {
     // NOTE(driver): the compiler daemon is gone (the cage is ephemeral,
     // SMOLVM-PLAN); the `Indexer` no longer holds a compiler client. The compile
-    // phase runs the language producer inside a per-job microVM on Linux
-    // (`compile_cage`) and in-process elsewhere — see `execute_compile_phase`.
+    // phase is stubbed — see `execute_compile_phase`.
     pub fn new(server: Arc<Server<M>>) -> Self {
         Self {
             server,
@@ -162,24 +156,21 @@ impl<M: EmbeddingModel> Indexer<M> {
         .map_err(RegistryError::from)?)
     }
 
-    /// Produce IR for the package, then ingest it into the blob builder.
+    /// Produce IR for the package inside an **ephemeral** SmolvmCage
+    /// (SMOLVM-PLAN §3). The long-lived compiler daemon this used to POST to is
+    /// gone (there is no `CompileRequest`/`CompileResponse` wire protocol any
+    /// more); IR is produced by one microVM per job, forked-from-golden for a
+    /// warm ~250 ms start and torn down after (one-VM-per-job ephemerality).
     ///
-    /// IR production is platform-dispatched. On **Linux** the language producer
-    /// runs inside an **ephemeral** per-job SmolvmCage (SMOLVM-PLAN §3): the
-    /// staged sources are materialized onto a scratch tree, a warm clone is
-    /// forked from the language toolchain golden (cold-boot fallback when live
-    /// fork is unavailable), the producer runs sealed (RO source, network OFF)
-    /// and streams a postcard-framed NdIrF1 IR stream on stdout, and the clone
-    /// is torn down. See [`compile_cage::produce_ir`] for the full lifecycle.
-    /// On **non-Linux** hosts the microVM cage cannot run (it needs Linux KVM),
-    /// so the sibling in-process strategy (`compile_inprocess`) owns IR
-    /// production instead.
-    ///
-    /// Either way the produced bytes are the same NdIrF1 stream, decoded here by
-    /// [`ingest_ir_bytes`] (via `ir_vcs::protocol::StreamReceiver`): Symbols
-    /// frames become the IR blob section + the returned symbol identifier list,
-    /// and Bodies frames are lowered into the blob `ReferenceSet` (oracle calls /
-    /// type mentions). A forge node that cannot produce IR fails the job loudly
+    /// Lifecycle: materialize the staged sources onto a scratch tree → resolve
+    /// the toolchain-image golden for the package's language and
+    /// `prepare_golden` (idempotent) → `fork_golden` a warm clone (falling back
+    /// to a fresh cage when live fork is unavailable on this host — the cage
+    /// handles that) → build the producer invocation as a [`sandbox::SealedCommand`]
+    /// under a [`sandbox::CapabilityBudget`] (RO toolchain roots + RO source,
+    /// scratch overlay, network OFF) → run it inside the clone → collect the
+    /// produced IR bytes → the clone is killed (the ephemeral overlay dies with
+    /// it). A forge node that cannot run the cage fails the job loudly
     /// (idempotent retry) rather than silently emitting an IR-less blob.
     async fn execute_compile_phase(
         &self,
@@ -194,18 +185,73 @@ impl<M: EmbeddingModel> Indexer<M> {
         let language = coordinates.ecosystem();
         let name = coordinates.name.canonical().to_owned();
 
-        // reconcile: cage (linux) vs in-process (macOS)
-        #[cfg(target_os = "linux")]
-        {
-            let ir_bytes = super::compile_cage::produce_ir(
-                self.toolchain_images.as_deref(),
-                &name,
-                language,
-                builder,
-            )
-            .await?;
+        // ── 1. Materialize the staged sources onto a scratch tree ─────────────
+        // `execute_extract_phase` already staged the sanitized source files in
+        // the builder; write them out once so the cage can mount the tree RO (no
+        // second archive pass). Both dirs live under one TempDir that is dropped
+        // (deleted) when this scope ends — nothing survives the job on the host.
+        let workspace = tempfile::Builder::new()
+            .prefix("nudox-compile-")
+            .tempdir()
+            .map_err(|source| {
+                ServerError::Internal(InternalError::MaterializeForCompile { source })
+            })?;
+        let source_root = workspace.path().join("src");
+        let scratch_root = workspace.path().join("scratch");
+        materialize_sources(builder, &source_root, &scratch_root).map_err(|source| {
+            ServerError::Internal(InternalError::MaterializeForCompile { source })
+        })?;
 
+        // ── 2/3. Produce IR for this package and stage it ─────────────────────
+        // reconcile: in-process (macOS) vs cage (linux)
+        //
+        // Only a Linux forge node can actually prepare/fork the ephemeral
+        // SmolvmCage golden (libkrun); every other host has no golden rootfs to
+        // fork and no toolchain image reachable from here, so
+        // `run_producer_in_cage` would only ever hit its cold-boot fallback and
+        // then fail outright. On such hosts `compile_inprocess` runs the
+        // matching `nudox-producer-*` crate directly against the materialized
+        // source tree instead — see that module for what it does and does not
+        // reconstruct.
+        #[cfg(target_os = "linux")]
+        let identifiers = {
+            // Resolve toolchain golden + drive the cage (blocking). The cage is
+            // a synchronous, CPU/VM-bound boundary; run it off the async
+            // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
+            let profile = producer_profile(language);
+            let image = self
+                .toolchain_images
+                .as_deref()
+                .and_then(|store| store.lookup(profile))
+                .map(|img| img.config_digest)
+                .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
+            let cage_name = name.clone();
+            let ir_bytes = tokio::task::spawn_blocking(move || {
+                run_producer_in_cage(
+                    &cage_name,
+                    language,
+                    profile,
+                    image,
+                    &source_root,
+                    &scratch_root,
+                )
+            })
+            .await
+            .map_err(|join| {
+                ServerError::Internal(InternalError::CageCompile {
+                    package: name.clone(),
+                    reason: format!("cage task panicked or was cancelled: {join}"),
+                })
+            })??;
+
+            // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
+            // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR
+            // blob section + the returned symbol identifier list, and Bodies
+            // frames are lowered into the blob `ReferenceSet` (oracle calls /
+            // type mentions). The producer binary is provisioned in the golden
+            // toolchain image; the on-wire framing contract is honored here.
             let identifiers = ingest_ir_bytes(builder, &ir_bytes);
+
             tracing::info!(
                 %package,
                 language = language.as_token(),
@@ -213,22 +259,20 @@ impl<M: EmbeddingModel> Indexer<M> {
                 identifiers = identifiers.len(),
                 "cage compile produced IR"
             );
-            Ok(identifiers)
-        }
+            identifiers
+        };
 
         #[cfg(not(target_os = "linux"))]
-        {
-            // The microVM cage needs Linux KVM; on this host the in-process
-            // producer (sibling `compile_inprocess`) owns IR production and
-            // slots into this branch on reconcile. Until then, fail loudly and
-            // honestly — naming the real reason — rather than emitting an
-            // IR-less blob or a generic "internal error" stub.
-            let _ = (language, builder);
-            Err(ServerError::Internal(InternalError::CageUnavailable {
-                package: name,
-                platform: std::env::consts::OS.to_owned(),
-            }))
-        }
+        let identifiers = super::compile_inprocess::compile_in_process(
+            stores,
+            package,
+            coordinates,
+            builder,
+            &source_root,
+        )
+        .await?;
+
+        Ok(identifiers)
     }
 
     async fn execute_emit_phase(
@@ -655,6 +699,324 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
     )
 }
 
+// ── Compile phase: cage lifecycle helpers ─────────────────────────────────
+
+/// Guest mount point (via the virtiofs tag `ro0`) for the materialized source
+/// tree. The cage projects `FsGrant.read_only[0]` to `/mnt/ro0` inside the VM
+/// (see `sandbox::smolvm_backend::translate_mounts`).
+const GUEST_SOURCE_MOUNT: &str = "/mnt/ro0";
+
+/// The per-language producer invocation contract.
+///
+/// This is the **code-level** specification of HOW each producer is invoked.
+/// The golden toolchain OCI images (built by the Buck2 compiler tree) fulfill
+/// this contract by shipping the producer binary at `entrypoint` and honouring
+/// the `args` convention. The cage on the host side merely execs these bytes;
+/// the content of the image is a deployment concern, not a code concern.
+///
+/// # Convention
+///
+/// Every producer binary follows the same interface:
+/// - `--source <path>`  : the RO-mounted source tree inside the guest VM
+///                        (always [`GUEST_SOURCE_MOUNT`]).
+/// - `--emit ndirf1`    : emit IR on stdout in the NdIrF1 / `ir-stream`
+///                        postcard-framed protocol (SMOLVM-PLAN §6.1).
+///
+/// Language-specific additional flags (e.g. `--edition 2021` for Rust,
+/// `--target-jdk 21` for Java) follow after `--emit ndirf1`; they are
+/// listed per-language below.
+///
+/// # Guest paths
+///
+/// All binary paths are absolute guest paths within the language toolchain
+/// image (e.g. `/opt/nudox/rust/bin/nudox-rust-producer`). The host never
+/// resolves these paths; the image's `PATH` is irrelevant because the cage
+/// execs the binary directly.
+pub struct ProducerInvocation {
+    /// Absolute guest path to the producer binary.
+    pub entrypoint: &'static str,
+    /// Argv (excluding argv0). Passed verbatim to the cage exec.
+    pub args: &'static [&'static str],
+}
+
+/// Return the producer invocation contract for `language`.
+///
+/// Each arm names the guest entrypoint + the fixed argv the cage passes.
+/// The golden toolchain image for that language must ship the binary at this
+/// path and must accept this argv without modification.
+pub fn producer_command(language: crate::ecosystem::Language) -> ProducerInvocation {
+    use crate::ecosystem::Language;
+    match language {
+        // Rust: nudox-rust-producer (ra_ap-backed) — reads Cargo sources at
+        // GUEST_SOURCE_MOUNT, emits NdIrF1 IR on stdout. `--edition 2021` is
+        // the default; the producer overrides it per-crate from Cargo.toml.
+        Language::Rust => ProducerInvocation {
+            entrypoint: "/opt/nudox/rust/bin/nudox-rust-producer",
+            args: &[
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--edition",
+                "2021",
+            ],
+        },
+
+        // Java: nudox-java-producer (Doclet/javac-oracle-backed) — reads
+        // Maven/Gradle sources at GUEST_SOURCE_MOUNT, emits NdIrF1.
+        // `--target-jdk 21` is the baseline; the producer auto-detects from
+        // pom.xml/build.gradle when available.
+        Language::Java => ProducerInvocation {
+            entrypoint: "/opt/nudox/java/bin/nudox-java-producer",
+            args: &[
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--target-jdk",
+                "21",
+            ],
+        },
+
+        // Go: nudox-go-producer (go/types-backed) — reads Go module sources.
+        // `--module-root` instructs the producer to treat GUEST_SOURCE_MOUNT
+        // as the module root (go.mod must be present at that path).
+        Language::Go => ProducerInvocation {
+            entrypoint: "/opt/nudox/go/bin/nudox-go-producer",
+            args: &[
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--module-root",
+                GUEST_SOURCE_MOUNT,
+            ],
+        },
+
+        // C#: nudox-csharp-producer (Roslyn-backed) — reads .NET sources.
+        // `--target-tfm net9.0` is the baseline target framework moniker; the
+        // producer overrides it from the .csproj when available.
+        Language::CSharp => ProducerInvocation {
+            entrypoint: "/opt/nudox/dotnet/bin/nudox-csharp-producer",
+            args: &[
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--target-tfm",
+                "net9.0",
+            ],
+        },
+
+        // Nix: nudox-nix-producer (snix-eval-backed) — evaluates the Nix
+        // flake at GUEST_SOURCE_MOUNT and emits IR for derivation symbols.
+        // `--flake` instructs the producer to look for a `flake.nix` at the
+        // source root and evaluate the default package set.
+        Language::Nix => ProducerInvocation {
+            entrypoint: "/opt/nudox/nix/bin/nudox-nix-producer",
+            args: &[
+                "--source",
+                GUEST_SOURCE_MOUNT,
+                "--emit",
+                "ndirf1",
+                "--flake",
+            ],
+        },
+
+        // TypeScript: nudox-ts-producer (OXC-backed static parser, LOW tier).
+        // OXC operates on the source tree directly; no separate oracle binary.
+        Language::Typescript => ProducerInvocation {
+            entrypoint: "/opt/nudox/ts/bin/nudox-ts-producer",
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
+        },
+
+        // Python: nudox-python-producer (pyrefly/static-parse-backed, LOW tier).
+        Language::Python => ProducerInvocation {
+            entrypoint: "/opt/nudox/python/bin/nudox-python-producer",
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
+        },
+
+        // C/C++: nudox-cpp-producer (tree-sitter static parse, LOW tier).
+        // No compiler oracle yet; source-only, git-checkout plane (RL-14 §7.4).
+        Language::Cpp => ProducerInvocation {
+            entrypoint: "/opt/nudox/cpp/bin/nudox-cpp-producer",
+            args: &["--source", GUEST_SOURCE_MOUNT, "--emit", "ndirf1"],
+        },
+    }
+}
+
+/// Map a package language onto the sandbox [`ProducerProfile`] whose resource
+/// ceilings + threat tier the compile runs under.
+fn producer_profile(language: crate::ecosystem::Language) -> sandbox::ProducerProfile {
+    use crate::ecosystem::Language;
+    use sandbox::ProducerProfile;
+    match language {
+        Language::Rust => ProducerProfile::Rust,
+        Language::Java => ProducerProfile::Java,
+        Language::Go => ProducerProfile::Go,
+        Language::CSharp => ProducerProfile::CSharp,
+        Language::Nix => ProducerProfile::Nix,
+        // deno_doc (TS) / pyrefly (Python) are LOW static parsers; C/C++ has no
+        // dedicated profile yet and reads as a static parse over source.
+        Language::Typescript | Language::Python | Language::Cpp => ProducerProfile::StaticParser,
+    }
+}
+
+/// Fallback toolchain-image digest used when no [`sandbox::ToolchainImageStore`]
+/// is wired into the [`Indexer`] (e.g. when images are not yet provisioned on
+/// this forge node, or in development without a full OCI image store).
+///
+/// Returns a deterministic, collision-free-per-language placeholder so
+/// `prepare_golden`/`fork_golden` are exercised for real (distinct languages
+/// get distinct goldens) without inventing image content. Each byte 0 is the
+/// first byte of the language token, rest zero.
+///
+/// The `Indexer::with_toolchain_images` call wires in the real
+/// `ToolchainImageStore`; once images are provisioned the store lookup in
+/// `execute_compile_phase` supersedes this function for every language whose
+/// image is registered. This fallback fires only for the not-found case.
+fn toolchain_image_digest_placeholder(
+    language: crate::ecosystem::Language,
+) -> sandbox::ImageDigest {
+    let mut bytes = [0u8; 32];
+    if let Some(&b0) = language.as_token().as_bytes().first() {
+        bytes[0] = b0;
+    }
+    sandbox::ImageDigest::from_bytes(bytes)
+}
+
+/// Write the builder's staged source files onto `source_root` (creating parent
+/// dirs) and create an empty `scratch_root`. Path traversal is already excluded
+/// by ingest sanitization; we defensively skip any absolute / `..` component.
+fn materialize_sources(
+    builder: &BlobBuilder,
+    source_root: &std::path::Path,
+    scratch_root: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(source_root)?;
+    std::fs::create_dir_all(scratch_root)?;
+    for (rel, bytes) in builder.source_files() {
+        let rel_path = std::path::Path::new(rel.as_str());
+        // Defensive: never escape the source root.
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            continue;
+        }
+        let dest = source_root.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dest, bytes)?;
+    }
+    Ok(())
+}
+
+/// Fork a warm cage from the language golden (falling back to a fresh cage) and
+/// run the sealed producer command inside it, returning the produced IR bytes
+/// (the producer's stdout). Synchronous: intended for `spawn_blocking`.
+///
+/// This is the real cage lifecycle: `prepare_golden` (idempotent) → `fork_golden`
+/// → `Cage::run` → teardown (the clone's `kill` runs inside `run`). The producer
+/// argv is resolved by [`producer_command`], which specifies the per-language
+/// invocation contract that the golden toolchain images fulfil.
+fn run_producer_in_cage(
+    package: &str,
+    language: crate::ecosystem::Language,
+    profile: sandbox::ProducerProfile,
+    image: sandbox::ImageDigest,
+    source_root: &std::path::Path,
+    scratch_root: &std::path::Path,
+) -> ServerResult<Vec<u8>> {
+    use sandbox::vm::{VmError, VmHandle, VmRuntime};
+    use sandbox::{
+        Cage, CancelToken, CapabilityBudget, Env, FsGrant, NetGrant, RootfsStore, SealedCommand,
+        SmolvmCage, SmolvmRuntime,
+    };
+
+    let cage_err = |reason: String| {
+        ServerError::Internal(InternalError::CageCompile {
+            package: package.to_owned(),
+            reason,
+        })
+    };
+
+    // Bootstrap the rootfs store + runtime (NUDOX_GUEST_ROOTFS on a forge node).
+    let store = RootfsStore::from_env().map_err(|e| cage_err(e.to_string()))?;
+    let runtime = SmolvmRuntime::new(store);
+
+    // ── Golden: prepare (idempotent) then fork a warm clone ───────────────────
+    // Falls back to a fresh cold-boot cage when live fork is unavailable on this
+    // host (non-Linux/macOS, or the golden could not be parked) — the no-silent-
+    // degrade rule still holds: only *unsupported fork* falls back; a hard cage
+    // failure propagates.
+    let handle = match runtime
+        .prepare_golden(&image)
+        .and_then(|golden| runtime.fork_golden(&golden))
+    {
+        Ok(handle) => Some(handle),
+        Err(VmError::Unsupported { reason }) => {
+            tracing::info!(
+                %package,
+                reason,
+                "golden fork unavailable on this host; cold-booting a fresh cage"
+            );
+            None
+        }
+        Err(other) => return Err(cage_err(format!("golden prepare/fork: {other}"))),
+    };
+
+    // ── Budget: RO source root, ephemeral scratch overlay, network OFF ────────
+    // By design (sealed-image plane): the toolchain roots (rustup/cargo/GOROOT/…)
+    // live INSIDE the golden guest image, so there are NO host-side RO toolchain
+    // binds — only the package source is bound RO. A host-bind toolchain plane
+    // would extend this `FsGrant`; the golden-image plane does not need it.
+    let fs = FsGrant::scratch(scratch_root).ro(source_root);
+    let budget = CapabilityBudget::new(fs, NetGrant::Off, Env::empty(), profile.limits());
+
+    // ── The producer invocation ───────────────────────────────────────────────
+    // `producer_command` specifies the per-language invocation contract (guest
+    // binary path + argv) that the golden toolchain OCI image fulfils. The cage
+    // execs this verbatim; the binary inside the image reads the RO source tree
+    // at GUEST_SOURCE_MOUNT and streams NdIrF1 IR frames on its stdout.
+    let inv = producer_command(language);
+    let command = SealedCommand::new(inv.entrypoint, inv.args.iter().copied(), budget);
+
+    let cancel = CancelToken::never();
+    let output = match handle {
+        // Warm fork clone: run directly against the live handle, then tear down.
+        Some(mut handle) => {
+            let spec = sandbox::project_run_spec(&command);
+            let out = handle.exec(&spec);
+            handle.kill(); // one-VM-per-job: the clone dies at end of job
+            out.map_err(|e| cage_err(format!("producer exec (forked clone): {e}")))?
+        }
+        // Cold path: the cage's own `run` boots a fresh VM, execs, and tears
+        // it down (ephemeral overlay dies with it).
+        None => {
+            let cage = SmolvmCage::with_runtime(runtime);
+            Cage::run(&cage, command, &cancel)
+                .map_err(|e| cage_err(format!("cage run (cold boot): {e}")))?
+        }
+    };
+
+    if !output.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServerError::Internal(InternalError::ProducerFailed {
+            package: package.to_owned(),
+            reason: format!(
+                "exit {:?}; stderr: {}",
+                output.status(),
+                stderr.chars().take(2000).collect::<String>()
+            ),
+        }));
+    }
+
+    Ok(output.stdout)
+}
+
 /// Decode the cage producer's IR stream bytes, stage them onto `builder`, and
 /// return the symbol identifier list for the emit/facets path.
 ///
@@ -706,12 +1068,6 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
 /// sections are still attached with whatever was received so far (possibly
 /// empty) and an empty identifier list is returned. A failed stream decode
 /// (framing error, version mismatch) logs a warning and degrades the same way.
-// Shared IR-ingestion path: both the Linux cage branch and the (sibling)
-// in-process branch produce the same postcard-framed NdIrF1 stream and feed it
-// here. On non-Linux the cage branch is `#[cfg]`-out and the in-process branch
-// (which calls this) is not yet reconciled into this worktree, so the compiler
-// sees these as unused — hence the non-linux dead-code allowance.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
     use ir::change::IntroId;
     use ir_vcs::protocol::{BodyWire, Received, StreamReceiver};
@@ -866,7 +1222,6 @@ fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> Vec<String> {
 /// - References are grouped by the owning entry's `source_path`; entries
 ///   whose `intro` is not in `intro_to_path` are grouped under the sentinel
 ///   path `"<unknown>"` (body arrived without a matching Symbol frame).
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn build_reference_set_from_bodies(
     bodies: &[ir_vcs::protocol::BodyWire],
     intro_to_path: &HashMap<ir::change::IntroId, String>,
@@ -938,7 +1293,6 @@ fn build_reference_set_from_bodies(
 /// IR store, which is an async operation not available in the blocking decode
 /// path). The `intro_hex` is sufficient for cross-reference graph edges; the
 /// IR graph adapter resolves it to a file path on demand.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn make_ref_target(
     stable: &ir::change::StableRef,
     owning_pkg: Option<&str>,
@@ -965,8 +1319,7 @@ fn make_ref_target(
 /// Attach an empty IR section and an empty reference section to `builder` so
 /// that `finalize()` does not fail with `MissingIrSection` or
 /// `MissingReferencesSection`. Used when the stream is empty or undecodable.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
+pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
     let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
     let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
