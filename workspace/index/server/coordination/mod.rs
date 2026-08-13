@@ -1,11 +1,14 @@
 //! The connective mesh: coordinating an ingest across subsystems.
 //!
-//! The durability model is **postgres-as-WAL + derived stores as pollers**: a
-//! publish is one postgres transaction (package row + parse-status + outbox
-//! entry); every derived store (qdrant / package-index / graph) is a poller with its
-//! own durable cursor. So the coordination layer here only ever *enqueues* and
-//! *records intents* — it never fans out synchronously, and a partial failure
-//! converges on retry rather than corrupting a subset of stores.
+//! The durability model is **catalog-as-WAL + derived stores as pollers**: a
+//! publish is one catalog write (the local SQLite/DoltLite engine via
+//! `CatalogWriter::apply_ops` — the old postgres connection typestate is gone),
+//! recording the package row + parse-status + outbox entry; every derived store
+//! (qdrant / package-index / graph) is a poller with its own durable cursor in
+//! `sink_watermarks`, redelivered at-least-once. So the coordination layer here
+//! only ever *enqueues* and *records intents* — it never fans out synchronously,
+//! and a partial failure converges on retry rather than corrupting a subset of
+//! stores.
 //!
 //! Flows:
 //! - [`initialization`]: ensure a package is present + fresh (enqueue if not);
