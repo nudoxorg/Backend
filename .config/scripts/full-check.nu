@@ -86,12 +86,12 @@ def main [
             exit 1
         }
         run-required "live backend socket tests" {
-            ^env RUSTC_BOOTSTRAP=1 cargo test -p driver --test live_socket --locked -- --ignored --nocapture
+            ^env RUSTC_BOOTSTRAP=1 cargo test -p index --test live_socket --locked -- --ignored --nocapture
         }
         run-required "live backend download tests" {
-            ^env RUSTC_BOOTSTRAP=1 cargo test -p driver --test live_download --locked -- --ignored --nocapture
+            ^env RUSTC_BOOTSTRAP=1 cargo test -p index --test live_download --locked -- --ignored --nocapture
         }
-        print "    live pipeline uses bin/driver (workspace/driver package)"
+        print "    live pipeline uses bin/nudox-serve (workspace/index package)"
     } else {
         print "NOT RUN: live backend tests (pass --live with SERVER_TEST_BACKENDS=1)"
     }

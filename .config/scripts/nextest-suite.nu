@@ -164,6 +164,13 @@ def main [
     # build on this machine cannot tell "committed" from "present in someone's
     # working tree", and that is exactly how the bug survived.
     #
+    # UPDATE 2026-08-12: the standalone `driver` package named throughout this
+    # history has since been dissolved — its composition/serving code folded
+    # into `index::server`, and the `driver` integration tests referenced
+    # above now live under `workspace/index/tests/` and are measured as part
+    # of `index`, not a separately-excludable package. No exclusion list
+    # changes are needed here as a result; `index` was already unexcluded.
+    #
     # `--no-fail-fast` on ci/perf (never on `default`): those two profiles
     # exist to produce a complete picture (a JUnit report, a perf table) —
     # stopping at the first failure would silently drop every benchmark

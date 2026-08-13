@@ -2,10 +2,10 @@
 //!
 //! The bespoke iroh endpoint + iroh-blobs provide/fetch this module used to
 //! carry now lives once in `index::transport` (CONSOLIDATION-NOTES §8b): the
-//! endpoint builder is [`index::transport::bind_endpoint`], the opaque
-//! content-addressed blob move is [`index::transport::blob::Provider`] /
-//! [`index::transport::blob::Fetcher`], and the length-prefixed postcard framing is
-//! [`index::transport::frame`]. This module keeps only the IR-plane control protocol
+//! endpoint builder is [`transport::bind_endpoint`], the opaque
+//! content-addressed blob move is [`transport::blob::Provider`] /
+//! [`transport::blob::Fetcher`], and the length-prefixed postcard framing is
+//! [`transport::frame`]. This module keeps only the IR-plane control protocol
 //! (announce tip → fetch missing changes → verify → write → apply → ack) and
 //! its `heart::sync::{ContentIo, ApplyHook}` wiring.
 
@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use heart::sync::{ApplyHook, ContentIo, SyncError};
-use index::transport::blob::{Fetcher, Provider, TransportHash};
-use index::transport::endpoint::{AddressLookup, EndpointId, SecretKey, bind_endpoint};
-use index::transport::frame::{TERMINAL_DRAIN, finish_and_drain, recv_framed, send_framed};
+use transport::blob::{Fetcher, Provider, TransportHash};
+use transport::endpoint::{AddressLookup, EndpointId, SecretKey, bind_endpoint};
+use transport::frame::{TERMINAL_DRAIN, finish_and_drain, recv_framed, send_framed};
 
 use super::MAX_CHANGE_BYTES;
 use super::types::{
@@ -62,7 +62,7 @@ impl<C: ContentIo<Id = ChangeId> + 'static> Syncer<C> {
         // The sender serves change blobs over iroh-blobs' ALPN; the receiver
         // pulls them by transport hash after seeing our announcement.
         let endpoint = bind_endpoint(
-            vec![index::transport::blob::BLOBS_ALPN.to_vec()],
+            vec![transport::blob::BLOBS_ALPN.to_vec()],
             secret_key,
             address_lookup,
         )

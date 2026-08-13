@@ -1,3 +1,4 @@
+#![feature(return_type_notation)]
 //! `index` — the versioned catalog crate (INDEX-PLAN phase IP-1).
 //!
 //! Two stores back the catalog:
@@ -24,11 +25,11 @@
 
 pub mod codec;
 /// The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c),
-/// moved from the former standalone `transport` crate into `index::transport`.
-/// Heart stays iroh-free; this module holds the concrete iroh/iroh-blobs/bao
-/// plumbing once, shared by all `ContentIo` implementors (ir-vcs::sync,
-/// index::pack, etc.).
-pub mod transport;
+/// now its OWN crate (`transport`) so `ir-vcs` can depend on it without an
+/// `index ↔ ir-vcs` cycle (the cycle that would otherwise block folding the
+/// server composition into `index`). Re-exported here so `index::transport::…`
+/// and `crate::transport::…` paths keep resolving unchanged.
+pub use ::transport as transport;
 /// The per-ecosystem spec (ECOSYSTEM-PLAN): name/version/upstream/manifest/search
 /// grammar per `heart::Language`. Folded in from the former standalone
 /// `ecosystem` crate; used only by `index` and `driver` (which composes index),
@@ -98,6 +99,20 @@ pub mod catalog;
 pub mod search;
 /// The transactional outbox + server-folded coordination flows.
 pub mod coordination;
+
+/// The serving composition (the dissolved `driver`/`server` crate): assembles
+/// the `index` data plane + `registry` graph/vector plane into an axum server
+/// (`Driver<M>`), plus config/authz/http/coordination/poll/save/bakery-worker.
+/// Server-specific composition folded in per CONSOLIDATION-NOTES §7/§9c; the
+/// `nudox-serve` binary is built from `server::main`. Shared client vocabulary
+/// stays in `heart::client`.
+///
+/// Behind the `server` feature (OFF by default): keeps the default `index` build
+/// a lean catalog library and keeps the `ir-vcs → zstd-seekable` symbol clash out
+/// of every non-serving build. Enable with `--features server` (the `nudox-serve`
+/// bin requires it).
+#[cfg(feature = "server")]
+pub mod server;
 
 /// Catalog table entities (SeaORM). Alias kept so `index::tables::…` paths work.
 pub use entity as tables;

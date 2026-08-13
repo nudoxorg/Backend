@@ -28,9 +28,17 @@ telemetry = [
     "dep:pyroscope",
     "dep:pyroscope_pprofrs",
 ]
+# The connecting HTTP client (`heart::client::http::NudoxClient`). OFF by default
+# so pure-vocabulary consumers (index, the server itself) never link reqwest;
+# GUI/CLI callers that need to reach a running `nudox-serve` opt in.
+client = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 anyhow = "1.0"
+
+# ── Connecting client (optional; enabled by the `client` feature) ─────────────
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+serde_json = { version = "1", optional = true }
 
 # `tracing` is a base dependency (the `cache` module logs unconditionally); the
 # heavy subscriber/OTLP stack below stays behind the `telemetry` feature.
@@ -74,6 +82,13 @@ tower = { version = "0.4", features = ["retry", "util"] }
 url = { version = "2.5", features = ["serde"] }
 uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
 uv-pep440 = { package = "uv-pep440", version = "0.0.59", features = ["serde", "version-ranges"] }
+
+# The connecting-client smoke example only builds with the `client` feature
+# (otherwise `heart::client::http` is configured out), so a default build/test
+# of `heart` — and `--all-targets` — never tries to compile it without reqwest.
+[[example]]
+name = "nudox_ping"
+required-features = ["client"]
 
 [dev-dependencies]
 tokio = { version = "1.52", features = ["full"] }

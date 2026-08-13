@@ -581,6 +581,29 @@ Also: `registry/tests/vector/*` (18 UNTRACKED files on old flat `vector::` paths
 server dissolve → index/registry/heart · object-pack → `index::pack` · ecosystem split (Language→heart, rest→index)
 · salvage §9a into index · §8b/§8c one bao/iroh transport under `heart::sync` (IR + pack + vector-shard transfer).
 
+### 9d. SERVER DISSOLVE — COMPLETED (2026-08-12): driver → index::server + heart::client
+The intermediate `driver` composition crate (§9c) was fully dissolved per the user directive
+("driver → move more into heart::client; any server-specific → index"):
+- ✅ **server-specific → `index::server`** — the whole `driver` module tree (config/error/authz/http/
+  coordination/poll/save/bakery/rerank/sync/search + `Driver<M>`=`Server<M>` + the layer-facade shim)
+  moved into `workspace/index/server/`, rewired (`crate::`→`crate::server::`, `index::`→`crate::`,
+  `xregistry`→`registry`). Built from it: the `nudox-serve` bin (`server/main.rs`). Behind index's
+  non-default **`server` feature** so a plain `cargo build/test -p index` stays a lean catalog library.
+- ✅ **`transport` crate EXTRACTED** — `index::transport` (the shared iroh/bao plane) became its own
+  `workspace/transport` crate so `ir-vcs` deps IT (not all of `index`), breaking the `index ↔ ir-vcs`
+  cycle that folding the server into `index` would create (this is §8b's planned extraction, forced
+  early). `index` re-exports it as `index::transport`; `ir-vcs` now deps `transport`.
+- ✅ **`heart::client` connecting client ADDED** — `heart::client::http::NudoxClient` (reqwest, behind a
+  new off-by-default `client` feature): `readyz`/`search`/`search_packages`/`add_package` over the shared
+  `heart::query::Query` + `Scored<Symbol>` + `client::dto` types. Proven end-to-end against a live
+  `nudox-serve` (`examples/nudox_ping.rs`). heart's default build stays reqwest-free.
+- ✅ **`driver` crate RETIRED** — deleted; root member removed; its 21 integration tests ported to
+  `workspace/index/tests/` (behind `--features server`, shared helper renamed to `server_common`).
+- ⚠ **Known latent clash**: `--features server` links `ir-vcs → libpijul → zstd-seekable`, which
+  duplicate-symbol-clashes with `index::pack`'s `zstd-sys` and SIGSEGVs pack under that feature (was
+  latent in the old `driver` bin too). Default `index` (server off) is clean: 725 lib tests green.
+- Status: `cargo check --workspace` green; `nudox-serve` serves `/readyz {"ready":true}`.
+
 ### 9c. SERVER DISSOLVE — in progress (2026-07-20)
 - ✅ **heart destination LANDED** — `heart::client` created (`pub mod client`): `client::dto` (add-package /
   compiled-lookup / rerank / health wire DTOs, transport-free, own typed validation errors — no `ServerError`)

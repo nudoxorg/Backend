@@ -2554,73 +2554,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd8e701084c37e7ef62d3f9e453b618130cbc0ef3573847785952a3ac3f746bf"
 
 [[package]]
-name = "driver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arborium-tree-sitter",
- "arc-swap",
- "async-compression",
- "async-stream",
- "async-trait",
- "axum 0.7.9",
- "blake3",
- "bytes",
- "chrono",
- "data-encoding",
- "embedrs",
- "figment",
- "flate2",
- "futures 0.3.33",
- "futures-util",
- "generativity",
- "heart",
- "http 1.4.2",
- "http-body-util",
- "hyper 0.14.32",
- "index",
- "ir-vcs",
- "metrics",
- "mimalloc",
- "moka",
- "nonempty",
- "nudox-ir",
- "object_store",
- "opentelemetry",
- "par-core",
- "postcard",
- "qdrant-client",
- "registry",
- "reqwest 0.12.28",
- "rustix 0.38.44",
- "sandbox",
- "secrecy",
- "semver",
- "serde",
- "serde_json",
- "smol_str 0.2.2",
- "strum 0.26.3",
- "tar",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-util 0.6.10",
- "toml 0.6.0",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "uuid",
- "uv-pep440",
- "which",
- "zip 2.4.2",
- "zstd",
-]
-
-[[package]]
 name = "drop_bomb"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3973,6 +3906,7 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.10.2",
+ "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
@@ -4670,26 +4604,38 @@ dependencies = [
  "async-compression",
  "async-stream",
  "async-trait",
+ "axum 0.7.9",
  "bao-tree",
  "blake3",
  "bytes",
  "chrono",
  "csv",
  "data-encoding",
+ "embedrs",
+ "figment",
  "flate2",
  "futures 0.3.33",
  "futures-util",
+ "generativity",
  "grit-lib",
  "heart",
  "heck 0.5.0",
+ "http 1.4.2",
+ "http-body-util",
+ "hyper 0.14.32",
+ "ir-vcs",
  "iroh",
  "iroh-blobs",
  "memmap2",
+ "metrics",
+ "mimalloc",
  "moka",
  "nonempty",
  "nudox-ir",
  "nudox-test-support",
  "object_store",
+ "opentelemetry",
+ "par-core",
  "postcard",
  "proptest",
  "qdrant-client",
@@ -4699,6 +4645,8 @@ dependencies = [
  "ron",
  "rusqdoltlite",
  "rusqlite",
+ "rustix 0.38.44",
+ "sandbox",
  "sea-orm",
  "sea-query",
  "secrecy",
@@ -4714,11 +4662,18 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tokio-util 0.6.10",
  "toml 0.8.23",
+ "tower 0.4.13",
+ "tower-http",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "transport",
  "url",
  "uuid",
  "uv-pep440",
+ "which",
  "zip 2.4.2",
  "zstd",
 ]
@@ -4936,7 +4891,6 @@ dependencies = [
  "blake3",
  "governor",
  "heart",
- "index",
  "iroh",
  "jiff",
  "libpijul",
@@ -4952,6 +4906,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "transport",
  "triomphe",
  "uuid",
  "yoke",
@@ -6628,15 +6583,6 @@ name = "nom"
 version = "8.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df9761775871bdef83bee530e60050f7e54b1105350d6884eb0fb4f46c2f9405"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "nom8"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae01545c9c7fc4486ab7debaf2aad7003ac19431791868fb2e8066df97fad2f8"
 dependencies = [
  "memchr",
 ]
@@ -13498,18 +13444,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb9d890e4dc9298b70f740f615f2e05b9db37dce531f6b24fb77ac993f9f217"
-dependencies = [
- "serde",
- "serde_spanned 0.6.9",
- "toml_datetime 0.5.1",
- "toml_edit 0.18.1",
-]
-
-[[package]]
-name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
@@ -13538,15 +13472,6 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4553f467ac8e3d374bc9a177a26801e5d0f9b211aa1673fb137a403afd1c9cf5"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "toml_datetime"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
@@ -13561,19 +13486,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "toml_edit"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56c59d8dd7d0dcbc6428bf7aa2f0e823e26e43b3c9aca15bbc9475d23e5fa12b"
-dependencies = [
- "indexmap 1.9.3",
- "nom8",
- "serde",
- "serde_spanned 0.6.9",
- "toml_datetime 0.5.1",
 ]
 
 [[package]]
@@ -13866,6 +13778,23 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "transport"
+version = "0.1.0"
+dependencies = [
+ "bao-tree",
+ "blake3",
+ "bytes",
+ "heart",
+ "iroh",
+ "iroh-blobs",
+ "postcard",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
