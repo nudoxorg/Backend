@@ -8,7 +8,7 @@ license.workspace = true
 # one strongly-typed `Vertex`, one async fallible `CorpusAdapter`.
 
 [dependencies]
-nudox-ir = { path = "../../workspace/ir/model" }
+nudox-ir = { path = "../ir/model" }
 nudox-store = { path = "../nudox-store" }
 
 futures = { workspace = true }

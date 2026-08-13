@@ -23,15 +23,15 @@ fixtures = []
 pyrefly = ["nudox-producer-python/pyrefly"]
 
 [dependencies]
-nudox-ir = { path = "../../workspace/ir/model" }
-nudox-producer = { path = "../../workspace/compiler/producer" }
-nudox-producer-rust = { path = "../../workspace/compiler/languages/rust" }
-nudox-producer-go = { path = "../../workspace/compiler/languages/go" }
-nudox-producer-java = { path = "../../workspace/compiler/languages/java" }
-nudox-producer-csharp = { path = "../../workspace/compiler/languages/csharp" }
-nudox-producer-clang = { path = "../../workspace/compiler/languages/clang" }
-nudox-producer-python = { path = "../../workspace/compiler/languages/python" }
-nudox-producer-typescript = { path = "../../workspace/compiler/languages/typescript" }
+nudox-ir = { path = "../ir/model" }
+nudox-producer = { path = "../compiler/producer" }
+nudox-producer-rust = { path = "../compiler/languages/rust" }
+nudox-producer-go = { path = "../compiler/languages/go" }
+nudox-producer-java = { path = "../compiler/languages/java" }
+nudox-producer-csharp = { path = "../compiler/languages/csharp" }
+nudox-producer-clang = { path = "../compiler/languages/clang" }
+nudox-producer-python = { path = "../compiler/languages/python" }
+nudox-producer-typescript = { path = "../compiler/languages/typescript" }
 
 futures = { workspace = true }
 indexmap = { workspace = true }
@@ -45,7 +45,7 @@ triomphe = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Doctrine §4: every integration test is also a benchmark. `measured()` emits the
 # `cost case=… wall_ms=… rss_bytes=… disk_delta_bytes=…` line the corpus report parses.
-nudox-test-support = { path = "../../workspace/test-support" }
+nudox-test-support = { path = "../test-support" }
 # `tests/corpus_contract.rs` reads `corpus/manifest.toml` and
 # `corpus/entry-baseline.toml` — the two files that between them define what the
 # corpus is and how many entries each package lowers to. Test-only: nothing in

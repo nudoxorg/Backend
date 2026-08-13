@@ -81,15 +81,15 @@ members = [
     # graph, and reaches these four by path. Dependency law, one direction only:
     # lindsey → engine → {graph, store} → ir; mcp → {engine, graph}; and none of
     # the four may link gpui.
-    "crates/nudox-store",
-    "crates/nudox-graph",
-    "crates/nudox-engine",
-    "crates/nudox-mcp",
+    "workspace/nudox-store",
+    "workspace/nudox-graph",
+    "workspace/nudox-engine",
+    "workspace/nudox-mcp",
     # The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability
     # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`
     # port, beside the engine rather than beneath it. Its `onnx` feature is
     # off by default, so a `--workspace` build never pulls the ort runtime.
-    "crates/nudox-embed",
+    "workspace/nudox-embed",
 ]
 
 # `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default

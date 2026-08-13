@@ -35,7 +35,7 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # and linted: lindsey → engine → {graph, store} → ir. Reaching past the engine
 # to nudox-ir/-store/-graph directly is a review-blocking finding, because it
 # would let a view depend on the shape of the IR rather than on the protocol.
-nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
+nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 
 # ── The MCP server lindsey hosts (GUI-LOCAL-PLAN §L6, LIMITATIONS.md L35) ────
 #
@@ -64,7 +64,7 @@ nudox-engine = { path = "../../crates/nudox-engine", features = ["fixtures"] }
 #
 # If a reviewer disagrees, the fix is one line here plus deleting
 # `src/app/mcp.rs`; L35 then reverts to OPEN with the reason recorded.
-nudox-mcp = { path = "../../crates/nudox-mcp" }
+nudox-mcp = { path = "../nudox-mcp" }
 
 # ── The embedder adapter lindsey installs (AGENTS-DOCTRINE §1, capability ports)
 #
@@ -85,7 +85,7 @@ nudox-mcp = { path = "../../crates/nudox-mcp" }
 # `load_from_env` is a compile-time `None` — so a plain `cargo build` of lindsey,
 # the screenshot suite, and CI never touch the ort runtime. A build that wants
 # real semantic search opts in with `-F semantic-onnx` (see `[features]` below).
-nudox-embed = { path = "../../crates/nudox-embed", default-features = false }
+nudox-embed = { path = "../nudox-embed", default-features = false }
 
 # ── The remote-server client lindsey uses for the omni-search "also search a
 # server" section (AGENTS-DOCTRINE §1, capability ports) ────────────────────

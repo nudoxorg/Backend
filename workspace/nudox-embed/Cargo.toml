@@ -38,7 +38,7 @@ nudox-engine = { path = "../nudox-engine" }
 # The runtime, behind the feature. `features = ["onnx"]` is what turns on
 # `FastembedOrt`; without this crate enabling `nudox-embed/onnx` nothing here
 # names `registry` at all, so its graph never enters a default build.
-registry = { path = "../../workspace/registry", features = ["onnx"], optional = true }
+registry = { path = "../registry", features = ["onnx"], optional = true }
 # For `tokio::sync::OnceCell`: the ORT session loads lazily on first embed so
 # engine startup never blocks on a 641 MB read + session build.
 tokio = { version = "1", features = ["sync"], optional = true }

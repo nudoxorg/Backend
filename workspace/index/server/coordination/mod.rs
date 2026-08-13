@@ -13,12 +13,12 @@
 //! - [`search`]: dispatch a read to the right surface;
 //! - [`health`]: parse-status + readiness.
 
-// The macOS/non-Linux compile strategy `indexing::execute_compile_phase`
-// dispatches to (`// reconcile: in-process (macOS) vs cage (linux)`). Not
-// declared under `#[cfg(not(target_os = "linux"))]`: it is a small,
-// self-contained module and gating it would only relocate the same dead-code
-// question onto its Linux-side sibling (`compile_cage.rs`) without avoiding
-// it, since neither module is meaningfully useful cross-compiled anyway.
+// The in-process (non-Linux) compile strategy `indexing::execute_compile_phase`
+// dispatches to on `#[cfg(not(target_os = "linux"))]` — runs the language
+// producer directly on the host CPU (no microVM cage) and writes catalog symbols
+// + qdrant vectors. The `#[cfg(target_os = "linux")]` branch keeps the real
+// SmolvmCage path inline in `indexing.rs`. See that dispatch (`// reconcile:
+// in-process (macOS) vs cage (linux)`).
 pub(crate) mod compile_inprocess;
 pub mod health;
 pub mod indexing;

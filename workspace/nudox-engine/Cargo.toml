@@ -14,7 +14,7 @@ default = []
 fixtures = ["nudox-store/fixtures"]
 
 [dependencies]
-nudox-ir = { path = "../../workspace/ir/model" }
+nudox-ir = { path = "../ir/model" }
 nudox-store = { path = "../nudox-store" }
 nudox-graph = { path = "../nudox-graph" }
 
@@ -75,15 +75,15 @@ trustfall_core = { workspace = true }
 
 
 [dev-dependencies]
-nudox-test-support = { path = "../../workspace/test-support" }
+nudox-test-support = { path = "../test-support" }
 # `tests/purl_url_parity.rs` reads `corpus/manifest.toml` to drive the
 # comparison against `corpus/fetch.nu`. Same workspace pin `nudox-store`'s
 # corpus tests use, so two readers of the same file cannot land on different
 # toml majors and disagree about what the corpus contains.
 toml = { workspace = true }
 nudox-store = { path = "../nudox-store", features = ["fixtures"] }
-nudox-producer = { path = "../../workspace/compiler/producer" }
-nudox-producer-rust = { path = "../../workspace/compiler/languages/rust" }
+nudox-producer = { path = "../compiler/producer" }
+nudox-producer-rust = { path = "../compiler/languages/rust" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 # The packages_subscription integration tests exercise `Engine::start_with_fixtures`

@@ -190,7 +190,7 @@ tokenizers  = { version = "0.22.2", optional = true }
 # `ir` (`ir = { package = "nudox-ir", … }` above), and naming the same package
 # twice under two names is a hard cargo error, not a style question. The test
 # uses `ir::change::…`.
-nudox-engine = { path = "../../crates/nudox-engine" }
+nudox-engine = { path = "../nudox-engine" }
 # `test-util` is NOT part of `full`, and without it `#[tokio::test(start_paused =
 # true)]` expands to a `Builder::start_paused` call that does not exist — 17
 # errors across the gate/scheduler/stage suites, all reported against unrelated
