@@ -422,11 +422,36 @@
           );
 
           # ── Devshell command wrappers ────────────────────────────────────
+          #
+          # `binNameOverrides` exists because `mkShell` puts every entry in
+          # `packages` ahead of the system `$PATH` (Nix's own precedence, not
+          # this flake's choice) — so a devshell command that happens to share
+          # a name with a POSIX utility silently *replaces* that utility for
+          # every process the shell runs, not just interactive use.
+          # `install` did exactly that: `tikv-jemalloc-sys`'s build script
+          # shells out to `configure`, which calls the real `install(1)` to
+          # generate a conftest file, and got `.config/scripts/install.nu`
+          # instead — a script with a completely different argument grammar
+          # (no `-o`), so the build failed with "unknown flag '-o'" nowhere
+          # near this flake's own code. `patch` is the next most plausible
+          # collision (some C packages' build steps shell out to GNU/BSD
+          # `patch(1)`); the rest of `nuScriptCommands` are cargo-adjacent
+          # verbs (`build`, `check`, `test`, …) that no third-party build
+          # script invokes by that bare name, so they are left alone rather
+          # than renamed on spec.
+          binNameOverrides = {
+            install = "nx-install";
+            "install-force" = "nx-install-force";
+          };
+
           mkDevshellCommand =
             cmdName:
+            let
+              binName = binNameOverrides.${cmdName} or cmdName;
+            in
             nixPackages.writeTextFile {
-              name = "${cmdName}-nuenv";
-              destination = "/bin/${cmdName}";
+              name = "${binName}-nuenv";
+              destination = "/bin/${binName}";
               executable = true;
               text = ''
                 #!/bin/sh
