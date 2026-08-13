@@ -504,6 +504,7 @@
               ++ (with nixPackages; [
                 git
                 cargo-bump
+                nushell
                 rust-analyzer
                 flock
                 nixfmt-rfc-style
