@@ -497,6 +497,32 @@
           default = nixPackages.mkShell {
             name = "NuNuShell";
 
+            # Linux-only build break, and the reason it is Linux-only: nixpkgs'
+            # cc-wrapper injects `-D_FORTIFY_SOURCE=3` (NIX_HARDENING_ENABLE
+            # carries both `fortify` and `fortify3`), and glibc's features.h
+            # answers that at `-O0` with `#warning _FORTIFY_SOURCE requires
+            # compiling with optimization (-O)`. Harmless on its own — but
+            # `tikv-jemalloc-sys` (pulled in transitively by `pyrefly`, the
+            # Python oracle) runs jemalloc's autoconf `configure`, and every
+            # JE_COMPILABLE probe compiles with `-Werror`. cc-rs appends the
+            # profile's `-O0` for any non-release build, so the warning becomes
+            # an error and *every* probe fails — including the trivial
+            # include-only one — leaving configure to abort with the misleading
+            # `cannot determine return type of strerror_r`.
+            #
+            # Darwin never sees it (libSystem has no such #warning) and Windows
+            # has no cc-wrapper, which is exactly why `cargo build` /
+            # `cargo nextest` worked there and not here.
+            #
+            # Both flags have to go: `fortify3` sets `=3` independently of
+            # `fortify`'s `=2`, so dropping only one still leaves the define.
+            # Release builds are unaffected either way (`-O3` silences the
+            # warning), so this only restores debug/test builds.
+            hardeningDisable = [
+              "fortify"
+              "fortify3"
+            ];
+
             RUSTC_BOOTSTRAP = "1";
             LIBRARY_PATH = "${nixPackages.libiconv}/lib";
             # `nudox-producer-clang` (workspace/compiler/languages/clang) links
