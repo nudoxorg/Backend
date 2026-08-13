@@ -201,24 +201,18 @@
             '';
 
           # Collect all prepared crates as a flat list
-          allPreparedCrates =
-            nixPackages.lib.flatten (
-              map (
-                pkgEntry:
-                map (
-                  verEntry:
-                  prepareCrate pkgEntry.name verEntry.version verEntry.hash
-                ) pkgEntry.versions
-              ) manifest.packages
-            );
+          allPreparedCrates = nixPackages.lib.flatten (
+            map (
+              pkgEntry:
+              map (verEntry: prepareCrate pkgEntry.name verEntry.version verEntry.hash) pkgEntry.versions
+            ) manifest.packages
+          );
 
           # Assemble all prepared packages into one directory
           assembliedCorpus = nixPackages.runCommand "real-crates" { } ''
             mkdir -p "$out"
             ${nixPackages.lib.concatStringsSep "\n" (
-              map (derivation:
-                "cp -r ${derivation}/*-*/ $out/ 2>/dev/null || true"
-              ) allPreparedCrates
+              map (derivation: "cp -r ${derivation}/*-*/ $out/ 2>/dev/null || true") allPreparedCrates
             )}
           '';
         in
@@ -521,6 +515,7 @@
                 taplo
                 cargo-nextest
                 libiconv
+                cargo-bundle
                 libclang.lib
                 nil
                 jsonfmt
