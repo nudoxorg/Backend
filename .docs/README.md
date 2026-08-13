@@ -68,6 +68,18 @@ table.
 | [flows/05-boot-and-config.md](flows/05-boot-and-config.md) | `main` → figment layering → `validate()` → `assemble` → `serve`. Every config key with its default and env var, `Role` gating, shutdown, and the stale comments in this area |
 | [open-questions.md](open-questions.md) | OQ-1 … OQ-16. What could not be determined, why it matters, and what would resolve it |
 
+### For coding agents — `ai/`
+
+Written for an agent that has just landed with no context: dense, no narrative,
+cross-linked to the documents above rather than duplicating them.
+
+| Document | What it covers |
+| --- | --- |
+| [ai/orientation.md](ai/orientation.md) | The repo in five lines, the two dependency planes, and a signal → plane table for deciding where a task belongs |
+| [ai/entry-points.md](ai/entry-points.md) | Task → exact files. Add a route, add an ecosystem, add a producer, change the IR schema, add an MCP tool, change ingest, change config, change search |
+| [ai/invariants.md](ai/invariants.md) | What must not break: the wire-stable content-hash encoding, the §L0 dependency law, the sealed-compute typestate, `ProducerId` versioning, the instance-token salt, ingest idempotency, the MCP standing decisions |
+| [ai/gotchas.md](ai/gotchas.md) | What fails silently or misleads: the broken build, the fiction README, empty search, dead Buck2 targets, the two `SinkKind`s and two `Language`s, contradicting comments, dead config keys |
+
 ## Known-broken things
 
 Hit these on page one rather than page forty.
