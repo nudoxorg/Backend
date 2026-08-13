@@ -55,9 +55,25 @@ use std::path::{Path, PathBuf};
 /// what closes LIMITATIONS.md L41; without it the semantic section reports
 /// `Unavailable(NoEmbedder)` in every build.
 ///
+/// `heart` sits beside the engine on a third seam: it is the transport-free
+/// wire vocabulary shared by `index::server` and
+/// `heart::client::http::NudoxClient` (behind `heart`'s own off-by-default
+/// `client` feature). The surface crossing the seam is
+/// `NudoxClient::{connect, readyz, search}` plus `heart::query::Query` and
+/// `heart::{Scored, Symbol}` — `Symbol` is the server's already-lowered wire
+/// projection, not an IR type, so nothing about the IR's shape crosses here
+/// either. It powers the omni-search remote-results section
+/// (`src/views/omni_search.rs`), additive to the local-first engine results.
+///
+/// NOTE: `heart` does not start with `nudox-`, so the manifest scan below
+/// (which only flags `nudox-*` crate names) does not actually gate it today.
+/// It is listed anyway so this allow-list stays the single source of truth
+/// for "which backend crates may `lindsey` depend on", matching §1's prose.
+///
 /// Adding to this list is a doctrine change, not a build fix. Update
 /// `AGENTS-DOCTRINE.md` §1 in the same commit or the two disagree again.
-const ALLOWED_BACKEND_DEPENDENCIES: &[&str] = &["nudox-engine", "nudox-mcp", "nudox-embed"];
+const ALLOWED_BACKEND_DEPENDENCIES: &[&str] =
+    &["nudox-engine", "nudox-mcp", "nudox-embed", "heart"];
 
 /// Crates whose types are the *shape of the IR*. A view that can name these can
 /// couple to them, which is the harm §1 exists to prevent.

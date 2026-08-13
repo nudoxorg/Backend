@@ -715,6 +715,12 @@ pub struct SearchSnapshot {
     pub gen_arrival: Option<Instant>,
     /// Whether the semantic plane is unreachable.
     pub offline: bool,
+    /// The remote (`NudoxClient`) search escape hatch's current state (§15
+    /// zero-hit state, "Search remote INDEX"). Not one of the
+    /// [`SECTION_COUNT`] sections and not part of cursor navigation — it is a
+    /// standalone status the zero-hit view renders alongside its button,
+    /// additive to the local-first `sections` above.
+    pub remote: RemoteStatus,
 }
 
 impl Default for SearchSnapshot {
@@ -733,8 +739,37 @@ impl Default for SearchSnapshot {
             generation: 0,
             gen_arrival: None,
             offline: false,
+            remote: RemoteStatus::NotConfigured,
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RemoteStatus
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// State of the remote (`heart::client::http::NudoxClient`) search escape
+/// hatch — a real network call to a configured `nudox-serve` instance,
+/// additive to (never a replacement for) the local-first `nudox-engine`
+/// sections above. See `SearchStore::search_remote` (AGENTS-DOCTRINE.md §1,
+/// `heart` capability-port seam).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum RemoteStatus {
+    /// No `NUDOX_SERVER_URL` was reachable/parseable at store construction —
+    /// distinct from `Unreachable`, which means a configured server was
+    /// *tried* and failed. Never rendered as an error: there is simply no
+    /// remote escape hatch on this run.
+    #[default]
+    NotConfigured,
+    /// Configured, but `search_remote` has not been triggered this session.
+    Idle,
+    /// A request is in flight.
+    Loading,
+    /// The server answered: `hits` symbols in `elapsed_ms`.
+    Ready { hits: usize, elapsed_ms: u64 },
+    /// The configured server did not answer (connect/timeout/non-2xx). Holds
+    /// the client error's `Display`, truncated for the status line.
+    Unreachable { reason: SharedString },
 }
 
 impl SearchSnapshot {

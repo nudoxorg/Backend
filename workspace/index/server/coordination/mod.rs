@@ -13,6 +13,13 @@
 //! - [`search`]: dispatch a read to the right surface;
 //! - [`health`]: parse-status + readiness.
 
+// The macOS/non-Linux compile strategy `indexing::execute_compile_phase`
+// dispatches to (`// reconcile: in-process (macOS) vs cage (linux)`). Not
+// declared under `#[cfg(not(target_os = "linux"))]`: it is a small,
+// self-contained module and gating it would only relocate the same dead-code
+// question onto its Linux-side sibling (`compile_cage.rs`) without avoiding
+// it, since neither module is meaningfully useful cross-compiled anyway.
+pub(crate) mod compile_inprocess;
 pub mod health;
 pub mod indexing;
 pub mod initialization;

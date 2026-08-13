@@ -23,13 +23,16 @@ lindsey (GUI, gpui)
    │      ├─→ nudox-graph ─┐
    │      └─→ nudox-store ─┴─→ nudox-ir
    │             └─→ nudox-producer ─→ nudox-producer-{rust,go,java,python,typescript,clang,csharp}
-   └─→ nudox-mcp ─→ {nudox-engine, nudox-graph}
+   ├─→ nudox-mcp ─→ {nudox-engine, nudox-graph}
+   ├─→ nudox-embed ─→ nudox-engine (capability port: Embedder)
+   └─→ heart[client] ─→ NudoxClient (remote index::server, additive to nudox-engine)
 ```
 
-- `lindsey` may **depend on `nudox-engine` and `nudox-mcp`, and no other backend
-  crate**. Its *source* may `use` neither `nudox-ir`, `nudox-store`, nor
-  `nudox-graph`; doing so is a review-blocking finding, because it would let a
-  *view* depend on the shape of the *IR* instead of on the protocol.
+- `lindsey` may **depend on `nudox-engine`, `nudox-mcp`, `nudox-embed`, and
+  `heart`, and no other backend crate**. Its *source* may `use` neither
+  `nudox-ir`, `nudox-store`, nor `nudox-graph`; doing so is a review-blocking
+  finding, because it would let a *view* depend on the shape of the *IR*
+  instead of on the protocol.
 
   **This rule previously read "may name `nudox-engine` and nothing else", and the
   word "name" was doing work it could not support.** `lindsey` has always had a
@@ -124,6 +127,18 @@ lindsey (GUI, gpui)
   build's semantic section still reports `Unavailable`, and that remains an
   honest state visible in a type rather than a zero-hit result — see
   LIMITATIONS.md L41.
+- **`heart` — a fourth allowed backend dependency, one-line justification:
+  transport-free client seam.** `heart` is the shared wire vocabulary
+  `index::server` and `heart::client::http::NudoxClient` both speak; `lindsey`
+  depends on it (with `features = ["client"]`, which is what pulls `reqwest`
+  in — bare `heart` carries no transport) to reach a configured `nudox-serve`
+  instance for the omni-search remote-results section
+  (`src/views/omni_search.rs`), additive to `nudox-engine`'s local-first
+  results. The surface crossing the seam — `NudoxClient`, `heart::query::Query`,
+  `heart::{Scored, Symbol}` — is the server's own already-lowered wire
+  projection, not an IR type, so this is the same argument `nudox-mcp` and
+  `nudox-embed` already establish above. Allow-listed in
+  `workspace/gui/tests/dependency_law.rs`'s `ALLOWED_BACKEND_DEPENDENCIES`.
 - **None** of engine/graph/store/ir/producer may link `gpui`. The whole protocol
   must be testable without a window.
 - `workspace/gui` is a standalone package with its own lockfile. That is

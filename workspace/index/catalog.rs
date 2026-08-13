@@ -379,6 +379,40 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             .collect()
     }
 
+    /// Resolve one symbol by its durable [`SymbolId`], independent of which
+    /// package/version it belongs to.
+    ///
+    /// This is the read half of [`Self::upsert_symbol`] (the write half is
+    /// exercised on every emit — see `coordination::compile_inprocess` — but
+    /// nothing called the read half until now: the semantic search hydrate
+    /// step, `SourceStores::symbol_by_id`, was stubbed to always return
+    /// `None` because "catalog `symbols_proj` lookup is the intended
+    /// replacement and is not wired yet"; this is that wiring).
+    pub async fn symbol_by_id(&self, identifier: SymbolId) -> Result<Option<heart::Symbol>, IndexError> {
+        let slot = symbol_slot(identifier);
+        let Some((version_id, moniker, kind_token)) =
+            lifecycle::symbol_by_intro_id(self.engine(), &slot)?
+        else {
+            return Ok(None);
+        };
+        let package = PackageId::from_uuid(version_id);
+        let (_, _, _, ecosystem_token, ..) = lifecycle::version_record(self.engine(), package)?
+            .ok_or(IndexError::NotFound { package })?;
+        let ecosystem = crate::schema::codec::ecosystem_from_token(&ecosystem_token)?;
+        let kind = std::str::FromStr::from_str(&kind_token)
+            .map_err(|_| IndexError::UnknownSymbolKind { token: kind_token })?;
+        Ok(Some(heart::Symbol {
+            id: identifier,
+            package,
+            ecosystem,
+            name: heart::Name {
+                plain: extract_plain_name(&moniker).into(),
+                fully_qualified: moniker.into(),
+            },
+            kind,
+        }))
+    }
+
     /// Recompute the corpus-wide reverse-dependency counts and persist each
     /// package's `dependents` into its stored facets. Returns packages updated.
     /// Runs in pages; safe to re-run (idempotent overwrite). Every changed

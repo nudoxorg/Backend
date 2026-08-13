@@ -196,6 +196,46 @@ pub fn symbols_for_version<E: CatalogEngine>(
     .map_err(MetaError::from)
 }
 
+/// Look up one projection symbol row by its packed `intro_id` slot, across
+/// every generation and version (the caller — `GlobalStore::symbol_by_id`
+/// — has only the durable `SymbolId`, not the version it belongs to; that is
+/// exactly what this recovers). Returns `(version_id, moniker, kind)` for the
+/// most recently-written matching row.
+///
+/// `intro_id` is not unique across generations of the *same* symbol by
+/// design (`upsert_symbol_projection`'s conflict key is `(gen_stamp,
+/// intro_id)`, so an unchanged symbol re-upserted under a new generation adds
+/// a row rather than replacing one) — `order_by_desc(GenStamp)` picks the
+/// newest write deterministically rather than an arbitrary row.
+pub fn symbol_by_intro_id<E: CatalogEngine>(
+    engine: &E,
+    intro_id: &[u8; 32],
+) -> Result<Option<(uuid::Uuid, String, String)>, MetaError> {
+    let stmt = symbols_proj::Entity::find()
+        .filter(symbols_proj::Column::IntroId.eq(intro_id.as_slice()))
+        .order_by_desc(symbols_proj::Column::GenStamp)
+        .select_only()
+        .column(symbols_proj::Column::VersionId)
+        .column(symbols_proj::Column::Moniker)
+        .column(symbols_proj::Column::Kind)
+        .limit(1)
+        .build(DbBackend::Sqlite);
+    // `version_id` is a sea-orm `Uuid` column, stored as a 16-byte BLOB on the
+    // SQLite backend (not TEXT) — `get_blob` + `Uuid::from_slice`, matching
+    // how every other UUID-typed id in this crate is decoded off the wire
+    // (see `symbol_from_slot`/`PackageStemId::from_uuid` callers); `get_text`
+    // here would (and did, before this was caught against a live server)
+    // fail with "non-UTF-8 bytes in Row::get_text" on the raw bytes.
+    let rows = engine::query(engine, stmt, &mut |row| {
+        Ok((row.get_blob(0)?, row.get_text(1)?, row.get_text(2)?))
+    })?;
+    Ok(rows.into_iter().find_map(|(version_id, moniker, kind)| {
+        uuid::Uuid::from_slice(&version_id)
+            .ok()
+            .map(|id| (id, moniker, kind))
+    }))
+}
+
 /// Overwrite a version's facet row and emit a Text outbox row.
 pub fn set_facets<E: CatalogEngine>(
     engine: &E,

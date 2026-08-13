@@ -10,7 +10,15 @@ use index::server::{Driver, ServerConfiguration};
 /// brand, so a store built for a *different model* (not merely a different
 /// dimension) cannot be wired in. Switching models is a deliberate recompile +
 /// migration.
-type EmbedModel = index::server::vector::JinaCodeV2;
+///
+/// `NomicEmbedText` rather than the parity `JinaCodeV2` brand: this build is
+/// wired against a local Ollama instance (`127.0.0.1:11434`) that has
+/// `nomic-embed-text` pulled, not the `JinaCodeV2` ONNX weights artifact.
+/// Both brands are 768-dimensional (`registry::vector::core::model`), so the
+/// qdrant collection schema is unaffected — only the model id embedded
+/// points are tagged with changes. Revert to `JinaCodeV2` for a deployment
+/// that serves the real parity weights.
+type EmbedModel = index::server::vector::NomicEmbedText;
 
 /// Fast general-purpose allocator for the serving path.
 #[global_allocator]

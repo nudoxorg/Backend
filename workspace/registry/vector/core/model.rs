@@ -145,6 +145,7 @@ mod sealed {
     pub trait Sealed {}
     impl Sealed for super::JinaCodeV2 {}
     impl Sealed for super::VoyageCode3 {}
+    impl Sealed for super::NomicEmbedText {}
 }
 
 /// A compile-time embedding-model brand: dimensionality, metric, stable id,
@@ -194,6 +195,36 @@ impl EmbeddingModel for JinaCodeV2 {
             ]),
             quantization: Quantization::Float32,
         })
+    }
+}
+
+/// `nomic-embed-text` — the local-dev-only Ollama brand (OpenAI-compatible
+/// `/v1/embeddings` surface, `127.0.0.1:11434`).
+///
+/// Not a product brand: it exists so a non-Linux dev/CI host that runs
+/// Ollama for its embeddings (rather than provisioning the parity
+/// `JinaCodeV2` ONNX weights) can compile-in a matching brand for
+/// `nudox-serve`'s `M` type parameter (`RemoteStore<M>` — see
+/// `workspace/index/server/main.rs`'s `EmbedModel`). `DIMENSIONS = 768`
+/// matches `JinaCodeV2`, so the same qdrant collection schema (vector size)
+/// stays valid regardless of which brand a given deployment compiles in —
+/// but the model ids differ, so points embedded under one brand are not
+/// comparable to points embedded under the other; never mix brands against
+/// one collection.
+pub enum NomicEmbedText {}
+
+impl EmbeddingModel for NomicEmbedText {
+    const DIMENSIONS: usize = 768;
+    const METRIC: Metric = Metric::Cosine;
+
+    fn id() -> ModelId {
+        ModelId::new("nomic-embed-text")
+    }
+
+    fn weights_hint() -> Option<WeightsArtifact> {
+        // API-only from this binary's point of view: Ollama manages and
+        // serves the weights itself; nothing here loads them locally.
+        None
     }
 }
 

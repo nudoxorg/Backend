@@ -202,51 +202,75 @@ impl<M: EmbeddingModel> Indexer<M> {
             ServerError::Internal(InternalError::MaterializeForCompile { source })
         })?;
 
-        // ── 2. Resolve toolchain golden + drive the cage (blocking) ───────────
-        // The cage is a synchronous, CPU/VM-bound boundary; run it off the async
-        // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
-        let profile = producer_profile(language);
-        let image = self
-            .toolchain_images
-            .as_deref()
-            .and_then(|store| store.lookup(profile))
-            .map(|img| img.config_digest)
-            .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
-        let cage_name = name.clone();
-        let ir_bytes = tokio::task::spawn_blocking(move || {
-            run_producer_in_cage(
-                &cage_name,
-                language,
-                profile,
-                image,
-                &source_root,
-                &scratch_root,
-            )
-        })
-        .await
-        .map_err(|join| {
-            ServerError::Internal(InternalError::CageCompile {
-                package: name.clone(),
-                reason: format!("cage task panicked or was cancelled: {join}"),
+        // ── 2/3. Produce IR for this package and stage it ─────────────────────
+        // reconcile: in-process (macOS) vs cage (linux)
+        //
+        // Only a Linux forge node can actually prepare/fork the ephemeral
+        // SmolvmCage golden (libkrun); every other host has no golden rootfs to
+        // fork and no toolchain image reachable from here, so
+        // `run_producer_in_cage` would only ever hit its cold-boot fallback and
+        // then fail outright. On such hosts `compile_inprocess` runs the
+        // matching `nudox-producer-*` crate directly against the materialized
+        // source tree instead — see that module for what it does and does not
+        // reconstruct.
+        #[cfg(target_os = "linux")]
+        let identifiers = {
+            // Resolve toolchain golden + drive the cage (blocking). The cage is
+            // a synchronous, CPU/VM-bound boundary; run it off the async
+            // reactor via `spawn_blocking` so heartbeats/other jobs keep flowing.
+            let profile = producer_profile(language);
+            let image = self
+                .toolchain_images
+                .as_deref()
+                .and_then(|store| store.lookup(profile))
+                .map(|img| img.config_digest)
+                .unwrap_or_else(|| toolchain_image_digest_placeholder(language));
+            let cage_name = name.clone();
+            let ir_bytes = tokio::task::spawn_blocking(move || {
+                run_producer_in_cage(
+                    &cage_name,
+                    language,
+                    profile,
+                    image,
+                    &source_root,
+                    &scratch_root,
+                )
             })
-        })??;
+            .await
+            .map_err(|join| {
+                ServerError::Internal(InternalError::CageCompile {
+                    package: name.clone(),
+                    reason: format!("cage task panicked or was cancelled: {join}"),
+                })
+            })??;
 
-        // ── 3. Hand the produced IR bytes to the emit path ────────────────────
-        // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
-        // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR blob
-        // section + the returned symbol identifier list, and Bodies frames are
-        // lowered into the blob `ReferenceSet` (oracle calls / type mentions).
-        // The producer binary is provisioned in the golden toolchain image; the
-        // on-wire framing contract is honored here.
-        let identifiers = ingest_ir_bytes(builder, &ir_bytes);
+            // `ingest_ir_bytes` decodes the producer's NdIrF1 stream via
+            // `ir_vcs::protocol::StreamReceiver`: Symbols frames become the IR
+            // blob section + the returned symbol identifier list, and Bodies
+            // frames are lowered into the blob `ReferenceSet` (oracle calls /
+            // type mentions). The producer binary is provisioned in the golden
+            // toolchain image; the on-wire framing contract is honored here.
+            let identifiers = ingest_ir_bytes(builder, &ir_bytes);
 
-        tracing::info!(
-            %package,
-            language = language.as_token(),
-            ir_bytes = ir_bytes.len(),
-            identifiers = identifiers.len(),
-            "cage compile produced IR"
-        );
+            tracing::info!(
+                %package,
+                language = language.as_token(),
+                ir_bytes = ir_bytes.len(),
+                identifiers = identifiers.len(),
+                "cage compile produced IR"
+            );
+            identifiers
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let identifiers = super::compile_inprocess::compile_in_process(
+            stores,
+            package,
+            coordinates,
+            builder,
+            &source_root,
+        )
+        .await?;
 
         Ok(identifiers)
     }
@@ -1295,7 +1319,7 @@ fn make_ref_target(
 /// Attach an empty IR section and an empty reference section to `builder` so
 /// that `finalize()` does not fail with `MissingIrSection` or
 /// `MissingReferencesSection`. Used when the stream is empty or undecodable.
-fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
+pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
     let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
     let _ = builder.set_ir(bytes::Bytes::from(ir_blob));

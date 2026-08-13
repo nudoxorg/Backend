@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use gpui::{Context, SharedString, Task};
+use heart::client::http::NudoxClient;
 use nudox_engine::wire::{Gen, HitRow, SearchEvent, SearchSectionId};
 use nudox_engine::{EngineHandle, SearchQuery, SectionState};
 
@@ -41,9 +42,35 @@ use crate::bridge::generation::GenSource;
 use crate::bridge::handle::StreamHandle as BridgeStreamHandle;
 use crate::stores::events::{OpenDisposition, OpenSymbol};
 use crate::stores::search_model::{
-    Cursor, PreparedRow, SearchMode, SearchSnapshot, ScopeChip, SectionData, SectionStatus,
-    SECTION_COUNT,
+    Cursor, PreparedRow, RemoteStatus, SearchMode, SearchSnapshot, ScopeChip, SectionData,
+    SectionStatus, SECTION_COUNT,
 };
+
+// ---------------------------------------------------------------------------
+// Remote (`NudoxClient`) escape hatch — AGENTS-DOCTRINE.md §1, `heart` seam
+// ---------------------------------------------------------------------------
+
+/// Env var naming the remote `nudox-serve` base URL for the §15 zero-hit
+/// escape hatch ("Search remote INDEX"). Unset/unparseable → no remote
+/// client is built and the escape hatch reports [`RemoteStatus::NotConfigured`]
+/// rather than attempting a request that could only fail.
+const NUDOX_SERVER_URL_ENV: &str = "NUDOX_SERVER_URL";
+
+/// Matches `ServerConfiguration::default().serving_address`
+/// (`workspace/index/server/config.rs`) — the single-node dev default, so a
+/// `nudox-serve` started with no config at all is reachable with no GUI
+/// config either.
+const NUDOX_SERVER_URL_DEFAULT: &str = "http://127.0.0.1:8080";
+
+/// Build the remote client from `NUDOX_SERVER_URL` (default
+/// [`NUDOX_SERVER_URL_DEFAULT`]). Building a [`NudoxClient`] only parses a
+/// URL and constructs a `reqwest::Client` — no I/O — so this is synchronous
+/// and safe to call from [`SearchStore::new`].
+fn remote_client_from_env() -> Option<NudoxClient> {
+    let base = std::env::var(NUDOX_SERVER_URL_ENV)
+        .unwrap_or_else(|_| NUDOX_SERVER_URL_DEFAULT.to_owned());
+    NudoxClient::connect(&base).ok()
+}
 
 // ---------------------------------------------------------------------------
 // Section constants (Name=0, Type=1, Semantic=2)
@@ -252,12 +279,30 @@ pub struct SearchStore<E: SearchEngine> {
     /// Drain loop for the current search stream.
     drain_task: Task<()>,
 
+    // ── Remote (`NudoxClient`) escape hatch (§15, AGENTS-DOCTRINE.md §1) ──
+    /// `None` when `NUDOX_SERVER_URL` is unset/unparseable — see
+    /// [`remote_client_from_env`]. Cheap to clone (`Arc`-backed
+    /// `reqwest::Client`), so `search_remote` clones it into its spawned task
+    /// rather than borrowing `self` across an `.await`.
+    remote_client: Option<NudoxClient>,
+    /// Render-ready status the zero-hit view's status line reads.
+    remote_status: RemoteStatus,
+    /// Owns the in-flight remote search task (LD-18); replaced on each call,
+    /// which drops and cancels a still-running predecessor.
+    remote_task: Task<()>,
+
     // ── Engine handle ─────────────────────────────────────────────────────
     engine: E,
 }
 
 impl<E: SearchEngine> SearchStore<E> {
     pub fn new(engine: E) -> Self {
+        let remote_client = remote_client_from_env();
+        let remote_status = if remote_client.is_some() {
+            RemoteStatus::Idle
+        } else {
+            RemoteStatus::NotConfigured
+        };
         Self {
             input: SharedString::default(),
             scope: SearchScope::default(),
@@ -270,6 +315,9 @@ impl<E: SearchEngine> SearchStore<E> {
             selection: None,
             debounce_task: None,
             drain_task: Task::ready(()),
+            remote_client,
+            remote_status,
+            remote_task: Task::ready(()),
             engine,
         }
     }
@@ -322,6 +370,68 @@ impl<E: SearchEngine> SearchStore<E> {
                 store.trigger_search(cx);
             });
         }));
+    }
+
+    // ── Remote (`NudoxClient`) escape hatch ─────────────────────────────────
+
+    /// §15 zero-hit state: issue a real `POST /search` against the configured
+    /// `nudox-serve` instance (see [`remote_client_from_env`]).
+    ///
+    /// This is additive, never a replacement: the local `sections` are
+    /// untouched, and the result lands only in `remote_status`, which the
+    /// zero-hit view renders as a status line next to its "Search remote
+    /// INDEX" button.
+    fn search_remote_inner(&mut self, cx: &mut Context<Self>) {
+        let Some(client) = self.remote_client.clone() else {
+            self.remote_status = RemoteStatus::NotConfigured;
+            cx.notify();
+            return;
+        };
+
+        self.remote_status = RemoteStatus::Loading;
+        cx.notify();
+
+        let text = self.input.to_string();
+        let started = Instant::now();
+        // Owned (LD-18): replacing `remote_task` drops and cancels a
+        // still-running predecessor, mirroring `debounce_task`/`drain_task`.
+        self.remote_task = cx.spawn(async move |store, cx| {
+            let query = heart::query::Query {
+                target: heart::query::Target::Symbols,
+                text,
+                scope: heart::query::Scope::default(),
+                rank: heart::query::RankSpecification::default(),
+                // Precise (lexical): the local-first sections above already
+                // cover the semantic path; the remote escape hatch's job is
+                // to check whether the *literal* term exists in a package the
+                // reader has not synced, not to re-run a semantic query.
+                mode: heart::query::QueryMode::Precise,
+                routing: heart::query::Routing::default(),
+                session: None,
+                at: None,
+                page: heart::query::PageSpecification::default(),
+                query_id: None,
+            };
+            let outcome = client.search(&query).await;
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let _ = store.update(cx, |store, cx| {
+                store.remote_status = match outcome {
+                    Ok(hits) => RemoteStatus::Ready {
+                        hits: hits.len(),
+                        elapsed_ms,
+                    },
+                    Err(error) => RemoteStatus::Unreachable {
+                        // Capped: a connection-refused/DNS error is short, but
+                        // nothing guarantees that of every `ClientError::Status`
+                        // body, and this renders in one status line.
+                        reason: SharedString::from(
+                            error.to_string().chars().take(160).collect::<String>(),
+                        ),
+                    },
+                };
+                cx.notify();
+            });
+        });
     }
 
     // ── Event application ─────────────────────────────────────────────────
@@ -603,6 +713,7 @@ impl<E: SearchEngine> SearchAccess for SearchStore<E> {
             gen_arrival: self.gen_arrival,
             // Offline if the semantic section (idx 2) is in the Offline state.
             offline: self.sections[2].status == SectionStatus::Offline,
+            remote: self.remote_status.clone(),
         }
     }
 
@@ -625,8 +736,7 @@ impl<E: SearchEngine> SearchAccess for SearchStore<E> {
     }
 
     fn search_remote(&mut self, cx: &mut Context<Self>) {
-        // Remote INDEX search — Wave-4 work.  Notify so the view refreshes.
-        cx.notify();
+        SearchStore::search_remote_inner(self, cx);
     }
 }
 
