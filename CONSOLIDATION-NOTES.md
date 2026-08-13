@@ -604,6 +604,68 @@ The intermediate `driver` composition crate (§9c) was fully dissolved per the u
   latent in the old `driver` bin too). Default `index` (server off) is clean: 725 lib tests green.
 - Status: `cargo check --workspace` green; `nudox-serve` serves `/readyz {"ready":true}`.
 
+### 9e. CRATES-FOLD — `nudox-test-support` relocated; the four substantive folds BLOCKED on leanness (2026-08-12)
+Task: fold the `crates/*` local-first crates into their `workspace/*` equivalents (`nudox-store`→`index`,
+`nudox-graph`/`nudox-embed`→`registry`, `nudox-engine`→`index::server`) to reduce the local-first/server split —
+without breaking the tree or the lean, gpui-free path the GUI (`workspace/gui`, package `lindsey`) consumes.
+
+- ✅ **LANDED — `nudox-test-support` → `workspace/test-support`** (package name unchanged). It is a zero-dependency,
+  dev-dependency-only measurement leaf (`measured()` / `disk_bytes`, doctrine §4's `cost case=…` line) already shared
+  by `index`, every `compiler/languages/*`, and the local-first crates — so it belongs beside the other shared
+  workspace crates, not under `crates/`. `git mv` + rewired all 11 consumer manifests + the root member (removed from
+  the local-first `[workspace.members]` block, re-added in the shared section beside `workspace/heart`). It is on no
+  crate's SHIPPING graph, so it carries zero leanness risk. **Verified green:** `cargo check --workspace` (exit 0),
+  `cargo build --manifest-path workspace/gui/Cargo.toml --bin lindsey` (exit 0), and the GUI dependency-law suite
+  (`workspace/gui/tests/dependency_law.rs`, 2/2 passed).
+
+- ⛔ **BLOCKED (documented, not attempted-and-reverted) — the four substantive folds, all on leanness grounds.**
+  The GUI's local-first path is `lindsey → nudox-engine → {nudox-graph, nudox-store} → nudox-ir`, plus
+  `nudox-mcp → {nudox-engine, nudox-graph}` and `nudox-embed` (registry ONNX bridge, `default-features = false`,
+  registry pulled ONLY under the off-by-default `onnx` feature). A default GUI build therefore links NONE of
+  `index`/`registry` and none of qdrant/tantivy/dolt/iroh — the leanness the hard constraint + `dependency_law.rs`
+  protect. Every substantive fold breaks that as things stand today:
+  - `nudox-graph → registry`: `registry` deps are **unconditionally heavy** — `default = ["remote"]` and its
+    `[dependencies]` link `qdrant-client`, `reqwest`, `moka`, `tar`, `zstd`, `trustfall` with no lean gate. The
+    GUI's `engine → graph` edge would become `engine → registry`, dragging qdrant-client into every GUI build.
+  - `nudox-embed → registry`: `nudox-embed` is the *whole point* of the split — a thin, default-off adapter so the
+    GUI can name it (dependency-law allow-list = `{nudox-engine, nudox-mcp, nudox-embed}`) without naming `registry`.
+    Folding it in would force the GUI to declare a `registry` dependency (dependency-law violation) AND link
+    qdrant. No gain: the ONNX runtime already lives in `registry`; only the object-safe `Embedder` bridge is in
+    `nudox-embed`, exactly where §1 "capability ports" wants it.
+  - `nudox-store → index` / `nudox-engine → index::server`: `index`'s `[dependencies]` are **unconditionally heavy**
+    (`registry` w/ `local`+`remote`, `qdrant-client`, `tantivy`, `iroh`/`iroh-blobs`/`bao-tree`, `object_store`,
+    `sea-orm`, `rusqlite`, `grit-lib`, `arborium-tree-sitter`, …); even server-off `index` is a heavy catalog lib.
+    And the two "stores" are **different substrates** — `nudox-store` is an in-memory `IrView` corpus over the
+    producer plane (`nudox-producer-*`); `index`'s storage is a DoltLite versioned SQL catalog. This is a source
+    relocation behind a new feature, not a merge of like storage.
+
+  **Remaining-work plan (the lean-`local`-feature strategy), file-level:**
+  1. Make `index` and `registry` heavy deps **optional** and gate them behind a `catalog`/`serving` feature that is
+     part of the current `default` (so `cargo check --workspace`, `-p index`, `-p registry` are unchanged). For
+     `index`: move `registry, qdrant-client, tantivy, iroh*, bao-tree, object_store, sea-orm, rusqlite, grit-lib,
+     arborium-tree-sitter, moka, reqwest, tar/zip/flate2/async-compression` to `optional = true` under that feature;
+     same for `registry`'s `qdrant-client/reqwest/moka/tar/zstd`. HIGH churn, must keep `index::{server,pack,catalog,…}`
+     behind it.
+  2. Add a **`local`** feature to `index` that compiles ONLY the relocated `nudox-store` (`corpus`/`package`/`index`
+     posting/`source`+producers) + `nudox-graph` (`adapter`/`vertex`/`plan`/`queries`) modules, depending on
+     `nudox-ir` + `nudox-producer-*` + the light utility deps (futures/indexmap/rustc-hash/thiserror/tokio-rt/
+     tracing/triomphe/trustfall) and **nothing** from step 1's gate. `local` and `catalog` must be able to coexist
+     (feature unification) without `local` pulling any step-1 dep.
+  3. Repoint `nudox-engine` at `index = { path=…, default-features=false, features=["local"] }` (replacing its
+     `nudox-store`/`nudox-graph` path deps); repoint `nudox-mcp`'s `nudox-graph` use at `index::local::graph`.
+     `nudox-engine` itself can then optionally fold into `index::server` as an `index` feature `engine` (or stay a
+     crate that deps `index/local`). `nudox-embed`/`nudox-mcp`/`lindsey` keep their names.
+  4. **Cycle risk:** `index` already deps `registry` (for the bakery ledger). Folding `nudox-graph` — which today deps
+     only `nudox-store`+`nudox-ir` — into `index/local` is cycle-safe (no new edge to `registry`). Folding
+     `nudox-embed` is NOT pursued (it must stay a distinct GUI-nameable crate).
+  5. **Leanness gate (must stay green after each step):** `cargo build --manifest-path workspace/gui/Cargo.toml
+     --bin lindsey` + `cargo test -p lindsey --test dependency_law`; and a NEW assertion that the GUI's resolved
+     graph contains no `qdrant-client`/`tantivy`/`iroh`/`sea-orm` (grep the GUI-workspace `Cargo.lock` once it is
+     built, mirroring `dependency_law.rs`'s text-scan discipline — no `cargo metadata` subprocess). Because the GUI
+     is a SEPARATE cargo workspace with its own lockfile, per-workspace feature unification means `index/local` in the
+     GUI graph stays lean **iff** no GUI-reachable crate enables a step-1 feature — which step 2 guarantees.
+  This is large, high-risk manifest surgery on two heavy crates; it was correctly deferred rather than half-landed.
+
 ### 9c. SERVER DISSOLVE — in progress (2026-07-20)
 - ✅ **heart destination LANDED** — `heart::client` created (`pub mod client`): `client::dto` (add-package /
   compiled-lookup / rerank / health wire DTOs, transport-free, own typed validation errors — no `ServerError`)

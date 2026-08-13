@@ -23,4 +23,4 @@ nudox-ir = { path = "../../../ir/model" }
 serde_json = { workspace = true }
 # Doctrine §4: every integration test is also a benchmark. `measured()` emits the
 # `cost case=… wall_ms=… rss_bytes=… disk_delta_bytes=…` line the corpus report parses.
-nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+nudox-test-support = { path = "../../../test-support" }

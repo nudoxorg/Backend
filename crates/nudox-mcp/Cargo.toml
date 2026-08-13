@@ -77,7 +77,7 @@ nudox-store = { path = "../nudox-store", features = ["fixtures"] }
 # `measured()`, for the `cost case=` line doctrine §4 requires from every
 # integration test. Same path-dependency shape `nudox-engine` and
 # `nudox-store` already use for it.
-nudox-test-support = { path = "../nudox-test-support" }
+nudox-test-support = { path = "../../workspace/test-support" }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macros", "io-util", "time"] }
 trustfall = { workspace = true }
 

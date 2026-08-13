@@ -75,7 +75,7 @@ trustfall_core = { workspace = true }
 
 
 [dev-dependencies]
-nudox-test-support = { path = "../nudox-test-support" }
+nudox-test-support = { path = "../../workspace/test-support" }
 # `tests/purl_url_parity.rs` reads `corpus/manifest.toml` to drive the
 # comparison against `corpus/fetch.nu`. Same workspace pin `nudox-store`'s
 # corpus tests use, so two readers of the same file cannot land on different

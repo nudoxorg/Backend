@@ -14,5 +14,5 @@ serde_json = { workspace = true }
 workspace = true
 
 [dev-dependencies]
-nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+nudox-test-support = { path = "../../../test-support" }
 serde_json = { workspace = true }

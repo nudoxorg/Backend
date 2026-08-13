@@ -225,4 +225,4 @@ proptest = "1"
 # `cost case=` line the perf report parses. For this crate the load-bearing
 # figure is `disk_delta_bytes` — the pack/catalog bytes a case actually wrote —
 # because wall time on a shared build host is not a usable signal.
-nudox-test-support = { path = "../../crates/nudox-test-support" }
+nudox-test-support = { path = "../test-support" }
