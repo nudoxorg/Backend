@@ -40,4 +40,4 @@ workspace = true
 serde_json = { workspace = true }
 # AGENTS-DOCTRINE §4: every integration test is also a benchmark. This crate is
 # a zero-dependency leaf, so it cannot re-enter the producer dependency graph.
-nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+nudox-test-support = { path = "../../../test-support" }

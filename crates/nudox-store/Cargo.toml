@@ -45,7 +45,7 @@ triomphe = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Doctrine §4: every integration test is also a benchmark. `measured()` emits the
 # `cost case=… wall_ms=… rss_bytes=… disk_delta_bytes=…` line the corpus report parses.
-nudox-test-support = { path = "../nudox-test-support" }
+nudox-test-support = { path = "../../workspace/test-support" }
 # `tests/corpus_contract.rs` reads `corpus/manifest.toml` and
 # `corpus/entry-baseline.toml` — the two files that between them define what the
 # corpus is and how many entries each package lowers to. Test-only: nothing in

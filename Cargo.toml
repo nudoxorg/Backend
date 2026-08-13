@@ -17,6 +17,13 @@ members = [
     # `Language` itself lives in `heart` (the light shared vocabulary), keeping
     # the index-free planes (`ir`, `registry`) off the catalog link path.
     "workspace/heart",
+    # Zero-dependency integration-test measurement helper (`measured`, the
+    # `cost case=…` line doctrine §4 parses). Shared across the whole tree —
+    # `index`, every `compiler/languages/*`, and the local-first crates all
+    # dev-dep it — so it lives beside the other shared workspace crates rather
+    # than under `crates/` (relocated from `crates/nudox-test-support`, package
+    # name unchanged). Dev-dependency only; on no crate's shipping graph.
+    "workspace/test-support",
     # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
     # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
     # (versioned SQLite); it is a path dep of `index`, not a workspace member.
@@ -77,7 +84,6 @@ members = [
     "crates/nudox-store",
     "crates/nudox-graph",
     "crates/nudox-engine",
-    "crates/nudox-test-support",
     "crates/nudox-mcp",
     # The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability
     # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`

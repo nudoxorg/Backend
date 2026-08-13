@@ -21,4 +21,4 @@ workspace = true
 tempfile = "3"
 # AGENTS-DOCTRINE.md §4: every integration test is also a benchmark —
 # `tests/real_package.rs` wraps its measured region in `measured()`.
-nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+nudox-test-support = { path = "../../../test-support" }

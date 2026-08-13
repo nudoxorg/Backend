@@ -155,5 +155,5 @@ rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0"
 optional = true
 
 [dev-dependencies]
-nudox-test-support = { path = "../../../../crates/nudox-test-support" }
+nudox-test-support = { path = "../../../test-support" }
 tempfile = "3"
