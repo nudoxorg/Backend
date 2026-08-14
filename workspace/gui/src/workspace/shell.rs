@@ -991,7 +991,7 @@ impl Shell {
         // an ungated shell for a session that has, in fact, lapsed: a fail-open
         // on exactly the gesture (`app::lifecycle::WindowSession::show`) most
         // likely to follow a long absence. `refresh()` costs one clock read and
-        // no network — [`nudox_mcp::AccountGate::posture`] is pure — so there is
+        // no network — [`nudox_engine::mcp::AccountGate::posture`] is pure — so there is
         // no reason to prefer the stale value.
         //
         // This still does not make the gate live *while a window stays open*:
@@ -1522,7 +1522,7 @@ impl Shell {
                         let _ = tx.send(outcome);
                     });
                 } else {
-                    let _ = tx.send(Err(nudox_mcp::SignInFailure::NoService));
+                    let _ = tx.send(Err(nudox_engine::mcp::SignInFailure::NoService));
                 }
 
                 cx.spawn_in(window, async move |_shell, cx| {
@@ -1532,7 +1532,7 @@ impl Shell {
                         // bug on our side, not a rejection of the user's key,
                         // and saying "rejected" would send them to regenerate a
                         // key that is fine.
-                        Err(_) => Err(nudox_mcp::SignInFailure::NoService),
+                        Err(_) => Err(nudox_engine::mcp::SignInFailure::NoService),
                     };
                     let rendered = cx.update(|_window, cx| {
                         let status =
@@ -1555,7 +1555,7 @@ impl Shell {
                                 // Verified, but the service could not re-derive
                                 // a presentation — impossible in practice and
                                 // not worth a fabricated one.
-                                (Ok(_), None) => Err(nudox_mcp::SignInFailure::NoService),
+                                (Ok(_), None) => Err(nudox_engine::mcp::SignInFailure::NoService),
                                 (Err(e), _) => Err(e),
                             },
                             window,
@@ -2523,47 +2523,47 @@ mod tests {
     /// value that bug was about.
     struct AlwaysAllow;
 
-    impl nudox_mcp::account::service::AccountService for AlwaysAllow {
+    impl nudox_engine::mcp::account::service::AccountService for AlwaysAllow {
         fn authorize<'a>(
             &'a self,
-            _key: &'a nudox_mcp::ApiKey,
-        ) -> nudox_mcp::account::service::ServiceFuture<
+            _key: &'a nudox_engine::mcp::ApiKey,
+        ) -> nudox_engine::mcp::account::service::ServiceFuture<
             'a,
             Result<
-                nudox_mcp::account::service::AuthorizeOutcome,
-                nudox_mcp::account::state::ProbeFailure,
+                nudox_engine::mcp::account::service::AuthorizeOutcome,
+                nudox_engine::mcp::account::state::ProbeFailure,
             >,
         > {
             Box::pin(async {
-                Ok(nudox_mcp::account::service::AuthorizeOutcome::Allowed {
-                    user: nudox_mcp::account::state::UserId(24),
+                Ok(nudox_engine::mcp::account::service::AuthorizeOutcome::Allowed {
+                    user: nudox_engine::mcp::account::state::UserId(24),
                 })
             })
         }
 
         fn record_usage<'a>(
             &'a self,
-            _key: &'a nudox_mcp::ApiKey,
+            _key: &'a nudox_engine::mcp::ApiKey,
             _count: u32,
-        ) -> nudox_mcp::account::service::ServiceFuture<
+        ) -> nudox_engine::mcp::account::service::ServiceFuture<
             'a,
             Result<
-                nudox_mcp::account::service::RecordOutcome,
-                nudox_mcp::account::state::ProbeFailure,
+                nudox_engine::mcp::account::service::RecordOutcome,
+                nudox_engine::mcp::account::state::ProbeFailure,
             >,
         > {
-            Box::pin(async { Ok(nudox_mcp::account::service::RecordOutcome::Accepted) })
+            Box::pin(async { Ok(nudox_engine::mcp::account::service::RecordOutcome::Accepted) })
         }
 
         fn usage<'a>(
             &'a self,
-            _key: &'a nudox_mcp::ApiKey,
-        ) -> nudox_mcp::account::service::ServiceFuture<
+            _key: &'a nudox_engine::mcp::ApiKey,
+        ) -> nudox_engine::mcp::account::service::ServiceFuture<
             'a,
-            Result<nudox_mcp::account::state::QuotaSnapshot, nudox_mcp::account::state::ProbeFailure>,
+            Result<nudox_engine::mcp::account::state::QuotaSnapshot, nudox_engine::mcp::account::state::ProbeFailure>,
         > {
             Box::pin(async {
-                Ok(nudox_mcp::account::state::QuotaSnapshot {
+                Ok(nudox_engine::mcp::account::state::QuotaSnapshot {
                     tier: "free".to_owned(),
                     period_start: "2026-08-01T00:00:00Z".to_owned(),
                     api_requests: 0,
@@ -2676,8 +2676,8 @@ mod tests {
         // for the rest of the test is exactly what makes it the correct
         // authority for the re-check below to consult).
         cx.update(|cx| {
-            let gate = nudox_mcp::AccountGate::in_state_for_tests(
-                nudox_mcp::account::state::GateState::SignedOut,
+            let gate = nudox_engine::mcp::AccountGate::in_state_for_tests(
+                nudox_engine::mcp::account::state::GateState::SignedOut,
             );
             cx.set_global(AccountService::start_with_gate(&engine, gate));
         });
@@ -2823,8 +2823,8 @@ mod tests {
         // `AccountGate::in_state_for_tests`, which has no service at all and
         // so cannot `sign_in` for real.
         cx.update(|cx| {
-            let gate = nudox_mcp::AccountGate::new(
-                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+            let gate = nudox_engine::mcp::AccountGate::new(
+                Box::new(nudox_engine::mcp::account::store::MemoryStore::empty()),
                 std::sync::Arc::new(AlwaysAllow),
                 None,
             );
@@ -3021,8 +3021,8 @@ mod tests {
         );
 
         cx.update(|cx| {
-            let gate = nudox_mcp::AccountGate::new(
-                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+            let gate = nudox_engine::mcp::AccountGate::new(
+                Box::new(nudox_engine::mcp::account::store::MemoryStore::empty()),
                 std::sync::Arc::new(AlwaysAllow),
                 None,
             );

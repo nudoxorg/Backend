@@ -166,7 +166,7 @@ fn truncation_at_every_length_never_panics() {
     // reliable figure is `sealed_bytes`, asserted below.
     let sealed_bytes = full.len();
     let scratch = tempfile::tempdir().expect("tempdir");
-    let (opened_ok, _cost) = nudox_test_support::measured(
+    let (opened_ok, _cost) = heart::cost::measured(
         "object_pack/truncation_sweep",
         scratch.path(),
         || {

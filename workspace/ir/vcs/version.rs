@@ -15,7 +15,7 @@
 use crate::vcs_types::ChangeSetFingerprint;
 use smol_str::SmolStr;
 
-use crate::error::VcsError;
+use crate::error::Error;
 
 // ---------------------------------------------------------------------------
 // VersionLabel
@@ -38,10 +38,10 @@ impl VersionLabel {
     ///
     /// A label may not be empty and may not contain a path/channel separator
     /// (`/`), an ASCII control character, or whitespace.
-    pub fn new(label: impl Into<SmolStr>) -> Result<Self, VcsError> {
+    pub fn new(label: impl Into<SmolStr>) -> Result<Self, Error> {
         let label = label.into();
         if label.is_empty() {
-            return Err(VcsError::InvalidRefName {
+            return Err(Error::InvalidRefName {
                 kind: "version".to_owned(),
                 name: label.to_string(),
                 reason: "empty".to_owned(),
@@ -51,7 +51,7 @@ impl VersionLabel {
             .chars()
             .find(|c| *c == '/' || c.is_control() || c.is_whitespace())
         {
-            return Err(VcsError::InvalidRefName {
+            return Err(Error::InvalidRefName {
                 kind: "version".to_owned(),
                 name: label.to_string(),
                 reason: format!("illegal character {bad:?}"),

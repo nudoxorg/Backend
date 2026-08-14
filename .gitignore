@@ -171,25 +171,25 @@
 # binary this produces is NOT allow-listed here — it stays denied by the
 # default-deny rule at the top of this file, same as every other build
 # artifact.
-!/workspace/compiler/languages/go/oracle/*.go
-!/workspace/compiler/languages/go/oracle/go.mod
-!/workspace/compiler/languages/go/oracle/go.sum
+!/workspace/compiler/languages/oracle/go/*.go
+!/workspace/compiler/languages/oracle/go/go.mod
+!/workspace/compiler/languages/oracle/go/go.sum
 # Java oracle source at its post-migration home (JAVELIN restoration from git
 # history at 23530d7^) — same reasoning as the Go oracle above: `javac`
 # (via build.rs) compiles these two committed .java files at crate build
 # time; the resulting `.class` files land under Cargo's own `OUT_DIR` and
 # stay denied by the default-deny rule, same as every other build artifact.
-!/workspace/compiler/languages/java/oracle/*.java
+!/workspace/compiler/languages/oracle/java/*.java
 
 # C# Roslyn oracle — unlike Go and Java above, this was NOT recovered from
 # history (only a BUCK file ever existed); it is new source and is the sole copy.
 # Single-level `*` is deliberate: `**/` would also un-ignore `obj/**/*.g.cs` and
 # the generated `AssemblyInfo.cs`, which must stay denied as build artifacts.
-!/workspace/compiler/languages/csharp/oracle/*.cs
-!/workspace/compiler/languages/csharp/oracle/oracle.csproj
-!/workspace/compiler/languages/csharp/oracle/packages.lock.json
-!/workspace/compiler/languages/csharp/tests/fixture/*.cs
-!/workspace/compiler/languages/csharp/tests/fixture/fixture.csproj
+!/workspace/compiler/languages/oracle/csharp/*.cs
+!/workspace/compiler/languages/oracle/csharp/oracle.csproj
+!/workspace/compiler/languages/oracle/csharp/packages.lock.json
+!/workspace/compiler/languages/tests/csharp/fixture/*.cs
+!/workspace/compiler/languages/tests/csharp/fixture/fixture.csproj
 
 # Producer test fixtures: source files for the TypeScript / Nix producers are
 # committed (mirroring the committed Rust `.rs` fixtures). Manifests that tests
@@ -207,16 +207,16 @@
 !/workspace/compiler/tests/fixtures/**/*.java
 !/workspace/compiler/tests/fixtures/**/go.mod
 !/workspace/compiler/tests/fixtures/**/go.sum
-# nudox-producer-java's own real-library fixture (Gson 2.11.0, vendored —
-# see workspace/compiler/languages/java/tests/producer_tests.rs's module doc
-# for exactly what is/isn't real Gson source) plus small hand-written-but-
-# really-compiled supplementary fixtures (records/sealed/module-info; a JEP
-# 467 probe). Committed, not `workspace/compiler/tests/fixtures/` above,
-# because these are specific to this one producer crate. Committed at all —
-# rather than fetched over the network at test time — so a fresh checkout can
-# run `cargo test -p nudox-producer-java` hermetically.
-!/workspace/compiler/languages/java/tests/fixtures/**/*.java
-!/workspace/compiler/languages/java/tests/fixtures/**/LICENSE-gson.txt
+# nudox-languages's Java producer's own real-library fixture (Gson 2.11.0,
+# vendored — see workspace/compiler/languages/tests/java/producer_tests.rs's
+# module doc for exactly what is/isn't real Gson source) plus small
+# hand-written-but-really-compiled supplementary fixtures (records/sealed/
+# module-info; a JEP 467 probe). Committed, not `workspace/compiler/tests/
+# fixtures/` above, because these are specific to this one producer. Committed
+# at all — rather than fetched over the network at test time — so a fresh
+# checkout can run `cargo test -p nudox-languages` hermetically.
+!/workspace/compiler/languages/tests/java/fixtures/**/*.java
+!/workspace/compiler/languages/tests/java/fixtures/**/LICENSE-gson.txt
 # Index ingest test fixtures (moved from workspace/ingestor).
 !/workspace/index/tests/fixtures/*.json
 

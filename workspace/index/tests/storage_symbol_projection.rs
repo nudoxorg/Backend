@@ -6,7 +6,7 @@
 //! # What "symbol" means here, precisely
 //!
 //! `index` has no language producer of its own (that plane is
-//! `nudox-ir`/`nudox-store`/`nudox-producer-*`, out of this crate's
+//! `nudox-ir`/`nudox-store`/`nudox-languages`, out of this crate's
 //! dependency graph entirely — see docs/AGENTS-DOCTRINE.md §1). It cannot lower a
 //! real crate into the ~1,300–1,900 real IR entries docs/LIMITATIONS.md L1 reports
 //! for memchr 2.8.3 without reaching into a plane this task's scope excludes.
@@ -243,7 +243,7 @@ fn ingest_real_symbols(
     let scanned_count = symbols.len();
 
     let engine = writer.engine();
-    let (_, cost) = nudox_test_support::measured(case, scratch_dir, || {
+    let (_, cost) = heart::cost::measured(case, scratch_dir, || {
         for symbol in &symbols {
             upsert_symbol_projection(
                 engine,

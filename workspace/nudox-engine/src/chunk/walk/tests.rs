@@ -1,3 +1,4 @@
+//! Unit tests for the documentation walk: sections, plan, and link resolution.
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
@@ -12,7 +13,7 @@ use nudox_ir::{
     kinds::Module,
     view::IrView,
 };
-use nudox_store::package::{PackageView, Provenance};
+use crate::store::package::{PackageView, Provenance};
 
 use super::doc_link_table::DocLinkTable;
 use super::prose::is_symbol_path;

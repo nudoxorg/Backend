@@ -764,6 +764,9 @@ pub struct SymbolHead {
     #[serde(serialize_with = "serialize_symbol_key")]
     #[schemars(with = "String")]
     pub key: SymbolKey,
+    /// Unqualified declaration name. Kept separate from the signature so
+    /// compact consumers never parse language-specific syntax to recover it.
+    pub name: SharedStr,
     /// Ancestor chain, root-first, each crumb clickable.
     pub breadcrumb: Vec<CrumbRef>,
     /// Pre-rendered signature tokens (LR-4).
@@ -812,6 +815,11 @@ pub struct SymbolHead {
     /// rendered as a link; see
     /// [`SourceLocation::jump_target`](source::SourceLocation::jump_target).
     pub source: SourceLocation,
+    /// Exact declaration text as written, including a function body when one
+    /// exists. Sliced once during production; consumers never reconstruct it
+    /// from a rendered signature or reopen package files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_excerpt: Option<SharedStr>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,7 +1356,7 @@ pub struct DiffRow {
 ///
 /// # Why this is a computed answer and not a graph vertex
 ///
-/// `nudox-graph` resolves against `nudox_store::corpus::Corpus`, which holds
+/// `nudox-graph` resolves against `crate::store::corpus::Corpus`, which holds
 /// exactly one resident `PackageView` per lineage — deliberately, because
 /// `PackageLineageId` is version-free and that is what makes `IntroId`
 /// continuity mean anything. The other generations live in the engine's
@@ -1728,14 +1736,14 @@ pub enum QueryEvent {
 // Conversions from store provenance
 // ---------------------------------------------------------------------------
 
-impl From<nudox_store::package::Provenance> for Provenance {
-    fn from(p: nudox_store::package::Provenance) -> Self {
-        // `nudox_store::package::Provenance` is #[non_exhaustive]; match both
+impl From<crate::store::package::Provenance> for Provenance {
+    fn from(p: crate::store::package::Provenance) -> Self {
+        // `crate::store::package::Provenance` is #[non_exhaustive]; match both
         // known variants and treat anything future as TrustedLocal (LR-10:
         // local is the truth, this is not the exception).
         match p {
-            nudox_store::package::Provenance::TrustedLocal => Provenance::TrustedLocal,
-            nudox_store::package::Provenance::SnapshotLocal => Provenance::TrustedLocal,
+            crate::store::package::Provenance::TrustedLocal => Provenance::TrustedLocal,
+            crate::store::package::Provenance::SnapshotLocal => Provenance::TrustedLocal,
             _ => Provenance::TrustedLocal,
         }
     }

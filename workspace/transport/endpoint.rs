@@ -1,9 +1,4 @@
-//! The shared iroh endpoint builder.
-//!
-//! Both prior transports built their endpoint identically: `presets::Minimal`,
-//! a secret key (random or caller-fixed for deterministic tests), an optional
-//! in-process [`MemoryLookup`] with loopback binding and no relay, and a set of
-//! advertised ALPNs. That builder lives here once.
+//! Shared iroh endpoint builder: minimal preset + secret key + ALPNs.
 
 use iroh::Endpoint;
 use iroh::address_lookup::MemoryLookup;

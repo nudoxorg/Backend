@@ -61,13 +61,13 @@ def run-required [label: string, command: closure] {
 }
 
 # Locate a `libclang.dylib` directory under /nix/store. Required at *run*
-# time (not just build time) because `nudox-producer-clang` — and anything
+# time (not just build time) because `nudox-languages` — and anything
 # that links it, e.g. `nudox-engine`'s test binaries — dynamically links
 # libclang without an embedded rpath (docs/TESTING.md; the doc comment on
-# `nudox-store`'s `ProducerRegistry::with_all_available`). Without
+# `nudox-engine`'s store plane `ProducerRegistry::with_all_available`). Without
 # `DYLD_LIBRARY_PATH` set to this directory, `cargo nextest list`/`run`
 # aborts with `Library not loaded: @rpath/libclang.dylib` while enumerating
-# `nudox-producer-clang`'s own test binary, before any test runs.
+# `nudox-languages`'s own test binary, before any test runs.
 def find-libclang-dir [] {
     if (sys host | get name) != "Darwin" {
         return null
@@ -113,7 +113,7 @@ def main [
         let libclang_dir = (find-libclang-dir)
         if $libclang_dir == null {
             print --stderr "FAIL: could not locate libclang.dylib under /nix/store"
-            print --stderr "      nudox-producer-clang (and anything linking it) aborts at dyld load"
+            print --stderr "      nudox-languages (and anything linking it) aborts at dyld load"
             print --stderr "      time without DYLD_LIBRARY_PATH pointed at it. See docs/TESTING.md."
             exit 1
         }
@@ -244,7 +244,7 @@ def main [
     }
 
     # Doctrine §4 / this track's constraint 4: every integration test is also
-    # a benchmark via `nudox_test_support::measured()`'s `cost case=` line.
+    # a benchmark via `heart::cost::measured()`'s `cost case=` line.
     # perf-report.nu itself prints "no cost lines found" harmlessly if a run
     # (e.g. the plain `default` profile, which sets `success-output =
     # "never"` on purpose for a quiet fast loop) produced none.

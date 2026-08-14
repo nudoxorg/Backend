@@ -1,7 +1,7 @@
 //! Storage-characteristics tests for the versioned catalog's SQL tables
 //! (`packages`, `versions`, `edges`, `schema_meta`, …): real corpus
 //! ingestion on a real on-disk engine, with disk bytes measured via
-//! `nudox_test_support::measured` per doctrine §4.
+//! `heart::cost::measured` per doctrine §4.
 //!
 //! # Which engine these bytes belong to
 //!
@@ -196,7 +196,7 @@ fn migration_ddl_cost_on_disk() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let db_path = scratch.path().join("catalog.sqlite");
 
-    let (_writer, cost) = nudox_test_support::measured(
+    let (_writer, cost) = heart::cost::measured(
         "index/migration_ddl_only",
         scratch.path(),
         || common::migrated_disk_writer(&db_path),
@@ -283,7 +283,7 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
         let batch_len = checkpoint - applied_so_far;
         let case = format!("index/catalog_scaling_upto_{checkpoint}_packages");
         let (report, cost) =
-            nudox_test_support::measured(&case, scratch.path(), || writer.apply_ops(&batch));
+            heart::cost::measured(&case, scratch.path(), || writer.apply_ops(&batch));
         let report = report.expect("real corpus batch must apply cleanly");
         assert_eq!(
             report.applied,

@@ -1,3 +1,4 @@
+//! `Reexport`, marker kind for public-alias entries.
 use crate::visitor::Visitor;
 
 // FIXME: flags for glob vs named re-exports are not yet represented; they

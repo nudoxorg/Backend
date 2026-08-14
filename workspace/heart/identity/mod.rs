@@ -1,3 +1,5 @@
+//! Package and symbol identity: ids, coordinates, and derivations.
+
 pub mod derive;
 pub mod id;
 pub mod namespace;

@@ -1,15 +1,4 @@
 //! Bao (bao-tree) outboards for verified range streaming.
-//!
-//! A Bao outboard is a BLAKE3 Merkle tree over a blob, laid out so a peer can
-//! request an arbitrary byte range and receive — alongside the range bytes —
-//! exactly the interior hashes needed to verify that slice against the blob's
-//! single root hash, without holding the whole blob. This is the "fetch one
-//! snippet, prove it's genuine" primitive.
-//!
-//! This module holds the raw bao math, generic over a 32-byte BLAKE3 root and
-//! plain byte slices — no pack/member/TOC vocabulary. The object-pack plane
-//! wraps these calls with its `MemberOutboard`/`OutboardSidecar` types; any
-//! other plane (vector shards, goldens) can reuse the same primitives.
 
 use bao_tree::io::outboard::PreOrderMemOutboard;
 use bao_tree::io::sync::{decode_ranges, encode_ranges_validated};
@@ -31,7 +20,7 @@ pub const BAO_CHUNK_BYTES: u64 = 1024;
 
 /// A bao encode/decode/range failure.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum BaoError {
+pub enum Error {
     /// The requested `[start, end)` range was invalid against the blob length.
     #[error("range out of bounds")]
     RangeOutOfBounds { start: u64, end: u64, length: u64 },
@@ -39,32 +28,35 @@ pub enum BaoError {
     /// The outboard could not encode the range (corruption between blob and
     /// outboard).
     #[error("bao encode failed")]
-    Encode(#[source] IoErrorString),
+    Encode(#[source] ErrorText),
 
     /// The encoded slice failed verification against the root (a tampered byte).
     #[error("bao decode/verify failed")]
-    Decode(#[source] IoErrorString),
+    Decode(#[source] ErrorText),
 }
+
+/// Back-compat alias so cross-crate callers keep `bao::BaoError` resolvable.
+pub use self::Error as BaoError;
 
 /// Wraps a `std::io::Error`-like value that is both `Clone + Eq` — bao_tree
 /// returns an error type that supports `Display` but not `Error`. We preserve
 /// its string rendering while keeping it as a typed source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IoErrorString(String);
+pub struct ErrorText(String);
 
-impl IoErrorString {
+impl ErrorText {
     fn new(e: impl std::fmt::Display) -> Self {
         Self(e.to_string())
     }
 }
 
-impl std::fmt::Display for IoErrorString {
+impl std::fmt::Display for ErrorText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl std::error::Error for IoErrorString {}
+impl std::error::Error for ErrorText {}
 
 /// A generated outboard: the root hash, the blob length, and the pre-order
 /// interior-hash bytes (without the 8-byte length prefix — the length is
@@ -102,9 +94,9 @@ pub fn encode_range(
     blob: &[u8],
     start: u64,
     end: u64,
-) -> Result<Bytes, BaoError> {
+) -> Result<Bytes, Error> {
     if start > end || end > outboard.length {
-        return Err(BaoError::RangeOutOfBounds {
+        return Err(Error::RangeOutOfBounds {
             start,
             end,
             length: outboard.length,
@@ -118,14 +110,14 @@ pub fn encode_range(
     };
     let mut encoded: Vec<u8> = Vec::new();
     encode_ranges_validated(blob, pre_order, &ranges, &mut encoded)
-        .map_err(|error| BaoError::Encode(IoErrorString::new(error)))?;
+        .map_err(|error| Error::Encode(ErrorText::new(error)))?;
     Ok(Bytes::from(encoded))
 }
 
 /// Verify a Bao-encoded range on the receiver and return the *exact* requested
 /// bytes `[start, end)`.
 ///
-/// Decoding fails with [`BaoError::Decode`] if any leaf or interior hash does
+/// Decoding fails with [`Error::Decode`] if any leaf or interior hash does
 /// not match `root` — a tampered byte is rejected.
 pub fn verify_range(
     root: &[u8; 32],
@@ -133,9 +125,9 @@ pub fn verify_range(
     encoded: &[u8],
     start: u64,
     end: u64,
-) -> Result<Bytes, BaoError> {
+) -> Result<Bytes, Error> {
     if start > end || end > length {
-        return Err(BaoError::RangeOutOfBounds { start, end, length });
+        return Err(Error::RangeOutOfBounds { start, end, length });
     }
     if start == end {
         return Ok(Bytes::new());
@@ -147,7 +139,7 @@ pub fn verify_range(
     let mut target: Vec<u8> = vec![0u8; length as usize];
     let empty_outboard = bao_tree::io::outboard::EmptyOutboard { tree, root };
     decode_ranges(encoded, &ranges, &mut target[..], empty_outboard)
-        .map_err(|error| BaoError::Decode(IoErrorString::new(error)))?;
+        .map_err(|error| Error::Decode(ErrorText::new(error)))?;
 
     Ok(Bytes::copy_from_slice(
         &target[start as usize..end as usize],
@@ -200,7 +192,7 @@ mod tests {
         let victim = encoded.len() / 2;
         encoded[victim] ^= 0xFF;
         let result = verify_range(&outboard.root, outboard.length, &encoded, start, end);
-        assert!(matches!(result, Err(BaoError::Decode(_))), "got {result:?}");
+        assert!(matches!(result, Err(Error::Decode(_))), "got {result:?}");
     }
 
     #[test]
@@ -208,6 +200,6 @@ mod tests {
         let data = big();
         let outboard = generate(&data);
         let err = encode_range(&outboard, &data, 0, outboard.length + 1).unwrap_err();
-        assert!(matches!(err, BaoError::RangeOutOfBounds { .. }));
+        assert!(matches!(err, Error::RangeOutOfBounds { .. }));
     }
 }

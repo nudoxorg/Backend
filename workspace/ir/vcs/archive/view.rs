@@ -36,7 +36,7 @@ use ir::change::{ContentBlake3, IntroId};
 use ir::kind::KindDiscriminant;
 use zerocopy::FromBytes;
 
-use crate::archive::error::ArchiveError;
+use crate::archive::error::Error;
 use crate::archive::header::{EntryHead, SectionId};
 use crate::archive::index::{DensePostingIndexView, IntroIndexView, LinkCsrView, PostingIndexView};
 use crate::archive::section::{CsrView, StringTableView};
@@ -192,19 +192,19 @@ impl<'a> PackageArchiveView<'a> {
     // -----------------------------------------------------------------------
 
     /// Return the [`EntryHead`] for `idx`.
-    pub fn entry_head(&self, idx: ArenaIdx) -> Result<&'a EntryHead, ArchiveError> {
+    pub fn entry_head(&self, idx: ArenaIdx) -> Result<&'a EntryHead, Error> {
         let i = idx.0 as usize;
         let count = self.parsed.entry_count as usize;
         if i >= count {
-            return Err(ArchiveError::IndexOutOfRange(
+            return Err(Error::IndexOutOfRange(
                 idx.0,
                 self.parsed.entry_count,
             ));
         }
-        let bytes = self.entry_heads_bytes().ok_or(ArchiveError::Truncated)?;
+        let bytes = self.entry_heads_bytes().ok_or(Error::Truncated)?;
         let off = i * std::mem::size_of::<EntryHead>();
         EntryHead::ref_from_bytes(&bytes[off..off + std::mem::size_of::<EntryHead>()])
-            .map_err(|_| ArchiveError::Truncated)
+            .map_err(|_| Error::Truncated)
     }
 
     // -----------------------------------------------------------------------
@@ -212,7 +212,7 @@ impl<'a> PackageArchiveView<'a> {
     // -----------------------------------------------------------------------
 
     /// Return the [`IntroId`] for `idx`.
-    pub fn intro_of(&self, idx: ArenaIdx) -> Result<IntroId, ArchiveError> {
+    pub fn intro_of(&self, idx: ArenaIdx) -> Result<IntroId, Error> {
         let eh = self.entry_head(idx)?;
         Ok(IntroId::from_raw(eh.intro))
     }
@@ -356,21 +356,21 @@ impl<'a> PackageArchiveView<'a> {
     // -----------------------------------------------------------------------
 
     /// Return the raw postcard-encoded payload bytes for `idx`.
-    pub fn payload_raw(&self, idx: ArenaIdx) -> Result<&'a [u8], ArchiveError> {
+    pub fn payload_raw(&self, idx: ArenaIdx) -> Result<&'a [u8], Error> {
         let eh = self.entry_head(idx)?;
         let off = eh.payload_off() as usize;
         let len = eh.payload_len() as usize;
-        let payload_bytes = self.entry_payloads_bytes().ok_or(ArchiveError::Truncated)?;
+        let payload_bytes = self.entry_payloads_bytes().ok_or(Error::Truncated)?;
         if off + len > payload_bytes.len() {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(&payload_bytes[off..off + len])
     }
 
     /// Decode the full [`OwnedEntryPayload`] for `idx` (allocates).
-    pub fn payload(&self, idx: ArenaIdx) -> Result<OwnedEntryPayload, ArchiveError> {
+    pub fn payload(&self, idx: ArenaIdx) -> Result<OwnedEntryPayload, Error> {
         let raw = self.payload_raw(idx)?;
-        postcard::from_bytes(raw).map_err(ArchiveError::Postcard)
+        postcard::from_bytes(raw).map_err(Error::Postcard)
     }
 
     // -----------------------------------------------------------------------

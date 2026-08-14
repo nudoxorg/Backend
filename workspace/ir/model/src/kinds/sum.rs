@@ -1,3 +1,4 @@
+//! `Enum` and `Variant`, algebraic sum type kinds.
 use crate::{
     List,
     index::Ref,

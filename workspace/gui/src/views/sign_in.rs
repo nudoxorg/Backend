@@ -68,7 +68,7 @@ use gpui::{
     Subscription, Window, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use nudox_mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
+use nudox_engine::mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
 
 use crate::app::account::AccountPresentation;
 use crate::app::actions::{ConfirmOverlay, DismissOverlay};

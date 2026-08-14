@@ -57,9 +57,9 @@ pub enum StreamFrame<T> {
     /// One ranked hit.
     Hit(T),
     /// The stream is terminating because the server failed *after* it began
-    /// answering. Carries a structured [`WireError`], not a rendered string, so
+    /// answering. Carries a structured [`Error`], not a rendered string, so
     /// the reader decides retry/offline/degraded on a typed variant.
-    Error(WireError),
+    Error(Error),
     /// The stream is terminating normally. Its presence is what distinguishes a
     /// complete answer from a truncated one.
     End(StreamSummary),
@@ -99,7 +99,7 @@ impl StreamSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "kind", content = "detail", rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum WireError {
+pub enum Error {
     /// A backing store (index/vector/catalog) was unavailable. Usually transient
     /// — a retry may succeed.
     #[error("backend unavailable: {0}")]
@@ -116,6 +116,8 @@ pub enum WireError {
     Internal(String),
 }
 
+pub use self::Error as WireError;
+
 /// The concrete symbol-search frame instantiation, named once so the server
 /// writer and the client reader cannot disagree about the payload type.
 pub type SymbolFrame = StreamFrame<Scored<Symbol>>;
@@ -131,7 +133,7 @@ mod tests {
         assert_eq!(serde_json::to_string(&end).unwrap(), r#"{"end":{"hits":2}}"#);
 
         let err: StreamFrame<i32> =
-            StreamFrame::Error(WireError::BadRequest("empty text".into()));
+            StreamFrame::Error(Error::BadRequest("empty text".into()));
         assert_eq!(
             serde_json::to_string(&err).unwrap(),
             r#"{"error":{"kind":"bad_request","detail":"empty text"}}"#
@@ -153,13 +155,13 @@ mod tests {
     #[test]
     fn wire_error_round_trips_by_variant_not_prose() {
         for err in [
-            WireError::Backend("qdrant down".into()),
-            WireError::BadRequest("bad cursor".into()),
-            WireError::Timeout,
-            WireError::Internal("boom".into()),
+            Error::Backend("qdrant down".into()),
+            Error::BadRequest("bad cursor".into()),
+            Error::Timeout,
+            Error::Internal("boom".into()),
         ] {
             let json = serde_json::to_string(&err).unwrap();
-            let back: WireError = serde_json::from_str(&json).unwrap();
+            let back: Error = serde_json::from_str(&json).unwrap();
             assert_eq!(err, back);
         }
     }

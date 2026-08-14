@@ -37,13 +37,13 @@ pub struct NudoxClient {
 /// stream-specific variants below are the whole point of the typed envelope —
 /// they let a caller tell a server error from a truncated stream from a
 /// malformed line, all of which the old bare-NDJSON reader collapsed into a
-/// single [`ClientError::Decode`].
+/// single [`Error::Decode`].
 ///
 /// `#[non_exhaustive]`: adding a failure class must not break a caller's
 /// `match` — callers fold the unknown into their most conservative decision.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
-pub enum ClientError {
+pub enum Error {
     /// The base URL could not be joined with an endpoint path.
     #[error("invalid endpoint url: {0}")]
     Url(#[from] url::ParseError),
@@ -61,7 +61,7 @@ pub enum ClientError {
     },
     /// A response line/body could not be decoded into the expected type — a
     /// *malformed* frame, distinct from a server-reported error (which is a
-    /// value; see [`ClientError::Wire`]).
+    /// value; see [`Error::Wire`]).
     #[error("decode error: {0}")]
     Decode(#[from] serde_json::Error),
     /// The server reported a structured failure *mid-stream*, after emitting
@@ -94,10 +94,12 @@ pub enum ClientError {
     },
 }
 
+pub use self::Error as ClientError;
+
 impl NudoxClient {
     /// Bind a client to `base` (e.g. `http://127.0.0.1:8080`). Uses sensible
     /// connect/read timeouts so a dead server surfaces as an error, not a hang.
-    pub fn new(base: Url) -> Result<Self, ClientError> {
+    pub fn new(base: Url) -> Result<Self, Error> {
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(std::time::Duration::from_secs(30))
@@ -107,14 +109,14 @@ impl NudoxClient {
     }
 
     /// Parse `base` from a string and bind.
-    pub fn connect(base: &str) -> Result<Self, ClientError> {
+    pub fn connect(base: &str) -> Result<Self, Error> {
         Self::new(Url::parse(base)?)
     }
 
     /// The server's readiness (`GET /readyz`): whether every backing store is up
     /// and which, if any, are degraded. This is the client-side "am I connected?"
     /// probe the GUI status bar renders.
-    pub async fn readyz(&self) -> Result<HealthDto, ClientError> {
+    pub async fn readyz(&self) -> Result<HealthDto, Error> {
         let url = self.base.join("readyz")?;
         let response = self.http.get(url).send().await?;
         self.json(response).await
@@ -126,10 +128,10 @@ impl NudoxClient {
     ///
     /// On success every line was a well-typed frame terminated by a
     /// [`StreamFrame::End`]. A mid-stream [`StreamFrame::Error`] surfaces as
-    /// [`ClientError::Wire`] (a *value*, carrying how many hits preceded it); a
-    /// stream with no terminal frame surfaces as [`ClientError::Truncated`] —
+    /// [`Error::Wire`] (a *value*, carrying how many hits preceded it); a
+    /// stream with no terminal frame surfaces as [`Error::Truncated`] —
     /// never as a spurious empty success.
-    pub async fn search(&self, query: &Query) -> Result<Vec<Scored<Symbol>>, ClientError> {
+    pub async fn search(&self, query: &Query) -> Result<Vec<Scored<Symbol>>, Error> {
         let url = self.base.join("search")?;
         let response = self.http.post(url).json(query).send().await?;
         let body = self.checked(response).await?;
@@ -142,7 +144,7 @@ impl NudoxClient {
     /// stream), so this decodes the whole page. `PackageHit` is the one shape
     /// both sides name — schema drift is a compile error at the server's
     /// projection, not a runtime `Value` index-panic here.
-    pub async fn search_packages(&self, query: &Query) -> Result<Page<PackageHit>, ClientError> {
+    pub async fn search_packages(&self, query: &Query) -> Result<Page<PackageHit>, Error> {
         let url = self.base.join("packages/search")?;
         let response = self.http.post(url).json(query).send().await?;
         self.json(response).await
@@ -151,7 +153,7 @@ impl NudoxClient {
     /// Request that the server index a package (`POST /packages`). Returns `Ok`
     /// once the server has accepted the request (2xx); the actual indexing is
     /// asynchronous (queue-driven).
-    pub async fn add_package(&self, dto: &AddPackageDto) -> Result<(), ClientError> {
+    pub async fn add_package(&self, dto: &AddPackageDto) -> Result<(), Error> {
         let url = self.base.join("packages")?;
         let response = self.http.post(url).json(dto).send().await?;
         let _ = self.checked(response).await?;
@@ -162,20 +164,20 @@ impl NudoxClient {
     async fn json<T: serde::de::DeserializeOwned>(
         &self,
         response: reqwest::Response,
-    ) -> Result<T, ClientError> {
+    ) -> Result<T, Error> {
         let body = self.checked(response).await?;
         Ok(serde_json::from_str(&body)?)
     }
 
-    /// Turn a non-2xx response into a typed [`ClientError::Status`]; otherwise
+    /// Turn a non-2xx response into a typed [`Error::Status`]; otherwise
     /// return the body text.
-    async fn checked(&self, response: reqwest::Response) -> Result<String, ClientError> {
+    async fn checked(&self, response: reqwest::Response) -> Result<String, Error> {
         let status = response.status();
         let body = response.text().await?;
         if status.is_success() {
             Ok(body)
         } else {
-            Err(ClientError::Status {
+            Err(Error::Status {
                 status: status.as_u16(),
                 body: body.chars().take(2048).collect(),
             })
@@ -187,13 +189,13 @@ impl NudoxClient {
 /// [`StreamFrame`]s.
 ///
 /// The terminal-frame requirement is enforced *here*: a body that ends without
-/// an `End` or `Error` frame returns [`ClientError::Truncated`], so "the lines I
+/// an `End` or `Error` frame returns [`Error::Truncated`], so "the lines I
 /// received all parsed" can no longer masquerade as a complete answer. A server
-/// [`StreamFrame::Error`] becomes a typed [`ClientError::Wire`] value (carrying
+/// [`StreamFrame::Error`] becomes a typed [`Error::Wire`] value (carrying
 /// the count of hits that preceded it); a line that fails to parse as a frame is
-/// a [`ClientError::Decode`] — the three outcomes the bare-line reader could not
+/// a [`Error::Decode`] — the three outcomes the bare-line reader could not
 /// tell apart.
-fn read_hit_stream<T>(body: &str) -> Result<Vec<Scored<T>>, ClientError>
+fn read_hit_stream<T>(body: &str) -> Result<Vec<Scored<T>>, Error>
 where
     T: serde::de::DeserializeOwned,
 {
@@ -209,7 +211,7 @@ where
         if terminal.is_some() {
             // A well-formed stream stops at its terminal frame; anything after
             // it is a writer bug we refuse to silently absorb.
-            return Err(ClientError::Protocol {
+            return Err(Error::Protocol {
                 hits_before: hits.len(),
             });
         }
@@ -222,11 +224,11 @@ where
 
     match terminal {
         Some(Ok(())) => Ok(hits),
-        Some(Err(error)) => Err(ClientError::Wire {
+        Some(Err(error)) => Err(Error::Wire {
             error,
             hits_before: hits.len(),
         }),
-        None => Err(ClientError::Truncated {
+        None => Err(Error::Truncated {
             hits_before: hits.len(),
         }),
     }
@@ -264,7 +266,7 @@ mod tests {
         // Two good hits, then the connection drops — no End/Error frame.
         let body = format!("{}\n{}", hit_line("a", 0.9), hit_line("b", 0.5));
         match read_hit_stream::<String>(&body) {
-            Err(ClientError::Truncated { hits_before }) => assert_eq!(hits_before, 2),
+            Err(Error::Truncated { hits_before }) => assert_eq!(hits_before, 2),
             other => panic!("expected Truncated, got {other:?}"),
         }
     }
@@ -275,7 +277,7 @@ mod tests {
             StreamFrame::Error(WireError::Backend("qdrant down".into()));
         let body = format!("{}\n{}", hit_line("a", 0.9), serde_json::to_string(&error).unwrap());
         match read_hit_stream::<String>(&body) {
-            Err(ClientError::Wire { error, hits_before }) => {
+            Err(Error::Wire { error, hits_before }) => {
                 assert_eq!(hits_before, 1, "one hit preceded the error");
                 assert!(matches!(error, WireError::Backend(_)));
             }
@@ -288,7 +290,7 @@ mod tests {
         let body = format!("{}\nnot json at all", hit_line("a", 0.9));
         assert!(matches!(
             read_hit_stream::<String>(&body),
-            Err(ClientError::Decode(_))
+            Err(Error::Decode(_))
         ));
     }
 }

@@ -3,7 +3,7 @@
 # perf-report.nu — turn `cost case=` lines into a report you can iterate against.
 #
 # Doctrine §4 says every integration test is also a benchmark: each one wraps its
-# measured region in `nudox_test_support::measured()`, which prints one line:
+# measured region in `heart::cost::measured()`, which prints one line:
 #
 #   cost case=<name> wall_ms=<f64> rss_bytes=<u64|unknown> disk_delta_bytes=<i64>
 #
@@ -64,7 +64,7 @@ def parse-cost-line [line: string] {
     if not ("case" in ($pairs | columns)) { return null }
 
     # `rss_bytes` is literally "unknown" on platforms with no supported counter —
-    # that is a deliberate choice in nudox-test-support (a missing platform
+    # that is a deliberate choice in heart::cost (a missing platform
     # counter must not turn a functional test into a platform test), so it must
     # not become 0 here either. 0 would silently average into the totals and
     # understate real memory use.

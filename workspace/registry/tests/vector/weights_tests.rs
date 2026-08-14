@@ -2,7 +2,7 @@
 //! Pinned-artifact policy: sha verification and graceful missing-weights.
 
 use sha2::{Digest, Sha256};
-use registry::vector::embed::weights::{WeightsError, WeightsSpec};
+use registry::vector::embed::weights::{Error, WeightsSpec};
 
 const FAKE_ONNX: &[u8] = b"definitely not a real onnx graph, but stable bytes";
 
@@ -42,7 +42,7 @@ fn sha_mismatch_rejected() {
 
 	let result = spec_with(dir.path(), Some(sha256(b"the pinned artifact"))).verify();
 	assert!(
-		matches!(result, Err(WeightsError::Sha256Mismatch { .. })),
+		matches!(result, Err(Error::Sha256Mismatch { .. })),
 		"corrupt/swapped weights must never load"
 	);
 }
@@ -52,7 +52,7 @@ fn missing_weights_is_graceful_signal() {
 	let dir = tempfile::tempdir().expect("tempdir");
 	let result = spec_with(dir.path(), None).verify();
 	assert!(
-		matches!(result, Err(WeightsError::MissingWeights { .. })),
+		matches!(result, Err(Error::MissingWeights { .. })),
 		"missing artifact → semantic search disabled, not a crash"
 	);
 }

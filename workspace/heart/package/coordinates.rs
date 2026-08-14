@@ -1,3 +1,5 @@
+//! The (origin, name, version) address of a package.
+
 use crate::{PackageId, RegistryOrigin, ecosystem::Language, identity::derive};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -42,7 +44,9 @@ impl Coordinates {
 /// Raised when name and version disagree on ecosystem.
 #[derive(Debug, Error)]
 #[error("coordinate ecosystem mismatch: name is {name}, version is {version}")]
-pub struct CoordinateError {
+pub struct Error {
     pub name: Language,
     pub version: Language,
 }
+
+pub use self::Error as CoordinateError;

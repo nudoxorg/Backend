@@ -4,10 +4,10 @@ use std::io::{Read, Write};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::cancel::CancelToken;
+use crate::budget::limits::Limits;
 use crate::cgroup::Cgroup;
 use crate::error::{KillReason, SandboxError};
-use crate::limits::Limits;
+use crate::job::cancel::CancelToken;
 use crate::spec::Output;
 
 /// Drive a spawned child to completion under `limits`.

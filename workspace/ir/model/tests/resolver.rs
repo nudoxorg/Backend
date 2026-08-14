@@ -1,3 +1,4 @@
+//! `ExampleResolver`, a test resolver backed by an in-memory VFS.
 use serde::{Deserialize, Serialize};
 use vfs::{MemoryFS, VfsPath, error::VfsErrorKind};
 

@@ -644,10 +644,10 @@ impl Stage {
         std::fs::create_dir_all(&account_dir).expect("account scratch dir");
 
         cx.update(|cx| {
-            let gate = nudox_mcp::AccountGate::new(
-                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+            let gate = nudox_engine::mcp::AccountGate::new(
+                Box::new(nudox_engine::mcp::account::store::MemoryStore::empty()),
                 Arc::new(
-                    nudox_mcp::account::service::HttpAccountService::with_base_url(
+                    nudox_engine::mcp::account::service::HttpAccountService::with_base_url(
                         fake_api.base_url(),
                     )
                     .expect("a loopback client builds"),

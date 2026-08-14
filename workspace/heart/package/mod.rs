@@ -1,3 +1,5 @@
+//! Package coordinates, search hits, and name validation.
+
 pub mod coordinates;
 
 pub use coordinates::{CoordinateError, Coordinates};

@@ -1,3 +1,5 @@
+//! The canonical symbol record surfaced by search and graph queries.
+
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 

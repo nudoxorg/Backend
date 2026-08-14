@@ -68,6 +68,7 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "aarch64-darwin"
+        "x86_64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
@@ -94,11 +95,17 @@
             src = cargo-bundle;
             cargoHash = "sha256-VfXJNsopV7SEjhnMyz4D2l2HBBnQv2I9xeqhhD4R7aw=";
             # Flake tarball inputs arrive as extensionless archives; unpack
-            # them into a writable root for buildRustPackage's vendoring phase.
+            # them into the build root (not a `source/` subdir we then `cd`
+            # into) so buildRustPackage's `cargo vendor` / lockfile-consistency
+            # hooks find `Cargo.toml`/`Cargo.lock` at the working directory
+            # they expect. `runHook postUnpack` is required: overriding
+            # unpackPhase skips the default `postUnpackHooks`, without which
+            # `cargoSetupPostUnpackHook` never copies the vendored deps in.
             unpackPhase = ''
               mkdir source
               ${nixPackages.gnutar}/bin/tar -xzf "$src" -C source --strip-components=1
-              cd source
+              cp -R source/. .
+              runHook postUnpack
             '';
             doCheck = false;
           };
@@ -108,6 +115,10 @@
             "aarch64-darwin" = {
               platform = "aarch64-apple-darwin";
               hash = "sha256-SL2EJ5B+90i3O3Pw4NAcI4wnyUMp29yl0qo4wmM7jsg=";
+            };
+            "x86_64-darwin" = {
+              platform = "x86_64-apple-darwin";
+              hash = "sha256-AScqudALl5webUyMJ2v/Lw0CCU+q7nJ1JrrAAQP2CSo=";
             };
             "aarch64-linux" = {
               platform = "aarch64-unknown-linux-gnu";
@@ -146,6 +157,10 @@
             "aarch64-darwin" = {
               platform = "aarch64-apple-darwin";
               hash = "sha256-cjgWmrQiLagv4lN3dgEl2l7wDmchntMGBgFyfztRLWA=";
+            };
+            "x86_64-darwin" = {
+              platform = "x86_64-apple-darwin";
+              hash = "sha256-7czaJhavbkHkv/1JsXPbi3IeNptgZHMcGLdt14de2lU=";
             };
             "aarch64-linux" = {
               platform = "aarch64-unknown-linux-gnu";
@@ -508,7 +523,7 @@
 
                 RUSTC_BOOTSTRAP = "1";
                 LIBRARY_PATH = "${nixPackages.libiconv}/lib";
-                # `nudox-producer-clang` (workspace/compiler/languages/clang) links
+                # `nudox-languages` (workspace/compiler/languages) links
                 # `clang-sys` with its `runtime` feature: libclang is `dlopen`'d at
                 # first use, not linked at build time, so no binary that merely
                 # links the crate can abort at process load — see that crate's

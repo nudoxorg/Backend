@@ -12,7 +12,7 @@
 use std::sync::Arc;
 
 use nudox_ir::{change::IntroId, entry::Entry, kind::Kind, view::IrView};
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
 use crate::wire::{
     FieldRow, KindTag, MemberRow, RenderSection, SectionId, SectionKind, SectionPlan, SharedStr,

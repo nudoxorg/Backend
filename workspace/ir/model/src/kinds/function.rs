@@ -1,3 +1,4 @@
+//! `Function` kind plus `Receiver` and `FnModifier` enums.
 use crate::{
     List,
     index::Ref,

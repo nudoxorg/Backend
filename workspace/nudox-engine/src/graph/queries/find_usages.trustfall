@@ -1,0 +1,11 @@
+{
+    Symbols {
+        key @filter(op: "=", value: ["$key"])
+        usages {
+            key @output
+            name @output
+            kind @output
+            path @output
+        }
+    }
+}

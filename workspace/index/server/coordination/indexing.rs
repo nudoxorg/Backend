@@ -210,7 +210,7 @@ impl<M: EmbeddingModel> Indexer<M> {
         // fork and no toolchain image reachable from here, so
         // `run_producer_in_cage` would only ever hit its cold-boot fallback and
         // then fail outright. On such hosts `compile_inprocess` runs the
-        // matching `nudox-producer-*` crate directly against the materialized
+        // matching `nudox-languages` producer directly against the materialized
         // source tree instead — see that module for what it does and does not
         // reconstruct.
         #[cfg(target_os = "linux")]
@@ -1560,7 +1560,7 @@ pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
 ///
 /// The cage path recovers references from the producer's `Bodies` stream frames
 /// (oracle call / type-mention facts with real spans). The in-process producer
-/// entrypoint (`nudox_producer::produce`) returns only the *sealed table*:
+/// entrypoint (`nudox_languages::produce`) returns only the *sealed table*:
 /// there is no second `Bodies` channel, and no forward semantic→wire encoder in
 /// the workspace to rebuild the NdIrF1 `Symbols`/`Bodies` stream from it (so the
 /// cage's [`ingest_ir_bytes`] byte-decode path cannot be reused — see
@@ -2133,7 +2133,7 @@ mod tests {
     // ── In-process path: real reference edges flow from the sealed table ──
     //
     // The end-to-end sanity check for the macOS/dev fix: a sealed
-    // `PristineIntroTable` (what `nudox_producer::produce` returns in-process)
+    // `PristineIntroTable` (what `nudox_languages::produce` returns in-process)
     // with real cross-symbol references must yield a NON-EMPTY `ReferenceSet`
     // with real Local *and* External edges — the section that was previously
     // attached empty, blinding `Target::Usages` for every macOS-indexed package.

@@ -56,7 +56,7 @@
 //! (zero rows, not wrong rows), and it is the reason the relevance suite is
 //! built over types the corpus actually declares.
 
-use nudox_store::package::TypePosition;
+use crate::store::package::TypePosition;
 
 /// One `facet:Type` term.
 #[derive(Debug, Clone, PartialEq, Eq)]

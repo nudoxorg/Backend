@@ -1,3 +1,4 @@
+//! `UniqueId`, package-scoped, globally-unique entry identifier.
 use super::PackageId;
 
 /// A globally-unique identifier for an entry, scoped to its package.

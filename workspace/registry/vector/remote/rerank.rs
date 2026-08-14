@@ -47,7 +47,7 @@ pub struct RerankScore {
 
 /// Errors from a reranker.
 #[derive(Debug, Error)]
-pub enum RerankError {
+pub enum Error {
     #[error("reranker HTTP error: {0}")]
     Http(String),
 
@@ -76,7 +76,7 @@ pub trait Reranker: Send + Sync {
         &self,
         query: &str,
         docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, RerankError>;
+    ) -> Result<Vec<RerankScore>, Error>;
 }
 
 /// A reranker that posts to the index's own `/v1/rerank` microservice.
@@ -104,7 +104,7 @@ impl Reranker for HttpReranker {
         &self,
         query: &str,
         docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, RerankError> {
+    ) -> Result<Vec<RerankScore>, Error> {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
@@ -119,7 +119,7 @@ impl Reranker for HttpReranker {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(RerankError::ApiError { status, body });
+            return Err(Error::ApiError { status, body });
         }
 
         let result: IndexRerankResponse = resp.json().await?;
@@ -153,9 +153,9 @@ impl VoyageReranker {
     ///
     /// Calls [`assert_licensed`] on `VOYAGE_RERANK_MODEL` — fails at
     /// construction if the model is on the deny-list (I15).
-    pub fn new(api_key: String, top_k: usize) -> Result<Self, RerankError> {
+    pub fn new(api_key: String, top_k: usize) -> Result<Self, Error> {
         assert_licensed(VOYAGE_RERANK_MODEL)
-            .map_err(|e| RerankError::LicenseDenied(e.to_string()))?;
+            .map_err(|e| Error::LicenseDenied(e.to_string()))?;
         Ok(Self {
             client: reqwest::Client::new(),
             api_key,
@@ -170,7 +170,7 @@ impl Reranker for VoyageReranker {
         &self,
         query: &str,
         docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, RerankError> {
+    ) -> Result<Vec<RerankScore>, Error> {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
@@ -194,7 +194,7 @@ impl Reranker for VoyageReranker {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp.text().await.unwrap_or_default();
-            return Err(RerankError::ApiError { status, body });
+            return Err(Error::ApiError { status, body });
         }
 
         let result: VoyageRerankResponse = resp.json().await?;

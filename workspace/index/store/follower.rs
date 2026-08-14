@@ -68,12 +68,12 @@ pub trait SinkFollower {
     ///
     /// Errors abort the current drain tick **before** the watermark is advanced
     /// past this row, so the row is redelivered on the next tick (at-least-once).
-    fn project(&mut self, row: &OutboxRow) -> Result<(), FollowerError>;
+    fn project(&mut self, row: &OutboxRow) -> Result<(), Error>;
 }
 
 /// Why a follower drain tick failed.
 #[derive(Debug, thiserror::Error)]
-pub enum FollowerError {
+pub enum Error {
     /// The catalog store (claim / watermark) failed.
     #[error(transparent)]
     Catalog(#[from] MetaError),
@@ -85,15 +85,19 @@ pub enum FollowerError {
     Projection(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-impl FollowerError {
-    /// Wrap any sink-specific projection error as a [`FollowerError::Projection`].
+impl Error {
+    /// Wrap any sink-specific projection error as a [`Error::Projection`].
     pub fn projection<E>(error: E) -> Self
     where
         E: std::error::Error + Send + Sync + 'static,
     {
-        FollowerError::Projection(Box::new(error))
+        Error::Projection(Box::new(error))
     }
 }
+
+/// Compatibility alias for callers that named the drain error by its old
+/// `FollowerError` spelling.
+pub use self::Error as FollowerError;
 
 /// The outcome of one [`drain_once`] tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -136,7 +140,7 @@ pub fn drain_once<S, F>(
     store: &S,
     follower: &mut F,
     batch: usize,
-) -> Result<DrainReport, FollowerError>
+) -> Result<DrainReport, Error>
 where
     S: MetaStore,
     F: SinkFollower,

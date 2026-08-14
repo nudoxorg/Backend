@@ -8,7 +8,7 @@ use heart::ContentHash;
 use registry::vector::EmbedRole;
 use registry::vector::embed::mock::MockEmbedder;
 use registry::vector::embed::scheduler::{
-	CancelGroup, EmbedHandle, EmbedScheduler, Priority, SchedulerConfig, SchedulerError,
+	CancelGroup, EmbedHandle, EmbedScheduler, Error, Priority, SchedulerConfig,
 };
 
 fn key(label: &str) -> ContentHash { ContentHash::of_bytes(label.as_bytes()) }
@@ -158,6 +158,6 @@ async fn cancelled_group_never_reaches_model() {
 		.embed(key("k"), "text".into(), EmbedRole::Document, Priority::Background, cancel)
 		.await;
 
-	assert!(matches!(result, Err(SchedulerError::Cancelled)));
+	assert!(matches!(result, Err(Error::Cancelled)));
 	assert_eq!(mock.call_count(), 0);
 }

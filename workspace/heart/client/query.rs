@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 /// Validation errors produced when parsing or checking a search query's raw text.
 #[derive(Debug, thiserror::Error)]
-pub enum QueryError {
+pub enum Error {
     /// The query string was completely empty (no characters at all).
     #[error("empty query")]
     Empty,
@@ -79,6 +79,8 @@ pub enum QueryError {
     Malformed { detail: String, query: String },
 }
 
+pub use self::Error as QueryError;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AbstractQuery {
     NaturalLanguage(String),
@@ -96,28 +98,28 @@ impl LiteralQuery {
     /// not a name lookup.
     const MAXIMUM_LENGTH: usize = 1024;
 
-    pub fn parse(raw: &str) -> Result<Self, QueryError> {
+    pub fn parse(raw: &str) -> Result<Self, Error> {
         let trimmed = raw.trim();
         if raw.trim().is_empty() {
             // Distinguish "provided nothing" from "only whitespace".
             if raw.is_empty() {
-                return Err(QueryError::Empty);
+                return Err(Error::Empty);
             } else {
-                return Err(QueryError::EmptyAfterTrim {
+                return Err(Error::EmptyAfterTrim {
                     raw: raw.to_owned(),
                 });
             }
         }
         let len = trimmed.len();
         if len > Self::MAXIMUM_LENGTH {
-            return Err(QueryError::TooLong {
+            return Err(Error::TooLong {
                 len,
                 max: Self::MAXIMUM_LENGTH,
                 snippet: trimmed.chars().take(64).collect(),
             });
         }
         if let Some((position, _ch)) = trimmed.char_indices().find(|(_, c)| c.is_control()) {
-            return Err(QueryError::ControlCharacter {
+            return Err(Error::ControlCharacter {
                 position,
                 snippet: trimmed
                     .chars()
@@ -231,14 +233,14 @@ mod tests {
 
     #[test]
     fn literal_query_empty_is_rejected() {
-        assert!(matches!(LiteralQuery::parse(""), Err(QueryError::Empty)));
+        assert!(matches!(LiteralQuery::parse(""), Err(Error::Empty)));
     }
 
     #[test]
     fn literal_query_whitespace_only_is_rejected() {
         assert!(matches!(
             LiteralQuery::parse("   "),
-            Err(QueryError::EmptyAfterTrim { .. })
+            Err(Error::EmptyAfterTrim { .. })
         ));
     }
 
@@ -247,7 +249,7 @@ mod tests {
         let long = "x".repeat(LiteralQuery::MAXIMUM_LENGTH + 1);
         assert!(matches!(
             LiteralQuery::parse(&long),
-            Err(QueryError::TooLong { .. })
+            Err(Error::TooLong { .. })
         ));
     }
 
@@ -255,7 +257,7 @@ mod tests {
     fn literal_query_control_char_is_rejected() {
         assert!(matches!(
             LiteralQuery::parse("foo\x01bar"),
-            Err(QueryError::ControlCharacter { .. })
+            Err(Error::ControlCharacter { .. })
         ));
     }
 }

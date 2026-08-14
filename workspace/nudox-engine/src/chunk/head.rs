@@ -38,9 +38,47 @@ use nudox_ir::{
     entry::{CfgExpr, Entry},
     view::IrView,
 };
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
-use crate::wire::{CrumbRef, KindTag, Provenance, SharedStr, SourceLocation, SymbolHead, SymbolKey};
+use crate::wire::{
+    CrumbRef, KindTag, Provenance, SectionPlan, SharedStr, SigToken, SourceLocation, SymbolHead,
+    SymbolKey, Visibility,
+};
+
+/// Canonical symbol metadata shared by the full GUI head and compact MCP
+/// projection. It intentionally contains no documentation-section plan.
+pub(crate) struct SymbolProjection {
+    pub(crate) key: SymbolKey,
+    pub(crate) name: SharedStr,
+    pub(crate) breadcrumb: Vec<CrumbRef>,
+    pub(crate) signature: Vec<SigToken>,
+    pub(crate) kind: KindTag,
+    pub(crate) visibility: Visibility,
+    pub(crate) provenance: Provenance,
+    pub(crate) deprecation: Option<SharedStr>,
+    pub(crate) cfg: Option<SharedStr>,
+    pub(crate) source: SourceLocation,
+    pub(crate) source_excerpt: Option<SharedStr>,
+}
+
+impl SymbolProjection {
+    fn into_head(self, section_plan: Vec<SectionPlan>) -> SymbolHead {
+        SymbolHead {
+            key: self.key,
+            name: self.name,
+            breadcrumb: self.breadcrumb,
+            signature: self.signature,
+            kind: self.kind,
+            visibility: self.visibility,
+            provenance: self.provenance,
+            deprecation: self.deprecation,
+            cfg: self.cfg,
+            section_plan,
+            source: self.source,
+            source_excerpt: self.source_excerpt,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Source-location helpers
@@ -175,7 +213,12 @@ fn shortest_alias_module_path(
 /// * `entry`   — the declaration entry we are building a head for.
 /// * `view`    — the `IrView` for this package (used for breadcrumb walk).
 /// * `package` — the `PackageView` (used for provenance, signature, and plan).
-pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView) -> SymbolHead {
+pub(crate) fn projection(
+    intro: IntroId,
+    entry: &Entry,
+    view: &IrView,
+    package: &PackageView,
+) -> SymbolProjection {
     // ── Stable key ────────────────────────────────────────────────────────────
 
     let key = SymbolKey::new(package.lineage().clone(), intro);
@@ -255,20 +298,14 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
 
     let cfg = entry.sym().cfg.as_ref().map(cfg_badge);
 
-    // ── Section plan ──────────────────────────────────────────────────────────
-    //
-    // `plan::section_plan` calls `walk::walk_doc` — the same function that
-    // `sections::sections` calls — so the plan and sections are structurally
-    // identical (one-walk guarantee).
-
-    let section_plan = super::plan::section_plan(intro, entry, view, package);
-
     // ── Source location ───────────────────────────────────────────────────────
 
     let source = source_location(entry);
+    let source_excerpt = package.view().source(intro).map(SharedStr::from);
 
-    SymbolHead {
+    SymbolProjection {
         key,
+        name: SharedStr::from(entry.sym().name.as_str()),
         breadcrumb,
         signature,
         kind,
@@ -276,20 +313,42 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
         provenance,
         deprecation,
         cfg,
-        section_plan,
         source,
+        source_excerpt,
     }
 }
 
-/// Convert `nudox_store::package::Provenance` to the wire `Provenance`.
+/// Build a full-page head from the canonical projection and the plan produced
+/// by the page's single documentation walk.
+pub fn head_with_plan(
+    intro: IntroId,
+    entry: &Entry,
+    view: &IrView,
+    package: &PackageView,
+    section_plan: Vec<SectionPlan>,
+) -> SymbolHead {
+    projection(intro, entry, view, package).into_head(section_plan)
+}
+
+/// Build a standalone full-page head.
+///
+/// Full document assembly should use [`head_with_plan`] with the plan returned
+/// by its existing documentation walk. This wrapper remains for focused head
+/// consumers and tests that do not already own that walk.
+pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView) -> SymbolHead {
+    let section_plan = super::plan::section_plan(intro, entry, view, package);
+    head_with_plan(intro, entry, view, package, section_plan)
+}
+
+/// Convert `crate::store::package::Provenance` to the wire `Provenance`.
 ///
 /// The store has a smaller provenance vocabulary than the wire (which includes
 /// `SyncedLocal`, `Remote`, and `Stale` for distributed corpus scenarios).
 /// Both store variants map to `TrustedLocal` — local IR produced in this
 /// session is always trusted.  Future store variants are handled by `_ =>
 /// TrustedLocal` so that adding a new store tier never silently panics.
-fn store_provenance_to_wire(p: nudox_store::package::Provenance) -> Provenance {
-    use nudox_store::package::Provenance as StoreP;
+fn store_provenance_to_wire(p: crate::store::package::Provenance) -> Provenance {
+    use crate::store::package::Provenance as StoreP;
     match p {
         StoreP::TrustedLocal | StoreP::SnapshotLocal => Provenance::TrustedLocal,
         _ => Provenance::TrustedLocal,
@@ -303,7 +362,7 @@ fn store_provenance_to_wire(p: nudox_store::package::Provenance) -> Provenance {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_store::{
+    use crate::store::{
         package::{PackageView, Provenance as StoreProvenance},
         source::fixtures::build_rich_view,
     };
@@ -394,7 +453,7 @@ mod tests {
     fn package_with_private_reexport_submodule(
         reexport_alias: &[&str],
     ) -> (
-        nudox_store::package::PackageView,
+        crate::store::package::PackageView,
         nudox_ir::change::IntroId,
         nudox_ir::change::IntroId,
         nudox_ir::change::IntroId,
@@ -548,9 +607,9 @@ mod tests {
     #[test]
     #[ignore = "loads a real Cargo workspace through rust-analyzer; run with --ignored"]
     fn real_memchr_memchr_breadcrumb_has_no_repeated_segment() {
-        use nudox_producer::produce;
-        use nudox_producer_rust::RustProducer;
-        use nudox_store::source::producer::PackageDescriptor;
+        use nudox_languages::produce;
+        use nudox_languages::rust::RustProducer;
+        use crate::store::source::producer::PackageDescriptor;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../result/memchr-2.8.3")
@@ -660,7 +719,7 @@ mod tests {
 
     /// A single-entry package whose root symbol carries `cfg`, for exercising
     /// `head()`'s cfg wiring without a real producer.
-    fn package_with_cfg(cfg: Option<CfgExpr>) -> nudox_store::package::PackageView {
+    fn package_with_cfg(cfg: Option<CfgExpr>) -> crate::store::package::PackageView {
         use nudox_ir::{
             apply::PristineIntroTable,
             change::{EcosystemId, IntroId, PackageLineageId, PackageName},

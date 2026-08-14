@@ -1,13 +1,11 @@
 //! Error type for the `ir-stream` protocol.
 
-use thiserror::Error;
-
 /// The unified error type for all `ir-stream` operations.
 ///
 /// Each variant is precise enough for the caller to act on without inspecting
 /// a nested error string.
-#[derive(Debug, Error)]
-pub enum StreamError {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     /// An underlying I/O error on the transport.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),

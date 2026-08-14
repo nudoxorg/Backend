@@ -31,8 +31,8 @@ use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use nudox_graph::CorpusAdapter;
-use nudox_store::corpus::Corpus;
+use crate::graph::CorpusAdapter;
+use crate::store::corpus::Corpus;
 use trustfall::FieldValue;
 
 use crate::{
@@ -219,7 +219,7 @@ pub(crate) async fn run_query(
         let row_map: BTreeMap<Arc<str>, FieldValue> = match item {
             Ok(r) => r,
             Err(e) => {
-                // A resolver-time failure (e.g. `nudox_graph::adapter::GraphError`
+                // A resolver-time failure (e.g. `crate::graph::adapter::Error`
                 // surfacing a malformed `$key` binding) — the query parsed, so
                 // there is no position to recover here, but it is still a
                 // graph-query-plane failure, not a chunker one.
@@ -471,7 +471,7 @@ fn find_line_column(value: &serde_json::Value) -> Option<QueryErrorPosition> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use nudox_store::source::fixtures::FixtureSource;
+    use crate::store::source::fixtures::FixtureSource;
 
     use crate::{
         query::GraphQuery,
@@ -484,7 +484,7 @@ mod tests {
     }
 
     async fn wait_for_corpus(engine: &crate::runtime::EngineHandle) {
-        use nudox_store::source::fixtures::rich_lineage;
+        use crate::store::source::fixtures::rich_lineage;
         for _ in 0..50 {
             if engine.corpus().package(&rich_lineage()).await.is_some() {
                 return;

@@ -1,3 +1,4 @@
+//! Golden byte-pin harness freezing the IR wire preimages.
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Golden byte-pin harness for nudox-ir
 //

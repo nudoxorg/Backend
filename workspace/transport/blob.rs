@@ -1,16 +1,4 @@
 //! Opaque content-addressed blob transfer over iroh-blobs.
-//!
-//! This is the path the IR-sync plane used: hand a change file's bytes to an
-//! in-memory blob store, which BLAKE3-hashes them into a transport hash; the
-//! receiver fetches the blob by that transport hash and reads the bytes back
-//! out (size-capped) for its own `heart::sync::ContentIo::verify`.
-//!
-//! The transport hash is the iroh-blobs BLAKE3 hash of the raw bytes — a
-//! *transport-level* address, distinct from the caller's content-address id
-//! (a pijul change hash, a pack member hash, …). The caller announces the
-//! `(their_id, transport_hash)` pairing, fetches by transport hash, then
-//! verifies the received bytes against *their* id. Content-addressing stays the
-//! trust anchor: a passing `ContentIo::verify` is the sole license to write.
 
 use heart::sync::SyncError;
 use iroh_blobs::store::mem::MemStore;

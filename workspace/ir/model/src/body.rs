@@ -3,8 +3,8 @@
 //!
 //! # Dual-fidelity tiers
 //!
-//! - [`TreesitterBody`]: CST/structural facts. Pre-resolution; no resolved
-//!   targets. Produced by the tree-sitter tier on every body.
+//! - [`TreesitterBody`]: optional CST/structural facts. Pre-resolution; no
+//!   resolved targets and therefore never admitted to precise usage postings.
 //! - [`OracleBody`]: Semantic facts. Resolved targets, type mentions, and
 //!   dataflow crumbs. Produced by the language oracle when available.
 //!
@@ -164,6 +164,14 @@ impl BodyMergeNote {
             conflict_policy: Self::CONFLICT_ORACLE_TARGET_TREESITTER_SPAN,
         }
     }
+
+    pub fn oracle_only() -> Self {
+        Self {
+            treesitter_ran: false,
+            oracle_ran: true,
+            conflict_policy: Self::CONFLICT_ORACLE_TARGET_TREESITTER_SPAN,
+        }
+    }
 }
 
 /// Conflict-resolution policy applied when both tiers touch the same span.
@@ -246,7 +254,7 @@ pub struct BodyCall {
 }
 
 /// A call site as the oracle resolved it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OracleCall {
     pub target: Option<StableRef>,
     pub kind: ReferenceKind,
@@ -255,7 +263,7 @@ pub struct OracleCall {
 }
 
 /// A type mentioned in the body, resolved by the oracle.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OracleTypeMention {
     /// The resolved type reference.
     pub ty: StableRef,

@@ -93,7 +93,7 @@
 use std::collections::HashMap;
 
 use nudox_ir::entry::Entry;
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
 use crate::wire::SymbolKey;
 

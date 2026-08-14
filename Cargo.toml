@@ -17,13 +17,6 @@ members = [
     # `Language` itself lives in `heart` (the light shared vocabulary), keeping
     # the index-free planes (`ir`, `registry`) off the catalog link path.
     "workspace/heart",
-    # Zero-dependency integration-test measurement helper (`measured`, the
-    # `cost case=…` line doctrine §4 parses). Shared across the whole tree —
-    # `index`, every `compiler/languages/*`, and the local-first crates all
-    # dev-dep it — so it lives beside the other shared workspace crates rather
-    # than under `crates/` (relocated from `crates/nudox-test-support`, package
-    # name unchanged). Dev-dependency only; on no crate's shipping graph.
-    "workspace/test-support",
     # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
     # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
     # (versioned SQLite); it is a path dep of `index`, not a workspace member.
@@ -66,30 +59,20 @@ members = [
     # the workspace member list. No per-plane bespoke bao/iroh.
     # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
     "workspace/ir/model",
-    # ── Producer plane: shared contract + one crate per language ─────────────
-    "workspace/compiler/producer",
-    "workspace/compiler/languages/go",
-    "workspace/compiler/languages/csharp",
-    "workspace/compiler/languages/rust",
-    "workspace/compiler/languages/typescript",
-    "workspace/compiler/languages/clang",
-    "workspace/compiler/languages/java",
-    "workspace/compiler/languages/python",
-    # ── Local-first GUI planes (GUI-LOCAL-PLAN §L0) ──────────────────────────
-    # store → graph → engine → mcp. `lindsey` (workspace/gui) is deliberately
-    # NOT a member: it keeps its own lockfile so gpui stays out of the backend
-    # graph, and reaches these four by path. Dependency law, one direction only:
-    # lindsey → engine → {graph, store} → ir; mcp → {engine, graph}; and none of
-    # the four may link gpui.
-    "workspace/nudox-store",
-    "workspace/nudox-graph",
+    # ── Producer plane: one crate holding the contract + all seven languages ──
+    # The former `nudox-producer` + `nudox-producer-{rust,go,java,csharp,clang,
+    # typescript,python}` crates were merged into a single `nudox-languages`
+    # crate at `workspace/compiler/languages/`; each language is a module.
+    "workspace/compiler/languages",
+    # ── Local-first GUI plane (GUI-LOCAL-PLAN §L0) ───────────────────────────
+    # `nudox-engine` is the whole local-first backend: the corpus (`store`),
+    # the Trustfall query adapter (`graph`), the engine facade, the MCP server
+    # (`mcp`), and the ONNX embedder adapter (`embed`, behind the `onnx`
+    # feature) are all modules of this one crate. `lindsey` (workspace/gui) is
+    # deliberately NOT a member: it keeps its own lockfile so gpui stays out of
+    # the backend graph, and reaches this one crate by path. Dependency law is
+    # now trivial — lindsey → nudox-engine → ir.
     "workspace/nudox-engine",
-    "workspace/nudox-mcp",
-    # The production embedder adapter (docs/AGENTS-DOCTRINE.md §1, "Capability
-    # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`
-    # port, beside the engine rather than beneath it. Its `onnx` feature is
-    # off by default, so a `--workspace` build never pulls the ort runtime.
-    "workspace/nudox-embed",
 ]
 
 # `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default
@@ -141,7 +124,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 # `nix/corpus.nix` and `nix/entry-baseline.toml` are read by tests in
-# more than one crate (`workspace/index`, `nudox-store`). Declared once here so
+# more than one crate (`workspace/index`, `nudox-engine`). Declared once here so
 # two readers of the same corpus files cannot end up on different toml majors
 # and disagree about what the corpus contains.
 toml = "0.8"

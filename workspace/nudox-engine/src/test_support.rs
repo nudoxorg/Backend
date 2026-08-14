@@ -2,7 +2,7 @@
 //!
 //! # Why not fixtures
 //!
-//! `nudox_store::source::fixtures::FixtureSource` exists and is the right tool
+//! `crate::store::source::fixtures::FixtureSource` exists and is the right tool
 //! for testing the *stream* (does `open_symbol` emit `Head` first?). It is the
 //! wrong tool for testing the *version plane*, because it produces exactly one
 //! generation of each of its two packages and there is no way to ask it for a
@@ -27,7 +27,7 @@ use nudox_ir::{
     kinds::{Module, Reexport},
     view::IrView,
 };
-use nudox_store::package::{PackageView, Provenance};
+use crate::store::package::{PackageView, Provenance};
 
 /// A `cargo:` lineage for `name`.
 pub(crate) fn lineage(name: &str) -> PackageLineageId {
@@ -199,9 +199,9 @@ impl StaticSource {
     }
 }
 
-impl nudox_store::source::IrSource for StaticSource {
-    fn describe(&self) -> nudox_store::source::SourceDescriptor {
-        nudox_store::source::SourceDescriptor {
+impl crate::store::source::IrSource for StaticSource {
+    fn describe(&self) -> crate::store::source::SourceDescriptor {
+        crate::store::source::SourceDescriptor {
             label: "static".to_owned(),
             package_count_hint: Some(self.generations.len() as u32),
         }
@@ -209,13 +209,13 @@ impl nudox_store::source::IrSource for StaticSource {
 
     fn load(
         &self,
-        _req: nudox_store::source::LoadRequest,
+        _req: crate::store::source::LoadRequest,
     ) -> futures::stream::BoxStream<
         'static,
-        Result<nudox_store::source::LoadEvent, nudox_store::source::SourceError>,
+        Result<crate::store::source::LoadEvent, crate::store::source::Error>,
     > {
         use futures::StreamExt as _;
-        use nudox_store::source::{LoadEvent, PackageHint};
+        use crate::store::source::{LoadEvent, PackageHint};
 
         let events: Vec<_> = self
             .generations

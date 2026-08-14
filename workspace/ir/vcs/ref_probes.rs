@@ -129,15 +129,15 @@ fn delete_absent_is_strict() {
     let repo = IrRepository::in_memory(pkg(), "main").unwrap();
     assert!(matches!(
         repo.delete_tag(&tg("nope")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ));
     assert!(matches!(
         repo.delete_version(&vl("9.9.9")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ));
     assert!(matches!(
         repo.delete_branch(&br("nope")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ));
 }
 
@@ -172,11 +172,11 @@ fn change_ref_not_servable() {
     let cref = Ref::Change(ChangeHashHex("deadbeef".to_owned()));
     assert!(matches!(
         repo.resolve_ref(&cref),
-        Err(crate::VcsError::RefNotServable { .. })
+        Err(crate::error::Error::RefNotServable { .. })
     ));
     assert!(matches!(
         repo.materialize_ref(&cref),
-        Err(crate::VcsError::RefNotServable { .. })
+        Err(crate::error::Error::RefNotServable { .. })
     ));
 }
 
@@ -192,7 +192,7 @@ fn rename_onto_existing_is_strict() {
     repo.switch_branch(&br("y")).unwrap(); // move off main so x/y are both non-current
     assert!(matches!(
         repo.rename_branch(&br("x"), &br("y")),
-        Err(crate::VcsError::RefAlreadyExists { .. })
+        Err(crate::error::Error::RefAlreadyExists { .. })
     ));
 }
 

@@ -65,7 +65,7 @@ fn main() {
     // engine an embedder is *all* it takes: the incremental indexer, the
     // `SectionState::{Building,Complete}` progress, and the ranked rows are
     // already built behind the port. See docs/LIMITATIONS.md L41.
-    let embedder = nudox_embed::load_from_env();
+    let embedder = nudox_engine::embed::load_from_env();
     tracing::info!(
         semantic = embedder.is_some(),
         "engine config: semantic embedder {}",

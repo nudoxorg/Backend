@@ -64,10 +64,10 @@ pub use checkout::MaterializedIndex;
 pub use checkpoint::{
     Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,
 };
-pub use error::VcsError;
+pub use error::Error as VcsError;
 pub use f1::{
-    ContinuityOp, ContinuitySummary, F1Error, F1View, RenameEdge, compute_api_surface_hash,
-    serialize_f1,
+    ContinuityOp, ContinuitySummary, Error as F1Error, F1View, RenameEdge,
+    compute_api_surface_hash, serialize_f1,
 };
 pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};

@@ -28,7 +28,7 @@ const ZSTD_LEVEL: i32 = 9;
 
 /// Pack and unpack failures.
 #[derive(Debug, thiserror::Error)]
-pub enum PackError {
+pub enum Error {
     #[error("shard artifact io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -58,7 +58,7 @@ pub enum PackError {
 /// headers, so a fixed byte tree packs to fixed bytes. The advisory lock file is
 /// skipped: it is per-machine state, not shard content. Symlinks inside a
 /// shard are unexpected and rejected rather than followed.
-pub fn pack_shard(directory: &Path) -> Result<(Vec<u8>, ContentHash), PackError> {
+pub fn pack_shard(directory: &Path) -> Result<(Vec<u8>, ContentHash), Error> {
     let entries = collect_sorted_entries(directory)?;
 
     let zstd_encoder = zstd::stream::write::Encoder::new(Vec::new(), ZSTD_LEVEL)?;
@@ -82,7 +82,7 @@ pub fn pack_shard(directory: &Path) -> Result<(Vec<u8>, ContentHash), PackError>
 pub fn pack_shard_to_file(
     directory: &Path,
     artifact_destination: &Path,
-) -> Result<ContentHash, PackError> {
+) -> Result<ContentHash, Error> {
     let (compressed_bytes, artifact_hash) = pack_shard(directory)?;
     let mut destination_file = fs::File::create(artifact_destination)?;
     destination_file.write_all(&compressed_bytes)?;
@@ -94,8 +94,8 @@ pub fn pack_shard_to_file(
 ///
 /// Order of operations (each step gates the next):
 /// 1. BLAKE3 of `artifact_bytes` must equal `expected_hash` — checked **before** any
-///    decompression ([`PackError::HashMismatch`] otherwise).
-/// 2. `destination` must not exist ([`PackError::DestinationExists`]).
+///    decompression ([`Error::HashMismatch`] otherwise).
+/// 2. `destination` must not exist ([`Error::DestinationExists`]).
 /// 3. Entries are extracted into `<destination>.tmp` with path hardening: only
 ///    `Normal`/`CurDir` components, only regular files and directories.
 ///    Any rejection deletes the partial extraction.
@@ -104,7 +104,7 @@ pub fn unpack_shard(
     artifact_bytes: &[u8],
     expected_hash: &ContentHash,
     destination: &Path,
-) -> Result<(), PackError> {
+) -> Result<(), Error> {
     verify_hash(artifact_bytes, expected_hash)?;
     ensure_destination_absent(destination)?;
 
@@ -125,7 +125,7 @@ pub fn unpack_shard(
 // Helper Functions: Packing
 // -----------------------------------------------------------------------------
 
-fn collect_sorted_entries(root_directory: &Path) -> Result<Vec<PathBuf>, PackError> {
+fn collect_sorted_entries(root_directory: &Path) -> Result<Vec<PathBuf>, Error> {
     let mut entries = Vec::new();
     collect_entries_recursive(root_directory, Path::new(""), &mut entries)?;
     entries.sort();
@@ -136,7 +136,7 @@ fn collect_entries_recursive(
     root_directory: &Path,
     relative_directory: &Path,
     entries: &mut Vec<PathBuf>,
-) -> Result<(), PackError> {
+) -> Result<(), Error> {
     for directory_entry in fs::read_dir(root_directory.join(relative_directory))? {
         let directory_entry = directory_entry?;
         let file_name = directory_entry.file_name();
@@ -149,7 +149,7 @@ fn collect_entries_recursive(
         let file_type = directory_entry.file_type()?;
 
         if file_type.is_symlink() {
-            return Err(PackError::UnsafeEntry(format!(
+            return Err(Error::UnsafeEntry(format!(
                 "{} is a symlink; shard directories must be plain trees",
                 relative_path.display()
             )));
@@ -167,7 +167,7 @@ fn append_entry<W: std::io::Write>(
     tar_builder: &mut tar::Builder<W>,
     root_directory: &Path,
     relative_path: &Path,
-) -> Result<(), PackError> {
+) -> Result<(), Error> {
     let absolute_path = root_directory.join(relative_path);
     if absolute_path.is_dir() {
         tar_builder.append_dir(relative_path, &absolute_path)?;
@@ -181,10 +181,10 @@ fn append_entry<W: std::io::Write>(
 // Helper Functions: Unpacking
 // -----------------------------------------------------------------------------
 
-fn verify_hash(artifact_bytes: &[u8], expected_hash: &ContentHash) -> Result<(), PackError> {
+fn verify_hash(artifact_bytes: &[u8], expected_hash: &ContentHash) -> Result<(), Error> {
     let actual_hash = ContentHash::of_bytes(artifact_bytes);
     if actual_hash != *expected_hash {
-        return Err(PackError::HashMismatch {
+        return Err(Error::HashMismatch {
             expected: *expected_hash,
             actual: actual_hash,
         });
@@ -192,14 +192,14 @@ fn verify_hash(artifact_bytes: &[u8], expected_hash: &ContentHash) -> Result<(),
     Ok(())
 }
 
-fn ensure_destination_absent(destination: &Path) -> Result<(), PackError> {
+fn ensure_destination_absent(destination: &Path) -> Result<(), Error> {
     if destination.exists() {
-        return Err(PackError::DestinationExists(destination.to_path_buf()));
+        return Err(Error::DestinationExists(destination.to_path_buf()));
     }
     Ok(())
 }
 
-fn prepare_temporary_directory(temporary_destination: &Path) -> Result<(), PackError> {
+fn prepare_temporary_directory(temporary_destination: &Path) -> Result<(), Error> {
     if temporary_destination.exists() {
         fs::remove_dir_all(temporary_destination)?;
     }
@@ -210,7 +210,7 @@ fn prepare_temporary_directory(temporary_destination: &Path) -> Result<(), PackE
     Ok(())
 }
 
-fn unpack_into(artifact_bytes: &[u8], root_directory: &Path) -> Result<(), PackError> {
+fn unpack_into(artifact_bytes: &[u8], root_directory: &Path) -> Result<(), Error> {
     let zstd_decoder = zstd::stream::read::Decoder::new(artifact_bytes)?;
     let mut tar_archive = tar::Archive::new(zstd_decoder);
 
@@ -228,7 +228,7 @@ fn unpack_single_entry<R: std::io::Read>(
     entry: &mut tar::Entry<'_, R>,
     root_directory: &Path,
     relative_path: &Path,
-) -> Result<(), PackError> {
+) -> Result<(), Error> {
     let target_path = root_directory.join(relative_path);
 
     match entry.header().entry_type() {
@@ -242,7 +242,7 @@ fn unpack_single_entry<R: std::io::Read>(
             entry.unpack(&target_path)?;
         }
         other_entry_type => {
-            return Err(PackError::UnsafeEntry(format!(
+            return Err(Error::UnsafeEntry(format!(
                 "{} (entry type {other_entry_type:?})",
                 relative_path.display()
             )));
@@ -251,7 +251,7 @@ fn unpack_single_entry<R: std::io::Read>(
     Ok(())
 }
 
-fn validate_safe_path(path: &Path) -> Result<(), PackError> {
+fn validate_safe_path(path: &Path) -> Result<(), Error> {
     let is_safe = !path.as_os_str().is_empty()
         && path
             .components()
@@ -260,13 +260,13 @@ fn validate_safe_path(path: &Path) -> Result<(), PackError> {
     if is_safe {
         Ok(())
     } else {
-        Err(PackError::UnsafeEntry(path.display().to_string()))
+        Err(Error::UnsafeEntry(path.display().to_string()))
     }
 }
 
-fn compute_temporary_sibling(destination: &Path) -> Result<PathBuf, PackError> {
+fn compute_temporary_sibling(destination: &Path) -> Result<PathBuf, Error> {
     let file_name = destination.file_name().ok_or_else(|| {
-        PackError::UnsafeEntry(format!(
+        Error::UnsafeEntry(format!(
             "unpack destination {} has no name",
             destination.display()
         ))

@@ -168,14 +168,14 @@ mod tests {
     /// for the status bar and the overlay — not a hand-built stand-in, so a
     /// passing test here is evidence the *real* derivation produces a
     /// distinct menu line, not evidence of a copy of it.
-    fn account_posture(posture: nudox_mcp::Posture) -> AccountStatus {
+    fn account_posture(posture: nudox_engine::mcp::Posture) -> AccountStatus {
         AccountStatus::Live(crate::app::account::AccountPresentation::derive(
             &posture,
             None,
             None,
-            &nudox_mcp::account::host::UsageReport {
+            &nudox_engine::mcp::account::host::UsageReport {
                 pending: 0,
-                dropped: nudox_mcp::account::ledger::DroppedTally::default(),
+                dropped: nudox_engine::mcp::account::ledger::DroppedTally::default(),
                 persistent: false,
             },
         ))
@@ -202,7 +202,7 @@ mod tests {
             McpStatus::Absent,
             listening(),
             McpStatus::Stopped,
-            McpStatus::failed(&nudox_mcp::McpError::Bind {
+            McpStatus::failed(&nudox_engine::mcp::McpError::Bind {
                 addr: "127.0.0.1:0".parse().expect("a literal loopback address"),
                 source: std::io::Error::other("denied"),
             }),
@@ -230,7 +230,7 @@ mod tests {
             McpStatus::Absent,
             listening(),
             McpStatus::Stopped,
-            McpStatus::failed(&nudox_mcp::McpError::Bind {
+            McpStatus::failed(&nudox_engine::mcp::McpError::Bind {
                 addr: "127.0.0.1:0".parse().expect("a literal loopback address"),
                 source: std::io::Error::other("denied"),
             }),
@@ -348,11 +348,11 @@ mod tests {
     #[test]
     fn a_real_gate_always_offers_the_account_item() {
         for posture in [
-            nudox_mcp::Posture::SignedOut,
-            nudox_mcp::Posture::Active {
+            nudox_engine::mcp::Posture::SignedOut,
+            nudox_engine::mcp::Posture::Active {
                 account: sample_account(),
-                source: nudox_mcp::account::store::KeySource::Keychain,
-                quota: nudox_mcp::account::state::QuotaKnowledge::Unknown,
+                source: nudox_engine::mcp::account::store::KeySource::Keychain,
+                quota: nudox_engine::mcp::account::state::QuotaKnowledge::Unknown,
             },
         ] {
             let menus = main_menu(&listening(), &account_posture(posture.clone()));
@@ -370,11 +370,11 @@ mod tests {
     /// whether they need to act.
     #[test]
     fn signed_out_and_signed_in_read_differently_in_the_menu() {
-        let signed_out = account_posture(nudox_mcp::Posture::SignedOut);
-        let signed_in = account_posture(nudox_mcp::Posture::Active {
+        let signed_out = account_posture(nudox_engine::mcp::Posture::SignedOut);
+        let signed_in = account_posture(nudox_engine::mcp::Posture::Active {
             account: sample_account(),
-            source: nudox_mcp::account::store::KeySource::Keychain,
-            quota: nudox_mcp::account::state::QuotaKnowledge::Unknown,
+            source: nudox_engine::mcp::account::store::KeySource::Keychain,
+            quota: nudox_engine::mcp::account::state::QuotaKnowledge::Unknown,
         });
         assert_ne!(
             signed_out.menu_label(),
@@ -383,10 +383,10 @@ mod tests {
         );
     }
 
-    fn sample_account() -> nudox_mcp::account::state::Account {
-        nudox_mcp::account::state::Account {
-            user: nudox_mcp::account::state::UserId(24),
-            fingerprint: nudox_mcp::ApiKey::parse("ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517")
+    fn sample_account() -> nudox_engine::mcp::account::state::Account {
+        nudox_engine::mcp::account::state::Account {
+            user: nudox_engine::mcp::account::state::UserId(24),
+            fingerprint: nudox_engine::mcp::ApiKey::parse("ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517")
                 .expect("sample key parses")
                 .fingerprint(),
             verified_at: std::time::SystemTime::now(),

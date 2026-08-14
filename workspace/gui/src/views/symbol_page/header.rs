@@ -771,6 +771,7 @@ mod tests {
                 PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg")),
                 IntroId::from_raw([1u8; 32]),
             ),
+            name: SharedStr::from("Widget"),
             breadcrumb: Vec::new(),
             signature: Vec::new(),
             kind: KindTag::Unknown(0),
@@ -785,6 +786,7 @@ mod tests {
             source: nudox_engine::wire::SourceLocation::Unlocated {
                 reason: nudox_engine::wire::UnlocatedReason::Synthesized,
             },
+            source_excerpt: None,
         }
     }
 

@@ -29,7 +29,7 @@ use heart::PackageId;
 use serde::{Deserialize, Serialize};
 
 use super::depshard::{
-    ArtifactFetcher, DepManifestEntry, InstallError, InstallOutcome, RemoteRouteReason,
+    ArtifactFetcher, DepManifestEntry, Error, InstallOutcome, RemoteRouteReason,
 };
 use super::fanout::SharedWorkingSet;
 
@@ -246,7 +246,7 @@ pub async fn apply_plan(
     schema: &ShardSchema,
     dep_root: &Path,
     working_set: &SharedWorkingSet,
-) -> Result<Vec<(PackageId, InstallOutcome)>, InstallError> {
+) -> Result<Vec<(PackageId, InstallOutcome)>, Error> {
     for package in &plan.evict {
         super::depshard::evict(*package, dep_root, working_set).await?;
     }

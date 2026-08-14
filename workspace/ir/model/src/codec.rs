@@ -121,12 +121,12 @@ pub const MAGIC_LEN: usize = 12;
 pub const HEADER_LEN: usize = MAGIC_LEN + 2;
 
 // ---------------------------------------------------------------------------
-// CodecError
+// Error
 // ---------------------------------------------------------------------------
 
 /// All errors that can arise from encoding or decoding an IR blob or path.
 #[derive(Debug, thiserror::Error)]
-pub enum CodecError {
+pub enum Error {
     /// The blob did not start with the expected magic bytes.
     ///
     /// Contains the first [`MAGIC_LEN`] bytes actually seen (or fewer if the
@@ -164,6 +164,9 @@ pub enum CodecError {
     BadHex(String),
 }
 
+/// Backwards-compatible alias for cross-crate consumers.
+pub use self::Error as CodecError;
+
 // ---------------------------------------------------------------------------
 // Low-level envelope helpers
 // ---------------------------------------------------------------------------
@@ -174,8 +177,8 @@ fn write_envelope<T: serde::Serialize>(
     out: &mut Vec<u8>,
     plane: Plane,
     value: &T,
-) -> Result<(), CodecError> {
-    let payload = postcard::to_allocvec(value).map_err(CodecError::PostcardEncode)?;
+) -> Result<(), Error> {
+    let payload = postcard::to_allocvec(value).map_err(Error::PostcardEncode)?;
     out.reserve(HEADER_LEN + payload.len());
     out.extend_from_slice(plane.magic());
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
@@ -186,22 +189,22 @@ fn write_envelope<T: serde::Serialize>(
 /// Parse a versioned envelope, returning the postcard payload bytes on success.
 ///
 /// `plane` selects which magic tag to expect.  A mismatch — including swapping
-/// the two planes — produces [`CodecError::BadMagic`].
-fn read_envelope(bytes: &[u8], plane: Plane) -> Result<&[u8], CodecError> {
+/// the two planes — produces [`Error::BadMagic`].
+fn read_envelope(bytes: &[u8], plane: Plane) -> Result<&[u8], Error> {
     // A blob shorter than HEADER_LEN cannot carry a valid envelope.
     if bytes.len() < HEADER_LEN {
-        return Err(CodecError::BadMagic(
+        return Err(Error::BadMagic(
             bytes[..bytes.len().min(MAGIC_LEN)].to_vec(),
         ));
     }
     let (magic, rest) = bytes.split_at(MAGIC_LEN);
     if magic != plane.magic().as_slice() {
-        return Err(CodecError::BadMagic(magic.to_vec()));
+        return Err(Error::BadMagic(magic.to_vec()));
     }
     let (ver_bytes, payload) = rest.split_at(2);
     let ver = u16::from_le_bytes([ver_bytes[0], ver_bytes[1]]);
     if ver != FORMAT_VERSION {
-        return Err(CodecError::UnsupportedVersion {
+        return Err(Error::UnsupportedVersion {
             expected: FORMAT_VERSION,
             got: ver,
         });
@@ -222,9 +225,9 @@ fn read_envelope(bytes: &[u8], plane: Plane) -> Result<&[u8], CodecError> {
 ///
 /// Does not panic.  If a non-serialization-marked `EntryIndex` is found inside
 /// the value, postcard will propagate a serde error which is returned as
-/// [`CodecError::PostcardEncode`] — a clear signal that the seal pass has a
+/// [`Error::PostcardEncode`] — a clear signal that the seal pass has a
 /// bug.
-pub fn encode_entry(entry: &Entry) -> Result<Vec<u8>, CodecError> {
+pub fn encode_entry(entry: &Entry) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     write_envelope(&mut out, Plane::Declaration, entry)?;
     Ok(out)
@@ -233,9 +236,9 @@ pub fn encode_entry(entry: &Entry) -> Result<Vec<u8>, CodecError> {
 /// Decode declaration-plane envelope bytes back into an [`Entry`].
 ///
 /// Verifies the magic tag and format version before decoding.
-pub fn decode_entry(bytes: &[u8]) -> Result<Entry, CodecError> {
+pub fn decode_entry(bytes: &[u8]) -> Result<Entry, Error> {
     let payload = read_envelope(bytes, Plane::Declaration)?;
-    postcard::from_bytes(payload).map_err(CodecError::PostcardDecode)
+    postcard::from_bytes(payload).map_err(Error::PostcardDecode)
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +249,7 @@ pub fn decode_entry(bytes: &[u8]) -> Result<Entry, CodecError> {
 ///
 /// The returned buffer is `nudox.nb.v\0\0` || `u16le(FORMAT_VERSION)` ||
 /// `postcard(body)`.
-pub fn encode_body(body: &BodyEmbed) -> Result<Vec<u8>, CodecError> {
+pub fn encode_body(body: &BodyEmbed) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     write_envelope(&mut out, Plane::Body, body)?;
     Ok(out)
@@ -255,9 +258,9 @@ pub fn encode_body(body: &BodyEmbed) -> Result<Vec<u8>, CodecError> {
 /// Decode body-plane envelope bytes back into a [`BodyEmbed`].
 ///
 /// Verifies the magic tag and format version before decoding.
-pub fn decode_body(bytes: &[u8]) -> Result<BodyEmbed, CodecError> {
+pub fn decode_body(bytes: &[u8]) -> Result<BodyEmbed, Error> {
     let payload = read_envelope(bytes, Plane::Body)?;
-    postcard::from_bytes(payload).map_err(CodecError::PostcardDecode)
+    postcard::from_bytes(payload).map_err(Error::PostcardDecode)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,9 +306,9 @@ pub fn is_ir_path(path: &str, plane: Plane) -> bool {
 ///
 /// Accepts paths from either plane; the caller passes the expected `plane` so
 /// that cross-plane confusion is caught immediately.
-pub fn intro_id_of(path: &str, plane: Plane) -> Result<IntroId, CodecError> {
+pub fn intro_id_of(path: &str, plane: Plane) -> Result<IntroId, Error> {
     if !is_ir_path(path, plane) {
-        return Err(CodecError::MalformedPath);
+        return Err(Error::MalformedPath);
     }
     let hex = &path[..HEX_LEN];
     hex_to_intro_id(hex)
@@ -315,14 +318,14 @@ pub fn intro_id_of(path: &str, plane: Plane) -> Result<IntroId, CodecError> {
 const HEX_LEN: usize = 64;
 
 /// Parse exactly 64 lowercase hex chars into an [`IntroId`].
-fn hex_to_intro_id(hex: &str) -> Result<IntroId, CodecError> {
+fn hex_to_intro_id(hex: &str) -> Result<IntroId, Error> {
     if hex.len() != HEX_LEN {
-        return Err(CodecError::BadHex(hex.to_owned()));
+        return Err(Error::BadHex(hex.to_owned()));
     }
     let mut bytes = [0u8; 32];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let hi = hex_nibble(chunk[0]).ok_or_else(|| CodecError::BadHex(hex.to_owned()))?;
-        let lo = hex_nibble(chunk[1]).ok_or_else(|| CodecError::BadHex(hex.to_owned()))?;
+        let hi = hex_nibble(chunk[0]).ok_or_else(|| Error::BadHex(hex.to_owned()))?;
+        let lo = hex_nibble(chunk[1]).ok_or_else(|| Error::BadHex(hex.to_owned()))?;
         bytes[i] = (hi << 4) | lo;
     }
     Ok(IntroId::from_raw(bytes))
@@ -475,7 +478,7 @@ mod tests {
         bytes[0] = b'X';
         let err = decode_entry(&bytes).expect_err("must reject corrupted magic");
         assert!(
-            matches!(err, CodecError::BadMagic(_)),
+            matches!(err, Error::BadMagic(_)),
             "expected BadMagic, got: {:?}",
             err
         );
@@ -493,7 +496,7 @@ mod tests {
         bytes[MAGIC_LEN + 1] = (bad_ver >> 8) as u8;
         let err = decode_entry(&bytes).expect_err("must reject bumped version");
         assert!(
-            matches!(err, CodecError::UnsupportedVersion { .. }),
+            matches!(err, Error::UnsupportedVersion { .. }),
             "expected UnsupportedVersion, got: {:?}",
             err
         );
@@ -574,7 +577,7 @@ mod tests {
         // intro_id_of returns MalformedPath for these.
         assert!(matches!(
             intro_id_of("deadbeef.nir", Plane::Declaration),
-            Err(CodecError::MalformedPath)
+            Err(Error::MalformedPath)
         ));
     }
 
@@ -612,7 +615,7 @@ mod tests {
         let mut bytes = encode_body(&BodyEmbed::Absent).expect("encode");
         bytes[0] = b'X';
         let err = decode_body(&bytes).expect_err("must reject corrupted magic");
-        assert!(matches!(err, CodecError::BadMagic(_)));
+        assert!(matches!(err, Error::BadMagic(_)));
     }
 
     #[test]
@@ -621,11 +624,11 @@ mod tests {
         let decl_bytes = encode_entry(&make_sealed_entry()).expect("encode entry");
         let body_bytes = encode_body(&make_body_embed()).expect("encode body");
         assert!(
-            matches!(decode_body(&decl_bytes), Err(CodecError::BadMagic(_))),
+            matches!(decode_body(&decl_bytes), Err(Error::BadMagic(_))),
             "declaration bytes must be rejected by decode_body"
         );
         assert!(
-            matches!(decode_entry(&body_bytes), Err(CodecError::BadMagic(_))),
+            matches!(decode_entry(&body_bytes), Err(Error::BadMagic(_))),
             "body bytes must be rejected by decode_entry"
         );
     }

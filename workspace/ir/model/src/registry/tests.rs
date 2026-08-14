@@ -1,3 +1,4 @@
+//! Registry tests: build a package and resolve entries by id.
 mod resolver {
     use crate as nudox_ir;
 

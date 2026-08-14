@@ -127,7 +127,7 @@ success-output = "never"
 # inside this workspace) but with CI's usual retry/report shape, mirroring
 # the root file's `ci` profile. `success-output = "final"` for the same
 # `cost case=` reason as the root file's `ci` profile — `shell_flow.rs` and
-# `adversarial.rs` do not currently call `nudox_test_support::measured()`
+# `adversarial.rs` do not currently call `heart::cost::measured()`
 # (grep confirms no `measured(` call site under `workspace/gui/tests/`), so
 # this profile has no cost lines to lose today, but it is set for parity and
 # so a future `measured()` call in this workspace is not silently swallowed.

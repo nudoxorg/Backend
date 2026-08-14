@@ -1,3 +1,4 @@
+//! `Type`, the cross-language type-expression lattice.
 use std::num::{NonZero, NonZeroU16};
 
 use crate::{List, entry::AttrTok, index::RawRef, visitor::Visitor};

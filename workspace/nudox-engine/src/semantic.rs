@@ -90,7 +90,7 @@ pub enum EmbedRole {
 /// reading the log can.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
-pub enum EmbedError {
+pub enum Error {
     /// The host returned a vector of the wrong width.
     ///
     /// Fatal for the affected batch: a vector that is not
@@ -169,7 +169,7 @@ pub trait Embedder: Send + Sync + 'static {
         &'a self,
         texts: &'a [String],
         role: EmbedRole,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>, EmbedError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<f32>>, Error>> + Send + 'a>>;
 }
 
 /// A shared embedder, or none.
@@ -311,17 +311,17 @@ impl SemanticIndex {
         lineage: PackageLineageId,
         entries: Vec<(IntroId, Vec<f32>)>,
         dimensions: usize,
-    ) -> Result<(), EmbedError> {
+    ) -> Result<(), Error> {
         let mut vectors = Vec::with_capacity(entries.len());
         for (intro, mut values) in entries {
             if values.len() != dimensions {
-                return Err(EmbedError::DimensionMismatch {
+                return Err(Error::DimensionMismatch {
                     expected: dimensions,
                     got: values.len(),
                 });
             }
             if let Some(index) = values.iter().position(|v| !v.is_finite()) {
-                return Err(EmbedError::NonFinite { index });
+                return Err(Error::NonFinite { index });
             }
             normalize(&mut values);
             vectors.push(Vector {
@@ -516,7 +516,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                EmbedError::DimensionMismatch {
+                Error::DimensionMismatch {
                     expected: 3,
                     got: 2
                 }
@@ -534,7 +534,7 @@ mod tests {
             .insert_package(lineage("a"), vec![(intro(1), vec![1.0, f32::NAN, 0.0])], 3)
             .expect_err("NaN must not enter the index");
         assert!(
-            matches!(err, EmbedError::NonFinite { index: 1 }),
+            matches!(err, Error::NonFinite { index: 1 }),
             "the error must name which component was bad, got {err:?}"
         );
     }

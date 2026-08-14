@@ -48,7 +48,7 @@ def main [
     }
 
     run-required "test measurement support" {
-        ^env RUSTC_BOOTSTRAP=1 cargo test -p nudox-test-support --locked
+        ^env RUSTC_BOOTSTRAP=1 cargo test -p heart --lib cost --locked
     }
 
     if (has-command "cargo") and ("workspace/gui/Cargo.toml" | path exists) {

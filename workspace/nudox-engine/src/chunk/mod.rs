@@ -46,7 +46,7 @@ pub mod signature;
 pub(crate) mod walk;
 
 use nudox_ir::{change::IntroId, view::IrView};
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
 use crate::wire::{RenderSection, SymbolHead};
 
@@ -77,11 +77,12 @@ pub fn chunk(
 ) -> Option<(SymbolHead, Vec<RenderSection>)> {
     let entry = view.entry(intro)?;
 
-    // Both head and sections ultimately call walk::walk_doc — see that module
-    // for the invariant explanation.
-    let h = head::head(intro, entry, view, package);
-    let s = sections::sections(intro, entry, view, package);
-    Some((h, s))
+    // Produce the plan and sections in one physical walk, then inject the plan
+    // into the head. This is both the zero-jump invariant and the cost bound;
+    // the previous wrappers each called `walk_doc` and doubled the work.
+    let walked = walk::walk_doc(intro, entry, view, package);
+    let h = head::head_with_plan(intro, entry, view, package, walked.plan);
+    Some((h, walked.sections))
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +91,7 @@ pub fn chunk(
 
 #[cfg(test)]
 mod tests {
-    use nudox_store::{
+    use crate::store::{
         package::{PackageView, Provenance},
         source::fixtures::build_rich_view,
     };

@@ -1,16 +1,4 @@
 //! Length-prefixed postcard framing over an iroh QUIC bi-stream.
-//!
-//! Both the IR-sync plane and the object-pack plane framed their typed
-//! request/response/announcement messages the same way — a little-endian length
-//! prefix followed by the postcard bytes, with a hard cap on the declared
-//! length so a hostile peer cannot force an unbounded allocation. That framing
-//! lives here once.
-//!
-//! The length prefix is a `u64` (the widest of the two prior planes; the
-//! IR-sync plane used a `u32`, the pack plane a `u64` — a `u64` is a strict
-//! superset). The cap is a caller-supplied argument, since the two planes bound
-//! their frames differently (IR announcements are tiny; whole-pack payloads are
-//! large).
 
 use std::time::Duration;
 

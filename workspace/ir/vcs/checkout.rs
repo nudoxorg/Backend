@@ -107,7 +107,7 @@ impl MaterializedIndex {
     pub fn view(
         &self,
         intro: IntroId,
-    ) -> Option<Result<crate::f1::F1View<'_>, crate::f1::F1Error>> {
+    ) -> Option<Result<crate::f1::F1View<'_>, crate::f1::Error>> {
         self.symbols
             .get(&intro)
             .map(|arc| crate::f1::F1View::from_bytes(&arc[..]))
@@ -116,7 +116,7 @@ impl MaterializedIndex {
     /// Iterate `(IntroId, F1View)` over every symbol, borrowed.
     pub fn views(
         &self,
-    ) -> impl Iterator<Item = (IntroId, Result<crate::f1::F1View<'_>, crate::f1::F1Error>)> + '_
+    ) -> impl Iterator<Item = (IntroId, Result<crate::f1::F1View<'_>, crate::f1::Error>)> + '_
     {
         self.symbols
             .iter()
@@ -152,7 +152,6 @@ pub(crate) fn try_intro_from_path(path: &str) -> Option<IntroId> {
 // Methods `materialize_index`, `materialize_index_incremental`,
 // `checkout_symbol`, `checkout_symbols` are added to
 // `impl<C> IrRepository<C>` in `repo.rs`.
-pub(crate) use try_intro_from_path as _try_intro_from_path;
 
 // ---------------------------------------------------------------------------
 // Tests

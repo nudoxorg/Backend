@@ -1,5 +1,5 @@
-//! Embedding-model brands: the sealed trait, the two canonical models of the
-//! dual-plane design (09-vector §20.2), and the reranker license deny-list.
+//! Embedding-model brands: the sealed trait and the two canonical models
+//! of the dual-plane design (09-vector §20.2).
 //!
 //! The model is lifted into the *type* — an `Embedding<JinaCodeV2>` can never
 //! feed a `VectorStore<VoyageCode3>`; the mismatch is a compile error (I11).
@@ -151,7 +151,7 @@ mod sealed {
 /// A compile-time embedding-model brand: dimensionality, metric, stable id,
 /// and (for locally-runnable models) the weights artifact. Sealed — only the
 /// catalog below exists, so a brand always names a real, licensed model (I15
-/// is enforced structurally for brands; [`license::assert_licensed`] guards
+/// is enforced structurally for brands; [`crate::vector::core::license::assert_licensed`] guards
 /// the stringly config boundary).
 pub trait EmbeddingModel: sealed::Sealed + Send + Sync + 'static {
     /// The model's output dimensionality.
@@ -245,38 +245,6 @@ impl EmbeddingModel for VoyageCode3 {
     }
 }
 
-/// The model license deny-list (09b §18.3b, I15): CC-BY-NC models must never
-/// be loaded in any serving plane.
-pub mod license {
-    /// Model ids that are CC-BY-NC licensed and forbidden from any serving
-    /// path (I15). The Jina v2 rerankers/ColBERT are non-commercial; the
-    /// replacement rerankers are mxbai / Voyage cross-encoders.
-    pub const FORBIDDEN_MODEL_IDS: &[&str] = &[
-        "jinaai/jina-reranker-v2-base-multilingual",
-        "jinaai/jina-colbert-v2",
-    ];
-
-    /// A forbidden model was named at a config/load boundary (I15).
-    #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-    #[error("model `{model_id}` is license-forbidden (CC-BY-NC; I15 deny-list)")]
-    pub struct LicenseError {
-        /// The offending model id, verbatim.
-        pub model_id: String,
-    }
-
-    /// Reject deny-listed model ids (I15). The match is *exact* (whole-id
-    /// equality), so `"jinaai/jina-colbert-v2-onnx"` or a substring like
-    /// `"colbert"` never trips it — no stringly `contains` heuristics.
-    pub fn assert_licensed(model_id: &str) -> Result<(), LicenseError> {
-        if FORBIDDEN_MODEL_IDS.contains(&model_id) {
-            return Err(LicenseError {
-                model_id: model_id.to_owned(),
-            });
-        }
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,18 +296,5 @@ mod tests {
                 hint.quantization,
             );
         }
-    }
-
-    #[test]
-    fn deny_list_blocks_exact_ids_only() {
-        // I15: both forbidden ids rejected.
-        for id in license::FORBIDDEN_MODEL_IDS {
-            assert!(license::assert_licensed(id).is_err());
-        }
-        // Substring-safety: near-misses and substrings pass.
-        assert!(license::assert_licensed("jinaai/jina-colbert-v2-onnx").is_ok());
-        assert!(license::assert_licensed("jina-reranker-v2-base-multilingual").is_ok());
-        assert!(license::assert_licensed("colbert").is_ok());
-        assert!(license::assert_licensed(JinaCodeV2::id().as_str()).is_ok());
     }
 }

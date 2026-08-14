@@ -1,3 +1,4 @@
+//! Crate-private `Visitor` derive for walking every `Ref`.
 use crate::index::{Indexable, RawRef, Ref};
 
 // derive macro re-export

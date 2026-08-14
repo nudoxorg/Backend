@@ -4,23 +4,23 @@
 //!
 //! 1. Check magic bytes (`b"NdIr"`).
 //! 2. Check `format_version` ≤ [`FORMAT_VERSION`]; reject unknown with
-//!    [`ArchiveError::UnsupportedFormat`].
+//!    [`Error::UnsupportedFormat`].
 //! 3. Verify `header_crc32` over the whole header minus the CRC field itself;
 //!    reject nonzero reserved header/TOC fields.
 //! 4. Parse the TOC; for each entry:
 //!    - Check `length` ≤ [`MAX_SECTION_UNCOMPRESSED`]; return
-//!      [`ArchiveError::SectionTooLarge`] if violated.
+//!      [`Error::SectionTooLarge`] if violated.
 //!    - Check that `offset + length` fits in the byte slice.
 //!    - Verify `uncompressed_crc32` of the section body.
 //!    - Unknown `section_id`: if `TOC_ENTRY_FLAG_OPTIONAL` is set, skip;
-//!      otherwise return [`ArchiveError::UnknownSection`].
+//!      otherwise return [`Error::UnknownSection`].
 //! 5. Construct and return a [`YokedArchive`].
 
 use std::sync::Arc;
 
 use zerocopy::FromBytes;
 
-use crate::archive::error::ArchiveError;
+use crate::archive::error::Error;
 use crate::archive::header::{
     ArchiveHeader, FORMAT_VERSION, MAGIC, MAX_SECTION_UNCOMPRESSED, SectionId, TocEntry,
 };
@@ -31,20 +31,20 @@ use crate::archive::view::{ParsedSections, YokedArchive};
 ///
 /// On success returns a [`YokedArchive`] that borrows the sections from
 /// the provided `Arc<[u8]>` with zero copies.
-pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
+pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, Error> {
     // --- Step 1: magic ---
     if bytes.len() < 4 || bytes[0..4] != MAGIC {
-        return Err(ArchiveError::BadMagic);
+        return Err(Error::BadMagic);
     }
 
     // --- Step 2: parse + validate header ---
     if bytes.len() < std::mem::size_of::<ArchiveHeader>() {
-        return Err(ArchiveError::Truncated);
+        return Err(Error::Truncated);
     }
-    let hdr = ArchiveHeader::ref_from_bytes(&bytes[0..64]).map_err(|_| ArchiveError::Truncated)?;
+    let hdr = ArchiveHeader::ref_from_bytes(&bytes[0..64]).map_err(|_| Error::Truncated)?;
 
     if hdr.format_version() > FORMAT_VERSION {
-        return Err(ArchiveError::UnsupportedFormat {
+        return Err(Error::UnsupportedFormat {
             found: hdr.format_version(),
             max: FORMAT_VERSION,
         });
@@ -53,15 +53,15 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
     // --- Step 3: header CRC (whole header minus the CRC field itself) ---
     let computed_crc = ArchiveHeader::header_crc(&bytes[0..64]);
     if computed_crc != hdr.header_crc32() {
-        return Err(ArchiveError::Crc);
+        return Err(Error::Crc);
     }
 
     // v1: reserved header fields must be zero.
     if hdr.flags() != 0 {
-        return Err(ArchiveError::ReservedNonzero("header.flags"));
+        return Err(Error::ReservedNonzero("header.flags"));
     }
     if hdr.reserved != [0u8; 2] || hdr._reserved_tail != [0u8; 12] {
-        return Err(ArchiveError::ReservedNonzero("header.reserved"));
+        return Err(Error::ReservedNonzero("header.reserved"));
     }
 
     // --- Step 4: parse TOC and validate sections ---
@@ -71,10 +71,10 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
     let toc_end = toc_len
         .checked_mul(std::mem::size_of::<TocEntry>()) // 32 bytes each
         .and_then(|toc_bytes_len| toc_offset.checked_add(toc_bytes_len))
-        .ok_or(ArchiveError::Truncated)?;
+        .ok_or(Error::Truncated)?;
 
     if bytes.len() < toc_end {
-        return Err(ArchiveError::Truncated);
+        return Err(Error::Truncated);
     }
 
     let mut sections: std::collections::HashMap<u32, (usize, usize)> =
@@ -83,7 +83,7 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
     for i in 0..toc_len {
         let toc_entry_off = toc_offset + i * std::mem::size_of::<TocEntry>();
         let toc_e = TocEntry::ref_from_bytes(&bytes[toc_entry_off..toc_entry_off + 32])
-            .map_err(|_| ArchiveError::Truncated)?;
+            .map_err(|_| Error::Truncated)?;
 
         let section_id = toc_e.section_id();
         let offset = toc_e.offset() as usize;
@@ -93,15 +93,15 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
         // v1: only the OPTIONAL flag bit is defined; reserved bits/bytes must
         // be zero so corrupted or non-canonical TOC entries fail closed.
         if toc_e.flags() & !crate::archive::header::TOC_ENTRY_FLAG_OPTIONAL != 0 {
-            return Err(ArchiveError::ReservedNonzero("toc.flags"));
+            return Err(Error::ReservedNonzero("toc.flags"));
         }
         if toc_e.reserved != [0u8; 4] {
-            return Err(ArchiveError::ReservedNonzero("toc.reserved"));
+            return Err(Error::ReservedNonzero("toc.reserved"));
         }
 
         // Size guard.
         if length > MAX_SECTION_UNCOMPRESSED {
-            return Err(ArchiveError::SectionTooLarge {
+            return Err(Error::SectionTooLarge {
                 section: section_id,
                 got: length,
                 max: MAX_SECTION_UNCOMPRESSED,
@@ -111,16 +111,16 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
         // Bounds check.
         let end = offset
             .checked_add(length as usize)
-            .ok_or(ArchiveError::Truncated)?;
+            .ok_or(Error::Truncated)?;
         if end > bytes.len() {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
 
         // Section CRC.
         let body = &bytes[offset..end];
         let actual_crc = crc32_of(body);
         if actual_crc != stored_crc {
-            return Err(ArchiveError::Crc);
+            return Err(Error::Crc);
         }
 
         // Forward-compat: unknown section.
@@ -128,7 +128,7 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, ArchiveError> {
             if toc_e.is_optional() {
                 continue; // skip gracefully
             } else {
-                return Err(ArchiveError::UnknownSection(section_id));
+                return Err(Error::UnknownSection(section_id));
             }
         }
 

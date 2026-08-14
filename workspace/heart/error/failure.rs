@@ -1,3 +1,5 @@
+//! Indexing phases, recorded failures, and resolution states.
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

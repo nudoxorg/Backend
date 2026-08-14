@@ -102,7 +102,7 @@ fn recipe_fingerprint_parts(
 
 /// Why a bakery **ledger** operation failed.
 #[derive(Debug, thiserror::Error)]
-pub enum BakeryError {
+pub enum Error {
     /// The `edgepack_artifacts` table could not be read/written.
     #[error("bakery claim store failed")]
     Catalog(#[source] EngineError),
@@ -116,6 +116,10 @@ pub enum BakeryError {
     Store(#[from] crate::error::StoreError),
 }
 
+/// Compatibility alias for callers that named the ledger error by its old
+/// `BakeryError` spelling.
+pub use self::Error as BakeryError;
+
 /// The claim protocol over `edgepack_artifacts`, abstracted so the single-claim
 /// invariant is unit-testable without a live engine.
 pub trait ClaimStore: Send + Sync {
@@ -124,7 +128,7 @@ pub trait ClaimStore: Send + Sync {
     fn try_claim(
         &self,
         request: &BakeRequest,
-    ) -> impl Future<Output = Result<bool, BakeryError>> + Send;
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Terminal success: record the artifact id + RAM estimate, status `ready`.
     fn mark_ready(
@@ -132,13 +136,13 @@ pub trait ClaimStore: Send + Sync {
         digest: ContentHash,
         artifact: ContentHash,
         ram_estimate: i64,
-    ) -> impl Future<Output = Result<(), BakeryError>> + Send;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Terminal failure: status `failed`. The claim stays terminal.
     fn mark_failed(
         &self,
         digest: ContentHash,
-    ) -> impl Future<Output = Result<(), BakeryError>> + Send;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 /// One row of `edgepack_artifacts`, as read back for the manifest surface.
@@ -209,7 +213,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
         &self,
         fingerprint: &str,
         limit: i64,
-    ) -> Result<Vec<(PackageId, String)>, BakeryError> {
+    ) -> Result<Vec<(PackageId, String)>, Error> {
         let rows = self
             .engine()
             .query_rows(
@@ -223,7 +227,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
                 &[Value::Text(fingerprint.to_owned()), Value::Integer(limit)],
                 &mut |row| Ok((row.get_blob(0)?, row.get_text(1)?)),
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(rows
             .into_iter()
             .filter_map(|(id, version)| {
@@ -234,7 +238,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
 
     /// Delete `claimed` rows whose worker evidently died (older than `age`
     /// without reaching a terminal status), releasing the claim for re-bake.
-    pub async fn release_stale_claims(&self, age: Duration) -> Result<u64, BakeryError> {
+    pub async fn release_stale_claims(&self, age: Duration) -> Result<u64, Error> {
         let cutoff = chrono::Utc::now().timestamp_millis() - age.as_millis() as i64;
         let removed = self
             .engine()
@@ -242,7 +246,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
                 "DELETE FROM edgepack_artifacts WHERE status = 'claimed' AND updated_at < ?1",
                 &[Value::Integer(cutoff)],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(removed as u64)
     }
 
@@ -252,7 +256,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
         &self,
         package: PackageId,
         fingerprint: &str,
-    ) -> Result<Option<EdgepackRow>, BakeryError> {
+    ) -> Result<Option<EdgepackRow>, Error> {
         let mut rows = self
             .engine()
             .query_rows(
@@ -271,7 +275,7 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
                     ))
                 },
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(rows.pop().and_then(|(digest, status, artifact, ram_estimate)| {
             Some(EdgepackRow {
                 digest: hash_from_column(&digest)?,
@@ -293,7 +297,7 @@ fn hash_from_column(bytes: &[u8]) -> Option<ContentHash> {
 }
 
 impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {
-    async fn try_claim(&self, request: &BakeRequest) -> Result<bool, BakeryError> {
+    async fn try_claim(&self, request: &BakeRequest) -> Result<bool, Error> {
         let digest = request.edgepack_key.digest();
         let inserted = self
             .engine()
@@ -309,7 +313,7 @@ impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {
                     Value::Integer(chrono::Utc::now().timestamp_millis()),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(inserted == 1)
     }
 
@@ -318,7 +322,7 @@ impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {
         digest: ContentHash,
         artifact: ContentHash,
         ram_estimate: i64,
-    ) -> Result<(), BakeryError> {
+    ) -> Result<(), Error> {
         let now = chrono::Utc::now().timestamp_millis();
         self.engine()
             .execute(
@@ -333,11 +337,11 @@ impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {
                     Value::Integer(now),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(())
     }
 
-    async fn mark_failed(&self, digest: ContentHash) -> Result<(), BakeryError> {
+    async fn mark_failed(&self, digest: ContentHash) -> Result<(), Error> {
         self.engine()
             .execute(
                 "UPDATE edgepack_artifacts SET status = 'failed', updated_at = ?2 \
@@ -347,7 +351,7 @@ impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {
                     Value::Integer(chrono::Utc::now().timestamp_millis()),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(())
     }
 }

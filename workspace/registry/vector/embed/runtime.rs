@@ -30,7 +30,7 @@ use fastembed::{
     InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
 };
 
-use super::weights::{WeightsError, WeightsSpec};
+use super::weights::{Error as WeightsError, WeightsSpec};
 use super::{MAX_BATCH, MAX_SEQ_LEN};
 
 /// The ort package identity folded into `tool_digest` (09c I12): the exact
@@ -62,7 +62,7 @@ impl RuntimeConfig {
 /// Why the runtime could not come up. Callers hitting `Weights(Missing…)`
 /// disable semantic search gracefully rather than failing the app.
 #[derive(Debug, thiserror::Error)]
-pub enum RuntimeInitError {
+pub enum Error {
     #[error(transparent)]
     Weights(#[from] WeightsError),
 
@@ -94,7 +94,7 @@ impl FastembedOrt {
     pub fn load_blocking(
         spec: &WeightsSpec,
         config: &RuntimeConfig,
-    ) -> Result<Self, RuntimeInitError> {
+    ) -> Result<Self, Error> {
         // Pinned-artifact policy first: hash before load; a mismatch never
         // reaches ort (I11).
         let verified = spec.verify()?;
@@ -124,7 +124,7 @@ impl FastembedOrt {
             .with_intra_threads(intra_threads);
 
         let session = TextEmbedding::try_new_from_user_defined(model, options)
-            .map_err(|error| RuntimeInitError::Fastembed(error.to_string()))?;
+            .map_err(|error| Error::Fastembed(error.to_string()))?;
 
         tracing::info!(
             path = %verified.path.display(),
@@ -141,10 +141,10 @@ impl FastembedOrt {
     }
 
     /// Async wrapper for [`Self::load_blocking`].
-    pub async fn load(spec: WeightsSpec, config: RuntimeConfig) -> Result<Self, RuntimeInitError> {
+    pub async fn load(spec: WeightsSpec, config: RuntimeConfig) -> Result<Self, Error> {
         tokio::task::spawn_blocking(move || Self::load_blocking(&spec, &config))
             .await
-            .map_err(|join| RuntimeInitError::Fastembed(join.to_string()))?
+            .map_err(|join| Error::Fastembed(join.to_string()))?
     }
 
     /// A factory closure for [`super::gate::EmbedGate`], so the gate can
@@ -185,9 +185,9 @@ impl FastembedOrt {
     }
 }
 
-fn read_sidecar(spec: &WeightsSpec, name: &str) -> Result<Vec<u8>, RuntimeInitError> {
+fn read_sidecar(spec: &WeightsSpec, name: &str) -> Result<Vec<u8>, Error> {
     let path = spec.sidecar(name);
-    std::fs::read(&path).map_err(|source| RuntimeInitError::Sidecar { path, source })
+    std::fs::read(&path).map_err(|source| Error::Sidecar { path, source })
 }
 
 #[async_trait::async_trait]

@@ -348,20 +348,20 @@ fn tagging_is_strict() {
     assert!(
         matches!(
             repo.tag_version(&vlabel("1.0.0")),
-            Err(crate::VcsError::RefAlreadyExists { .. })
+            Err(crate::error::Error::RefAlreadyExists { .. })
         ),
         "re-tagging the same version must error"
     );
     assert!(
         matches!(
             repo.materialize_version(&vlabel("9.9.9")),
-            Err(crate::VcsError::RefNotFound { .. })
+            Err(crate::error::Error::RefNotFound { .. })
         ),
         "serving an untagged version must error"
     );
     assert!(matches!(
         repo.version_state(&vlabel("9.9.9")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ),);
 }
 
@@ -714,7 +714,7 @@ fn branch_lifecycle() {
     // Strictness: re-create errors.
     assert!(matches!(
         repo.create_branch(&branch("feature/x")),
-        Err(crate::VcsError::RefAlreadyExists { .. })
+        Err(crate::error::Error::RefAlreadyExists { .. })
     ));
 
     // Listing partitions only branches (no tag/version leakage).
@@ -743,17 +743,17 @@ fn branch_lifecycle() {
     // The current working branch is protected from delete + rename.
     assert!(matches!(
         repo.delete_branch(&branch("main")),
-        Err(crate::VcsError::CurrentBranchProtected { .. })
+        Err(crate::error::Error::CurrentBranchProtected { .. })
     ));
     assert!(matches!(
         repo.rename_branch(&branch("main"), &branch("trunk")),
-        Err(crate::VcsError::CurrentBranchProtected { .. })
+        Err(crate::error::Error::CurrentBranchProtected { .. })
     ));
 
     // Switching to a non-existent branch errors.
     assert!(matches!(
         repo.switch_branch(&branch("ghost")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ));
 }
 
@@ -807,7 +807,7 @@ fn tags_are_first_class() {
     assert!(!repo.tag_exists(&tag("rc1")).unwrap());
     assert!(matches!(
         repo.delete_tag(&tag("rc1")),
-        Err(crate::VcsError::RefNotFound { .. })
+        Err(crate::error::Error::RefNotFound { .. })
     ));
 }
 
@@ -826,11 +826,11 @@ fn change_ref_is_not_servable() {
     assert!(!change_ref.is_channel_backed());
     assert!(matches!(
         repo.materialize_ref(&change_ref),
-        Err(crate::VcsError::RefNotServable { .. })
+        Err(crate::error::Error::RefNotServable { .. })
     ));
     assert!(matches!(
         repo.resolve_ref(&change_ref),
-        Err(crate::VcsError::RefNotServable { .. })
+        Err(crate::error::Error::RefNotServable { .. })
     ));
 }
 
@@ -1510,7 +1510,7 @@ fn session_large_batch_stage() {
 
 /// **Foreign-package rejection (SV-10)**: staging an entry whose
 /// `stable.package` differs from the repository's package must return
-/// `VcsError::ForeignPackage` before any WC mutation.  A valid entry staged
+/// `Error::ForeignPackage` before any WC mutation.  A valid entry staged
 /// after the rejection must be committed correctly.
 #[test]
 fn session_foreign_package_rejected() {
@@ -1542,7 +1542,7 @@ fn session_foreign_package_rejected() {
         // Staging the foreign entry must error with ForeignPackage.
         let err = session.stage(vec![foreign_entry]).unwrap_err();
         assert!(
-            matches!(err, crate::VcsError::ForeignPackage { .. }),
+            matches!(err, crate::error::Error::ForeignPackage { .. }),
             "expected ForeignPackage, got {err:?}"
         );
 
@@ -1989,7 +1989,7 @@ fn stream_abort_mid_stream() {
     );
 }
 
-/// **Protocol violation**: truncated transport → `VcsError::Stream`, session
+/// **Protocol violation**: truncated transport → `Error::Stream`, session
 /// abandoned, repo still usable after.
 #[test]
 fn stream_protocol_violation_truncated() {
@@ -2026,8 +2026,8 @@ fn stream_protocol_violation_truncated() {
     assert!(result.is_err(), "truncated stream must return Err");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, crate::VcsError::Stream(_)),
-        "expected VcsError::Stream, got {err:?}"
+        matches!(err, crate::error::Error::Stream(_)),
+        "expected Error::Stream, got {err:?}"
     );
 
     // Repo tip must be unchanged.
@@ -2050,7 +2050,7 @@ fn stream_protocol_violation_truncated() {
     let _ = change;
 }
 
-/// **Foreign-package entry in the stream**: `VcsError::ForeignPackage` surfaces
+/// **Foreign-package entry in the stream**: `Error::ForeignPackage` surfaces
 /// through `record_stream` and the repo stays clean.
 #[test]
 fn stream_foreign_package_rejected() {
@@ -2127,7 +2127,7 @@ fn stream_foreign_package_rejected() {
     assert!(result.is_err(), "foreign package must produce an error");
     let err = result.unwrap_err();
     assert!(
-        matches!(err, crate::VcsError::ForeignPackage { .. }),
+        matches!(err, crate::error::Error::ForeignPackage { .. }),
         "expected ForeignPackage, got {err:?}"
     );
 

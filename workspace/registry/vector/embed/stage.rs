@@ -24,13 +24,14 @@ use crate::vector::core::model::{EmbeddingModel, Metric, ModelId};
 use crate::vector::core::recipe::{
     EmbedFacetsBuf, RECIPE_ID, TokenCounter, VectorName, build_embed_text,
 };
-use crate::vector::core::store::{Payload, PointId, StoreError, VectorPoint, VectorStore};
+use crate::vector::core::store::{Payload, PointId, VectorPoint, VectorStore};
+use crate::vector::core::StoreError;
 use crate::vector::core::{EmbedRole, Embedding, JinaCodeV2};
 use async_trait::async_trait;
 use heart::{ContentHash, SymbolId};
 
 use super::MAX_BATCH;
-use super::scheduler::{CancelGroup, EmbedHandle, Priority, SchedulerError};
+use super::scheduler::{self, CancelGroup, EmbedHandle, Priority};
 
 /// Stage identity for stage-trace rows. v1 embeds the `sym` facet only.
 /// The recipe revision itself is [`RECIPE_ID`] (vector-core), folded into
@@ -104,7 +105,7 @@ pub struct StageReport {
 /// Why a stage run failed. A failed stage must not seal the generation
 /// (09b §16.9).
 #[derive(Debug, thiserror::Error)]
-pub enum StageError {
+pub enum Error {
     #[error("embed stage cancelled")]
     Cancelled,
     #[error("vector store: {0}")]
@@ -113,14 +114,14 @@ pub enum StageError {
     Embed(crate::vector::core::EmbedError),
 }
 
-impl From<SchedulerError> for StageError {
-    fn from(error: SchedulerError) -> Self {
+impl From<scheduler::Error> for Error {
+    fn from(error: scheduler::Error) -> Self {
         match error {
-            SchedulerError::Cancelled => StageError::Cancelled,
-            SchedulerError::Closed => {
-                StageError::Embed(super::backend_error("embed scheduler shut down"))
+            scheduler::Error::Cancelled => Error::Cancelled,
+            scheduler::Error::Closed => {
+                Error::Embed(super::backend_error("embed scheduler shut down"))
             }
-            SchedulerError::Embed(inner) => StageError::Embed(inner),
+            scheduler::Error::Embed(inner) => Error::Embed(inner),
         }
     }
 }
@@ -179,7 +180,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
         delta: &SymbolDelta,
         facets_for: &dyn Fn(&SymbolId) -> Option<EmbedFacetsBuf>,
         cancel: CancelGroup,
-    ) -> Result<StageReport, StageError> {
+    ) -> Result<StageReport, Error> {
         let mut report = StageReport::default();
 
         self.delete_removed(&delta.removed, &mut report).await?;
@@ -195,7 +196,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
 
         for chunk in work.chunks(MAX_BATCH) {
             if cancel.is_cancelled() {
-                return Err(StageError::Cancelled);
+                return Err(Error::Cancelled);
             }
             self.run_chunk(chunk, facets_for, &cancel, &mut report)
                 .await?;
@@ -209,7 +210,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
         &self,
         removed: &[SymbolId],
         report: &mut StageReport,
-    ) -> Result<(), StageError> {
+    ) -> Result<(), Error> {
         if removed.is_empty() {
             return Ok(());
         }
@@ -227,7 +228,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
         facets_for: &dyn Fn(&SymbolId) -> Option<EmbedFacetsBuf>,
         cancel: &CancelGroup,
         report: &mut StageReport,
-    ) -> Result<(), StageError> {
+    ) -> Result<(), Error> {
         // Phase 1 — classify each symbol through the cutoff ladder.
         let mut from_cas: Vec<(PointId, EmbedFacetsBuf, ContentHash, Vec<f32>)> = Vec::new();
         let mut need_infer: Vec<(PointId, EmbedFacetsBuf, ContentHash)> = Vec::new();
@@ -301,7 +302,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
         for (point_id, facets, embed_key, task) in jobs {
             let embedding = task
                 .await
-                .map_err(|join| StageError::Embed(super::backend_error(join)))??;
+                .map_err(|join| Error::Embed(super::backend_error(join)))??;
             self.cas
                 .put(&embed_key, super::embedding_floats(&embedding))
                 .await;
@@ -315,7 +316,7 @@ impl<S: VectorStore<JinaCodeV2>> EmbedStage<S> {
         let mut trace_keys = Vec::new();
 
         for (point_id, facets, embed_key, vector) in from_cas {
-            let embedding = Embedding::from_vec(vector).map_err(StageError::Embed)?;
+            let embedding = Embedding::from_vec(vector).map_err(Error::Embed)?;
             points.push(self.point(point_id, embedding, &facets, &embed_key));
             trace_keys.push(embed_key);
         }

@@ -2,7 +2,7 @@
 //!
 //! [`StreamReceiver`] enforces the protocol ordering rules and validates the
 //! emitted-count invariant. It surfaces all violations as typed
-//! [`crate::protocol::StreamError`] variants.
+//! [`crate::protocol::Error`] variants.
 //!
 //! # State machine
 //!
@@ -16,7 +16,7 @@ use std::io::Read;
 
 use ir::change::StableRef;
 
-use crate::protocol::error::StreamError;
+use crate::protocol::error::Error;
 use crate::protocol::frame::{
     BodyWire, FailureKindWire, IR_STREAM_VERSION, PhaseWire, ProducerId, StreamFrame, WireEntry,
     WireLink,
@@ -115,7 +115,7 @@ pub enum Received {
 /// 2. Call [`StreamReceiver::next`] in a loop until it returns `Ok(None)` or a
 ///    terminal [`Received::Finish`] / [`Received::Abort`].
 ///
-/// All protocol violations return a typed [`StreamError`]; the receiver does
+/// All protocol violations return a typed [`Error`]; the receiver does
 /// not panic.
 pub struct StreamReceiver<R: Read> {
     reader: FrameReader<R>,
@@ -147,13 +147,13 @@ impl<R: Read> StreamReceiver<R> {
     ///
     /// # Errors
     ///
-    /// - [`StreamError::VersionMismatch`] — the remote announced a different version.
-    /// - [`StreamError::Protocol`] — the first frame was not `Hello`, or the
+    /// - [`Error::VersionMismatch`] — the remote announced a different version.
+    /// - [`Error::Protocol`] — the first frame was not `Hello`, or the
     ///   stream ended before `Hello` arrived.
-    /// - [`StreamError::Io`] / [`StreamError::Decode`] — transport/encoding errors.
-    pub fn accept(&mut self) -> Result<(JobKey, ProducerId), StreamError> {
+    /// - [`Error::Io`] / [`Error::Decode`] — transport/encoding errors.
+    pub fn accept(&mut self) -> Result<(JobKey, ProducerId), Error> {
         if self.state != ReceiverState::AwaitingHello {
-            return Err(StreamError::Protocol(
+            return Err(Error::Protocol(
                 "accept() called after Hello already received".into(),
             ));
         }
@@ -161,7 +161,7 @@ impl<R: Read> StreamReceiver<R> {
         let frame = self
             .reader
             .read_frame()?
-            .ok_or_else(|| StreamError::Protocol("stream ended before Hello".into()))?;
+            .ok_or_else(|| Error::Protocol("stream ended before Hello".into()))?;
 
         match frame {
             StreamFrame::Hello {
@@ -170,7 +170,7 @@ impl<R: Read> StreamReceiver<R> {
                 producer,
             } => {
                 if version != IR_STREAM_VERSION {
-                    return Err(StreamError::VersionMismatch {
+                    return Err(Error::VersionMismatch {
                         ours: IR_STREAM_VERSION,
                         theirs: version,
                     });
@@ -180,7 +180,7 @@ impl<R: Read> StreamReceiver<R> {
                 self.producer = Some(producer.clone());
                 Ok((job, producer))
             }
-            other => Err(StreamError::Protocol(format!(
+            other => Err(Error::Protocol(format!(
                 "expected Hello as first frame, got {}",
                 other.variant_name()
             ))),
@@ -193,15 +193,15 @@ impl<R: Read> StreamReceiver<R> {
     ///
     /// # Ordering enforcement
     ///
-    /// - [`StreamError::Protocol`] if called before [`StreamReceiver::accept`].
-    /// - [`StreamError::Protocol`] if a frame arrives after a terminal.
-    /// - [`StreamError::Protocol`] if a `Hello` frame arrives mid-stream.
-    /// - [`StreamError::EmittedCountMismatch`] on `Finish` if the declared count
+    /// - [`Error::Protocol`] if called before [`StreamReceiver::accept`].
+    /// - [`Error::Protocol`] if a frame arrives after a terminal.
+    /// - [`Error::Protocol`] if a `Hello` frame arrives mid-stream.
+    /// - [`Error::EmittedCountMismatch`] on `Finish` if the declared count
     ///   disagrees with the observed count.
-    pub fn recv(&mut self) -> Result<Option<Received>, StreamError> {
+    pub fn recv(&mut self) -> Result<Option<Received>, Error> {
         match self.state {
             ReceiverState::AwaitingHello => {
-                return Err(StreamError::Protocol(
+                return Err(Error::Protocol(
                     "next() called before accept()".into(),
                 ));
             }
@@ -211,7 +211,7 @@ impl<R: Read> StreamReceiver<R> {
                 // end-of-stream, any further frame is a protocol error.
                 return match self.reader.read_frame()? {
                     None => Ok(None),
-                    Some(frame) => Err(StreamError::Protocol(format!(
+                    Some(frame) => Err(Error::Protocol(format!(
                         "{} frame received after terminal frame",
                         frame.variant_name()
                     ))),
@@ -226,7 +226,7 @@ impl<R: Read> StreamReceiver<R> {
         };
 
         match frame {
-            StreamFrame::Hello { .. } => Err(StreamError::Protocol(
+            StreamFrame::Hello { .. } => Err(Error::Protocol(
                 "unexpected second Hello frame".into(),
             )),
 
@@ -254,7 +254,7 @@ impl<R: Read> StreamReceiver<R> {
                 producer_digest,
             } => {
                 if emitted != self.observed {
-                    return Err(StreamError::EmittedCountMismatch {
+                    return Err(Error::EmittedCountMismatch {
                         declared: emitted,
                         observed: self.observed,
                     });

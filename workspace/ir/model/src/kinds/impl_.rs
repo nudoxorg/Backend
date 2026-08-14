@@ -1,3 +1,4 @@
+//! `Impl`, trait or inherent impl block kind.
 use crate::{
     List,
     kinds::{GenericParam, Type, WherePred},

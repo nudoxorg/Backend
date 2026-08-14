@@ -12,7 +12,7 @@
 //!    optional `ReversePositionIndex` for the fast path) and exposes plain-Rust neighbour
 //!    methods that a Trustfall schema can call once the full schema wiring is completed in
 //!    a later wave. [`execute_graph_query`] is present as a correctly-typed stub that
-//!    returns [`GraphQueryError::Unsupported`] until the schema is wired.
+//!    returns [`Error::Unsupported`] until the schema is wired.
 //!
 //! HTTP routes (`GET /v1/symbols/:ref/usages`, etc.) are a later wave — this module
 //! exposes library functions only.
@@ -21,6 +21,4 @@ pub mod reverse_index;
 pub mod trustfall_adapter;
 
 pub use reverse_index::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
-pub use trustfall_adapter::{
-    GraphQueryError, GraphVertex, IrTrustfallAdapter, execute_graph_query,
-};
+pub use trustfall_adapter::{Error, GraphVertex, IrTrustfallAdapter, execute_graph_query};

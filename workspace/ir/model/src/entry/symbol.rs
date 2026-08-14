@@ -1,3 +1,4 @@
+//! `Symbol` metadata plus attribute, cfg, and doc-link types.
 use std::{ops::Range, path::PathBuf};
 
 use crate::visitor::Visitor;

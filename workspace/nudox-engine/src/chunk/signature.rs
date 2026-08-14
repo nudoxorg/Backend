@@ -64,7 +64,7 @@ use nudox_ir::{
         ty::{Primitive, TemplatePart, TupleElement, Variance, Width},
     },
 };
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
 use crate::wire::{SharedStr, SigToken, SymbolKey};
 
@@ -869,7 +869,7 @@ fn resolve_nominal(
 ///
 /// # The defect (docs/LIMITATIONS.md L18, L39)
 ///
-/// `path_of` (`nudox_store::package::PackageIndexes::path_of`) is the
+/// `path_of` (`crate::store::package::PackageIndexes::path_of`) is the
 /// *physical* ancestor chain: every module `id` is nested under, root first,
 /// dot-joined. For `memchr::Memchr` that chain is `memchr.memchr.memchr.Memchr`
 /// — the package, its crate-root module (Rust names it after the crate), and
@@ -897,7 +897,7 @@ fn resolve_nominal(
 ///    when there is only one `Memchr` in the package to mean.
 /// 3. If the leaf collides with another declaration — two distinct types
 ///    sharing a name in different modules, e.g. `io::Error` and `fmt::Error`
-///    (`nudox_store::index::name` module docs) — enough of the path survives
+///    (`crate::store::index::name` module docs) — enough of the path survives
 ///    to tell them apart. The rule for "enough" is the one
 ///    `PreparedRow::prepare` already uses for colliding search rows
 ///    (`workspace/gui/src/stores/search_model.rs::common_head_len`): elide
@@ -1178,7 +1178,7 @@ mod tests {
         },
         view::IrView,
     };
-    use nudox_store::package::{PackageView, Provenance};
+    use crate::store::package::{PackageView, Provenance};
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1609,7 +1609,7 @@ mod tests {
 
     #[test]
     fn rich_fixture_all_tokens_non_empty() {
-        use nudox_store::source::fixtures::build_rich_view;
+        use crate::store::source::fixtures::build_rich_view;
         let view = build_rich_view();
         let pkg = PackageView::build(view, Provenance::TrustedLocal);
         for (_intro, entry) in pkg.view().entries() {
@@ -1761,7 +1761,7 @@ mod tests {
     #[test]
     fn same_package_nominal_ref_keeps_disambiguating_tail_when_leaf_collides() {
         // Two distinct `Error` types declared in different modules
-        // (`nudox_store::index::name` module docs use this exact example)
+        // (`crate::store::index::name` module docs use this exact example)
         // must never render the same label. The precedent this mirrors is
         // `PreparedRow::prepare`'s search-row disambiguation
         // (`workspace/gui/src/stores/search_model.rs`): elide only the

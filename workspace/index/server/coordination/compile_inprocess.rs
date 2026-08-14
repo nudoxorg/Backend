@@ -3,13 +3,13 @@
 //! (macOS) vs cage (linux)`).
 //!
 //! There is no ephemeral SmolvmCage available on macOS (no golden rootfs to
-//! fork, no `libkrun`), so this module runs the matching `nudox-producer-*`
+//! fork, no `libkrun`), so this module runs the matching `nudox-languages`
 //! crate **directly on this host's CPU**, against the same materialized
 //! source tree `execute_compile_phase` already writes out for the cage path.
 //!
 //! # What this does write
 //!
-//! For every live, public entry the producer's [`nudox_producer::Produced`]
+//! For every live, public entry the producer's [`nudox_languages::Produced`]
 //! table contains, this writes a real catalog `symbols_proj` row via
 //! [`crate::catalog::GlobalStore::upsert_symbol`] — the exact projection
 //! [`super::indexing`]'s vector outbox consumer
@@ -85,7 +85,7 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         ir::change::EcosystemId::new(lineage_ecosystem_tag(language)),
         ir::change::PackageName::new(name.clone()),
     );
-    let src = nudox_producer::PackageSource::new(source_root.to_path_buf(), name.clone(), version);
+    let src = nudox_languages::PackageSource::new(source_root.to_path_buf(), name.clone(), version);
 
     // Producers are synchronous and can be CPU-heavy (ra_ap parsing, javac
     // doclet invocation, …) — run on the blocking pool exactly like the cage
@@ -292,44 +292,44 @@ mod tests {
 /// callers wrap it in a typed `ServerError`).
 fn run_language_producer(
     language: heart::Language,
-    src: &nudox_producer::PackageSource,
+    src: &nudox_languages::PackageSource,
     lineage: &ir::change::PackageLineageId,
-) -> Result<nudox_producer::Produced, String> {
+) -> Result<nudox_languages::Produced, String> {
     use heart::Language;
 
     let result = match language {
-        Language::Rust => nudox_producer::produce(
-            &nudox_producer_rust::RustProducer { direct_repo: false },
+        Language::Rust => nudox_languages::produce(
+            &nudox_languages::rust::RustProducer { direct_repo: false },
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::Go => nudox_producer::produce(
-            &nudox_producer_go::GoProducer,
+        Language::Go => nudox_languages::produce(
+            &nudox_languages::go::GoProducer,
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::Java => nudox_producer::produce(
-            &nudox_producer_java::JavaProducer::new(),
+        Language::Java => nudox_languages::produce(
+            &nudox_languages::java::JavaProducer::new(),
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::CSharp => nudox_producer::produce(
-            &nudox_producer_csharp::CSharpProducer::from_env(),
+        Language::CSharp => nudox_languages::produce(
+            &nudox_languages::csharp::CSharpProducer::from_env(),
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::Typescript => nudox_producer::produce(
-            &nudox_producer_typescript::TypescriptProducer::new(),
+        Language::Typescript => nudox_languages::produce(
+            &nudox_languages::typescript::TypescriptProducer::new(),
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::Cpp => nudox_producer::produce(
-            &nudox_producer_clang::ClangProducer::new(),
+        Language::Cpp => nudox_languages::produce(
+            &nudox_languages::clang::ClangProducer::new(),
             src,
             lineage,
             &ir::foreign::Unlinked,
@@ -337,7 +337,7 @@ fn run_language_producer(
         // No in-process producer is registered for these: Python only
         // contributes real declarations behind the `pyrefly` feature (not
         // wired into `index` — see `workspace/index/Cargo.toml`), and there
-        // is no `nudox-producer-nix` crate in the workspace at all.
+        // is no nix producer in the workspace at all.
         Language::Python | Language::Nix => {
             return Err(format!(
                 "no in-process producer available for language {language}"
@@ -350,7 +350,7 @@ fn run_language_producer(
 
 /// Render a `ProducerError` and every link of its `#[source]` chain
 /// (docs/AGENTS-DOCTRINE.md §8: never print only the top-level `Display`).
-fn error_chain(err: &nudox_producer::ProducerError) -> String {
+fn error_chain(err: &nudox_languages::ProducerError) -> String {
     std::iter::successors(Some(err as &dyn std::error::Error), |e| {
         std::error::Error::source(*e)
     })

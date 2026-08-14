@@ -8,7 +8,7 @@
 //! here once, generic over the item id and the durable target.
 //!
 //! This module holds ONLY the transport-agnostic contract: the [`ContentIo`] and
-//! [`ApplyHook`] traits plus the [`VerifyError`]/[`SyncError`] vocabulary. It
+//! [`ApplyHook`] traits plus the [`VerifyError`]/[`Error`] vocabulary. It
 //! deliberately names no transport (`iroh`) and no engine (`libpijul`) type — an
 //! implementor (`ir::sync`, `object_pack`) instantiates the associated types and
 //! owns its own provide/fetch wiring. The trust anchor is content-addressing:
@@ -74,7 +74,7 @@ pub trait ApplyHook: Send + Sync {
     type Tip;
 
     /// Apply `ids` (in dependency order) to `target`, returning the new tip.
-    fn apply(&self, target: &Self::Target, ids: &[Self::Id]) -> Result<Self::Tip, SyncError>;
+    fn apply(&self, target: &Self::Target, ids: &[Self::Id]) -> Result<Self::Tip, Error>;
 }
 
 /// An item's bytes did not verify against its content-address id.
@@ -100,7 +100,7 @@ pub enum VerifyError {
 
 /// A sync operation failed.
 #[derive(Debug, Error)]
-pub enum SyncError {
+pub enum Error {
     /// An item failed verification. NOTHING is written or applied past this.
     #[error(transparent)]
     VerificationFailed(#[from] VerifyError),
@@ -156,3 +156,5 @@ pub enum SyncError {
         reason: String,
     },
 }
+
+pub use self::Error as SyncError;

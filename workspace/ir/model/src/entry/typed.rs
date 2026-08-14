@@ -1,3 +1,4 @@
+//! `TypedEntry<T>`, a kind-typed view over an `Entry`.
 use std::{marker::PhantomData, ops::Deref};
 
 use crate::kind::EntryKind;

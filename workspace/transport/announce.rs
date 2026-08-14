@@ -1,41 +1,4 @@
-//! Control-ALPN announcement path for federation sync push (CONSOLIDATION-NOTES §8e).
-//!
-//! After [`blob::Provider`] has served the content-addressed bytes, the
-//! sender announces the `(id, transport_hash)` pairing to each remote peer
-//! over a dedicated QUIC control stream. The peer's [`FederationSync::pull`]
-//! then fetches the blob by transport hash and verifies it with its own
-//! `ContentIo::verify` — the content-address trust model is unchanged.
-//!
-//! # Protocol
-//!
-//! One request/response over a QUIC bi-stream:
-//!
-//!   1. Sender opens a bi-stream and writes a length-prefixed postcard
-//!      [`Announcement`] frame (`send_framed`).
-//!   2. Receiver reads the announcement, invokes the caller's handler, and
-//!      replies with an [`Ack`] frame.
-//!   3. Sender reads the [`Ack`] and closes the connection.
-//!
-//! The frame cap for control messages is intentionally small (16 KiB):
-//! announcements carry only a string id and a 32-byte hash; the actual bytes
-//! ride the blob channel.
-//!
-//! # Receiver side
-//!
-//! [`serve_announcements`] runs an accept-loop on a bound endpoint, dispatching
-//! each inbound connection to the caller's async handler. The handler receives
-//! the decoded [`Announcement`] and returns an [`Ack`]. A failed handler gets
-//! an `Ack { accepted: false }` sent back and the loop continues.
-//!
-//! Recommended integration:
-//!
-//! ```text
-//! let ann_ep = bind_endpoint(vec![ANNOUNCE_ALPN.to_vec()], key, lookup).await?;
-//! tokio::spawn(serve_announcements(ann_ep, |ann| async move {
-//!     federation_sync.pull(&io, &fetcher, &ann.id, ann.transport_hash).await?;
-//!     Ok(Ack { accepted: true })
-//! }));
-//! ```
+//! Control-ALPN announcement/ack push path for federation sync.
 
 use std::future::Future;
 use std::sync::Arc;

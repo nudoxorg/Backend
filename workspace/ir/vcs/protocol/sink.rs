@@ -17,7 +17,7 @@ use std::io::Write;
 
 use heart::content::{ContentHash, JobKey};
 
-use crate::protocol::error::StreamError;
+use crate::protocol::error::Error;
 use ir::change::StableRef;
 
 use ir::change::IntroId;
@@ -66,7 +66,7 @@ const FRAME_OVERHEAD: usize = 8;
 impl<W: Write> SymbolSink<W> {
     /// Open a new stream: wrap `writer`, send the `Hello` frame, and return
     /// the sink ready for use.
-    pub fn hello(writer: W, job: JobKey, producer: ProducerId) -> Result<Self, StreamError> {
+    pub fn hello(writer: W, job: JobKey, producer: ProducerId) -> Result<Self, Error> {
         let mut fw = FrameWriter::new(writer);
         fw.write_frame(&StreamFrame::Hello {
             version: crate::protocol::IR_STREAM_VERSION,
@@ -88,15 +88,15 @@ impl<W: Write> SymbolSink<W> {
     /// to approach [`MAX_FRAME_BYTES`], the current batch is flushed first.
     /// If the batch count reaches [`SINK_BATCH_ENTRIES`], the batch is also
     /// flushed.
-    pub fn emit(&mut self, entry: WireEntry) -> Result<(), StreamError> {
+    pub fn emit(&mut self, entry: WireEntry) -> Result<(), Error> {
         let entry_bytes = postcard::to_allocvec(&entry)
-            .map_err(StreamError::Encode)?
+            .map_err(Error::Encode)?
             .len();
 
         // A single entry that cannot fit in any frame is the producer's bug —
         // reject it eagerly instead of at flush time.
         if FRAME_OVERHEAD + entry_bytes > MAX_FRAME_BYTES {
-            return Err(StreamError::FrameTooLarge {
+            return Err(Error::FrameTooLarge {
                 limit: MAX_FRAME_BYTES,
                 actual: FRAME_OVERHEAD + entry_bytes,
                 variant: Some("Symbols"),
@@ -121,7 +121,7 @@ impl<W: Write> SymbolSink<W> {
     ///
     /// `from` is the emitting (self) endpoint; `link` describes the other end.
     /// The caller is responsible for splitting large link batches across calls.
-    pub fn emit_link(&mut self, from: StableRef, link: WireLink) -> Result<(), StreamError> {
+    pub fn emit_link(&mut self, from: StableRef, link: WireLink) -> Result<(), Error> {
         self.emit_links(from, std::iter::once(link))
     }
 
@@ -135,7 +135,7 @@ impl<W: Write> SymbolSink<W> {
         &mut self,
         from: StableRef,
         links: impl IntoIterator<Item = WireLink>,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         let batch: Vec<WireLink> = links.into_iter().collect();
         if batch.is_empty() {
             return Ok(());
@@ -157,7 +157,7 @@ impl<W: Write> SymbolSink<W> {
         &mut self,
         intro: IntroId,
         body: ir::body::BodyEmbed,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         self.emit_bodies(std::iter::once(BodyWire { intro, body }))
     }
 
@@ -174,7 +174,7 @@ impl<W: Write> SymbolSink<W> {
     pub fn emit_bodies(
         &mut self,
         bodies: impl IntoIterator<Item = BodyWire>,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         let batch: Vec<BodyWire> = bodies.into_iter().collect();
         if batch.is_empty() {
             return Ok(());
@@ -189,7 +189,7 @@ impl<W: Write> SymbolSink<W> {
         path: impl Into<String>,
         hash: ContentHash,
         size: u64,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         self.writer.write_frame(&StreamFrame::SourceDigest {
             path: path.into(),
             hash,
@@ -198,7 +198,7 @@ impl<W: Write> SymbolSink<W> {
     }
 
     /// Emit a progress update.
-    pub fn progress(&mut self, phase: PhaseWire) -> Result<(), StreamError> {
+    pub fn progress(&mut self, phase: PhaseWire) -> Result<(), Error> {
         let emitted = self.emitted + self.pending.len() as u64;
         self.writer
             .write_frame(&StreamFrame::Progress { emitted, phase })
@@ -212,7 +212,7 @@ impl<W: Write> SymbolSink<W> {
     pub fn emit_all(
         &mut self,
         entries: impl IntoIterator<Item = WireEntry>,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         for entry in entries {
             self.emit(entry)?;
         }
@@ -222,7 +222,7 @@ impl<W: Write> SymbolSink<W> {
     /// Flush pending entries, send `Finish`, and consume the sink.
     ///
     /// Returns the total number of entries emitted across all batches.
-    pub fn finish(mut self, producer_digest: ContentHash) -> Result<u64, StreamError> {
+    pub fn finish(mut self, producer_digest: ContentHash) -> Result<u64, Error> {
         // Flush any remaining buffered entries.
         self.flush_symbols()?;
         let emitted = self.emitted;
@@ -239,7 +239,7 @@ impl<W: Write> SymbolSink<W> {
         mut self,
         failure: FailureKindWire,
         message: impl Into<String>,
-    ) -> Result<(), StreamError> {
+    ) -> Result<(), Error> {
         // Discard pending entries — do not flush them.
         self.pending.clear();
         self.pending_bytes = 0;
@@ -256,7 +256,7 @@ impl<W: Write> SymbolSink<W> {
     // -----------------------------------------------------------------------
 
     /// Flush the pending symbol batch as a single [`StreamFrame::Symbols`] frame.
-    fn flush_symbols(&mut self) -> Result<(), StreamError> {
+    fn flush_symbols(&mut self) -> Result<(), Error> {
         if self.pending.is_empty() {
             return Ok(());
         }

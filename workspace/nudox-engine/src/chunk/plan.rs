@@ -5,7 +5,7 @@
 //! without knowing about the shared walk.
 
 use nudox_ir::{change::IntroId, entry::Entry, view::IrView};
-use nudox_store::package::PackageView;
+use crate::store::package::PackageView;
 
 use crate::wire::SectionPlan;
 
@@ -26,7 +26,7 @@ pub fn section_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_store::{
+    use crate::store::{
         package::{PackageView, Provenance},
         source::fixtures::build_rich_view,
     };

@@ -1,3 +1,4 @@
+//! Package build/wire tests walking every entry kind.
 use itertools::Itertools;
 
 use crate::{entry::EntryInner, kinds::*, test_helpers::*};
@@ -99,17 +100,17 @@ fn builds_and_wires_every_kind() {
             .sorted_by_key(|&(idx, _)| idx)
             .map(|(_, entry)| entry),
         &[
-            entry(sym("root"), n::root([1, 4, 6].map(idx)), Module),
+            entry(sym("root"), node::root([1, 4, 6].map(idx)), Module),
             entry(
                 sym("Point"),
-                n(root, [2, 3].map(idx)),
+                node(root, [2, 3].map(idx)),
                 Record::builder()
                     .fields([2, 3].map(idx).map(EntryIndex::typed).map(Ref::Local))
                     .build(),
             ),
             entry(
                 sym("0"),
-                n::leaf(idx(1)),
+                node::leaf(idx(1)),
                 Field::builder()
                     .key(FieldKey::Positional(0))
                     .ty(Type::I32)
@@ -117,7 +118,7 @@ fn builds_and_wires_every_kind() {
             ),
             entry(
                 sym("1"),
-                n::leaf(idx(1)),
+                node::leaf(idx(1)),
                 Field::builder()
                     .key(FieldKey::Positional(1))
                     .ty(Type::I32)
@@ -126,7 +127,7 @@ fn builds_and_wires_every_kind() {
             ),
             entry(
                 sym("translate"),
-                n(root, [idx(5)]),
+                node(root, [idx(5)]),
                 Function::builder()
                     .receiver(Receiver::MutRef)
                     .input_params([Ref::Local(idx(5).typed())])
@@ -134,17 +135,17 @@ fn builds_and_wires_every_kind() {
             ),
             entry(
                 sym("by"),
-                n::leaf(idx(4)),
+                node::leaf(idx(4)),
                 Param::builder().ty(Type::I32).build(),
             ),
             entry(
                 sym("Shape"),
-                n(root, [idx(7)]),
+                node(root, [idx(7)]),
                 Enum::builder()
                     .variants([Ref::Local(idx(7).typed())])
                     .build(),
             ),
-            entry(sym("Unit"), n::leaf(idx(6)), Variant::builder().build()),
+            entry(sym("Unit"), node::leaf(idx(6)), Variant::builder().build()),
         ],
     );
 }

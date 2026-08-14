@@ -52,12 +52,12 @@ fn pack_real_source_tree(
         "expected a real fixture at {}; run nix build .#checks.corpus",
         src_root.display()
     );
-    let raw_bytes = nudox_test_support::disk_bytes(&src_root);
+    let raw_bytes = heart::cost::disk_bytes(&src_root);
     assert!(raw_bytes > 0, "real source tree must have non-zero bytes");
 
     let store = FilesystemObjectPackStore::open(store_dir).expect("open pack store");
 
-    let ((pack_id, member_count), cost) = nudox_test_support::measured(case, store_dir, || {
+    let ((pack_id, member_count), cost) = heart::cost::measured(case, store_dir, || {
         let builder =
             TreeIngest::ingest_directory(&src_root).expect("ingest a real, symlink-free source tree");
         let member_count = builder.member_count();

@@ -60,6 +60,11 @@ pub struct IrView {
     bodies: HashMap<IntroId, BodyEmbed>,
     /// Occurrences grouped by their owning entry (forward direction).
     occurrences: HashMap<IntroId, Vec<Occurrence>>,
+    /// Exact declaration text, sliced once from the package source while the
+    /// producer still owns the extracted tree.  Keeping this beside bodies and
+    /// occurrences makes source a first-class part of the read model without
+    /// forcing documentation queries to reopen files.
+    source: HashMap<IntroId, String>,
 }
 
 impl IrView {
@@ -79,6 +84,7 @@ impl IrView {
             table,
             bodies: HashMap::new(),
             occurrences: HashMap::new(),
+            source: HashMap::new(),
         }
     }
 
@@ -207,6 +213,21 @@ impl IrView {
             .iter()
             .flat_map(|(owner, occs)| occs.iter().map(move |occ| (*owner, occ)))
     }
+
+    // -----------------------------------------------------------------------
+    // Source accessors
+    // -----------------------------------------------------------------------
+
+    /// Attach the exact declaration text for an entry.
+    pub fn set_source(&mut self, intro: IntroId, source: String) {
+        self.source.insert(intro, source);
+    }
+
+    /// Borrow the exact declaration text recorded for an entry.
+    #[inline]
+    pub fn source(&self, intro: IntroId) -> Option<&str> {
+        self.source.get(&intro).map(String::as_str)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +242,7 @@ mod tests {
         body::BodyEmbed,
         change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
         kinds::Module,
-        test_helpers::{entry, n, sym},
+        test_helpers::{entry, node, sym},
         vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
     };
 
@@ -251,10 +272,10 @@ mod tests {
         let child_id = intro(2);
 
         let mut table = PristineIntroTable::new();
-        table.insert_live(parent_id, entry(sym("root"), n::root([]), Module), None);
+        table.insert_live(parent_id, entry(sym("root"), node::root([]), Module), None);
         table.insert_live(
             child_id,
-            entry(sym("child"), n::root([]), Module),
+            entry(sym("child"), node::root([]), Module),
             Some(parent_id),
         );
 

@@ -24,7 +24,7 @@ use std::fmt;
 
 use smol_str::SmolStr;
 
-use crate::error::VcsError;
+use crate::error::Error;
 use crate::repo::ChangeHashHex;
 use crate::version::{VersionLabel, VersionState};
 
@@ -36,8 +36,8 @@ pub(crate) const VERSION_PREFIX: &str = VersionLabel::CHANNEL_PREFIX;
 /// Validate a reference-name component (branch or tag). Interior `/` is allowed
 /// (hierarchical names like `release/2.x`); leading/trailing/double `/`,
 /// whitespace, control characters, and emptiness are not.
-fn validate_component(kind: &str, name: &str) -> Result<(), VcsError> {
-    let invalid = |reason: &str| VcsError::InvalidRefName {
+fn validate_component(kind: &str, name: &str) -> Result<(), Error> {
+    let invalid = |reason: &str| Error::InvalidRefName {
         kind: kind.to_owned(),
         name: name.to_owned(),
         reason: reason.to_owned(),
@@ -70,11 +70,11 @@ pub struct BranchName(SmolStr);
 
 impl BranchName {
     /// Build a branch name, rejecting reserved-prefixed or channel-unsafe names.
-    pub fn new(name: impl Into<SmolStr>) -> Result<Self, VcsError> {
+    pub fn new(name: impl Into<SmolStr>) -> Result<Self, Error> {
         let name = name.into();
         validate_component("branch", &name)?;
         if name.starts_with(TAG_PREFIX) || name.starts_with(VERSION_PREFIX) {
-            return Err(VcsError::InvalidRefName {
+            return Err(Error::InvalidRefName {
                 kind: "branch".to_owned(),
                 name: name.to_string(),
                 reason: "uses a reserved namespace prefix (tag/ or version/)".to_owned(),
@@ -110,7 +110,7 @@ pub struct TagName(SmolStr);
 
 impl TagName {
     /// Build a tag name, rejecting channel-unsafe names.
-    pub fn new(name: impl Into<SmolStr>) -> Result<Self, VcsError> {
+    pub fn new(name: impl Into<SmolStr>) -> Result<Self, Error> {
         let name = name.into();
         validate_component("tag", &name)?;
         Ok(Self(name))
@@ -165,17 +165,17 @@ pub enum Ref {
 
 impl Ref {
     /// Convenience: a branch reference from a raw name.
-    pub fn branch(name: &str) -> Result<Ref, VcsError> {
+    pub fn branch(name: &str) -> Result<Ref, Error> {
         Ok(Ref::Branch(BranchName::new(name)?))
     }
 
     /// Convenience: a tag reference from a raw name.
-    pub fn tag(name: &str) -> Result<Ref, VcsError> {
+    pub fn tag(name: &str) -> Result<Ref, Error> {
         Ok(Ref::Tag(TagName::new(name)?))
     }
 
     /// Convenience: a version reference from a raw label.
-    pub fn version(label: &str) -> Result<Ref, VcsError> {
+    pub fn version(label: &str) -> Result<Ref, Error> {
         Ok(Ref::Version(VersionLabel::new(label)?))
     }
 

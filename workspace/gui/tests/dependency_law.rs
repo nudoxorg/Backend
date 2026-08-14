@@ -5,10 +5,9 @@
 //! §1 used to be prose that only a reviewer could apply, and it was phrased in
 //! a way that could not survive contact with the dependency graph: *"`lindsey`
 //! may name `nudox-engine` and nothing else"*. `lindsey` has always had a
-//! transitive edge to `nudox-ir` and `nudox-store` — they sit at depth 2 under
-//! `nudox-engine`, unavoidably — so read literally the rule was violated on the
-//! day it was written, and read charitably it needed a distinction the text did
-//! not make.
+//! transitive edge to `nudox-ir` — it sits at depth 2 under `nudox-engine`,
+//! unavoidably — so read literally the rule was violated on the day it was
+//! written, and read charitably it needed a distinction the text did not make.
 //!
 //! The distinction is **depend** vs **import**. A transitive edge is harmless: a
 //! view cannot couple to a type it has no path to name. A *direct* dependency is
@@ -16,12 +15,16 @@
 //! the IR instead of to the protocol is the actual harm §1 names. So the rule
 //! this file enforces is:
 //!
-//! * `lindsey` may declare a dependency on `nudox-engine` and `nudox-mcp`, and
-//!   on no other backend crate — in any dependency section, including
+//! * `lindsey` may declare a dependency on `nudox-engine` and `heart`, and on no
+//!   other backend crate — in any dependency section, including
 //!   `[dev-dependencies]`, because a dev-dependency is enough to make an import
 //!   compile in a test and tests are where shortcuts get taken;
-//! * no file under `workspace/gui/src/` may import `nudox_ir`, `nudox_store`, or
-//!   `nudox_graph`.
+//! * no file under `workspace/gui/src/` may import `nudox_ir`, or reach into
+//!   `nudox_engine::store::` / `nudox_engine::graph::` — the two merged planes
+//!   that hold the IR's shape. The engine's own public surface (`wire`,
+//!   `EngineHandle`, `Purl`, …) and the two capability-port seams
+//!   (`nudox_engine::mcp::`, `nudox_engine::embed::`) remain reachable, exactly
+//!   as `nudox-mcp` and `nudox-embed` were when they were sibling crates.
 //!
 //! The second check is not redundant with the first. The manifest check is the
 //! one that can actually be violated by a one-line edit, and it fails at the
@@ -40,29 +43,11 @@ use std::path::{Path, PathBuf};
 
 /// Backend crates `lindsey` is permitted to declare a direct dependency on.
 ///
-/// `nudox-engine` is the protocol seam. `nudox-mcp` sits *beside* `lindsey` as a
-/// second view of the same `EngineHandle` — the surface crossing the seam is
-/// `McpHost`/`McpStatus`, whose vocabulary is `EngineHandle`/`SocketAddr`/
-/// `String`, so no IR type crosses it. Hosting it is what closes docs/LIMITATIONS.md
-/// L35; without it the MCP server exists and is never started.
-///
-/// `nudox-embed` sits beside the engine on its *other* seam — the capability
-/// ports (§1). It bridges an ONNX runtime to `nudox_engine::semantic::Embedder`,
-/// and the surface crossing the seam is `SharedEmbedder`
-/// (`Option<Arc<dyn Embedder>>`, whose vocabulary is `Vec<f32>`/`usize`/`bool`)
-/// plus a `&str` env-var name. No IR type crosses it, and no vector-plane type
-/// does either — which is the same test `nudox-mcp` passes. Installing it is
-/// what closes docs/LIMITATIONS.md L41; without it the semantic section reports
-/// `Unavailable(NoEmbedder)` in every build.
-///
-/// `heart` sits beside the engine on a third seam: it is the transport-free
-/// wire vocabulary shared by `index::server` and
+/// `nudox-engine` is the protocol seam, and now *also* carries the store, graph,
+/// MCP and embed planes as modules. `heart` sits beside the engine on a third
+/// seam: it is the transport-free wire vocabulary shared by `index::server` and
 /// `heart::client::http::NudoxClient` (behind `heart`'s own off-by-default
-/// `client` feature). The surface crossing the seam is
-/// `NudoxClient::{connect, readyz, search}` plus `heart::query::Query` and
-/// `heart::{Scored, Symbol}` — `Symbol` is the server's already-lowered wire
-/// projection, not an IR type, so nothing about the IR's shape crosses here
-/// either. It powers the omni-search remote-results section
+/// `client` feature). It powers the omni-search remote-results section
 /// (`src/views/omni_search.rs`), additive to the local-first engine results.
 ///
 /// NOTE: `heart` does not start with `nudox-`, so the manifest scan below
@@ -72,15 +57,17 @@ use std::path::{Path, PathBuf};
 ///
 /// Adding to this list is a doctrine change, not a build fix. Update
 /// `docs/AGENTS-DOCTRINE.md` §1 in the same commit or the two disagree again.
-const ALLOWED_BACKEND_DEPENDENCIES: &[&str] =
-    &["nudox-engine", "nudox-mcp", "nudox-embed", "heart"];
+const ALLOWED_BACKEND_DEPENDENCIES: &[&str] = &["nudox-engine", "heart"];
 
-/// Crates whose types are the *shape of the IR*. A view that can name these can
-/// couple to them, which is the harm §1 exists to prevent.
+/// Paths whose types are the *shape of the IR* — or the merged planes that hold
+/// it. A view that can name these can couple to them, which is the harm §1
+/// exists to prevent. `nudox-ir` remains a crate; `store` and `graph` are now
+/// modules of `nudox-engine`, so they are named as `nudox_engine::store` /
+/// `nudox_engine::graph` rather than as crates.
 const FORBIDDEN_CRATES: &[(&str, &str)] = &[
     ("nudox-ir", "nudox_ir"),
-    ("nudox-store", "nudox_store"),
-    ("nudox-graph", "nudox_graph"),
+    ("nudox-engine::store", "nudox_engine::store"),
+    ("nudox-engine::graph", "nudox_engine::graph"),
 ];
 
 fn gui_root() -> PathBuf {
@@ -179,7 +166,7 @@ fn declared_dependency(line: &str) -> Option<&str> {
 
 /// `lindsey`'s manifest declares no backend dependency outside the allow-list.
 #[test]
-fn lindsey_declares_no_backend_dependency_beyond_engine_and_mcp() {
+fn lindsey_declares_no_backend_dependency_beyond_engine_and_heart() {
     let manifest_path = gui_root().join("Cargo.toml");
     let manifest = std::fs::read_to_string(&manifest_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
@@ -211,7 +198,7 @@ fn lindsey_declares_no_backend_dependency_beyond_engine_and_mcp() {
     );
 }
 
-/// No GUI source file imports an IR-shaped crate.
+/// No GUI source file imports an IR-shaped crate or reaches into an IR-holding plane.
 #[test]
 fn lindsey_source_imports_no_ir_shaped_crate() {
     let src = gui_root().join("src");
@@ -253,13 +240,13 @@ fn lindsey_source_imports_no_ir_shaped_crate() {
     assert!(
         violations.is_empty(),
         "docs/AGENTS-DOCTRINE.md §1: no file under `workspace/gui/src` may import \
-         `nudox-ir`, `nudox-store`, or `nudox-graph`. A view must depend on the \
-         protocol (`nudox-engine`, `nudox-mcp`), never on the shape of the IR. \
-         Found:\n{}\n\nThe fix is to widen the engine's protocol so the GUI can \
-         ask for what it needs in protocol terms — not to add the dependency. \
-         (Comments are stripped before this scan, so these are real imports, not \
-         prose: `src/theme/kind.rs` discusses `nudox_ir::kind` on purpose and is \
-         correctly not reported.)",
+         `nudox-ir` or reach into `nudox_engine::store`/`nudox_engine::graph` — the \
+         planes that hold the IR's shape. A view must depend on the protocol \
+         (`nudox-engine`, `heart`), never on the shape of the IR. Found:\n{}\n\nThe \
+         fix is to widen the engine's protocol so the GUI can ask for what it needs \
+         in protocol terms — not to add the dependency. (Comments are stripped before \
+         this scan, so these are real imports, not prose: `src/theme/kind.rs` discusses \
+         `nudox_ir::kind` on purpose and is correctly not reported.)",
         violations.join("\n")
     );
 }

@@ -1,3 +1,4 @@
+//! Shared test helpers for symbols, entries, and node builders.
 use std::path::PathBuf;
 
 pub(crate) use crate::{
@@ -35,14 +36,14 @@ pub(crate) fn entry<T: EntryKind>(sym: Symbol, node: Node, kind: T) -> Entry {
     Entry::new(sym, node, kind.into_kind())
 }
 
-pub(crate) fn n(
+pub(crate) fn node(
     parent: UntypedEntryIndex,
     children: impl IntoIterator<Item = UntypedEntryIndex>,
 ) -> Node {
     Node::build(Ref::Local(parent), children.into_iter().map(Ref::Local))
 }
 
-pub(crate) mod n {
+pub(crate) mod node {
     use super::*;
 
     pub fn leaf(parent: UntypedEntryIndex) -> Node {

@@ -19,14 +19,31 @@ path = "src/main.rs"
 
 [dependencies]
 # ── GPUI, pinned exactly (GUI-PLAN LD-10) ────────────────────────────────────
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-# `runtime_shaders` is load-bearing, not an optimisation knob: without it
-# `gpui_macos/build.rs:23` shells out to the `metal` CLI at build time, which
-# needs the full Xcode Metal Toolchain component. With it (`build.rs:21`) the
-# shaders are stitched into the binary and compiled in-process by Metal at
-# startup, so the build needs no Xcode toolchain at all. gpui-component's own
-# workspace sets this flag for the same reason — it is the supported path.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+#
+# gpui-ce is the community fork of Zed's GPUI, a drop-in replacement that
+# publishes as `gpui-ce` on crates.io but keeps the crate name `gpui` in its
+# git tree (so no `package =` rename is needed here). Pinned by rev — not
+# branch, not crates.io `0.3` — for the same reason the old zed pin was: the
+# lockfile must be reproducible and the API surface frozen. gpui-ce tracks a
+# NEWER upstream than the old `1d217ee` zed pin, hence the API adjustments
+# throughout `src/`.
+#
+# This rev is the newest gpui-ce commit compatible with gpui-component rev
+# c112e7b. It tracks zed 2026-07-30 (the PR #110 upstream sync, newer than the
+# old `1d217ee` June-12 pin) but sits before PR #105, which replaces the custom
+# `Hsla`/`Rgba` with the `palette` crate — a change gpui-component has not
+# adopted and that would produce hundreds of breakages across its theme code.
+# Two residual gpui-component breakages remain even here (see the migration
+# report): PR #111's `TextRun.letter_spacing` field (a gpui-ce-specific
+# addition) and the zed July-30 rename of `AnyView::into_any` →
+# `into_any_element`.
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
+
+# ── gpui-component ───────────────────────────────────────────────────────────
+# These still name zed's git gpui; the `[patch."https://github.com/zed-industries/zed.git"]`
+# block below redirects their `gpui`/`gpui_macros` to gpui-ce so there is ONE
+# `Entity`/`App`/`Window` type shared by lindsey and every component.
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component-assets" }
 
@@ -37,70 +54,31 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # would let a view depend on the shape of the IR rather than on the protocol.
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 
-# ── The MCP server lindsey hosts (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md L35) ────
+# ── The MCP server + embedder adapter (GUI-LOCAL-PLAN §L6, §1 capability ports)
 #
-# THIS IS A SECOND BACKEND CRATE, and AGENTS-DOCTRINE §1 says lindsey "may name
-# `nudox-engine` and nothing else from the backend". The exception is argued
-# here rather than assumed, because §1 is otherwise absolute:
-#
-#  * The harm §1 names is a *view* coupling to the shape of the *IR* — that is
-#    why the rule enumerates `nudox-ir`/`-store`/`-graph`, all of which sit
-#    BENEATH the engine, and why §L9's enforcement check is exactly
-#    "`lindsey` has no edge to nudox-ir/-store/-graph". `nudox-mcp` sits BESIDE
-#    lindsey, not beneath the engine: it is a second *view* of the same
-#    `EngineHandle` (LR-8), holds no corpus, no index and no IR, and names no
-#    `nudox-ir` type. Nothing about the IR's shape becomes visible here.
-#  * The surface used below is `McpHost` + `McpStatus`, whose entire vocabulary
-#    is `EngineHandle`, `SocketAddr`, `String` and `McpError`.
-#  * The plan this crate is built to says so directly: GUI-LOCAL-PLAN §L6
-#    ("Lifecycle: started by lindsey after the engine, stopped on window
-#    close"), §L10's M2.5 row ("`nudox-mcp` server, hosted by lindsey"), and
-#    nudox-mcp's own manifest header ("the MCP server lindsey hosts").
-#  * There is no alternative that shares the corpus. The server must observe
-#    the same live `EngineHandle` the window does (LR-8: "if a tool here ever
-#    answers a question the engine could not, that is a bug"), which rules out
-#    a separate process, and `nudox-engine` cannot host it without inverting
-#    the existing `nudox-mcp -> nudox-engine` edge into a cycle.
-#
-# If a reviewer disagrees, the fix is one line here plus deleting
-# `src/app/mcp.rs`; L35 then reverts to OPEN with the reason recorded.
-nudox-mcp = { path = "../nudox-mcp" }
-
-# ── The embedder adapter lindsey installs (AGENTS-DOCTRINE §1, capability ports)
-#
-# THIS IS A THIRD BACKEND CRATE, admitted for the same reason as `nudox-mcp` and
-# under the same test (`tests/dependency_law.rs`, allow-list amended in the same
-# commit as this line). It sits BESIDE the engine on the capability-port
-# argument, not beneath it: `main.rs` calls `nudox_embed::load_from_env()` and
-# hands the result to `EngineConfig::embedder`. Its entire public surface is
-# `SharedEmbedder` (`Option<Arc<dyn Embedder>>`) and a `&str` env-var name — the
-# port's own vocabulary — so no `nudox-ir`/`-store`/`-graph` type, and nothing
-# of the vector plane, becomes visible here. That is precisely what keeps it a
-# legitimate sibling rather than a smuggled dependency; the harm §1 names (a
-# view coupling to the shape of the IR) cannot occur through this seam.
-#
-# `default-features = false` is load-bearing: the crate's `onnx` feature drags
-# in `registry` (483 crates) whose `ort-sys` fetches a runtime at build time.
-# With it off, this dependency is a few lines over `nudox-engine` and
-# `load_from_env` is a compile-time `None` — so a plain `cargo build` of lindsey,
-# the screenshot suite, and CI never touch the ort runtime. A build that wants
-# real semantic search opts in with `-F semantic-onnx` (see `[features]` below).
-nudox-embed = { path = "../nudox-embed", default-features = false }
+# The store, graph, MCP and embedder planes are no longer separate crates: they
+# are now the `store`, `graph`, `mcp` and `embed` modules of `nudox-engine`,
+# reached as `nudox_engine::mcp::McpHost` and `nudox_engine::embed::load_from_env`
+# respectively. The engine's `onnx` feature (forwarded from the embedder plane)
+# still drags in `registry` (483 crates) whose `ort-sys` fetches a runtime at
+# build time, so it stays off by default and is opted into via `-F semantic-onnx`
+# (see `[features]` below).
 
 # ── The remote-server client lindsey uses for the omni-search "also search a
 # server" section (AGENTS-DOCTRINE §1, capability ports) ────────────────────
 #
-# THIS IS A FOURTH BACKEND CRATE, admitted on the same `nudox-mcp`/`nudox-embed`
-# argument: it sits BESIDE the engine, not beneath it. `heart` is the shared
+# THIS IS A SECOND BACKEND CRATE, admitted on the same capability-port argument
+# as the engine's MCP and embedder planes: it sits BESIDE the engine, not
+# beneath it. `heart` is the shared
 # wire vocabulary `index::server` and `heart::client::http::NudoxClient` both
 # speak — `NudoxClient` (behind `heart`'s own off-by-default `client` feature,
 # see that crate's module docs) is a thin `reqwest` wrapper whose entire surface
 # lindsey touches is `NudoxClient::{connect, readyz, search}`,
 # `heart::query::Query`, and `heart::{Scored, Symbol}`. None of those are
-# `nudox-ir`/`-store`/`-graph` types — `heart::Symbol` is the server's own
+# `nudox-ir`/store/graph types — `heart::Symbol` is the server's own
 # already-lowered wire projection (name/kind/package), not the IR — so nothing
-# about the IR's shape crosses this seam, which is the same test `nudox-mcp`
-# and `nudox-embed` pass.
+# about the IR's shape crosses this seam, which is the same test the engine's
+# MCP and embedder planes pass.
 #
 # The remote section is additive, never a replacement: `nudox-engine` stays the
 # only source of the local-first (offline) results; a remote server, when one
@@ -130,6 +108,31 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+# ── Per-platform gpui_platform features ──────────────────────────────────────
+# The platform crates (`gpui_macos`, `gpui_linux`, `gpui_windows`) are already
+# target-gated inside gpui_platform, so enabling a feature on the wrong OS is a
+# no-op — but listing them per-target keeps each build's feature set honest and
+# stops a macOS build from ever naming a Linux/Windows-only feature.
+#
+# `runtime_shaders` is load-bearing, not an optimisation knob: without it
+# `gpui_macos/build.rs` shells out to the `metal` CLI at build time, which
+# needs the full Xcode Metal Toolchain component. With it the shaders are
+# stitched into the binary and compiled in-process by Metal at startup, so the
+# build needs no Xcode toolchain at all. gpui-component's own workspace sets
+# this flag for the same reason — it is the supported path.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["font-kit", "runtime_shaders"] }
+
+# Linux text rendering comes via cosmic-text (pulled by the x11/wayland
+# features), so `font-kit` is not needed here.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["x11", "wayland"] }
+
+# `wgpu` is the Windows rendering backend (gpui_windows/wgpu). gpui_platform
+# additionally enables gpui's `windows-manifest` feature on this target itself.
+[target.'cfg(target_os = "windows")'.dependencies]
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["wgpu"] }
+
 [features]
 # OFF by default. Turning it on enables the ONNX embedder runtime behind the
 # capability port, so `NUDOX_EMBED_MODEL_DIR` (pointing at the pinned model)
@@ -140,7 +143,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 #
 #   cargo build --manifest-path workspace/gui/Cargo.toml -F semantic-onnx
 default = []
-semantic-onnx = ["nudox-embed/onnx"]
+semantic-onnx = ["nudox-engine/onnx"]
 
 [dev-dependencies]
 # `test-support` is what makes GPUI testable without a display: it enables
@@ -148,7 +151,7 @@ semantic-onnx = ["nudox-embed/onnx"]
 # entire app — entities, windows, focus, keystrokes, actions — deterministically
 # on one thread. Same pin as the runtime dependency; a mismatch would give two
 # incompatible `Entity` types.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["test-support"] }
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["test-support"] }
 
 # ── The screenshot plane ─────────────────────────────────────────────────────
 # `gpui_platform`'s `test-support` feature is what exposes
@@ -161,9 +164,23 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac10
 # The real platform's text system comes along for the ride via
 # `Platform::text_system()` — without it glyph metrics are stubbed and every
 # screenshot would be a picture of a layout that no user will ever see.
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit", "x11", "wayland", "runtime_shaders", "test-support"] }
+gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["font-kit", "x11", "wayland", "runtime_shaders", "test-support"] }
 # Same version gpui itself re-exports, so `RgbaImage` is one type, not two.
 image = "0.25"
+
+# ── gpui-ce patch ────────────────────────────────────────────────────────────
+#
+# gpui-component (rev c112e7b) names zed's git gpui at rev 1d217ee. That rev is
+# older than gpui-ce's tracked upstream, and a second, unpatched `gpui` in the
+# graph would mean two incompatible `Entity`/`App` types — lindsey's and every
+# component's. This block redirects the two zed-git packages gpui-component
+# actually pulls (`gpui`, `gpui_macros`) onto the same gpui-ce rev lindsey pins,
+# so there is exactly ONE gpui instance in the tree. (gpui-component's own
+# `[patch.crates-io]` is a dependency's manifest and is ignored by cargo; only
+# this root-workspace patch applies.)
+[patch."https://github.com/zed-industries/zed.git"]
+gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
+gpui_macros = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
 
 [[test]]
 name = "shell_flow"
@@ -221,7 +238,7 @@ lto = "thin"
 # via `include_str!` (src/theme/spec.rs) and gpui-component's icon SVGs are
 # `rust_embed`-d into the binary (gpui-component's `crates/assets`), so the
 # shipped binary is self-contained — nothing is read from a Resources
-# directory at runtime, and the MCP server it hosts (`nudox-mcp`) binds a
+# directory at runtime, and the MCP server it hosts (`nudox_engine::mcp`) binds a
 # loopback socket rather than reading files.
 [package.metadata.bundle]
 name = "lindsey"
@@ -261,3 +278,47 @@ osx_minimum_system_version = "14.0"
 # /workspace/gui/assets/logo.svg by generate_dmg_background.py in this directory; rerun that
 # script after a logo change, this path does not change.
 osx_dmg_background = "packaging/dmg-background.svg"
+
+# ── Linux packaging (cargo-deb → .deb) ──────────────────────────────────────
+#
+# Consumed by `cargo deb` (run from this directory). `depends = "$auto"` asks
+# cargo-deb to resolve the shared-library dependency set from the built binary
+# via dpkg-shlibdeps rather than hard-coding a Debian/RPM-specific list here —
+# the X11/Wayland/font libraries gpui needs at runtime are enumerated in
+# packaging/linux/README.md (they differ by name between Debian and RPM, which
+# is exactly why `$auto` is preferred over a manual list). Both `assets` are
+# text/vector files, so the desktop integration (`.desktop` + scalable icon)
+# ships in the same package as the binary with no Resources-dir runtime reads.
+[package.metadata.deb]
+maintainer = "the nudox project"
+copyright = "2026 the nudox project"
+license = "MIT"
+section = "devel"
+priority = "optional"
+depends = "$auto"
+assets = [
+  ["packaging/linux/lindsey.desktop", "usr/share/applications/lindsey.desktop", "644"],
+  ["assets/logo.svg", "usr/share/icons/hicolor/scalable/apps/lindsey.svg", "644"],
+]
+
+# ── Linux packaging (cargo-generate-rpm → .rpm) ─────────────────────────────
+#
+# Consumed by `cargo generate-rpm` (run from this directory). The binary is
+# auto-placed at /usr/bin/lindsey; `assets` adds only the desktop entry and the
+# scalable icon, mirroring the deb section above so the two formats ship the
+# same desktop integration. `dest` must be absolute; `mode` is the POSIX mode
+# string. `requires` is left empty: like the deb `$auto`, the RPM dependency
+# set is best left to the rpmbuild auto-requires pass over the built binary.
+[package.metadata.generate-rpm]
+license = "MIT"
+summary = "Local-first documentation and code intelligence for seven languages"
+description = """
+lindsey renders documentation for real packages in Rust, Go, Java, Python, \
+TypeScript, C#, and C/C++, streamed from a local nudox-engine over a typed \
+wire protocol — real search, real version lineage, working hyperlinks, no \
+network round trip to docs.rs.
+"""
+assets = [
+  { source = "packaging/linux/lindsey.desktop", dest = "/usr/share/applications/lindsey.desktop", mode = "0644" },
+  { source = "assets/logo.svg", dest = "/usr/share/icons/hicolor/scalable/apps/lindsey.svg", mode = "0644" },
+]

@@ -2,8 +2,8 @@
 //!
 //! # The gap this closes — docs/LIMITATIONS.md **L35**
 //!
-//! `nudox-mcp` was complete and tested end-to-end and *nothing started it*.
-//! `grep -rn 'nudox_mcp|McpEndpoint|NudoxMcpServer' workspace/gui` returned
+//! `nudox-engine`'s MCP plane was complete and tested end-to-end and *nothing started it*.
+//! `grep -rn 'nudox_engine::mcp|McpEndpoint|NudoxMcpServer' workspace/gui` returned
 //! zero hits and `StatusBar::set_mcp_endpoint` had one occurrence repo-wide —
 //! its own definition. Every piece was real; the integration was not.
 //!
@@ -57,8 +57,8 @@ use lindsey::app::mcp::{McpService, McpStatus};
 /// `api.nudox.org` being up, which AGENTS-DOCTRINE §4 rules out. Account
 /// behaviour has its own suite, against a fake this process controls:
 /// `crates/nudox-mcp/tests/account_against_a_fake_service.rs`.
-fn test_gate() -> nudox_mcp::AccountGate {
-    nudox_mcp::AccountGate::unmetered(
+fn test_gate() -> nudox_engine::mcp::AccountGate {
+    nudox_engine::mcp::AccountGate::unmetered(
         "gui transport test: asserts the displayed endpoint is reachable, not billing",
     )
 }
@@ -897,7 +897,7 @@ async fn stopping_the_service_retracts_the_endpoint_and_closes_the_socket(
 /// the error becomes something a reader can see and act on.
 #[gpui::test]
 async fn a_server_that_could_not_bind_is_visible_rather_than_absent(cx: &mut TestAppContext) {
-    let error = nudox_mcp::McpError::Bind {
+    let error = nudox_engine::mcp::McpError::Bind {
         addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)),
         source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Operation not permitted"),
     };

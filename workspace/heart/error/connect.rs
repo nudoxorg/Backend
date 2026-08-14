@@ -1,3 +1,5 @@
+//! Connection-failure vocabulary for backend bring-up.
+
 use std::io;
 
 use super::{BackendKind, Retryable};
@@ -32,7 +34,7 @@ pub enum ConnectFailure {
 
 #[derive(Debug, Error)]
 #[error("failed to connect")]
-pub struct ConnectError {
+pub struct Error {
     /// Which backend failed to connect.
     pub backend: BackendKind,
     /// How it failed.
@@ -40,14 +42,14 @@ pub struct ConnectError {
     pub kind: ConnectFailure,
 }
 
-impl ConnectError {
+impl Error {
     /// Construct a connection error for a backend and failure mode.
     pub fn new(backend: BackendKind, kind: ConnectFailure) -> Self {
         Self { backend, kind }
     }
 }
 
-impl Retryable for ConnectError {
+impl Retryable for Error {
     fn is_retryable(&self) -> bool {
         matches!(
             self.kind,

@@ -5,12 +5,16 @@
 //! This crate sits at L3 in the stack:
 //!
 //! ```text
-//! lindsey  →  nudox-engine  →  {nudox-graph, nudox-store}  →  nudox-ir
+//! lindsey  →  nudox-engine  →  {store, graph, embed, mcp}  →  nudox-ir
 //! ```
 //!
-//! `lindsey` must not import `nudox-ir`, `nudox-store`, or `nudox-graph`
-//! directly.  `nudox-engine` must not import `gpui`.  Both rules are enforced
-//! by `scripts/lint-gui-no-block.sh`.
+//! The four former sibling crates — `nudox-store`, `nudox-graph`, `nudox-embed`
+//! and `nudox-mcp` — were merged into this crate as the [`store`], [`graph`],
+//! [`embed`] and [`mcp`] modules respectively. `lindsey` must not import
+//! `nudox-ir`, or reach past the engine's public wire surface into its
+//! `store`/`graph`/`mcp` internals. `nudox-engine` must not import `gpui`.
+//! Both rules are enforced by `scripts/lint-gui-no-block.sh` and
+//! `workspace/gui/tests/dependency_law.rs`.
 //!
 //! # Modules
 //!
@@ -34,6 +38,11 @@
 //! * [`acquire`]  — resolve → fetch → verify → extract, and the typed failure
 //!                 vocabulary for each. Read its module docs before assuming
 //!                 anything about what a fetch guarantees.
+//! * [`store`]    — the live corpus (`Corpus`, `PackageView`, `IrSource`) at the
+//!                 base of the stack, directly above `nudox-ir`.
+//! * [`graph`]    — the Trustfall query plane (`CorpusAdapter`) over the corpus.
+//! * [`embed`]    — the production ONNX embedder adapter behind `semantic::Embedder`.
+//! * [`mcp`]      — the MCP server `lindsey` hosts; a *view* of `EngineHandle`.
 //!
 //! # `EngineHandle` public surface (§7.1 + §L5)
 //!
@@ -69,28 +78,36 @@
 //! a failure converted into a success with the cause parked where nobody
 //! looked. See [`EngineCapability`] and docs/LIMITATIONS.md L37.
 
-pub mod acquire;
 pub mod chunk;
-pub mod diff;
 pub mod doc;
+pub mod embed;
+pub mod graph;
 pub mod highlight;
-pub mod purl;
+pub mod mcp;
+pub mod packages;
+/// Per-platform directory resolution (see its module docs).
+pub(crate) mod platform;
 pub mod query;
 pub mod runtime;
 pub mod search;
 pub mod semantic;
-pub mod timeline;
+pub mod store;
 pub mod typequery;
 pub mod versions;
 pub mod wire;
 
+// `purl` and `acquire` moved under [`packages`]; keep the historical module
+// paths resolvable for callers that reach `nudox_engine::acquire::*` /
+// `nudox_engine::purl::*` (integration tests, older hosts).
+pub use packages::{acquire, purl};
+
 #[cfg(test)]
 pub(crate) mod test_support;
 
-// Re-export the primary public surface so callers can `use nudox_engine::*`
+// Re-export the primary public surface so callers can `use crate::*`
 // if they prefer.
-pub use acquire::{IndexError, IndexEvent, IndexStage, Integrity};
-pub use purl::{Purl, PurlParseError, PurlType};
+pub use packages::acquire::{Error as IndexError, IndexEvent, IndexStage, Integrity};
+pub use packages::purl::{Error as PurlParseError, Purl, PurlType};
 pub use query::GraphQuery;
 pub use runtime::{Engine, EngineConfig, EngineHandle, StreamHandle};
 pub use search::SearchQuery;
@@ -98,7 +115,7 @@ pub use search::SearchQuery;
 // exactly the way it names `Highlighter` to install a host highlighter — no IR
 // type crosses the seam, so §1 is satisfied by the same argument.
 pub use semantic::{
-    EmbedError, EmbedRole, Embedder, EmbedderInfo, SectionState, SharedEmbedder, Unavailable,
+    EmbedRole, Embedder, EmbedderInfo, Error as EmbedError, SectionState, SharedEmbedder, Unavailable,
 };
 pub use typequery::{TypeFacet, TypeQuery};
 pub use wire::{
@@ -107,7 +124,7 @@ pub use wire::{
     Timeline, TimelineChange, TimelineRow, VersionEvent, VersionList, VersionRow,
 };
 // `PackageLoadEvent`, `PackageSpec`, and `ProducerLanguage` are defined below
-// and are `pub`; they are visible to `lindsey` as `nudox_engine::PackageLoadEvent`
+// and are `pub`; they are visible to `lindsey` as `crate::PackageLoadEvent`
 // etc. without any additional re-export.
 
 // ---------------------------------------------------------------------------
@@ -131,8 +148,8 @@ use std::path::PathBuf;
 /// `nudox_ir::body::Language` but is defined here at the seam (§L0) to keep
 /// the dependency law intact.
 ///
-/// One variant per `nudox-producer-*` crate that exists in the workspace
-/// (§docs/LIMITATIONS.md L2). `#[non_exhaustive]` because an eighth producer crate
+/// One variant per language module in the `nudox-languages` crate
+/// (§docs/LIMITATIONS.md L2). `#[non_exhaustive]` because an eighth producer
 /// arriving must not be a breaking change for `lindsey`'s `match` arms.
 ///
 /// # Which variants actually run something
@@ -153,27 +170,27 @@ use std::path::PathBuf;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ProducerLanguage {
-    /// Rust, via `nudox-producer-rust`. Oracle: rust-analyzer (`ra_ap_*`,
+    /// Rust, via `nudox-languages::rust`. Oracle: rust-analyzer (`ra_ap_*`,
     /// in-process). Manifest: `Cargo.toml`.
     Rust,
-    /// Go, via `nudox-producer-go`. Oracle: a vendored Go subprocess oracle
+    /// Go, via `nudox-languages::go`. Oracle: a vendored Go subprocess oracle
     /// (`workspace/compiler/compile/go/oracle/`). Manifest: `go.mod`.
     Go,
-    /// Java, via `nudox-producer-java`. Oracle: a Java oracle subprocess
-    /// (schema in `nudox_producer_java::schema`). Manifest: `pom.xml` or
+    /// Java, via `nudox-languages::java`. Oracle: a Java oracle subprocess
+    /// (schema in `nudox_languages::java::schema`). Manifest: `pom.xml` or
     /// `build.gradle`.
     Java,
-    /// C#, via `nudox-producer-csharp`. Oracle: Roslyn, invoked as
+    /// C#, via `nudox-languages::csharp`. Oracle: Roslyn, invoked as
     /// `dotnet <publish>/oracle.dll`. Manifest: `*.csproj`.
     CSharp,
-    /// Python, via `nudox-producer-python`. Oracle: pyrefly, in-process
+    /// Python, via `nudox-languages::python`. Oracle: pyrefly, in-process
     /// (behind that crate's `pyrefly` feature; without it, an empty oracle).
     /// Manifest: `pyproject.toml`.
     Python,
-    /// TypeScript / JavaScript, via `nudox-producer-typescript`. Oracle: OXC,
+    /// TypeScript / JavaScript, via `nudox-languages::typescript`. Oracle: OXC,
     /// in-process. Manifest: `package.json`.
     TypeScript,
-    /// C and C++, via `nudox-producer-clang`. Oracle: libclang, loaded at
+    /// C and C++, via `nudox-languages::clang`. Oracle: libclang, loaded at
     /// runtime via `dlopen`/`LoadLibrary` (no build-time libclang
     /// dependency). Manifest: `CMakeLists.txt` or `compile_commands.json`.
     ///
@@ -194,7 +211,7 @@ pub enum ProducerLanguage {
 /// so that `lindsey` (which must not name `nudox-store` or `nudox-ir`, §L0)
 /// can construct one without crossing the dependency boundary.
 ///
-/// The engine converts this to a `nudox_store::source::producer::PackageDescriptor`
+/// The engine converts this to a `crate::store::source::producer::PackageDescriptor`
 /// internally — the translation is a single `match` in `start_with_producer`
 /// and is invisible to the caller.
 ///
@@ -241,8 +258,8 @@ pub struct PackageSpec {
 /// compile error here rather than a silent `ToolchainMissing` there.
 pub(crate) fn descriptor_for(
     spec: PackageSpec,
-) -> nudox_store::source::producer::PackageDescriptor {
-    use nudox_store::source::producer::PackageDescriptor;
+) -> crate::store::source::producer::PackageDescriptor {
+    use crate::store::source::producer::PackageDescriptor;
 
     let PackageSpec {
         root,
@@ -374,7 +391,7 @@ impl From<PackageSpec> for PackageHistorySpec {
 /// not heap buffers (GUI-PLAN §2.2.5).
 ///
 /// The type is intentionally **not** a re-export of any store or IR type.
-/// `nudox_store::package::PackageView` and `nudox_ir::change::PackageLineageId`
+/// `crate::store::package::PackageView` and `nudox_ir::change::PackageLineageId`
 /// must not cross the §L0 boundary; this event carries only the fields the
 /// GUI actually needs to render its status bar and package list.
 #[derive(Clone, Debug)]
@@ -413,7 +430,7 @@ pub enum PackageLoadEvent {
     ///
     /// Corresponds to `LoadEvent::Failed` in `nudox-store`.  The error is
     /// flattened to a `SharedStr` at the boundary so `lindsey` never needs to
-    /// match on `SourceError` variants.
+    /// match on `Error` variants.
     LoadFailed {
         /// Name of the package that failed (may be partial if the oracle
         /// crashed early).

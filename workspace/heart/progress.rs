@@ -1,9 +1,4 @@
-//! Our module for handling and communicating progress.
-//! This is designed to give both users and our logs a full picture into where
-//! things stand during package parse.
-//!
-//! A little over-engineered, sure, but provides a real outlook into how we
-//! should position things.
+//! Phased progress reporting for package indexing jobs.
 
 use serde::{Deserialize, Serialize};
 

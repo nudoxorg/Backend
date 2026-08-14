@@ -11,7 +11,7 @@ use registry::vector::key as vkey;
 use registry::vector::recipe::VectorName;
 use registry::vector::embed::mock::{MockEmbedder, deterministic_unit_vector};
 use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
-use registry::vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore};
+use registry::vector::embed::stage::{EmbedStage, Error, StageConfig, TraceStore};
 use registry::vector::embed::stage;
 
 struct Harness {
@@ -180,7 +180,7 @@ async fn cancelled_run_stops_before_embedding() {
 	cancel.cancel();
 
 	let result = h.stage.run(&delta_added(&corpus), &facet_lookup(&corpus), cancel).await;
-	assert!(matches!(result, Err(StageError::Cancelled)));
+	assert!(matches!(result, Err(Error::Cancelled)));
 	assert_eq!(h.mock.call_count(), 0);
 	assert_eq!(h.store.upserted(), 0);
 }

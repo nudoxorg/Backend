@@ -1,3 +1,4 @@
+//! Round-trip and strict-parser tests for the NdIrF1 format.
 use super::*;
 use crate::wire::{
     AutoFact, AutoState, AutoTrait, EntryPayloadFlags, FnSigFlags, GenericParamWire, ImplFlags,
@@ -477,7 +478,7 @@ fn f1_strict_parser_rejects_unknown_key() {
     let bytes = b"NdIrF1\t1\nname\tfoo\nvis\tpublic\nkind\tmodule\nspan\t0\t1\nunknown\tvalue\n";
     assert!(matches!(
         F1View::from_bytes(bytes),
-        Err(F1Error::UnknownKey(_))
+        Err(Error::UnknownKey(_))
     ));
 }
 
@@ -487,7 +488,7 @@ fn f1_strict_parser_rejects_wrong_order() {
     let bytes = b"NdIrF1\t1\nvis\tpublic\nname\tfoo\nkind\tmodule\nspan\t0\t1\n";
     assert!(matches!(
         F1View::from_bytes(bytes),
-        Err(F1Error::OutOfOrder(_))
+        Err(Error::OutOfOrder(_))
     ));
 }
 
@@ -498,7 +499,7 @@ fn f1_strict_parser_rejects_unsorted_set() {
         b"NdIrF1\t1\nname\tfoo\nvis\tpublic\nkind\tmodule\nspan\t0\t1\nalias\tzz\nalias\taa\n";
     assert!(matches!(
         F1View::from_bytes(bytes),
-        Err(F1Error::UnsortedSet(_, _, _))
+        Err(Error::UnsortedSet(_, _, _))
     ));
 }
 

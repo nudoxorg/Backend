@@ -64,7 +64,7 @@ fn assert_tagged_repo_enumerates_one_version_per_tag(case: &str, adapter: &impl 
     // measured region. The reliable figure is the op count asserted below; the
     // emitted wall time is per-adapter (subprocess `git` vs in-process grit) and
     // is only comparable between them on an otherwise idle host.
-    let (ops, _cost) = nudox_test_support::measured(case, _dir.path(), || {
+    let (ops, _cost) = heart::cost::measured(case, _dir.path(), || {
         enumerate_git_versions(adapter, slug, &url, 20250101000000)
     });
     let ops = ops.expect("enumerate tagged repo");

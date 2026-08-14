@@ -1,4 +1,4 @@
-//! How we manage access.
+//! Source federation and provider identity (no access policy yet).
 //! We don't provide any kind of access controls — server providers gate through a proxy or similar.
 //! For our own services we simply provide a wall through an internal auth provider for rate limiting.
 //!

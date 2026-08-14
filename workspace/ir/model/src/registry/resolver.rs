@@ -1,3 +1,4 @@
+//! `RegistryResolver`, supplies entry data to the `Registry`.
 use std::{error::Error, hash::Hash};
 
 use crate::entry::Entry;

@@ -3435,3 +3435,73 @@ absent for the status bar's account chip, which reads the same cached
 `AccountService::status` this gate does — scoped out as a separate concern
 from wiring the gate to the posture machinery that already exists.
 
+---
+
+# Packaging & platform support (not a defect — a support matrix)
+
+This section is the single source of truth for **what we build and ship**, as
+distinct from the L-entries above (which record defects). It exists because the
+packaging surface was, until 2026-08-14, macOS-only and undocumented.
+
+## Supported build targets
+
+| Target | Triple | Packaging | Mechanism |
+|---|---|---|---|
+| macOS (Apple Silicon) | `aarch64-apple-darwin` | `.app` + `.dmg` | cargo-bundle (`[package.metadata.bundle]`, `cargo bundle --format osx\|dmg`) |
+| macOS (Intel) | `x86_64-apple-darwin` | `.app` + `.dmg` | cargo-bundle |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` | `.deb` + `.rpm` | cargo-deb / cargo-generate-rpm (`[package.metadata.deb]` / `[package.metadata.generate-rpm]`) + nfpm in `.config/pipeline.cue` |
+| Windows (x86_64) | `x86_64-pc-windows-msvc` | `.msi` | cargo-wix / WiX Toolset (`packaging/windows/`) |
+
+`flake.nix` `systems` covers the three Nix-capable families:
+`aarch64-darwin`, `x86_64-darwin`, `aarch64-linux`, `x86_64-linux`. Windows is
+deliberately absent — Nix cannot target Windows (see below).
+
+## Nix / devshell coverage
+
+- `flake.nix`'s `reindeerArtifactDetails` and `buck2ArtifactDetails` both carry
+  `x86_64-darwin` entries (platform `x86_64-apple-darwin`), so Intel Macs get the
+  same reindeer/buck2 binaries as the other systems rather than a fetch failure.
+- The GUI itself is **not** a flake package output; its packaging is the
+  declarative Cargo metadata above (cargo-bundle / cargo-deb /
+  cargo-generate-rpm), which is the least-new-tooling path. A `buildRustPackage`
+  output for lindsey would be the follow-up if Nix-native GUI builds are wanted.
+
+## Windows caveats
+
+- **No Nix coverage.** `flake.nix` and the dev shell are macOS/Linux only; there
+  is no Windows derivation and none is planned while the toolchain is MSVC-based.
+- **MSVC + WiX required.** Building lindsey on Windows needs the MSVC toolchain
+  (with the "Desktop development with C++" VS workload) and the WiX Toolset v3
+  for the `.msi`. cargo-bundle does **not** support Windows, which is why the MSI
+  path is cargo-wix (`cargo wix init` → `cargo wix`), with `main.wxs` committed as
+  a reviewable template in `packaging/windows/`.
+- **gpui-ce / wgpu backend.** The Windows renderer is wgpu, not Metal/DirectX;
+  this is the migration target (gpui → gpui-ce) and the reason Windows packaging
+  exists at all. Until that migration lands, the Windows target is a build
+  target, not a shipped artifact.
+- **No cross-compilation.** gpui-ce/wgpu links the Windows SDK; build natively on
+  Windows. `release.nu`/goreleaser are run once per OS, never cross-OS.
+- **No `.ico` committed.** `assets/logo.svg` is the single brand mark; the
+  `.ico` is rasterised per `packaging/windows/README.md` (ImageMagick or
+  rsvg-convert + icotool). No binary artifact is committed.
+
+## Linux caveats
+
+- **X11/Wayland system libraries are not vendored.** gpui links
+  `libxkbcommon`, `libwayland-{client,cursor}`, `fontconfig`, `libX11`, and the
+  `libxcb` family at runtime; these are provided by the desktop environment and
+  enumerated in `packaging/linux/README.md`. The `.deb` uses `depends = "$auto"`
+  (dpkg-shlibdeps) and the `.rpm` relies on rpmbuild's auto-requires rather than
+  a hand-maintained list, because Debian and RPM name these differently.
+- **AppImage is not yet produced.** The `.deb`/`.rpm` pair covers the two largest
+  distributions; AppImage (`cargo-appimage` / linuxdeploy) is a documented
+  optional follow-up, not implemented.
+
+## macOS caveat (unchanged)
+
+`osx_minimum_system_version = "14.0"` remains the measured value: the binary is
+built against the toolchain's default deployment target (14.0 against the
+installed 14.4 SDK) with no `MACOSX_DEPLOYMENT_TARGET` override in *this* crate
+(Zed's own 10.15.7 setting lives in Zed's build.rs, which does not run here).
+Lowering it is possible but unverified, so it is not claimed.
+

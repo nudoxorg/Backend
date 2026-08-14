@@ -40,7 +40,7 @@ use std::str::FromStr;
 use heart::ContentHash;
 use thiserror::Error;
 
-use crate::profiles::ProducerProfile;
+use crate::budget::profiles::ProducerProfile;
 
 // ─── hex helpers (no external dep) ──────────────────────────────────────────
 
