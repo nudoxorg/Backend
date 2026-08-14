@@ -50,10 +50,10 @@
 //! *resolve* at all (unknown macro-generated code, a broken `cfg`, …), not
 //! merely because the type is external.
 //!
-//! **If a rendered signature is missing a generic wrapper (LIMITATIONS.md
+//! **If a rendered signature is missing a generic wrapper (docs/LIMITATIONS.md
 //! L19), the defect is not in this module — this module's `Type::Apply`
 //! construction is correct.** Verified directly (2026-08-05) two ways: (a)
-//! instrumenting `lower_path_type` while lowering `.real-crates/memchr-2.8.3`
+//! instrumenting `lower_path_type` while lowering `result/memchr-2.8.3`
 //! showed every one of `memchr`'s ~150 uses of `Option<T>` — including the
 //! public `memchr()` function's own return type — resolves through
 //! `PathResolution::Def` and builds `Type::Apply` correctly; (b)

@@ -8,7 +8,7 @@
 //! machinery. It reads the IR types (entry/symbol/kind/wire/change/view/vocab/…)
 //! from the [`ir`] crate — libpijul and iroh live here, not there.
 //!
-//! Spec context: `.research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md`.
+//! Spec context: `docs/research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md`.
 
 // ── Sync plane (formerly the `ir-sync` crate) ───────────────────────────────
 /// iroh-based distribution of libpijul change files to a trusted remote.

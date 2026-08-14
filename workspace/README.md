@@ -1,7 +1,7 @@
 Workspace crate map
 ===================
 
-Nine crates, two utilities. All built with Buck2 via `build/rust.bzl`.
+Nine crates, two utilities. All built with Buck2 via `nix/build/rust.bzl`.
 
 
 heart

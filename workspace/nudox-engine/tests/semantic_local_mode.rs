@@ -12,7 +12,7 @@
 
 //!
 //! Doctrine §1 ("Capability ports") is exactly what makes this file possible
-//! without the artifact gap LIMITATIONS.md L41 records: the engine takes
+//! without the artifact gap docs/LIMITATIONS.md L41 records: the engine takes
 //! `Arc<dyn Embedder>`, and a fake that returns a fixed unit vector is a
 //! complete implementation of that trait. Nothing here needs ONNX, a model
 //! file, or `ORT_LIB_LOCATION` — which is the whole point of the port.

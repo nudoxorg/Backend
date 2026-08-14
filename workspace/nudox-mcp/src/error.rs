@@ -71,7 +71,7 @@ pub enum McpError {
     #[error("unknown resource uri: {0}")]
     UnknownResource(String),
 
-    // -- Account authentication (see `crate::account` and `auth.md`) ---------
+    // -- Account authentication (see `crate::account` and `docs/auth.md`) ---------
     //
     // Seven variants rather than one `Account { message }`, because an agent
     // and a human do genuinely different things about each: sign in, unlock a
@@ -531,7 +531,7 @@ impl McpError {
                 "toolCalls": tool_calls,
                 "periodStart": period_start,
                 // There is deliberately no `periodEnd`: `GET v1/usage` does not
-                // return one (`auth.md` § "Gaps in the contract", gap 1), and
+                // return one (`docs/auth.md` § "Gaps in the contract", gap 1), and
                 // computing a plausible date from `periodStart` would be a
                 // fabrication an agent would repeat to a user as fact.
                 "isQuotaNotFault": true,

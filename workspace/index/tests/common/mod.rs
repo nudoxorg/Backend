@@ -56,7 +56,7 @@ pub fn gen_stamp(seed: u8) -> index::ids::GenerationStamp {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Storage-characteristics harness: the real `.real-crates/` corpus + an
+// Storage-characteristics harness: the real `result/` corpus + an
 // on-disk (not `:memory:`) catalog engine, so integration tests can take real
 // `disk_delta_bytes` measurements (doctrine §4).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -69,19 +69,19 @@ pub fn repo_root() -> std::path::PathBuf {
 }
 
 /// The real, checked-in corpus manifest — the exact source
-/// `corpus/fetch.nu` reads. Tests key off this file (not off re-derived
+/// `nix build .#checks.corpus` reads. Tests key off this file (not off re-derived
 /// directory-name guesses) so every corpus fact this suite relies on is
 /// exactly the fact the fetch step itself relied on.
 pub fn corpus_manifest_path() -> std::path::PathBuf {
-    repo_root().join("corpus/manifest.toml")
+    repo_root().join("nix/corpus.nix")
 }
 
-/// Where `corpus/fetch.nu` materializes fixtures.
+/// Where `nix build .#checks.corpus` materializes fixtures.
 pub fn real_crates_root() -> std::path::PathBuf {
-    repo_root().join(".real-crates")
+    repo_root().join("result")
 }
 
-/// One `[[packages]]` entry of `corpus/manifest.toml`.
+/// One `[[packages]]` entry of `nix/corpus.nix`.
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ManifestPackage {
     pub ecosystem: String,
@@ -114,7 +114,7 @@ pub fn load_corpus_manifest() -> Vec<ManifestPackage> {
     parsed.packages
 }
 
-/// Filesystem-safe directory name, mirroring `corpus/fetch.nu`'s
+/// Filesystem-safe directory name, mirroring `nix build .#checks.corpus`'s
 /// `safe-dir-name` byte-for-byte (`/` and `:` both become `__`), so this
 /// resolves exactly the directories the fetch script wrote.
 pub fn safe_dir_name(name: &str, version: &str) -> String {
@@ -137,7 +137,7 @@ pub struct CorpusFixture {
 /// Every manifest-listed `(ecosystem, name, version)` whose fixture directory
 /// actually exists on disk, in stable `(ecosystem, name, version)` order.
 ///
-/// `corpus/manifest.toml` may list more than any one checkout has fetched
+/// `nix/corpus.nix` may list more than any one checkout has fetched
 /// (L9's Nix-reproducible fetch is opt-in); silently treating "listed" as
 /// "present" would misreport corpus size, so this filters to what is actually
 /// there and callers can report `.len()` against the manifest's own total.

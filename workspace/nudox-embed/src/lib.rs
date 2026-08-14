@@ -8,7 +8,7 @@
 //! decision of *when* to embed. `registry` owns the *runtime* (`FastembedOrt`,
 //! fastembed 5.17.3 over ort 2.0.0-rc.12, running the fp32 Jina code model on
 //! CPU). Between them there is a ten-line adapter that belongs to neither, for
-//! reasons `AGENTS-DOCTRINE.md` §1 ("Capability ports") records in full:
+//! reasons `docs/AGENTS-DOCTRINE.md` §1 ("Capability ports") records in full:
 //!
 //! * `registry::vector::core::embed::Embedder` is **not** object-safe (it
 //!   carries `type Model: EmbeddingModel`), so the engine cannot hold it without

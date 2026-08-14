@@ -25,7 +25,7 @@ pulldown-cmark = { workspace = true }
 # Nothing here is new to the lockfile: `reqwest`/`rustls` are already what
 # `workspace/{driver,index,registry}` use, and `zip` is a workspace dependency
 # pinned once so two readers of the same archive cannot disagree about what it
-# contains. The alternative — shelling out to `corpus/fetch.nu` — is rejected in
+# contains. The alternative — shelling out to `nix build .#checks.corpus` — is rejected in
 # `src/acquire/mod.rs`'s module docs, with reasons.
 #
 # `rustls-tls` rather than the default `native-tls`: same choice the three
@@ -76,8 +76,8 @@ trustfall_core = { workspace = true }
 
 [dev-dependencies]
 nudox-test-support = { path = "../test-support" }
-# `tests/purl_url_parity.rs` reads `corpus/manifest.toml` to drive the
-# comparison against `corpus/fetch.nu`. Same workspace pin `nudox-store`'s
+# `tests/purl_url_parity.rs` reads `nix/corpus.nix` to drive the
+# comparison against `nix build .#checks.corpus`. Same workspace pin `nudox-store`'s
 # corpus tests use, so two readers of the same file cannot land on different
 # toml majors and disagree about what the corpus contains.
 toml = { workspace = true }
@@ -99,7 +99,7 @@ required-features = ["fixtures"]
 name = "search_adversarial"
 required-features = ["fixtures"]
 
-# Pins SECTION_SEMANTIC as empty BY DESIGN (LIMITATIONS.md L41). Needs the
+# Pins SECTION_SEMANTIC as empty BY DESIGN (docs/LIMITATIONS.md L41). Needs the
 # fixture corpus for the same reason `search_adversarial` does: the invariant is
 # a conjunction — sections 0 and 1 must return real hits while section 2 stays
 # empty — so it cannot be stated without a corpus that actually matches.
@@ -126,7 +126,7 @@ required-features = ["fixtures"]
 [[test]]
 name = "impls_refs_flows"
 
-# End-to-end hyperlink test against real producer output (.real-crates fixture).
+# End-to-end hyperlink test against real producer output (result fixture).
 [[test]]
 name = "real_producer_links"
 

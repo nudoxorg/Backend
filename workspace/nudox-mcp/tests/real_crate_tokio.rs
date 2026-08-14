@@ -28,7 +28,7 @@
 //!
 //! ```text
 //! # Ensure tokio is fetched:
-//! ls .real-crates/tokio/Cargo.toml
+//! ls result/tokio/Cargo.toml
 //!
 //! # Run everything:
 //! cargo test -p nudox-mcp --test real_crate_tokio -- --ignored --nocapture
@@ -39,7 +39,7 @@
 //!
 //! # Grace when the fixture is absent
 //!
-//! Every test skips gracefully if `.real-crates/tokio/Cargo.toml` is absent:
+//! Every test skips gracefully if `result/tokio/Cargo.toml` is absent:
 //! a missing fixture is an environment problem, not a code defect.  The skip
 //! message is printed on `eprintln!` so it appears under `--nocapture`.
 
@@ -59,16 +59,16 @@ use nudox_mcp::{NudoxTools, SymbolKeyDto};
 /// Where a tokio checkout would land if it were part of the corpus.
 ///
 /// `scripts/fetch-real-crate.sh` does not exist in this repo — the real
-/// fetch tooling is `corpus/fetch.nu`, driven by `corpus/manifest.toml`
-/// (see `corpus/README.md`). As of this writing tokio is not an entry in
+/// fetch tooling is `nix build .#checks.corpus`, driven by `nix/corpus.nix`
+/// (see `docs/CORPUS.md`). As of this writing tokio is not an entry in
 /// that manifest (unlike memchr — see `tests/real_crate_memchr.rs`), so
 /// fetching it means adding a `{ version, hash }` block to
-/// `corpus/manifest.toml` under a `crates.io`/`tokio` package (hash via `nu
-/// corpus/fetch.nu hash-url crates.io tokio <version>`) and then running `nu
-/// corpus/fetch.nu` to materialize it.
+/// `nix/corpus.nix` under a `crates.io`/`tokio` package (hash via `nu
+/// nix build .#checks.corpus hash-url crates.io tokio <version>`) and then running `nu
+/// nix build .#checks.corpus` to materialize it.
 fn tokio_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates/tokio")
+        .join("../../result/tokio")
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
 }
@@ -88,9 +88,9 @@ macro_rules! skip_if_absent {
         if !tokio_available() {
             eprintln!(
                 "SKIP: no checkout at {}. \
-                 tokio is not in corpus/manifest.toml yet — add a {{ version, hash }} \
-                 entry (see corpus/README.md 'Adding a package') and run: \
-                 nu corpus/fetch.nu",
+                 tokio is not in nix/corpus.nix yet — add a {{ version, hash }} \
+                 entry (see docs/CORPUS.md 'Adding a package') and run: \
+                 nix build .#checks.corpus",
                 tokio_root().display()
             );
             return;

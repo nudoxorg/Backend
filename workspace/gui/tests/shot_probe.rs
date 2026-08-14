@@ -33,8 +33,8 @@ impl Render for Probe {
 }
 
 fn main() {
-    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.shots");
-    std::fs::create_dir_all(&out).expect("create .shots");
+    let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/shots");
+    std::fs::create_dir_all(&out).expect("create tests/shots");
 
     let platform = gpui_platform::current_platform(true);
     let text_system = platform.text_system();

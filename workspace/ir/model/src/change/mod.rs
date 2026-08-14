@@ -24,7 +24,7 @@ pub use ids::{EcosystemId, PackageLineageId, PackageName, StableRef};
 /// nudox-ir must use this constant, not the workspace/ir domain strings, when
 /// computing IntroId preimages for symbols originating from this crate.
 /// **v2 (2026-08-08)**: `Entry` gained a `location: SourceLocation` field
-/// (`LIMITATIONS.md` L31/L42). The declaration plane is postcard over serde, so
+/// (`docs/LIMITATIONS.md` L31/L42). The declaration plane is postcard over serde, so
 /// the new field is on the wire and v1 bytes cannot be decoded as v2. The
 /// IntroId preimage is unaffected — it is domain-separated by
 /// `"nudox.intro.v5"` and does not read this constant. The converse also

@@ -1,4 +1,4 @@
-//! Hosting the MCP server (GUI-LOCAL-PLAN §L6, LIMITATIONS.md **L35**).
+//! Hosting the MCP server (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md **L35**).
 //!
 //! # What L35 was
 //!
@@ -203,7 +203,7 @@ impl McpService {
     /// server that rendered like an absent one is exactly what L35 was.
     ///
     /// `gate` is the account gate every tool call is admitted through
-    /// (`auth.md`). It is a parameter because `NudoxMcpServer` requires one and
+    /// (`docs/auth.md`). It is a parameter because `NudoxMcpServer` requires one and
     /// because the same gate is what `app::account` renders — a second gate
     /// would be a second answer to "is this user signed in?".
     pub fn start(engine: &EngineHandle, gate: nudox_mcp::AccountGate) -> Self {

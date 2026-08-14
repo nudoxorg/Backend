@@ -1096,7 +1096,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
     /// *all* the vertical slack whether or not it had prose to put in it, and
     /// pushed `Implementations` / `References` / `Source` to the very bottom of
     /// the window with ~600 px of empty background between them and the text
-    /// they belong to (GUI-WORKORDER-2 F2, `.shots/memchr/08-symbol-opened.png`).
+    /// they belong to (GUI-WORKORDER-2 F2, `tests/shots/memchr/08-symbol-opened.png`).
     ///
     /// The sections are now siblings of this list inside one column, and the
     /// list sizes itself from its content (see the `Infer` note below), so the
@@ -1452,7 +1452,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
         cx.notify();
     }
 
-    /// The page's one and only root element (LIMITATIONS.md L22).
+    /// The page's one and only root element (docs/LIMITATIONS.md L22).
     ///
     /// # Why the chrome is built here and not in `render`
     ///

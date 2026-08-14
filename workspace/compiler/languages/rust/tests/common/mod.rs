@@ -14,7 +14,7 @@
 //!
 //! # Why the expectations are `(name, kind)` pairs and not counts
 //!
-//! AGENTS-DOCTRINE.md §4: "a test that would pass against a stub is not a
+//! docs/AGENTS-DOCTRINE.md §4: "a test that would pass against a stub is not a
 //! test." A count, a `table.len() > 0`, or an `is_ok()` is satisfied by a
 //! producer that emits one entry named `""`. Every [`Want`] below names a
 //! symbol that was read out of the checkout's own source in this repository
@@ -49,7 +49,7 @@ const fn want(name: &'static str, kind: KindDiscriminant) -> Want {
     Want { name, kind }
 }
 
-/// One corpus entry: `.real-crates/<dir>`, the cargo package name (which must
+/// One corpus entry: `result/<dir>`, the cargo package name (which must
 /// be the `[package] name` in that checkout's manifest, because
 /// `ra::documented_package_names` matches on it exactly), the pinned version,
 /// and the symbols its lowering must contain.
@@ -62,7 +62,7 @@ pub struct Entry {
 
 use KindDiscriminant::{Alias, Const, Enum, Function, Module, Record, Trait};
 
-/// The 23 crates.io version entries from `corpus/manifest.toml` (20 packages;
+/// The 23 crates.io version entries from `nix/corpus.nix` (20 packages;
 /// `log` carries two versions and `memchr` three, for lineage testing), in
 /// manifest order.
 ///
@@ -402,11 +402,11 @@ const MEMCHR_API: &[Want] = &[
 /// Root of the corpus checkout directory, resolved from this crate's manifest
 /// so the tests work regardless of the invoking shell's cwd.
 ///
-/// Deliberately not `canonicalize`d: a missing `.real-crates/` must surface as
+/// Deliberately not `canonicalize`d: a missing `result/` must surface as
 /// a named per-entry failure from the test that looked for it, not as a panic
 /// inside a path helper that names no package.
 pub fn corpus_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../result")
 }
 
 pub fn entry_root(entry: &Entry) -> PathBuf {

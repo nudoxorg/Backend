@@ -21,7 +21,7 @@
 //!
 //! Before it, `SymbolHead` carried `source_path: Option<SharedStr>` and
 //! `source_span: Option<[u32; 2]>`. Three things were wrong with that and all
-//! three were visible in shipped frames (`LIMITATIONS.md` L42.2):
+//! three were visible in shipped frames (`docs/LIMITATIONS.md` L42.2):
 //!
 //! - the path could be `<file-id-806>`, a producer's internal index formatted
 //!   to look like a filename;
@@ -69,7 +69,7 @@ pub enum UnlocatedReason {
     /// The item exists only after macro expansion.
     MacroExpanded,
     /// The producer read the declaration from a file and does not record
-    /// where. This one is an open item on `LIMITATIONS.md` L31.
+    /// where. This one is an open item on `docs/LIMITATIONS.md` L31.
     ProducerRecordsNoLocation,
     /// The file is outside the documented package, so no package-relative path
     /// names it.

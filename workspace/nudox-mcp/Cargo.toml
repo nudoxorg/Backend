@@ -45,7 +45,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "net", "macro
 tokio-util = { version = "0.7", default-features = false }
 tracing = { workspace = true }
 
-# ── Account authentication (`src/account`, see `auth.md`) ────────────────────
+# ── Account authentication (`src/account`, see `docs/auth.md`) ────────────────────
 #
 # `reqwest` talks to `api.nudox.org`. Same version, same feature set and the
 # same `rustls-tls` (not native-tls) choice already made by `driver`, `index`

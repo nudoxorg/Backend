@@ -14,7 +14,7 @@
 //!   convention would have produced;
 //! * whether `javax.inject-1-sources.jar` still unpacks to `javax/inject/*.java`
 //!   rather than to seven flat files — the regression `finalize-package` in
-//!   `corpus/fetch.nu` exists to prevent, restated here as a test rather than a
+//!   `nix build .#checks.corpus` exists to prevent, restated here as a test rather than a
 //!   comment.
 //!
 //! A mock server would have answered all four the way the author expected.
@@ -201,7 +201,7 @@ fn acquire_only(cache: &Path, purl: &str) -> (Integrity, PathBuf) {
 /// The four registries that publish a digest must actually be verified against
 /// it, and the two that do not must say so rather than imply otherwise.
 ///
-/// This is the test the whole `Integrity` type exists for. `corpus/fetch.nu`'s
+/// This is the test the whole `Integrity` type exists for. `nix build .#checks.corpus`'s
 /// header calls a fetcher that accepts a mismatch "worse than not fetching at
 /// all"; the PURL path has no manifest hash, so the equivalent claim is "we
 /// verified against what the registry publishes, or we said we could not".
@@ -284,7 +284,7 @@ fn a_cargo_fetch_is_checked_against_the_index_cksum_not_a_local_hash() {
 /// A Maven sources jar's leading directories are the *package path* and must
 /// survive extraction.
 ///
-/// `corpus/fetch.nu` records what happened when they did not: recursive
+/// `nix build .#checks.corpus` records what happened when they did not: recursive
 /// wrapper-stripping descended twice into `javax/inject/` and produced seven
 /// flat files each still declaring `package javax.inject;`, javadoc could not
 /// resolve them by `-sourcepath`, and dagger failed with "package javax.inject

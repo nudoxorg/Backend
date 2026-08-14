@@ -8,12 +8,12 @@
 //! therefore evaluated every `cfg(feature = "…")` as false and pruned the item
 //! *before* `lower_workspace` ever walked it. The item is not merely
 //! unbadged; it is entirely absent — no entry, no id, unsearchable,
-//! unlinkable. See `LIMITATIONS.md` L14.
+//! unlinkable. See `docs/LIMITATIONS.md` L14.
 //!
 //! # Two crates, two gated items
 //!
 //! `serde`'s `rc` feature is not in its `default` set, so `impl Serialize for
-//! Weak<T>` (`.real-crates/serde-*/src/ser/impls.rs`, `#[cfg(all(feature =
+//! Weak<T>` (`result/serde-*/src/ser/impls.rs`, `#[cfg(all(feature =
 //! "rc", …))]`) is present only when Cargo features are requested at all.
 //!
 //! `memchr` is the crate L14 was originally diagnosed against
@@ -42,11 +42,11 @@ use nudox_store::{
     source::producer::PackageDescriptor,
 };
 
-/// Where `.real-crates/<name>-<version>` (or `.real-crates/<name>` for the
+/// Where `result/<name>-<version>` (or `result/<name>` for the
 /// no-version-suffix convention some fixtures use) lives.
 fn crate_root(dir_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates")
+        .join("../../result")
         .join(dir_name)
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
@@ -54,7 +54,7 @@ fn crate_root(dir_name: &str) -> PathBuf {
 
 /// Lower `root` under `name`/`version`, skipping gracefully if the checkout is
 /// absent, and printing a `cost case=` line so the run is also a benchmark
-/// (AGENTS-DOCTRINE.md §4).
+/// (docs/AGENTS-DOCTRINE.md §4).
 fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
     if !root.join("Cargo.toml").is_file() {
         eprintln!(
@@ -166,7 +166,7 @@ fn serde_rc_gated_impl_reaches_the_lowered_ir() {
 /// It was written as a canary that *expected absence* and panicked if the item
 /// ever appeared, because two separate things stopped `memchr` resolving:
 ///
-///  1. `.real-crates/memchr-*` had no vendored copy of
+///  1. `result/memchr-*` had no vendored copy of
 ///     `rustc-std-workspace-core`, which `memchr` declares as an unconditional
 ///     optional dependency. `cargo metadata` must resolve every optional
 ///     dependency's version to build a valid lockfile whether or not a feature

@@ -163,7 +163,7 @@ impl ProducerRegistry {
     /// This is the engine's production registry — the multi-language
     /// successor to [`Self::with_rust_pilot`], which this program's history
     /// shows is easy to mistake for "the" registry rather than "the pilot
-    /// one" (see LIMITATIONS.md L2). It stays available for tests and callers
+    /// one" (see docs/LIMITATIONS.md L2). It stays available for tests and callers
     /// that deliberately want a single-language corpus.
     ///
     /// # Why this is six producers, not seven
@@ -193,13 +193,13 @@ impl ProducerRegistry {
     /// silent success *unrepresentable* for every producer, and withholding the
     /// registration additionally spares the caller a pointless load — it gets a
     /// `SourceError::ToolchainMissing` naming the language up front, instead of
-    /// an oracle failure after the work (LIMITATIONS.md L2).
+    /// an oracle failure after the work (docs/LIMITATIONS.md L2).
     ///
     /// A package described for a language with no registered producer is not
     /// a build failure: `ProducerRegistry::run` returns
     /// `SourceError::ToolchainMissing` for it, naming the language, and the
     /// rest of the corpus is unaffected — that behaviour predates this
-    /// constructor and is unchanged. See LIMITATIONS.md L2.
+    /// constructor and is unchanged. See docs/LIMITATIONS.md L2.
     pub fn with_all_available() -> Self {
         let mut reg = Self::new();
         reg.register(Language::Rust, RustProducer { direct_repo: false });
@@ -443,7 +443,7 @@ impl ProducerRegistry {
 /// duplicated) in a `#[source]` slot rather than in their own `Display`.
 /// `SourceError`'s `detail` is a `String` and is the last point at which that
 /// chain still exists, so it is flattened here rather than lost here.
-/// AGENTS-DOCTRINE.md §8: "Print the whole `#[source]` chain when a producer
+/// docs/AGENTS-DOCTRINE.md §8: "Print the whole `#[source]` chain when a producer
 /// fails … Reading only it is how a five-second diagnosis becomes an hour."
 ///
 /// # Every variant goes through here, and that took a second attempt
@@ -459,7 +459,7 @@ impl ProducerRegistry {
 /// naming the actual defect lives only in its source chain. On 2026-08-08 the
 /// first real nuget baseline measurement wrote six rows reading
 /// `producer_error = "lowering failed for nuget:Polly: lowering failed"` into
-/// `corpus/entry-baseline.toml` — a file whose own header calls itself the one
+/// `nix/entry-baseline.toml` — a file whose own header calls itself the one
 /// authoritative record of how each package lowers. Those rows named the
 /// package twice and the defect zero times, and a baseline row is the *only*
 /// durable record of why a package does not lower.
@@ -473,7 +473,7 @@ impl ProducerRegistry {
 /// Unbounded was tried first and was wrong. `LoweringError::Duplicate` lists
 /// every colliding declaration id, and `Microsoft.Bcl.AsyncInterfaces` produced
 /// a **283,070-character** single line — which went straight into
-/// `corpus/entry-baseline.toml`, taking that file from 33 KB to 519 KB. A
+/// `nix/entry-baseline.toml`, taking that file from 33 KB to 519 KB. A
 /// diagnosis nobody can read in a diff is not better than no diagnosis; it is
 /// the same failure (an unusable record) with a larger footprint.
 ///
@@ -846,7 +846,7 @@ mod tests {
 
     // -----------------------------------------------------------------
     // with_all_available — one test per language it actually registers
-    // (LIMITATIONS.md L2).
+    // (docs/LIMITATIONS.md L2).
     // -----------------------------------------------------------------
 
     #[test]
@@ -929,7 +929,7 @@ mod tests {
     /// directly (via `produce`, already imported above) rather than through
     /// `ProducerRegistry::run`, because `SourceError::OracleFailed::detail`
     /// is built from `ProducerError`'s deliberately terse top-level
-    /// `Display` (`"oracle spawn failed"` — AGENTS-DOCTRINE.md §8, "Print
+    /// `Display` (`"oracle spawn failed"` — docs/AGENTS-DOCTRINE.md §8, "Print
     /// the whole `#[source]` chain") and would not itself contain the path.
     #[test]
     fn csharp_runner_missing_oracle_surfaces_at_invoke_not_at_construction() {

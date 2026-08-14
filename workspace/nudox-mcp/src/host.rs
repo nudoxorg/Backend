@@ -10,7 +10,7 @@
 //!
 //! Left there, "started by lindsey after the engine, stopped on window close"
 //! (GUI-LOCAL-PLAN §L6) is unimplementable, which is exactly why it stayed
-//! unimplemented — see LIMITATIONS.md **L35**, where a fully working, fully
+//! unimplemented — see docs/LIMITATIONS.md **L35**, where a fully working, fully
 //! tested server had zero callers and the status bar's `set_mcp_endpoint` had
 //! zero call sites repo-wide.
 //!

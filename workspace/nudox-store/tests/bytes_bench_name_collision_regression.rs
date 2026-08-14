@@ -1,4 +1,4 @@
-//! Regression test for LIMITATIONS.md L4: a `[[bench]]` target that shares its
+//! Regression test for docs/LIMITATIONS.md L4: a `[[bench]]` target that shares its
 //! package's crate name must not stop the package from lowering.
 //!
 //! # Why this exists
@@ -49,13 +49,13 @@ use nudox_store::package::{PackageView, Provenance};
 use nudox_store::source::producer::PackageDescriptor;
 
 /// Where `scripts/fetch-real-crate.sh bytes 1.11.0` (or this repo's
-/// `.real-crates/` checkout) puts the checkout. `NUDOX_PKG_ROOT` overrides it,
+/// `result/` checkout) puts the checkout. `NUDOX_PKG_ROOT` overrides it,
 /// matching the convention `real_package.rs` uses.
 fn bytes_root() -> PathBuf {
     std::env::var("NUDOX_PKG_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.real-crates/bytes-1.11.0")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/bytes-1.11.0")
         })
 }
 
@@ -99,7 +99,7 @@ fn bytes_lowers_despite_its_bench_target_matching_the_crate_name() {
             }
             panic!(
                 "bytes must lower despite its bench target sharing its crate \
-                 name (LIMITATIONS.md L4):\n{chain}"
+                 name (docs/LIMITATIONS.md L4):\n{chain}"
             );
         }).table;
 

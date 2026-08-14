@@ -208,7 +208,7 @@ pub struct ScopeChip {
 /// Seven consecutive search rows once rendered as exactly `memchr` over
 /// `mod memchr`, with identical badges, because the row template drew only the
 /// leaf name and the leaf name was all the row carried
-/// (GUI-WORKORDER-2 F1 / LIMITATIONS.md L20). Adding "also draw the path" to
+/// (GUI-WORKORDER-2 F1 / docs/LIMITATIONS.md L20). Adding "also draw the path" to
 /// the template would have fixed that frame and left the *type* able to
 /// express an ambiguous row, so the next section, the next mode, and the next
 /// view would each have to remember. Instead a row cannot be built at all
@@ -646,7 +646,7 @@ fn remote_symbol_key(symbol: &Symbol) -> SymbolKey {
 /// (`memchr.arch.x86_64.avx2.memchr`), while a hand-built or cross-package
 /// name is `::`-separated. Splitting on only `::` is why a fully-qualified
 /// name arrived, was not recognised as qualified, and rendered as one enormous
-/// leaf with an empty path tier — visible in `.shots/memchr/04-search-hits.png`
+/// leaf with an empty path tier — visible in `tests/shots/memchr/04-search-hits.png`
 /// before this change.
 ///
 /// The separator that was found is returned rather than normalised, because
@@ -784,7 +784,7 @@ pub enum SectionStatus {
     ///
     /// Not an error and not a zero-hit result. The semantic section reports it
     /// when no embedding model is installed — which is every build in this
-    /// repository today (`AGENTS-DOCTRINE.md` §1, capability ports). Rendering
+    /// repository today (`docs/AGENTS-DOCTRINE.md` §1, capability ports). Rendering
     /// it as "no results" would be a claim about the corpus that the engine is
     /// in no position to make.
     Unavailable,
@@ -878,7 +878,7 @@ impl Default for SearchSnapshot {
 /// State of the remote (`heart::client::http::NudoxClient`) search escape
 /// hatch — a real network call to a configured `nudox-serve` instance,
 /// additive to (never a replacement for) the local-first `nudox-engine`
-/// sections above. See `SearchStore::search_remote` (AGENTS-DOCTRINE.md §1,
+/// sections above. See `SearchStore::search_remote` (docs/AGENTS-DOCTRINE.md §1,
 /// `heart` capability-port seam).
 /// Why a remote search failed, as a **typed decision**, not a rendered string.
 ///

@@ -10,13 +10,13 @@
 //! Every test in this file answers that question, or one like it, with file
 //! metadata and a manifest parse — no rust-analyzer, no cargo, milliseconds.
 //! It therefore runs in the ordinary gate, which is what makes the expensive
-//! sweep's silence trustworthy: if `.real-crates/` is missing, renamed, or
-//! holds a different version of a package than `corpus/manifest.toml` pins,
+//! sweep's silence trustworthy: if `result/` is missing, renamed, or
+//! holds a different version of a package than `nix/corpus.nix` pins,
 //! this binary says so long before anyone spends twenty minutes finding out.
 //!
 //! # What the refusal tests are for
 //!
-//! AGENTS-DOCTRINE.md §4 requires adversarial coverage of a protocol, not just
+//! docs/AGENTS-DOCTRINE.md §4 requires adversarial coverage of a protocol, not just
 //! its happy path. The protocol here is `Producer::invoke`'s contract that a
 //! `PackageSource` names a real cargo package. The two ways to violate it that
 //! cost no rust-analyzer boot — a path that does not exist, and a directory
@@ -84,11 +84,11 @@ fn package_identity(manifest: &Path) -> Result<(String, String), String> {
 
 // ── Corpus preconditions ─────────────────────────────────────────────────────
 
-/// Every entry in `corpus/manifest.toml`'s crates.io section is on disk, and is
+/// Every entry in `nix/corpus.nix`'s crates.io section is on disk, and is
 /// the package and version it claims to be.
 ///
 /// Asserting on the manifest's own `name`/`version` rather than on the
-/// directory name is the content assertion here: `.real-crates/memchr-2.8.3`
+/// directory name is the content assertion here: `result/memchr-2.8.3`
 /// being present proves a directory exists, and nothing more. A checkout
 /// re-fetched at the wrong version, or a directory hand-renamed to make a sweep
 /// go green, both leave the directory name intact and the manifest wrong — and
@@ -96,7 +96,7 @@ fn package_identity(manifest: &Path) -> Result<(String, String), String> {
 /// version everybody expected.
 ///
 /// This fails, rather than skipping, when the corpus is absent. That is the
-/// deliberate choice: `.real-crates/` is materialized by `nu corpus/fetch.nu`
+/// deliberate choice: `result/` is materialized by `nix build .#checks.corpus`
 /// and every other language's corpus test in this workspace already requires
 /// it. A skip here would restore exactly the failure mode this whole file
 /// exists to remove — a green run that measured nothing.
@@ -110,7 +110,7 @@ fn every_crates_io_corpus_entry_is_a_checkout_of_the_package_and_version_it_name
 
         if !manifest.is_file() {
             failures.push(format!(
-                "{}: no Cargo.toml at {} — run `nu corpus/fetch.nu` to materialize the corpus",
+                "{}: no Cargo.toml at {} — run `nix build .#checks.corpus` to materialize the corpus",
                 entry.dir,
                 root.display()
             ));
@@ -159,7 +159,7 @@ fn every_crates_io_corpus_entry_is_a_checkout_of_the_package_and_version_it_name
 /// the *reason* is always the same environmental one, and it is visible from
 /// here for free: `cargo vendor` wrote a `vendor/` directory and a
 /// `.cargo/config.toml` redirecting `crates-io` at it (see the comment
-/// `.real-crates/memchr-2.8.3/.cargo/config.toml` carries).
+/// `result/memchr-2.8.3/.cargo/config.toml` carries).
 ///
 /// This prints the classification rather than asserting per entry, because a
 /// package with no dependencies at all needs no vendor directory and would be

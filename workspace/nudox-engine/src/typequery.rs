@@ -27,7 +27,7 @@
 //! type grammars, a notion of subtyping to make `&mut self` a *constraint*
 //! rather than a token, and a relevance model over structural distance. None of
 //! those exist here, and shipping a natural-language box that silently degrades
-//! to keyword matching is the affordance-without-engine failure LIMITATIONS.md
+//! to keyword matching is the affordance-without-engine failure docs/LIMITATIONS.md
 //! L41 was filed about.
 //!
 //! A facet grammar is the opposite trade: it is smaller than what a user might

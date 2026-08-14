@@ -108,7 +108,7 @@ pub(crate) struct LowerCtx<'db> {
     /// Held on the context because every item lowering needs it and the
     /// alternative — threading `&Vfs` through a dozen `lower_*` signatures —
     /// is what produced the `<file-id-N>` placeholder this field deletes
-    /// (`LIMITATIONS.md` L42.2). Owning it also gives the line-index cache the
+    /// (`docs/LIMITATIONS.md` L42.2). Owning it also gives the line-index cache the
     /// same lifetime as the crate walk that fills it.
     pub(crate) files: super::source::FileMap<'db>,
 

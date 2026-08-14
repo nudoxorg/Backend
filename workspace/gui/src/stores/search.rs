@@ -49,7 +49,7 @@ use heart::client::http::ClientError;
 use heart::stream::WireError;
 
 // ---------------------------------------------------------------------------
-// Remote (`NudoxClient`) escape hatch — AGENTS-DOCTRINE.md §1, `heart` seam
+// Remote (`NudoxClient`) escape hatch — docs/AGENTS-DOCTRINE.md §1, `heart` seam
 // ---------------------------------------------------------------------------
 
 /// Env var naming the remote `nudox-serve` base URL for the §15 zero-hit
@@ -281,7 +281,7 @@ pub struct SearchStore<E: SearchEngine> {
     /// Drain loop for the current search stream.
     drain_task: Task<()>,
 
-    // ── Remote (`NudoxClient`) escape hatch (§15, AGENTS-DOCTRINE.md §1) ──
+    // ── Remote (`NudoxClient`) escape hatch (§15, docs/AGENTS-DOCTRINE.md §1) ──
     /// `None` when `NUDOX_SERVER_URL` is unset/unparseable — see
     /// [`remote_client_from_env`]. Cheap to clone (`Arc`-backed
     /// `reqwest::Client`), so `search_remote` clones it into its spawned task

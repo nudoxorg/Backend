@@ -33,7 +33,7 @@
 //! # L17 case study — `memchr_iter` resolves, `memrchr_iter` doesn't
 //!
 //! `memchr-2.8.3`'s `struct Memchr` doc comment reads (verbatim, from
-//! `.real-crates/memchr-2.8.3/src/memchr.rs:282`):
+//! `result/memchr-2.8.3/src/memchr.rs:282`):
 //!
 //! ```text
 //! This iterator is created by the [`memchr_iter`] or `[memrchr_iter`]
@@ -47,7 +47,7 @@
 //! `workspace/compiler/languages/rust/src/ra/docs.rs`) is a byte-level
 //! bracket scanner that finds `memrchr_iter` and resolves it exactly like
 //! `memchr_iter` — both genuinely exist
-//! (`.real-crates/memchr-2.8.3/src/memchr.rs:216,223`), so both aliases end
+//! (`result/memchr-2.8.3/src/memchr.rs:216,223`), so both aliases end
 //! up in this table.
 //!
 //! The asymmetry is downstream, in `prose.rs`'s markdown *rendering* of the
@@ -86,7 +86,7 @@
 //! `InlineRun::Link` carries a mandatory `LinkOrigin` saying whether the
 //! spelling was the author's (`Authored`) or ours (`Repaired`), the GUI paints
 //! the two differently, and `chunk::repair_audit::RepairTally` counts the
-//! repaired ones. See `wire/repair.rs` for the closed set and `LIMITATIONS.md`
+//! repaired ones. See `wire/repair.rs` for the closed set and `docs/LIMITATIONS.md`
 //! L46 for the ruling — including what a *second* repair would cost, which is
 //! five compile errors in five files.
 

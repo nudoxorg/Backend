@@ -16,7 +16,7 @@
 
   <rect x="0" y="0" width="660" height="420" fill="url(#bg-wash)"/>
 
-  <!-- Brand watermark, derived from /logo.svg verbatim (not redrawn), fully
+  <!-- Brand watermark, derived from /workspace/gui/assets/logo.svg verbatim (not redrawn), fully
        inside the canvas so the gem reads whole rather than cropped. -->
   <svg x="180.0" y="24" width="300" height="300"
        viewBox="-4 -9 48 48" opacity="0.16">

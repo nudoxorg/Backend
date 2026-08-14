@@ -24,14 +24,14 @@ use std::path::Path;
 /// `nudox-producer-clang` links `clang-sys`'s `runtime` feature specifically
 /// so that a *missing* libclang is a graceful, typed `Err` at the point of
 /// use (`ClangProducer::invoke` → `ProducerError::OracleSpawn`) rather than a
-/// `dyld` abort at process load (AGENTS-DOCTRINE.md §8) — every test in this
+/// `dyld` abort at process load (docs/AGENTS-DOCTRINE.md §8) — every test in this
 /// file exercises exactly that "libclang present, drive it" path. libclang
 /// is expected to be resolvable on every host that runs this suite: pinned
 /// via `flake.nix`'s `LIBCLANG_PATH` inside `nix develop`, or via Xcode
 /// Command Line Tools' `libclang.dylib` outside it. A test suite that
 /// quietly returns "skip" instead of failing when that assumption breaks is
 /// a suite that can never fail — the "screenshot suite that cannot fail"
-/// defect (AGENTS-DOCTRINE.md §8), applied to libclang instead of pixels.
+/// defect (docs/AGENTS-DOCTRINE.md §8), applied to libclang instead of pixels.
 ///
 /// This therefore **panics** by default when libclang cannot be loaded,
 /// naming the underlying error. The only way to get the old silent-skip

@@ -867,7 +867,7 @@ fn resolve_nominal(
 
 /// Turn a same-package moniker path into the text a reader should see.
 ///
-/// # The defect (LIMITATIONS.md L18, L39)
+/// # The defect (docs/LIMITATIONS.md L18, L39)
 ///
 /// `path_of` (`nudox_store::package::PackageIndexes::path_of`) is the
 /// *physical* ancestor chain: every module `id` is nested under, root first,
@@ -1669,7 +1669,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // display_path (LIMITATIONS.md L18/L39: repeated-ancestor collapse)
+    // display_path (docs/LIMITATIONS.md L18/L39: repeated-ancestor collapse)
     // -----------------------------------------------------------------------
 
     /// Pull the `text` of the one `SigToken::Ty` in `toks` whose `target` is

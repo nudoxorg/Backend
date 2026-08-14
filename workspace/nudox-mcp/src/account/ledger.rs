@@ -63,7 +63,7 @@
 //! default — *"it's better to report usage twice and filter out duplicates
 //! later than to underreport it"*
 //! (<https://openmeter.io/blog/usage-deduplication>) — and they are right,
-//! *given a server that can filter*. We have not got one. `auth.md` § "Gaps in
+//! *given a server that can filter*. We have not got one. `docs/auth.md` § "Gaps in
 //! the contract" asks for one, and the day it exists this policy flips.
 //!
 //! # Reconciliation makes the drop rare rather than routine

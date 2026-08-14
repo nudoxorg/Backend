@@ -15,7 +15,7 @@
 //! `allowed: false`, a connection refused, a socket that accepts the request
 //! and then dies without answering.
 //!
-//! [`FakeService`] is `api.nudox.org` reduced to the three endpoints `auth.md`
+//! [`FakeService`] is `api.nudox.org` reduced to the three endpoints `docs/auth.md`
 //! specifies, on loopback, with a script the test sets. Nothing here resolves
 //! `api.nudox.org`, and `the_suite_never_points_at_production` asserts it.
 //!
@@ -72,7 +72,7 @@ enum Mode {
 }
 
 /// A loopback stand-in for `api.nudox.org`, speaking the three endpoints in
-/// `auth.md` and nothing else.
+/// `docs/auth.md` and nothing else.
 struct FakeService {
     addr: SocketAddr,
     mode: Arc<std::sync::Mutex<Mode>>,
@@ -166,7 +166,7 @@ impl FakeService {
         /// verified by probing the real service.
         ///
         /// This fake previously accepted the header alone, because it was
-        /// written from the same reading of `auth.md` that produced the client.
+        /// written from the same reading of `docs/auth.md` that produced the client.
         /// Both agreed; neither matched the server; **sign-in could not succeed
         /// for any real user** and the whole suite stayed green. Enforcing the
         /// real shape here is what stops that recurring: a client that reverts
@@ -242,7 +242,7 @@ impl FakeService {
                 serde_json::from_str(&body).expect("the client must send valid JSON");
             assert_eq!(
                 parsed["kind"], "tool_call",
-                "auth.md: for MCP it is always tool_call"
+                "docs/auth.md: for MCP it is always tool_call"
             );
             let count = parsed["count"].as_u64().expect("count must be a number");
 

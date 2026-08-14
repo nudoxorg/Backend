@@ -43,7 +43,7 @@
 //! flag alone would fix most of them (it fixes none — no flag conjures
 //! dependency *content* that was never fetched); the other assumed the maven
 //! corpus packages were not provisioned at all (all 20/22 *were* on disk
-//! under `.real-crates/`, hash-verified — see `corpus/manifest.toml`). The
+//! under `result/`, hash-verified — see `nix/corpus.nix`). The
 //! real, sweep-verified shape (`tests/corpus_sweep.rs`) is per-package and
 //! non-uniform: 16 of the 17 non-lowering entries need one or more Maven
 //! artifacts that are not part of this corpus at all (Guava needs
@@ -55,14 +55,14 @@
 //! (`org.reactivestreams:reactive-streams`, 4 interfaces) and nothing else —
 //! confirmed by rerunning `javadoc -Xmaxerrs 100000` and observing every one
 //! of its ~2200 errors trace to `org.reactivestreams`. That one artifact is
-//! now a corpus entry (see `corpus/manifest.toml`), and [`invoke`] passes
+//! now a corpus entry (see `nix/corpus.nix`), and [`invoke`] passes
 //! `-sourcepath` so `javadoc` can find it (and anything else already
 //! fetched) as a sibling checkout, instead of hand-wiring one classpath
 //! entry per package.
 //!
 //! [`sourcepath_entries`] builds that `-sourcepath` value from whatever
 //! directories happen to sit beside `PackageSource::root()` — it does not
-//! know or care that they came from `corpus/manifest.toml`; any caller that
+//! know or care that they came from `nix/corpus.nix`; any caller that
 //! extracts several package checkouts as sibling directories gets the same
 //! benefit. Two things keep this from being a real dependency resolver: (1)
 //! it is peer-directory discovery, not `groupId:artifactId` resolution — a
@@ -299,7 +299,7 @@ fn sourcepath_entries(root: &Path) -> Option<String> {
 
 /// A dot-prefixed directory next to the package checkouts is never a package
 /// checkout — it is corpus machinery. Today the only one is
-/// `.real-crates/.module-path`, the compiled-JPMS-descriptor directory (see
+/// `result/.module-path`, the compiled-JPMS-descriptor directory (see
 /// [`module_path_args`]); skipping the whole class rather than that one name
 /// keeps `-sourcepath` from picking up anything a future corpus mechanism
 /// puts beside the checkouts.
@@ -432,9 +432,9 @@ fn strip_java_comments(text: &str) -> String {
 
 /// `--module-path <corpus>/.module-path`, when that directory exists.
 ///
-/// This is where `corpus/fetch.nu` puts the corpus's only compiled artifacts:
+/// This is where `nix build .#checks.corpus` puts the corpus's only compiled artifacts:
 /// jars fetched *solely* so `javac` can resolve a module descriptor that has
-/// no source form (see `corpus/manifest.toml`'s `[[jpms_modules]]` header for
+/// no source form (see `nix/corpus.nix`'s `[[jpms_modules]]` header for
 /// the three situations that arise, and why a sources jar cannot cover them).
 /// They are never extracted and never on `-sourcepath` — [`is_hidden`] keeps
 /// the dot-directory off it — so nothing here can be lowered.

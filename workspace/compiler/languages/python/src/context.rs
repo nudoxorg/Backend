@@ -770,9 +770,9 @@ mod tests {
     /// position; a package that hit the fallback would gain none.
     #[test]
     fn fallback_path_does_not_fire_on_any_provisioned_corpus_package() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../result");
         let Ok(root) = root.canonicalize() else {
-            eprintln!("SKIP: no .real-crates/ checkout — see corpus/README.md");
+            eprintln!("SKIP: no result/ checkout — see docs/CORPUS.md");
             return;
         };
         // Mirrors `type_lattice_census.rs::ENTRIES`, restricted to the six

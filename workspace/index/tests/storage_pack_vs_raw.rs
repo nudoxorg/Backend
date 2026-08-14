@@ -1,11 +1,11 @@
 //! Storage-characteristics tests for the NDPK object-pack layer
-//! (`index::pack`): real source trees from `.real-crates/` packed through the
+//! (`index::pack`): real source trees from `result/` packed through the
 //! real `TreeIngest` + `FilesystemObjectPackStore`, with pack bytes on disk
 //! measured against raw source bytes on disk (doctrine §4).
 //!
 //! Scope: only each fixture's own `src/` is packed, not the whole checkout.
-//! `.real-crates/<pkg>/vendor/` (offline-vendored dependency copies) and
-//! `.real-crates/<pkg>/target/` (build output some prior tool run left
+//! `result/<pkg>/vendor/` (offline-vendored dependency copies) and
+//! `result/<pkg>/target/` (build output some prior tool run left
 //! behind) are not source the package itself owns — packing them would
 //! measure someone else's bytes under this package's name. `src/` is exactly
 //! what `pack::tree`'s own docs describe packing ("source trees").
@@ -49,7 +49,7 @@ fn pack_real_source_tree(
         .join("src");
     assert!(
         src_root.is_dir(),
-        "expected a real fixture at {}; run corpus/fetch.nu",
+        "expected a real fixture at {}; run nix build .#checks.corpus",
         src_root.display()
     );
     let raw_bytes = nudox_test_support::disk_bytes(&src_root);

@@ -1,8 +1,8 @@
 //! The Implementations list for `memchr::Memchr` must name its traits.
 //!
-//! # The defect this pins (LIMITATIONS.md L39)
+//! # The defect this pins (docs/LIMITATIONS.md L39)
 //!
-//! `.shots/memchr/08-symbol-opened.png` shipped six near-identical rows:
+//! `tests/shots/memchr/08-symbol-opened.png` shipped six near-identical rows:
 //!
 //! ```text
 //! impl ? for memchr.memchr.memchr.Memchr
@@ -31,7 +31,7 @@
 //!
 //! # Ground truth
 //!
-//! `.real-crates/memchr-2.8.3/src/memchr.rs` lines 287-351:
+//! `result/memchr-2.8.3/src/memchr.rs` lines 287-351:
 //!
 //! * `#[derive(Clone, Debug)]` on `pub struct Memchr<'h>`  → `Clone`, `Debug`
 //! * `impl<'h> Memchr<'h>`                                 → inherent, no trait
@@ -63,7 +63,7 @@ fn var(key: &str) -> Option<String> {
 
 fn root() -> PathBuf {
     var("NUDOX_PKG_ROOT").map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.real-crates/memchr-2.8.3")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
     })
 }
 
@@ -260,7 +260,7 @@ fn memchr_impl_labels_name_their_real_traits() {
     assert_eq!(
         trait_names, expected,
         "the five trait impls on `Memchr` must name their real traits, verified \
-         against .real-crates/memchr-2.8.3/src/memchr.rs:287-351"
+         against result/memchr-2.8.3/src/memchr.rs:287-351"
     );
 
     assert_eq!(

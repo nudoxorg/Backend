@@ -7,7 +7,7 @@ license.workspace = true
 [lints]
 workspace = true
 
-# ── The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability ports") ─
+# ── The production embedder adapter (docs/AGENTS-DOCTRINE.md §1, "Capability ports") ─
 #
 # This crate is the home the doctrine said the production adapter did not yet
 # have: it "sits *beside* the engine on the `nudox-mcp` argument", not beneath
@@ -28,7 +28,7 @@ workspace = true
 # lines over `nudox-engine` alone and `load_from_env` always returns `None`
 # (→ `SectionState::Unavailable { NoEmbedder }`, the honest "not configured in
 # this build" state). A dev or release build opts in with `--features onnx`,
-# where the operator has accepted the runtime fetch. See LIMITATIONS.md L41.
+# where the operator has accepted the runtime fetch. See docs/LIMITATIONS.md L41.
 default = []
 onnx = ["dep:registry", "dep:tokio", "dep:tracing"]
 

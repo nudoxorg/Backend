@@ -20,7 +20,7 @@
 //! ```text
 //! cargo test -p nudox-producer-rust --test module_census -- --ignored --nocapture
 //!
-//! NUDOX_PKG_ROOT=.real-crates/memchr-2.8.0 \
+//! NUDOX_PKG_ROOT=result/memchr-2.8.0 \
 //! NUDOX_PKG_NAME=memchr NUDOX_PKG_VERSION=2.8.0 \
 //! NUDOX_CENSUS_OUT=/tmp/memchr-2.8.0.census \
 //!   cargo test -p nudox-producer-rust --test module_census -- --ignored --nocapture
@@ -36,7 +36,7 @@
 //! while `NUDOX_PKG_NAME` and `NUDOX_CENSUS_OUT` `.expect()`ed and panicked.
 //! Nothing in `.config/scripts` sets any of the three, so under
 //! `--run-ignored all` this test reported PASS in 0.014 s having executed zero
-//! assertions — the precise failure AGENTS-DOCTRINE.md §4 condemns, and worse
+//! assertions — the precise failure docs/AGENTS-DOCTRINE.md §4 condemns, and worse
 //! for being asymmetric: one missing input was fatal and another was fine.
 //!
 //! Panicking on all three would have been symmetric and still useless, because
@@ -55,7 +55,7 @@ use nudox_producer::PackageSource;
 use nudox_producer_rust::{RustProducer, produce_with_occurrences};
 
 /// The corpus checkout censused when nothing is overridden: directory under
-/// `.real-crates/`, cargo package name, version.
+/// `result/`, cargo package name, version.
 ///
 /// `memchr` because it is the crate this file's own history is about — the
 /// 11 329-entry rows and the 2.7.6 collapse to 902 — so the default run is the
@@ -98,7 +98,7 @@ fn module_census() {
         Err(_) => {
             let (dir, name, version) = DEFAULT_PACKAGE;
             let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../../.real-crates")
+                .join("../../../../result")
                 .join(dir);
             (root, name.to_owned(), version.to_owned(), true)
         }
@@ -107,7 +107,7 @@ fn module_census() {
     assert!(
         root.join("Cargo.toml").is_file(),
         "no cargo package at {} — set NUDOX_PKG_ROOT/NUDOX_PKG_NAME to a checkout, or run \
-         `nu corpus/fetch.nu` to materialize the default one",
+         `nix build .#checks.corpus` to materialize the default one",
         root.display()
     );
 

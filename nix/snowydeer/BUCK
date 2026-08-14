@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: 2026 Mercury Technologies, Inc.
+#
+# SPDX-License-Identifier: MIT OR Apache-2.0
+#
+# snowydeer vendored BUCK — adapted from MercuryTechnologies/snowydeer
+# rev 5435d7763f428cc47a690617bbb67d5e34f4cb51 (snowydeer/BUCK).
+#
+# Differences from upstream:
+#   - ci_script removed (Mercury-internal //third_party/mercury_ci dependency).
+#   - import-ca-exe omitted: Lix >=2.95 is confirmed on the deploy host, so
+#     build_store_path.py falls through to `nix store add-path --references-list-json`.
+#   - toolchains//:ripgrep is the backend repo's own flake.package ripgrep target
+#     (nix/build/toolchains/BUCK) rather than upstream's nix_build target.
+
+load(":package.bzl", "transition_to_static")
+
+python_binary(
+    name = "build_store_path_unwrapped",
+    main = "build_store_path.py",
+    typing = True,
+    visibility = ["PUBLIC"],
+)
+
+# Wraps the Python binary with the ripgrep exe path baked in as a CLI arg.
+# import-ca-exe is intentionally omitted: the deploy host runs Lix >=2.95 which
+# supports `nix store add-path --references-list-json` natively (see build_store_path.py
+# export_path() fallback branch). Remove this comment when import-ca is universally
+# unnecessary upstream too.
+command_alias(
+    name = "build_store_path",
+    args = [
+        "--ripgrep-exe=$(exe toolchains//:ripgrep)",
+    ],
+    exe = ":build_store_path_unwrapped",
+    visibility = ["PUBLIC"],
+)
+
+# Configuration transition rule — transitions binaries to static-PIC linking.
+# Consumed by snowydeer_package's `binaries` attr transition_dep.
+transition_to_static(
+    name = "transition_to_static",
+    visibility = ["PUBLIC"],
+)

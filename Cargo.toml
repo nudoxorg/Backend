@@ -85,7 +85,7 @@ members = [
     "workspace/nudox-graph",
     "workspace/nudox-engine",
     "workspace/nudox-mcp",
-    # The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability
+    # The production embedder adapter (docs/AGENTS-DOCTRINE.md §1, "Capability
     # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`
     # port, beside the engine rather than beneath it. Its `onnx` feature is
     # off by default, so a `--workspace` build never pulls the ort runtime.
@@ -140,7 +140,7 @@ rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-# `corpus/manifest.toml` and `corpus/entry-baseline.toml` are read by tests in
+# `nix/corpus.nix` and `nix/entry-baseline.toml` are read by tests in
 # more than one crate (`workspace/index`, `nudox-store`). Declared once here so
 # two readers of the same corpus files cannot end up on different toml majors
 # and disagree about what the corpus contains.

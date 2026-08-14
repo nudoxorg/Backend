@@ -67,7 +67,7 @@
 //! caller could not tell apart from "resolution succeeded and found nothing" or
 //! "there are no jobs right now". That is the exact shape doctrine §8 names —
 //! a failure converted into a success with the cause parked where nobody
-//! looked. See [`EngineCapability`] and LIMITATIONS.md L37.
+//! looked. See [`EngineCapability`] and docs/LIMITATIONS.md L37.
 
 pub mod acquire;
 pub mod chunk;
@@ -132,7 +132,7 @@ use std::path::PathBuf;
 /// the dependency law intact.
 ///
 /// One variant per `nudox-producer-*` crate that exists in the workspace
-/// (§LIMITATIONS.md L2). `#[non_exhaustive]` because an eighth producer crate
+/// (§docs/LIMITATIONS.md L2). `#[non_exhaustive]` because an eighth producer crate
 /// arriving must not be a breaking change for `lindsey`'s `match` arms.
 ///
 /// # Which variants actually run something
@@ -498,7 +498,7 @@ pub enum ClientCommand {
 }
 
 // ---------------------------------------------------------------------------
-// Unbuilt capabilities (LIMITATIONS.md L37)
+// Unbuilt capabilities (docs/LIMITATIONS.md L37)
 // ---------------------------------------------------------------------------
 
 /// A milestone in GUI-LOCAL-PLAN §L10.
@@ -604,7 +604,7 @@ impl std::fmt::Display for EngineCapability {
 ///
 /// # Why a typed error and not an empty stream
 ///
-/// This is the whole point of LIMITATIONS.md L37. An immediately-closed
+/// This is the whole point of docs/LIMITATIONS.md L37. An immediately-closed
 /// receiver and a receiver that is merely quiet are the same value to a caller,
 /// so a UI wired to one renders "no jobs" — a claim — where the truth is "we
 /// cannot answer". Returning `Err` moves the decision to the call site, where
@@ -638,7 +638,7 @@ impl EngineHandle {
     /// **Stub (M4).** Returns an immediately-`Done` stream.
     ///
     /// This carries the same defect the four planes below were fixed for
-    /// (LIMITATIONS.md L37) — a `Done` with no sections is indistinguishable
+    /// (docs/LIMITATIONS.md L37) — a `Done` with no sections is indistinguishable
     /// from a package with no API — and is left alone here only because it was
     /// outside the assigned scope of that fix. It has no callers.
     pub fn open_package(
@@ -684,7 +684,7 @@ impl EngineHandle {
     /// Subscribe to the long-lived job event stream.
     ///
     /// **Always `Err`** ([`EngineCapability::Jobs`]). This is the root cause of
-    /// LIMITATIONS.md L29: the Jobs panel had nothing to render because this
+    /// docs/LIMITATIONS.md L29: the Jobs panel had nothing to render because this
     /// method handed it a receiver that closed immediately, and an empty panel
     /// read as "no jobs are running".
     pub fn jobs(&self) -> Result<flume::Receiver<JobEvent>, Unimplemented> {
@@ -746,7 +746,7 @@ mod capability_tests {
         Engine::start(config, StaticSource::versions(&lineage("none"), Vec::new()))
     }
 
-    /// The defect LIMITATIONS.md L37 records: each of the four planes used to
+    /// The defect docs/LIMITATIONS.md L37 records: each of the four planes used to
     /// hand back a channel that a caller could not tell apart from a real,
     /// empty answer. The invariant is that they now refuse *by type*.
     #[test]

@@ -39,11 +39,11 @@
 //!
 //! # Fixture provenance
 //!
-//! `.real-crates/zap-1.28.0` is an unmodified copy of the
+//! `result/zap-1.28.0` is an unmodified copy of the
 //! `go.uber.org/zap@v1.28.0` module tree, fetched via `go mod download` and
 //! copied out of the module cache (`go list -m -f '{{.Dir}}'
-//! go.uber.org/zap`). `.real-crates/` is gitignored (see
-//! AGENTS-DOCTRINE.md's "hard-won facts" on why: it must be re-derived, not
+//! go.uber.org/zap`). `result/` is gitignored (see
+//! docs/AGENTS-DOCTRINE.md's "hard-won facts" on why: it must be re-derived, not
 //! assumed present, and re-derivation must be verified against a known
 //! measurement — this file's assertions are that measurement).
 //!
@@ -74,10 +74,10 @@ use nudox_producer_go::producer::GoProducer;
 /// Where the zap checkout lives, relative to this crate.
 fn zap_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates/zap-1.28.0")
+        .join("../../../../result/zap-1.28.0")
         .canonicalize()
         .expect(
-            "no checkout at .real-crates/zap-1.28.0 — see this file's module doc for how \
+            "no checkout at result/zap-1.28.0 — see this file's module doc for how \
              it was built and re-derive it the same way",
         )
 }
@@ -96,7 +96,7 @@ fn oracle_bin() -> &'static Path {
             .arg("./...")
             .status()
             .expect(
-                "`go` must be on PATH to build the oracle (AGENTS-DOCTRINE.md's toolchain \
+                "`go` must be on PATH to build the oracle (docs/AGENTS-DOCTRINE.md's toolchain \
                  note: Go 1.26.4 via nix)",
             );
         assert!(status.success(), "go build of the oracle failed");
@@ -151,7 +151,7 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
     // across all 15 packages). The table also holds every field, method,
     // param, and iota variant nested under them, so it must be substantially
     // larger — a producer that "succeeds" with a near-zero or suspiciously
-    // round count is the failure this guards against (AGENTS-DOCTRINE.md §4:
+    // round count is the failure this guards against (docs/AGENTS-DOCTRINE.md §4:
     // never just a non-zero count — but a *floor* tied to an independently
     // counted real number is exactly the "content" doctrine asks for).
     assert!(

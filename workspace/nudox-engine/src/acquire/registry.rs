@@ -1,14 +1,14 @@
 //! Per-ecosystem registry resolution: which versions exist, where the source
 //! artifact lives, and what digest (if any) the registry publishes for it.
 //!
-//! # Relationship to `corpus/fetch.nu`
+//! # Relationship to `nix build .#checks.corpus`
 //!
 //! [`artifact`] is a port of that script's `resolve-url`, including the two
 //! rules that are not guessable: the Go module proxy's uppercase `!`-escape
 //! (`golang.org/x/mod/module.EscapePath`) and the fact that maven and nuget
 //! resolve to a **sources** jar and a nupkg respectively rather than to a
 //! compiled artifact. `tests/purl_url_parity.rs` re-derives the same URLs by
-//! running `fetch.nu` itself over `corpus/manifest.toml`, so the two cannot
+//! running `fetch.nu` itself over `nix/corpus.nix`, so the two cannot
 //! drift silently.
 //!
 //! [`versions`] has no counterpart in `fetch.nu` — the script never needs to
@@ -489,8 +489,8 @@ pub(crate) async fn artifact(
 ///
 /// Without it, `GoProducer` finds no `go.mod`, and the failure surfaces as a
 /// producer error about a package that was fetched and verified perfectly.
-/// `corpus/fetch.nu` never hit this because every Go entry in
-/// `corpus/manifest.toml` happens to be a modules-era tag.
+/// `nix build .#checks.corpus` never hit this because every Go entry in
+/// `nix/corpus.nix` happens to be a modules-era tag.
 ///
 /// This was found by fetching a real module. No fixture would have contained
 /// the *absence* of a file.

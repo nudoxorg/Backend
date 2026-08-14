@@ -509,7 +509,7 @@ fn collect_impls(
                 _ => 0,
             };
 
-            // The impl block's own location (LIMITATIONS.md L42.3). Read from
+            // The impl block's own location (docs/LIMITATIONS.md L42.3). Read from
             // the same entry the label came from, so a row can never describe
             // one impl and link to another.
             let source = crate::wire::SourceLocation::from_ir(entry.location());

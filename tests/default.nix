@@ -10,18 +10,14 @@
 {
   pkgs,
   fenixPackages,
-  nixos ? null,
+  nixos,
   packages, # self.packages.${system}
-  # Optional: pre-built buck2 derivation for the compiler fallback.
   buck2,
-  # Repo checkout for buck2 fallback when compiler is a placeholder.
-  projectRoot ? "",
-  # Optional override for compiler-daemon used by backendImage check.
-  compilerDaemon ? null,
+  projectRoot,
 }:
 
 let
-  helpers = import ../build/nix/lib.nix {
+  helpers = import ../nix/lib.nix {
     inherit pkgs fenixPackages nixos;
   };
 
@@ -29,7 +25,6 @@ let
 
   nuLib = ./lib;
 
-  compilerForCheck = if compilerDaemon != null then compilerDaemon else packages.compiler-daemon;
 in
 {
   backendImage = import ./backend-image {
@@ -43,7 +38,7 @@ in
       ;
     server = packages.server;
     backend = packages.backend;
-    compilerDaemon = compilerForCheck;
+    compilerDaemon = packages.compiler-daemon;
     rustToolchain = packages.rustc;
   };
 }

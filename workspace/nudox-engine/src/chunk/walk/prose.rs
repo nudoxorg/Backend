@@ -101,7 +101,7 @@ pub(crate) fn build_prose_blocks(
         // comment scanned as a potential shortcut, including ones with
         // nothing to do with the declared link — a literal `[NOTE]` in a
         // comment that also happens to link `[SomeOtherType]` loses its
-        // brackets too. See LIMITATIONS.md for the tracked entry; the real
+        // brackets too. See docs/LIMITATIONS.md for the tracked entry; the real
         // fix is span-accurate link-attempt data from the producer, which
         // does not exist today.
         let bracket_open = (doc_link_table.has_declared_links()

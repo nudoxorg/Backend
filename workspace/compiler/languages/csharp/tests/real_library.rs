@@ -7,12 +7,12 @@
 //!
 //! # Why this test is `#[ignore]`d
 //!
-//! It needs a third-party checkout that cannot be committed. `.real-csharp/` is
+//! It needs a third-party checkout that cannot be committed. `result/` is
 //! covered by the repository's ignore-everything policy, exactly like
-//! `.real-crates/` is for Rust. Fetch it with:
+//! `result/` is for Rust. Fetch it with:
 //!
 //! ```text
-//! mkdir -p .real-csharp && cd .real-csharp
+//! mkdir -p result && cd result
 //! curl -sSL -o polly.tar.gz \
 //!   https://codeload.github.com/App-vNext/Polly/tar.gz/refs/tags/8.5.2
 //! tar xzf polly.tar.gz && rm polly.tar.gz
@@ -50,7 +50,7 @@ fn package_root() -> PathBuf {
 
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../..")
-        .join(".real-csharp")
+        .join("result")
         .join(format!("Polly-{DEFAULT_VERSION}"))
         .join("src")
         .join("Polly.Core")
@@ -72,7 +72,7 @@ fn package_source() -> PackageSource {
 fn toolkit_source() -> PackageSource {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../..")
-        .join(".real-csharp")
+        .join("result")
         .join("dotnet-8.4.0")
         .join("src")
         .join("CommunityToolkit.Mvvm");
@@ -189,7 +189,7 @@ fn lower_real_package(
 /// rather than about counts: a count alone would still pass if the producer
 /// emitted the right number of wrong things.
 #[test]
-#[ignore = "needs a third-party C# checkout under .real-csharp/ and a published oracle; see module docs"]
+#[ignore = "needs a third-party C# checkout under result/ and a published oracle; see module docs"]
 fn real_library_lowers_with_resolved_types_and_documentation() {
     let source = package_source();
     let (extraction, package, cost) = lower_real_package(&source);
@@ -309,7 +309,7 @@ fn real_library_lowers_with_resolved_types_and_documentation() {
 /// exists to raise `PropertyChanged`, and `ObservableValidator` reaches
 /// `INotifyDataErrorInfo` only through an explicit implementation.
 #[test]
-#[ignore = "needs a third-party C# checkout under .real-csharp/ and a published oracle; see module docs"]
+#[ignore = "needs a third-party C# checkout under result/ and a published oracle; see module docs"]
 fn real_library_events_indexers_and_explicit_implementations_survive() {
     let source = toolkit_source();
     let (extraction, package, cost) = lower_real_package(&source);

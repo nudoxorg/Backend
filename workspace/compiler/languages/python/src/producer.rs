@@ -119,7 +119,7 @@ mod tests {
     /// declarations in the table, not just the synthesized root.
     ///
     /// This is the fixture-free twin of `tests/corpus_sweep.rs`'s per-entry
-    /// assertions against the real pypi corpus; it needs no `.real-crates/`
+    /// assertions against the real pypi corpus; it needs no `result/`
     /// checkout, so it proves the wiring even on a machine without the corpus.
     #[test]
     fn a_real_temp_package_produces_named_declarations_under_the_default_contract() {

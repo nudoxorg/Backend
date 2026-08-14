@@ -1,7 +1,7 @@
 //! Account authentication against `api.nudox.org`: the `ndx_` key, where it
 //! lives, what happens offline, and how billable tool calls are metered.
 //!
-//! Read `auth.md` at the repository root for the design and the research behind
+//! Read `docs/auth.md` at the repository root for the design and the research behind
 //! it. This is the code that implements it.
 //!
 //! # Why this lives in `nudox-mcp`

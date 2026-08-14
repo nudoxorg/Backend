@@ -1,12 +1,12 @@
 //! Sweeps every provisioned `maven` corpus package through the full
 //! `nudox_producer::produce` pipeline (`invoke` -> `lower` -> `finish` ->
 //! `seal`) against real, third-party sources-jar checkouts under
-//! `.real-crates/`.
+//! `result/`.
 //!
 //! `producer_tests.rs` proves the pipeline works end to end on one package
 //! (Gson 2.11.0, vendored) with deep content assertions. This file proves it
 //! (or does not) on all 20 `maven` corpus packages / 22 version entries, per
-//! AGENTS-DOCTRINE.md §4's warning that a producer's hand-fixture test suite
+//! docs/AGENTS-DOCTRINE.md §4's warning that a producer's hand-fixture test suite
 //! tells you nothing about real code.
 //!
 //! This intentionally does not abort on the first failure: the whole point
@@ -39,7 +39,7 @@
 //!    entirely — and that closure did resolve. kafka is still pinned, but on
 //!    a completely different and much smaller thing: exactly one unresolvable
 //!    symbol inside jackson-databind, described in its test below. Every
-//!    entry is named in `corpus/manifest.toml` with the file and import it
+//!    entry is named in `nix/corpus.nix` with the file and import it
 //!    resolves.
 //! 2. **httpclient5 was pinned on `org.conscrypt` being unobtainable as
 //!    source.** It is obtainable. The earlier pass checked
@@ -62,16 +62,16 @@
 //!
 //! `logback-classic`, `junit-jupiter-api` and `assertj-core` all failed
 //! because `javac`'s module system has positions that a sources jar cannot
-//! fill. `corpus/README.md`'s maven row says the corpus fetches sources jars
+//! fill. `docs/CORPUS.md`'s maven row says the corpus fetches sources jars
 //! because "asking for anything else would hand the producer bytecode instead
 //! of Java". That rule is about what gets **lowered**, and it is still
 //! absolute: every `.java` file this producer ever reads comes from a sources
 //! jar.
 //!
-//! What was conceded is narrower: `corpus/manifest.toml` gained a
+//! What was conceded is narrower: `nix/corpus.nix` gained a
 //! `[[jpms_modules]]` array — six compiled jars, fetched only so `javac` can
 //! *resolve a module descriptor*, copied unextracted into
-//! `.real-crates/.module-path/`, and passed to nothing but `--module-path`.
+//! `result/.module-path/`, and passed to nothing but `--module-path`.
 //! `JavaProducer::sourcepath_entries` skips the dot-directory, and
 //! `discover_java_sources` would find zero `.java` files in it regardless, so
 //! a binary jar cannot become lowering input by accident — that is a
@@ -181,10 +181,10 @@ use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_producer::{PackageSource, Producer, produce};
 use nudox_producer_java::JavaProducer;
 
-/// One corpus entry: `.real-crates/<dir>`, the `groupId:artifactId` name
+/// One corpus entry: `result/<dir>`, the `groupId:artifactId` name
 /// used both as the on-disk name-selector-equivalent and the
 /// `PackageLineageId`, and the ecosystem version string. Mirrors
-/// `corpus/manifest.toml`'s 20 `maven` `[[packages]]` blocks / 22 version
+/// `nix/corpus.nix`'s 20 `maven` `[[packages]]` blocks / 22 version
 /// entries exactly (`guava` and `jackson-databind` each carry two versions
 /// for lineage testing).
 ///
@@ -332,13 +332,13 @@ const ENTRIES: &[Entry] = &[
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 /// Walk the full `std::error::Error` source chain. `ProducerError`'s
-/// top-level `Display` is deliberately terse (AGENTS-DOCTRINE.md's
+/// top-level `Display` is deliberately terse (docs/AGENTS-DOCTRINE.md's
 /// "hard-won facts": reading only it turns a five-second diagnosis into an
 /// hour).
 fn chain(e: &(dyn std::error::Error + 'static)) -> String {
@@ -361,7 +361,7 @@ enum Outcome {
         /// Every lowered symbol's name, owned so `run_entry` can drop the
         /// full `Produced` value. Used to assert on *named* content (a type
         /// that really exists in the package's source) rather than a count —
-        /// see `KNOWN_CONTENT` below and AGENTS-DOCTRINE.md §4.
+        /// see `KNOWN_CONTENT` below and docs/AGENTS-DOCTRINE.md §4.
         symbol_names: Vec<String>,
     },
     Fail {
@@ -533,7 +533,7 @@ fn run_entry(entry: &Entry) -> Outcome {
 
 /// Per-entry named-content floor: at least one symbol name that genuinely
 /// appears in that package's own source, keyed by `Entry::dir`. This is the
-/// AGENTS-DOCTRINE.md §4 bar ("a symbol that really exists"), which the
+/// docs/AGENTS-DOCTRINE.md §4 bar ("a symbol that really exists"), which the
 /// oracle-count comparison below cannot provide on its own — a producer that
 /// silently renamed or fabricated symbols could still satisfy a count-only
 /// check. `io.reactivex.rxjava3:rxjava` is the package this pass newly
@@ -729,7 +729,7 @@ fn every_provisioned_maven_corpus_package_lowers_through_the_real_producer() {
     //     without this list.
     //
     // `jakarta.servlet-api` is deliberately provisioned twice, 5.0.0 and
-    // 6.0.0, one for each mechanism (see `corpus/manifest.toml`). They cannot
+    // 6.0.0, one for each mechanism (see `nix/corpus.nix`). They cannot
     // collide: the 6.0.0 checkout carries a `module-info.java`, so it is
     // excluded from every `-sourcepath`, and h2 resolves `jakarta.servlet`
     // against exactly one directory, the 5.0.0 one.
@@ -795,7 +795,7 @@ fn expect_lowered(dir: &str) -> Vec<String> {
 /// closure turned out to be entirely ordinary once actually fetched: JTS,
 /// three Lucene artifacts, both OSGi artifacts, and both servlet generations,
 /// all sources jars, all `role = "dependency"` entries in
-/// `corpus/manifest.toml`.
+/// `nix/corpus.nix`.
 ///
 /// The part worth keeping is *where the versions came from*. h2's published
 /// Maven POM declares **zero** dependencies — it is a shaded release POM, and
@@ -913,7 +913,7 @@ fn logback_classic_lowers_via_module_source_path_plus_two_compiled_descriptors()
         assert!(
             module_path.join(jar).is_file(),
             "{jar} missing from {} — logback-classic resolves org.slf4j and \
-             ch.qos.logback.core through it and nothing else can; re-run `nu corpus/fetch.nu`",
+             ch.qos.logback.core through it and nothing else can; re-run `nix build .#checks.corpus`",
             module_path.display()
         );
     }
@@ -928,7 +928,7 @@ fn logback_classic_lowers_via_module_source_path_plus_two_compiled_descriptors()
 /// `org.opentest4j`'s sources jar carrying no `module-info.java`. That much
 /// was right; what the pin also claimed — that `org.apiguardian:apiguardian-api`
 /// and `org.junit.platform:junit-platform-commons` were "both now corpus
-/// entries" — was not: neither was in `corpus/manifest.toml`, and all three
+/// entries" — was not: neither was in `nix/corpus.nix`, and all three
 /// modules were unresolved. Both are entries now, and both stay **source**:
 /// their sources jars do carry real `module-info.java` files, so
 /// `--module-source-path` resolves them and only `opentest4j` needs a
@@ -1057,7 +1057,7 @@ fn assertj_core_reads_the_junit_chain_off_the_module_path() {
 /// and its sources jar is a machine-generated stub whose every method body is
 /// `throw new RuntimeException("Stub!")`. Shipping it would put fabricated
 /// implementations in the corpus to satisfy a package that would stay red
-/// anyway — the thing AGENTS-DOCTRINE.md §6 exists to prevent, even though
+/// anyway — the thing docs/AGENTS-DOCTRINE.md §6 exists to prevent, even though
 /// the bytes are genuinely published. It is the wrong call independently of
 /// whether it would work.
 ///
@@ -1197,7 +1197,7 @@ fn lombok_blocked_on_a_release_flag_contradiction_and_an_incomplete_sources_jar(
 /// `3.7.0`. **Maintenance note, and the real cost of this entry:** a version
 /// bump must re-derive that list from the new tag's Gradle files plus a fresh
 /// import grep. A POM-only check will miss half of it. See
-/// `corpus/manifest.toml`'s kafka section header.
+/// `nix/corpus.nix`'s kafka section header.
 ///
 /// What remains is one error, and it is inside a *dependency*:
 ///

@@ -1,13 +1,13 @@
 //! Sweeps every provisioned `cpp` corpus package through the full
 //! `nudox_producer::produce` pipeline (`invoke` -> `lower` -> `finish`)
-//! against real, third-party checkouts under `.real-crates/`.
+//! against real, third-party checkouts under `result/`.
 //!
 //! # Why this file does more than `real_package.rs`
 //!
 //! `real_package.rs` proves the pipeline end to end on a hand-authored,
 //! structurally-real fixture. This file proves it (or does not) on the 20
 //! real corpus packages listed for `ecosystem = "cpp"` in
-//! `corpus/manifest.toml` — per AGENTS-DOCTRINE.md §4, a producer's own
+//! `nix/corpus.nix` — per docs/AGENTS-DOCTRINE.md §4, a producer's own
 //! green fixture suite tells you nothing about real code.
 //!
 //! Two producer-level bugs were found and fixed while building this file (see
@@ -31,8 +31,8 @@
 //! (`Foo.hpp` -> `Foo.nudox_probe.cpp`, byte-identical to the original) so
 //! `find_sources`'s ordinary directory walk picks it up as its own
 //! translation unit. This is the same shape of fixup as the Rust corpus's
-//! `[workspace]`-table append (AGENTS-DOCTRINE.md §8) — a small, persistent,
-//! idempotent addition to a `.real-crates/` checkout that makes an otherwise-
+//! `[workspace]`-table append (docs/AGENTS-DOCTRINE.md §8) — a small, persistent,
+//! idempotent addition to a `result/` checkout that makes an otherwise-
 //! unusable real package usable, not a change to the package's own tracked
 //! content.
 //!
@@ -71,7 +71,7 @@ enum Lang {
     C,
 }
 
-/// One corpus entry: where it lives under `.real-crates/`, which
+/// One corpus entry: where it lives under `result/`, which
 /// directories/files hold the public headers worth shimming (see module
 /// docs), which `-I` roots its own cross-includes need, and one real,
 /// specific symbol that must survive lowering — the doctrine §4 content
@@ -299,9 +299,9 @@ const ENTRIES: &[Entry] = &[
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 // ── Shim provisioning ────────────────────────────────────────────────────────
@@ -499,7 +499,7 @@ fn run_entry(entry: &Entry) -> Outcome {
         return Outcome::Fail {
             stage: "preflight",
             chain: format!(
-                "no checkout at {} — run `nu corpus/fetch.nu` from the repo root",
+                "no checkout at {} — run `nix build .#checks.corpus` from the repo root",
                 root.display()
             ),
         };

@@ -391,7 +391,7 @@ mod tests {
     /// `exports` map: that map is Node's own authoritative statement of
     /// what is importable, and `sibling.js` is deliberately not in it. This
     /// is the real-package shape `ws` 8.16.0 has — verified separately
-    /// against `.real-crates/ws-8.16.0/package.json` (`exports` present) —
+    /// against `result/ws-8.16.0/package.json` (`exports` present) —
     /// this test pins the same property on a minimal, controlled fixture so
     /// it doesn't depend on the corpus checkout being present.
     #[test]

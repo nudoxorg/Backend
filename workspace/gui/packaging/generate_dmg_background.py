@@ -2,7 +2,7 @@
 """Derive the DMG Finder-window background from the repo's one brand mark.
 
 Run with no arguments from anywhere; paths are computed relative to this
-file. Regenerate `dmg-background.svg` whenever `/logo.svg` changes — that is
+file. Regenerate `dmg-background.svg` whenever `/workspace/gui/assets/logo.svg` changes — that is
 the whole point of generating it instead of hand-drawing it separately.
 
     python3 workspace/gui/packaging/generate_dmg_background.py
@@ -31,7 +31,7 @@ from pathlib import Path
 PACKAGING_DIR = Path(__file__).resolve().parent
 GUI_DIR = PACKAGING_DIR.parent
 REPO_ROOT = GUI_DIR.parent.parent
-LOGO_PATH = REPO_ROOT / "logo.svg"
+LOGO_PATH = REPO_ROOT / "workspace/gui/assets/logo.svg"
 OUTPUT_PATH = PACKAGING_DIR / "dmg-background.svg"
 
 # Finder window / DMG canvas, in points. cargo-bundle reads this straight off
@@ -46,7 +46,7 @@ APP_CENTER = (180, 205)
 APPLICATIONS_CENTER = (480, 205)
 MARKER_SIZE = 96  # bounding box cargo-bundle measures; must exceed the 48pt icon.
 
-# Colors lifted from logo.svg's own palette (its inner-pool + rim-grad
+# Colors lifted from workspace/gui/assets/logo.svg's own palette (its inner-pool + rim-grad
 # stops), so the background reads as "the same object, zoomed out" rather
 # than a color scheme invented separately.
 BG_TOP = "#14172a"
@@ -106,7 +106,7 @@ def build_background(view_box: str, logo_inner: str) -> str:
 
   <rect x="0" y="0" width="{WIDTH}" height="{HEIGHT}" fill="url(#bg-wash)"/>
 
-  <!-- Brand watermark, derived from /logo.svg verbatim (not redrawn), fully
+  <!-- Brand watermark, derived from /workspace/gui/assets/logo.svg verbatim (not redrawn), fully
        inside the canvas so the gem reads whole rather than cropped. -->
   <svg x="{watermark_x}" y="{watermark_y}" width="{watermark_size}" height="{watermark_size}"
        viewBox="{view_box}" opacity="0.16">

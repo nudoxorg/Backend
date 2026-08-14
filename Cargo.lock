@@ -7003,6 +7003,7 @@ dependencies = [
  "nudox-test-support",
  "rustc-hash 2.1.3",
  "serde",
+ "serde_json",
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.23",

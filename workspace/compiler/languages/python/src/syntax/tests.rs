@@ -1,6 +1,6 @@
 //! Unit tests for the ruff syntactic front end.
 //!
-//! Per AGENTS-DOCTRINE.md §4 ("a hand-authored fixture tests the fixture
+//! Per docs/AGENTS-DOCTRINE.md §4 ("a hand-authored fixture tests the fixture
 //! author's imagination, not the code"), these are deliberately narrow: they
 //! pin the mapping from one small, literal Python snippet to the expected
 //! `ItemData`/`TypeData` shape, exactly mirroring `types.rs`'s and

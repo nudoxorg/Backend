@@ -21,7 +21,7 @@
 //! costs nothing: dev-dependencies do not appear in any consumer's graph, so
 //! `driver` and `index` — the two crates that actually depend on `registry` —
 //! are untouched, and `nudox-engine`'s own graph is untouched in both
-//! directions. `AGENTS-DOCTRINE.md` §1 needs no amendment for this, because no
+//! directions. `docs/AGENTS-DOCTRINE.md` §1 needs no amendment for this, because no
 //! shipping edge is created. (Cargo does not permit *optional*
 //! dev-dependencies, which is why the target is gated by `required-features`
 //! instead: with `onnx` off, cargo refuses to build it rather than compiling it
@@ -129,7 +129,7 @@ impl Embedder for OrtBridge {
 /// already baselined elsewhere.
 fn real_crate_root(name: &str, version: &str) -> Option<std::path::PathBuf> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates")
+        .join("../../result")
         .join(format!("{name}-{version}"));
     root.join("Cargo.toml").is_file().then(|| root)
 }
@@ -297,7 +297,7 @@ const JUDGEMENTS: &[Judgement] = &[
 #[ignore = "needs real model weights and a memchr checkout; run with --ignored"]
 async fn the_semantic_section_ranks_relevant_symbols_above_irrelevant_ones() {
     let Some((engine, index_elapsed)) = engine_with_model("memchr", "2.8.3").await else {
-        eprintln!("SKIP: no memchr-2.8.3 checkout under .real-crates/");
+        eprintln!("SKIP: no memchr-2.8.3 checkout under result/");
         return;
     };
     eprintln!("cost case=semantic_index_memchr dir=. elapsed_ms={}", index_elapsed.as_millis());
@@ -374,7 +374,7 @@ async fn the_semantic_section_ranks_relevant_symbols_above_irrelevant_ones() {
 #[ignore = "needs real model weights and a memchr checkout; run with --ignored"]
 async fn a_search_issued_while_the_index_builds_reports_building_not_empty() {
     let Some(root) = real_crate_root("memchr", "2.8.3") else {
-        eprintln!("SKIP: no memchr-2.8.3 checkout under .real-crates/");
+        eprintln!("SKIP: no memchr-2.8.3 checkout under result/");
         return;
     };
 
@@ -478,7 +478,7 @@ async fn without_an_embedder_the_section_reports_unavailable_not_empty() {
     assert!(
         matches!(state, Some(SectionState::Unavailable { .. })),
         "a build with no model must report Unavailable. `Complete` with zero \
-         rows would be the LIMITATIONS.md L41 failure in reverse: instead of \
+         rows would be the docs/LIMITATIONS.md L41 failure in reverse: instead of \
          fabricating matches, claiming to have searched. Got {state:?}"
     );
 }

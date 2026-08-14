@@ -196,7 +196,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// nothing declared through this method can ever be a jump target. A
     /// producer that knows where its declaration is calls
     /// [`declare_at`](Self::declare_at) instead. Every remaining caller of this
-    /// method is an open item on `LIMITATIONS.md` L31, and is countable by
+    /// method is an open item on `docs/LIMITATIONS.md` L31, and is countable by
     /// grep.
     pub fn declare<T: EntryKind>(
         &mut self,

@@ -1535,7 +1535,7 @@ pub(crate) fn lower_impl(
         .build();
 
     // The `impl` block's own header range. `wire::ImplRow` had no source field
-    // at all (LIMITATIONS.md L42.3); this is where the value it now carries is
+    // at all (docs/LIMITATIONS.md L42.3); this is where the value it now carries is
     // produced.
     let impl_location = source::impl_location(ctx, imp);
     let (impl_source, impl_span) = impl_location.legacy_pair();

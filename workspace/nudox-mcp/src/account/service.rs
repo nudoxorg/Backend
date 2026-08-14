@@ -45,7 +45,7 @@
 //!   200 {"tier":…,"period_start":…,"used":…,"limit":…,"over_limit":…}
 //! ```
 //!
-//! `scopes` and any org fields are parsed and dropped: `auth.md` says to ignore
+//! `scopes` and any org fields are parsed and dropped: `docs/auth.md` says to ignore
 //! them for now, and a field we neither store nor act on is better absent from
 //! our types than present and unused.
 
@@ -80,7 +80,7 @@ pub const BASE_URL_ENV: &str = "NUDOX_API_BASE";
 /// it is the one that drops a batch.
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The `kind` this client records. Always `tool_call`, per `auth.md`.
+/// The `kind` this client records. Always `tool_call`, per `docs/auth.md`.
 ///
 /// Not an enum with an `api_request` variant: nothing in this process makes a
 /// billable API request, and a variant nothing constructs is a variant that
@@ -123,7 +123,7 @@ pub enum RecordOutcome {
     /// 429. The account is at or over its limit.
     ///
     /// **Whether the batch that triggered this was itself recorded is
-    /// unspecified by the contract** (`auth.md` § "Gaps in the contract", gap
+    /// unspecified by the contract** (`docs/auth.md` § "Gaps in the contract", gap
     /// 3). The ledger treats the batch as settled either way and immediately
     /// reconciles against `GET v1/usage`, which is the only authority on the
     /// question.
@@ -183,7 +183,7 @@ struct AuthorizeBody {
 /// # Why the key travels in the body here and in the header everywhere else
 ///
 /// It is not a design choice; it is what the deployed service accepts, verified
-/// against `api.nudox.org` rather than inferred from `auth.md`:
+/// against `api.nudox.org` rather than inferred from `docs/auth.md`:
 ///
 /// ```text
 /// POST /v1/authorize  Authorization: Bearer ndx_…            → 400 "token is required"
@@ -199,7 +199,7 @@ struct AuthorizeBody {
 /// stricter of the two shapes.
 ///
 /// This mismatch shipped undetected because `tests/account_against_a_fake_service.rs`
-/// asserts against a fake built from the same reading of `auth.md` that produced
+/// asserts against a fake built from the same reading of `docs/auth.md` that produced
 /// the client: both sides shared the misreading, so both agreed. Sign-in could
 /// never have succeeded for any real user. It was caught by
 /// `tests/account_against_the_real_service.rs`, which exists for exactly this
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn the_usage_body_is_the_shape_the_contract_specifies() {
-        // `auth.md` gives the body literally as {"kind":"tool_call","count":1}.
+        // `docs/auth.md` gives the body literally as {"kind":"tool_call","count":1}.
         // Serialising it through the real struct is what keeps a field rename
         // from becoming a silent billing outage.
         let json = serde_json::to_value(RecordBody {
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn unknown_response_fields_do_not_break_the_client() {
-        // `auth.md` promises `scopes` and org fields we are told to ignore, and
+        // `docs/auth.md` promises `scopes` and org fields we are told to ignore, and
         // the service will grow more. A client that rejects them breaks on a
         // deploy it was not part of.
         let body: AuthorizeBody = serde_json::from_str(

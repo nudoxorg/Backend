@@ -35,7 +35,7 @@ use nudox_producer_rust::RustProducer;
 
 mod common;
 
-/// The house test crate (`AGENTS-DOCTRINE.md` §8 calls it that), pinned to the
+/// The house test crate (`docs/AGENTS-DOCTRINE.md` §8 calls it that), pinned to the
 /// version the rest of this crate's corpus assertions use.
 const FIXTURE_DIR: &str = "memchr-2.8.3";
 const FIXTURE_PKG: &str = "memchr";
@@ -59,7 +59,7 @@ fn lower() -> PristineIntroTable {
     let root = fixture_root();
     assert!(
         root.join("Cargo.toml").is_file(),
-        "corpus fixture missing: {} — provision `.real-crates/` before running this test",
+        "corpus fixture missing: {} — provision `result/` before running this test",
         root.display()
     );
 
@@ -116,7 +116,7 @@ fn the_memchr_function_reports_the_file_and_line_where_it_is_actually_written() 
         );
     };
 
-    // Measured 2026-08-08 against `.real-crates/memchr-2.8.3`:
+    // Measured 2026-08-08 against `result/memchr-2.8.3`:
     //   src/memchr.rs, bytes 68..1134, lines 5:1..35:2
     // Byte 68 is the first `/` of `/// Search for the first occurrence…` (the
     // item's syntax node begins at its doc comment) and byte 1134 is the final

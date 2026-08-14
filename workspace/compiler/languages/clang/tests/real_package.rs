@@ -5,11 +5,11 @@
 //!
 //! # Why this fixture, not a vendored upstream project
 //!
-//! Unlike `.real-crates/` for the Rust producer (LIMITATIONS.md L9), this
+//! Unlike `result/` for the Rust producer (docs/LIMITATIONS.md L9), this
 //! repository has no established convention for vendoring a real C/C++
 //! package as a fixture, and adding one (a new gitignored directory, a
 //! provenance note, a known-good measurement to guard against silent
-//! corruption — see AGENTS-DOCTRINE.md §8's `log-0.4.33` incident) is a
+//! corruption — see docs/AGENTS-DOCTRINE.md §8's `log-0.4.33` incident) is a
 //! bigger commitment than this module's scope. This fixture is instead
 //! authored here, generated fresh into a `tempfile::TempDir` per test run —
 //! hermetic, no network, nothing to accidentally `rm -rf` — but it is a
@@ -40,7 +40,7 @@
 //!
 //! It used to assert that the zero-function run came back as a *successful*
 //! empty table — "no error, just an empty result indistinguishable from
-//! 'this package truly has no public API'", LIMITATIONS.md L2's shape. That
+//! 'this package truly has no public API'", docs/LIMITATIONS.md L2's shape. That
 //! indistinguishability was the defect, not the contract, and
 //! [`nudox_producer::YieldContract`] closed it: [`produce`] now holds every
 //! producer to what it said it would contribute, so a run that ends with
@@ -171,7 +171,7 @@ fn produce_fixture(root: &Path, name: &str) -> Result<Produced, ProducerError> {
     )
 }
 
-/// The whole `#[source]` chain, joined — AGENTS-DOCTRINE.md §8: a
+/// The whole `#[source]` chain, joined — docs/AGENTS-DOCTRINE.md §8: a
 /// `ProducerError`'s top-level `Display` is deliberately terse, and reading
 /// only it is how a five-second diagnosis becomes an hour.
 fn chain(err: &ProducerError) -> String {
@@ -198,7 +198,7 @@ fn real_multi_file_c_package_lowers_end_to_end_with_compile_commands_json() {
     write_fixture(dir.path(), true);
 
     // `measured()` itself prints the `cost case=… ` line the corpus report
-    // parses (AGENTS-DOCTRINE.md §4) — nothing further to emit here.
+    // parses (docs/AGENTS-DOCTRINE.md §4) — nothing further to emit here.
     let (produced, _cost) =
         nudox_test_support::measured("clang/real_multi_file_c_package", dir.path(), || {
             lower_fixture(dir.path(), "fixture-mathutils")
@@ -239,7 +239,7 @@ fn same_fixture_without_compile_commands_json_fails_as_no_declarations_contribut
     // yields. `produce` refuses to hand that back as a success.
     //
     // Asserting the *variant* rather than "the names are absent" is the
-    // stronger form (AGENTS-DOCTRINE.md §4: never assert on a message string
+    // stronger form (docs/AGENTS-DOCTRINE.md §4: never assert on a message string
     // where you can assert on a typed variant, and a test that would pass
     // against a stub is not a test). The old assertion — "neither name is
     // present" — was satisfied by a table containing only the root, and would

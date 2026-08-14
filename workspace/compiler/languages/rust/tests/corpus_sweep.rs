@@ -1,6 +1,6 @@
 //! Sweeps every provisioned crates.io corpus package through the full
 //! `nudox_producer::produce` pipeline (`invoke` -> `lower` -> `finish` ->
-//! `seal`) against real, third-party crate checkouts under `.real-crates/`.
+//! `seal`) against real, third-party crate checkouts under `result/`.
 //!
 //! # Why this exists
 //!
@@ -10,10 +10,10 @@
 //! real crate, and it was `#[ignore]`d behind an environment variable that, when
 //! unset, made it `return` — so under `--run-ignored all` it reported PASS in
 //! 0.014s having asserted nothing. Rust was also the only one of the seven
-//! languages in this workspace with no `.real-crates/` sweep: go, java, c#,
+//! languages in this workspace with no `result/` sweep: go, java, c#,
 //! python, typescript and clang all have one.
 //!
-//! AGENTS-DOCTRINE.md §4 is what that costs: "a hand-authored fixture tests the
+//! docs/AGENTS-DOCTRINE.md §4 is what that costs: "a hand-authored fixture tests the
 //! fixture author's imagination, not the code," and the Go producer's 47 green
 //! fixture tests crashed on the first real package it was ever shown. A
 //! fixture-only suite's "all our tests pass" is an unmeasured claim.
@@ -105,7 +105,7 @@ fn run_entry(entry: &Entry) -> Outcome {
         return Outcome::Failed {
             stage: "preflight",
             chain: format!(
-                "no Cargo.toml at {} — run `nu corpus/fetch.nu`",
+                "no Cargo.toml at {} — run `nix build .#checks.corpus`",
                 root.display()
             ),
         };
@@ -305,7 +305,7 @@ fn every_crates_io_corpus_package_lowers_to_the_public_api_its_source_declares()
         "{} of {} crates.io corpus entries could not resolve their dependency graph offline \
          and were refused rather than lowered degraded. This is an environment defect with a \
          known fix — `cargo vendor` into the checkout plus a `.cargo/config.toml` \
-         source-replacement, as `.real-crates/memchr-2.8.3` already has — but it is asserted \
+         source-replacement, as `result/memchr-2.8.3` already has — but it is asserted \
          rather than tolerated: a sweep that quietly skips the packages it cannot resolve is \
          reporting on a corpus it chose after seeing the answers.\n  {}",
         unresolved.len(),
@@ -323,7 +323,7 @@ fn every_crates_io_corpus_package_lowers_to_the_public_api_its_source_declares()
 /// Asking a real workspace for a package it does not contain is refused, not
 /// answered with somebody else's table.
 ///
-/// The load succeeds — `.real-crates/memchr-2.8.3` is a perfectly good cargo
+/// The load succeeds — `result/memchr-2.8.3` is a perfectly good cargo
 /// workspace — and only `lower` can notice that no `hir::Crate` in it answers
 /// to the requested name. The failure mode being excluded is the one that
 /// `documented_package_names` sets up: when the name is not in the
@@ -348,7 +348,7 @@ fn a_package_absent_from_the_loaded_workspace_is_refused_rather_than_answered_wi
     let root = corpus_root().join("memchr-2.8.3");
     assert!(
         root.join("Cargo.toml").is_file(),
-        "this adversarial case needs the memchr-2.8.3 checkout; run `nu corpus/fetch.nu`"
+        "this adversarial case needs the memchr-2.8.3 checkout; run `nix build .#checks.corpus`"
     );
 
     let absent = "nudox-no-such-crate-in-this-workspace-9e3f1a";

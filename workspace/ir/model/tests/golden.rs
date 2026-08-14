@@ -392,7 +392,7 @@ fa6a6170d0f22f5822a965b11ed4a73d86420c8e7c23cf1e36aaff808d6f6ae6";
 /// rather than embedding kilobytes of JSON, which would make diffs unreadable.
 /// Protects: the on-wire encoding of every entry kind and every field value.
 // Regenerated 2026-08-08 with `change::FORMAT_VERSION` 1 → 2: `Entry` gained
-// `location: SourceLocation` (LIMITATIONS.md L31/L42), which is part of the
+// `location: SourceLocation` (docs/LIMITATIONS.md L31/L42), which is part of the
 // serde representation this digest pins. `GOLDEN_ALL_INTROS` and the impl/draw
 // digests are unchanged, which is the check that matters: identity did not
 // move, only the encoding grew a field.

@@ -1445,7 +1445,7 @@ fn adversarial_cross_crate_link_leaks_nothing() {
 }
 
 /// L17 case study, verbatim: the real `struct Memchr<'h>` doc comment from
-/// `.real-crates/memchr-2.8.3/src/memchr.rs:282`, backtick/bracket typo and
+/// `result/memchr-2.8.3/src/memchr.rs:282`, backtick/bracket typo and
 /// all. Reproduces the screenshot evidence directly rather than a
 /// paraphrase of it.
 ///
@@ -1858,7 +1858,7 @@ fn authored_link_text_appears_verbatim_in_the_doc_comment() {
 // `tests/generic_signature_shapes.rs`, made the same finding and chose a
 // hand-rolled table for the same reason). Adding it would mean editing
 // `Cargo.toml`, outside this task's scope (only `prose.rs`, `tests.rs`,
-// `tests/hyperlink_flows.rs`, `LIMITATIONS.md`). It would also buy little
+// `tests/hyperlink_flows.rs`, `docs/LIMITATIONS.md`). It would also buy little
 // here regardless: the two tests below pin two *qualitatively different*
 // scenarios (zero declared links vs. one declared link with a resolving and
 // a non-resolving shortcut side by side), not the same assertion repeated

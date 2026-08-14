@@ -84,7 +84,7 @@ uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
 uv-pep440 = { package = "uv-pep440", version = "0.0.59", features = ["serde", "version-ranges"] }
 
 # The connecting-client smoke example only builds with the `client` feature
-# (otherwise `heart::client::http` is configured out), so a default build/test
+# (otherwise `heart::client::http` is configured out), so a default cargo build/test
 # of `heart` — and `--all-targets` — never tries to compile it without reqwest.
 [[example]]
 name = "nudox_ping"

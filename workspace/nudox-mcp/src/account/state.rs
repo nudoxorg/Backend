@@ -139,7 +139,7 @@ pub struct QuotaSnapshot {
     /// ISO-8601 start of the current billing period, verbatim from the service.
     ///
     /// There is deliberately no `period_end` here because the contract does not
-    /// provide one — see `auth.md` § "Gaps in the contract", gap 1. Its absence
+    /// provide one — see `docs/auth.md` § "Gaps in the contract", gap 1. Its absence
     /// is why every over-limit message says "when the period rolls over" rather
     /// than naming a date.
     pub period_start: String,
@@ -187,7 +187,7 @@ pub enum QuotaKnowledge {
 ///
 /// This distinction is load-bearing for [`super::ledger`] and is the single
 /// most important type in this module: it is what decides whether a usage batch
-/// may be retried or must be dropped. See `auth.md` § "At-most-once, and why".
+/// may be retried or must be dropped. See `docs/auth.md` § "At-most-once, and why".
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ProbeFailure {
     /// The request provably never reached the service: DNS failure, connection
@@ -353,7 +353,7 @@ pub enum GateState {
         /// The service's own `reason` string, shown verbatim.
         ///
         /// Verbatim because the contract gives no machine-readable code to
-        /// branch on — see `auth.md` § "Gaps in the contract", gap 4.
+        /// branch on — see `docs/auth.md` § "Gaps in the contract", gap 4.
         reason: String,
         /// When it said so.
         at: SystemTime,

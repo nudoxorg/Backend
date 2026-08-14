@@ -188,7 +188,7 @@ pub enum BuildScriptFailure {
     /// not compilation: `cargo package` honours `exclude`, so a published
     /// tarball can omit `tests/` or `benches/` while its own generated
     /// `Cargo.toml` still declares `[[test]]`/`[[bench]]` entries pointing at
-    /// them. See LIMITATIONS.md L50.
+    /// them. See docs/LIMITATIONS.md L50.
     #[error("the build-script `cargo check` exited non-zero: {diagnostic}")]
     CargoRefusedTheWorkspace {
         /// Everything cargo wrote, as upstream accumulated it.
@@ -248,7 +248,7 @@ impl BuildScriptFailure {
 /// that comes out describes a crate that does not exist on this target, and it
 /// is structurally indistinguishable from a correct one. `log 0.4.17` lost
 /// `set_logger` and `set_boxed_logger` this way; `nom 5.1.3` lost eight public
-/// parsers. See LIMITATIONS.md L50.
+/// parsers. See docs/LIMITATIONS.md L50.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum BuildScriptExecution {
@@ -436,7 +436,7 @@ pub struct LoadedWorkspace {
     /// Absolute root of the package this workspace was loaded for.
     ///
     /// Kept so that source locations can be reported *relative* to it. An IR
-    /// that embedded `/Users/…/.real-crates/memchr-2.8.3/src/lib.rs` would make
+    /// that embedded `/Users/…/result/memchr-2.8.3/src/lib.rs` would make
     /// every entry's identity a property of the build machine; relative to this
     /// root the same declaration is `src/lib.rs` everywhere.
     pub root: AbsPathBuf,
@@ -767,7 +767,7 @@ pub(crate) fn load(
     // the sysroot) that a single-package walk mostly throws away. Measured
     // head-to-head, priming first was slower, not faster, in every paired run
     // across three real crates of very different sizes (`itoa` 153 entries,
-    // `log` 419, `memchr` 11 329) — see `LIMITATIONS.md` L1 for the numbers.
+    // `log` 419, `memchr` 11 329) — see `docs/LIMITATIONS.md` L1 for the numbers.
     // Salsa is demand-driven and memoized regardless, so removing this costs
     // nothing but the eager, over-broad head start; `lower_workspace`'s walk
     // (`attach_db` + `lower_all_packages_into` in `super`) computes exactly
@@ -819,7 +819,7 @@ pub(crate) fn load(
 /// succeed even on targets without libtest" — is true of *compilation* and false
 /// of *target resolution*, which happens first and is fatal.
 ///
-/// That is the whole of LIMITATIONS.md L50. `cargo package` honours `exclude`,
+/// That is the whole of docs/LIMITATIONS.md L50. `cargo package` honours `exclude`,
 /// so a published tarball routinely omits `tests/` or `benches/` while the
 /// `Cargo.toml` cargo generated for it still declares `[[test]]`/`[[bench]]`
 /// entries pointing into them. `--all-targets` makes cargo resolve those
@@ -827,7 +827,7 @@ pub(crate) fn load(
 /// build script. Measured directly in the checkouts:
 ///
 /// ```text
-/// $ cargo check --all-targets            # .real-crates/log-0.4.17
+/// $ cargo check --all-targets            # result/log-0.4.17
 /// error: can't find integration-test `filters` at path `…/tests/filters.rs`
 /// error: could not compile due to 2 previous target resolution errors
 /// ```
@@ -1161,7 +1161,7 @@ fn build_cargo_config(cfg: &ExtractConfig, features: CargoFeatures) -> CargoConf
         // false }`: only the crate's `default` feature set. Every item behind a
         // non-default `#[cfg(feature = "…")]` (memchr's `alloc`, serde's `rc`
         // and `derive`, log's `kv`, …) was pruned by rust-analyzer before
-        // `lower_workspace` ever walked it — see LIMITATIONS.md L14.
+        // `lower_workspace` ever walked it — see docs/LIMITATIONS.md L14.
         //
         // `CargoFeatures::All` is the right default here, not
         // `Selected`-with-an-explicit-list:
@@ -1171,7 +1171,7 @@ fn build_cargo_config(cfg: &ExtractConfig, features: CargoFeatures) -> CargoConf
         //     "what public API exists", which is the union over every feature
         //     the author gated something behind. `docs.rs` made the identical
         //     call for the identical reason, and is the bar this product is
-        //     measured against (see AGENTS-DOCTRINE.md §0).
+        //     measured against (see docs/AGENTS-DOCTRINE.md §0).
         //   - The stated risk — enabling mutually-exclusive features together,
         //     or cfg combinations that never occur in a real build — is real,
         //     but it is a *lowering-time* risk (duplicate/contradictory items;
@@ -1183,14 +1183,14 @@ fn build_cargo_config(cfg: &ExtractConfig, features: CargoFeatures) -> CargoConf
         //     than the previous default did — confirmed empirically: a plain
         //     `cargo metadata --offline` with *no* `--features` flags at all
         //     already fails identically to `--all-features` for most
-        //     multi-dependency fixtures under `.real-crates/` (checked directly
+        //     multi-dependency fixtures under `result/` (checked directly
         //     with the `cargo metadata` CLI; see the L14 report for the list).
         //     So `All` costs nothing extra offline that `Selected` was not
         //     already paying, and it is strictly more correct once resolution
         //     succeeds.
         //   - A reader who lands on a feature-gated item and finds it inert or
         //     mutually-exclusive with another isn't worse off than not being
-        //     shown the item existed at all; `Symbol::cfg` (LIMITATIONS.md L3)
+        //     shown the item existed at all; `Symbol::cfg` (docs/LIMITATIONS.md L3)
         //     already carries the gating predicate end-to-end to a GUI chip, so
         //     the reader is told *which* feature they would need — the same
         //     disclosure docs.rs makes.

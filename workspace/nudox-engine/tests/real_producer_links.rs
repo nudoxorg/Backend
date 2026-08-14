@@ -13,14 +13,14 @@
 //! link.
 //!
 //! This test closes that gap by:
-//! 1. Running the real Rust producer against the `.real-crates/axum` checkout.
+//! 1. Running the real Rust producer against the `result/axum` checkout.
 //! 2. Finding the `Router` entry (axum's most recognisable export).
 //! 3. Feeding it through `nudox_engine::chunk::chunk`.
 //! 4. Asserting that the prose sections contain at least one
 //!    `InlineRun::Link { target: LinkTarget::Symbol { .. } }`.
 //!
 //! The test is `#[ignore]`d exactly like its siblings in `nudox-store`'s
-//! `real_crate.rs` and skips gracefully if the `.real-crates/axum` checkout is
+//! `real_crate.rs` and skips gracefully if the `result/axum` checkout is
 //! absent.
 //!
 //! # Running
@@ -53,13 +53,13 @@ use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
 ///
 /// Mirrors `axum_root()` in `nudox-store/tests/real_crate.rs` so both test
 /// files honour the same `NUDOX_REAL_CRATE_ROOT` override and the same default
-/// location `../../.real-crates/axum`.
+/// location `../../result/axum`.
 fn axum_root() -> PathBuf {
     std::env::var("NUDOX_REAL_CRATE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../.real-crates/axum")
+                .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
         })

@@ -495,7 +495,7 @@ impl AccountGate {
 
             Ok(RecordOutcome::OverLimit) => {
                 // The contract does not say whether a 429 recorded the batch
-                // (`auth.md` gap 3). Settling is the choice that cannot
+                // (`docs/auth.md` gap 3). Settling is the choice that cannot
                 // double-bill, and the `GET /v1/usage` immediately below is
                 // what establishes the truth either way. Sentry's transport
                 // spec makes the same call for its own 429s — discard, respect

@@ -1,6 +1,6 @@
 //! The endpoint the status bar displays is one a client can actually reach.
 //!
-//! # The gap this closes — LIMITATIONS.md **L35**
+//! # The gap this closes — docs/LIMITATIONS.md **L35**
 //!
 //! `nudox-mcp` was complete and tested end-to-end and *nothing started it*.
 //! `grep -rn 'nudox_mcp|McpEndpoint|NudoxMcpServer' workspace/gui` returned
@@ -288,7 +288,7 @@ fn displayed_endpoint(
 // The load-bearing test
 // ---------------------------------------------------------------------------
 
-/// LIMITATIONS.md L35, stated as an invariant: whatever endpoint the status bar
+/// docs/LIMITATIONS.md L35, stated as an invariant: whatever endpoint the status bar
 /// puts on screen, a client that dials exactly that gets real answers about the
 /// corpus this window is showing.
 #[gpui::test]

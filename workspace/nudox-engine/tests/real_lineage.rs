@@ -4,16 +4,16 @@
 //!
 //! # REGISTRAR's starting suspicion
 //!
-//! `CORPUS-REPORT.md` records `memchr` 2.7.6, 2.8.0 and 2.8.3 each lowering to
+//! `docs/CORPUS-REPORT.md` records `memchr` 2.7.6, 2.8.0 and 2.8.3 each lowering to
 //! **exactly** 11 329 entries. Three different release tarballs producing a
 //! byte-identical count is either (a) a genuinely API-stable patch series, or
 //! (b) a sign that `version` never reaches the producer and the same tree got
 //! lowered three times under three labels. Nobody had distinguished these
-//! before this file. LIMITATIONS.md L10 says so explicitly.
+//! before this file. docs/LIMITATIONS.md L10 says so explicitly.
 //!
 //! # What the on-disk diff established (before writing any test)
 //!
-//! `diff -rq` across `.real-crates/memchr-{2.7.6,2.8.0,2.8.3}/src` proves the
+//! `diff -rq` across `result/memchr-{2.7.6,2.8.0,2.8.3}/src` proves the
 //! three checkouts are **not** the same tree: `Cargo.toml`'s `version` field
 //! matches each label, and real `src/` files differ between every adjacent
 //! pair (`cow.rs`, `memmem/mod.rs` for 2.7.6→2.8.0; `arch/all/rabinkarp.rs`,
@@ -82,7 +82,7 @@
 //! cargo test -p nudox-engine --test real_lineage -- --ignored --nocapture
 //! ```
 //!
-//! Each generation takes roughly the wall time `CORPUS-REPORT.md` records for
+//! Each generation takes roughly the wall time `docs/CORPUS-REPORT.md` records for
 //! `memchr` alone (~30-35s) because `nudox_store::source::producer::ProducerSource`
 //! loads packages with `Stream::then`, i.e. strictly serially — loading three
 //! generations of one package is not parallelised. Total wall time for this
@@ -105,12 +105,12 @@ use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 /// Path to one on-disk memchr generation, e.g. `memchr_root("2.8.3")`.
 ///
 /// Mirrors `axum_root()` in `real_producer_links.rs`: honours
-/// `CARGO_MANIFEST_DIR`-relative `../../.real-crates/`, no override env var
+/// `CARGO_MANIFEST_DIR`-relative `../../result/`, no override env var
 /// (the fixture set is fixed — three specific generations — rather than a
 /// single swappable checkout).
 fn memchr_root(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates")
+        .join("../../result")
         .join(format!("memchr-{version}"))
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
@@ -262,7 +262,7 @@ fn timeline_of(events: &[DocEvent]) -> &Timeline {
 fn real_memchr_lineage_loads_all_three_generations_with_stable_intro_ids() {
     if !all_checkouts_present() {
         eprintln!(
-            "SKIP: not all of memchr {ALL_VERSIONS:?} are checked out under .real-crates/. \
+            "SKIP: not all of memchr {ALL_VERSIONS:?} are checked out under result/. \
              Expected e.g. {}",
             memchr_root("2.8.3").display()
         );
@@ -303,7 +303,7 @@ fn real_memchr_lineage_loads_all_three_generations_with_stable_intro_ids() {
 
             // Evidence for L10: the real, live entry count per generation,
             // read straight off the running corpus rather than trusted from
-            // CORPUS-REPORT.md.
+            // docs/CORPUS-REPORT.md.
             let counts: Vec<(String, u64)> = list
                 .versions
                 .iter()
@@ -353,7 +353,7 @@ fn real_memchr_lineage_loads_all_three_generations_with_stable_intro_ids() {
                  than 3, the real Rust producer is NOT assigning the same \
                  IntroId to the same declaration across independent lowerings \
                  of different checkouts of the same package — i.e. IntroId \
-                 stability, the entire premise LIMITATIONS.md L10 is about, \
+                 stability, the entire premise docs/LIMITATIONS.md L10 is about, \
                  does not hold for real producer output. Got {} row(s): {:?}",
                 t.rows.len(),
                 t.rows.iter().map(|r| (&*r.version, r.change.clone())).collect::<Vec<_>>(),

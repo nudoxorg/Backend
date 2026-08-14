@@ -1,11 +1,11 @@
 //! Sweeps every provisioned `go` corpus package through the full
 //! `nudox_producer::produce` pipeline (`invoke` -> `lower` -> `finish` ->
-//! `seal`) against real, third-party module checkouts under `.real-crates/`.
+//! `seal`) against real, third-party module checkouts under `result/`.
 //!
 //! `real_package.rs` proves the pipeline works end to end on one package
 //! (`go.uber.org/zap`) with deep content assertions. This file proves it
 //! (or does not) on the other 20 corpus packages / 22 version entries, per
-//! AGENTS-DOCTRINE.md §4's warning that a producer's hand-fixture test suite
+//! docs/AGENTS-DOCTRINE.md §4's warning that a producer's hand-fixture test suite
 //! tells you nothing about real code: the Go producer's own history includes
 //! 47 green fixture tests that crashed on the first real package.
 //!
@@ -22,7 +22,7 @@
 //! first one. Each entry's outcome is recorded and printed; a summary
 //! assertion at the end fails the test if anything did not succeed, with
 //! the full `std::error::Error` source chain for every failure (never just
-//! the terse top-level `Display` — AGENTS-DOCTRINE.md's "hard-won facts").
+//! the terse top-level `Display` — docs/AGENTS-DOCTRINE.md's "hard-won facts").
 
 use std::{
     path::{Path, PathBuf},
@@ -33,9 +33,9 @@ use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_producer::{PackageSource, produce};
 use nudox_producer_go::producer::GoProducer;
 
-/// One corpus entry: `.real-crates/<dir>`, the Go module path used both as
+/// One corpus entry: `result/<dir>`, the Go module path used both as
 /// the on-disk name-selector-equivalent and the `PackageLineageId`, and the
-/// ecosystem version string. Mirrors `corpus/manifest.toml`'s 20 `go`
+/// ecosystem version string. Mirrors `nix/corpus.nix`'s 20 `go`
 /// `[[packages]]` blocks / 22 version entries exactly (`pkg/errors` and
 /// `stretchr/testify` each carry two versions for lineage testing).
 struct Entry {
@@ -71,9 +71,9 @@ const ENTRIES: &[Entry] = &[
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 /// Build the oracle binary once, exactly as `real_package.rs` does.
@@ -97,7 +97,7 @@ fn oracle_bin() -> &'static Path {
 
 /// Walk the full `std::error::Error` source chain. The top-level `Display`
 /// on `ProducerError`/this crate's `Error` is deliberately terse
-/// (AGENTS-DOCTRINE.md's "hard-won facts": reading only it turns a
+/// (docs/AGENTS-DOCTRINE.md's "hard-won facts": reading only it turns a
 /// five-second diagnosis into an hour).
 fn chain(e: &(dyn std::error::Error + 'static)) -> String {
     let mut out = e.to_string();

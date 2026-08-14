@@ -147,7 +147,7 @@ mod tests {
 
     /// The model directory the tests use, or a skip.
     ///
-    /// Real weights are large and provisioned out of band (LIMITATIONS.md L41),
+    /// Real weights are large and provisioned out of band (docs/LIMITATIONS.md L41),
     /// so a machine without them skips rather than fails — but a machine *with*
     /// them runs a genuine embedding, which is the only thing that proves this
     /// adapter works. Set `NUDOX_EMBED_MODEL_DIR` to the pinned model directory.

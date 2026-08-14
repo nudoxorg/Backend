@@ -1650,7 +1650,7 @@ mod tests {
         use nudox_store::source::producer::PackageDescriptor;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.real-crates/memchr-2.8.3")
+            .join("../../result/memchr-2.8.3")
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
 

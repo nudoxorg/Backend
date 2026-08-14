@@ -1358,7 +1358,7 @@ async fn symbol_key_from_search_round_trips() {
 //
 // Full cross-generation coverage (multiple real loaded versions of one
 // package) lives in `tests/real_crate_memchr_versions.rs` against the three
-// real memchr releases `corpus/manifest.toml` pins — this fixture corpus
+// real memchr releases `nix/corpus.nix` pins — this fixture corpus
 // only ever has one generation loaded, so what is tested here is the
 // single-generation edge (deliberately the first thing `Timeline`'s own
 // module docs call out: "with one generation loaded... `Present`, never

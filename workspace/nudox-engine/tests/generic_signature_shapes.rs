@@ -4,7 +4,7 @@
 //!
 //! # Why this file exists, and what it actually found
 //!
-//! LIMITATIONS.md L19 reports that `memchr`'s real signature
+//! docs/LIMITATIONS.md L19 reports that `memchr`'s real signature
 //! `fn memchr(needle: u8, haystack: &[u8]) -> Option<usize>` renders as
 //! `fn memchr(needle: u8, haystack: &[u8]) -> usize` — the `Option<..>`
 //! wrapper vanishes, leaving only the innermost argument — and hypothesizes

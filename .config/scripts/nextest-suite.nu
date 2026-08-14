@@ -19,7 +19,7 @@
 #                                  plus --run-ignored all on the root step
 #   --report <path>               where perf-report.nu writes its markdown (default: perf-report.md)
 #
-# WHY EVERYTHING RUNS SEQUENTIALLY, NEVER BACKGROUNDED: AGENTS-DOCTRINE.md §8 —
+# WHY EVERYTHING RUNS SEQUENTIALLY, NEVER BACKGROUNDED: docs/AGENTS-DOCTRINE.md §8 —
 # concurrent cargo invocations against the shared `target/` corrupt the
 # build-script cache (observed: `dyld: Library not loaded:
 # @rpath/libclang.dylib`), and a real-crate lowering has been measured at
@@ -63,7 +63,7 @@ def run-required [label: string, command: closure] {
 # Locate a `libclang.dylib` directory under /nix/store. Required at *run*
 # time (not just build time) because `nudox-producer-clang` — and anything
 # that links it, e.g. `nudox-engine`'s test binaries — dynamically links
-# libclang without an embedded rpath (TESTING.md; the doc comment on
+# libclang without an embedded rpath (docs/TESTING.md; the doc comment on
 # `nudox-store`'s `ProducerRegistry::with_all_available`). Without
 # `DYLD_LIBRARY_PATH` set to this directory, `cargo nextest list`/`run`
 # aborts with `Library not loaded: @rpath/libclang.dylib` while enumerating
@@ -114,7 +114,7 @@ def main [
         if $libclang_dir == null {
             print --stderr "FAIL: could not locate libclang.dylib under /nix/store"
             print --stderr "      nudox-producer-clang (and anything linking it) aborts at dyld load"
-            print --stderr "      time without DYLD_LIBRARY_PATH pointed at it. See TESTING.md."
+            print --stderr "      time without DYLD_LIBRARY_PATH pointed at it. See docs/TESTING.md."
             exit 1
         }
         $env.LIBCLANG_PATH = $libclang_dir
@@ -137,13 +137,13 @@ def main [
     #
     # This used to read `--exclude index --exclude driver --exclude ir-vcs`
     # and cite L6 ("index has never compiled"). L6 has been RESOLVED since
-    # 2026-08-05 (LIMITATIONS.md:736) — `index` and `ir-vcs` both compile and
+    # 2026-08-05 (docs/LIMITATIONS.md:736) — `index` and `ir-vcs` both compile and
     # both have tests. Re-measured 2026-08-07: dropping the two stale
     # exclusions takes `cargo nextest list -P default` from 1227 to 2267
     # enumerated tests, i.e. the stale tourniquet was hiding ~1040 tests that
     # build today, 731 of them in `index` and 216 in `ir-vcs`. Of those,
     # 1020 of 1023 also PASS on a real run; the 3 that do not are recorded in
-    # TESTING.md's "Newly-visible red tests" section rather than re-hidden.
+    # docs/TESTING.md's "Newly-visible red tests" section rather than re-hidden.
     # Doctrine §7: "a crate outside the gate stops being measured".
     #
     # `driver` is NO LONGER EXCLUDED as of 2026-08-08, and its 202 tests are

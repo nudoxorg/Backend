@@ -438,7 +438,7 @@ life of the server, so one call per session is enough."
         Parameters(_args): Parameters<GraphSchemaArgs>,
     ) -> Result<Json<SchemaResult>, ErrorData> {
         // Metered like every other tool. It answers from a constant rather
-        // than from the engine, but `auth.md` bills a `tool_call`, and an agent
+        // than from the engine, but `docs/auth.md` bills a `tool_call`, and an agent
         // cannot tell which of our tools happen to be cheap for us to serve.
         // Exempting it would put a hole in the meter whose size is set by how
         // often agents call `graph_schema`, which is once per session and

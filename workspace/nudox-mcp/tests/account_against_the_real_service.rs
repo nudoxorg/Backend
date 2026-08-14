@@ -7,7 +7,7 @@
 //! of which a real service will do to order. What it cannot prove is that the
 //! contract we implemented is the contract the service actually speaks. Every
 //! assertion there is ultimately checked against a fake we wrote from the same
-//! reading of `auth.md` that produced the client — so a misreading is invisible,
+//! reading of `docs/auth.md` that produced the client — so a misreading is invisible,
 //! because both sides share it.
 //!
 //! This file closes exactly that gap and nothing else. If a field is renamed
@@ -291,7 +291,7 @@ fn the_real_usage_endpoint_returns_a_coherent_snapshot() {
         );
         assert!(
             !quota.period_start.is_empty(),
-            "period_start is the only period information the contract provides (auth.md gap 1); \
+            "period_start is the only period information the contract provides (docs/auth.md gap 1); \
              without it the UI cannot say anything about when the quota resets"
         );
         assert!(

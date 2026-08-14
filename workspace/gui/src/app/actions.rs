@@ -53,7 +53,7 @@ gpui::actions!(
         /// Open the settings page (§21) as a WorkspaceItem.
         OpenSettings,
         /// Open the account overlay: sign in, or see the account you are signed
-        /// in as (`auth.md`).
+        /// in as (`docs/auth.md`).
         ///
         /// One action for both, because they are one surface. A separate
         /// `SignIn`/`ViewAccount` pair would need the caller to know which

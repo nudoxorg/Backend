@@ -1350,7 +1350,7 @@ async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContex
 
 /// Activating a tab must move window focus onto that tab's own content, not
 /// leave it on the pane — otherwise the item's `.on_action` handlers are
-/// structurally unreachable (LIMITATIONS.md L16).
+/// structurally unreachable (docs/LIMITATIONS.md L16).
 ///
 /// Asserted twice over, because "some handle is focused" is not the claim:
 /// first that the focused handle is *the active item's*, then that a
@@ -1432,7 +1432,7 @@ async fn activating_a_tab_focuses_the_symbol_page_not_the_pane(cx: &mut TestAppC
 }
 
 /// A document whose stream fails before anything is readable must not take the
-/// pane's keyboard bindings down with it (LIMITATIONS.md L22).
+/// pane's keyboard bindings down with it (docs/LIMITATIONS.md L22).
 ///
 /// `SymbolPage` renders a whole-page error for that state. When that error page
 /// was built as a *second* root — without `key_context` or `track_focus` —
@@ -1726,7 +1726,7 @@ fn crate_sources() -> Vec<std::path::PathBuf> {
 ///
 /// The Jobs panel rendered, centred and in the product's own type, the text
 /// `TODO(views): crate::views::jobs_panel` — in a dock a user opens with ⌘J
-/// (`.shots/memchr/17-bottom-dock-open.png`, GUI-WORKORDER-2 F9). The Logs,
+/// (`tests/shots/memchr/17-bottom-dock-open.png`, GUI-WORKORDER-2 F9). The Logs,
 /// Search and Outline panels each carried the same shape. A placeholder is a
 /// claim like any other: it is read by the person using the program, not by the
 /// author who wrote it, and a Rust module path answers nothing they asked.

@@ -1,4 +1,4 @@
-//! `McpHost` — the synchronous lifecycle `lindsey` drives (LIMITATIONS.md L35).
+//! `McpHost` — the synchronous lifecycle `lindsey` drives (docs/LIMITATIONS.md L35).
 //!
 //! `tests/endpoint.rs` covers the async [`McpEndpoint`] surface. This file
 //! covers the wrapper a host with **no runtime of its own** uses, because that

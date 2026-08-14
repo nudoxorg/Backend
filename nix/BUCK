@@ -1,0 +1,18 @@
+# nix holds shared Nix helpers + snowydeer only (not app package recipes).
+# App packages live under workspace/{server,compiler,registry}.
+# Buck2 hermetic toolchains use the root flake — see
+# nix/build/toolchains/BUCK flake.package(path = "root//:flake").
+#
+# This package only exposes non-flake Nix sources that other Buck targets
+# may materialize (e.g. snowydeer helpers under this tree).
+filegroup(
+    name = "nix-sources",
+    srcs = [
+        "lib.nix",
+        "buck2-artifact.json",
+        "nix_build.bzl",
+        "corpus.nix",
+        "entry-baseline.toml",
+    ],
+    visibility = ["PUBLIC"],
+)

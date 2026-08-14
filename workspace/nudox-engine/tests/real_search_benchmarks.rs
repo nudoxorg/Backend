@@ -11,7 +11,7 @@
 //! *protocol* correctness (ordering, cancellation, stability) against the
 //! synthetic fixture corpus; it does not touch timing, corpus-size scaling,
 //! or whether the *ranking* of results is any good. This file adds both,
-//! using real crates already vendored under `.real-crates/` so the corpus,
+//! using real crates already vendored under `result/` so the corpus,
 //! the name collisions, and the module structure are not hand-authored —
 //! per AGENTS-DOCTRINE §4, "a hand-authored fixture tests the fixture
 //! author's imagination, not the code."
@@ -38,7 +38,7 @@
 //! * `itoa-1.0.18` — a third, tiny real package (`Buffer`), used only to
 //!   round out the multi-package corpus for scaling measurements.
 //!
-//! All three are already present under `.real-crates/` in this checkout, so
+//! All three are already present under `result/` in this checkout, so
 //! every test below runs unmodified in this environment; the `Cargo.toml`
 //! existence check is kept anyway so the file degrades gracefully (skips,
 //! does not panic) on a checkout where they are absent.
@@ -121,7 +121,7 @@ use nudox_engine::{Engine, EngineConfig, PackageLoadEvent, SearchQuery};
 
 fn real_crate_root(name: &str, version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../.real-crates/{name}-{version}"))
+        .join(format!("../../result/{name}-{version}"))
 }
 
 /// Lower one real crate through the real Rust producer, exactly like
@@ -989,7 +989,7 @@ async fn memchr_function_specifically_outranks_internal_module_collision() {
 // ---------------------------------------------------------------------------
 
 /// `memchr`'s crate root re-exports its public API with
-/// `pub use crate::memchr::{memchr, memchr2, ...};` (`.real-crates/memchr-2.8.3/src/lib.rs:203`).
+/// `pub use crate::memchr::{memchr, memchr2, ...};` (`result/memchr-2.8.3/src/lib.rs:203`).
 /// That creates, per real symbol, **two** IR entries: the physical
 /// definition inside the private `crate::memchr` submodule (an
 /// `EntryInner::Owned(Kind::Function(..))`, the one search finds — see the

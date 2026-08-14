@@ -1,34 +1,34 @@
-//! Every `ecosystem = "nuget"` package in `corpus/manifest.toml` lowers end to
+//! Every `ecosystem = "nuget"` package in `nix/corpus.nix` lowers end to
 //! end (oracle extraction *and* `Lowering::finish`) against its real GitHub
 //! source checkout — not just the hand-written `oracle_end_to_end.rs` fixture.
 //!
 //! # Why this file is `#[ignore]`d
 //!
 //! Same reason as `real_library.rs`: it needs third-party checkouts under
-//! `.real-csharp/`, which is gitignored exactly like `.real-crates/` is for
-//! Rust (see AGENTS-DOCTRINE.md §8), and a published oracle. Provision both,
+//! `result/`, which is gitignored exactly like `result/` is for
+//! Rust (see docs/AGENTS-DOCTRINE.md §8), and a published oracle. Provision both,
 //! then:
 //!
 //! ```text
 //! cargo test -p nudox-producer-csharp --test nuget_corpus -- --ignored --nocapture
 //! ```
 //!
-//! `corpus/manifest.toml`'s NuGet packages ship compiled `.nupkg` assemblies,
-//! not source (see `corpus/README.md`'s per-ecosystem table) — this crate's
-//! source-tier oracle cannot lower a `.nupkg`. `.real-csharp/<Name>-<Version>/`
+//! `nix/corpus.nix`'s NuGet packages ship compiled `.nupkg` assemblies,
+//! not source (see `docs/CORPUS.md`'s per-ecosystem table) — this crate's
+//! source-tier oracle cannot lower a `.nupkg`. `result/<Name>-<Version>/`
 //! holds the GitHub tag checkout for each one instead, obtained the way
 //! `real_library.rs` obtains Polly's.
 //!
 //! # Why every entry carries `expect_symbol` and `min_entries`
 //!
-//! Per AGENTS-DOCTRINE.md §4 ("a test that would pass against a stub is not a
+//! Per docs/AGENTS-DOCTRINE.md §4 ("a test that would pass against a stub is not a
 //! test"), this file used to assert only `type_count > 0` and
 //! `entry_count > type_count` for every package — a magnitude/ratio check that
 //! a stub inflating both counts proportionally would pass for 21 of 22
 //! packages. Every [`Entry`] below now follows the pattern
 //! `nudox-producer-clang/tests/corpus_sweep.rs` already uses: a real,
 //! hand-verified `expect_symbol` (see each entry's comment for the `grep`
-//! evidence against that package's own `.real-csharp/` checkout) paired with a
+//! evidence against that package's own `result/` checkout) paired with a
 //! `min_entries` floor set below an actually-measured run (recorded per entry;
 //! re-measure with `--nocapture` and look for the `OK` line if a package's
 //! oracle or lowering changes and this floor needs updating).
@@ -66,7 +66,7 @@ struct Entry {
 }
 
 /// `xunit` is a NuGet meta-package with no assembly of its own — its nuspec
-/// (`.real-crates/xunit-2.7.0/xunit.nuspec`) declares only dependencies on
+/// (`result/xunit-2.7.0/xunit.nuspec`) declares only dependencies on
 /// `xunit.core`/`xunit.assert`/`xunit.analyzers`, confirmed by the `.nupkg`
 /// containing no `lib/`. `xunit.core` is used here as the representative real
 /// source from the same checkout/tag; there is no source tree that is "the
@@ -75,7 +75,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Newtonsoft.Json",
         version: "13.0.3",
-        root: ".real-csharp/Newtonsoft.Json-13.0.3/Src/Newtonsoft.Json",
+        root: "result/Newtonsoft.Json-13.0.3/Src/Newtonsoft.Json",
         // `public static class JsonConvert` — JsonConvert.cs:53.
         expect_symbol: "JsonConvert",
         // Measured 2026-08-08: 267 types -> 7763 entries.
@@ -84,7 +84,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Newtonsoft.Json",
         version: "12.0.3",
-        root: ".real-csharp/Newtonsoft.Json-12.0.3/Src/Newtonsoft.Json",
+        root: "result/Newtonsoft.Json-12.0.3/Src/Newtonsoft.Json",
         expect_symbol: "JsonConvert",
         // Measured 2026-08-08: 264 types -> 7632 entries.
         min_entries: 6000,
@@ -92,7 +92,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Serilog",
         version: "3.1.1",
-        root: ".real-csharp/Serilog-3.1.1/src/Serilog",
+        root: "result/Serilog-3.1.1/src/Serilog",
         // `public class LoggerConfiguration` — LoggerConfiguration.cs:20.
         expect_symbol: "LoggerConfiguration",
         // Measured 2026-08-08: 102 types -> 2730 entries.
@@ -101,7 +101,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Serilog",
         version: "2.12.0",
-        root: ".real-csharp/Serilog-2.12.0/src/Serilog",
+        root: "result/Serilog-2.12.0/src/Serilog",
         expect_symbol: "LoggerConfiguration",
         // Measured 2026-08-08: 103 types -> 2778 entries.
         min_entries: 2000,
@@ -109,7 +109,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "AutoMapper",
         version: "13.0.1",
-        root: ".real-csharp/AutoMapper-13.0.1/src/AutoMapper",
+        root: "result/AutoMapper-13.0.1/src/AutoMapper",
         // `public sealed class MapperConfiguration` —
         // Configuration/MapperConfiguration.cs:37.
         expect_symbol: "MapperConfiguration",
@@ -119,7 +119,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "FluentValidation",
         version: "11.9.0",
-        root: ".real-csharp/FluentValidation-11.9.0/src/FluentValidation",
+        root: "result/FluentValidation-11.9.0/src/FluentValidation",
         // `public abstract class AbstractValidator<T>` — AbstractValidator.cs:36.
         expect_symbol: "AbstractValidator",
         // Measured 2026-08-08: 190 types -> 2694 entries.
@@ -128,7 +128,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Polly",
         version: "8.3.0",
-        root: ".real-csharp/Polly-8.3.0/src/Polly",
+        root: "result/Polly-8.3.0/src/Polly",
         // `public abstract partial class Policy : PolicyBase` — Policy.cs:7.
         expect_symbol: "Policy",
         // Measured 2026-08-08: 175 types -> 5290 entries.
@@ -137,7 +137,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Dapper",
         version: "2.1.35",
-        root: ".real-csharp/Dapper-2.1.35/Dapper",
+        root: "result/Dapper-2.1.35/Dapper",
         // `public static partial class SqlMapper` — SqlMapper.IDynamicParameters.cs:5.
         expect_symbol: "SqlMapper",
         // Measured 2026-08-08: 63 types -> 2776 entries.
@@ -146,7 +146,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "MediatR",
         version: "12.2.0",
-        root: ".real-csharp/MediatR-12.2.0/src/MediatR",
+        root: "result/MediatR-12.2.0/src/MediatR",
         // `public class Mediator : IMediator` — Mediator.cs:16.
         expect_symbol: "Mediator",
         // Measured 2026-08-08: 42 types -> 506 entries.
@@ -155,7 +155,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Moq",
         version: "4.20.70",
-        root: ".real-csharp/Moq-4.20.70/src/Moq",
+        root: "result/Moq-4.20.70/src/Moq",
         // `public abstract partial class Mock : IFluentInterface` — Mock.cs:22.
         expect_symbol: "Mock",
         // Measured 2026-08-08: 177 types -> 4290 entries.
@@ -164,7 +164,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "xunit",
         version: "2.7.0",
-        root: ".real-csharp/xunit-2.7.0/src/xunit.core",
+        root: "result/xunit-2.7.0/src/xunit.core",
         // `public class FactAttribute : Attribute` — FactAttribute.cs:13.
         expect_symbol: "FactAttribute",
         // Measured 2026-08-08: 57 types -> 364 entries.
@@ -173,7 +173,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "NUnit",
         version: "4.1.0",
-        root: ".real-csharp/NUnit-4.1.0/src/NUnitFramework/framework",
+        root: "result/NUnit-4.1.0/src/NUnitFramework/framework",
         // `public class TestAttribute : ...` — Attributes/TestAttribute.cs:29.
         expect_symbol: "TestAttribute",
         // Measured 2026-08-08: 574 types -> 8505 entries.
@@ -182,7 +182,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "StackExchange.Redis",
         version: "2.7.33",
-        root: ".real-csharp/StackExchange.Redis-2.7.33/src/StackExchange.Redis",
+        root: "result/StackExchange.Redis-2.7.33/src/StackExchange.Redis",
         // `public partial class ConnectionMultiplexer` — ConnectionMultiplexer.Debug.cs:5.
         expect_symbol: "ConnectionMultiplexer",
         // Measured 2026-08-08: 373 types -> 18326 entries.
@@ -191,7 +191,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Microsoft.Extensions.DependencyInjection.Abstractions",
         version: "8.0.1",
-        root: ".real-csharp/Microsoft.Extensions.DependencyInjection.Abstractions-8.0.1/src/libraries/Microsoft.Extensions.DependencyInjection.Abstractions/src",
+        root: "result/Microsoft.Extensions.DependencyInjection.Abstractions-8.0.1/src/libraries/Microsoft.Extensions.DependencyInjection.Abstractions/src",
         // `public class ServiceDescriptor` — ServiceDescriptor.cs:14.
         expect_symbol: "ServiceDescriptor",
         // Measured 2026-08-08: 29 types -> 935 entries.
@@ -200,7 +200,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Humanizer.Core",
         version: "2.14.1",
-        root: ".real-csharp/Humanizer.Core-2.14.1/src/Humanizer",
+        root: "result/Humanizer.Core-2.14.1/src/Humanizer",
         // `public static class InflectorExtensions` — InflectorExtensions.cs:32.
         expect_symbol: "InflectorExtensions",
         // Measured 2026-08-08: 250 types -> 5240 entries.
@@ -209,7 +209,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "CsvHelper",
         version: "30.0.1",
-        root: ".real-csharp/CsvHelper-30.0.1/src/CsvHelper",
+        root: "result/CsvHelper-30.0.1/src/CsvHelper",
         // `public class CsvReader : IReader` — CsvReader.cs:23.
         expect_symbol: "CsvReader",
         // Measured 2026-08-08: 227 types -> 3137 entries.
@@ -218,7 +218,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "RestSharp",
         version: "111.2.0",
-        root: ".real-csharp/RestSharp-111.2.0/src/RestSharp",
+        root: "result/RestSharp-111.2.0/src/RestSharp",
         // `public partial class RestClient : IRestClient` — RestClient.cs:37.
         expect_symbol: "RestClient",
         // Measured 2026-08-08: 110 types -> 2195 entries.
@@ -227,7 +227,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "NLog",
         version: "5.2.8",
-        root: ".real-csharp/NLog-5.2.8/src/NLog",
+        root: "result/NLog-5.2.8/src/NLog",
         // `public static class LogManager` — LogManager.cs:54.
         expect_symbol: "LogManager",
         // Measured 2026-08-08: 625 types -> 15514 entries.
@@ -236,7 +236,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Refit",
         version: "7.0.0",
-        root: ".real-csharp/Refit-7.0.0/Refit",
+        root: "result/Refit-7.0.0/Refit",
         // `public static class RestService` — RestService.cs:7.
         expect_symbol: "RestService",
         // Measured 2026-08-08: 71 types -> 909 entries.
@@ -245,7 +245,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "Microsoft.Bcl.AsyncInterfaces",
         version: "8.0.0",
-        root: ".real-csharp/Microsoft.Bcl.AsyncInterfaces-8.0.0/src/libraries/Microsoft.Bcl.AsyncInterfaces/src",
+        root: "result/Microsoft.Bcl.AsyncInterfaces-8.0.0/src/libraries/Microsoft.Bcl.AsyncInterfaces/src",
         // `public struct AsyncIteratorMethodBuilder` —
         // System/Runtime/CompilerServices/AsyncIteratorMethodBuilder.cs:18.
         expect_symbol: "AsyncIteratorMethodBuilder",
@@ -258,7 +258,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "protobuf-net",
         version: "3.2.30",
-        root: ".real-csharp/protobuf-net-3.2.30/src/protobuf-net.Core",
+        root: "result/protobuf-net-3.2.30/src/protobuf-net.Core",
         // `public sealed class ProtoContractAttribute : Attribute` —
         // ProtoContractAttribute.cs:12.
         expect_symbol: "ProtoContractAttribute",
@@ -284,7 +284,7 @@ const ENTRIES: &[Entry] = &[
     Entry {
         name: "System.Text.Json",
         version: "8.0.2",
-        root: ".real-csharp/System.Text.Json-8.0.2/src/libraries/System.Text.Json/src",
+        root: "result/System.Text.Json-8.0.2/src/libraries/System.Text.Json/src",
         // `public sealed class JsonDocument` — Document/JsonDocument.cs.
         expect_symbol: "JsonDocument",
         // Measured 2026-08-08: 253 types -> 9045 entries.
@@ -347,11 +347,11 @@ fn lower(
 /// Every nuget-corpus package must lower with a real, structurally sound IR
 /// package: a named symbol that really exists in that package's own source
 /// (not a bare non-zero count), above an entry-count floor measured on a real
-/// run. Per AGENTS-DOCTRINE.md §4, a count-only assertion is not a test — a
+/// run. Per docs/AGENTS-DOCTRINE.md §4, a count-only assertion is not a test — a
 /// stub that inflated both `type_count` and `entry_count` proportionally
 /// would have passed the old version of this test for 21 of 22 packages.
 #[test]
-#[ignore = "needs third-party C# checkouts under .real-csharp/ and a published oracle; see module docs"]
+#[ignore = "needs third-party C# checkouts under result/ and a published oracle; see module docs"]
 fn all_nuget_corpus_packages_lower_end_to_end() {
     let producer = CSharpProducer::from_env();
     assert!(
@@ -396,7 +396,7 @@ fn all_nuget_corpus_packages_lower_end_to_end() {
                 if !names.iter().any(|n| n == entry.expect_symbol) {
                     failures.push(format!(
                         "{} {}: expected symbol {:?} not found among {entry_count} lowered \
-                         entries — a count alone is not a test (AGENTS-DOCTRINE.md §4)",
+                         entries — a count alone is not a test (docs/AGENTS-DOCTRINE.md §4)",
                         entry.name, entry.version, entry.expect_symbol
                     ));
                     continue;

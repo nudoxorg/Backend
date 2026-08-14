@@ -185,7 +185,7 @@ async fn a_build_with_no_model_reports_unavailable_rather_than_no_results() {
         Some(0),
         "SECTION_SEMANTIC delivered rows with no embedder installed. There is \
          nothing to have produced them, so they are fabricated — the doctrine \
-         §6 failure LIMITATIONS.md L41 exists to prevent. Rows: {:?}",
+         §6 failure docs/LIMITATIONS.md L41 exists to prevent. Rows: {:?}",
         seen.rows
     );
 

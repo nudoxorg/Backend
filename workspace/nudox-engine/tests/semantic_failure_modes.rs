@@ -25,7 +25,7 @@
 //!   whatever partial vectors survived, mark it covered, and let the section
 //!   report `Complete` — telling a reader "rows are the whole answer" about a
 //!   package that was never searched. That is the silent-repair failure
-//!   `AGENTS-DOCTRINE.md` §8 names: presenting a degraded case as the good one.
+//!   `docs/AGENTS-DOCTRINE.md` §8 names: presenting a degraded case as the good one.
 //!
 //! - Pairing a short vector list positionally (`zip` truncates without
 //!   complaint, so this compiles and looks fine) would attach each vector to

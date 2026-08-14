@@ -1,6 +1,6 @@
 //! Gson's `fromJson` overloads must survive sealing as distinct declarations.
 //!
-//! # The defect this pins (LIMITATIONS.md L39)
+//! # The defect this pins (docs/LIMITATIONS.md L39)
 //!
 //! 28 real `Function` entries — ~4.3% of Gson's 655 — vanished between
 //! `Lowering::finish` and the sealed table, silently.

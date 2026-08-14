@@ -1,4 +1,4 @@
-//! Verify LIMITATIONS.md L19 against the *real* `memchr` crate, end to end
+//! Verify docs/LIMITATIONS.md L19 against the *real* `memchr` crate, end to end
 //! through the public renderer.
 //!
 //! # What this proves
@@ -96,7 +96,7 @@
 //! count assert here used to run *before* the `Option` check and killed the
 //! test on an unrelated arithmetic identity, so the thing it was written to
 //! prove never executed. Corpus entry counts have one authoritative home:
-//! `corpus/entry-baseline.toml`, enforced by `nudox-store`'s
+//! `nix/entry-baseline.toml`, enforced by `nudox-store`'s
 //! `tests/corpus_contract.rs`.
 //!
 //! # Running
@@ -130,7 +130,7 @@ fn var(key: &str) -> Option<String> {
 
 fn root() -> PathBuf {
     var("NUDOX_PKG_ROOT").map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.real-crates/memchr-2.8.3")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
     })
 }
 
@@ -164,7 +164,7 @@ fn render_text(toks: &[SigToken]) -> String {
 /// Passing as of 2026-08-07 (see the module doc for the measured run and for
 /// the param/return identity collision this remains the regression guard for).
 #[test]
-#[ignore = "drives in-process rust-analyzer over the real .real-crates/memchr-2.8.3 cargo \
+#[ignore = "drives in-process rust-analyzer over the real result/memchr-2.8.3 cargo \
             workspace: ~30 s and needs the fixture fetched. Run it on purpose with \
             `cargo test -p nudox-engine --test real_memchr_generic_return -- --ignored \
             --nocapture`; it passes"]
@@ -218,7 +218,7 @@ fn real_memchr_return_type_keeps_option_wrapper() {
     // identity and the `Option<..>` check it was written for never executed at
     // all. Corpus entry counts have exactly one authoritative home now —
     // `nudox-store/tests/corpus_contract.rs::corpus_entry_counts_match_the_recorded_baseline`
-    // and `corpus/entry-baseline.toml`. Do not re-add a count check here.
+    // and `nix/entry-baseline.toml`. Do not re-add a count check here.
 
     let view = IrView::with_package(descriptor.lineage.clone(), table);
     let package = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -257,7 +257,7 @@ fn real_memchr_return_type_keeps_option_wrapper() {
         has_option,
         "none of the {} `memchr` Function entrie(s) render with `Option` in \
          their signature — the return type's generic wrapper was dropped:\n{}\n\
-         real declaration (.real-crates/memchr-2.8.3/src/memchr.rs:27):\n\
+         real declaration (result/memchr-2.8.3/src/memchr.rs:27):\n\
          \x20\x20pub fn memchr(needle: u8, haystack: &[u8]) -> Option<usize>",
         matches.len(),
         matches

@@ -18,7 +18,7 @@ use crate::ra::loaded::{BuildScriptFailure, NoDepsFallback};
 /// left with the backstop's own text, which by construction cannot name a cause.
 ///
 /// Both variants used to be `Error::Load(io::Error(NotFound, "…"))`. That was
-/// wrong in the direction AGENTS-DOCTRINE.md §8 warns about specifically — "the
+/// wrong in the direction docs/AGENTS-DOCTRINE.md §8 warns about specifically — "the
 /// producer's package name is a key, not a label … If a lowering fails on a
 /// crate that obviously exists, check the name before you check the code" — a
 /// mistyped name is exactly the common cause of [`Self::NoPackageMatched`], and
@@ -104,7 +104,7 @@ pub enum Error {
     /// shrink — it describes a different crate. `log 0.4.17` lowered its private
     /// `#[cfg(not(has_atomics))]` `AtomicUsize` shim as public structure while
     /// `set_logger` and `set_boxed_logger` were absent; `nom 5.1.3` lost eight
-    /// public parsers. See LIMITATIONS.md L50.
+    /// public parsers. See docs/LIMITATIONS.md L50.
     ///
     /// Recover by making the build-script `cargo check` succeed — which for a
     /// crates.io tarball usually means not asking cargo to resolve targets the

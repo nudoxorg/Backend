@@ -27,7 +27,7 @@
   buck2,
   rustToolchain,
   # Absolute path to the repo checkout for buck2 fallback.
-  projectRoot ? "",
+  projectRoot,
   axumVersion ? "0.7.9",
   zodVersion ? "3.24.2",
   pipelineDeadlineSecs ? 300,

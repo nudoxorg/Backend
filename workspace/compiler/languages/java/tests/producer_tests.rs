@@ -64,7 +64,7 @@ fn fixture_root(name: &str) -> PathBuf {
 
 /// Print the whole `#[source]` chain. `ProducerError`'s top-level `Display`
 /// is deliberately terse; reading only it is how a five-second diagnosis
-/// becomes an hour (AGENTS-DOCTRINE.md §8).
+/// becomes an hour (docs/AGENTS-DOCTRINE.md §8).
 fn error_chain(err: &dyn std::error::Error) -> String {
     let mut chain = err.to_string();
     let mut cursor: &dyn std::error::Error = err;

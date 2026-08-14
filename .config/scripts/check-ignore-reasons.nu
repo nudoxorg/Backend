@@ -12,8 +12,8 @@
 #
 # A bare `#[ignore]` is a silent skip with no record of why it is safe to
 # leave off, or how to turn it back on. Every #[ignore] in this repo's own
-# source (crates/, workspace/, fuzz/, tests/ — excluding vendor/ and
-# .real-crates/, neither of which is code this repo owns) already carries a
+# source (crates/, workspace/, tests/fuzz/, tests/ — excluding vendor/ and
+# result/, neither of which is code this repo owns) already carries a
 # reason as of 2026-08-05; this script exists to keep that true as the repo
 # grows, not because a violation is currently expected.
 #
@@ -30,7 +30,7 @@ def main [
     ] | where { |d| $d | path exists }
 
     if ($dirs | is-empty) {
-        print --stderr "FAIL: none of crates/, workspace/, fuzz/, tests/ exist under --root"
+        print --stderr "FAIL: none of crates/, workspace/, tests/fuzz/, tests/ exist under --root"
         exit 1
     }
 
@@ -46,11 +46,11 @@ def main [
             $result.stdout | lines
         }
         | flatten
-        | where { |l| not ($l | str contains "/vendor/") and not ($l | str contains "/.real-crates/") }
+        | where { |l| not ($l | str contains "/vendor/") and not ($l | str contains "/result/") }
     )
 
     if ($bare | is-empty) {
-        print "PASS: every #[ignore] under crates/, workspace/, fuzz/, tests/ carries a reason"
+        print "PASS: every #[ignore] under crates/, workspace/, tests/fuzz/, tests/ carries a reason"
         exit 0
     }
 

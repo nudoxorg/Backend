@@ -1,6 +1,6 @@
 //! Unpacking a downloaded registry artifact into a package root.
 //!
-//! This is the Rust half of `corpus/fetch.nu`'s `extract-to` /
+//! This is the Rust half of `nix build .#checks.corpus`'s `extract-to` /
 //! `deepest-sole-dir` / `finalize-package` trio, and it keeps that script's one
 //! hard-won rule: **the wrapper-directory strip is ecosystem-scoped, and that
 //! is load-bearing rather than tidiness.**
@@ -58,7 +58,7 @@ impl ArchiveKind {
 /// Whether this ecosystem's archive wraps its contents in nested single-child
 /// directories that must be stripped to reach the package root.
 ///
-/// `corpus/fetch.nu`'s `WRAPPED_ECOSYSTEMS`, transcribed. `true` for the
+/// `nix build .#checks.corpus`'s `WRAPPED_ECOSYSTEMS`, transcribed. `true` for the
 /// ecosystems whose archives carry a `<name>-<version>/` (or, for Go, a whole
 /// `<module path>@<version>/`) wrapper; `false` for maven and nuget, whose
 /// leading directories are the *package path* and whose stripping was the

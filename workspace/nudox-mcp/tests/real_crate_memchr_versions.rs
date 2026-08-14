@@ -10,7 +10,7 @@
 //! `Renamed`, `SignatureChanged`, or the version-registry/corpus interaction
 //! `select_version` drives. Doctrine is explicit about why that is not enough:
 //! "A timeline test that never sees two real versions of a package is not a
-//! test of timelines." `corpus/manifest.toml` already pins three real memchr
+//! test of timelines." `nix/corpus.nix` already pins three real memchr
 //! releases (2.7.6, 2.8.0, 2.8.3) specifically so a multi-generation corpus
 //! can be built without fabricating one — this file is that test.
 //!
@@ -25,11 +25,11 @@
 //!
 //! ```text
 //! # Ensure all three memchr generations are fetched:
-//! ls .real-crates/memchr-2.7.6/Cargo.toml .real-crates/memchr-2.8.0/Cargo.toml \
-//!    .real-crates/memchr-2.8.3/Cargo.toml
+//! ls result/memchr-2.7.6/Cargo.toml result/memchr-2.8.0/Cargo.toml \
+//!    result/memchr-2.8.3/Cargo.toml
 //!
 //! # If missing:
-//! nu corpus/fetch.nu
+//! nix build .#checks.corpus
 //!
 //! cargo test -p nudox-mcp --test real_crate_memchr_versions -- --ignored --nocapture
 //! ```
@@ -49,12 +49,12 @@ use tokio::runtime::Runtime;
 // Fixture path helpers
 // ---------------------------------------------------------------------------
 
-/// The three memchr generations `corpus/manifest.toml` pins.
+/// The three memchr generations `nix/corpus.nix` pins.
 const MEMCHR_VERSIONS: [&str; 3] = ["2.7.6", "2.8.0", "2.8.3"];
 
 fn memchr_root(version: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../.real-crates/memchr-{version}"))
+        .join(format!("../../result/memchr-{version}"))
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
 }
@@ -152,7 +152,7 @@ async fn wait_for_all_generations(tools: &NudoxTools) {
 fn list_versions_reports_all_three_real_memchr_generations() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under .real-crates/. Run: nu corpus/fetch.nu",
+            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
             MEMCHR_VERSIONS
         );
         return;
@@ -214,7 +214,7 @@ fn list_versions_reports_all_three_real_memchr_generations() {
 fn select_version_switches_the_current_generation_and_reports_not_loaded_honestly() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under .real-crates/. Run: nu corpus/fetch.nu",
+            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
             MEMCHR_VERSIONS
         );
         return;
@@ -314,7 +314,7 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
 fn get_symbol_timeline_spans_three_real_memchr_generations() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under .real-crates/. Run: nu corpus/fetch.nu",
+            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
             MEMCHR_VERSIONS
         );
         return;
@@ -478,7 +478,7 @@ fn diffing_two_real_memchr_releases_never_claims_an_unsupported_deletion() {
 
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under .real-crates/. Run: nu corpus/fetch.nu",
+            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
             MEMCHR_VERSIONS
         );
         return;
@@ -640,7 +640,7 @@ fn key_provenance_reaches_a_really_produced_package() {
 
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under .real-crates/. Run: nu corpus/fetch.nu",
+            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
             MEMCHR_VERSIONS
         );
         return;

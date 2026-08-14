@@ -38,9 +38,9 @@ use nudox_producer_python::oracle::{ItemBody, TypeData};
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 /// One function to check: where it lives, and the return type a human reading

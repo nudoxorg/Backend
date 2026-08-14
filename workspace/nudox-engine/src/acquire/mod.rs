@@ -3,13 +3,13 @@
 //!
 //! # The integrity guarantee, stated exactly
 //!
-//! `corpus/fetch.nu`'s header is the standard this module is held to:
+//! `nix build .#checks.corpus`'s header is the standard this module is held to:
 //!
 //! > A fetcher that silently accepts a hash mismatch converts a real failure
 //! > into an apparent success, which is worse than not fetching at all.
 //!
 //! That script compares every download against a hash **written in
-//! `corpus/manifest.toml` by a human who ran `hash-url` first**. A PURL typed
+//! `nix/corpus.nix` by a human who ran `hash-url` first**. A PURL typed
 //! into a search box has no such hash and never can — the whole point is that
 //! nobody provisioned it. So the guarantee is different, and it is stated in the
 //! type rather than in prose: every acquisition returns an [`Integrity`], and
@@ -26,7 +26,7 @@
 //!   publishes a digest on any endpoint this fetcher reads, so what we have is
 //!   the bytes an HTTPS-authenticated host served and nothing else. The variant
 //!   carries the SHA-256 we computed and the specific reason no comparison was
-//!   possible, so a caller can pin it into `corpus/manifest.toml` and get the
+//!   possible, so a caller can pin it into `nix/corpus.nix` and get the
 //!   stronger guarantee for every later fetch.
 //!
 //! What this module does **not** claim, in either case: that the bytes match
@@ -41,7 +41,7 @@
 //! `?repository_url=` qualifier that would otherwise redirect a fetch while
 //! keeping the name.
 //!
-//! # Why Rust and not `nu corpus/fetch.nu`
+//! # Why Rust and not `nix build .#checks.corpus`
 //!
 //! Recorded here because it is the decision most likely to be revisited.
 //!
@@ -59,7 +59,7 @@
 //!    survive an exit code and a stderr blob.
 //! 4. **The duplication is bounded and tested.** What is genuinely shared is
 //!    *URL resolution*, and `tests/purl_url_parity.rs` runs `fetch.nu`'s own
-//!    `hash-url` against `corpus/manifest.toml` entries and asserts this module
+//!    `hash-url` against `nix/corpus.nix` entries and asserts this module
 //!    resolves the same URLs. `fetch.nu` remains the manifest-driven,
 //!    hash-pinned corpus provisioner; this is the on-demand path. Drift is a
 //!    test failure rather than a surprise.
@@ -86,7 +86,7 @@ const MAX_LISTED_VERSIONS: usize = 20;
 
 /// Upper bound on a downloaded artifact, in bytes.
 ///
-/// Source artifacts are small — the largest in `corpus/manifest.toml` is a few
+/// Source artifacts are small — the largest in `nix/corpus.nix` is a few
 /// megabytes. 256 MiB is far above anything legitimate and exists so a
 /// misresolved URL (or a hostile `Content-Length`) cannot exhaust memory before
 /// the digest check ever runs.
@@ -132,7 +132,7 @@ pub enum Integrity {
         /// SHA-256 of the downloaded artifact, lowercase hex.
         ///
         /// Present so this fetch can be *promoted*: paste it into
-        /// `corpus/manifest.toml` (`nu corpus/fetch.nu hash-url` prints the
+        /// `nix/corpus.nix` (`nix build .#checks.corpus hash-url` prints the
         /// nix-base32 form of the same bytes) and every later fetch of this
         /// version is hash-pinned.
         sha256: String,
@@ -921,7 +921,7 @@ pub(crate) async fn acquire(
         }
     }
 
-    // Mirrors `append-cargo-workspace` in `corpus/fetch.nu`: a fetched crate
+    // Mirrors `append-cargo-workspace` in `nix build .#checks.corpus`: a fetched crate
     // that lands inside some ancestor cargo workspace would otherwise be
     // auto-promoted into it, and rust-analyzer would then load the *host*
     // workspace instead of this package.
@@ -1150,7 +1150,7 @@ fn blocker_for(language: ProducerLanguage) -> &'static str {
             "nudox-store's `pyrefly` feature, which this build does not enable. Without it the \
              Python producer is deliberately not registered, because it would otherwise return an \
              empty oracle — making \"we cannot document this\" indistinguishable from \"this \
-             package has no public API\" (LIMITATIONS.md L2)."
+             package has no public API\" (docs/LIMITATIONS.md L2)."
         }
         ProducerLanguage::Rust => "the Rust producer, which is registered unconditionally — its \
              absence means the registry was built with `with_rust_pilot` or a custom set",
@@ -1175,7 +1175,7 @@ pub(crate) struct LoadedPackage {
 /// The URL this crate would download for `purl`, without downloading it.
 ///
 /// Exists solely for `tests/purl_url_parity.rs`, which compares it against what
-/// `corpus/fetch.nu`'s `resolve-url` produces for the same package. It is `pub`
+/// `nix build .#checks.corpus`'s `resolve-url` produces for the same package. It is `pub`
 /// and named `_for_test` rather than being reached through `#[cfg(test)]`
 /// because an *integration* test lives in a separate crate and cannot see this
 /// module's internals — and because the alternative, re-deriving the URLs in

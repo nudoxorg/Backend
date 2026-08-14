@@ -5,7 +5,7 @@
 //!
 //! This module used to return `(PathBuf, Range<usize>)` where the path was the
 //! literal string `<file-id-806>` — a `vfs::FileId` index formatted into a
-//! filename-shaped placeholder. It reached the GUI verbatim (`LIMITATIONS.md`
+//! filename-shaped placeholder. It reached the GUI verbatim (`docs/LIMITATIONS.md`
 //! L42.2 records the screenshot) and named nothing on any filesystem. The
 //! comment left behind said "there is no clean way to get the absolute VfsPath
 //! from a `FileId` without holding a reference to the `Vfs`, which we do not
@@ -194,7 +194,7 @@ pub(crate) fn node_location(
 
 /// Location of an `impl` block's header.
 ///
-/// `wire::ImplRow` had no source field at all (`LIMITATIONS.md` L42.3); this is
+/// `wire::ImplRow` had no source field at all (`docs/LIMITATIONS.md` L42.3); this is
 /// what fills it. `Impl` is not a `ModuleDef`, so it needs its own entry point
 /// rather than a variant of [`def_location`].
 pub(crate) fn impl_location(ctx: &mut LowerCtx<'_>, imp: Impl) -> SourceLocation {

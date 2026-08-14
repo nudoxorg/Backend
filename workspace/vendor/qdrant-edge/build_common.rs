@@ -4,7 +4,7 @@
 /// ## Why this is a hard error and not a `cargo:warning`
 ///
 /// It used to be a warning that returned early. That choice was wrong in a way
-/// worth recording, because it cost this program two days (LIMITATIONS.md L7).
+/// worth recording, because it cost this program two days (docs/LIMITATIONS.md L7).
 ///
 /// The kernels in `cpp/` and `src/segment/spaces/metric_f16/cpp/` are the *only*
 /// definitions of the symbols that `encoded_vectors_u8.rs`,

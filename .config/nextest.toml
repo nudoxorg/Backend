@@ -1,7 +1,7 @@
 # .config/nextest.toml — the group + profile architecture for the ROOT
 # backend workspace. This file governs the 19 crates under `[workspace]` in
 # the root `Cargo.toml`; it does NOT govern `workspace/gui` (package
-# `lindsey`), a deliberately separate Cargo workspace (AGENTS-DOCTRINE.md §1).
+# `lindsey`), a deliberately separate Cargo workspace (docs/AGENTS-DOCTRINE.md §1).
 # The GUI has its own scoped config: `.config/nextest-gui.toml`, invoked with
 # `--manifest-path workspace/gui/Cargo.toml --config-file
 # .config/nextest-gui.toml` — see that file, and the "GUI group assignment"
@@ -56,7 +56,7 @@
 #
 # WHY THIS FILE EXISTS: tests here have wildly different costs and
 # preconditions — a real-crate lowering takes 20-60s and needs a checkout on
-# disk (~600 MB peak RSS, LIMITATIONS.md L1); a wire-protocol unit test takes
+# disk (~600 MB peak RSS, docs/LIMITATIONS.md L1); a wire-protocol unit test takes
 # microseconds. Undifferentiated, nobody runs the expensive ones on purpose
 # and everybody eats their cost by accident. Grouping makes both mistakes
 # hard: `cargo nextest run -E 'group(unit)'` cannot accidentally boot
@@ -71,7 +71,7 @@
 #   grep -rln 'nudox_test_support::measured' crates --include=*.rs
 #
 # — not a guessed naming convention. In particular: most tests in this repo
-# are named for the *invariant* they check (AGENTS-DOCTRINE.md §4), not their
+# are named for the *invariant* they check (docs/AGENTS-DOCTRINE.md §4), not their
 # mechanism, so `test(/^real_/)`-style regexes would silently miss most of the
 # real-crate suite (e.g. `nudox-store::real_crate`'s `lowers_a_real_crate`,
 # `the_lowered_package_is_named_after_its_source`, … none of which start with
@@ -91,7 +91,7 @@
 # all six were falling through the old filter's catch-alls into `unit`/
 # `integration` (uncapped concurrency, no slow-timeout) and, under `-P ci
 # --run-ignored all`, would have run concurrently with the rest of the
-# real-crate suite, corrupting exactly the timings LIMITATIONS.md L1 depends
+# real-crate suite, corrupting exactly the timings docs/LIMITATIONS.md L1 depends
 # on. Fixed below; see the grep commands above to re-audit after adding a new
 # test file.
 #
@@ -126,7 +126,7 @@
 # `(package(=<pkg>) and binary(=<name>))`. Audit for new collisions with:
 #
 #   find crates workspace -path '*/tests/*.rs' -not -path '*/vendor/*' \
-#     -not -path '*/.real-crates/*' -exec basename {} \; | sort | uniq -d
+#     -not -path '*/result/*' -exec basename {} \; | sort | uniq -d
 #
 # As of 2026-08-07 that reports SIX duplicated names, of which this file names
 # only two — and the distinction is the whole point of the audit, so read the
@@ -191,7 +191,7 @@
 # (2,378 -> 2,580 enumerated). That is a decision to start measuring them, not a
 # no-op; expect this to surface `driver` failures that were simply never run.
 #
-# STILL REQUIRED ON THIS HOST (TESTING.md): `nudox-producer-clang` (and anything
+# STILL REQUIRED ON THIS HOST (docs/TESTING.md): `nudox-producer-clang` (and anything
 # that links it, e.g. `nudox-engine`'s test binaries) dynamically links libclang
 # without an embedded rpath. `cargo nextest list`/`run` aborts with
 # `Library not loaded: @rpath/libclang.dylib` unless `DYLD_LIBRARY_PATH` points
@@ -238,25 +238,25 @@ max-threads = "num-cpus"
 max-threads = "num-cpus"
 
 [test-groups.real-crate-serial]
-# Drives in-process rust-analyzer over a checkout in `.real-crates/`
+# Drives in-process rust-analyzer over a checkout in `result/`
 # (`ProjectWorkspace::load` + `run_build_scripts` + `parallel_prime_caches` —
-# LIMITATIONS.md L1). Peak RSS is ~517-713 MB *per test*, and the dominant
+# docs/LIMITATIONS.md L1). Peak RSS is ~517-713 MB *per test*, and the dominant
 # cost is booting rust-analyzer itself, not the crate size — a 34-entry crate
 # and a 14,710-entry crate cost within the same order of magnitude of wall
 # time. A memchr lowering has been measured at 21.9s idle and 44.6s under
-# load (AGENTS-DOCTRINE.md §8, "Do not run two agents that both build
+# load (docs/AGENTS-DOCTRINE.md §8, "Do not run two agents that both build
 # workspace/gui...") — a 2x swing from contention alone, with no code change.
 # Two of these running concurrently on a laptop-class machine don't just
 # contend for memory: they contend for the same page cache and CPU the *load*
 # itself is bottlenecked on, so a "parallel" run doesn't get faster, it gets
 # noisier — and the entire reason to run this group is to trust its timings
-# (LIMITATIONS.md L1's whole table, and `.config/scripts/perf-report.nu`'s
+# (docs/LIMITATIONS.md L1's whole table, and `.config/scripts/perf-report.nu`'s
 # `cost case=` rows). Serialised to one slot.
 max-threads = 1
 
 [test-groups.corpus-sweep]
 # Every `tests/corpus_sweep.rs` binary — one `#[test]` each, each looping the
-# provisioned packages of one ecosystem under `.real-crates/` through the full
+# provisioned packages of one ecosystem under `result/` through the full
 # `produce()` pipeline (`invoke` -> `lower` -> `finish` [-> `seal`]):
 #
 #   nudox-producer-clang::corpus_sweep    20 cpp packages       MEASURED 595 s idle
@@ -297,7 +297,7 @@ max-threads = 1
 # in-process, `go build` + the go oracle, `javac`/javadoc doclet, and for python
 # a stub that does no I/O at all). Folding them in would inherit a cap whose
 # stated justification does not describe them, and would let a 10-minute clang
-# sweep serialise against the memchr lowerings whose timings LIMITATIONS.md L1
+# sweep serialise against the memchr lowerings whose timings docs/LIMITATIONS.md L1
 # depends on. Same reasoning the `slow` group's comment uses to stay separate
 # from `real-crate-serial`.
 #
@@ -321,7 +321,7 @@ max-threads = 1
 #    `nudox_test_support::measured`, emitting one `cost case=` line per corpus
 #    entry into `perf-report.nu`). Running two multi-minute sweeps side by side
 #    reproduces exactly the 21.9s-idle/44.6s-under-load contention swing
-#    AGENTS-DOCTRINE.md §8 documents, which would make every row they emit a
+#    docs/AGENTS-DOCTRINE.md §8 documents, which would make every row they emit a
 #    number about machine load rather than about the producer.
 max-threads = 1
 
@@ -331,7 +331,7 @@ max-threads = 1
 # (this root file's workspace cannot see `lindsey`'s packages/binaries; see
 # that file). Declared here too only so `cargo nextest show-config
 # test-groups` against *this* workspace documents the name and the reasoning,
-# for a reader who only opens the root config. AGENTS-DOCTRINE.md §8: two
+# for a reader who only opens the root config. docs/AGENTS-DOCTRINE.md §8: two
 # cargo invocations that both build `workspace/gui` concurrently corrupt the
 # shared `target/`'s build-script cache (observed:
 # `dyld: Library not loaded: @rpath/libclang.dylib`, half-populated `gpui-*`
@@ -347,16 +347,16 @@ max-threads = 1
 # Anything over ~10s not already covered above. Populated today by:
 #  - `ir-vcs::bench_replay_vs_snapshot` and `ir-vcs::repo_size_and_seal_overhead`
 #    (`workspace/ir/vcs/vcs_tests.rs`, `size_tests.rs`) — `--release`-only
-#    timing/invariant tests (TESTING.md's "Benchmark" tier). Currently
+#    timing/invariant tests (docs/TESTING.md's "Benchmark" tier). Currently
 #    UNREACHABLE by nextest at all: `ir-vcs` depends on `index`
-#    (LIMITATIONS.md L6), so its own test binary does not compile in this
+#    (docs/LIMITATIONS.md L6), so its own test binary does not compile in this
 #    environment. Listed here so the assignment is already correct the day
 #    L6 is fixed.
 #  - `sandbox`'s real-VM tests (`tests/escape.rs`'s 4 `#[ignore]`d cases plus
 #    `smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable`)
 #    — these need `NUDOX_GUEST_ROOTFS` + a `smolvm`/`libkrun` binary on PATH,
 #    neither present on this host. Their real wall-clock cost is UNMEASURED
-#    (this is a new gap, not yet in LIMITATIONS.md — see this track's
+#    (this is a new gap, not yet in docs/LIMITATIONS.md — see this track's
 #    report): they need a real VM boot, which is presumptively >10s, but that
 #    presumption has never been checked against real infra. They are a
 #    materially different resource (a VM, not an in-process rust-analyzer
@@ -418,9 +418,9 @@ max-threads = 2
 # other four.) They cannot live there, for a reason
 # that is about correctness on a fresh clone rather than about cost: each one's
 # `corpus_root()` is
-# `Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../.real-crates")
-#  .canonicalize().expect("no .real-crates/ checkout …")`,
-# and `.real-crates/` is gitignored (AGENTS-DOCTRINE.md §8). Go's sweep also
+# `Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../result")
+#  .canonicalize().expect("no result/ checkout …")`,
+# and `result/` is gitignored (docs/AGENTS-DOCTRINE.md §8). Go's sweep also
 # shells out to `go build`, Java's needs a JDK `javac`. On a checkout without
 # those, these tests PANIC rather than skip — unlike the `real-crate` group's
 # members, which check for their checkout and print `SKIP:`. A gate that a
@@ -453,10 +453,10 @@ slow-timeout = { period = "10s", terminate-after = 3, on-timeout = "fail" }
 # step by `.config/scripts/nextest-suite.nu --gui --screenshots`, never
 # concurrently with this profile's run.) Real-crate/slow tests are still
 # `#[ignore]`d at the source, so getting them into a CI run additionally
-# requires `--run-ignored all` on the command line (see TESTING.md and
+# requires `--run-ignored all` on the command line (see docs/TESTING.md and
 # `nextest-suite.nu`) — no profile setting can flip that; nextest's
 # `run-ignored` is CLI/env only. Retries absorb flakiness in the
-# rust-analyzer boot path (LIMITATIONS.md L1/L5 both describe timing
+# rust-analyzer boot path (docs/LIMITATIONS.md L1/L5 both describe timing
 # variance) without masking a real regression more than twice; JUnit output
 # feeds a CI reporter.
 #
@@ -494,7 +494,7 @@ store-success-output = true
 store-failure-output = true
 
 [profile.perf]
-# The measurement runs ONLY: real-crate lowering timings (LIMITATIONS.md L1),
+# The measurement runs ONLY: real-crate lowering timings (docs/LIMITATIONS.md L1),
 # the five `corpus_sweep` binaries (which emit one `cost case=` line per
 # corpus entry — ~109 rows across the five ecosystems, by far the largest
 # single source of rows this report has), plus whatever else lands in `slow`.
@@ -585,7 +585,7 @@ slow-timeout = { period = "60s", terminate-after = 3, on-timeout = "fail" }
 # times, once per crates.io checkout), which is exactly the bottleneck
 # `real-crate-serial` caps. Two single-slot groups do not serialise against each
 # other, so leaving it in `corpus-sweep` let it run alongside the memchr
-# lowerings whose timings LIMITATIONS.md L1 depends on.
+# lowerings whose timings docs/LIMITATIONS.md L1 depends on.
 #
 # BUDGET, MEASURED 2026-08-07, not inherited from `real-crate-serial`'s 90 s x 4
 # (which is sized for ONE lowering, and this is 23 of them):
@@ -638,7 +638,7 @@ slow-timeout = { period = "150s", terminate-after = 11, on-timeout = "fail" }
 #     the other three) and below clang's real 595 s, so clang is *reported*
 #     slow every run rather than silently normalising a 10-minute test.
 #   terminate-after = 8  — SIGKILL at 150 x 8 = 1200 s, i.e. 2.02x the
-#     measured 595 s. The 2x factor is not arbitrary: AGENTS-DOCTRINE.md §8
+#     measured 595 s. The 2x factor is not arbitrary: docs/AGENTS-DOCTRINE.md §8
 #     records a real-crate lowering measured at 21.9 s idle and 44.6 s under
 #     concurrent-cargo contention — a 2.04x swing with no code change. A kill
 #     threshold under 2x the idle measurement would turn that documented
@@ -663,7 +663,7 @@ test-group = "corpus-sweep"
 # over 595 s — but 595 s was taken with the machine otherwise idle, and the
 # very next clang run, with other builds against the shared `target/`, took
 # 803 s. That would have left the real margin at 1.49x, inside the 2x-4.6x
-# contention swing AGENTS-DOCTRINE.md section 8 documents for this host. A
+# contention swing docs/AGENTS-DOCTRINE.md section 8 documents for this host. A
 # budget derived from an honest measurement taken under dishonest conditions
 # is the same mistake as a stale one: 1650 s is 2.05x the contended figure and
 # 2.77x the isolated one.

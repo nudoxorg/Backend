@@ -14,7 +14,7 @@
 //! link-repair	memchr	2.8.3	transposed_open_delimiter	3
 //! ```
 //!
-//! which is `awk`-able and aggregatable across `.real-crates/`.
+//! which is `awk`-able and aggregatable across `result/`.
 //!
 //! It also asserts that **every other** `LinkRepairKind` counts zero. A future
 //! repair that starts firing on real crates therefore shows up as a red test on
@@ -51,7 +51,7 @@ fn memchr_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join(format!("../../.real-crates/memchr-{MEMCHR_VERSION}"))
+                .join(format!("../../result/memchr-{MEMCHR_VERSION}"))
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
         })
@@ -142,7 +142,7 @@ fn count_repairs_independently(sections: &[RenderSection]) -> u32 {
 ///
 /// # The pinned baseline
 ///
-/// `DOCSRS-COMPARISON.md` §2 names three transposed-delimiter sites in the
+/// `docs/DOCSRS-COMPARISON.md` §2 names three transposed-delimiter sites in the
 /// memchr source:
 ///
 /// * `src/memchr.rs:282` — `` `[memrchr_iter`] `` (on `struct Memchr`)
@@ -310,7 +310,7 @@ fn memchr_repairs_only_transposed_open_delimiters() {
 /// `transposed_open_delimiter = 3`.
 ///
 /// It agrees with the source, which is the point of pinning it. `grep -noE
-/// '`\[[A-Za-z_][A-Za-z0-9_:]*`\]' .real-crates/memchr-2.8.3/src/` finds
+/// '`\[[A-Za-z_][A-Za-z0-9_:]*`\]' result/memchr-2.8.3/src/` finds
 /// exactly three transposed-delimiter sites, all in `src/memchr.rs`:
 ///
 /// * line 282 — `` `[memrchr_iter`] `` on `struct Memchr`

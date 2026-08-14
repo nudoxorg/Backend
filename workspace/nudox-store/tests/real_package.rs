@@ -21,7 +21,7 @@
 //! # Running
 //!
 //! ```text
-//! NUDOX_PKG_ROOT=.real-crates/log-0.4.33 \
+//! NUDOX_PKG_ROOT=result/log-0.4.33 \
 //! NUDOX_PKG_NAME=log NUDOX_PKG_VERSION=0.4.33 \
 //!   cargo test -p nudox-store --test real_package -- --ignored --nocapture
 //! ```

@@ -1512,7 +1512,7 @@ impl<S: SearchAccess> OmniSearch<S> {
     ///
     /// That reasoning was measured against a corpus where nothing collided. On
     /// a real single-crate lowering the majority case is the *other* one:
-    /// `.shots/memchr/04-search-hits.png` shows six of eight rows needing a
+    /// `tests/shots/memchr/04-search-hits.png` shows six of eight rows needing a
     /// path (F1). `uniform_list` demands one fixed height for every row, so an
     /// unreserved third tier is not a smaller row — it is a **clipped** one,
     /// and the clipped thing is exactly the text that makes the row
@@ -1634,7 +1634,7 @@ impl<S: SearchAccess> OmniSearch<S> {
         // was told: the text expanded to fill every available pixel and the
         // caret was pushed to the far right edge of a 640 px panel, four
         // hundred pixels from the end of the word it was supposed to be
-        // marking. `.shots/fixtures/04-search-hits.png` shows it against the
+        // marking. `tests/shots/fixtures/04-search-hits.png` shows it against the
         // panel's right border while the query `Point` sits at the left. Read
         // as a UI, it says the insertion point is somewhere it is not.
         //
@@ -2248,7 +2248,7 @@ impl<S: SearchAccess> OmniSearch<S> {
     /// backend is unreachable, which is a transient condition a reader might
     /// retry; this one is a permanent property of how the application was
     /// assembled, and telling the reader to wait would waste their time. See
-    /// `AGENTS-DOCTRINE.md` §1 (capability ports) for why no build in this
+    /// `docs/AGENTS-DOCTRINE.md` §1 (capability ports) for why no build in this
     /// repository currently installs one.
     fn render_unavailable_notice(cx: &App) -> AnyElement {
         let ext = cx.theme_ext();

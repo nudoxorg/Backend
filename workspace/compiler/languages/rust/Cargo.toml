@@ -24,7 +24,7 @@ ra_ap_proc_macro_api = "=0.0.341"
 ra_ap_project_model = "=0.0.341"
 ra_ap_span         = "=0.0.341"
 # Needed only to resolve the `cargo` binary the same way `Sysroot::tool` does,
-# for the narrowed build-script command in `ra::loaded` (LIMITATIONS.md L50).
+# for the narrowed build-script command in `ra::loaded` (docs/LIMITATIONS.md L50).
 ra_ap_toolchain    = "=0.0.341"
 ra_ap_syntax       = "=0.0.341"
 ra_ap_vfs          = "=0.0.341"

@@ -137,7 +137,7 @@ pub struct Banner {
 /// The generated panels used to render their own `TODO(views):
 /// crate::views::jobs_panel` scaffolding note, centred, in the product's own
 /// type, in a user-visible dock (GUI-WORKORDER-2 F9,
-/// `.shots/memchr/17-bottom-dock-open.png`). A placeholder is a claim too: it
+/// `tests/shots/memchr/17-bottom-dock-open.png`). A placeholder is a claim too: it
 /// is read by a user, not by the author who wrote it, and a Rust module path
 /// is not an answer to "what would be here?".
 ///
@@ -269,7 +269,7 @@ placeholder_panel!(
 //
 // `JobsPanel` used to be a placeholder, and its comment said why:
 // "`EngineHandle::jobs()` hands back an already-closed receiver
-// (LIMITATIONS.md L37), so the engine's job stream is a documented stub and
+// (docs/LIMITATIONS.md L37), so the engine's job stream is a documented stub and
 // there is nothing here for `lindsey` to subscribe to."
 //
 // `EngineHandle::jobs()` is still `Err(Unimplemented)` — that gap is unchanged.
@@ -703,7 +703,7 @@ pub struct Shell {
     /// dropping it would cancel every running fetch and its drain task.
     index_jobs: Entity<IndexJobStore<nudox_engine::EngineHandle>>,
 
-    // ── Account gate (`auth.md`) ─────────────────────────────────────────────
+    // ── Account gate (`docs/auth.md`) ─────────────────────────────────────────────
     /// `Some` when the account posture cannot work: the corpus, the docks, the
     /// omni-search overlay and every document surface are behind this until it
     /// clears. `render` returns *only* this view's tree while it is set —
@@ -974,7 +974,7 @@ impl Shell {
         // The MCP status is read from the process-wide service rather than
         // passed in, so a window opened before — or entirely without — the
         // service still renders something true (`McpStatus::Absent`). See
-        // `app::mcp` and LIMITATIONS.md L35.
+        // `app::mcp` and docs/LIMITATIONS.md L35.
         let initial_packages = packages.read(cx).summary_label();
         let initial_mcp = McpStatus::from_app(cx);
         // Same reasoning for the account as for MCP above, with one addition:
@@ -1022,7 +1022,7 @@ impl Shell {
         // ── Subscribe to layout changes ───────────────────────────────────────
         let mut subs = Vec::new();
 
-        // ── Account gate (`auth.md`) ──────────────────────────────────────────
+        // ── Account gate (`docs/auth.md`) ──────────────────────────────────────────
         //
         // Built here, at launch, from the same `initial_account` the status
         // bar was just seeded from — see the field doc on `Shell::gate` for
@@ -1430,7 +1430,7 @@ impl Shell {
         );
     }
 
-    // ── Account overlay (`auth.md`) ──────────────────────────────────────────
+    // ── Account overlay (`docs/auth.md`) ──────────────────────────────────────────
 
     /// The key `OverlayKind::Modal` identity for the account panel.
     ///
@@ -1632,7 +1632,7 @@ impl Shell {
             .update(cx, |bar, cx| bar.set_account(status, cx));
     }
 
-    // ── Account gate (`auth.md`) ──────────────────────────────────────────────
+    // ── Account gate (`docs/auth.md`) ──────────────────────────────────────────────
 
     /// Whether the corpus is currently behind the gate.
     ///
@@ -2191,7 +2191,7 @@ impl Render for Shell {
 
         let theme = cx.theme_ext().clone();
 
-        // ── Account gate (`auth.md`) ───────────────────────────────────────────
+        // ── Account gate (`docs/auth.md`) ───────────────────────────────────────────
         //
         // Checked, and possibly cleared, before anything else renders — see
         // `Self::settle_gate_if_ready` for why this is not done the instant

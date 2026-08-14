@@ -287,7 +287,7 @@ pub(crate) struct SemanticIndexInner {
 /// Cheap to clone (`Arc` inside). Never persisted: [`EmbedderInfo::durable_canonical`]
 /// is `false` for a dynamically-quantized model, and this type has no way to
 /// know which host it was handed, so it declines to persist for all of them.
-/// That is a deliberate limitation, not an oversight — see LIMITATIONS.md L41.
+/// That is a deliberate limitation, not an oversight — see docs/LIMITATIONS.md L41.
 #[derive(Clone, Default)]
 pub(crate) struct SemanticIndex {
     inner: Arc<RwLock<SemanticIndexInner>>,

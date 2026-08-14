@@ -315,10 +315,10 @@ fn discriminant_index(kind: &Kind) -> u16 {
 
 // ── Corpus entry counts: the one authoritative home ──────────────────────────
 //
-// `corpus/entry-baseline.toml` is the ONLY place in this repo that states how
+// `nix/entry-baseline.toml` is the ONLY place in this repo that states how
 // many IR entries a corpus package lowers to. Everything else that quotes a
-// number — LIMITATIONS.md's banners, CORPUS-SWEEP.md, CORPUS-REPORT.md,
-// DOCSRS-COMPARISON.md — is prose reporting a measurement, and prose does not
+// number — docs/LIMITATIONS.md's banners, docs/CORPUS-SWEEP.md, docs/CORPUS-REPORT.md,
+// docs/DOCSRS-COMPARISON.md — is prose reporting a measurement, and prose does not
 // get to disagree with the measurement. Before this file existed there was no
 // per-package baseline format at all, and the numbers in those documents had
 // drifted three ways for the same three package versions with nothing in the
@@ -326,7 +326,7 @@ fn discriminant_index(kind: &Kind) -> u16 {
 //
 // The two properties that make it authoritative, both enforced below:
 //
-//   1. It is TOTAL over `corpus/manifest.toml`. A package listed in the
+//   1. It is TOTAL over `nix/corpus.nix`. A package listed in the
 //      manifest with no row here fails `every_corpus_package_has_a_recorded_
 //      entry_baseline` — it cannot be silently absent. This is the same shape
 //      as `rich_fixture_covers_every_kind_the_ir_defines` above, which derives
@@ -341,7 +341,7 @@ fn discriminant_index(kind: &Kind) -> u16 {
 //      carries a version and nothing else does not parse. Recording that we
 //      have not measured something is allowed; recording nothing is not.
 //
-// See `corpus/entry-baseline.toml`'s own header for the file format, and
+// See `nix/entry-baseline.toml`'s own header for the file format, and
 // `corpus_entry_counts_match_the_recorded_baseline` for the equality-versus-
 // floor argument.
 
@@ -351,7 +351,7 @@ mod baseline {
 
     use nudox_store::source::producer::PackageDescriptor;
 
-    /// The seven package registries `corpus/manifest.toml` draws from.
+    /// The seven package registries `nix/corpus.nix` draws from.
     ///
     /// A closed enum rather than a `String` so that an eighth ecosystem
     /// appearing in the manifest is a *parse* failure here, naming the unknown
@@ -414,7 +414,7 @@ mod baseline {
         }
     }
 
-    /// The key that joins `corpus/manifest.toml` to `corpus/entry-baseline.toml`.
+    /// The key that joins `nix/corpus.nix` to `nix/entry-baseline.toml`.
     ///
     /// A struct rather than a bare `(String, String, String)` so the three
     /// fields cannot be swapped at a call site — `(name, version)` and
@@ -440,37 +440,36 @@ mod baseline {
     }
 
     pub fn manifest_path() -> PathBuf {
-        repo_root().join("corpus/manifest.toml")
+        repo_root().join("nix/corpus.nix")
     }
 
     pub fn baseline_path() -> PathBuf {
-        repo_root().join("corpus/entry-baseline.toml")
+        repo_root().join("nix/entry-baseline.toml")
     }
 
     pub fn real_crates_root() -> PathBuf {
-        repo_root().join(".real-crates")
+        std::env::var_os("NUDOX_CORPUS_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| repo_root().join("result"))
     }
 
     /// Where a given ecosystem's fixtures actually live.
     ///
-    /// Six ecosystems land in `.real-crates`; **nuget lands in `.real-csharp`**.
+    /// Six ecosystems land in `result`; **nuget lands in `result`**.
     /// That split is not cosmetic — it is why every nuget row in
-    /// `corpus/entry-baseline.toml` reads "not yet measured". The measurement
-    /// harness resolved `.real-crates/AutoMapper-13.0.1`, found nothing, and the
-    /// producer reported `no .cs files found under .real-crates/…`, which reads
+    /// `nix/entry-baseline.toml` reads "not yet measured". The measurement
+    /// harness resolved `result/AutoMapper-13.0.1`, found nothing, and the
+    /// producer reported `no .cs files found under result/…`, which reads
     /// like a producer or provisioning failure rather than what it was: the
     /// harness looking in the wrong directory. All 24 nuget checkouts were
     /// present and lowering the whole time — a separate sweep verified 22/22
-    /// against `.real-csharp` on the same day this was found (2026-08-08).
+    /// against `result` on the same day this was found (2026-08-08).
     ///
     /// The general lesson is the one this file already encodes elsewhere: a
     /// diagnostic that names the wrong subject is worse than no diagnostic,
     /// because it sends the reader to the wrong place with confidence.
-    pub fn fixtures_root(ecosystem: Ecosystem) -> PathBuf {
-        match ecosystem {
-            Ecosystem::Nuget => repo_root().join(".real-csharp"),
-            _ => real_crates_root(),
-        }
+    pub fn fixtures_root(_ecosystem: Ecosystem) -> PathBuf {
+        real_crates_root()
     }
 
     /// The absolute fixture directory for one corpus key.
@@ -478,7 +477,7 @@ mod baseline {
         fixtures_root(key.ecosystem).join(safe_dir_name(&key.name, &key.version))
     }
 
-    /// Filesystem-safe fixture directory name, mirroring `corpus/fetch.nu`'s
+    /// Filesystem-safe fixture directory name, mirroring `nix build .#checks.corpus`'s
     /// `safe-dir-name` byte for byte (`/` and `:` both become `__`), so this
     /// resolves exactly the directories the fetch step wrote.
     ///
@@ -491,19 +490,14 @@ mod baseline {
         format!("{}-{version}", name.replace('/', "__").replace(':', "__"))
     }
 
-    // ── corpus/manifest.toml ────────────────────────────────────────────────
-
-    #[derive(Debug, serde::Deserialize)]
-    struct ManifestFile {
-        packages: Vec<ManifestPackage>,
-    }
+    // ── nix/corpus.nix ────────────────────────────────────────────────
 
     /// Why a package is in the corpus at all.
     ///
-    /// Until 2026-08-08 this distinction existed only in prose: `corpus/manifest.toml`
+    /// Until 2026-08-08 this distinction existed only in prose: `nix/corpus.nix`
     /// explained in a comment that `org.reactivestreams:reactive-streams` was "not a
     /// 21st representative library, but rxjava's one and only external compile-time
-    /// dependency", and every count in CORPUS-SWEEP.md quietly excluded it. Nothing
+    /// dependency", and every count in docs/CORPUS-SWEEP.md quietly excluded it. Nothing
     /// enforced that, so the exclusion had to be re-derived by every reader, and
     /// `154` vs the manifest's actual entry count looked like broken arithmetic.
     ///
@@ -572,14 +566,30 @@ mod baseline {
     }
 
     fn manifest_keys_with_role(only: Option<CorpusRole>) -> Vec<CorpusKey> {
+        // The catalog is executable Nix, not a second hand-maintained data
+        // format. Evaluate just the package list for this test; the flake
+        // remains the sole source of truth.
         let path = manifest_path();
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-        let parsed: ManifestFile = toml::from_str(&text)
-            .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
+        let output = std::process::Command::new("nix-instantiate")
+            .current_dir(repo_root())
+            .args([
+                "--eval",
+                "--json",
+                "-E",
+                "(import ./nix/corpus.nix).packages",
+            ])
+            .output()
+            .unwrap_or_else(|error| panic!("evaluate {}: {error}", path.display()));
+        assert!(
+            output.status.success(),
+            "evaluate {} failed: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed: Vec<ManifestPackage> = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|error| panic!("parse evaluated {}: {error}", path.display()));
 
         let mut keys: Vec<CorpusKey> = parsed
-            .packages
             .into_iter()
             .filter(|package| only.is_none_or(|role| package.role == role))
             .flat_map(|package| {
@@ -596,7 +606,7 @@ mod baseline {
         keys
     }
 
-    // ── corpus/entry-baseline.toml ──────────────────────────────────────────
+    // ── nix/entry-baseline.toml ──────────────────────────────────────────
 
     /// A package version that lowered, and the exact entry count it produced.
     #[derive(Debug, Clone, serde::Deserialize)]
@@ -746,7 +756,7 @@ mod baseline {
         out
     }
 
-    /// Render a whole baseline file in `corpus/manifest.toml`'s own style.
+    /// Render a whole baseline file in `nix/corpus.nix`'s own style.
     ///
     /// Hand-rendered rather than `toml::to_string`: the manifest writes its
     /// versions as inline tables and a serializer would expand them into
@@ -778,7 +788,7 @@ mod baseline {
 
     pub const BASELINE_HEADER: &str = "\
 # Corpus entry baseline — the ONE authoritative record of how many IR entries
-# each package in `corpus/manifest.toml` lowers to.
+# each package in `nix/corpus.nix` lowers to.
 #
 # DO NOT hand-edit a number here. Every figure is produced by running the real
 # producer over the real, hash-pinned fixture; a number typed in by hand is
@@ -786,12 +796,12 @@ mod baseline {
 # makes this file worth having.
 #
 # Regenerate with (this rewrites the file AND fails the run, deliberately —
-# review `git diff corpus/entry-baseline.toml` before re-running clean):
+# review `git diff nix/entry-baseline.toml` before re-running clean):
 #
 #   UPDATE_CORPUS_BASELINE=1 cargo test -p nudox-store --features fixtures \\
 #     --test corpus_contract corpus_entry_counts -- --ignored --nocapture
 #
-# Keyed by (ecosystem, name, version), exactly as `corpus/manifest.toml` is.
+# Keyed by (ecosystem, name, version), exactly as `nix/corpus.nix` is.
 # Every manifest version must appear here — `nudox-store`'s
 # `every_corpus_package_has_a_recorded_entry_baseline` fails otherwise.
 #
@@ -810,7 +820,7 @@ mod baseline {
 /// How many corpus package versions have never been measured.
 ///
 /// This is a debt pin, not a target: it exists so that adding a package to
-/// `corpus/manifest.toml` and parking it as `unmeasured` is a *visible* act
+/// `nix/corpus.nix` and parking it as `unmeasured` is a *visible* act
 /// that reddens the suite until someone edits this number on purpose. It must
 /// only ever be lowered. Raising it is a decision, and it should be argued for
 /// in the commit that raises it.
@@ -837,9 +847,9 @@ mod baseline {
 /// Each was an artifact that was present and unreachable, behind a diagnostic
 /// that named the wrong subject:
 ///
-/// * **nuget** — the harness resolved `.real-crates/` while all 24 checkouts
-///   live in `.real-csharp/`. It reported `no .cs files found under
-///   .real-crates/…`, which reads as a provisioning failure. 16 of 22 lower
+/// * **nuget** — the harness resolved `result/` while all 24 checkouts
+///   live in `result/`. It reported `no .cs files found under
+///   result/…`, which reads as a provisioning failure. 16 of 22 lower
 ///   (StackExchange.Redis 22,664; AutoMapper 22,384); the other 6 fail with
 ///   `declared more than once` — a real C# `member_id` collision, and the first
 ///   hard consequence of the identity work rather than an abstract statistic.
@@ -875,7 +885,7 @@ mod baseline {
 ///   `assertj-core` needs `org.junit.jupiter.api.extension`, not on this
 ///   sourcepath. All six are genuine "we tried and it broke" outcomes, not
 ///   provisioning gaps — see each row's `producer_error` in
-///   `corpus/entry-baseline.toml` for the exact `javadoc` diagnostic.
+///   `nix/entry-baseline.toml` for the exact `javadoc` diagnostic.
 /// * **pypi** — 22/22 lower, but only once `nudox-store`'s own `pyrefly`
 ///   Cargo feature is passed to the measurement binary
 ///   (`cargo test -p nudox-store --features fixtures,pyrefly …`). Without it,
@@ -896,16 +906,16 @@ mod baseline {
 ///   unresolved in the product, only in this measurement. Wiring that
 ///   forward is a separate, undone change outside this file's scope.
 ///
-/// Debt is now zero: every representative version in `corpus/manifest.toml`
+/// Debt is now zero: every representative version in `nix/corpus.nix`
 /// has a recorded `entries` or `producer_error` row.
 const UNMEASURED_CORPUS_VERSIONS: usize = 0;
 
-/// Every package version in `corpus/manifest.toml` must have a row in
-/// `corpus/entry-baseline.toml`, and vice versa.
+/// Every package version in `nix/corpus.nix` must have a row in
+/// `nix/entry-baseline.toml`, and vice versa.
 ///
 /// This is the property that makes the baseline authoritative rather than
 /// merely present. It derives its expectation from the manifest — the same file
-/// `corpus/fetch.nu` fetches from — instead of from a hand-written list, so a
+/// `nix build .#checks.corpus` fetches from — instead of from a hand-written list, so a
 /// package added to the corpus fails here until it has been measured, exactly
 /// as `rich_fixture_covers_every_kind_the_ir_defines` fails when `nudox-ir`
 /// gains a kind the fixture does not cover.
@@ -922,7 +932,7 @@ fn every_corpus_package_has_a_recorded_entry_baseline() {
 
     assert!(
         !manifest.is_empty(),
-        "corpus/manifest.toml declared no packages — a coverage check over an \
+        "nix/corpus.nix declared no packages — a coverage check over an \
          empty set proves nothing"
     );
 
@@ -933,8 +943,8 @@ fn every_corpus_package_has_a_recorded_entry_baseline() {
         .collect();
     assert!(
         missing.is_empty(),
-        "{} corpus package version(s) are in corpus/manifest.toml with no row in \
-         corpus/entry-baseline.toml:\n{}\n\n\
+        "{} corpus package version(s) are in nix/corpus.nix with no row in \
+         nix/entry-baseline.toml:\n{}\n\n\
          Every corpus package must state an outcome — a measured count, a recorded \
          producer failure, or an explicit `unmeasured = \"why\"`. Measure them with:\n  \
          UPDATE_CORPUS_BASELINE=1 cargo test -p nudox-store --features fixtures \
@@ -950,8 +960,8 @@ fn every_corpus_package_has_a_recorded_entry_baseline() {
         .collect();
     assert!(
         stale.is_empty(),
-        "{} row(s) in corpus/entry-baseline.toml name package versions that \
-         corpus/manifest.toml no longer lists:\n{}\n\n\
+        "{} row(s) in nix/entry-baseline.toml name package versions that \
+         nix/corpus.nix no longer lists:\n{}\n\n\
          A baseline for a package that is not in the corpus is a number nothing \
          re-derives — delete the rows or restore the manifest entries.",
         stale.len(),
@@ -997,7 +1007,7 @@ fn corpus_baseline_measurement_debt_does_not_grow() {
 }
 
 /// Every corpus fixture on disk must lower to exactly the entry count
-/// `corpus/entry-baseline.toml` records for it.
+/// `nix/entry-baseline.toml` records for it.
 ///
 /// # Why exact equality, and not a floor or a tolerance band
 ///
@@ -1019,8 +1029,8 @@ fn corpus_baseline_measurement_debt_does_not_grow() {
 /// also passes. Bands catch noise. There is no noise to catch — see below.
 ///
 /// **Equality is available because the input is pinned.** Every row in
-/// `corpus/manifest.toml` carries a sha256 of the exact bytes fetched, and
-/// `corpus/fetch.nu` verifies it before extracting. The fixture is therefore
+/// `nix/corpus.nix` carries a sha256 of the exact bytes fetched, and
+/// `nix build .#checks.corpus` verifies it before extracting. The fixture is therefore
 /// byte-identical on every machine, and the producer is deterministic over it.
 /// A changed count is never noise; it is always a change in *our* code, and it
 /// is always worth a human's attention. Doctrine §8 puts it directly: a
@@ -1043,8 +1053,8 @@ fn corpus_baseline_measurement_debt_does_not_grow() {
 /// that silently flips from lowering to failing is a failure here even though
 /// no count changed.
 #[test]
-#[ignore = "runs every language producer over the whole ~154-package .real-crates corpus; \
-            tens of minutes and needs the fixtures fetched (corpus/fetch.nu) plus each \
+#[ignore = "runs every language producer over the whole ~154-package result corpus; \
+            tens of minutes and needs the fixtures fetched (nix build .#checks.corpus) plus each \
             producer's toolchain"]
 fn corpus_entry_counts_match_the_recorded_baseline() {
     let manifest = baseline::manifest_keys();
@@ -1054,7 +1064,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         fixtures.is_dir(),
         "no corpus at {}. This test measures real packages; with no fixtures it \
          would assert nothing and report PASS, which is the failure mode it exists \
-         to prevent. Fetch them with `nu corpus/fetch.nu` (see corpus/README.md).",
+         to prevent. Fetch them with `nix build .#checks.corpus` (see docs/CORPUS.md).",
         fixtures.display(),
     );
 
@@ -1072,7 +1082,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         .collect();
     assert!(
         absent_any.is_empty(),
-        "{} manifest entr(ies) are not on disk:\n{}\n\nFetch with `nu corpus/fetch.nu`.",
+        "{} manifest entr(ies) are not on disk:\n{}\n\nFetch with `nix build .#checks.corpus`.",
         absent_any.len(),
         absent_any.join("\n"),
     );
@@ -1096,7 +1106,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         absent.is_empty(),
         "{} of {} manifest package version(s) have no fixture on disk:\n{}\n\n\
          Measuring only the subset that happens to be present would let a shrinking \
-         corpus look like a passing suite. Fetch the rest with `nu corpus/fetch.nu`.",
+         corpus look like a passing suite. Fetch the rest with `nix build .#checks.corpus`.",
         absent.len(),
         manifest.len(),
         absent.join("\n"),
@@ -1170,7 +1180,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         panic!(
             "UPDATE_CORPUS_BASELINE is set — {} rewritten with {} row(s).\n\
              This run fails on purpose, matching workspace/ir/model/tests/golden.rs: \
-             review `git diff corpus/entry-baseline.toml` and re-run without \
+             review `git diff nix/entry-baseline.toml` and re-run without \
              UPDATE_CORPUS_BASELINE to confirm it is green.",
             path.display(),
             measured_rows.len(),
@@ -1218,8 +1228,8 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
     assert!(
         drifted.is_empty(),
         "{} of {} measured corpus package version(s) no longer match \
-         corpus/entry-baseline.toml, largest change first:\n{}\n\n\
-         The corpus fixtures are sha256-pinned by corpus/manifest.toml, so the input \
+         nix/entry-baseline.toml, largest change first:\n{}\n\n\
+         The corpus fixtures are sha256-pinned by nix/corpus.nix, so the input \
          did not move — this is a change in our own code. Decide whether it is an \
          improvement before recording it, then:\n  \
          UPDATE_CORPUS_BASELINE=1 cargo test -p nudox-store --features fixtures \
@@ -1384,7 +1394,7 @@ fn decode_published_key(text: &str) -> Option<StableRef> {
 ///   1. **Nothing was dropped.** `report.collisions` empty. `produce` now
 ///      refuses to return a table that lost a declaration, so this shows up as
 ///      the package failing to lower at all — which is why the pass/fail
-///      expectation is taken from `corpus/entry-baseline.toml` rather than from
+///      expectation is taken from `nix/entry-baseline.toml` rather than from
 ///      "did it error": a package the baseline records as *lowering* that now
 ///      errors is a hard failure here, and one the baseline records as already
 ///      failing cannot mask an identity defect behind a toolchain gap.
@@ -1406,9 +1416,9 @@ fn decode_published_key(text: &str) -> Option<StableRef> {
 /// checks the `IntroId`s, this checks the *published* form of them, and the
 /// published form is what an MCP client caches.
 #[test]
-#[ignore = "runs every language producer over the whole ~154-package .real-crates corpus \
+#[ignore = "runs every language producer over the whole ~154-package result corpus \
             and reads each package's SealReport; tens of minutes, needs the fixtures \
-            fetched (corpus/fetch.nu) plus each producer's toolchain. Run it on purpose \
+            fetched (nix build .#checks.corpus) plus each producer's toolchain. Run it on purpose \
             with `cargo test -p nudox-store --features fixtures --test corpus_contract \
             every_corpus_declaration -- --ignored --nocapture`"]
 fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
@@ -1420,7 +1430,7 @@ fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
     assert!(
         fixtures.is_dir(),
         "no corpus at {}. This test measures real packages; with no fixtures it would \
-         assert nothing and report PASS. Fetch them with `nu corpus/fetch.nu`.",
+         assert nothing and report PASS. Fetch them with `nix build .#checks.corpus`.",
         fixtures.display(),
     );
 
@@ -1433,7 +1443,7 @@ fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
     let mut examined = 0usize;
     let mut declarations = 0usize;
     // The subset the corpus has actually measured, and therefore the subset a
-    // regression here is unambiguous about. `corpus/entry-baseline.toml` is
+    // regression here is unambiguous about. `nix/entry-baseline.toml` is
     // mostly `unmeasured` rows today; a package that has never lowered failing
     // to lower now proves nothing, and letting it count towards coverage would
     // let this test look broader than it is.
@@ -1485,7 +1495,7 @@ fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
             }
             Err(error) => {
                 // Already failing before this change, for a reason
-                // `corpus/entry-baseline.toml` records. Not this test's finding,
+                // `nix/entry-baseline.toml` records. Not this test's finding,
                 // but printed so a reader can see what was not examined.
                 eprintln!("identity {key} => not examined ({error})");
                 continue;
@@ -1611,7 +1621,7 @@ fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
     // finding above.
     assert!(
         ever_lowered > 0,
-        "corpus/entry-baseline.toml records no package as lowering, so this run had \
+        "nix/entry-baseline.toml records no package as lowering, so this run had \
          nothing whose identity it could hold to account"
     );
     assert!(
@@ -1798,7 +1808,7 @@ fn index_by_site(
 /// `Span` failures, which this test also catches, because a byte offset is not
 /// a property of the declaration.
 ///
-/// Following the precedent LIMITATIONS.md records for
+/// Following the precedent docs/LIMITATIONS.md records for
 /// `real_memchr_generic_return::real_memchr_return_type_keeps_option_wrapper`
 /// and `real_crate.rs::router_doc_links_are_populated`: a deliberately-red test
 /// is `#[ignore]`d with a reason that names what must change, never weakened
@@ -1814,7 +1824,7 @@ fn index_by_site(
             a way for a child to key on its parent's identity rather than its parent's name; \
             fixing the four producers that hardcode a `0..0` span (typescript, go, csharp, \
             python) is necessary but not sufficient. Also runs every multi-version corpus \
-            package through its producer — tens of minutes, needs `nu corpus/fetch.nu`. Run \
+            package through its producer — tens of minutes, needs `nix build .#checks.corpus`. Run \
             with `cargo test -p nudox-store --features fixtures --test corpus_contract \
             unchanged_declarations -- --ignored --nocapture`"]
 fn unchanged_declarations_keep_their_intro_id_across_versions() {
@@ -1823,7 +1833,7 @@ fn unchanged_declarations_keep_their_intro_id_across_versions() {
     let fixtures = baseline::real_crates_root();
     assert!(
         fixtures.is_dir(),
-        "no corpus at {}. Fetch it with `nu corpus/fetch.nu`.",
+        "no corpus at {}. Fetch it with `nix build .#checks.corpus`.",
         fixtures.display(),
     );
 
@@ -1843,7 +1853,7 @@ fn unchanged_declarations_keep_their_intro_id_across_versions() {
     lineages.retain(|_, versions| versions.len() >= 2);
     assert!(
         !lineages.is_empty(),
-        "corpus/manifest.toml declares no package with two versions, so nothing here can \
+        "nix/corpus.nix declares no package with two versions, so nothing here can \
          be compared across versions. This test would report PASS having measured nothing."
     );
 
@@ -1864,7 +1874,7 @@ fn unchanged_declarations_keep_their_intro_id_across_versions() {
 
         for key in versions {
             // Every version is attempted, not just the ones
-            // `corpus/entry-baseline.toml` has a number for. Most of the corpus
+            // `nix/entry-baseline.toml` has a number for. Most of the corpus
             // is `unmeasured` today, and the lineages most likely to expose an
             // unstable key — the C++ and C# ones, whose producers reach for
             // `Span` and `Ordinal` — are all in that set. Gating on the

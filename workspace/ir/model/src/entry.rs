@@ -136,7 +136,7 @@ impl Entry {
     /// [`SourceLocation::Declared`] and can never be a jump target. A producer
     /// that knows where its declaration is should call
     /// [`Entry::new_located`]; every remaining caller of this constructor is
-    /// an open item on `LIMITATIONS.md` L31.
+    /// an open item on `docs/LIMITATIONS.md` L31.
     pub fn new(sym: Symbol, node: Node, kind: Kind) -> Self {
         let location = SourceLocation::from_legacy(&sym.source, &sym.span);
         Self::new_located(sym, node, kind, location)

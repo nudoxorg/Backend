@@ -1,5 +1,5 @@
 //! `CommandOverlay` — the `?` shortcuts cheat sheet and the `cmd-shift-P`
-//! command palette (GUI-PLAN §23.1, §23.3; LIMITATIONS.md L15).
+//! command palette (GUI-PLAN §23.1, §23.3; docs/LIMITATIONS.md L15).
 //!
 //! # Why one view, two modes
 //!

@@ -1,23 +1,23 @@
-//! Lower every real npm-ecosystem fixture in `corpus/manifest.toml` end to
+//! Lower every real npm-ecosystem fixture in `nix/corpus.nix` end to
 //! end through the actual `Producer` trait (entry discovery -> OXC extraction
 //! -> `Lowering` -> seal), and assert on real content.
 //!
 //! # Why this exists
 //!
 //! Every other test in this crate (`producer_tests.rs`) parses a literal
-//! TypeScript string written by hand. AGENTS-DOCTRINE.md §4 is explicit about
+//! TypeScript string written by hand. docs/AGENTS-DOCTRINE.md §4 is explicit about
 //! what that measures: the fixture author's imagination, not the producer's
 //! behaviour on a package nobody here wrote. The Go producer's 47
 //! fixture-only tests were 100% green and 0% usable on the first real
 //! package it saw. This file is the counterpart: it drives the same
 //! `nudox_producer::produce` entry point the store/engine use in production,
-//! over the 20 real npm tarballs `corpus/fetch.nu` materializes into
-//! `.real-crates/`, and asserts on entries that must be present in each
+//! over the 20 real npm tarballs `nix build .#checks.corpus` materializes into
+//! `result/`, and asserts on entries that must be present in each
 //! package's real public API — never just `is_ok()`.
 //!
 //! # Fixture list
 //!
-//! Mirrors the `ecosystem = "npm"` section of `corpus/manifest.toml` exactly
+//! Mirrors the `ecosystem = "npm"` section of `nix/corpus.nix` exactly
 //! (20 packages, 22 version entries — `lodash` and `zod` each carry two for
 //! lineage testing). Kept as a literal list rather than parsed from the TOML
 //! at test time so a missing/renamed fixture fails as a clear per-case SKIP
@@ -30,10 +30,10 @@
 //! cargo test -p nudox-producer-typescript --test real_npm_packages -- --nocapture
 //! ```
 //!
-//! Each case prints a `cost case=…` line (AGENTS-DOCTRINE.md §4) and, on
+//! Each case prints a `cost case=…` line (docs/AGENTS-DOCTRINE.md §4) and, on
 //! success, an entry count. A missing checkout is a visible per-case SKIP
 //! (an environment problem, not a code defect) rather than a failure — run
-//! `nu corpus/fetch.nu` first to materialize the corpus.
+//! `nix build .#checks.corpus` first to materialize the corpus.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -46,7 +46,7 @@ use nudox_producer::{PackageSource, YieldContract, produce};
 use nudox_producer_typescript::TypescriptProducer;
 
 /// One npm corpus fixture: the manifest package name, the pinned version, the
-/// `.real-crates/` directory name `fetch.nu`'s `safe-dir-name` produces for it
+/// `result/` directory name `fetch.nu`'s `safe-dir-name` produces for it
 /// (`/` -> `__`, joined with `-<version>`), and what the producer owes it.
 ///
 /// # Why `floor` + `must_contain`, and not the old `Expect` enum
@@ -90,7 +90,7 @@ use nudox_producer_typescript::TypescriptProducer;
 ///   already a claim no stub could satisfy.
 ///
 /// Every name in every `must_contain` list below was checked against the
-/// 2026-08-08 checkout under `.real-crates/` before being pinned — see the
+/// 2026-08-08 checkout under `result/` before being pinned — see the
 /// per-fixture comments for exactly where each symbol is declared and
 /// exported. A canary naming a symbol the package does not actually export
 /// is a bug in this file, not a floor to be met by inventing one.
@@ -102,7 +102,7 @@ struct Fixture {
     must_contain: &'static [&'static str],
 }
 
-/// The 22 npm version entries from `corpus/manifest.toml`, in manifest order.
+/// The 22 npm version entries from `nix/corpus.nix`, in manifest order.
 const FIXTURES: &[Fixture] = &[
     // `lodash.js` (the `main` entry, a 17k-line UMD bundle) is one
     // `ExpressionStatement`; the real ~300-function API lives in sibling
@@ -112,7 +112,7 @@ const FIXTURES: &[Fixture] = &[
     // `exports` field, so Node's classic resolution makes every one of
     // those 333 top-level `.js` files real, importable API
     // (`require('lodash/chunk')`) — verified by listing
-    // `.real-crates/lodash-4.17.21/*.js` directly.
+    // `result/lodash-4.17.21/*.js` directly.
     Fixture { name: "lodash", version: "4.17.21", dir: "lodash-4.17.21",
               floor: 250,
               must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"] },
@@ -174,7 +174,7 @@ const FIXTURES: &[Fixture] = &[
     // };`. Each `lib/*.js` file declares its class/function at module top
     // level (`class WebSocket extends EventEmitter { ... }`,
     // `module.exports = WebSocket;`) — verified in
-    // `.real-crates/ws-8.16.0/wrapper.mjs` and `lib/{websocket,receiver,
+    // `result/ws-8.16.0/wrapper.mjs` and `lib/{websocket,receiver,
     // sender,stream,websocket-server}.js`.
     Fixture { name: "ws", version: "8.16.0", dir: "ws-8.16.0",
               floor: 5,
@@ -198,7 +198,7 @@ const FIXTURES: &[Fixture] = &[
 /// manifest so the test works regardless of the invoking shell's cwd.
 fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
 }
 
 fn fixture_root(dir: &str) -> PathBuf {
@@ -271,7 +271,7 @@ struct Lowered {
 /// Lower one fixture through the real `Producer` pipeline, or return the full
 /// error chain as `Err`.
 ///
-/// Walks `std::error::Error::source` per AGENTS-DOCTRINE.md §8 ("print the
+/// Walks `std::error::Error::source` per docs/AGENTS-DOCTRINE.md §8 ("print the
 /// whole `#[source]` chain") — this crate's `ProducerError` wraps
 /// `discover_entry_points`/`build_and_extract` failures behind
 /// `ProducerError::OracleSpawn { reason: io::Error::other(e), .. }`, and the
@@ -363,7 +363,7 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
         let root = fixture_root(fixture.dir);
         if !root.join("package.json").is_file() {
             eprintln!(
-                "SKIP: no checkout at {} (run `nu corpus/fetch.nu` to materialize the corpus)",
+                "SKIP: no checkout at {} (run `nix build .#checks.corpus` to materialize the corpus)",
                 root.display()
             );
             continue;
@@ -428,7 +428,7 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
             continue;
         }
 
-        // The content assertion (AGENTS-DOCTRINE.md §4): a count is satisfied by
+        // The content assertion (docs/AGENTS-DOCTRINE.md §4): a count is satisfied by
         // a table of placeholders, a real exported name is not.
         if identifiers == 0 {
             failures.push(format!(
@@ -464,7 +464,7 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
 
     assert!(
         ran > 0,
-        "no npm fixtures were found under {} — run `nu corpus/fetch.nu` first",
+        "no npm fixtures were found under {} — run `nix build .#checks.corpus` first",
         corpus_root().display()
     );
 

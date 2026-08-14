@@ -67,7 +67,7 @@ fn axum_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../.real-crates/axum")
+                .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
         })
@@ -76,7 +76,7 @@ fn axum_root() -> PathBuf {
 /// Where `scripts/fetch-real-crate.sh <name> <version>` puts a crate checkout.
 fn real_crate_root(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates")
+        .join("../../result")
         .join(name)
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))

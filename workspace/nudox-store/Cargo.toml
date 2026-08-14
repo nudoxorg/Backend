@@ -46,11 +46,12 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # Doctrine §4: every integration test is also a benchmark. `measured()` emits the
 # `cost case=… wall_ms=… rss_bytes=… disk_delta_bytes=…` line the corpus report parses.
 nudox-test-support = { path = "../test-support" }
-# `tests/corpus_contract.rs` reads `corpus/manifest.toml` and
-# `corpus/entry-baseline.toml` — the two files that between them define what the
+# `tests/corpus_contract.rs` reads `nix/corpus.nix` and
+# `nix/entry-baseline.toml` — the two files that between them define what the
 # corpus is and how many entries each package lowers to. Test-only: nothing in
 # the library reads either file.
 serde = { workspace = true }
+serde_json = { workspace = true }
 toml = { workspace = true }
 
 # `corpus_contract` imports `nudox_store::source::fixtures`, which exists only

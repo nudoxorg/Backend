@@ -66,7 +66,7 @@ pub(crate) enum ShortcutOutcome {
     Repaired(LinkRepairKind),
     /// Path-shaped but unresolved: brackets stripped, inner text shown as
     /// plain text or `Code`. This is the L17 fallback, already owned and
-    /// tested (`LIMITATIONS.md` L17 / L27). Produces no link.
+    /// tested (`docs/LIMITATIONS.md` L17 / L27). Produces no link.
     Stripped,
     /// Not path-shaped (`[!NOTE]`, `arr[0]`, an unclosed run): the exact
     /// consumed span is re-emitted verbatim. Produces no link.

@@ -39,13 +39,13 @@
 #   ...
 #   error: creating test list failed
 #   Caused by:
-#     for `lindsey::shot_probe`, line "PROBE_OK 1800x800 -> .../.shots/probe.png"
+#     for `lindsey::shot_probe`, line "PROBE_OK 1800x800 -> .../tests/shots/probe.png"
 #     did not end with the string ": test" or ": benchmark"
 #   $ echo $?
 #   104
 #
 # `screenshots.rs` and `shot_probe.rs` are `harness = false` (Cargo.toml,
-# AGENTS-DOCTRINE.md's "GPUI testing": the file *is* `fn main`, run with no
+# docs/AGENTS-DOCTRINE.md's "GPUI testing": the file *is* `fn main`, run with no
 # libtest harness, specifically so it executes on the process's real main
 # thread — libtest spawns `#[test]` bodies on worker threads, and
 # constructing the macOS platform off the main thread aborts). nextest's
@@ -87,7 +87,7 @@ nextest-version = "0.9.131"
 dir = "target/nextest"
 
 [test-groups.gui-serial]
-# AGENTS-DOCTRINE.md §8 / this track's constraint 1: GPUI tests cannot run
+# docs/AGENTS-DOCTRINE.md §8 / this track's constraint 1: GPUI tests cannot run
 # concurrently with each other or with anything else that builds
 # `workspace/gui` — concurrent cargo invocations against the shared
 # `target/` corrupt the build-script cache (observed:

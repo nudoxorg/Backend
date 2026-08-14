@@ -1,4 +1,4 @@
-//! AGENTS-DOCTRINE.md §1 (the dependency law), enforced instead of described.
+//! docs/AGENTS-DOCTRINE.md §1 (the dependency law), enforced instead of described.
 //!
 //! # Why this file exists
 //!
@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 /// `nudox-engine` is the protocol seam. `nudox-mcp` sits *beside* `lindsey` as a
 /// second view of the same `EngineHandle` — the surface crossing the seam is
 /// `McpHost`/`McpStatus`, whose vocabulary is `EngineHandle`/`SocketAddr`/
-/// `String`, so no IR type crosses it. Hosting it is what closes LIMITATIONS.md
+/// `String`, so no IR type crosses it. Hosting it is what closes docs/LIMITATIONS.md
 /// L35; without it the MCP server exists and is never started.
 ///
 /// `nudox-embed` sits beside the engine on its *other* seam — the capability
@@ -52,7 +52,7 @@ use std::path::{Path, PathBuf};
 /// (`Option<Arc<dyn Embedder>>`, whose vocabulary is `Vec<f32>`/`usize`/`bool`)
 /// plus a `&str` env-var name. No IR type crosses it, and no vector-plane type
 /// does either — which is the same test `nudox-mcp` passes. Installing it is
-/// what closes LIMITATIONS.md L41; without it the semantic section reports
+/// what closes docs/LIMITATIONS.md L41; without it the semantic section reports
 /// `Unavailable(NoEmbedder)` in every build.
 ///
 /// `heart` sits beside the engine on a third seam: it is the transport-free
@@ -71,7 +71,7 @@ use std::path::{Path, PathBuf};
 /// for "which backend crates may `lindsey` depend on", matching §1's prose.
 ///
 /// Adding to this list is a doctrine change, not a build fix. Update
-/// `AGENTS-DOCTRINE.md` §1 in the same commit or the two disagree again.
+/// `docs/AGENTS-DOCTRINE.md` §1 in the same commit or the two disagree again.
 const ALLOWED_BACKEND_DEPENDENCIES: &[&str] =
     &["nudox-engine", "nudox-mcp", "nudox-embed", "heart"];
 
@@ -200,7 +200,7 @@ fn lindsey_declares_no_backend_dependency_beyond_engine_and_mcp() {
 
     assert!(
         violations.is_empty(),
-        "AGENTS-DOCTRINE.md §1: `lindsey` may declare a direct dependency on {:?} \
+        "docs/AGENTS-DOCTRINE.md §1: `lindsey` may declare a direct dependency on {:?} \
          and no other backend crate, because a direct dependency is exactly what \
          makes `use <crate>::…` compile and lets a view couple to the shape of the \
          IR instead of to the protocol. Found:\n{}\n\nIf this is intentional, it is \
@@ -252,7 +252,7 @@ fn lindsey_source_imports_no_ir_shaped_crate() {
 
     assert!(
         violations.is_empty(),
-        "AGENTS-DOCTRINE.md §1: no file under `workspace/gui/src` may import \
+        "docs/AGENTS-DOCTRINE.md §1: no file under `workspace/gui/src` may import \
          `nudox-ir`, `nudox-store`, or `nudox-graph`. A view must depend on the \
          protocol (`nudox-engine`, `nudox-mcp`), never on the shape of the IR. \
          Found:\n{}\n\nThe fix is to widen the engine's protocol so the GUI can \

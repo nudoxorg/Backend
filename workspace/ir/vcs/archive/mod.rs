@@ -12,7 +12,7 @@
 //! [`ir::change::CasKey`]. Forbidden in the archive: source bytes, tar, CST,
 //! Terminus documents, unbounded embeddings.
 //!
-//! Normative spec: `.research/ir-vcs/design/IR-NATIVE-VCS-DESIGN.md` Rev 3.2,
+//! Normative spec: `docs/research/ir-vcs/design/IR-NATIVE-VCS-DESIGN.md` Rev 3.2,
 //! "PackageArchive Layout" + decisions K2, K3, K11, K16.
 
 pub mod error;

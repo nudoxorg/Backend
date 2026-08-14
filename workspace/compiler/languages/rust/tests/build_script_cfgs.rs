@@ -17,7 +17,7 @@
 //! The output is not a smaller description of the crate; it is a description of
 //! a different crate, and nothing about it looks wrong. `log 0.4.17` lost
 //! `set_logger`/`set_boxed_logger` and gained a private `AtomicUsize` shim this
-//! way. See LIMITATIONS.md L50.
+//! way. See docs/LIMITATIONS.md L50.
 //!
 //! # Why the fixtures are synthesized rather than real checkouts
 //!
@@ -225,7 +225,7 @@ fn a_phantom_test_target_does_not_stop_the_build_script() {
         "nudox_fixture_phantom_target",
         BUILD_RS_OK,
         // No `tests/phantom.rs` is ever written. This is not a broken fixture:
-        // it is byte-for-byte the situation `.real-crates/log-0.4.17` is in,
+        // it is byte-for-byte the situation `result/log-0.4.17` is in,
         // whose generated manifest declares `[[test]] name = "filters"` while
         // `exclude` kept `tests/` out of the published tarball.
         "[[test]]\nname = \"phantom\"\npath = \"tests/phantom.rs\"\n",

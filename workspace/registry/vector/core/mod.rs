@@ -6,7 +6,7 @@
 //! RRF fusion, the §20.5 routing table, §20.4 hot-set admission, the §17.3
 //! quantization ladder, and edgepack shard identity.
 //!
-//! Authoritative specs: `.research/librarification/09-vector/PLAN.md`,
+//! Authoritative specs: `docs/research/librarification/09-vector/PLAN.md`,
 //! `09b-retrieval-pipeline-plan.md`, `09c-embeddings-runtime-adversarial.md`.
 //! Invariants are cited on items as `I1`–`I16` (09b §23).
 

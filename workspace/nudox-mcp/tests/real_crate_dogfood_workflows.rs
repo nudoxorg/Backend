@@ -24,9 +24,9 @@
 //! # Running
 //!
 //! ```text
-//! ls .real-crates/memchr-2.7.6/Cargo.toml .real-crates/memchr-2.8.0/Cargo.toml \
-//!    .real-crates/memchr-2.8.3/Cargo.toml .real-crates/serde-1.0.196/Cargo.toml
-//! # If missing: nu corpus/fetch.nu
+//! ls result/memchr-2.7.6/Cargo.toml result/memchr-2.8.0/Cargo.toml \
+//!    result/memchr-2.8.3/Cargo.toml result/serde-1.0.196/Cargo.toml
+//! # If missing: nix build .#checks.corpus
 //!
 //! cargo test -p nudox-mcp --test real_crate_dogfood_workflows -- --ignored --nocapture
 //! ```
@@ -54,7 +54,7 @@ const MEMCHR_VERSIONS: [&str; 3] = ["2.7.6", "2.8.0", "2.8.3"];
 
 fn real_crate_root(dir: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../.real-crates/{dir}"))
+        .join(format!("../../result/{dir}"))
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
 }
@@ -193,8 +193,8 @@ fn head_name(head: &nudox_engine::wire::SymbolHead) -> String {
 fn memchr_agent_workflow_chain() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under .real-crates/. \
-             Run: nu corpus/fetch.nu"
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. \
+             Run: nix build .#checks.corpus"
         );
         return;
     }
@@ -460,7 +460,7 @@ fn memchr_agent_workflow_chain() {
         log_step!(
             "search_symbols(query=\"find the function that parses a URL\")",
             "{} hits: {:?}\n  (SECTION_SEMANTIC is a stub, always empty by design — \
-             LIMITATIONS.md L41 — so this is name/kind substring matching against a \
+             docs/LIMITATIONS.md L41 — so this is name/kind substring matching against a \
              sentence, not semantic search; whatever came back is name matches on \
              individual words, not intent)",
             semantic.hits.len(),
@@ -494,7 +494,7 @@ fn memchr_agent_workflow_chain() {
         assert_eq!(page1.rows.len(), 50, "default limit must be 50");
         assert!(
             page1.truncated,
-            "memchr's own declaration table is well over 500 entries (LIMITATIONS.md L1: \
+            "memchr's own declaration table is well over 500 entries (docs/LIMITATIONS.md L1: \
              1,325+ for 2.8.3 alone); the very first page must already say more exist"
         );
 
@@ -766,7 +766,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
             --ignored"]
 fn serde_trait_implementors_workflow() {
     if !serde_available() {
-        eprintln!("SKIP: no checkout at .real-crates/serde-1.0.196. Run: nu corpus/fetch.nu");
+        eprintln!("SKIP: no checkout at result/serde-1.0.196. Run: nix build .#checks.corpus");
         return;
     }
 

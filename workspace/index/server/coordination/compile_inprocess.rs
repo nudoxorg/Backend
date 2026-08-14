@@ -349,7 +349,7 @@ fn run_language_producer(
 }
 
 /// Render a `ProducerError` and every link of its `#[source]` chain
-/// (AGENTS-DOCTRINE.md §8: never print only the top-level `Display`).
+/// (docs/AGENTS-DOCTRINE.md §8: never print only the top-level `Display`).
 fn error_chain(err: &nudox_producer::ProducerError) -> String {
     std::iter::successors(Some(err as &dyn std::error::Error), |e| {
         std::error::Error::source(*e)

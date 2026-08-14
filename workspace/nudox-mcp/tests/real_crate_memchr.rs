@@ -1,7 +1,7 @@
 //! End-to-end MCP test: a real streamable-HTTP transport carrying a real
 //! `tools/call` against a real lowered package.
 //!
-//! # The gap this closes — LIMITATIONS.md L36
+//! # The gap this closes — docs/LIMITATIONS.md L36
 //!
 //! Four other test files each cover half of "does this actually work":
 //!
@@ -16,17 +16,17 @@
 //! line — it never issues a `tools/call` or looks at a JSON-RPC result body.
 //! `real_crate_tokio.rs` calls `NudoxTools` methods directly in-process,
 //! bypassing rmcp and HTTP entirely, and every one of its tests is gated on
-//! `.real-crates/tokio/Cargo.toml`, which does not exist in this checkout —
+//! `result/tokio/Cargo.toml`, which does not exist in this checkout —
 //! its own doc comment points at `scripts/fetch-real-crate.sh`, which does
-//! not exist either (the real fetch tooling is `corpus/fetch.nu` driven by
-//! `corpus/manifest.toml`; see the fix to that doc comment alongside this
+//! not exist either (the real fetch tooling is `nix build .#checks.corpus` driven by
+//! `nix/corpus.nix`; see the fix to that doc comment alongside this
 //! file).
 //!
 //! Nobody drives the real `axum`/`rmcp` HTTP+SSE stack while documenting a
 //! package no fixture author hand-wrote. This file does both at once: it
 //! starts a real engine over the real Rust producer
-//! (`Engine::start_with_producer`) pointed at `.real-crates/memchr-2.8.3`
-//! (present — see `corpus/manifest.toml`; tokio is not, so this test uses
+//! (`Engine::start_with_producer`) pointed at `result/memchr-2.8.3`
+//! (present — see `nix/corpus.nix`; tokio is not, so this test uses
 //! memchr instead, per instruction), starts a real `McpEndpoint`, performs
 //! the real MCP handshake over a raw TCP socket exactly like `endpoint.rs`
 //! does, and then issues a real `tools/call` for `search_symbols` and one for
@@ -49,17 +49,17 @@
 //! `PristineIntroTable::insert_live`'s collision behaviour changed). Asserting
 //! a count here would make this test as fragile as the thing it exists to
 //! prove works. Every assertion below is instead on a named symbol that
-//! really exists in `.real-crates/memchr-2.8.3/src/lib.rs`'s public
+//! really exists in `result/memchr-2.8.3/src/lib.rs`'s public
 //! re-export list (`Memchr`, `memchr_iter`, `memrchr`, …).
 //!
 //! # Running
 //!
 //! ```text
 //! # Ensure memchr is fetched (it ships with the corpus manifest):
-//! ls .real-crates/memchr-2.8.3/Cargo.toml
+//! ls result/memchr-2.8.3/Cargo.toml
 //!
 //! # If missing, fetch the whole reproducible corpus:
-//! nu corpus/fetch.nu
+//! nix build .#checks.corpus
 //!
 //! cargo test -p nudox-mcp --test real_crate_memchr -- --ignored --nocapture
 //! ```
@@ -82,11 +82,11 @@ use tokio::runtime::Runtime;
 // Fixture path helpers
 // ---------------------------------------------------------------------------
 
-/// Where `corpus/fetch.nu` places the memchr checkout (`corpus/manifest.toml`
+/// Where `nix build .#checks.corpus` places the memchr checkout (`nix/corpus.nix`
 /// pins it at 2.8.3).
 fn memchr_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.real-crates/memchr-2.8.3")
+        .join("../../result/memchr-2.8.3")
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
 }
@@ -284,14 +284,14 @@ async fn wait_for_memchr(engine: &EngineHandle) {
 
 /// A real `tools/call` for `search_symbols` and one for `list_packages`,
 /// driven over the real streamable-HTTP transport against a real lowered
-/// package — the exact combination LIMITATIONS.md L36 says no test covers.
+/// package — the exact combination docs/LIMITATIONS.md L36 says no test covers.
 #[test]
 #[ignore = "drives rust-analyzer over a real cargo workspace (~10-30s) and opens real \
             loopback sockets; run explicitly with --ignored"]
 fn tools_call_over_real_transport_returns_real_memchr_symbols() {
     if !memchr_available() {
         eprintln!(
-            "SKIP: no checkout at {}. Fetch the corpus with: nu corpus/fetch.nu",
+            "SKIP: no checkout at {}. Fetch the corpus with: nix build .#checks.corpus",
             memchr_root().display()
         );
         return;
@@ -413,7 +413,7 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
 
     // --- Assertions on the real JSON-RPC result bodies --------------------------
     //
-    // Real symbols from `.real-crates/memchr-2.8.3/src/lib.rs`:
+    // Real symbols from `result/memchr-2.8.3/src/lib.rs`:
     //   pub use crate::memchr::{
     //       memchr, memchr2, memchr2_iter, memchr3, memchr3_iter, memchr_iter,
     //       memrchr, memrchr2, memrchr2_iter, memrchr3, memrchr3_iter, memrchr_iter,
@@ -437,7 +437,7 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
         assert!(
             display_names.iter().any(|n| n.contains(real_symbol)),
             "search_symbols(\"mem\") over the real memchr crate must surface `{real_symbol}` \
-             (see .real-crates/memchr-2.8.3/src/lib.rs's `pub use crate::memchr::{{ ... }}`); \
+             (see result/memchr-2.8.3/src/lib.rs's `pub use crate::memchr::{{ ... }}`); \
              got: {display_names:?}"
         );
     }

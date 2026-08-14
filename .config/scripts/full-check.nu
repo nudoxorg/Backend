@@ -116,7 +116,7 @@ def main [
         }
     } else {
         print "NOT RUN: mutation/fuzz tooling (pass --nightly to request it)"
-        print "    note: no fuzz/ tree, no fuzz targets, no screenshot or mutation coverage in default gate"
+        print "    note: no tests/fuzz/ tree, no fuzz targets, no screenshot or mutation coverage in default gate"
     }
 
     let total_elapsed = ((date now) - $total_started | into int) / 1_000_000_000

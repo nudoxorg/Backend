@@ -16,7 +16,7 @@
 //!
 //! Each is answered below by **running a Trustfall query** over real lowered
 //! `memchr` and asserting on named symbols that really exist in
-//! `.real-crates/memchr-2.8.3/src/`. A test that asserted "some postings
+//! `result/memchr-2.8.3/src/`. A test that asserted "some postings
 //! exist" would pass against the defect.
 //!
 //! It also reports the index growth the new positions cost, measured rather
@@ -34,7 +34,7 @@
 //! # Running
 //!
 //! ```text
-//! ls .real-crates/memchr-2.8.3/Cargo.toml   # fetched by `nu corpus/fetch.nu`
+//! ls result/memchr-2.8.3/Cargo.toml   # fetched by `nix build .#checks.corpus`
 //! cargo test -p nudox-engine --test real_memchr_signature_index -- --ignored --nocapture
 //!
 //! # Or point at another checkout:
@@ -67,7 +67,7 @@ fn root() -> PathBuf {
         .filter(|v| !v.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.real-crates/memchr-2.8.3")
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
         })
 }
 
@@ -80,7 +80,7 @@ fn lower_memchr(case: &str) -> PackageView {
     let root = root();
     assert!(
         root.join("Cargo.toml").is_file(),
-        "no memchr checkout at {}; run `nu corpus/fetch.nu` or set NUDOX_PKG_ROOT",
+        "no memchr checkout at {}; run `nix build .#checks.corpus` or set NUDOX_PKG_ROOT",
         root.display()
     );
 
@@ -235,7 +235,7 @@ fn what_a_real_type_implements_is_answerable_by_name() {
         assert!(
             traits.iter().any(|t| t.ends_with("Iterator")),
             "`impl Iterator for Memchr<'_>` is in \
-             .real-crates/memchr-2.8.3/src/memchr.rs; `implementedBy` must \
+             result/memchr-2.8.3/src/memchr.rs; `implementedBy` must \
              reach it. got: {traits:?}"
         );
 

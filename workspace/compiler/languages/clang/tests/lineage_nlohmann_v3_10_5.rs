@@ -1,7 +1,7 @@
 //! `nlohmann-json` is one of two `cpp` corpus packages carrying multiple
-//! versions for `nudox-graph` lineage testing (`corpus/README.md`'s
+//! versions for `nudox-graph` lineage testing (`docs/CORPUS.md`'s
 //! multi-version table) — v3.11.3 and v3.10.5. `corpus_sweep.rs` covers one
-//! entry per *package* (`corpus/manifest.toml`'s 20 `[[packages]]` blocks,
+//! entry per *package* (`nix/corpus.nix`'s 20 `[[packages]]` blocks,
 //! matching this ecosystem's 20-package provisioning scope), so it exercises
 //! v3.11.3 but not this second version entry. Lineage queries need *both*
 //! versions to actually lower, not just the one the main sweep happened to
@@ -19,9 +19,9 @@ static CLANG_SINGLETON: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 #[test]
@@ -33,7 +33,7 @@ fn nlohmann_json_v3_10_5_lineage_pair_also_resolves() {
     let root = corpus_root().join("nlohmann-json-v3.10.5");
     assert!(
         root.is_dir(),
-        "no checkout at {} — run `nu corpus/fetch.nu` from the repo root",
+        "no checkout at {} — run `nix build .#checks.corpus` from the repo root",
         root.display()
     );
 

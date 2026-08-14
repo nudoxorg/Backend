@@ -5,9 +5,9 @@
 //!
 //! Two documents in this repo say apparently opposite things about PURL:
 //!
-//! * `GLOBAL-IR-GRAPH.md` §1 — "Package identity **is** the canonical PURL …
+//! * `docs/GLOBAL-IR-GRAPH.md` §1 — "Package identity **is** the canonical PURL …
 //!   canonicalize at ingest, never at query."
-//! * `REGISTRYLESS-PLAN.md` RL-8 — "purl and SWHID are pure **renderings**.
+//! * `docs/REGISTRYLESS-PLAN.md` RL-8 — "purl and SWHID are pure **renderings**.
 //!   Derived from `(stem, version, source_rev)` at export/query time … never
 //!   stored as identity."
 //!
@@ -40,7 +40,7 @@
 //!
 //! Nothing downstream of `PackageSpec` learns that a PURL was involved. A
 //! package indexed from `pkg:cargo/serde@1.0.196` and the same package listed
-//! in `corpus/manifest.toml` produce the *same* `PackageLineageId` and land in
+//! in `nix/corpus.nix` produce the *same* `PackageLineageId` and land in
 //! the same lineage — which is the whole point of not adding a second
 //! vocabulary. [`Purl::render`] goes back the other way for display.
 //!
@@ -59,7 +59,7 @@
 //!
 //! Similarly, `nuget` names are *not* lowercased here even though purl-spec
 //! says to. The corpus already holds `nuget:AutoMapper`, `nuget:CsvHelper` and
-//! twenty more in their published casing (see `corpus/manifest.toml`), so
+//! twenty more in their published casing (see `nix/corpus.nix`), so
 //! lowercasing at ingest would give one package two `PackageLineageId`s —
 //! exactly the keyspace fragmentation GLOBAL-IR-GRAPH §1 warns about, arrived
 //! at by obeying the rule instead of by ignoring it. The lowercasing that
@@ -78,7 +78,7 @@ use crate::ProducerLanguage;
 ///
 /// One variant per ecosystem this build can actually fetch *and* produce IR
 /// for, which is why there is no `Cpp`/`generic`/`github` variant: `cpp`
-/// packages have no URL convention at all (`corpus/fetch.nu` requires an
+/// packages have no URL convention at all (`nix build .#checks.corpus` requires an
 /// explicit per-version `url` for every one of them, because GitHub's
 /// auto-generated tag tarballs are not byte-stable), so a `pkg:generic/...`
 /// input could be parsed but never resolved. An enum that can name a thing the
@@ -278,7 +278,7 @@ pub enum PurlParseError {
     /// *redirects the fetch to a different registry*; honouring the name and
     /// silently dropping the location would download a different package that
     /// happens to share a name — the exact "apparent success" failure mode
-    /// `corpus/fetch.nu`'s header warns about, arrived at without a hash
+    /// `nix build .#checks.corpus`'s header warns about, arrived at without a hash
     /// mismatch to notice.
     #[error("package URL qualifier {key:?} is not supported; nudox resolves every package against its ecosystem's canonical registry and follows no caller-supplied location")]
     UnsupportedQualifier {
@@ -519,8 +519,8 @@ impl Purl {
     }
 
     /// The `PackageName` this package occupies in the corpus — the *one* string
-    /// that has to agree with what `corpus/manifest.toml` and
-    /// `corpus/fetch.nu` already use, or a PURL-indexed package would land in a
+    /// that has to agree with what `nix/corpus.nix` and
+    /// `nix build .#checks.corpus` already use, or a PURL-indexed package would land in a
     /// different lineage than the same package provisioned from the manifest.
     ///
     /// | type   | lineage name                | manifest example              |
@@ -533,7 +533,7 @@ impl Purl {
     /// | nuget  | `AutoMapper`                | `name = "AutoMapper"`         |
     ///
     /// The Maven `groupId:artifactId` join is not cosmetic: `resolve-url` in
-    /// `corpus/fetch.nu` splits on exactly that colon to build the repo path,
+    /// `nix build .#checks.corpus` splits on exactly that colon to build the repo path,
     /// and `JavaProducer` reads the same coordinate back out.
     pub fn lineage_name(&self) -> String {
         match (self.ty, &self.namespace) {
@@ -577,7 +577,7 @@ impl Purl {
 
     /// A filesystem-safe directory name for this package's unpacked root.
     ///
-    /// Mirrors `safe-dir-name` in `corpus/fetch.nu` — package names contain `/`
+    /// Mirrors `safe-dir-name` in `nix build .#checks.corpus` — package names contain `/`
     /// (Go modules, scoped npm) and `:` (Maven coordinates), neither of which
     /// may appear in a single path component. Kept byte-identical to that
     /// function's output so a PURL fetch and a manifest fetch of the same
@@ -686,7 +686,7 @@ mod tests {
     fn the_golang_type_maps_onto_the_go_ecosystem_id_not_its_own_spelling() {
         // The one place the purl vocabulary and the store's vocabulary
         // disagree. A package indexed from a purl must land in the same
-        // lineage as one provisioned from `corpus/manifest.toml`, which says
+        // lineage as one provisioned from `nix/corpus.nix`, which says
         // `ecosystem = "go"`.
         let p = Purl::parse("pkg:golang/github.com/pkg/errors@v0.9.1").expect("valid purl");
         assert_eq!(p.ty().as_str(), "golang");
@@ -705,7 +705,7 @@ mod tests {
 
     #[test]
     fn nuget_ids_keep_the_casing_the_corpus_already_uses() {
-        // `corpus/manifest.toml` holds `name = "AutoMapper"`. Lowercasing here
+        // `nix/corpus.nix` holds `name = "AutoMapper"`. Lowercasing here
         // would give one package two `PackageLineageId`s.
         let p = Purl::parse("pkg:nuget/AutoMapper@13.0.1").expect("valid purl");
         assert_eq!(p.lineage_name(), "AutoMapper");
@@ -827,7 +827,7 @@ mod tests {
 
     #[test]
     fn the_cache_directory_name_matches_fetch_nus_safe_dir_name() {
-        // `safe-dir-name` in corpus/fetch.nu: '/' and ':' both become '__',
+        // `safe-dir-name` in nix build .#checks.corpus: '/' and ':' both become '__',
         // then '-<version>'. Byte-identical output means a purl fetch of a
         // package the manifest already provisioned is a cache hit.
         assert_eq!(

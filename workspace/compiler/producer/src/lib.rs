@@ -121,7 +121,7 @@ impl fmt::Display for ProducerId {
 /// It is a type rather than a `String` field on [`YieldContract`] so the reason
 /// can occupy a `#[source]` slot on [`ProducerError::YieldContractOutgrown`] and
 /// be reached by walking `std::error::Error::source` — the diagnosis path
-/// AGENTS-DOCTRINE.md §8 prescribes — instead of being flattened into a message
+/// docs/AGENTS-DOCTRINE.md §8 prescribes — instead of being flattened into a message
 /// the moment it crosses a layer. It is the [`YieldContract`] analogue of
 /// `nudox_producer_rust::NoDepsFallback`.
 ///
@@ -174,7 +174,7 @@ impl DegradedYield {
 /// `table.is_empty()` guard therefore catches nothing: it cannot distinguish
 /// "this producer analysed the package and found no public API" from "this
 /// producer never read a byte of `src` and returned `Ok`". Both are `Ok`, both
-/// carry one entry, and the second is the failure AGENTS-DOCTRINE.md §8 calls
+/// carry one entry, and the second is the failure docs/AGENTS-DOCTRINE.md §8 calls
 /// "a real failure converted into a success with the cause parked somewhere a
 /// caller need not look" — the same defect class as the `--no-deps` fallback,
 /// wearing a producer's hat.
@@ -305,7 +305,7 @@ impl YieldContract {
 ///    are not: each param's key is `(Param, [.., App, parse], "args")`, which
 ///    is byte-identical across the overload set, and a parameter has no
 ///    signature skeleton to fall back to. That is why `Param` is the single
-///    largest kind above, and it is LIMITATIONS.md L23's residue at corpus
+///    largest kind above, and it is docs/LIMITATIONS.md L23's residue at corpus
 ///    scale ("memchr's own return-type `Param` is overwritten by a sibling
 ///    function's").
 ///
@@ -582,7 +582,7 @@ pub enum ProducerError {
     ///
     /// They share a variant because they share a cause and a fix: something
     /// upstream erased the bytes that told two declarations apart. The
-    /// canonical instance is `.real-crates/cli11-v2.7.2/include/CLI/App.hpp`,
+    /// canonical instance is `result/cli11-v2.7.2/include/CLI/App.hpp`,
     /// where `parse(std::vector<std::string>&)` and
     /// `parse(std::vector<std::string>&&)` both lower to the identical mutable
     /// reference — `workspace/compiler/languages/clang/src/lower.rs` says so in
@@ -921,7 +921,7 @@ pub fn enforce_yield_contract<P: Producer>(
     lowered: &nudox_ir::package::IrPackage<P::Id>,
 ) -> Result<YieldContract, ProducerError> {
     // `contributed` is *derived from the entries themselves*, not tallied
-    // alongside them (AGENTS-DOCTRINE.md §8: "the count is derived from the
+    // alongside them (docs/AGENTS-DOCTRINE.md §8: "the count is derived from the
     // repaired values, never accumulated alongside them"). It is exact rather
     // than `len() - 1`: `PackageInfo::export_idx_to_id` maps export index 0 —
     // and only export index 0 — to `None`, and index 0 is precisely the root
@@ -967,7 +967,7 @@ pub fn enforce_yield_contract<P: Producer>(
 /// `produce` returned `Ok` no matter how many declarations `seal` had just
 /// dropped, and the only production reader of the report was a `tracing::warn!`
 /// with no subscriber installed. The whole defect class this workspace keeps
-/// finding — AGENTS-DOCTRINE.md §8's `map_err(|_| …)`, the `--no-deps` fallback,
+/// finding — docs/AGENTS-DOCTRINE.md §8's `map_err(|_| …)`, the `--no-deps` fallback,
 /// the yield contract — is a real failure converted into a success with the
 /// cause parked somewhere a caller need not look. This is that shape, wearing
 /// `SealReport`'s hat.
@@ -1024,7 +1024,7 @@ pub(crate) fn enforce_identity_contract_under(
     ordinals: OrdinalPolicy,
 ) -> Result<SealOutcome, ProducerError> {
     // Derived from the report's own rows, never tallied alongside them
-    // (AGENTS-DOCTRINE.md §8). `seal` re-mints *whole groups* and never just
+    // (docs/AGENTS-DOCTRINE.md §8). `seal` re-mints *whole groups* and never just
     // the losers — `package/seal.rs` says so where it does it — so
     // `SealReport::forced` carries exactly one row per colliding group and
     // filtering it cannot double-count.
@@ -1089,7 +1089,7 @@ pub struct Produced {
     /// exists to answer ("26 of 154 corpus entries return Ok with a stub table
     /// and are counted as successes").
     ///
-    /// AGENTS-DOCTRINE.md §8 states the rule this field implements: a degraded
+    /// docs/AGENTS-DOCTRINE.md §8 states the rule this field implements: a degraded
     /// case may travel only if it is *typed* — "the output carries which repair
     /// happened, in-band, on the thing repaired … a mandatory field with no
     /// `Default` on the value that crosses the seam, so the repaired case

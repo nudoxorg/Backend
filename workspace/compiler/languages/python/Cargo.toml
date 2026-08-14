@@ -33,7 +33,7 @@ license.workspace = true
 #       typeshed are committed in the pyrefly repo, so cargo's own git checkout
 #       carries them. Verified by building it: the build script emitted
 #       stdlib.tar.zst / typeshed_stubs.tar.zst / stubs.tar.zst with no network.
-#       Nothing needs provisioning through `corpus/manifest.toml`.
+#       Nothing needs provisioning through `nix/corpus.nix`.
 #
 #   2.  TRANSITIVE CRATES — REAL, AND LARGER THAN THE OLD ESTIMATE. Adding the
 #       deps below adds **77** lock entries, not ~30: capnp, arc-swap, dupe,

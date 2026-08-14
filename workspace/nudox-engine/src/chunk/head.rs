@@ -526,7 +526,7 @@ mod tests {
     }
 
     /// End-to-end regression against the **real** `memchr` crate (L18):
-    /// drives the actual Rust producer over `.real-crates/memchr-2.8.3`, the
+    /// drives the actual Rust producer over `result/memchr-2.8.3`, the
     /// exact case the limitations ledger used to demonstrate the bug, rather
     /// than a fixture tailored to pass.
     ///
@@ -553,7 +553,7 @@ mod tests {
         use nudox_store::source::producer::PackageDescriptor;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../.real-crates/memchr-2.8.3")
+            .join("../../result/memchr-2.8.3")
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from("/nonexistent"));
 

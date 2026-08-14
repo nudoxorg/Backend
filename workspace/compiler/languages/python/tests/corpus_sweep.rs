@@ -1,7 +1,7 @@
 //! Sweeps every provisioned `pypi` corpus package through the full
 //! `nudox_producer::produce` pipeline (`invoke` -> `lower` -> `finish` ->
 //! yield-contract gate -> `seal`) against real, third-party sdists under
-//! `.real-crates/`.
+//! `result/`.
 //!
 //! # History: this file used to assert the opposite of what it asserts now
 //!
@@ -13,7 +13,7 @@
 //! synthesized root, nothing else) was the expected, asserted outcome for
 //! all 22 entries — see git history for that version if you need it.
 //!
-//! Per AGENTS-DOCTRINE.md §4 ("a test that would pass against a stub is not
+//! Per docs/AGENTS-DOCTRINE.md §4 ("a test that would pass against a stub is not
 //! a test") and the mission that added `syntax.rs`, that shape is gone.
 //! `PythonProducer` no longer overrides `yield_contract` at all — it takes
 //! the trait default (`YieldContract::Declarations`) — so a run that
@@ -23,11 +23,11 @@
 //! canaries** (a real, human-verified export that must appear by name) plus
 //! a **floor** on the non-module entry count, both derived from an actual
 //! measured run and set safely below it — never a bare count, per
-//! AGENTS-DOCTRINE.md §4's "a count-only assertion is satisfiable by a table
+//! docs/AGENTS-DOCTRINE.md §4's "a count-only assertion is satisfiable by a table
 //! of module entries named after files."
 //!
 //! Every entry is measured via `nudox_test_support::measured` per
-//! AGENTS-DOCTRINE.md §4.
+//! docs/AGENTS-DOCTRINE.md §4.
 
 use std::path::{Path, PathBuf};
 
@@ -37,10 +37,10 @@ use nudox_producer::{
 };
 use nudox_producer_python::{PythonProducer, oracle::PythonOracle};
 
-/// One corpus entry: `.real-crates/<dir>`, the PyPI project name, the
+/// One corpus entry: `result/<dir>`, the PyPI project name, the
 /// ecosystem version string, and its canary set.
 ///
-/// Mirrors `corpus/manifest.toml`'s 20 `pypi` `[[packages]]` blocks exactly:
+/// Mirrors `nix/corpus.nix`'s 20 `pypi` `[[packages]]` blocks exactly:
 /// 20 packages, of which `click` and `pydantic` each carry two versions for
 /// lineage testing, giving **22** version entries.
 ///
@@ -51,7 +51,7 @@ use nudox_producer_python::{PythonProducer, oracle::PythonOracle};
 /// real, non-private, non-module symbol the package actually defines at a
 /// syntactically visible (not control-flow-gated) position. A canary that
 /// does not hold is a bug in this test, not in the producer — per
-/// AGENTS-DOCTRINE.md §4.
+/// docs/AGENTS-DOCTRINE.md §4.
 ///
 /// `non_module_floor` is a floor, not an expectation: it is set safely below
 /// the entry count actually observed on the checkout in this repo (roughly
@@ -288,13 +288,13 @@ const ENTRIES: &[Entry] = &[
 
 fn corpus_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../.real-crates")
+        .join("../../../../result")
         .canonicalize()
-        .expect("no .real-crates/ checkout — see corpus/README.md to (re)provision it")
+        .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
 /// Walk the full `std::error::Error` source chain. The top-level `Display`
-/// on `ProducerError` is deliberately terse (AGENTS-DOCTRINE.md's "hard-won
+/// on `ProducerError` is deliberately terse (docs/AGENTS-DOCTRINE.md's "hard-won
 /// facts": reading only it turns a five-second diagnosis into an hour).
 fn chain(e: &(dyn std::error::Error + 'static)) -> String {
     let mut out = e.to_string();
@@ -458,7 +458,7 @@ fn every_provisioned_pypi_corpus_package_lowers_real_named_declarations() {
 ///
 /// This is the repurposed twin of the pre-`syntax.rs` version of this test
 /// (`the_declaration_is_what_keeps_python_out_of_the_error_path`), updated
-/// for AGENTS-DOCTRINE.md §8's "verify the guard by mutation" now that the
+/// for docs/AGENTS-DOCTRINE.md §8's "verify the guard by mutation" now that the
 /// thing being guarded against is different: it used to be "an undeclared
 /// stub is wrongly accepted"; it is now "a producer that silently regresses
 /// to contributing nothing is wrongly accepted". `EmptyPython` delegates

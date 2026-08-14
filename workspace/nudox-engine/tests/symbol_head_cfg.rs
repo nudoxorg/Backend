@@ -169,7 +169,7 @@ fn memchr_root() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../.real-crates/memchr-2.8.3")
+                .join("../../result/memchr-2.8.3")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
         })

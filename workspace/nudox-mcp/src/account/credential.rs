@@ -34,7 +34,7 @@
 //! We can do the prefix and shape half of that. We cannot do the checksum half:
 //! GitHub's `ghp_` tokens carry a CRC32 in their last six base62 characters
 //! precisely so a client can reject a mistyped token offline, and `ndx_` keys
-//! carry no such thing. See `auth.md` § "Gaps in the contract" — adopting one is
+//! carry no such thing. See `docs/auth.md` § "Gaps in the contract" — adopting one is
 //! a server-side change, not something this module can decide alone.
 
 use std::fmt;
@@ -98,7 +98,7 @@ const TAIL_LEN: usize = 4;
 /// `Drop` impl that overwrites the final buffer would leave every earlier
 /// buffer intact and would buy a *claim* of scrubbing rather than scrubbing.
 /// The credential's real defence is that it is at rest in the Keychain and in
-/// process memory only while the process runs — see `auth.md` § "Key hygiene".
+/// process memory only while the process runs — see `docs/auth.md` § "Key hygiene".
 #[derive(Clone)]
 pub struct ApiKey {
     secret: String,

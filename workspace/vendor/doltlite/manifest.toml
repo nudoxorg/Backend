@@ -7,7 +7,7 @@
 # git commit that tag pointed at when it was vendored, and every byte that lands
 # on disk is checked against a hash recorded here before anything uses it.
 #
-# Same discipline as corpus/manifest.toml + corpus/fetch.nu: a fetcher that
+# Same discipline as nix/corpus.nix + nix build .#checks.corpus: a fetcher that
 # accepts a hash mismatch converts a real failure into an apparent success, which
 # is worse than not fetching at all. The hashes here are plain hex sha256 (verify
 # with `shasum -a 256`) rather than corpus's nix-base32, because nothing in this

@@ -807,7 +807,7 @@ pub struct SymbolHead {
     /// Replaces the `source_path: Option<SharedStr>` /
     /// `source_span: Option<[u32; 2]>` pair, which could not express a
     /// navigable location and could not say why when it had none
-    /// (`LIMITATIONS.md` L31, L42.2). Only
+    /// (`docs/LIMITATIONS.md` L31, L42.2). Only
     /// [`SourceLocation::Declared`](source::SourceLocation::Declared) may be
     /// rendered as a link; see
     /// [`SourceLocation::jump_target`](source::SourceLocation::jump_target).
@@ -901,7 +901,7 @@ pub struct ImplRow {
     ///
     /// `ImplRow` previously carried `{key, label, is_blanket, trait_label,
     /// self_generic_count}` and no location at all, so a per-impl source link
-    /// had nothing to point at (`LIMITATIONS.md` L42.3) and the GUI's only
+    /// had nothing to point at (`docs/LIMITATIONS.md` L42.3) and the GUI's only
     /// recourse was to navigate to the impl's own symbol page and read the
     /// head's location from there — two steps for what docs.rs does in one.
     ///

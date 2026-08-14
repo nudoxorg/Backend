@@ -48,17 +48,17 @@
 //!   across the checkpoints) instead of rising off a floor. That is chunk
 //!   sharing: later packages reuse content already in the store.
 //!
-//! The package total also moved 154 → 155 — that is `corpus/manifest.toml`
+//! The package total also moved 154 → 155 — that is `nix/corpus.nix`
 //! gaining an entry on another track, not an effect of the engine swap.
-//! `INDEX-CAPABILITY.md` §2.2 and `ISSUES.md`'s `storage-numbers` row still
+//! `docs/INDEX-CAPABILITY.md` §2.2 and `docs/ISSUES.md`'s `storage-numbers` row still
 //! quote the pre-swap column and need updating; both are outside this change's
 //! file scope.
 //!
 //! # Corpus
 //!
-//! Package/version identity for every fixture comes from `corpus/manifest.toml`
+//! Package/version identity for every fixture comes from `nix/corpus.nix`
 //! itself (the authoritative fetch spec), cross-checked against which
-//! directories actually exist under `.real-crates/`. Dependency edges are
+//! directories actually exist under `result/`. Dependency edges are
 //! parsed out of the real `Cargo.toml` for `crates.io` fixtures only (the
 //! `toml` crate is already a hard `index` dependency); other ecosystems
 //! contribute real packages/versions with an empty edge set — disclosed here,
@@ -235,7 +235,7 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     assert!(
         fixtures.len() >= 100,
         "expected a meaningful real corpus (>=100 fetched fixtures out of \
-         {manifest_total} manifest-listed); found {}. Run corpus/fetch.nu first.",
+         {manifest_total} manifest-listed); found {}. Run nix build .#checks.corpus first.",
         fixtures.len()
     );
 
@@ -332,7 +332,7 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     // memchr 2.8.3's real, published Cargo.toml declares exactly two direct
     // dependencies, both optional: `core` (renamed from
     // rustc-std-workspace-core) and `log`. This is independently verifiable
-    // by reading `.real-crates/memchr-2.8.3/Cargo.toml` directly — it is not
+    // by reading `result/memchr-2.8.3/Cargo.toml` directly — it is not
     // a number this test invented.
     let memchr_2_8_3 = version_id_for(memchr_stem, "2.8.3");
     let memchr_edges = stored_edge_names(writer.engine(), memchr_2_8_3);
@@ -351,6 +351,6 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     {
         assert_eq!(newtonsoft.name_original, "Newtonsoft.Json");
     } else {
-        panic!("Newtonsoft.Json (nuget) must have been ingested; corpus/manifest.toml lists it");
+        panic!("Newtonsoft.Json (nuget) must have been ingested; nix/corpus.nix lists it");
     }
 }

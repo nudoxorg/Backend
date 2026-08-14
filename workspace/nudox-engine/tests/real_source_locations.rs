@@ -13,7 +13,7 @@
 //! empty-path test and the wire had no way to say "these are bytes, not lines".
 //! A producer-side test alone would have been green throughout.
 //!
-//! Both assertions are checked against `.real-crates/memchr-2.8.3` on disk, so
+//! Both assertions are checked against `result/memchr-2.8.3` on disk, so
 //! neither can be satisfied by a fabricated path.
 //!
 //! # Cost
@@ -52,7 +52,7 @@ const PKG_NAME: &str = "memchr";
 const PKG_VERSION: &str = "2.8.3";
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.real-crates/memchr-2.8.3")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ fn real_package() -> (PackageLineageId, Arc<PackageView>) {
     let root = root();
     assert!(
         root.join("Cargo.toml").is_file(),
-        "no checkout at {} — run `nu corpus/fetch.nu`",
+        "no checkout at {} — run `nix build .#checks.corpus`",
         root.display()
     );
 

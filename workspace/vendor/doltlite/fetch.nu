@@ -15,7 +15,7 @@
 # publishes the generated amalgamation as a release asset, so the honest recovery
 # is one pinned download.
 #
-# Same rule as corpus/fetch.nu: every byte is verified against manifest.toml
+# Same rule as nix build .#checks.corpus: every byte is verified against manifest.toml
 # BEFORE anything is written into this directory. A hash mismatch is a hard
 # failure and nothing is extracted — a fetcher that silently accepts a mismatch
 # turns a real failure into an apparent success, which is the exact failure class

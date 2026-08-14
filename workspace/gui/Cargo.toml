@@ -37,7 +37,7 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # would let a view depend on the shape of the IR rather than on the protocol.
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 
-# ── The MCP server lindsey hosts (GUI-LOCAL-PLAN §L6, LIMITATIONS.md L35) ────
+# ── The MCP server lindsey hosts (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md L35) ────
 #
 # THIS IS A SECOND BACKEND CRATE, and AGENTS-DOCTRINE §1 says lindsey "may name
 # `nudox-engine` and nothing else from the backend". The exception is argued
@@ -135,7 +135,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # capability port, so `NUDOX_EMBED_MODEL_DIR` (pointing at the pinned model)
 # gives the omni-search semantic section real ranked results instead of the
 # "not configured in this build" notice. It is opt-in because building it fetches
-# the ort runtime at build time (LIMITATIONS.md L41): a fresh clone, CI, and the
+# the ort runtime at build time (docs/LIMITATIONS.md L41): a fresh clone, CI, and the
 # screenshot suite build lindsey with this off and remain network-free at build.
 #
 #   cargo build --manifest-path workspace/gui/Cargo.toml -F semantic-onnx
@@ -174,7 +174,7 @@ name = "adversarial"
 path = "tests/adversarial.rs"
 
 # Proves the endpoint the status bar displays is one a client actually reaches
-# (LIMITATIONS.md L35). Normal harness — it drives real loopback sockets, not
+# (docs/LIMITATIONS.md L35). Normal harness — it drives real loopback sockets, not
 # pixels.
 [[test]]
 name = "mcp_endpoint"
@@ -241,7 +241,7 @@ network round trip to docs.rs.
 # required iconset size (16/16@2x/32/32@2x/128/128@2x/256/256@2x/512/512@2x —
 # the last of which *is* the 1024px tile) and writes a real .icns into
 # Contents/Resources. A logo change needs no other step.
-icon = ["../../logo.svg"]
+icon = ["assets/logo.svg"]
 # Measured, not aspirational: `otool -l target/release/lindsey`'s
 # LC_BUILD_VERSION reports `minos 14.0` for a binary built with no
 # MACOSX_DEPLOYMENT_TARGET override, i.e. this toolchain's default deployment
@@ -258,6 +258,6 @@ osx_minimum_system_version = "14.0"
 # positions, rasterises the whole file to `.background/background.tiff` at 2x,
 # and writes a matching `.DS_Store` (window size/position, icon size, hidden
 # toolbar/sidebar) directly — no AppleScript, no `create-dmg`. Generated from
-# /logo.svg by generate_dmg_background.py in this directory; rerun that
+# /workspace/gui/assets/logo.svg by generate_dmg_background.py in this directory; rerun that
 # script after a logo change, this path does not change.
 osx_dmg_background = "packaging/dmg-background.svg"

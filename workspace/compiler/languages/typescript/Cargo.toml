@@ -52,7 +52,7 @@ tracing = "0.1"
 
 # ── tsz oracle tier (optional, feature-gated) ──────────────────────────────────
 # tsz 0.1.x is NOT on crates.io at the needed commit; pin to the exact git SHA
-# documented in build/third-party/git-fragment.bzl (TSZ_REV).
+# documented in nix/build/third-party/git-fragment.bzl (TSZ_REV).
 # wasm-bindgen is an unconditional dep in tsz-scanner/tsz-parser/tsz-core; on
 # native targets it compiles to no-op stubs — expected, not a blocker.
 tsz-core    = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-core",    optional = true }
@@ -75,6 +75,6 @@ tempfile = "3"
 # Needed for nudox_ir::kinds::ty::MappedModifier in test assertions.
 nudox-ir = { path = "../../../ir/model" }
 # Used by tests/real_npm_packages.rs, which lowers the real npm corpus
-# (.real-crates/) through the actual Producer pipeline and emits the
-# `cost case=…` benchmark lines AGENTS-DOCTRINE.md §4 requires.
+# (result/) through the actual Producer pipeline and emits the
+# `cost case=…` benchmark lines docs/AGENTS-DOCTRINE.md §4 requires.
 nudox-test-support = { path = "../../../test-support" }

@@ -21,7 +21,7 @@
 //! # Quick start
 //!
 //! From a synchronous host — which is what `lindsey` is, and what
-//! [`host::McpHost`] exists for (LIMITATIONS.md L35):
+//! [`host::McpHost`] exists for (docs/LIMITATIONS.md L35):
 //!
 //! ```no_run
 //! # fn run(engine: nudox_engine::EngineHandle) -> Result<(), nudox_mcp::McpError> {

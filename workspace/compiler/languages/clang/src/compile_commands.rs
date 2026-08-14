@@ -75,7 +75,7 @@ pub(crate) struct CompileCommands {
 
 impl CompileCommands {
     /// Look for `compile_commands.json` at the package root, or in the
-    /// `build/` subdirectory `cmake -B build
+    /// `nix/build/` subdirectory `cmake -B build
     /// -DCMAKE_EXPORT_COMPILE_COMMANDS=ON` writes it to — the two locations
     /// real C/C++ tooling actually produces by default. Returns `None` if
     /// neither location has a parseable database; callers fall back to
@@ -404,7 +404,7 @@ mod tests {
         ]);
         std::fs::write(build_dir.join("compile_commands.json"), db.to_string()).unwrap();
 
-        let cc = CompileCommands::load(dir.path()).expect("database under build/ must be found");
+        let cc = CompileCommands::load(dir.path()).expect("database under nix/build/ must be found");
         assert!(cc.args_for(&file_path).is_some());
     }
 }

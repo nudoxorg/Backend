@@ -1,5 +1,5 @@
 //! Background residency: the window is a *view of* the process, not the process
-//! (GUI-LOCAL-PLAN §L6, LIMITATIONS.md **L35**).
+//! (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md **L35**).
 //!
 //! # The defect this closes
 //!
