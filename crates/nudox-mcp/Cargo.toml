@@ -58,10 +58,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # *holding* one.
 sha2 = "0.10"
 
-# The macOS Keychain, for the account key at rest. Target-gated because there is
-# no Keychain anywhere else; `account::store::platform_store` returns a store
-# that reports `Unavailable` and points at `NUDOX_API_KEY` on other platforms,
-# rather than inventing a plaintext dotfile.
+# The macOS Keychain, for the account key at rest.
 #
 # `security-framework` directly, not `keyring`: `keyring`'s macOS backend *is*
 # this crate, so the abstraction buys nothing for a macOS-only app, and this
@@ -70,6 +67,37 @@ sha2 = "0.10"
 # `SecItem*` calls.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
+
+# The freedesktop Secret Service, for the same key at rest on Linux — the
+# platform's own equivalent of the Keychain, served by gnome-keyring, KWallet's
+# `ksecretd`, KeePassXC and others over D-Bus.
+#
+# Before this, `platform_store()` returned a store that answered `Unavailable`
+# to everything, so a signed-out Linux session hit `GateState::StoreUnavailable`
+# and the sign-in gate replaced the shell **permanently**: the field on that
+# card could not persist what was typed into it, and the only way into the app
+# was exporting `NUDOX_API_KEY` in every shell that launched it. That is not a
+# Linux port, it is a macOS app that starts on Linux.
+#
+# `oo7` rather than `secret-service`: it is already in this workspace's lockfile
+# (gpui_linux depends on it), so it costs no new dependency tree, and it is the
+# maintained successor — the `secret-service` crate's own README points at it.
+# Features match gpui_linux's exactly, so the graph resolves one copy: async-std
+# (this crate's D-Bus calls must not require a Tokio reactor — see
+# `SecretServiceStore`'s note on why the calls run on their own thread) and
+# `native_crypto` (no OpenSSL).
+#
+# **D-Bus only.** `oo7::Keyring::new()` silently falls back to oo7's encrypted
+# *file* keyring when no daemon answers; `account::store` uses `oo7::dbus`
+# directly so that cannot happen. With no daemon on the bus the answer is
+# `Unavailable` and the user is routed to `NUDOX_API_KEY`, which is the same
+# honest failure this module has always given — the no-file rule stays absolute.
+[target.'cfg(target_os = "linux")'.dependencies]
+oo7 = { version = "0.6", default-features = false, features = [
+    "async-std",
+    "native_crypto",
+] }
+futures-lite = "2"
 
 [dev-dependencies]
 nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }

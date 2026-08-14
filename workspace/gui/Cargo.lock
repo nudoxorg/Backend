@@ -5914,8 +5914,10 @@ name = "nudox-mcp"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
+ "futures-lite 2.6.1",
  "nudox-engine",
  "nudox-graph",
+ "oo7",
  "rand 0.10.2",
  "reqwest",
  "rmcp",

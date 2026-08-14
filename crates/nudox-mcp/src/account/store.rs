@@ -3,9 +3,13 @@
 //!
 //! # The decision, and the two alternatives it beat
 //!
-//! **Chosen: the macOS Keychain** (`Security.framework`, a generic-password
-//! item under service `org.nudox.api`), reached through the
-//! [`security_framework::passwords`] wrapper.
+//! **Chosen: the platform's own credential store.** On macOS the Keychain
+//! (`Security.framework`, a generic-password item under service
+//! `org.nudox.api`), reached through the [`security_framework::passwords`]
+//! wrapper. On Linux the freedesktop Secret Service over D-Bus — gnome-keyring,
+//! KWallet's `ksecretd`, KeePassXC — reached through `oo7`, filing the item
+//! under the same service/account pair so the two platforms agree on one
+//! identity. See [`SecretServiceStore`] for why that one is D-Bus only.
 //!
 //! *Rejected: a dotfile.* A plain `~/.config/nudox/credentials.json` is what
 //! most tools reach for and it is the single most common way a key escapes: it
@@ -112,18 +116,33 @@ pub const API_KEY_ENV: &str = "NUDOX_API_KEY";
 /// edit whatever set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeySource {
-    /// Read from the macOS Keychain, written there by the sign-in flow.
+    /// Read from the platform's own credential store — the macOS Keychain or
+    /// the Linux Secret Service — written there by the sign-in flow.
+    ///
+    /// Still spelled `Keychain` because that is what every caller means by it:
+    /// *the store this app can also write to and sign out of*, as opposed to
+    /// one the app can only read. [`Self::label`] supplies the platform's own
+    /// name for the UI.
     Keychain,
-    /// Read from [`API_KEY_ENV`]. Overrides the keychain; not removable from
-    /// inside the app.
+    /// Read from [`API_KEY_ENV`]. Overrides the platform store; not removable
+    /// from inside the app.
     Environment,
 }
 
 impl KeySource {
     /// How this source should be named in UI, in one short phrase.
+    ///
+    /// Platform-specific for the stored case: "Keychain" on a Linux desktop
+    /// would name something the machine does not have, and the string is shown
+    /// to the user in the account panel and the sign-in card.
     pub fn label(self) -> &'static str {
         match self {
+            #[cfg(target_os = "macos")]
             Self::Keychain => "Keychain",
+            #[cfg(target_os = "linux")]
+            Self::Keychain => "keyring",
+            #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+            Self::Keychain => "credential store",
             Self::Environment => "NUDOX_API_KEY",
         }
     }
@@ -190,12 +209,23 @@ pub enum CredentialStoreError {
         reason: String,
     },
 
-    /// The platform store is not available in this build or on this OS.
+    /// There is no store to consult on this machine.
     ///
-    /// Not an error to hide: on a non-macOS build there is no Keychain, and the
-    /// honest answer is to say so and point at [`API_KEY_ENV`].
-    #[error("no platform credential store is available on this build")]
-    Unavailable,
+    /// Two different facts reach this variant and the `detail` is what tells
+    /// them apart: a platform this build has no store *for* at all, and a
+    /// platform that has one where nothing is answering — no Secret Service on
+    /// the session bus, or no session bus, which is the normal state in a
+    /// container or over plain SSH.
+    ///
+    /// Not an error to hide: in both cases the honest answer is to say which it
+    /// was and point at [`API_KEY_ENV`]. The detail is the difference between
+    /// "install a keyring" and "this build cannot store keys here".
+    #[error("no credential store is available: {detail}")]
+    Unavailable {
+        /// Which of the two it was, in the platform's own words where there
+        /// are any. Never contains a key.
+        detail: String,
+    },
 }
 
 impl CredentialStoreError {
@@ -208,7 +238,10 @@ impl CredentialStoreError {
                  instead."
             }
             Self::Corrupt { .. } => "Sign out and sign in again to replace the stored key.",
-            Self::Unavailable => "Set NUDOX_API_KEY in the environment that launches nudox.",
+            Self::Unavailable { .. } => {
+                "Set NUDOX_API_KEY in the environment that launches nudox, or start a keyring \
+                 service (gnome-keyring, ksecretd, KeePassXC) and sign in again."
+            }
         }
     }
 }
@@ -409,6 +442,262 @@ impl CredentialStore for FailingStore {
 }
 
 // ---------------------------------------------------------------------------
+// SecretServiceStore (Linux)
+// ---------------------------------------------------------------------------
+
+/// The freedesktop Secret Service, as a [`CredentialStore`].
+///
+/// One item in the login collection, tagged with the same
+/// [`KEYCHAIN_SERVICE`]/[`KEYCHAIN_ACCOUNT`] pair the macOS item uses, so the
+/// two platforms file the credential under one identity rather than two.
+/// gnome-keyring, KWallet's `ksecretd` and KeePassXC all serve this interface.
+///
+/// # D-Bus only, on purpose
+///
+/// `oo7::Keyring::new()` falls back to oo7's own encrypted *file* keyring when
+/// no daemon answers. This uses [`oo7::dbus`] directly so that cannot happen:
+/// with no Secret Service on the bus the answer is
+/// [`CredentialStoreError::Unavailable`], which routes the user to
+/// [`API_KEY_ENV`] exactly as the old no-op store did. The module docs above
+/// reject a credential file on disk; a fallback that quietly wrote one would
+/// reverse that decision without anyone deciding to.
+///
+/// # Why every call runs on its own thread
+///
+/// `CredentialStore` is sync, and [`super::gate::AccountGate::sign_in`] is
+/// `async` — so `store()` is called *from inside* a running executor. Blocking
+/// that executor's own thread on a future is how you deadlock a single-threaded
+/// runtime and how you panic a Tokio one (`Cannot start a runtime from within a
+/// runtime`). Handing the future to a fresh thread with its own executor is
+/// safe from every context, sync or async, whatever runtime the caller happens
+/// to be on — and these calls happen at startup, sign-in and sign-out, so a
+/// thread each is not a cost worth optimising away.
+#[cfg(target_os = "linux")]
+pub struct SecretServiceStore {
+    service: String,
+    account: String,
+}
+
+#[cfg(target_os = "linux")]
+impl Default for SecretServiceStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl SecretServiceStore {
+    /// The store for this app's credential.
+    pub fn new() -> Self {
+        Self {
+            service: KEYCHAIN_SERVICE.to_owned(),
+            account: KEYCHAIN_ACCOUNT.to_owned(),
+        }
+    }
+
+    /// The attribute set identifying our one item.
+    fn attributes(&self) -> std::collections::HashMap<&str, &str> {
+        std::collections::HashMap::from([
+            ("service", self.service.as_str()),
+            ("account", self.account.as_str()),
+        ])
+    }
+
+    /// Run a Secret Service future to completion on a dedicated thread.
+    ///
+    /// See the type's docs for why this is not `block_on` in place.
+    fn blocking<T, F>(future: F) -> Result<T, CredentialStoreError>
+    where
+        F: std::future::Future<Output = Result<T, CredentialStoreError>> + Send + 'static,
+        T: Send + 'static,
+    {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| futures_lite::future::block_on(future))
+                .join()
+                // A panic inside the D-Bus call is not something to translate
+                // into "the store is unavailable" — that would send the user to
+                // set an environment variable to work around a bug here.
+                .unwrap_or_else(|_| {
+                    Err(CredentialStoreError::AccessDenied {
+                        store: SECRET_SERVICE_NAME,
+                        detail: "the Secret Service call panicked".to_owned(),
+                    })
+                })
+        })
+    }
+
+    /// Open the default collection, mapping every failure to say which kind it
+    /// is.
+    ///
+    /// A missing daemon and a locked collection are different facts and get
+    /// different answers: "sign in" is useless advice to someone whose keyring
+    /// is locked, and "unlock your keyring" is useless to someone who has none.
+    async fn collection() -> Result<oo7::dbus::Collection, CredentialStoreError> {
+        let service = oo7::dbus::Service::new().await.map_err(|err| {
+            // No daemon on the bus, or no session bus at all (a container, a
+            // bare TTY, an SSH session). Honest, and the env var still works.
+            CredentialStoreError::Unavailable {
+                detail: format!("no Secret Service on the session bus: {err}"),
+            }
+        })?;
+
+        match service.default_collection().await {
+            Ok(collection) => Ok(collection),
+            Err(err) => Err(CredentialStoreError::AccessDenied {
+                store: SECRET_SERVICE_NAME,
+                detail: err.to_string(),
+            }),
+        }
+    }
+}
+
+/// How the Secret Service names itself in an error message.
+#[cfg(target_os = "linux")]
+const SECRET_SERVICE_NAME: &str = "Secret Service keyring";
+
+#[cfg(target_os = "linux")]
+impl CredentialStore for SecretServiceStore {
+    fn load(&self) -> Result<Option<ApiKey>, CredentialStoreError> {
+        let attributes: std::collections::HashMap<String, String> = self
+            .attributes()
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+
+        Self::blocking(async move {
+            let collection = Self::collection().await?;
+            let items = collection.search_items(&attributes).await.map_err(|err| {
+                CredentialStoreError::AccessDenied {
+                    store: SECRET_SERVICE_NAME,
+                    detail: err.to_string(),
+                }
+            })?;
+
+            // `Ok(None)` and `Err(_)` mean different things to `GateState` —
+            // "never signed in" versus "could not ask" — which is the whole
+            // point of this module. An empty search result is the former.
+            let Some(item) = items.first() else {
+                return Ok(None);
+            };
+
+            // Unlocking can prompt. That is correct: the alternative is
+            // reporting "not signed in" to someone who is, and sending them to
+            // paste a key they already stored.
+            // `None`: no window to parent a prompt to. The Secret Service
+            // agent still prompts, it is just not modal to our window — the
+            // alternative is threading a `WindowIdentifier` from the GUI into a
+            // backend crate that has no business knowing windows exist.
+            item.unlock(None).await.map_err(|err| {
+                CredentialStoreError::AccessDenied {
+                    store: SECRET_SERVICE_NAME,
+                    detail: err.to_string(),
+                }
+            })?;
+
+            let secret = item.secret().await.map_err(|err| {
+                CredentialStoreError::AccessDenied {
+                    store: SECRET_SERVICE_NAME,
+                    detail: err.to_string(),
+                }
+            })?;
+
+            let text = std::str::from_utf8(&secret).map_err(|_| CredentialStoreError::Corrupt {
+                reason: "the stored secret is not valid UTF-8".to_owned(),
+            })?;
+
+            ApiKey::parse(text)
+                .map(Some)
+                .map_err(|err| CredentialStoreError::Corrupt {
+                    reason: err.to_string(),
+                })
+        })
+    }
+
+    fn store(&self, key: &ApiKey) -> Result<(), CredentialStoreError> {
+        let attributes: std::collections::HashMap<String, String> = self
+            .attributes()
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        // Exposed once, here, and moved into the future — never logged, never
+        // formatted into an error (`ApiKey`'s `Debug` redacts; this is the
+        // deliberate exception that has to hand the bytes to the daemon).
+        let secret = key.expose().to_owned();
+
+        Self::blocking(async move {
+            let collection = Self::collection().await?;
+            collection
+                // `true` replaces an existing item with the same attributes,
+                // which is what signing in again must do — two items under one
+                // identity is the state where `load` starts picking arbitrarily.
+                .create_item(
+                    SECRET_SERVICE_LABEL,
+                    &attributes,
+                    oo7::Secret::text(&secret),
+                    // Replace an existing item with the same attributes, which
+                    // is what signing in again must do — two items under one
+                    // identity is the state where `load` starts picking
+                    // arbitrarily between them.
+                    true,
+                    None,
+                )
+                .await
+                .map(|_| ())
+                .map_err(|err| CredentialStoreError::AccessDenied {
+                    store: SECRET_SERVICE_NAME,
+                    detail: err.to_string(),
+                })
+        })
+    }
+
+    fn delete(&self) -> Result<(), CredentialStoreError> {
+        let attributes: std::collections::HashMap<String, String> = self
+            .attributes()
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+
+        Self::blocking(async move {
+            let collection = Self::collection().await?;
+            // Per *item*, never `Collection::delete` — that one deletes the
+            // whole collection, i.e. every secret the user owns, and the
+            // compiler will happily suggest it as a same-named alternative.
+            //
+            // Deleting an absent key succeeds (the trait says so): an empty
+            // search is a no-op, not an error.
+            let items = collection.search_items(&attributes).await.map_err(|err| {
+                CredentialStoreError::AccessDenied {
+                    store: SECRET_SERVICE_NAME,
+                    detail: err.to_string(),
+                }
+            })?;
+
+            for item in items {
+                item.delete(None)
+                    .await
+                    .map_err(|err| CredentialStoreError::AccessDenied {
+                        store: SECRET_SERVICE_NAME,
+                        detail: err.to_string(),
+                    })?;
+            }
+            Ok(())
+        })
+    }
+
+    fn describe(&self) -> &'static str {
+        SECRET_SERVICE_NAME
+    }
+}
+
+/// The human-facing label the keyring UI shows for our item.
+///
+/// Seen by anyone browsing Seahorse or KWalletManager, so it names the app and
+/// the account rather than being an opaque id.
+#[cfg(target_os = "linux")]
+const SECRET_SERVICE_LABEL: &str = "nudox API key";
+
+// ---------------------------------------------------------------------------
 // KeychainStore (macOS)
 // ---------------------------------------------------------------------------
 
@@ -532,8 +821,8 @@ impl CredentialStore for KeychainStore {
 
 /// The platform credential store for this build.
 ///
-/// Returns the Keychain on macOS and a store that reports
-/// [`CredentialStoreError::Unavailable`] everywhere else — which is honest, and
+/// The Keychain on macOS, the Secret Service on Linux, and a store that reports
+/// [`CredentialStoreError::Unavailable`] anywhere else — which is honest, and
 /// routes the user to [`API_KEY_ENV`], rather than inventing a dotfile on a
 /// platform where we have nothing better.
 pub fn platform_store() -> Box<dyn CredentialStore> {
@@ -541,26 +830,41 @@ pub fn platform_store() -> Box<dyn CredentialStore> {
     {
         Box::new(KeychainStore::new())
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(SecretServiceStore::new())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Box::new(NoPlatformStore)
     }
 }
 
+/// Why a platform with no store of its own cannot answer.
+///
+/// A named function rather than the variant inline, so the three trait methods
+/// cannot drift into saying three different things about one fact.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn no_store_for_this_platform() -> CredentialStoreError {
+    CredentialStoreError::Unavailable {
+        detail: "this build has no credential store for this platform".to_owned(),
+    }
+}
+
 /// The stand-in for platforms with no credential store.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub struct NoPlatformStore;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 impl CredentialStore for NoPlatformStore {
     fn load(&self) -> Result<Option<ApiKey>, CredentialStoreError> {
-        Err(CredentialStoreError::Unavailable)
+        Err(no_store_for_this_platform())
     }
     fn store(&self, _key: &ApiKey) -> Result<(), CredentialStoreError> {
-        Err(CredentialStoreError::Unavailable)
+        Err(no_store_for_this_platform())
     }
     fn delete(&self) -> Result<(), CredentialStoreError> {
-        Err(CredentialStoreError::Unavailable)
+        Err(no_store_for_this_platform())
     }
     fn describe(&self) -> &'static str {
         "no platform credential store"
