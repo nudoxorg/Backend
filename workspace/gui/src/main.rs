@@ -15,12 +15,15 @@
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{App, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui::{
+    App, Bounds, SharedString, TitlebarOptions, WindowBounds, WindowOptions, px, size,
+};
 use gpui_component::Root;
 use gpui_component_assets::Assets;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt as _, util::SubscriberInitExt as _};
 
 use lindsey::app::corpus::{self, CorpusChoice};
+use lindsey::app::desktop;
 use lindsey::app::keymaps;
 use lindsey::app::lifecycle::{self, WindowSession};
 use lindsey::app::account::AccountService;
@@ -42,6 +45,26 @@ fn main() {
         .init();
 
     lindsey::perf::init_from_env();
+
+    // ── Is there a screen? (Linux only failure mode) ─────────────────────────
+    //
+    // Asked before the engine so a headless invocation costs nothing and says
+    // something. GPUI would otherwise infer the headless backend from the same
+    // environment, render every frame into nothing, and never report a problem
+    // — see `app::desktop` for why that is worth an explicit check.
+    //
+    // This is checked even though lindsey now outlives its window
+    // (`app::lifecycle`): a process with an MCP endpoint and no possible window
+    // is a different product, and if that is ever wanted it should be asked for
+    // rather than fallen into by an unset variable.
+    let session = match desktop::from_env() {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("lindsey: {err}");
+            std::process::exit(2);
+        }
+    };
+    tracing::info!(session = session.compositor_name(), "display session");
 
     // ── The engine (LR-9: it owns every runtime; lindsey links none) ─────────
     //
@@ -244,6 +267,36 @@ fn main() {
                     cx.open_window(
                         WindowOptions {
                             window_bounds: Some(WindowBounds::Windowed(bounds)),
+
+                            // Desktop identity (`app::desktop::APP_ID`). On
+                            // Wayland this is the only thing a compositor can
+                            // match against the installed `.desktop` entry — a
+                            // surface carries no icon and no window class — so
+                            // without it the window appears in the taskbar, the
+                            // dock and alt-tab as an unnamed placeholder.
+                            //
+                            // It matters more here than it would elsewhere:
+                            // `app::lifecycle` destroys and rebuilds this
+                            // window, and the rebuilt one must land back in the
+                            // same taskbar slot rather than appearing as a
+                            // second, anonymous application.
+                            app_id: Some(desktop::APP_ID.to_owned()),
+
+                            titlebar: Some(TitlebarOptions {
+                                title: Some(SharedString::from("lindsey")),
+                                ..Default::default()
+                            }),
+
+                            // A floor the compositor must honour. Tiling window
+                            // managers (sway, Hyprland, i3) do not ask a window
+                            // what size it would like; they hand it whatever the
+                            // layout has left, which can be a 200 px column.
+                            // Below roughly this size the dock layout has
+                            // nowhere to put the centre pane and the shell
+                            // renders as overlapping chrome — LAYOUT-TRAPS
+                            // Trap 1, at window scale.
+                            window_min_size: Some(size(px(800.), px(600.))),
+
                             ..Default::default()
                         },
                         |window, cx| {

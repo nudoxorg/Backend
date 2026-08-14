@@ -422,11 +422,38 @@
           );
 
           # ── Devshell command wrappers ────────────────────────────────────
+          # Convenience commands whose name is also a standard Unix tool that
+          # build scripts call by name. These are exposed with a `nudox-`
+          # prefix; everything else keeps its bare name.
+          #
+          # This is not tidiness. The wrappers land ahead of coreutils on PATH,
+          # so inside the devshell `install` *was* a Nushell script, and any C
+          # dependency running autotools got:
+          #
+          #     x The `install.nu` command doesn't have flag `-c`.
+          #     configure: error: cannot determine return type of strerror_r
+          #
+          # which failed `tikv-jemalloc-sys` and took the whole lindsey build
+          # down with it, on Linux only, with an error naming neither cause.
+          # `patch` is the same landmine one dependency away.
+          #
+          # Reordering PATH instead would be worse: it would make every bare
+          # command lose to a same-named tool, including `test`.
+          shadowingCommands = [
+            "install"
+            "install-force"
+            "patch"
+          ];
+
           mkDevshellCommand =
             cmdName:
+            let
+              exposedName =
+                if builtins.elem cmdName shadowingCommands then "nudox-${cmdName}" else cmdName;
+            in
             nixPackages.writeTextFile {
-              name = "${cmdName}-nuenv";
-              destination = "/bin/${cmdName}";
+              name = "${exposedName}-nuenv";
+              destination = "/bin/${exposedName}";
               executable = true;
               text = ''
                 #!/bin/sh
@@ -467,10 +494,70 @@
           ];
 
           commandPackages = map mkDevshellCommand nuScriptCommands;
+
+          # ── lindsey (workspace/gui) native graphics stack ─────────────────
+          #
+          # GPUI's Linux backends need four libraries that nothing else in this
+          # repo does. Two are DT_NEEDED by the linked binary (libxcb,
+          # libxkbcommon + its -x11 companion); two are dlopened by soname at
+          # runtime and so never appear in `patchelf --print-needed` at all
+          # (libwayland-client, libvulkan).
+          #
+          # Leaving them out of the shell does not produce a missing-dependency
+          # error at build time, which is what makes it dangerous. `pkg-config`
+          # simply falls through to the host's /usr/lib copies, the link
+          # succeeds, and the result is a binary that mixes Nix's dynamic
+          # linker with the host's glibc — it requires GLIBC_2.43 while running
+          # under Nix's 2.42 loader, and dies at exec with a version error that
+          # names neither cause. Putting them here is a correctness fix, not a
+          # convenience.
+          guiGraphicsLibraries = with nixPackages; [
+            libxcb
+            libxkbcommon
+            wayland
+            vulkan-loader
+          ];
+
+          # Needed to *build* (font-kit's `yeslogic-fontconfig-sys` and
+          # `freetype-sys` are pkg-config crates, and the `test-support` feature
+          # pulls them into the test profile), but deliberately kept off
+          # LD_LIBRARY_PATH.
+          #
+          # Font *configuration* is a property of the machine, not of the build:
+          # a store fontconfig carries no font paths, finds nothing, and renders
+          # blank text. Linking against the store copy and resolving the host's
+          # `libfontconfig.so.1` at run time is the combination that both builds
+          # hermetically and picks up the user's actual fonts.
+          guiFontLibraries = with nixPackages; [
+            fontconfig
+            freetype
+          ];
         in
         {
           default = nixPackages.mkShell {
             name = "NuNuShell";
+
+            # Cargo compiles C dependencies at `-O0` in the dev profile, while
+            # Nix's default hardening injects `-D_FORTIFY_SOURCE=3`. glibc
+            # answers that combination with
+            #
+            #     features.h: #warning _FORTIFY_SOURCE requires compiling with
+            #                 optimization (-O)
+            #
+            # which is harmless right up until a dependency's autotools probe
+            # runs with `-Werror` — and `tikv-jemalloc-sys`'s does. Both of its
+            # `strerror_r` probes fail on the warning, configure aborts with
+            # "cannot determine return type of strerror_r", and the entire GUI
+            # build dies on a message that mentions neither fortification nor
+            # optimisation.
+            #
+            # It reproduces only in debug builds on Linux: `--release` compiles
+            # the same C at `-O3`, where the warning never fires. That asymmetry
+            # is what makes it worth a comment rather than a one-line flag.
+            hardeningDisable = [
+              "fortify"
+              "fortify3"
+            ];
 
             RUSTC_BOOTSTRAP = "1";
             LIBRARY_PATH = "${nixPackages.libiconv}/lib";
@@ -535,15 +622,64 @@
                     wild-unwrapped
                     openssl
                     clang
+                    # Nix's own pkg-config, so `guiGraphicsLibraries` below is
+                    # what gets found rather than the host's /usr/lib/pkgconfig.
+                    # Without this the search order is the host's, and the
+                    # glibc-mismatch failure described above is the result.
+                    pkg-config
                   ]
                 )
               );
+
+            # `buildInputs` rather than `packages`: the pkg-config setup hook
+            # builds PKG_CONFIG_PATH from this list, which is the whole point —
+            # `xcb.pc` and `xkbcommon.pc` must resolve to the store, not to
+            # /usr/lib/pkgconfig.
+            buildInputs = nixPackages.lib.optionals nixPackages.stdenv.isLinux (
+              guiGraphicsLibraries ++ guiFontLibraries
+            );
 
             shellHook = ''
               export PRJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
               export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
               export DOTNET_CLI_HOME="$TMPDIR/dotnet"
+
+              ${nixPackages.lib.optionalString nixPackages.stdenv.isLinux ''
+                # ── lindsey's graphics stack (workspace/gui) ──────────────────
+                #
+                # Two of these four are dlopened by soname — libwayland-client
+                # by `wayland-client`, libvulkan by wgpu — so they are invisible
+                # to the linker and must be findable at run time or the window
+                # never opens. lindsey reports that case itself now ("could not
+                # open a window … no usable GPU backend"), but the fix belongs
+                # here.
+                export LD_LIBRARY_PATH="${nixPackages.lib.makeLibraryPath guiGraphicsLibraries}:$LD_LIBRARY_PATH"
+
+                # The Vulkan *driver* cannot come from the store on a non-NixOS
+                # host: its ICD manifest names the vendor library by bare soname
+                # ("libGLX_nvidia.so.0", not a path), so the directory holding it
+                # has to be searchable at run time. This is the seam nixGL exists
+                # to paper over, and it is why the GUI is the one target here
+                # that is not hermetic.
+                #
+                # It is deliberately **not** added to LD_LIBRARY_PATH for the
+                # whole shell. Doing that was tried, and it broke the build: with
+                # /usr/lib searched first, the Nix JDK loaded the host's
+                # `libnet.so` and `nudox-producer-java`'s build script died on
+                # `undefined symbol: reuseport_available`. A host library
+                # directory on the search path of every compiler, linker and
+                # build script in the repo will keep finding new ways to do that.
+                #
+                # So it is exported as its own variable and applied by
+                # `workspace/gui/packaging/linux/run-lindsey`, which is the only
+                # process that needs it.
+                if [[ -d /run/opengl-driver/lib ]]; then
+                  export NUDOX_GUI_DRIVER_PATH=/run/opengl-driver/lib
+                elif [[ -d /usr/lib ]]; then
+                  export NUDOX_GUI_DRIVER_PATH=/usr/lib
+                fi
+              ''}
 
               # Sealed-producer PATH prefix (see sandbox::ToolchainSet). Hermetic
               # PATH alone is /usr/bin:/bin:/nix/var/nix/profiles/default/bin —

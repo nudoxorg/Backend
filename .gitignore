@@ -42,6 +42,13 @@
 # Crates under /crates need the same allowance — without it a new crate's
 # manifest is silently ignored and the workspace fails to load.
 !/crates/**/Cargo.toml
+# workspace/gui is a standalone Cargo workspace with its own lockfile — that is
+# the whole point of the split, since it is what keeps gpui out of the root
+# workspace's graph. The root allowance above is anchored at `/Cargo.lock` and
+# does not reach it, so the lockfile pinning gpui, gpui-component and the whole
+# wgpu stack was untracked: every fresh checkout re-resolved them, which is not
+# a lockfile at all. It is an application, so the lockfile belongs in the tree.
+!/workspace/gui/Cargo.lock
 # Manifests that tests scaffold at runtime stay ignored.
 /workspace/compiler/tests/fixtures/**/Cargo.toml
 
@@ -159,6 +166,18 @@
 # Trustfall schema and query sources
 !/**/*.graphql
 !/**/*.trustfall
+
+# Freedesktop entries shipped with the GUI (workspace/gui/packaging/linux). The
+# window's `app_id` is matched against the installed entry by name, so an
+# untracked one means the app loses its icon on every fresh checkout.
+!/**/*.desktop
+
+# The Linux run wrapper, which puts the host's GPU driver on the loader's path
+# for the GUI process only. Listed by name because it has no extension, and
+# every allow-rule in this file keys off one — `git add -A` silently skipped it
+# on the first attempt, which is the same trap the themes and the query-plane
+# sources hit, arriving this time on a file added to fix a packaging problem.
+!/workspace/gui/packaging/linux/run-lindsey
 
 # Go / Java oracle producer sources. Unlike the Rust producer (compiled from
 # committed .rs), the Go and Java oracles ship as source compiled by Buck2's
