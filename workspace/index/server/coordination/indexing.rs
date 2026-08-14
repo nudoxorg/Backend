@@ -1524,17 +1524,174 @@ fn make_ref_target(
     }
 }
 
+/// Attach an empty-but-valid IR payload section to `builder` (the postcard
+/// encoding of an empty `Vec<OwnedEntryPayload>`) so `finalize()` does not fail
+/// with `MissingIrSection`.
+///
+/// Split out from [`attach_empty_ir_sections`] because the in-process compile
+/// path ([`super::compile_inprocess`]) needs an empty IR section *alongside a
+/// real reference section*: there is no forward semantic→wire encoder in the
+/// workspace to rebuild a faithful `Vec<OwnedEntryPayload>` from the sealed
+/// table, and nothing decodes this section as payloads yet (only its
+/// byte-integrity is audited — see `crate::server::save::blobs`), so it stays
+/// empty-but-valid while references carry the real graph.
+pub(super) fn set_empty_ir_section(builder: &mut BlobBuilder) {
+    let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
+    let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
+    let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
+}
+
 /// Attach an empty IR section and an empty reference section to `builder` so
 /// that `finalize()` does not fail with `MissingIrSection` or
 /// `MissingReferencesSection`. Used when the stream is empty or undecodable.
 pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
-    let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
-    let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
-    let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
+    set_empty_ir_section(builder);
     let empty_refs = crate::server::registry::blob::ReferenceSet {
         by_file: Vec::new(),
     };
     let _ = builder.set_references(&empty_refs);
+}
+
+/// Derive a [`crate::server::registry::blob::ReferenceSet`] directly from a
+/// sealed [`ir::apply::PristineIntroTable`] — the in-process (macOS) analogue
+/// of [`build_reference_set_from_bodies`].
+///
+/// # Why this exists (macOS vs cage, `// reconcile:`)
+///
+/// The cage path recovers references from the producer's `Bodies` stream frames
+/// (oracle call / type-mention facts with real spans). The in-process producer
+/// entrypoint (`nudox_producer::produce`) returns only the *sealed table*:
+/// there is no second `Bodies` channel, and no forward semantic→wire encoder in
+/// the workspace to rebuild the NdIrF1 `Symbols`/`Bodies` stream from it (so the
+/// cage's [`ingest_ir_bytes`] byte-decode path cannot be reused — see
+/// [`super::compile_inprocess`]). References are therefore recovered from the
+/// one artifact the in-process path *does* have: the sealed table's own
+/// cross-symbol `Ref` edges — every type nominal a declaration mentions in its
+/// signature / fields / impl-of, already lowered by `seal` to `Ref::Intro`
+/// (same-package) or `Ref::Foreign` (cross-package).
+///
+/// It reuses the exact [`RefTarget`](crate::server::registry::blob::RefTarget) /
+/// [`Reference`](crate::server::registry::blob::Reference) /
+/// [`ReferenceSet`](crate::server::registry::blob::ReferenceSet) blob vocabulary
+/// and the [`make_ref_target`] mapping the cage path uses, so both hosts land in
+/// one on-disk reference format that `save::blobs`'s `ReferenceSet::decode` audit
+/// and the future reverse-`occ` index read identically.
+///
+/// # Spans
+/// The sealed declaration table carries no per-reference occurrence span (that
+/// lives in the `Bodies` facts the in-process path never sees), so every
+/// reference is recorded with a degenerate relative span `0..0`: the *edge*
+/// (who mentions whom) is exact; the intra-declaration offset is not available.
+///
+/// # Structural edges are excluded
+/// [`ir::entry::Entry::for_each_ref`] also visits the `Node` parent/children
+/// tree edges; those are structural containment, not usage, so any `Ref::Intro`
+/// naming this entry's own parent or a child is dropped. What remains is exactly
+/// the type-nominal usage graph.
+pub(super) fn build_reference_set_from_table(
+    table: &ir::apply::PristineIntroTable,
+    source_root: &std::path::Path,
+    owning_pkg: Option<&str>,
+) -> crate::server::registry::blob::ReferenceSet {
+    use crate::server::registry::blob::{FileReferences, Reference, ReferenceSet, RefTarget};
+    use ir::index::Ref;
+    use ir::vocab::ReferenceKind;
+    use smol_str::SmolStr;
+    use std::collections::HashSet;
+
+    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+
+    for (intro, entry) in table.iter() {
+        // Node tree edges (parent + children) are structural containment, not
+        // usage — collect them so a `Ref::Intro` naming one is skipped.
+        let mut structural: HashSet<ir::change::IntroId> = HashSet::new();
+        if let Some(parent) = table.parent_of(intro) {
+            structural.insert(parent);
+        }
+        structural.extend(table.children_of(intro).iter().copied());
+
+        let refs = by_file
+            .entry(reference_source_path(entry, source_root))
+            .or_default();
+
+        entry.for_each_ref(|raw| match raw {
+            Ref::Intro(id) => {
+                if structural.contains(id) {
+                    return;
+                }
+                refs.push(Reference {
+                    target: RefTarget::Local(id.to_hex()),
+                    span_start: 0,
+                    span_end: 0,
+                    kind: ReferenceKind::TypeReference as u8,
+                });
+            }
+            Ref::Foreign { key, target } => {
+                let target = match target {
+                    Some(stable) => make_ref_target(stable, owning_pkg),
+                    None => external_ref_target_from_key(key),
+                };
+                refs.push(Reference {
+                    target,
+                    span_start: 0,
+                    span_end: 0,
+                    kind: ReferenceKind::TypeReference as u8,
+                });
+            }
+            // A `Ref::Local` surviving into a sealed table is a seal bug
+            // (`SealReport::unmapped_local`), not a resolvable edge — skip it
+            // rather than emit a reference to a dropped arena index.
+            Ref::Local(_) => {}
+        });
+    }
+
+    let by_file: Vec<FileReferences> = by_file
+        .into_iter()
+        .filter(|(_, refs)| !refs.is_empty())
+        .map(|(path, references)| FileReferences { path, references })
+        .collect();
+
+    ReferenceSet { by_file }
+}
+
+/// Build an `External` [`RefTarget`](crate::server::registry::blob::RefTarget)
+/// for a named-but-unlinked cross-package reference.
+///
+/// The in-process path seals against [`ir::foreign::Unlinked`], so every foreign
+/// ref arrives with `target: None` but a fully-named [`ir::foreign::ForeignKey`].
+/// `dependency` is `ecosystem:name` when the producer could name the owning
+/// package, else the bare ecosystem tag (`Namespace`/`Universe` origins that
+/// decline to guess a package). `path` is the target's canonical path in its own
+/// language's spelling — the durable join key a corpus-side resolver matches on,
+/// mirroring the `intro_hex` `path` the linked cage path emits.
+fn external_ref_target_from_key(
+    key: &ir::foreign::ForeignKey,
+) -> crate::server::registry::blob::RefTarget {
+    let dependency = match key.origin.lineage() {
+        Some(lineage) => format!("{}:{}", lineage.ecosystem.as_str(), lineage.name.as_str()),
+        None => key.origin.ecosystem().as_str().to_owned(),
+    };
+    crate::server::registry::blob::RefTarget::External {
+        path: key.path.to_string(),
+        dependency,
+    }
+}
+
+/// The in-package-relative source path a reference is grouped under: the entry's
+/// declaration source with `source_root` stripped (so it matches the
+/// [`FileEntry::path`] keys the builder stages), falling back to the raw path,
+/// or the `"<unknown>"` sentinel for a synthesized / unlocated entry (the same
+/// sentinel the cage path uses for a body without a matching symbol).
+fn reference_source_path(
+    entry: &ir::entry::Entry,
+    source_root: &std::path::Path,
+) -> smol_str::SmolStr {
+    let source = &entry.sym().source;
+    if source.as_os_str().is_empty() {
+        return smol_str::SmolStr::new("<unknown>");
+    }
+    let rel = source.strip_prefix(source_root).unwrap_or(source);
+    smol_str::SmolStr::from(rel.to_string_lossy().as_ref())
 }
 
 fn ensure_trailing_slash(url: &url::Url) -> String {
@@ -1971,6 +2128,270 @@ mod tests {
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
         let reason = outcome.degraded_reason.expect("corrupt frame must degrade the job");
         assert!(reason.contains("decode error"), "reason: {reason}");
+    }
+
+    // ── In-process path: real reference edges flow from the sealed table ──
+    //
+    // The end-to-end sanity check for the macOS/dev fix: a sealed
+    // `PristineIntroTable` (what `nudox_producer::produce` returns in-process)
+    // with real cross-symbol references must yield a NON-EMPTY `ReferenceSet`
+    // with real Local *and* External edges — the section that was previously
+    // attached empty, blinding `Target::Usages` for every macOS-indexed package.
+    //
+    // Filterable in isolation (`coordination::indexing::tests::
+    // in_process_sealed_table_yields_real_reference_edges`); it never touches
+    // `index::pack`, so the `--features server` zstd duplicate-symbol clash
+    // never runs.
+    #[test]
+    fn in_process_sealed_table_yields_real_reference_edges() {
+        use crate::server::registry::blob::RefTarget;
+        use ir::build::{
+            EcosystemId, Impl, Lowering, PackageId, PackageLineageId, PackageName, Record, Symbol,
+            Type, Visibility,
+        };
+        use ir::foreign::{ForeignKey, Unlinked};
+        use ir::index::Ref;
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let core = PackageLineageId::new(
+            EcosystemId::new("rust-sysroot"),
+            PackageName::new("core"),
+        );
+
+        // `struct Widget;` + `impl Clone for Widget` — the impl's `self_ty`
+        // references the same-package `Widget` (→ a `Ref::Intro`, i.e. a Local
+        // edge post-seal), and its `of` names a cross-package trait (→ a
+        // `Ref::Foreign`, i.e. an External edge under `Unlinked`).
+        let mut low: Lowering<&'static str> =
+            Lowering::new(PackageId::path("fixture"), sym("fixture"));
+        let self_ref = low.refer::<Record>("Widget");
+        low.declare("Widget", None, sym("Widget"), Record::builder().build());
+        let of = low.nominal_import(ForeignKey::in_package(
+            core.clone(),
+            "core::clone::Clone",
+            "Clone",
+        ));
+        low.declare(
+            "impl#clone",
+            None,
+            sym("impl Clone for Widget"),
+            Impl::builder()
+                .of(of)
+                .self_ty(Type::Nominal(self_ref.into_raw()))
+                .build(),
+        );
+
+        let table = low
+            .finish()
+            .expect("lowering must succeed")
+            .seal(&lineage, &Unlinked)
+            .table;
+
+        let ref_set = build_reference_set_from_table(
+            &table,
+            std::path::Path::new(""),
+            Some("cargo:fixture"),
+        );
+
+        let edges: Vec<&crate::server::registry::blob::Reference> =
+            ref_set.by_file.iter().flat_map(|f| f.references.iter()).collect();
+
+        assert!(
+            !edges.is_empty(),
+            "a sealed table with cross-symbol type references must yield a \
+             non-empty reference set — this is the section the in-process path \
+             used to leave empty, blinding Target::Usages on macOS"
+        );
+        assert!(
+            edges.iter().any(|r| matches!(&r.target, RefTarget::Local(_))),
+            "the impl's self_ty referencing same-package `Widget` must be a \
+             Local edge; got {edges:?}"
+        );
+        assert!(
+            edges.iter().any(|r| matches!(
+                &r.target,
+                RefTarget::External { dependency, .. } if dependency == "rust-sysroot:core"
+            )),
+            "the impl's foreign `Clone` trait must be an External edge naming \
+             its owning package; got {edges:?}"
+        );
+        // And the whole set must round-trip the on-disk codec the audit uses.
+        let encoded = ref_set.encode().expect("reference set must encode");
+        let decoded = crate::server::registry::blob::ReferenceSet::decode(&encoded)
+            .expect("reference set must decode (matches save::blobs audit)");
+        assert_eq!(decoded.by_file.len(), ref_set.by_file.len());
+    }
+
+    // ── reviewer adversarial tests for the in-process reference seam ──
+
+    #[test]
+    fn adversarial_table_with_no_type_references_yields_empty_but_valid_set() {
+        // The empty-vs-degraded boundary (W1): a package whose declarations
+        // name no other types (a bare fieldless struct, no impl) is honest
+        // ABSENCE, not breakage. build_reference_set_from_table must return an
+        // empty set that still encodes/decodes, so the caller reports a clean
+        // success — NOT a degraded job, and NOT a false "has usages".
+        use ir::build::{
+            EcosystemId, Lowering, PackageId, PackageLineageId, PackageName, Record, Symbol,
+            Visibility,
+        };
+        use ir::foreign::Unlinked;
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let mut low: Lowering<&'static str> =
+            Lowering::new(PackageId::path("fixture"), sym("fixture"));
+        low.declare("Lonely", None, sym("Lonely"), Record::builder().build());
+        let table = low
+            .finish()
+            .expect("lowering must succeed")
+            .seal(&lineage, &Unlinked)
+            .table;
+
+        let ref_set =
+            build_reference_set_from_table(&table, std::path::Path::new(""), Some("cargo:fixture"));
+        let edges = ref_set
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .count();
+        assert_eq!(
+            edges, 0,
+            "a package that references no other types must yield zero usage edges (honest absence)"
+        );
+        let encoded = ref_set.encode().expect("empty set still encodes");
+        let decoded = crate::server::registry::blob::ReferenceSet::decode(&encoded)
+            .expect("empty set decodes");
+        assert!(decoded.by_file.iter().all(|f| f.references.is_empty()));
+    }
+
+    #[test]
+    fn adversarial_reference_edges_carry_exact_target_and_degenerate_spans() {
+        // Tighter contract than the sanity test: the External edge's `path`
+        // must be the foreign key's canonical path (the durable resolver join
+        // key), every edge's span must be the documented degenerate 0..0 (the
+        // sealed table carries no occurrence span), and encode/decode must
+        // preserve the exact edge count (no silent drop in the codec).
+        use crate::server::registry::blob::RefTarget;
+        use ir::build::{
+            EcosystemId, Impl, Lowering, PackageId, PackageLineageId, PackageName, Record, Symbol,
+            Type, Visibility,
+        };
+        use ir::foreign::{ForeignKey, Unlinked};
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let core =
+            PackageLineageId::new(EcosystemId::new("rust-sysroot"), PackageName::new("core"));
+        let mut low: Lowering<&'static str> =
+            Lowering::new(PackageId::path("fixture"), sym("fixture"));
+        let self_ref = low.refer::<Record>("Widget");
+        low.declare("Widget", None, sym("Widget"), Record::builder().build());
+        let of = low.nominal_import(ForeignKey::in_package(
+            core.clone(),
+            "core::clone::Clone",
+            "Clone",
+        ));
+        low.declare(
+            "impl#clone",
+            None,
+            sym("impl Clone for Widget"),
+            Impl::builder()
+                .of(of)
+                .self_ty(Type::Nominal(self_ref.into_raw()))
+                .build(),
+        );
+        let table = low
+            .finish()
+            .expect("lowering must succeed")
+            .seal(&lineage, &Unlinked)
+            .table;
+
+        let ref_set =
+            build_reference_set_from_table(&table, std::path::Path::new(""), Some("cargo:fixture"));
+        let edges: Vec<&crate::server::registry::blob::Reference> =
+            ref_set.by_file.iter().flat_map(|f| f.references.iter()).collect();
+
+        // Exactly one Local (self_ty → same-package Widget) and one External
+        // (foreign Clone trait) — no phantom duplicates from the Node tree.
+        assert_eq!(
+            edges.iter().filter(|r| matches!(r.target, RefTarget::Local(_))).count(),
+            1,
+            "exactly one Local edge; got {edges:?}"
+        );
+        let external: Vec<_> = edges
+            .iter()
+            .filter_map(|r| match &r.target {
+                RefTarget::External { path, dependency } => Some((path.clone(), dependency.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(external.len(), 1, "exactly one External edge; got {edges:?}");
+        assert_eq!(
+            external[0],
+            ("core::clone::Clone".to_owned(), "rust-sysroot:core".to_owned()),
+            "External edge must carry the foreign key's canonical path + owning package"
+        );
+        // Documented degeneracy: no per-reference span from a sealed table.
+        assert!(
+            edges.iter().all(|r| r.span_start == 0 && r.span_end == 0),
+            "sealed-table references have degenerate 0..0 spans"
+        );
+        // Codec must preserve every edge.
+        let round = crate::server::registry::blob::ReferenceSet::decode(
+            &ref_set.encode().expect("encode"),
+        )
+        .expect("decode");
+        assert_eq!(
+            round.by_file.iter().map(|f| f.references.len()).sum::<usize>(),
+            edges.len(),
+            "encode/decode must preserve the exact edge count"
+        );
     }
 
     /// A stream with no valid Hello at all (garbage from byte 0) must

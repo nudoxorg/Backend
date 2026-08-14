@@ -20,23 +20,34 @@
 //! fix: no other wiring is needed for `/search` to return real hits for an
 //! in-process-compiled package.
 //!
-//! # What this does NOT write
+//! # The reference section (the Target::Usages fix)
+//!
+//! It also writes a **real** reference section: the cross-symbol usage graph,
+//! recovered from the sealed table's own `Ref` edges via
+//! [`super::indexing::build_reference_set_from_table`] — the in-process twin of
+//! the cage path's `Bodies`-frame reference derivation, landing in the identical
+//! blob `ReferenceSet` format. Before this, the non-Linux path attached an
+//! *empty* reference section, so `Target::Usages` ("who uses this symbol")
+//! returned nothing for every package indexed on a macOS serving node, across
+//! all languages. Now it returns real edges.
+//!
+//! # What this does NOT write (the IR payload section)
 //!
 //! It does not reconstruct the producer's wire-format `Vec<OwnedEntryPayload>`
-//! IR section that the cage path's `ingest_ir_bytes` decodes from an
-//! NdIrF1 stream. Doing so faithfully would require a full inverse of
-//! `ir_vcs::lower` (semantic `ir::entry::Entry`/`Kind` → wire
-//! `SymbolWire`/`KindWire`, all 13 discriminants) that nothing in this
-//! codebase provides today — `lower.rs` only goes wire → semantic. Nothing
-//! downstream currently decodes that section back out, either: grepping the
-//! whole `index` crate for `upsert_symbol` callers before this file existed
-//! turned up none, which means the IR blob has been write-only (staged to
-//! CAS, never read back) since the cage path was written. Attaching empty
-//! (but valid — `BlobBuilder::finalize` requires both sections present)
-//! IR/reference sections is therefore honest: it doesn't fabricate wire
-//! bytes nobody currently reads, and it doesn't block emit. Revisit once the
-//! IR reverse-position index (INDEX-PLAN §5.5 / IP-7, see the `Graph` sink
-//! comment in `poll.rs`) needs real bytes here.
+//! IR section that the cage path's `ingest_ir_bytes` decodes from an NdIrF1
+//! stream. Doing so faithfully would require a full inverse of `ir_vcs::lower`
+//! (semantic `ir::entry::Entry`/`Kind` → wire `SymbolWire`/`KindWire`, all 13
+//! discriminants) that nothing in this codebase provides today — `lower.rs`
+//! only goes wire → semantic, and the guest producer that emits the `Symbols`
+//! stream is out-of-repo. Nothing downstream decodes that section as payloads
+//! either: only its byte-integrity is audited (`crate::server::save::blobs`),
+//! so the IR blob has been write-only (staged to CAS, never read back) since
+//! the cage path was written. Attaching an empty (but valid —
+//! `BlobBuilder::finalize` requires the section present) IR section is
+//! therefore honest: it does not fabricate wire bytes nobody currently reads,
+//! and it does not block emit. Revisit once a forward semantic→wire lowering
+//! plus the IR reverse-position index (INDEX-PLAN §5.5 / IP-7, see the `Graph`
+//! sink comment in `poll.rs`) need real payload bytes here.
 
 use std::path::Path;
 
@@ -51,8 +62,10 @@ use crate::server::SourceStores;
 
 /// Run the matching language producer in-process over `source_root` and
 /// stage the result: real catalog symbol rows (so the existing vector
-/// outbox consumer embeds them into qdrant) plus empty-but-valid IR/
-/// reference sections on `builder` (see module docs for why they're empty).
+/// outbox consumer embeds them into qdrant), a real reference section (the
+/// cross-symbol usage graph derived from the sealed table, so `Target::Usages`
+/// works for macOS-indexed packages), and an empty-but-valid IR payload section
+/// on `builder` (see module docs for why the IR payload stays empty).
 ///
 /// Returns the fully-qualified symbol names contributed — the same shape
 /// [`super::indexing::ingest_ir_bytes`] returns for the cage path, used by
@@ -171,16 +184,51 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         }));
     }
 
-    // ── Empty-but-valid IR/reference sections ──────────────────────────────
-    // See module docs: nothing downstream decodes these yet.
-    super::indexing::attach_empty_ir_sections(builder);
+    // ── Reference section: the real cross-symbol usage graph ────────────────
+    // Recover references from the sealed table's own `Ref` edges — the
+    // in-process twin of the cage path's Bodies-frame derivation (see
+    // `super::indexing::build_reference_set_from_table` for why the sealed
+    // table, and not a reconstructed NdIrF1 stream, is the source here). This
+    // is the whole point of the fix: it is what makes `Target::Usages` return
+    // real edges for a package indexed on a macOS serving node.
+    let owning_pkg = format!("{}:{}", lineage_ecosystem_tag(language), name);
+    let ref_set =
+        super::indexing::build_reference_set_from_table(table, source_root, Some(owning_pkg.as_str()));
+    let reference_edges: usize = ref_set.by_file.iter().map(|f| f.references.len()).sum();
+
+    if let Err(error) = builder.set_references(&ref_set) {
+        // W1: a dropped reference set is a silent loss of this snapshot's
+        // cross-reference graph, not a cosmetic degrade — fail the job rather
+        // than report a clean `Stored` with no usages (mirrors the cage path's
+        // `set_references` handling in `ingest_ir_bytes`). Re-attach an empty
+        // set first so the builder still has a valid section if a later stage
+        // inspects it.
+        let empty = crate::server::registry::blob::ReferenceSet { by_file: Vec::new() };
+        let _ = builder.set_references(&empty);
+        return Err(ServerError::Internal(InternalError::InProcessCompile {
+            package: name.clone(),
+            reason: format!("staging in-process reference set failed: {error}"),
+        }));
+    }
+
+    // ── IR payload section: empty-but-valid ─────────────────────────────────
+    // There is no forward semantic→wire encoder in the workspace
+    // (`ir_vcs::lower` is wire→semantic only, and the guest producer that emits
+    // the NdIrF1 `Symbols` stream is out-of-repo), so a faithful
+    // `Vec<OwnedEntryPayload>` cannot be rebuilt from the sealed table here.
+    // Nothing decodes this section as payloads yet — only its byte-integrity is
+    // audited (`crate::server::save::blobs`) — so it stays empty-but-valid; the
+    // real reference graph above is the functional fix. Revisit when a
+    // semantic→wire lowering + the reverse-`occ` index land (INDEX-PLAN §5.5).
+    super::indexing::set_empty_ir_section(builder);
 
     tracing::info!(
         %package,
         language = language.as_token(),
         entries = table.len(),
         identifiers = identifiers.len(),
-        "in-process compile produced catalog symbols"
+        reference_edges,
+        "in-process compile produced catalog symbols + reference graph"
     );
 
     Ok(identifiers)
