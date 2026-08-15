@@ -91,7 +91,14 @@ fi
 mkdir -p "$bin_dir" "$libexec_dir" "$applications_dir" "$icon_dir" "$metainfo_dir"
 
 cp -f "$bin"                        "$libexec_dir/lindsey"
-cp -f "$here/$app_id.desktop"       "$applications_dir/$app_id.desktop"
+# The shipped entry says `Exec=lindsey`, which is right for a distribution
+# package installing to /usr/bin. For a per-user install it is a trap: a
+# graphical session's PATH is not the shell's, and ~/.local/bin is frequently
+# absent from it, so the menu entry fails to find a binary that `which` can see.
+# Rewrite it to the absolute launcher — the same rewrite Flatpak performs on
+# install, for the same reason.
+sed "s|^Exec=lindsey|Exec=$bin_dir/lindsey|" \
+    "$here/$app_id.desktop" > "$applications_dir/$app_id.desktop"
 cp -f "$icon_source"                "$icon_dir/$app_id.svg"
 cp -f "$here/$app_id.metainfo.xml"  "$metainfo_dir/$app_id.metainfo.xml"
 
@@ -133,6 +140,32 @@ exec "$libexec_dir/lindsey" "\$@"
 WRAPPER
 
 chmod 755 "$bin_dir/lindsey" "$libexec_dir/lindsey"
+
+# ── Make the binary stand on its own ─────────────────────────────────────────
+#
+# The wrapper above is not enough, and assuming it was is what shipped a broken
+# install: anything that reaches the binary directly rather than through
+# `lindsey` on PATH — a launcher configured with the real path, a user who
+# copied it, a debugger, `systemd-run` — got
+#
+#   error while loading shared libraries: libxcb.so.1
+#
+# because the loader consults only DT_RUNPATH and LD_LIBRARY_PATH, and a
+# devshell build has neither pointing at the Nix store. Writing the path into
+# the ELF fixes it for *every* caller instead of one.
+#
+# The order matters and matches the wrapper's: store paths first so they keep
+# priority, host driver directory last so it supplies only what Nix does not.
+if command -v patchelf >/dev/null 2>&1 && [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    rpath="$LD_LIBRARY_PATH"
+    for d in /run/opengl-driver/lib /usr/lib; do
+        if [ -d "$d" ]; then rpath="$rpath:$d"; break; fi
+    done
+    patchelf --set-rpath "$rpath" "$libexec_dir/lindsey"
+    echo "  (rpath written into the binary; it runs without the wrapper)"
+elif [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    echo "note: patchelf not found — the binary only runs through the wrapper" >&2
+fi
 chmod 644 "$applications_dir/$app_id.desktop" \
           "$icon_dir/$app_id.svg" \
           "$metainfo_dir/$app_id.metainfo.xml"

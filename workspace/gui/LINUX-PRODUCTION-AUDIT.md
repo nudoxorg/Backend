@@ -67,10 +67,22 @@ path. The app worked perfectly from the terminal it was built in and not at all
 from the desktop — the failure mode least likely to be noticed by the person who
 built it.
 
-`packaging/linux/install.sh` now installs the binary to
-`~/.local/share/lindsey/` and generates a wrapper at `~/.local/bin/lindsey` that
-captures the library path at install time and adds the host GPU driver
-directory. Verified by launching with `env -i` and nothing else.
+`packaging/linux/install.sh` now does three things, and the first fix alone was
+not enough:
+
+* installs the binary to `~/.local/share/lindsey/` with a wrapper at
+  `~/.local/bin/lindsey` that captures the library path at install time;
+* **writes that path into the ELF with `patchelf --set-rpath`**, so the binary
+  runs on its own. Shipping only the wrapper left the binary itself unrunnable —
+  anything reaching it directly (a launcher configured with the real path, a
+  copy, a debugger) still got `libxcb.so.1: cannot open shared object file`;
+* **rewrites `Exec=` to the absolute launcher path.** The shipped entry says
+  `Exec=lindsey`, which is right for a distribution package in `/usr/bin` and a
+  trap for a per-user install: a graphical session's PATH is not the shell's and
+  frequently omits `~/.local/bin`, so the menu entry cannot find a binary
+  `which` can see. Flatpak performs the same rewrite on install.
+
+Verified by launching *both* the wrapper and the bare binary under `env -i`.
 
 ### 6 — the icon did not exist
 
