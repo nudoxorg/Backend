@@ -153,6 +153,18 @@
 !/workspace/gui/packaging/*.svg
 !/workspace/gui/packaging/*.py
 
+# lindsey's Linux packaging: the desktop entry, the AppStream metainfo, the
+# installer and the run wrapper. Allowed as a *directory* rather than by
+# extension, which the rules above do and this one deliberately does not.
+#
+# Extension allow-lists have now failed three times in this one directory: the
+# run wrapper has no extension at all, and `install.sh` and the `.metainfo.xml`
+# were both silently skipped by `git add` — the second time producing a commit
+# whose message described two files that were not in it. Everything under this
+# path is hand-written source with no build output in it, so the honest rule is
+# the directory.
+!/workspace/gui/packaging/linux/**
+
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
 !/**/example.json
