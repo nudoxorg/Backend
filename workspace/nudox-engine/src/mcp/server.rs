@@ -12,7 +12,7 @@
 //! sees for a tool — there is no README, no rustdoc, and no type signature it
 //! can read. Each one therefore says what the tool returns, when to prefer it
 //! over the others, and what a `SymbolKey` looks like. The typed tools
-//! (`search_symbols`, `get_symbol`, `find_usages`, `list_packages`,
+//! (`search_symbols`, `semantic_search`, `get_symbol`, `find_usages`, `get_occurrences`, `list_packages`,
 //! `list_versions`, `select_version`) announce themselves as the first choice
 //! and `graph_query` announces itself as the escape hatch, per §L6.
 //!
@@ -29,11 +29,11 @@
 //!   second path to the corpus.
 
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    Implementation, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents, ServerCapabilities,
-    ServerInfo,
+    CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router};
@@ -41,13 +41,12 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router
 use crate::mcp::account::AccountGate;
 use crate::mcp::error::McpError;
 use crate::mcp::tools::{
-    CompactSymbolDoc, DiffVersionsArgs, DiffVersionsResult, FindUsagesArgs, GetSymbolArgs,
-    GetSymbolsArgs, GraphQueryArgs,
-    GraphSchemaArgs, IndexPackageArgs, IndexPackageResult, ListPackagesArgs, ListVersionsArgs,
-    ListVersionsResult, NudoxTools, PackagesResult, QueryResult, SchemaResult, SearchResult,
-    SearchSymbolsArgs, SelectVersionArgs, SelectVersionResult, SymbolFormat, SymbolsResult,
-    UsagesResult,
+    DiffVersionsArgs, FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GetSymbolsArgs,
+    GraphQueryArgs, GraphSchemaArgs, IndexPackageArgs, ListPackagesArgs, ListVersionsArgs,
+    NudoxTools, PackagesResult, SchemaResult, SearchSymbolsArgs, SelectVersionArgs,
+    SemanticSearchArgs, SymbolFormat,
 };
+use crate::mcp::result_format::MarkdownResult;
 
 /// URI of the schema resource.
 pub const SCHEMA_URI: &str = "nudox://schema";
@@ -65,9 +64,10 @@ workspace. Every answer comes from IR produced on this machine or verified \
 against a remote generation, and carries a `provenance` field saying which.
 
 Start with `list_packages` to see what is loaded, then `search_symbols` to find \
-a symbol by name, then `get_symbols` to read one or more without repeated \
-context round trips. Use `find_usages` to \
-find a symbol's callers. All four speak the same key format, \
+a symbol by name, or `semantic_search` for a concept/behavior. Use `get_symbols` to read one or \
+more without repeated context round trips. Use `find_usages` to find symbols referring to a \
+target, and `get_occurrences` for exact owner-relative references inside one symbol. All these \
+tools speak the same key format, \
 `ecosystem:name#introhex`, so a key returned by one goes straight into another. \
 `get_symbol` is source-first and compact; use `list_versions` and \
 `diff_versions` for package history.
@@ -172,12 +172,15 @@ impl NudoxMcpServer {
     /// The permit is held for the duration of the call rather than dropped
     /// immediately, so "this work ran under an admission" is a lifetime rather
     /// than a comment.
-    async fn metered<T>(
+    async fn metered<T: MarkdownResult>(
         &self,
         run: impl Future<Output = Result<T, McpError>>,
-    ) -> Result<Json<T>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         let _permit = self.gate.admit()?;
-        Ok(Json(run.await?))
+        let value = run.await?;
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            value.to_markdown(),
+        )]))
     }
 
     /// Every resource this server serves right now.
@@ -209,7 +212,7 @@ Read this before writing a query.",
 symbol key it declares, and is what `search_symbols`'s `packages` filter accepts.",
                     pkg.name, pkg.ecosystem, pkg.lineage
                 ))
-                .with_mime_type("application/json"),
+                .with_mime_type("text/markdown"),
             );
         }
 
@@ -242,8 +245,20 @@ Treat `cursor` as opaque; never construct one yourself."
     pub async fn search_symbols(
         &self,
         Parameters(args): Parameters<SearchSymbolsArgs>,
-    ) -> Result<Json<SearchResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_search(args)).await
+    }
+
+    /// Find documented public APIs by concept or behavior.
+    #[tool(
+        name = "semantic_search",
+        description = "Use for natural-language questions such as `retry failed requests` or `which API parses URLs`. Searches embeddings of public symbol paths, kinds and documentation. Results are ranked Markdown rows with stable keys; use `get_symbol` for exact source. The status line distinguishes complete coverage, partial indexing and an unavailable model. Narrow with `kinds` or `packages`; pagination cursors are opaque. This is semantic retrieval, not a claim that the implementation body was searched."
+    )]
+    pub async fn semantic_search(
+        &self,
+        Parameters(args): Parameters<SemanticSearchArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.metered(self.tools.do_semantic_search(args)).await
     }
 
     /// Read one symbol through the compact source-first projection.
@@ -257,7 +272,7 @@ structures or duplicate a signature already present in source. Prefer `get_symbo
     pub async fn get_symbol(
         &self,
         Parameters(args): Parameters<GetSymbolArgs>,
-    ) -> Result<Json<CompactSymbolDoc>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_get_symbol_compact(args, SymbolFormat::Source))
             .await
     }
@@ -272,7 +287,7 @@ returns compact records in the same order in one MCP round trip. `format=signatu
     pub async fn get_symbols(
         &self,
         Parameters(args): Parameters<GetSymbolsArgs>,
-    ) -> Result<Json<SymbolsResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_get_symbols(args)).await
     }
 
@@ -291,8 +306,20 @@ more."
     pub async fn find_usages(
         &self,
         Parameters(args): Parameters<FindUsagesArgs>,
-    ) -> Result<Json<UsagesResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_find_usages(args)).await
+    }
+
+    /// Read exact references owned by one symbol.
+    #[tool(
+        name = "get_occurrences",
+        description = "Read one row per exact reference contained in the symbol identified by `key`. Each span is explicitly labeled as bytes relative to the owner's declaration span, not an absolute file offset. The target key is retained even when its package is unloaded. Use `find_usages` for the different question of which symbols refer to a target."
+    )]
+    pub async fn get_occurrences(
+        &self,
+        Parameters(args): Parameters<GetOccurrencesArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.metered(self.tools.do_get_occurrences(args)).await
     }
 
     /// List the packages currently loaded.
@@ -308,7 +335,7 @@ been produced or loaded yet and no other tool will find symbols from it — this
     pub async fn list_packages(
         &self,
         Parameters(_args): Parameters<ListPackagesArgs>,
-    ) -> Result<Json<PackagesResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_list_packages()).await
     }
 
@@ -327,7 +354,7 @@ ones in a given package are affected; see `select_version`'s description before 
     pub async fn list_versions(
         &self,
         Parameters(args): Parameters<ListVersionsArgs>,
-    ) -> Result<Json<ListVersionsResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_list_versions(args)).await
     }
 
@@ -351,7 +378,7 @@ and re-fetch it with `search_symbols` rather than concluding the symbol was remo
     pub async fn select_version(
         &self,
         Parameters(args): Parameters<SelectVersionArgs>,
-    ) -> Result<Json<SelectVersionResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_select_version(args)).await
     }
 
@@ -375,7 +402,7 @@ re-search by name and path before concluding it was deleted. Rows are paginated 
     pub async fn diff_versions(
         &self,
         Parameters(args): Parameters<DiffVersionsArgs>,
-    ) -> Result<Json<DiffVersionsResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_diff_versions(args)).await
     }
 
@@ -407,7 +434,7 @@ alone."
     pub async fn index_package(
         &self,
         Parameters(args): Parameters<IndexPackageArgs>,
-    ) -> Result<Json<IndexPackageResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_index_package(args)).await
     }
 
@@ -430,7 +457,7 @@ check `next_cursor` and pass it back as `cursor` for more."
     pub async fn graph_query(
         &self,
         Parameters(args): Parameters<GraphQueryArgs>,
-    ) -> Result<Json<QueryResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_graph_query(args)).await
     }
 
@@ -449,7 +476,7 @@ life of the server, so one call per session is enough."
     pub async fn graph_schema(
         &self,
         Parameters(_args): Parameters<GraphSchemaArgs>,
-    ) -> Result<Json<SchemaResult>, ErrorData> {
+    ) -> Result<CallToolResult, ErrorData> {
         // Metered like every other tool. It answers from a constant rather
         // than from the engine, but `docs/auth.md` bills a `tool_call`, and an agent
         // cannot tell which of our tools happen to be cheap for us to serve.
@@ -512,9 +539,10 @@ impl ServerHandler for NudoxMcpServer {
                 .into_iter()
                 .find(|p| p.lineage == lineage)
                 .ok_or_else(|| McpError::UnknownResource(uri.clone()))?;
-            let body = serde_json::to_string_pretty(&found).map_err(|e| {
-                ErrorData::internal_error(format!("failed to encode package resource: {e}"), None)
-            })?;
+            let body = PackagesResult {
+                packages: vec![found],
+            }
+            .to_markdown();
             return Ok(ReadResourceResult::new(vec![ResourceContents::text(
                 body, &uri,
             )]));

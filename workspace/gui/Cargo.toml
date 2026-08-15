@@ -33,19 +33,32 @@ path = "src/main.rs"
 # old `1d217ee` June-12 pin) but sits before PR #105, which replaces the custom
 # `Hsla`/`Rgba` with the `palette` crate — a change gpui-component has not
 # adopted and that would produce hundreds of breakages across its theme code.
-# Two residual gpui-component breakages remain even here (see the migration
-# report): PR #111's `TextRun.letter_spacing` field (a gpui-ce-specific
-# addition) and the zed July-30 rename of `AnyView::into_any` →
-# `into_any_element`.
+# The two drifts gpui-ce does introduce here — PR #111's `TextRun.letter_spacing`
+# field and the zed July-30 `AnyView::into_any` → `into_any_element` rename — are
+# absorbed by the vendored gpui-component fork (see
+# `workspace/vendor/gpui-component-fork.patch`), which is why the dependency
+# below is a `path` into `workspace/vendor/` rather than the upstream git.
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
 
-# ── gpui-component ───────────────────────────────────────────────────────────
-# These still name zed's git gpui; the `[patch."https://github.com/zed-industries/zed.git"]`
-# block below redirects their `gpui`/`gpui_macros` to gpui-ce so there is ONE
-# `Entity`/`App`/`Window` type shared by lindsey and every component.
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c112e7b482b6b9c53a8c43deaf5847b94a29ad82", package = "gpui-component-assets" }
+# ── gpui-component (vendored fork — see workspace/vendor/gpui-component) ──────
+#
+# gpui-component tracks Zed's gpui, and no release tracks gpui-ce. To use the
+# two together we vendor gpui-component here and apply a 16-line fork patch
+# (regenerable at `workspace/vendor/gpui-component-fork.patch`) for the two API
+# drifts gpui-ce introduces: `TextRun.letter_spacing` (gpui-ce PR #111) and the
+# zed `AnyView::into_any` → `into_any_element` rename. The vendored workspace
+# still names zed's git gpui, so the
+# `[patch."https://github.com/zed-industries/zed.git"]` block below redirects its
+# `gpui`/`gpui_macros` to gpui-ce, giving ONE `Entity`/`App`/`Window` type shared
+# by lindsey and every component.
+#
+# The fork pin is gpui-component `c112e7b` (tracks zed `1d217ee`, the pre-migration
+# gpui pin); gpui-ce `d435891` is the newest rev compatible with it (pre the
+# `palette` migration, PR #105, which would break hundreds of theme-code call
+# sites). See workspace/vendor/README.md for the fork-patch convention.
+gpui-component = { path = "../../vendor/gpui-component/crates/ui", package = "gpui-component" }
+gpui-component-assets = { path = "../../vendor/gpui-component/crates/assets", package = "gpui-component-assets" }
 
 # ── The engine (GUI-LOCAL-PLAN §L0) ──────────────────────────────────────────
 # The ONLY backend crate lindsey may name. The dependency law is one-directional

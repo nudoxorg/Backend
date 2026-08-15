@@ -40,7 +40,7 @@ use super::IMPLS_PAGE_SIZE;
 ///   impl is *for*.
 ///
 /// [`TypePosition::ImplSelf`]: crate::store::package::TypePosition::ImplSelf
-fn collect_impls(
+pub(crate) fn collect_impls(
     target: nudox_ir::change::IntroId,
     pkg: &crate::store::package::PackageView,
     lineage: nudox_ir::change::PackageLineageId,
@@ -124,7 +124,7 @@ fn collect_impls(
 ///
 /// Always emits at least one page (possibly empty) so the GUI can exit the
 /// "still loading" state.  The last page carries `done: true`.
-async fn emit_impls_pages(
+pub(crate) async fn emit_impls_pages(
     tx: &flume::Sender<DocEvent>,
     cancel: &CancellationToken,
     rows: Vec<ImplRow>,

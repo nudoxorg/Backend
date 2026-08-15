@@ -55,7 +55,7 @@ pub struct FollowerBatch {
 
 /// Why a follower poll failed.
 #[derive(Debug, thiserror::Error)]
-pub enum FollowerError {
+pub enum Error {
     /// The feed transport (HTTP) failed.
     #[error(transparent)]
     Transport(#[from] TransportError),
@@ -81,6 +81,9 @@ pub enum FollowerError {
     },
 }
 
+/// Backwards-compatible alias: the follower error (now [`Error`]).
+pub use self::Error as FollowerError;
+
 /// One upstream feed's incremental follower.
 ///
 /// A follower is **pure over its transport**: given the same watermark and the
@@ -105,5 +108,5 @@ pub trait Follower: Send + Sync {
         &self,
         previous: Option<&FeedWatermark>,
         now_unix_ms: i64,
-    ) -> Result<FollowerBatch, FollowerError>;
+    ) -> Result<FollowerBatch, Error>;
 }

@@ -86,6 +86,7 @@ pub mod bakery;
 // `compiler_client` DELETED — the compiler daemon it spoke to no longer exists
 // (the cage is ephemeral, SMOLVM-PLAN). See CONSOLIDATION-NOTES §9c. The compile
 // call in the indexing pipeline was stubbed on the `index` side.
+mod catalog_follower;
 pub mod config;
 pub mod coordination;
 pub mod error;
@@ -642,7 +643,7 @@ impl<M: EmbeddingModel> Driver<M> {
                     }
                 };
                 tracing::info!(%lang, "starting catalog follower");
-                pollers.spawn(poll::catalog_follower_worker(Arc::clone(&self), follower));
+                pollers.spawn(catalog_follower::catalog_follower_worker(Arc::clone(&self), follower));
             }
         }
         tracing::info!(?role, "background pollers started");

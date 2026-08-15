@@ -572,8 +572,6 @@ pub enum VmError {
     Io(#[from] std::io::Error),
 }
 
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

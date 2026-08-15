@@ -1,5 +1,5 @@
 //! In-process compile strategy: the non-Linux twin of
-//! [`super::indexing::run_producer_in_cage`] (`// reconcile: in-process
+//! [`super::indexing::cage::run_producer_in_cage`] (`// reconcile: in-process
 //! (macOS) vs cage (linux)`).
 //!
 //! There is no ephemeral SmolvmCage available on macOS (no golden rootfs to
@@ -68,7 +68,7 @@ use crate::server::SourceStores;
 /// on `builder` (see module docs for why the IR payload stays empty).
 ///
 /// Returns the fully-qualified symbol names contributed — the same shape
-/// [`super::indexing::ingest_ir_bytes`] returns for the cage path, used by
+/// [`super::indexing::ir_stream::ingest_ir_bytes`] returns for the cage path, used by
 /// `execute_emit_phase` for facet/keyword extraction.
 pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     stores: &SourceStores<M>,

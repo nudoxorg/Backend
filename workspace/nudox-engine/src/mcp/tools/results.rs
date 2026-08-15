@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
-use crate::wire::{HitRow, PackageDiff, RenderSection, SymbolHead, Timeline};
+use crate::wire::{HitRow, KindTag, PackageDiff, RenderSection, SymbolHead, Timeline, Visibility};
 
 /// What is known about the bytes a package's documentation was produced from.
 ///
@@ -198,7 +198,90 @@ pub struct UsagesResult {
     pub truncated: bool,
     /// Pass this to `find_usages`'s `cursor` argument to get the next page.
     /// `None` when this is the last page.
+    pub next_cursor: Option<String>,
+}
+
+/// One exact reference owned by a symbol.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OccurrenceRow {
+    /// The stable key of the referenced symbol. The target may be unloaded.
+    pub target_key: String,
+    /// Producer-specific reference category, such as `call` or `type`.
+    pub reference_kind: String,
+    /// Producer confidence label.
+    pub confidence: String,
+    /// Byte offset relative to the owning symbol's span start.
+    pub span_start: u32,
+    /// Exclusive byte offset relative to the owning symbol's span start.
+    pub span_end: u32,
+}
+
+/// Exact occurrences owned by one symbol.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetOccurrencesResult {
+    /// The symbol whose body owns these occurrences.
+    pub owner: SymbolKeyDto,
+    /// One row per exact reference.
+    pub occurrences: Vec<OccurrenceRow>,
+    /// True when more rows exist beyond this page.
+    pub truncated: bool,
+    /// Opaque cursor for the next page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Why semantic search is or is not complete.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+#[schemars(extend("type" = "object"))]
+pub enum SemanticStatus {
+    /// Every package in scope was embedded.
+    Ready,
+    /// Only the covered packages contributed to the current ranking.
+    Building {
+        /// Number of packages already embedded.
+        covered: u32,
+        /// Number of packages in the search scope.
+        total: u32,
+    },
+    /// No semantic ranking was produced.
+    Unavailable {
+        /// Machine state rendered as a compact actionable label.
+        reason: String,
+    },
+}
+
+/// One semantic-search hit plus the exact documentation that was indexed.
+///
+/// This is an internal projection rather than a wire schema: MCP transports
+/// render it as Markdown, while the typed fields keep ranking and evidence
+/// explicit inside the tools layer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticHitRow {
+    /// Stable symbol identity for follow-up calls.
+    pub key: SymbolKeyDto,
+    /// The leaf display name emitted by the search pipeline.
+    pub display_name: String,
+    /// Canonical symbol kind.
+    pub kind: KindTag,
+    /// Relevance score retained for optional diagnostics, not default output.
+    pub score: f32,
+    /// Exact documentation text used by the semantic corpus, when present.
+    pub documentation: Option<String>,
+}
+
+/// A semantic-search result, kept separate from name/type hits.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticSearchResult {
+    /// The original natural-language query.
+    pub query: String,
+    /// Whether the ranking is complete, partial, or unavailable.
+    pub status: SemanticStatus,
+    /// Ranked semantic hits.
+    pub hits: Vec<SemanticHitRow>,
+    /// True when more rows exist beyond this page.
+    pub truncated: bool,
+    /// Opaque cursor for the next page.
     pub next_cursor: Option<String>,
 }
 

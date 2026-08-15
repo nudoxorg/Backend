@@ -62,7 +62,7 @@ impl UpstreamClient {
     ///
     /// Retries on 429/5xx and transport errors up to `MAX_ATTEMPTS` attempts.
     /// Honors `Retry-After` when the ecosystem policy requests it.
-    pub async fn get(&self, language: Language, url: &str) -> Result<Bytes, UpstreamError> {
+    pub async fn get(&self, language: Language, url: &str) -> Result<Bytes, Error> {
         let policy = language.spec().policy();
 
         for attempt in 0..MAX_ATTEMPTS {
@@ -78,7 +78,7 @@ impl UpstreamClient {
             match response {
                 Err(e) => {
                     if attempt + 1 >= MAX_ATTEMPTS {
-                        return Err(UpstreamError::Transport(e));
+                        return Err(Error::Transport(e));
                     }
                     tokio::time::sleep(backoff(attempt, url)).await;
                     continue;
@@ -89,7 +89,7 @@ impl UpstreamClient {
                     // Honor Retry-After on 429 when policy says so.
                     if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
                         if attempt + 1 >= MAX_ATTEMPTS {
-                            return Err(UpstreamError::RateLimited);
+                            return Err(Error::RateLimited);
                         }
                         let wait = if policy.respect_retry_after {
                             retry_after_secs(&resp).map(Duration::from_secs)
@@ -102,27 +102,27 @@ impl UpstreamClient {
 
                     if status.is_server_error() {
                         if attempt + 1 >= MAX_ATTEMPTS {
-                            return Err(UpstreamError::ServerError(status.as_u16()));
+                            return Err(Error::ServerError(status.as_u16()));
                         }
                         tokio::time::sleep(backoff(attempt, url)).await;
                         continue;
                     }
 
                     if status == reqwest::StatusCode::NOT_FOUND {
-                        return Err(UpstreamError::NotFound);
+                        return Err(Error::NotFound);
                     }
 
                     let bytes = resp
                         .error_for_status()
-                        .map_err(UpstreamError::Transport)?
+                        .map_err(Error::Transport)?
                         .bytes()
                         .await
-                        .map_err(UpstreamError::Transport)?;
+                        .map_err(Error::Transport)?;
                     return Ok(bytes);
                 }
             }
         }
-        Err(UpstreamError::RetriesExhausted)
+        Err(Error::RetriesExhausted)
     }
 }
 
@@ -130,11 +130,11 @@ impl Default for UpstreamClient {
     fn default() -> Self { Self::new() }
 }
 
-// ── UpstreamError ────────────────────────────────────────────────────────────
+// ── Error ────────────────────────────────────────────────────────────
 
 /// Error from a single upstream GET.
 #[derive(Debug, thiserror::Error)]
-pub enum UpstreamError {
+pub enum Error {
     #[error("transport error: {0}")]
     Transport(#[from] reqwest::Error),
 
@@ -155,11 +155,14 @@ pub enum UpstreamError {
     Parse(String),
 }
 
-impl heart::Retryable for UpstreamError {
+/// Backwards-compatible alias: the upstream error (now [`Error`]).
+pub use self::Error as UpstreamError;
+
+impl heart::Retryable for Error {
     fn is_retryable(&self) -> bool {
         matches!(
             self,
-            UpstreamError::Transport(_) | UpstreamError::ServerError(_) | UpstreamError::RateLimited
+            Error::Transport(_) | Error::ServerError(_) | Error::RateLimited
         )
     }
 }

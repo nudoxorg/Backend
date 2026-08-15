@@ -32,7 +32,7 @@ use crate::ingest::git::{GitRepository, GitRepositoryError};
 
 /// Why enumeration failed.
 #[derive(Debug, thiserror::Error)]
-pub enum EnumerateError {
+pub enum Error {
     /// The git adapter failed to list refs or read HEAD.
     #[error(transparent)]
     Git(#[from] GitRepositoryError),
@@ -44,6 +44,9 @@ pub enum EnumerateError {
         url: String,
     },
 }
+
+/// Backwards-compatible alias: the enumeration error (now [`Error`]).
+pub use self::Error as EnumerateError;
 
 /// Derive the deterministic stem id for a cpp direct-git package. The stem
 /// identity **is** its normalized repo slug (REGISTRYLESS-PLAN §15), so the id
@@ -110,7 +113,7 @@ pub fn enumerate_git_versions<Repository: GitRepository>(
     repo_slug: &str,
     repo_url: &str,
     commit_timestamp: u64,
-) -> Result<Vec<CatalogOp>, EnumerateError> {
+) -> Result<Vec<CatalogOp>, Error> {
     let stem_id = cpp_stem_id(repo_slug);
     let bytes = git.ls_remote_bytes(repo_url)?;
     let listed = parse_ls_remote(&bytes);
@@ -153,15 +156,15 @@ pub fn enumerate_git_versions<Repository: GitRepository>(
 
 /// Synthesize the single pseudo-version op for an untagged repo from `HEAD`
 /// (REGISTRYLESS-PLAN §7.4 step 2 fallback, §3.3). Returns `None` only via the
-/// [`EnumerateError::NoVersions`] error when `HEAD` is unreadable.
+/// [`Error::NoVersions`] error when `HEAD` is unreadable.
 fn enumerate_pseudo_version<Repository: GitRepository>(
     git: &Repository,
     stem_id: PackageStemId,
     repo_url: &str,
     commit_timestamp: u64,
-) -> Result<Option<CatalogOp>, EnumerateError> {
+) -> Result<Option<CatalogOp>, Error> {
     let Some(head_oid) = git.head_object_id(repo_url)? else {
-        return Err(EnumerateError::NoVersions { url: repo_url.to_owned() });
+        return Err(Error::NoVersions { url: repo_url.to_owned() });
     };
     // The Go pseudo-version grammar takes a 12-hex commit prefix; a short remote
     // HEAD (defensive) is padded/truncated to 12 by the synthesis helper's own

@@ -5,6 +5,7 @@ This directory contains vendored dependencies that require special handling due 
 | Package | Sources Committed | Obtain With | What Breaks If Missing | Build Script Handling |
 |---------|-------------------|-------------|----------------------|----------------------|
 | `libpijul` | Yes | N/A (fork diff in `libpijul-fork.patch`) | Depth-1 structured record (DEPTH1 plan §2); all `libpijul` requirements resolve to this fork | Normal build |
+| `gpui-component` | Yes | N/A (fork diff in `gpui-component-fork.patch`) | The GUI (`lindsey`) links gpui-ce, whose two API drifts from zed (`TextRun.letter_spacing`, `AnyView::into_any` → `into_any_element`) the upstream component library does not track | Normal build (path dep of `workspace/gui` only — not a root-workspace member) |
 | `qdrant-edge` | **Yes** (restored 2026-08-07) | `curl -sSLO https://static.crates.io/crates/qdrant-edge/qdrant-edge-0.7.2.crate` — the published crate carries `cpp/`, `src/segment/spaces/metric_f16/cpp/` and `tokenizer/bccwj-suw_c1.0.model` verbatim | Was L7: the SIMD kernels are the *only* definitions of six symbols the Rust FFI declares, so their absence broke the final link of `driver` and 3 of its integration tests. Cargo patch resolves `qdrant-edge 0.7.2` to this vendored fork. | **Hard error** naming the missing file (see below) |
 | `doltlite` | No (`.gitignore`d, 12 MB generated C) | `nu workspace/vendor/doltlite/fetch.nu` — pinned + hash-verified against `doltlite/manifest.toml` | `index`'s versioned catalog has no engine. Since 2026-08-07 that is a **typed refusal at open**, not a silent substitution — see "The doltlite trap" below. | (No build script; compiled by rusqdoltlite) |
 | `rusqdoltlite` | Yes | N/A (Rust wrapper only; needs doltlite.c via sibling doltlite/) | DoltLite C bindings for catalog storage backend (behind `index::dolt-engine` feature) | Emits `cfg(doltlite_engine_linked)` only on a real compile; without it `Connection::open` returns `EngineError::EngineNotLinked` |
@@ -115,6 +116,18 @@ patch:
 (`workspace/vendor/libpijul-fork.patch`): a vendored fork carries a regenerable
 diff so the divergence is visible and can be replayed against a newer upstream.
 `qdrant-edge` is now past "one change" and should get a `qdrant-edge-fork.patch`.
+
+- `gpui-component` — vendored at upstream `c112e7b` (which pins zed gpui
+  `1d217ee`) with `gpui-component-fork.patch` applied. The fork is the minimum
+  needed to compile against gpui-ce `d435891`:
+  - 15× `letter_spacing: None` added to full `TextRun { .. }` literals
+    (`crates/ui/src/input/{element,indent}.rs`, `crates/ui/src/plot/label.rs`)
+    — gpui-ce PR #111 added the field to `TextRun`.
+  - 1× `FieldBuilder::View(view) => view.into_any()` →
+    `into_any_element()` (`crates/ui/src/form/field.rs`) — the zed rename.
+  The vendored workspace still names zed's git gpui; `workspace/gui`'s
+  `[patch."https://github.com/zed-industries/zed.git"]` redirects it to gpui-ce.
+  Regenerate with `git diff` in a checkout of `c112e7b` after applying the fork.
 
 ### Corrections to earlier notes in this file
 

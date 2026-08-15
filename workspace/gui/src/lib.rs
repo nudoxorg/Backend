@@ -18,6 +18,7 @@ pub mod app;
 pub mod bridge;
 pub mod highlight;
 pub mod motion;
+pub mod platform;
 pub mod theme;
 
 pub mod perf;

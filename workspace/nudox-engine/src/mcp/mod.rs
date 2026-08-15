@@ -78,8 +78,16 @@ pub mod host;
 /// vocabulary — nothing outside this crate needs to name a job.
 mod index;
 pub mod key;
+/// Markdown primitives and compact MCP projections.
+pub(crate) mod markdown;
+/// Occurrence-specific Markdown projection.
+pub(crate) mod occurrence_format;
+/// Typed-result Markdown projections.
+pub(crate) mod result_format;
 pub mod server;
 pub mod session;
+/// Semantic-search Markdown projection.
+pub(crate) mod semantic_format;
 pub mod tools;
 
 pub use account::{

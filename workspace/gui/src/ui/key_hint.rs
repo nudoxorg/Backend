@@ -35,6 +35,7 @@ use std::rc::Rc;
 use gpui::{App, IntoElement, Keystroke, ParentElement, RenderOnce, SharedString, Window, div};
 use gpui_component::h_flex;
 
+use crate::platform::ModifierLabels;
 use crate::theme::ext::ThemeExtAccessor as _;
 use gpui::prelude::*;
 
@@ -47,20 +48,23 @@ use gpui::prelude::*;
 /// Pure, so the glyph table is testable. See the module docs for the rule.
 pub fn format_key(key: &Keystroke) -> String {
     let mut out = String::with_capacity(8);
+    let labels = ModifierLabels::current();
 
     // Modifier order is macOS's own: ⌃⌥⇧⌘ (Apple HT201236). Getting this order
-    // wrong is the kind of thing nobody can name and everybody notices.
+    // wrong is the kind of thing nobody can name and everybody notices. The
+    // glyph-vs-word choice per modifier is the platform seam's job
+    // (`ModifierLabels`), not this function's.
     if key.modifiers.control {
-        out.push(if cfg!(target_os = "macos") { '⌃' } else { '^' });
+        out.push_str(labels.control);
     }
     if key.modifiers.alt {
-        out.push_str(if cfg!(target_os = "macos") { "⌥" } else { "alt " });
+        out.push_str(labels.alt);
     }
     if key.modifiers.shift {
-        out.push_str(if cfg!(target_os = "macos") { "⇧" } else { "shift " });
+        out.push_str(labels.shift);
     }
     if key.modifiers.platform {
-        out.push_str(if cfg!(target_os = "macos") { "⌘" } else { "win " });
+        out.push_str(labels.platform);
     }
 
     match key.key.as_str() {
@@ -266,5 +270,26 @@ mod tests {
         assert_eq!(format_key(&k), "⌃⌥⇧⌘K");
         let enter = Keystroke::parse("cmd-enter").expect("keystroke parses");
         assert_eq!(format_key(&enter), "⌘⏎");
+    }
+
+    /// Non-macOS: modifiers are words, and the platform modifier is the real
+    /// key (super on Linux, win on Windows) — never a hard-coded "win".
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn modifier_order_uses_the_real_platform_word() {
+        use crate::platform::ModifierLabels;
+
+        let k = Keystroke::parse("ctrl-alt-shift-cmd-k").expect("keystroke parses");
+        let rendered = format_key(&k);
+        let labels = ModifierLabels::current();
+        let expected = format!(
+            "{}{}{}{}K",
+            labels.control, labels.alt, labels.shift, labels.platform
+        );
+        assert_eq!(rendered, expected);
+        assert!(
+            !rendered.ends_with("win K"),
+            "the platform modifier must name the real key, not hard-code \"win\""
+        );
     }
 }

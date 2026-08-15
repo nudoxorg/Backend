@@ -1,0 +1,145 @@
+diff --git a/crates/ui/src/form/field.rs b/crates/ui/src/form/field.rs
+index 838d212..d7f1eb1 100644
+--- a/crates/ui/src/form/field.rs
++++ b/crates/ui/src/form/field.rs
+@@ -53,7 +53,7 @@ impl RenderOnce for FieldBuilder {
+         match self {
+             FieldBuilder::String(value) => value.into_any_element(),
+             FieldBuilder::Element(builder) => builder(window, cx),
+-            FieldBuilder::View(view) => view.into_any(),
++            FieldBuilder::View(view) => view.into_any_element(),
+         }
+     }
+ }
+diff --git a/crates/ui/src/input/element.rs b/crates/ui/src/input/element.rs
+index 0de4e96..041257d 100644
+--- a/crates/ui/src/input/element.rs
++++ b/crates/ui/src/input/element.rs
+@@ -901,6 +901,7 @@ impl TextElement {
+                     background_color: None,
+                     underline: None,
+                     strikethrough: None,
++                    letter_spacing: None,
+                 }],
+                 None,
+             );
+@@ -955,6 +956,7 @@ impl TextElement {
+                 background_color: None,
+                 underline: None,
+                 strikethrough: None,
++                letter_spacing: None,
+             }],
+             None,
+         );
+@@ -970,6 +972,7 @@ impl TextElement {
+                 background_color: None,
+                 underline: None,
+                 strikethrough: None,
++                letter_spacing: None,
+             }],
+             None,
+         );
+@@ -1027,6 +1030,7 @@ impl TextElement {
+                 background_color: None,
+                 underline: None,
+                 strikethrough: None,
++                letter_spacing: None,
+             };
+             Some(
+                 window
+@@ -1050,6 +1054,7 @@ impl TextElement {
+                     background_color: None,
+                     underline: None,
+                     strikethrough: None,
++                    letter_spacing: None,
+                 };
+                 // Use space for empty lines so they take up height
+                 let shaped_text = if text.is_empty() { " ".into() } else { text };
+@@ -1649,6 +1654,7 @@ impl Element for TextElement {
+             background_color: None,
+             underline: None,
+             strikethrough: None,
++            letter_spacing: None,
+         };
+         let marked_run = TextRun {
+             len: 0,
+@@ -1661,6 +1667,7 @@ impl Element for TextElement {
+                 wavy: false,
+             }),
+             strikethrough: None,
++            letter_spacing: None,
+         };
+ 
+         let runs = if !is_empty {
+@@ -1751,6 +1758,7 @@ impl Element for TextElement {
+                         background_color: None,
+                         underline: None,
+                         strikethrough: None,
++                        letter_spacing: None,
+                     }],
+                     wrap_width,
+                 )
+@@ -1853,6 +1861,7 @@ impl Element for TextElement {
+                 background_color: None,
+                 underline: None,
+                 strikethrough: None,
++                letter_spacing: None,
+             }];
+             let current_line_runs = vec![TextRun {
+                 len: line_number_len,
+@@ -1861,6 +1870,7 @@ impl Element for TextElement {
+                 background_color: None,
+                 underline: None,
+                 strikethrough: None,
++                letter_spacing: None,
+             }];
+ 
+             // build line numbers
+@@ -2443,6 +2453,7 @@ mod tests {
+             background_color: None,
+             underline: None,
+             strikethrough: None,
++            letter_spacing: None,
+         };
+ 
+         // use hello this-is-test
+@@ -2501,6 +2512,7 @@ mod tests {
+             background_color: None,
+             underline: None,
+             strikethrough: None,
++            letter_spacing: None,
+         };
+ 
+         let runs = vec![
+@@ -2539,6 +2551,7 @@ mod tests {
+             background_color: None,
+             underline: None,
+             strikethrough: None,
++            letter_spacing: None,
+         };
+ 
+         let runs = vec![
+diff --git a/crates/ui/src/input/indent.rs b/crates/ui/src/input/indent.rs
+index 1c95a1c..b2a9f43 100644
+--- a/crates/ui/src/input/indent.rs
++++ b/crates/ui/src/input/indent.rs
+@@ -99,6 +99,7 @@ impl TextElement {
+                 color: Hsla::default(),
+                 background_color: None,
+                 strikethrough: None,
++                letter_spacing: None,
+                 underline: None,
+             }],
+             None,
+diff --git a/crates/ui/src/plot/label.rs b/crates/ui/src/plot/label.rs
+index 59a0817..c3c3997 100644
+--- a/crates/ui/src/plot/label.rs
++++ b/crates/ui/src/plot/label.rs
+@@ -24,6 +24,7 @@ fn shape_label(
+         background_color: None,
+         underline: None,
+         strikethrough: None,
++        letter_spacing: None,
+     };
+     window
+         .text_system()

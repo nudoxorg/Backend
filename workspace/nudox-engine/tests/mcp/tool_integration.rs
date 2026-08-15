@@ -28,8 +28,8 @@ use nudox_engine::wire::{KindDiscriminant, KindTag};
 use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
 use nudox_engine::mcp::key::PackageLineageDto;
 use nudox_engine::mcp::tools::{
-    FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, ListVersionsArgs, SearchSymbolsArgs,
-    SelectVersionArgs, SelectVersionResult,
+    FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GraphQueryArgs, ListVersionsArgs,
+    SearchSymbolsArgs, SemanticSearchArgs, SelectVersionArgs, SelectVersionResult,
 };
 use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
 
@@ -727,6 +727,70 @@ async fn find_usages_malformed_key_is_rejected() {
         matches!(err, nudox_engine::mcp::McpError::MalformedKey { .. }),
         "expected MalformedKey, got {err:?}"
     );
+}
+
+/// `get_occurrences` shares the key grammar but must reject malformed input
+/// before opening a Trustfall stream, just like `find_usages`.
+#[tokio::test]
+async fn get_occurrences_malformed_key_is_rejected() {
+    let tools = make_tools();
+
+    let err = tools
+        .do_get_occurrences(GetOccurrencesArgs {
+            key: SymbolKeyDto("bad-key".to_owned()),
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect_err("malformed occurrence key must be rejected");
+
+    assert!(
+        matches!(err, nudox_engine::mcp::McpError::MalformedKey { .. }),
+        "expected MalformedKey, got {err:?}"
+    );
+}
+
+/// Semantic filters use the same parser as name search, including the
+/// important distinction between an omitted package filter and an empty one.
+#[tokio::test]
+async fn semantic_search_rejects_invalid_filters_before_search() {
+    let tools = make_tools();
+
+    let invalid_kind = tools
+        .do_semantic_search(SemanticSearchArgs {
+            query: "retry".into(),
+            kinds: Some(vec!["NotAKind".into()]),
+            packages: None,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect_err("unknown semantic kind must be rejected");
+    assert!(matches!(
+        invalid_kind,
+        nudox_engine::mcp::McpError::InvalidArgument {
+            argument: "kinds",
+            ..
+        }
+    ));
+
+    let empty_packages = tools
+        .do_semantic_search(SemanticSearchArgs {
+            query: "retry".into(),
+            kinds: None,
+            packages: Some(vec![]),
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect_err("empty semantic package filter must be rejected");
+    assert!(matches!(
+        empty_packages,
+        nudox_engine::mcp::McpError::InvalidArgument {
+            argument: "packages",
+            ..
+        }
+    ));
 }
 
 /// A valid key that has no callers returns an empty usages list, not an error.

@@ -10,7 +10,10 @@
 use std::fs;
 use std::time::Duration;
 
-use nudox_engine::mcp::tools::{FindUsagesArgs, GetSymbolsArgs, SearchSymbolsArgs, SymbolFormat};
+use nudox_engine::mcp::tools::{
+    FindUsagesArgs, GetOccurrencesArgs, GetSymbolsArgs, SearchSymbolsArgs, SemanticSearchArgs,
+    SemanticStatus, SymbolFormat,
+};
 use nudox_engine::mcp::{McpError, NudoxTools, SymbolKeyDto};
 use nudox_engine::{Engine, EngineConfig, PackageLoadEvent, PackageSpec, ProducerLanguage};
 
@@ -87,7 +90,7 @@ async fn one_function(tools: &NudoxTools, name: &str) -> SymbolKeyDto {
     let matches: Vec<_> = result
         .hits
         .iter()
-        .filter(|hit| hit.display_name.as_ref() == name)
+        .filter(|hit| &*hit.display_name == name)
         .collect();
     assert_eq!(
         matches.len(),
@@ -96,7 +99,7 @@ async fn one_function(tools: &NudoxTools, name: &str) -> SymbolKeyDto {
         result
             .hits
             .iter()
-            .map(|hit| hit.display_name.as_ref())
+            .map(|hit| &*hit.display_name)
             .collect::<Vec<_>>()
     );
     key_of(matches[0])
@@ -116,14 +119,14 @@ async fn one_symbol(tools: &NudoxTools, name: &str, kind: &str) -> SymbolKeyDto 
     let hit = result
         .hits
         .iter()
-        .find(|hit| hit.display_name.as_ref() == name)
+        .find(|hit| &*hit.display_name == name)
         .unwrap_or_else(|| {
             panic!(
                 "real source must produce {kind} {name}; got {:?}",
                 result
                     .hits
                     .iter()
-                    .map(|hit| hit.display_name.as_ref())
+                    .map(|hit| &*hit.display_name)
                     .collect::<Vec<_>>()
             )
         });
@@ -198,7 +201,60 @@ async fn real_rust_source_reaches_precise_usages_and_compact_batched_mcp() {
         "a string literal is not a resolved reference to Payload: {payload_users:?}"
     );
 
-    // 3. The compact batch projection preserves request order, carries exact
+    // 3. Body occurrences retain exact owner-relative byte spans. This is a
+    // different relationship from `find_usages`: the caller owns the call
+    // row, while `target` is the referenced key.
+    let occurrences = tools
+        .do_get_occurrences(GetOccurrencesArgs {
+            key: caller.clone(),
+            limit: Some(20),
+            cursor: None,
+        })
+        .await
+        .expect("get_occurrences(caller) must succeed");
+    let target_occurrences: Vec<_> = occurrences
+        .occurrences
+        .iter()
+        .filter(|occurrence| occurrence.target_key == target.0)
+        .collect();
+    assert!(
+        !target_occurrences.is_empty(),
+        "caller must contain an occurrence targeting target; got {:?}",
+        occurrences.occurrences
+    );
+    assert!(
+        target_occurrences
+            .iter()
+            .all(|occurrence| occurrence.span_start < occurrence.span_end),
+        "occurrence spans must be non-empty owner-relative byte ranges: {target_occurrences:?}"
+    );
+    assert!(
+        target_occurrences
+            .iter()
+            .all(|occurrence| !occurrence.reference_kind.is_empty()),
+        "occurrences must preserve the producer reference category"
+    );
+
+    // 4. A host without an embedder must not be represented as a misleading
+    // empty semantic result. The status is the agent-facing distinction
+    // between "not configured" and "searched, no match".
+    let semantic = tools
+        .do_semantic_search(SemanticSearchArgs {
+            query: "retry failed requests".into(),
+            kinds: None,
+            packages: Some(vec![format!("cargo:{PACKAGE}")]),
+            limit: Some(10),
+            cursor: None,
+        })
+        .await
+        .expect("semantic_search must degrade honestly without an embedder");
+    assert!(semantic.hits.is_empty());
+    assert!(matches!(
+        semantic.status,
+        SemanticStatus::Unavailable { ref reason } if reason == "NoEmbedder"
+    ));
+
+    // 5. The compact batch projection preserves request order, carries exact
     // bodies, and does not force the tool to serialise the GUI document model.
     let batch = tools
         .do_get_symbols(GetSymbolsArgs {

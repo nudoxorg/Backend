@@ -7,11 +7,11 @@
 //! reverse-position projection — so this module defines the *typed, honest*
 //! seam: the [`UsageQueryBackend`] trait every deployment implements, the real
 //! [`ReverseIndexUsageBackend`] over a loaded IR view + reverse-position index,
-//! and the [`Unsupported`] stub that returns [`UsageQueryError::UnsupportedTarget`]
+//! and the [`Unsupported`] stub that returns [`Error::UnsupportedTarget`]
 //! for deployments where the projection type itself is absent.
 //!
 //! An *empty* [`ReverseIndexUsageBackend`] returns the typed
-//! [`UsageQueryError::IndexUnavailable`] (`503`) when no index is loaded for the
+//! [`Error::IndexUnavailable`] (`503`) when no index is loaded for the
 //! requested scope — distinct from a fake empty page and from the `501`
 //! unsupported-target case.
 
@@ -39,7 +39,7 @@ pub struct Usage {
 
 /// Why a usage query could not be answered.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum UsageQueryError {
+pub enum Error {
     /// The reverse `occ` index required to answer `Target::Usages` is not
     /// available in this deployment yet (WS5 reverse-position projection). The
     /// route is wired and typed; the backing index is pending.
@@ -52,7 +52,7 @@ pub enum UsageQueryError {
     /// The usage-query surface **is** wired, but no reverse-position index is
     /// currently loaded for the requested scope (no IR/generation materialized
     /// for that package here yet). This is the honest "come back later" state:
-    /// distinct from [`UsageQueryError::UnsupportedTarget`] (the projection type
+    /// distinct from [`Error::UnsupportedTarget`] (the projection type
     /// itself is not implemented) and from a fake empty page (which would claim
     /// "zero uses"). Surfaced as `503 Service Unavailable`.
     #[error(
@@ -70,6 +70,9 @@ pub enum UsageQueryError {
     },
 }
 
+/// Backwards-compatible alias: the usage-query error (now [`Error`]).
+pub use self::Error as UsageQueryError;
+
 /// The engine seam a `Target::Usages` query delegates to.
 ///
 /// Every deployment supplies an implementation: the real one queries the
@@ -82,12 +85,12 @@ pub trait UsageQueryBackend: Send + Sync {
         &self,
         symbol: &StableReference,
         page: &PageSpecification,
-    ) -> Result<Page<Usage>, UsageQueryError>;
+    ) -> Result<Page<Usage>, Error>;
 }
 
 /// The stub backend used until WS5's reverse `occ` index lands.
 ///
-/// Always returns [`UsageQueryError::UnsupportedTarget`] — never a silent empty
+/// Always returns [`Error::UnsupportedTarget`] — never a silent empty
 /// page, so a client can distinguish "no uses" from "not implemented".
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Unsupported;
@@ -97,8 +100,8 @@ impl UsageQueryBackend for Unsupported {
         &self,
         _symbol: &StableReference,
         _page: &PageSpecification,
-    ) -> Result<Page<Usage>, UsageQueryError> {
-        Err(UsageQueryError::UnsupportedTarget)
+    ) -> Result<Page<Usage>, Error> {
+        Err(Error::UnsupportedTarget)
     }
 }
 
@@ -120,7 +123,7 @@ use registry::graph::ReversePositionIndex;
 ///
 /// A backend is constructed [`empty`](Self::empty) (no scope loaded) or
 /// [`loaded`](Self::loaded) (one package's IR view + reverse index). An empty
-/// backend answers every query with [`UsageQueryError::IndexUnavailable`]
+/// backend answers every query with [`Error::IndexUnavailable`]
 /// (`503`) — never a fake empty page — so a client can tell "this package's IR
 /// is not materialized here yet" apart from "this symbol genuinely has no uses"
 /// (a real, *populated* `Page { items: [] }`). This is the wiring the review
@@ -147,7 +150,7 @@ struct UsageScope {
 
 impl ReverseIndexUsageBackend {
     /// An empty backend with no scope loaded. Every query answers
-    /// [`UsageQueryError::IndexUnavailable`].
+    /// [`Error::IndexUnavailable`].
     #[must_use]
     pub fn empty() -> Self {
         Self { scope: None }
@@ -161,7 +164,7 @@ impl ReverseIndexUsageBackend {
     }
 
     /// Whether a scope is currently loaded (a query can be answered with real
-    /// data rather than [`UsageQueryError::IndexUnavailable`]).
+    /// data rather than [`Error::IndexUnavailable`]).
     #[must_use]
     pub fn is_loaded(&self) -> bool {
         self.scope.is_some()
@@ -173,22 +176,22 @@ impl UsageQueryBackend for ReverseIndexUsageBackend {
         &self,
         symbol: &StableReference,
         page: &PageSpecification,
-    ) -> Result<Page<Usage>, UsageQueryError> {
+    ) -> Result<Page<Usage>, Error> {
         // No scope loaded → honest unavailable (not 501, not a fake empty page).
         let Some(scope) = self.scope.as_ref() else {
-            return Err(UsageQueryError::IndexUnavailable);
+            return Err(Error::IndexUnavailable);
         };
 
         // Resolve the wire reference into the typed cross-package reference the
         // reverse index keys on. A malformed intro id is a client-side
         // unresolvable target, not an unavailability.
         let target = stable_ref_from_wire(symbol)
-            .map_err(|detail| UsageQueryError::UnresolvableTarget { detail })?;
+            .map_err(|detail| Error::UnresolvableTarget { detail })?;
 
         // If the target's package is not the one this scope loaded, we hold no
         // index for it — honest unavailable rather than a false "no uses".
         if scope.view.package() != &target.package {
-            return Err(UsageQueryError::IndexUnavailable);
+            return Err(Error::IndexUnavailable);
         }
 
         // Fast-path: the reverse index's owner postings for this target. An
@@ -395,7 +398,7 @@ mod tests {
         let err = backend
             .usages(&wire, &PageSpecification::default())
             .expect_err("empty backend must not return a page");
-        assert_eq!(err, UsageQueryError::IndexUnavailable);
+        assert_eq!(err, Error::IndexUnavailable);
     }
 
     #[test]
@@ -434,7 +437,7 @@ mod tests {
         let err = backend
             .usages(&elsewhere, &PageSpecification::default())
             .expect_err("no index is loaded for a different package");
-        assert_eq!(err, UsageQueryError::IndexUnavailable);
+        assert_eq!(err, Error::IndexUnavailable);
     }
 
     #[test]

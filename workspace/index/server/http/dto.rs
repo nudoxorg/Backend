@@ -1,8 +1,5 @@
 //! Request DTOs — the serialized shapes the API *accepts* — and their lowering
 //! into the typed domain vocabulary.
-
-//! Request DTOs — the serialized shapes the API *accepts* — and their lowering
-//! into the typed domain vocabulary.
 //!
 //! The search surfaces no longer live here: `POST /search`, `/packages/search`,
 //! and `/usages` deserialize the one query algebra ([`heart::query::Query`])

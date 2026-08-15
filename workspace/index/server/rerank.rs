@@ -10,7 +10,7 @@
 //!
 //! Every call runs under `rerank.timeout_ms` (default 1.2 s — the whole deep
 //! path's budget). On timeout the caller receives an explicit
-//! [`RerankError::Timeout`] which the HTTP surface projects as
+//! [`Error::Timeout`] which the HTTP surface projects as
 //! `rerank_unavailable` — reranking **never silently degrades** into unranked
 //! results presented as ranked.
 //!
@@ -57,7 +57,7 @@ pub struct RerankScore {
 /// surface must project it as the explicit `rerank_unavailable` signal
 /// (§20.9) rather than a generic 5xx.
 #[derive(Debug, thiserror::Error)]
-pub enum RerankError {
+pub enum Error {
     /// The call outlived the configured latency budget.
     #[error("rerank timed out after {budget:?}")]
     Timeout { budget: Duration },
@@ -82,6 +82,9 @@ pub enum RerankError {
     IndexOutOfBounds { index: usize, count: usize },
 }
 
+/// Backwards-compatible alias: the rerank error (now [`Error`]).
+pub use self::Error as RerankError;
+
 /// A service that scores documents against a query with a cross-encoder.
 /// Trait-based so the deep search path and the `/v1/rerank` handler stay
 /// implementation-agnostic (self-hosting lands behind the same trait later).
@@ -93,7 +96,7 @@ pub trait RerankService: Send + Sync {
         query: &str,
         documents: &[RerankDocument],
         top_k: usize,
-    ) -> impl Future<Output = Result<Vec<RerankScore>, RerankError>> + Send;
+    ) -> impl Future<Output = Result<Vec<RerankScore>, Error>> + Send;
 
     /// The model this service scores with (for telemetry labels).
     fn model_id(&self) -> &str;
@@ -131,7 +134,7 @@ impl HttpProxyReranker {
         query: &str,
         documents: &[RerankDocument],
         top_k: usize,
-    ) -> Result<Vec<RerankScore>, RerankError> {
+    ) -> Result<Vec<RerankScore>, Error> {
         let payload = serde_json::json!({
             "model": self.model.as_str(),
             "query": query,
@@ -148,23 +151,23 @@ impl HttpProxyReranker {
             request = request.bearer_auth(api_key.expose_secret());
         }
 
-        let response = request.send().await.map_err(RerankError::Transport)?;
+        let response = request.send().await.map_err(Error::Transport)?;
         let status = response.status();
         if !status.is_success() {
             let message = response.text().await.unwrap_or_default();
             let body: String = message.chars().take(512).collect();
-            return Err(RerankError::HttpStatus { status, body });
+            return Err(Error::HttpStatus { status, body });
         }
 
-        let bytes = response.bytes().await.map_err(RerankError::Transport)?;
+        let bytes = response.bytes().await.map_err(Error::Transport)?;
         let decoded: WireResponse =
-            serde_json::from_slice(&bytes).map_err(RerankError::Malformed)?;
+            serde_json::from_slice(&bytes).map_err(Error::Malformed)?;
 
         let mut scores = Vec::with_capacity(decoded.results.len().min(top_k));
         for row in decoded.results.into_iter().take(top_k) {
             let document = documents
                 .get(row.index)
-                .ok_or(RerankError::IndexOutOfBounds {
+                .ok_or(Error::IndexOutOfBounds {
                     index: row.index,
                     count: documents.len(),
                 })?;
@@ -190,7 +193,7 @@ impl RerankService for HttpProxyReranker {
         query: &str,
         documents: &[RerankDocument],
         top_k: usize,
-    ) -> Result<Vec<RerankScore>, RerankError> {
+    ) -> Result<Vec<RerankScore>, Error> {
         if documents.is_empty() || top_k == 0 {
             return Ok(Vec::new());
         }
@@ -204,7 +207,7 @@ impl RerankService for HttpProxyReranker {
         // path's latency budget or answer the explicit timeout (§20.9).
         match tokio::time::timeout(self.budget, self.request(query, documents, top_k)).await {
             Ok(result) => result,
-            Err(_) => Err(RerankError::Timeout {
+            Err(_) => Err(Error::Timeout {
                 budget: self.budget,
             }),
         }

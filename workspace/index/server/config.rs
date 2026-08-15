@@ -428,7 +428,7 @@ impl ServerConfiguration {
     /// so the file layer is parsed with the `toml` crate and the environment
     /// layer is folded by [`environment_fragment`]; both merge as serialized
     /// fragments — semantically identical to `Toml::file` + `Env::prefixed`.
-    pub fn resolve() -> Result<Self, ConfigError> {
+    pub fn resolve() -> Result<Self, Error> {
         use figment::{Figment, providers::Serialized};
 
         let mut figment = Figment::from(Serialized::defaults(Self::default()));
@@ -438,16 +438,16 @@ impl ServerConfiguration {
             .unwrap_or_else(|| PathBuf::from("nudox.toml"));
         if path.is_file() {
             let text = std::fs::read_to_string(&path)
-                .map_err(|error| ConfigError::Load(figment::Error::from(error.to_string())))?;
+                .map_err(|error| Error::Load(figment::Error::from(error.to_string())))?;
             let fragment: toml::Value = toml::from_str(&text)
-                .map_err(|error| ConfigError::Load(figment::Error::from(error.to_string())))?;
+                .map_err(|error| Error::Load(figment::Error::from(error.to_string())))?;
             figment = figment.merge(Serialized::defaults(fragment));
         }
         if let Some(fragment) = environment_fragment() {
             figment = figment.merge(Serialized::defaults(fragment));
         }
 
-        let configuration: Self = figment.extract().map_err(ConfigError::Load)?;
+        let configuration: Self = figment.extract().map_err(Error::Load)?;
         configuration.validate()?;
         Ok(configuration)
     }
@@ -459,17 +459,17 @@ impl ServerConfiguration {
     /// URL or TerminusDB password is still the well-known development default is
     /// a hard error — the server refuses to start rather than silently connecting
     /// a production graph store with publicly-known credentials.
-    pub fn validate(&self) -> Result<(), ConfigError> {
+    pub fn validate(&self) -> Result<(), Error> {
         let mut names = std::collections::HashSet::new();
         for source in std::iter::once(&self.definitive).chain(&self.overlays) {
             if source.name.trim().is_empty() {
-                return Err(ConfigError::Validation(
-                    ConfigValidationError::EmptySourceName,
+                return Err(Error::Validation(
+                    ValidationError::EmptySourceName,
                 ));
             }
             if !names.insert(source.name.clone()) {
-                return Err(ConfigError::Validation(
-                    ConfigValidationError::DuplicateSourceName {
+                return Err(Error::Validation(
+                    ValidationError::DuplicateSourceName {
                         name: source.name.clone(),
                     },
                 ));
@@ -481,8 +481,8 @@ impl ServerConfiguration {
         // no endpoint is configured yet, so a forbidden id never lies dormant in
         // config waiting for an endpoint to activate it.
         if let Err(error) = vector::model::license::assert_licensed(self.rerank.model_id.as_str()) {
-            return Err(ConfigError::Validation(
-                ConfigValidationError::ForbiddenRerankModel {
+            return Err(Error::Validation(
+                ValidationError::ForbiddenRerankModel {
                     model: self.rerank.model_id.clone(),
                     detail: error.to_string(),
                 },
@@ -643,20 +643,20 @@ mod defaults {
 
 /// Why configuration failed to resolve.
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
+pub enum Error {
     /// A layer (file/env) could not be read or parsed.
     #[error("failed to load configuration")]
     Load(#[source] figment::Error),
 
     /// The merged configuration failed structural validation.
     #[error(transparent)]
-    Validation(#[from] ConfigValidationError),
+    Validation(#[from] ValidationError),
 }
 
 /// Detailed, typed configuration validation failures. All data carried
 /// explicitly; no dynamic strings for the core reason.
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigValidationError {
+pub enum ValidationError {
     /// A source name (definitive or overlay) is empty or whitespace-only.
     #[error("a source has an empty name")]
     EmptySourceName,
@@ -714,6 +714,10 @@ pub enum ConfigValidationError {
     #[error("invalid configuration: {detail}")]
     Other { detail: String },
 }
+
+/// Backwards-compatible aliases: the config errors (now [`Error`] / [`ValidationError`]).
+pub use self::Error as ConfigError;
+pub use self::ValidationError as ConfigValidationError;
 
 /// Serde adapter so an optional secret round-trips as a plain string in config
 /// without ever being `Debug`-printed in the clear.

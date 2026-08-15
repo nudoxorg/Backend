@@ -37,9 +37,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use futures::future::try_join_all;
 use crate::wire::{
     DocEvent, Gen, HitRow, KindDiscriminant, PackageDiff, QueryEvent, RenderSection, SearchEvent,
-    SigToken, SourceLocation, SymbolHead, Timeline, VersionEvent, Visibility,
+    SigToken, SourceLocation, SymbolHead, Timeline, VersionEvent,
 };
 use crate::{EngineHandle, GraphQuery, SearchQuery};
+use crate::semantic::SectionState;
 
 use crate::mcp::error::McpError;
 use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
@@ -48,15 +49,17 @@ mod args;
 mod results;
 
 pub use args::{
-    DiffVersionsArgs, FindUsagesArgs, GetSymbolArgs, GetSymbolsArgs, GraphQueryArgs,
+    DiffVersionsArgs, FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GetSymbolsArgs, GraphQueryArgs,
     GraphSchemaArgs, IndexPackageArgs, ListPackagesArgs, ListVersionsArgs, SearchSymbolsArgs,
-    SelectVersionArgs, SymbolFormat,
+    SelectVersionArgs, SemanticSearchArgs, SymbolFormat,
 };
 pub use results::{
-    CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, IndexPackageResult,
+    CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, GetOccurrencesResult,
+    IndexPackageResult,
     IntegrityReport, ListVersionsResult, PackageSummary, PackagesResult, QueryResult, QueryResultRow,
-    SchemaResult, SearchResult, SelectVersionResult, SymbolDoc, SymbolsResult, UsageRow,
-    UsagesResult, VersionSummary,
+    SchemaResult, SearchResult, SelectVersionResult, SemanticHitRow, SemanticSearchResult,
+    SemanticStatus, SymbolDoc, SymbolsResult, UsageRow, UsagesResult, VersionSummary,
+    OccurrenceRow,
 };
 
 /// The Trustfall query behind `list_packages`.
@@ -73,6 +76,22 @@ query {
     }
 }
 ";
+
+/// The exact-occurrence query behind `get_occurrences`.
+pub const GET_OCCURRENCES_QUERY: &str = r#"
+{
+    Symbols {
+        key @filter(op: "=", value: ["$key"])
+        occurrencesOf {
+            targetKey @output
+            referenceKind @output
+            confidence @output
+            spanStart @output
+            spanEnd @output
+        }
+    }
+}
+"#;
 
 /// Default number of rows a tool returns when the caller does not say.
 const DEFAULT_LIMIT: usize = 50;
@@ -200,65 +219,7 @@ impl NudoxTools {
         let limit = clamp_limit(args.limit);
         let offset = decode_cursor(args.cursor.as_deref())?;
 
-        let kinds = match &args.kinds {
-            None => Vec::new(),
-            Some(names) => {
-                let mut out = Vec::with_capacity(names.len());
-                for name in names {
-                    out.push(parse_kind(name).ok_or_else(|| McpError::InvalidArgument {
-                        argument: "kinds",
-                        reason: format!(
-                            "{name:?} is not a known kind; expected one of {}",
-                            known_kind_names().join(", ")
-                        ),
-                    })?);
-                }
-                out
-            }
-        };
-
-        // The `packages` filter is pushed all the way into the engine's
-        // `SearchQuery` (rather than applied here, after the fact, on the rows
-        // it returned) because `collect_name_hits`/`collect_type_hits` each
-        // truncate to `limit` before returning. A post-hoc filter here would be
-        // filtering an already-truncated set: ties break on package lineage
-        // (`compare_candidates`), so a package whose name sorts late could be
-        // crowded out of the truncated set entirely by ties from packages the
-        // caller was about to exclude anyway, producing zero results for a
-        // package that genuinely has matches. See `SearchQuery::packages`.
-        let packages = match &args.packages {
-            None => Vec::new(),
-            Some(names) => {
-                if names.is_empty() {
-                    return Err(McpError::InvalidArgument {
-                        argument: "packages",
-                        reason: "must contain at least one 'ecosystem:name' entry, or be omitted"
-                            .to_owned(),
-                    });
-                }
-                let mut out = Vec::with_capacity(names.len());
-                for name in names {
-                    // Preserve the specific reason `PackageLineageDto::to_wire`
-                    // already computed (empty ecosystem vs. empty name vs. no
-                    // ':' at all) rather than discarding it for one generic
-                    // message — doctrine's `map_err(|_|)` callout applies here
-                    // exactly: the reason existed one line up and this used to
-                    // throw it away.
-                    let lineage = PackageLineageDto(name.clone()).to_wire().map_err(|e| {
-                        let reason = match e {
-                            McpError::MalformedPackage { reason, .. } => reason,
-                            _ => "not 'ecosystem:name'",
-                        };
-                        McpError::InvalidArgument {
-                            argument: "packages",
-                            reason: format!("{name:?} is not 'ecosystem:name': {reason}"),
-                        }
-                    })?;
-                    out.push(lineage);
-                }
-                out
-            }
-        };
+        let (kinds, packages) = parse_search_filters(args.kinds.as_ref(), args.packages.as_ref())?;
 
         // Fetch one row past the page so we can tell whether another page
         // exists (`fetched_may_have_capped` below) without a second query.
@@ -281,14 +242,33 @@ impl NudoxTools {
         // i.e. that section's own truncation may have hidden more.
         let mut fetched_may_have_capped = false;
         let mut terminated = false;
+        let mut local_sections_seen = [false; 2];
         while let Ok(event) = rx.recv_async().await {
             match event {
-                SearchEvent::Section { rows: batch, .. }
-                | SearchEvent::Merge { rows: batch, .. } => {
+                SearchEvent::Section {
+                    section,
+                    rows: batch,
+                    ..
+                }
+                | SearchEvent::Merge {
+                    section,
+                    rows: batch,
+                    ..
+                } if section != crate::search::SECTION_SEMANTIC => {
                     if batch.len() >= fetch_limit {
                         fetched_may_have_capped = true;
                     }
                     rows.extend(batch.iter().cloned());
+                    if section.0 < 2 {
+                        local_sections_seen[section.0 as usize] = true;
+                    }
+                    // `search_symbols` is deliberately the fast structural
+                    // facet. The engine emits name/type before semantic, so
+                    // returning as soon as both local sections arrive avoids
+                    // making an exact lookup wait for an embedding model.
+                    if local_sections_seen == [true, true] {
+                        break;
+                    }
                 }
                 SearchEvent::Latency { .. } => {}
                 SearchEvent::Done { .. } => {
@@ -299,7 +279,7 @@ impl NudoxTools {
                 _ => {}
             }
         }
-        if !terminated {
+        if !terminated && local_sections_seen != [true, true] {
             return Err(McpError::TruncatedStream);
         }
 
@@ -493,6 +473,141 @@ impl NudoxTools {
         let next_cursor = has_more.then(|| encode_cursor(offset + limit));
         Ok(UsagesResult {
             usages,
+            truncated: next_cursor.is_some(),
+            next_cursor,
+        })
+    }
+
+    /// `get_occurrences`, minus the MCP wrapping.
+    pub async fn do_get_occurrences(
+        &self,
+        args: GetOccurrencesArgs,
+    ) -> Result<GetOccurrencesResult, McpError> {
+        args.key.to_wire()?;
+        let limit = clamp_limit(args.limit);
+        let offset = decode_cursor(args.cursor.as_deref())?;
+        let mut bindings = BTreeMap::new();
+        bindings.insert("key".to_owned(), args.key.0.clone());
+
+        let (page, columns, has_more) = self
+            .run_query_page(
+                GraphQuery {
+                    query: GET_OCCURRENCES_QUERY.to_owned(),
+                    args: bindings,
+                },
+                offset,
+                limit,
+            )
+            .await?;
+
+        let mut occurrences = Vec::with_capacity(page.len());
+        for row in &page {
+            occurrences.push(OccurrenceRow {
+                target_key: column(&columns, row, "targetKey").unwrap_or_default(),
+                reference_kind: column(&columns, row, "referenceKind").unwrap_or_default(),
+                confidence: column(&columns, row, "confidence").unwrap_or_default(),
+                span_start: parse_occurrence_offset(&column(&columns, row, "spanStart"), "spanStart")?,
+                span_end: parse_occurrence_offset(&column(&columns, row, "spanEnd"), "spanEnd")?,
+            });
+        }
+        let next_cursor = has_more.then(|| encode_cursor(offset + limit));
+        Ok(GetOccurrencesResult {
+            owner: args.key,
+            occurrences,
+            truncated: next_cursor.is_some(),
+            next_cursor,
+        })
+    }
+
+    /// `semantic_search`, minus the MCP wrapping.
+    pub async fn do_semantic_search(
+        &self,
+        args: SemanticSearchArgs,
+    ) -> Result<SemanticSearchResult, McpError> {
+        let limit = clamp_limit(args.limit);
+        let offset = decode_cursor(args.cursor.as_deref())?;
+        let (kinds, packages) = parse_search_filters(args.kinds.as_ref(), args.packages.as_ref())?;
+        let fetch_limit = offset.saturating_add(limit).saturating_add(1);
+        let query = SearchQuery {
+            text: args.query.clone(),
+            kinds,
+            packages,
+            limit: fetch_limit,
+        };
+        let generation = self.next_gen();
+        let (_stream, rx) = self.engine.search(query, generation);
+        let mut rows = Vec::new();
+        let mut status = None;
+        let mut fetched_may_have_capped = false;
+        let mut terminated = false;
+
+        while let Ok(event) = rx.recv_async().await {
+            match event {
+                SearchEvent::SectionState { section, state, .. }
+                    if section == crate::search::SECTION_SEMANTIC =>
+                {
+                    status = Some(semantic_status(state));
+                }
+                SearchEvent::Section { section, rows: batch, .. }
+                | SearchEvent::Merge { section, rows: batch, .. }
+                    if section == crate::search::SECTION_SEMANTIC =>
+                {
+                    if batch.len() >= fetch_limit {
+                        fetched_may_have_capped = true;
+                    }
+                    rows.extend(batch.iter().cloned());
+                }
+                SearchEvent::Done { .. } => {
+                    terminated = true;
+                    break;
+                }
+                SearchEvent::Failed { error, .. } => return Err(McpError::Engine(error)),
+                _ => {}
+            }
+        }
+        if !terminated {
+            return Err(McpError::TruncatedStream);
+        }
+
+        let mut seen = HashSet::with_capacity(rows.len());
+        rows.retain(|row| {
+            let key = format!(
+                "{}:{}#{}",
+                row.key.package.ecosystem.as_str(),
+                row.key.package.name.as_str(),
+                row.key.intro.to_hex()
+            );
+            seen.insert(key)
+        });
+        let (page, has_more) = paginate_rows(rows, offset, limit, fetched_may_have_capped);
+        let corpus = self.engine.corpus();
+        let mut hits = Vec::with_capacity(page.len());
+        for hit in page {
+            let documentation = corpus
+                .package(&hit.key.package)
+                .await
+                .and_then(|package| {
+                    package
+                        .view()
+                        .entry(hit.key.intro)
+                        .map(|entry| entry.sym().documentation.clone())
+                })
+                .filter(|documentation| !documentation.is_empty());
+            hits.push(SemanticHitRow {
+                key: SymbolKeyDto::from_wire(&hit.key),
+                display_name: hit.display_name.to_string(),
+                kind: hit.kind,
+                score: hit.score,
+                documentation,
+            });
+        }
+        let next_cursor = has_more.then(|| encode_cursor(offset + limit));
+        Ok(SemanticSearchResult {
+            query: args.query,
+            status: status.unwrap_or_else(|| SemanticStatus::Unavailable {
+                reason: "semantic section emitted no status".to_owned(),
+            }),
+            hits,
             truncated: next_cursor.is_some(),
             next_cursor,
         })
@@ -953,7 +1068,10 @@ fn compact_symbol(head: &crate::chunk::head::SymbolProjection, format: SymbolFor
     }
 }
 
-fn signature_text(token: &SigToken) -> &str {
+/// Render one signature token without exposing the GUI token vocabulary at the
+/// MCP boundary. The Markdown projection uses this exact formatter so an
+/// agent sees the same signature text as the compact symbol reader.
+pub(crate) fn signature_text(token: &SigToken) -> &str {
     match token {
         SigToken::Kw(text) | SigToken::Punct(text) => text,
         SigToken::Ident(text)
@@ -1046,6 +1164,85 @@ fn clamp_limit(requested: Option<u32>) -> usize {
         Some(0) => MAX_LIMIT,
         Some(n) => (n as usize).min(MAX_LIMIT),
     }
+}
+
+/// Parse the shared name/type/semantic search filters once for every search
+/// facet. Keeping package filtering inside `SearchQuery` is important: the
+/// engine truncates each section before returning it, so filtering afterward
+/// can erase a package that should have occupied a page.
+fn parse_search_filters(
+    kinds: Option<&Vec<String>>,
+    packages: Option<&Vec<String>>,
+) -> Result<(Vec<KindDiscriminant>, Vec<crate::wire::PackageLineageId>), McpError> {
+    let kinds = match kinds {
+        None => Vec::new(),
+        Some(names) => {
+            let mut out = Vec::with_capacity(names.len());
+            for name in names {
+                out.push(parse_kind(name).ok_or_else(|| McpError::InvalidArgument {
+                    argument: "kinds",
+                    reason: format!(
+                        "{name:?} is not a known kind; expected one of {}",
+                        known_kind_names().join(", ")
+                    ),
+                })?);
+            }
+            out
+        }
+    };
+
+    let packages = match packages {
+        None => Vec::new(),
+        Some(names) => {
+            if names.is_empty() {
+                return Err(McpError::InvalidArgument {
+                    argument: "packages",
+                    reason: "must contain at least one 'ecosystem:name' entry, or be omitted"
+                        .to_owned(),
+                });
+            }
+            let mut out = Vec::with_capacity(names.len());
+            for name in names {
+                let lineage = PackageLineageDto(name.clone()).to_wire().map_err(|e| {
+                    let reason = match e {
+                        McpError::MalformedPackage { reason, .. } => reason,
+                        _ => "not 'ecosystem:name'",
+                    };
+                    McpError::InvalidArgument {
+                        argument: "packages",
+                        reason: format!("{name:?} is not 'ecosystem:name': {reason}"),
+                    }
+                })?;
+                out.push(lineage);
+            }
+            out
+        }
+    };
+    Ok((kinds, packages))
+}
+
+/// Map the engine's honest semantic coverage state to the MCP result model.
+fn semantic_status(state: SectionState) -> SemanticStatus {
+    match state {
+        SectionState::Complete => SemanticStatus::Ready,
+        SectionState::Building { covered, total } => SemanticStatus::Building { covered, total },
+        SectionState::Unavailable { reason } => SemanticStatus::Unavailable {
+            reason: format!("{reason:?}"),
+        },
+    }
+}
+
+/// Parse a scalar span from the graph plane without turning a corrupt row into
+/// an apparently valid zero-length occurrence.
+fn parse_occurrence_offset(value: &Option<String>, field: &'static str) -> Result<u32, McpError> {
+    let value = value.as_deref().ok_or_else(|| McpError::InvalidArgument {
+        argument: field,
+        reason: "the graph row omitted a required occurrence offset".to_owned(),
+    })?;
+    value.parse::<u32>().map_err(|_| McpError::InvalidArgument {
+        argument: field,
+        reason: format!("the graph row contained a non-integer offset {value:?}"),
+    })
 }
 
 /// Look a cell up by column name rather than by position.

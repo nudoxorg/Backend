@@ -421,61 +421,43 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
     //   };
     // No total-count assertion — see the module doc's "Why no entry count" note.
 
-    let search_hits = search_result
-        .pointer("/result/structuredContent/hits")
-        .and_then(Value::as_array)
+    let search_text = search_result
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
         .unwrap_or_else(|| {
-            panic!("search_symbols result must carry structuredContent.hits: {search_result}")
+            panic!("search_symbols result must carry Markdown content: {search_result}")
         });
-
-    let display_names: Vec<&str> = search_hits
-        .iter()
-        .filter_map(|hit| hit.get("display_name").and_then(Value::as_str))
-        .collect();
+    assert!(search_result.pointer("/result/structuredContent").is_none());
 
     for real_symbol in ["Memchr", "memchr_iter", "memrchr"] {
         assert!(
-            display_names.iter().any(|n| n.contains(real_symbol)),
+            search_text.contains(real_symbol),
             "search_symbols(\"mem\") over the real memchr crate must surface `{real_symbol}` \
              (see result/memchr-2.8.3/src/lib.rs's `pub use crate::memchr::{{ ... }}`); \
-             got: {display_names:?}"
+             got: {search_text}"
         );
     }
 
     // Every key returned must actually carry the cargo:memchr lineage — proof
     // this came from the real producer's real IR, not from a stub or a
     // hand-authored fixture (doctrine §4).
-    for hit in search_hits {
-        let key = hit
-            .get("key")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("every hit must carry a string key: {hit}"));
+    for line in search_text.lines().filter(|line| line.contains("cargo:memchr#")) {
         assert!(
-            key.starts_with("cargo:memchr#"),
-            "every hit in a single-package corpus must carry the cargo:memchr lineage; got {key}"
+            line.contains("cargo:memchr#"),
+            "every rendered search row must carry the cargo:memchr lineage; got {line}"
         );
     }
 
-    let packages_list = packages_result
-        .pointer("/result/structuredContent/packages")
-        .and_then(Value::as_array)
+    let package_text = packages_result
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
         .unwrap_or_else(|| {
-            panic!("list_packages result must carry structuredContent.packages: {packages_result}")
+            panic!("list_packages result must carry Markdown content: {packages_result}")
         });
-
-    let memchr_pkg = packages_list
-        .iter()
-        .find(|p| p.get("name").and_then(Value::as_str) == Some("memchr"))
-        .unwrap_or_else(|| panic!("memchr must appear in list_packages; got {packages_list:?}"));
-    assert_eq!(
-        memchr_pkg.get("ecosystem").and_then(Value::as_str),
-        Some("cargo"),
-        "memchr's ecosystem must be cargo: {memchr_pkg}"
-    );
-    assert_eq!(
-        memchr_pkg.get("lineage").and_then(Value::as_str),
-        Some("cargo:memchr"),
-        "memchr's lineage must be cargo:memchr: {memchr_pkg}"
+    assert!(packages_result.pointer("/result/structuredContent").is_none());
+    assert!(
+        package_text.contains("cargo:memchr"),
+        "memchr must appear in list_packages: {package_text}"
     );
 
     drop(runtime);

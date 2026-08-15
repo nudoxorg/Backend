@@ -90,6 +90,48 @@ pub struct FindUsagesArgs {
     pub cursor: Option<String>,
 }
 
+/// Arguments to `get_occurrences`.
+///
+/// The key identifies the symbol that owns the occurrences. Each returned row
+/// is one exact reference inside that symbol; use `find_usages` when the
+/// question is instead which symbols refer to a target.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct GetOccurrencesArgs {
+    /// The symbol whose body owns the occurrences, as `ecosystem:name#introhex`.
+    pub key: SymbolKeyDto,
+
+    /// Maximum number of occurrences. Defaults to 50, capped at 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+
+    /// Opaque pagination cursor from a previous `get_occurrences` call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Arguments to `semantic_search`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SemanticSearchArgs {
+    /// A natural-language concept or behavior to find in documented public APIs.
+    pub query: String,
+
+    /// Restrict results to these kinds. Omit to search all kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kinds: Option<Vec<String>>,
+
+    /// Restrict results to these loaded packages. Omit to search every package.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packages: Option<Vec<String>>,
+
+    /// Maximum number of results. Defaults to 50, capped at 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+
+    /// Opaque pagination cursor from a previous `semantic_search` call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
 /// Arguments to `list_packages`.
 ///
 /// Empty, but named rather than omitted so the tool still has a derived schema

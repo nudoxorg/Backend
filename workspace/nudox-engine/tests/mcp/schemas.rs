@@ -17,7 +17,8 @@ use nudox_engine::mcp::tools::{
     GetSymbolsArgs, GraphQueryArgs, GraphSchemaArgs, IndexPackageResult, ListPackagesArgs,
     ListVersionsArgs, ListVersionsResult, PackageSummary, PackagesResult, QueryResult,
     QueryResultRow, SchemaResult, SearchResult, SearchSymbolsArgs, SelectVersionArgs,
-    SelectVersionResult, SymbolDoc, SymbolFormat, SymbolsResult, UsageRow, UsagesResult,
+    SelectVersionResult, SemanticStatus, SymbolDoc, SymbolFormat, SymbolsResult, UsageRow,
+    UsagesResult,
     VersionSummary,
 };
 use nudox_engine::wire::{
@@ -78,6 +79,14 @@ fn every_tool_argument_type_has_a_derived_schema() {
     assert_schema_is_meaningful(&schema_for!(GetSymbolArgs), "get_symbol args");
     assert_schema_is_meaningful(&schema_for!(GetSymbolsArgs), "get_symbols args");
     assert_schema_is_meaningful(&schema_for!(FindUsagesArgs), "find_usages args");
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::GetOccurrencesArgs),
+        "get_occurrences args",
+    );
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::SemanticSearchArgs),
+        "semantic_search args",
+    );
     assert_schema_is_meaningful(&schema_for!(ListPackagesArgs), "list_packages args");
     assert_schema_is_meaningful(&schema_for!(ListVersionsArgs), "list_versions args");
     assert_schema_is_meaningful(&schema_for!(SelectVersionArgs), "select_version args");
@@ -158,6 +167,10 @@ fn every_tool_result_schema_declares_a_root_object_type() {
         (
             "IndexPackageResult",
             serde_json::to_value(schema_for!(IndexPackageResult)).unwrap(),
+        ),
+        (
+            "SemanticStatus",
+            serde_json::to_value(schema_for!(SemanticStatus)).unwrap(),
         ),
     ];
     for (name, schema) in cases {

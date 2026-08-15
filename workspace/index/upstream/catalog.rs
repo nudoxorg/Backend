@@ -4,7 +4,7 @@
 //! Each follower represents one ecosystem's catalog: it knows how to talk to
 //! its registry's native feed format (NuGet V3 catalog, crates.io new-crates
 //! RSS, etc.) and produce a stream of `CatalogEvent`s that the driver
-//! (`server/poll.rs::catalog_follower_worker`) converts into idempotent
+//! (`server/catalog_follower.rs::catalog_follower_worker`) converts into idempotent
 //! package-registration calls.
 //!
 //! # Design constraints

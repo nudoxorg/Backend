@@ -19,7 +19,7 @@ use super::REFS_PAGE_SIZE;
 /// `Confidence >= Index` — which represent active use sites (call sites,
 /// field accesses, etc.).  See the `stream_symbol` comment above for why
 /// `mentions_of` is intentionally excluded here.
-fn collect_refs(
+pub(crate) fn collect_refs(
     target: nudox_ir::change::IntroId,
     pkg: &crate::store::package::PackageView,
     lineage: nudox_ir::change::PackageLineageId,
@@ -68,7 +68,7 @@ fn collect_refs(
 ///
 /// Always emits at least one page (possibly empty) so the GUI can exit the
 /// "still loading" state.  The last page carries `done: true`.
-async fn emit_refs_pages(
+pub(crate) async fn emit_refs_pages(
     tx: &flume::Sender<DocEvent>,
     cancel: &CancellationToken,
     rows: Vec<RefRow>,

@@ -159,7 +159,7 @@ fn recipe_fingerprint_parts(
 
 /// Why a bakery operation failed.
 #[derive(Debug, thiserror::Error)]
-pub enum BakeryError {
+pub enum Error {
     /// The `edgepack_artifacts` table could not be read/written.
     #[error("bakery claim store failed")]
     Catalog(#[source] crate::engine::EngineError),
@@ -187,6 +187,9 @@ pub enum BakeryError {
     Edge(#[source] anyhow::Error),
 }
 
+/// Backwards-compatible alias: the bakery error (now [`Error`]).
+pub use self::Error as BakeryError;
+
 /// The claim protocol over `edgepack_artifacts`, abstracted so the
 /// single-claim invariant is unit-testable without postgres.
 pub trait ClaimStore: Send + Sync {
@@ -196,7 +199,7 @@ pub trait ClaimStore: Send + Sync {
     fn try_claim(
         &self,
         request: &BakeRequest,
-    ) -> impl Future<Output = Result<bool, BakeryError>> + Send;
+    ) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Terminal success: record the artifact id + RAM estimate, status `ready`.
     fn mark_ready(
@@ -204,7 +207,7 @@ pub trait ClaimStore: Send + Sync {
         digest: ContentHash,
         artifact: ContentHash,
         ram_estimate: i64,
-    ) -> impl Future<Output = Result<(), BakeryError>> + Send;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Terminal failure: status `failed`. The claim stays terminal — a failed
     /// bake is not retried until the row is deleted (operator action) or the
@@ -212,7 +215,7 @@ pub trait ClaimStore: Send + Sync {
     fn mark_failed(
         &self,
         digest: ContentHash,
-    ) -> impl Future<Output = Result<(), BakeryError>> + Send;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 /// What one bake attempt produced.
@@ -234,7 +237,7 @@ pub enum BakeOutcome {
     /// This worker claimed, baked, and published the artifact.
     Baked(BakedArtifact),
     /// This worker claimed and the bake failed; the row is marked `failed`.
-    Failed(BakeryError),
+    Failed(Error),
 }
 
 /// Claim-then-bake, upholding the single-claim invariant: the bake closure
@@ -244,11 +247,11 @@ pub async fn run_bake<C, F, Fut>(
     claims: &C,
     request: &BakeRequest,
     bake: F,
-) -> Result<BakeOutcome, BakeryError>
+) -> Result<BakeOutcome, Error>
 where
     C: ClaimStore + ?Sized,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<BakedArtifact, BakeryError>>,
+    Fut: Future<Output = Result<BakedArtifact, Error>>,
 {
     let digest = request.edgepack_key.digest();
     if !claims.try_claim(request).await? {
@@ -286,7 +289,7 @@ pub async fn bake_package<M: EmbeddingModel>(
     embedder: &HttpEmbedder<M>,
     cache: &EmbeddingCache<M>,
     request: &BakeRequest,
-) -> Result<BakedArtifact, BakeryError> {
+) -> Result<BakedArtifact, Error> {
     let symbols = stores
         .global_store
         .symbols_for(request.package)
@@ -332,21 +335,21 @@ pub async fn bake_package<M: EmbeddingModel>(
     // Build and pack the shard on a blocking thread: EdgeShard is not Send
     // and all its I/O is synchronous. `pack_shard` is also sync.
     let (artifact_bytes, artifact_hash) =
-        tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, ContentHash), BakeryError> {
-            let dir = tempfile::tempdir().map_err(BakeryError::Io)?;
+        tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, ContentHash), Error> {
+            let dir = tempfile::tempdir().map_err(Error::Io)?;
             let shard = vector::local::shard::open_or_create(dir.path(), &schema)
-                .map_err(|error| BakeryError::Edge(anyhow::Error::new(error)))?;
+                .map_err(|error| Error::Edge(anyhow::Error::new(error)))?;
 
             // Upsert points directly via the sync EdgeShard API.
             for (id, vector, payload) in raw_points {
                 vector::local::upsert_raw(&shard, id, vector, payload)
-                    .map_err(|error| BakeryError::Edge(anyhow::Error::new(error)))?;
+                    .map_err(|error| Error::Edge(anyhow::Error::new(error)))?;
             }
             // Compact to a fixed point (max 8 passes), then flush.
             for _ in 0..8 {
                 let progress = shard
                     .optimize()
-                    .map_err(|error| BakeryError::Edge(anyhow::Error::new(error)))?;
+                    .map_err(|error| Error::Edge(anyhow::Error::new(error)))?;
                 if !progress {
                     break;
                 }
@@ -356,10 +359,10 @@ pub async fn bake_package<M: EmbeddingModel>(
             drop(shard);
 
             vector::local::pack_shard(dir.path())
-                .map_err(|error| BakeryError::Edge(anyhow::Error::new(error)))
+                .map_err(|error| Error::Edge(anyhow::Error::new(error)))
         })
         .await
-        .map_err(|join_err| BakeryError::Io(std::io::Error::other(join_err)))??;
+        .map_err(|join_err| Error::Io(std::io::Error::other(join_err)))??;
 
     // Route the CAS write through the ShardContentIo seam (heart::sync::ContentIo).
     // verify is the sole write licence; write is idempotent (re-put of identical
@@ -369,14 +372,14 @@ pub async fn bake_package<M: EmbeddingModel>(
     shard_io
         .verify(&artifact_hash, &artifact_bytes)
         .map_err(|e| {
-            BakeryError::Io(std::io::Error::new(
+            Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 e.to_string(),
             ))
         })?;
     shard_io
         .write(&artifact_hash, &artifact_bytes)
-        .map_err(BakeryError::Io)?;
+        .map_err(Error::Io)?;
 
     let ram_estimate = vector::admission::ram_estimate_bytes(n_symbols as u64) as i64;
     Ok(BakedArtifact {
@@ -495,7 +498,7 @@ impl CatalogEdgepackStore {
         &self,
         fingerprint: &str,
         limit: i64,
-    ) -> Result<Vec<(PackageId, String)>, BakeryError> {
+    ) -> Result<Vec<(PackageId, String)>, Error> {
         use crate::engine::{CatalogEngine as _, Value};
         let rows = self
             .engine()
@@ -510,7 +513,7 @@ impl CatalogEdgepackStore {
                 &[Value::Text(fingerprint.to_owned()), Value::Integer(limit)],
                 &mut |row| Ok((row.get_blob(0)?, row.get_text(1)?)),
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(rows
             .into_iter()
             .filter_map(|(id, version)| {
@@ -523,7 +526,7 @@ impl CatalogEdgepackStore {
 
     /// Delete `claimed` rows whose worker evidently died (older than `age`
     /// without reaching a terminal status), releasing the claim for re-bake.
-    pub async fn release_stale_claims(&self, age: Duration) -> Result<u64, BakeryError> {
+    pub async fn release_stale_claims(&self, age: Duration) -> Result<u64, Error> {
         use crate::engine::{CatalogEngine as _, Value};
         let cutoff = chrono::Utc::now().timestamp_millis() - age.as_millis() as i64;
         let removed = self
@@ -532,7 +535,7 @@ impl CatalogEdgepackStore {
                 "DELETE FROM edgepack_artifacts WHERE status = 'claimed' AND updated_at < ?1",
                 &[Value::Integer(cutoff)],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(removed as u64)
     }
 
@@ -544,7 +547,7 @@ impl CatalogEdgepackStore {
         package: PackageId,
         _version: &str,
         fingerprint: &str,
-    ) -> Result<Option<EdgepackRow>, BakeryError> {
+    ) -> Result<Option<EdgepackRow>, Error> {
         use crate::engine::{CatalogEngine as _, Value};
         let mut rows = self
             .engine()
@@ -564,7 +567,7 @@ impl CatalogEdgepackStore {
                     ))
                 },
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(rows
             .pop()
             .and_then(|(digest, status, artifact, ram_estimate)| {
@@ -590,7 +593,7 @@ fn hash_from_column(bytes: &[u8]) -> Option<ContentHash> {
 }
 
 impl ClaimStore for CatalogEdgepackStore {
-    async fn try_claim(&self, request: &BakeRequest) -> Result<bool, BakeryError> {
+    async fn try_claim(&self, request: &BakeRequest) -> Result<bool, Error> {
         use crate::engine::{CatalogEngine as _, Value};
         let digest = request.edgepack_key.digest();
         let inserted = self
@@ -607,7 +610,7 @@ impl ClaimStore for CatalogEdgepackStore {
                     Value::Integer(chrono::Utc::now().timestamp_millis()),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(inserted == 1)
     }
 
@@ -616,7 +619,7 @@ impl ClaimStore for CatalogEdgepackStore {
         digest: ContentHash,
         artifact: ContentHash,
         ram_estimate: i64,
-    ) -> Result<(), BakeryError> {
+    ) -> Result<(), Error> {
         use crate::engine::{CatalogEngine as _, Value};
         let now = chrono::Utc::now().timestamp_millis();
         self.engine()
@@ -632,11 +635,11 @@ impl ClaimStore for CatalogEdgepackStore {
                     Value::Integer(now),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(())
     }
 
-    async fn mark_failed(&self, digest: ContentHash) -> Result<(), BakeryError> {
+    async fn mark_failed(&self, digest: ContentHash) -> Result<(), Error> {
         use crate::engine::{CatalogEngine as _, Value};
         self.engine()
             .execute(
@@ -647,7 +650,7 @@ impl ClaimStore for CatalogEdgepackStore {
                     Value::Integer(chrono::Utc::now().timestamp_millis()),
                 ],
             )
-            .map_err(BakeryError::Catalog)?;
+            .map_err(Error::Catalog)?;
         Ok(())
     }
 }
@@ -765,7 +768,7 @@ mod tests {
     }
 
     impl ClaimStore for MockClaims {
-        async fn try_claim(&self, request: &BakeRequest) -> Result<bool, BakeryError> {
+        async fn try_claim(&self, request: &BakeRequest) -> Result<bool, Error> {
             let digest = *request.edgepack_key.digest().as_bytes();
             Ok(self.claimed.lock().expect("unpoisoned").insert(digest))
         }
@@ -775,7 +778,7 @@ mod tests {
             digest: ContentHash,
             _artifact: ContentHash,
             _ram_estimate: i64,
-        ) -> Result<(), BakeryError> {
+        ) -> Result<(), Error> {
             self.ready
                 .lock()
                 .expect("unpoisoned")
@@ -783,7 +786,7 @@ mod tests {
             Ok(())
         }
 
-        async fn mark_failed(&self, digest: ContentHash) -> Result<(), BakeryError> {
+        async fn mark_failed(&self, digest: ContentHash) -> Result<(), Error> {
             self.failed
                 .lock()
                 .expect("unpoisoned")
@@ -870,7 +873,7 @@ mod tests {
         let request = request();
 
         let first = run_bake(&claims, &request, || async {
-            Err(BakeryError::Io(std::io::Error::other("disk full")))
+            Err(Error::Io(std::io::Error::other("disk full")))
         })
         .await
         .expect("claim protocol");
