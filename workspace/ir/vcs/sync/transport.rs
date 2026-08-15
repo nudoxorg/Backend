@@ -232,8 +232,7 @@ where
             .map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
         if alpn != ALPN {
             return Err(SyncError::RemoteRefused(format!(
-                "unexpected ALPN: {:?}",
-                alpn
+                "unexpected ALPN: {alpn:?}"
             )));
         }
 

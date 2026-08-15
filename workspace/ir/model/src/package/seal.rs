@@ -306,12 +306,12 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let mut parent_idxs: Vec<Option<UntypedEntryIndex>> = Vec::with_capacity(n);
         for (_, e) in &self.entries {
             let mut chain = Vec::new();
-            let mut cur = e.parent().and_then(|r| r.as_local());
+            let mut cur = e.parent().and_then(super::super::index::Ref::as_local);
             while let Some(pidx) = cur {
                 match by_idx.get(&pidx) {
                     Some(pe) => {
                         chain.push(pe.sym().name.clone());
-                        cur = pe.parent().and_then(|r| r.as_local());
+                        cur = pe.parent().and_then(super::super::index::Ref::as_local);
                     }
                     None => break,
                 }
@@ -324,7 +324,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 // A within-arena forwarding alias is a re-export.
                 EntryInner::Reference(_) => KindDiscriminant::Reexport,
             });
-            parent_idxs.push(e.parent().and_then(|r| r.as_local()));
+            parent_idxs.push(e.parent().and_then(super::super::index::Ref::as_local));
         }
 
         // ── Phase A: path ids — one `IntroId` per entry, ref-free ────────────
@@ -362,8 +362,10 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         // encodes byte-identically to `Ref::Intro(path_id)`.
         let resolver = |idx: UntypedEntryIndex| path_ids.get(&idx).copied();
 
-        let mut report = SealReport::default();
-        report.rejected_facts = self.rejected_facts;
+        let mut report = SealReport {
+            rejected_facts: self.rejected_facts,
+            ..SealReport::default()
+        };
         let mut intros: Vec<IntroId> = Vec::with_capacity(n);
         for i in 0..n {
             let (_, e) = &self.entries[i];

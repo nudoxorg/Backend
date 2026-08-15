@@ -205,8 +205,7 @@ mod tests {
         // Pin: accepted (no deny_unknown_fields).
         assert!(
             result.is_ok(),
-            "FROZEN: ShardSchema accepts unknown fields silently (no deny_unknown_fields): {:?}",
-            result
+            "FROZEN: ShardSchema accepts unknown fields silently (no deny_unknown_fields): {result:?}"
         );
     }
 

@@ -5,6 +5,7 @@
             key @output
             name @output
             kind @output
+            signature @output
             path @output
         }
     }

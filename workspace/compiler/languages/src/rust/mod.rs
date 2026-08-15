@@ -56,7 +56,6 @@ pub mod error;
 use crate::{PackageSource, Producer, ProducerError, ProducerId};
 use nudox_ir::{
     body::Language,
-    change::PackageLineageId,
     lower::Lowering,
     vocab::Confidence,
 };

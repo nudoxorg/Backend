@@ -253,17 +253,14 @@ pub async fn apply_plan(
 
     let mut outcomes = Vec::with_capacity(plan.install.len());
     for package in &plan.install {
-        let outcome = match manifest.get(package) {
-            Some(entry) => {
-                super::depshard::install(fetcher, entry, dep_root, schema, working_set).await?
-            }
-            None => {
-                tracing::warn!(
-                    package = %package,
-                    "admitted package has no manifest entry; remote-routing"
-                );
-                InstallOutcome::RemoteRoute(RemoteRouteReason::ArtifactMissing)
-            }
+        let outcome = if let Some(entry) = manifest.get(package) {
+            super::depshard::install(fetcher, entry, dep_root, schema, working_set).await?
+        } else {
+            tracing::warn!(
+                package = %package,
+                "admitted package has no manifest entry; remote-routing"
+            );
+            InstallOutcome::RemoteRoute(RemoteRouteReason::ArtifactMissing)
         };
         outcomes.push((*package, outcome));
     }

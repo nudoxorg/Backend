@@ -94,10 +94,7 @@ impl<E: VersioningEngine + Send + Sync> MetaStore for CatalogWriter<E> {
     }
 }
 
-impl<E: VersioningEngine> Catalog for CatalogWriter<E>
-where
-    E: Send + Sync,
-{
+impl<E: VersioningEngine + Send + Sync> Catalog for CatalogWriter<E> {
     fn get_package(
         &self,
         stem: PackageStemId,

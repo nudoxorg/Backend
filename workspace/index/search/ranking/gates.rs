@@ -200,7 +200,7 @@ mod tests {
 			..GateFlags::default()
 		};
 		let out = apply_gate_multiplier(10.0, flags, &cfg);
-		assert!((out - 10.0 * cfg.malware_factor).abs() < 1e-6);
+		assert!((10.0f32.mul_add(-cfg.malware_factor, out)).abs() < 1e-6);
 	}
 
 	#[test]
@@ -211,7 +211,7 @@ mod tests {
 			..GateFlags::default()
 		};
 		let out = apply_gate_multiplier(10.0, flags, &cfg);
-		assert!((out - 10.0 * cfg.squat_factor).abs() < 1e-6);
+		assert!((10.0f32.mul_add(-cfg.squat_factor, out)).abs() < 1e-6);
 	}
 
 	#[test]

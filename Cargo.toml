@@ -106,6 +106,9 @@ qdrant-edge = { path = "workspace/vendor/qdrant-edge" }
 edition = "2024"
 version = "0.1.0"
 license = "MIT"
+repository = "https://dev.nudox.org/Nudox/Backend"
+keywords = ["nudox", "index", "search", "compiler", "code-intelligence"]
+categories = ["development-tools", "development-tools::build-utils"]
 
 [workspace.lints.rust]
 unused_imports = "warn"
@@ -158,7 +161,71 @@ tracing = "0.1"
 # `Stored`.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# ── Clippy lint policy ────────────────────────────────────────────────────────
+# Strategy (see clippy.toml for the configuration knobs):
+#   * `all` (correctness/suspicious/style/complexity/perf) is enabled at `warn`
+#     and every occurrence is fixed in code — these are the reliable lints.
+#   * `pedantic` + `nursery` are enabled at `warn`; the noisy/heuristic lints
+#     whose findings are subjective (doc phrasing, `must_use` suggestions,
+#     integer-narrowing casts that are deliberate in storage/index math, name
+#     similarity, function-length thresholds) are allowed below.
+#   * `cargo` is enabled at `warn`; `multiple_crate_versions` is allowed because
+#     the dependency graph (vendored forks, patched crates) intentionally pins
+#     multiple majors. `cargo_common_metadata` is FIXED by adding real metadata
+#     to each crate's Cargo.toml.
+#   * `restriction` is allowed wholesale — these are the off-by-default,
+#     opinionated lints (`implicit_return`, `min_ident_chars`,
+#     `arbitrary_source_item_ordering`, `absolute_paths`, `unwrap_used`, …) that
+#     are "really unreliable" for a codebase of this size and are not meant to be
+#     applied mechanically.
 [workspace.lints.clippy]
+# Group levels use a negative priority so that the individual `allow`/`warn`
+# entries below reliably override them (Cargo sorts same-priority entries by
+# name, so `pedantic = "warn"` would otherwise win over `must_use_candidate =
+# "allow"` — see clippy::lint_groups_priority).
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+restriction = { level = "allow", priority = -1 }
+
+# ── Noisy / heuristic pedantic+nursery lints (allowed at workspace level) ─────
+# These produce large numbers of subjective or false-positive findings.
+must_use_candidate = "allow"
+use_self = "allow"
+doc_markdown = "allow"
+missing_errors_doc = "allow"
+missing_const_for_fn = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+too_long_first_doc_paragraph = "allow"
+struct_excessive_bools = "allow"
+needless_pass_by_value = "allow"
+trivially_copy_pass_by_ref = "allow"
+module_name_repetitions = "allow"
+needless_raw_string_hashes = "allow"
+return_self_not_must_use = "allow"
+redundant_pub_crate = "allow"
+unused_self = "allow"
+implicit_hasher = "allow"
+ref_option = "allow"
+type_complexity = "allow"
+items_after_statements = "allow"
+significant_drop_tightening = "allow"
+significant_drop_in_scrutinee = "allow"
+future_not_send = "allow"
+unused_async = "allow"
+unused_async_trait_impl = "allow"
+
+# ── Cargo lints ───────────────────────────────────────────────────────────────
+multiple_crate_versions = "allow"
+
+# ── Kept from the prior policy (design choices) ───────────────────────────────
 result_large_err = "allow"
 too_many_arguments = "allow"
 

@@ -352,12 +352,12 @@ impl<T: Indexable> Ref<T> {
             Ref::Foreign { key, target } => Ref::Foreign { key, target },
         }
     }
+}
 
-    /// Erase the kind marker. Safety: `Ref<T>` layout is independent of the
-    /// phantom `T` (only `Local` carries it, as a `repr(transparent)` index).
-    pub(crate) fn erase_mut(&mut self) -> &mut RawRef {
-        unsafe { &mut *std::ptr::from_mut(self).cast() }
-    }
+/// Erase the kind marker. Safety: `Ref<T>` layout is independent of the
+/// phantom `T` (only `Local` carries it, as a `repr(transparent)` index).
+pub(crate) fn erase_mut<T: Indexable>(r: &mut Ref<T>) -> &mut RawRef {
+    unsafe { &mut *std::ptr::from_mut(r).cast() }
 }
 
 impl<T: Indexable> From<EntryIndex<T>> for Ref<T> {

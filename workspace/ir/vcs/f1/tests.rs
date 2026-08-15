@@ -62,7 +62,7 @@ fn round_trip(payload: &OwnedEntryPayload, parent: Option<IntroId>, links: &[Lin
     assert_eq!(view.links().len(), links.len(), "link count mismatch");
     let recon = view
         .to_owned_payload()
-        .unwrap_or_else(|e| panic!("to_owned_payload failed: {:?}", e));
+        .unwrap_or_else(|e| panic!("to_owned_payload failed: {e:?}"));
     assert_eq!(recon.kind_disc, payload.kind_disc, "kind_disc mismatch");
     assert_eq!(recon.symbol.name, payload.symbol.name, "name mismatch");
     assert_eq!(
@@ -79,9 +79,7 @@ fn round_trip(payload: &OwnedEntryPayload, parent: Option<IntroId>, links: &[Lin
 /// so no ESC/NUL/etc. can appear raw, which keeps libpijul on the text path.
 fn assert_no_bad_controls(bytes: &[u8]) {
     for (i, &b) in bytes.iter().enumerate() {
-        if b < 0x20 && b != b'\n' && b != b'\t' {
-            panic!("control byte 0x{:02x} at position {} in F1 output", b, i);
-        }
+        assert!(!(b < 0x20 && b != b'\n' && b != b'\t'), "control byte 0x{b:02x} at position {i} in F1 output");
     }
 }
 
@@ -310,7 +308,7 @@ fn f1_10k_params() {
     // 10k input params — verify determinism and no control bytes.
     let params: Vec<ParamWire> = (0u32..10_000)
         .map(|i| ParamWire {
-            name: Some(format!("p{}", i)),
+            name: Some(format!("p{i}")),
             ty: TypeRefWire::Same(IntroId::from_raw({
                 let mut b = [0u8; 32];
                 b[0] = (i & 0xFF) as u8;
@@ -447,7 +445,7 @@ fn f1_all_12_discriminants() {
         let bytes = serialize_f1(&payload, None, &[]);
         assert_no_bad_controls(&bytes);
         let view = F1View::from_bytes(&bytes)
-            .unwrap_or_else(|e| panic!("parse failed for {:?}: {:?}", disc, e));
+            .unwrap_or_else(|e| panic!("parse failed for {disc:?}: {e:?}"));
         assert_eq!(view.kind_disc(), disc);
         let _ = view.to_owned_payload().expect("to_owned_payload");
     }

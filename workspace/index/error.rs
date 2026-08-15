@@ -250,9 +250,9 @@ impl Retryable for StoreError {
 	fn is_retryable(&self) -> bool {
 		match self {
 			// object_store surfaces transient network faults we can retry.
-			StoreError::Backend(e) => is_object_store_retryable(e),
-			StoreError::ObjectStoreGeneric { source, .. } => is_object_store_retryable(source),
-			StoreError::ObjectStoreJoin { source } => is_object_store_retryable(source),
+			StoreError::Backend(e)
+			| StoreError::ObjectStoreGeneric { source: e, .. }
+			| StoreError::ObjectStoreJoin { source: e } => is_object_store_retryable(e),
 			StoreError::Blob(e) => e.is_retryable(),
 			// NotFound, integrity, key encode, permission etc are permanent.
 			_ => false,
@@ -311,8 +311,7 @@ impl IngestError {
 			IngestError::Unsafe(_) => FailureKind::Unsafe,
 			IngestError::Malformed(_) => FailureKind::Malformed,
 			IngestError::Io(_) => FailureKind::Transient,
-			IngestError::Blob(_) => FailureKind::Internal,
-			IngestError::DecompressorInit(_) => FailureKind::Internal,
+			IngestError::Blob(_) | IngestError::DecompressorInit(_) => FailureKind::Internal,
 		}
 	}
 }
@@ -405,10 +404,8 @@ impl Retryable for QueueError {
 	fn is_retryable(&self) -> bool {
 		match self {
 			// A local sqlite fault (e.g. a transient lock) is worth a retry.
-			QueueError::Scratch(_) => true,
-			QueueError::LeaseLost { .. } => true,
-			QueueError::Codec(_) => false,
-			QueueError::NotFound { .. } => false,
+			QueueError::Scratch(_) | QueueError::LeaseLost { .. } => true,
+			QueueError::Codec(_) | QueueError::NotFound { .. } => false,
 		}
 	}
 }
@@ -539,10 +536,8 @@ pub enum SearchError {
 
 impl Retryable for SearchError {
 	fn is_retryable(&self) -> bool {
-		match self {
-			SearchError::Source(_) | SearchError::RowDecode { .. } => false,
-			_ => false,
-		}
+		// Search read errors are structural, not transient network weather.
+		false
 	}
 }
 

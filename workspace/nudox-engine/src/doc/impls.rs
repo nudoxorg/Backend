@@ -71,9 +71,8 @@ pub(crate) fn collect_impls(
             // rather than a filter. It stays a `return None` instead of an
             // `expect` because a corpus inconsistency should cost one row, not
             // the whole page.
-            let impl_data = match entry.kind().as_owned_kind() {
-                Some(Kind::Impl(i)) => i,
-                _ => return None,
+            let Some(Kind::Impl(impl_data)) = entry.kind().as_owned_kind() else {
+                return None;
             };
             // Render the impl signature as the label.  `chunk::signature::tokens`
             // produces something like `impl Debug for Router<E>` which is exactly
@@ -115,8 +114,9 @@ pub(crate) fn collect_impls(
         })
         .collect();
 
-    // Sort by label for stable, deterministic ordering across calls.
-    rows.sort_unstable_by(|a, b| (*a.label).cmp(&*b.label));
+    // Sort by label for stable, deterministic ordering across calls. The key
+    // is the triomphe Arc (cheap clone) so no heap string is allocated per row.
+    rows.sort_unstable_by_key(|a| a.label.as_arc().clone());
     rows
 }
 
@@ -151,7 +151,7 @@ pub(crate) async fn emit_impls_pages(
         }
         let done = chunks.peek().is_none();
         let page = ImplsPage {
-            impls: chunk.iter().cloned().collect::<Vec<_>>().into(),
+            impls: chunk.to_vec().into(),
             total,
         };
         if tx.send_async(DocEvent::Impls { page, done }).await.is_err() {

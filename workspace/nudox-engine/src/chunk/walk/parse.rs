@@ -83,25 +83,14 @@ pub(crate) fn parse_markdown(
                     current_events.push(event);
                 }
             }
-            Event::Text(text) => {
-                if in_heading.is_some() {
-                    heading_buf.push_str(text);
-                    if in_heading != Some(HeadingLevel::H2) {
-                        current_events.push(event);
-                    }
-                } else {
+            Event::Text(text) | Event::Code(text) if in_heading.is_some() => {
+                heading_buf.push_str(text);
+                if in_heading != Some(HeadingLevel::H2) {
                     current_events.push(event);
                 }
             }
-            Event::Code(text) => {
-                if in_heading.is_some() {
-                    heading_buf.push_str(text);
-                    if in_heading != Some(HeadingLevel::H2) {
-                        current_events.push(event);
-                    }
-                } else {
-                    current_events.push(event);
-                }
+            Event::Text(_) | Event::Code(_) => {
+                current_events.push(event);
             }
             _ => {
                 current_events.push(event);
@@ -148,11 +137,11 @@ pub(crate) fn parse_markdown(
                     line_count,
                 });
             } else {
-                let effective_heading = if !heading_used {
+                let effective_heading = if heading_used {
+                    ""
+                } else {
                     heading_used = true;
                     heading_text
-                } else {
-                    ""
                 };
 
                 if slice_events.is_empty() && effective_heading.is_empty() {
@@ -207,7 +196,7 @@ fn split_at_code_blocks(events: Vec<Event<'_>>) -> Vec<(Vec<Event<'_>>, bool)> {
     let mut slices: Vec<(Vec<Event<'_>>, bool)> = Vec::new();
     let mut prose_buf: Vec<Event<'_>> = Vec::new();
 
-    let mut iter = events.into_iter().peekable();
+    let mut iter = events.into_iter();
 
     while let Some(ev) = iter.next() {
         let is_fenced_start = matches!(&ev, Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))));

@@ -23,7 +23,7 @@ use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
 
 use crate::typescript::{
-    entry::{is_ts_module_path, make_resolver, specifier_to_module_name},
+    entry::{has_extension, is_ts_module_path, make_resolver, specifier_to_module_name},
     extract::{ModuleFacts, PackageError, decl::extract_module},
 };
 
@@ -100,7 +100,7 @@ pub fn build_and_extract(
 
             // ── Enqueue imports ───────────────────────────────────────────────
             let parent_dir = module_path.parent().unwrap_or(root);
-            for (specifier, _) in module_record.requested_modules.iter() {
+            for (specifier, _) in &module_record.requested_modules {
                 let spec_str = specifier.as_str();
                 // Skip node built-ins and non-relative/non-absolute specifiers
                 // that the resolver can't locate on disk.
@@ -226,18 +226,17 @@ pub fn build_and_extract(
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
 fn source_type_for(path: &Path) -> SourceType {
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-    if name.ends_with(".tsx") {
+    if has_extension(name, ".tsx") {
         SourceType::tsx()
-    } else if name.ends_with(".d.ts") || name.ends_with(".d.mts") || name.ends_with(".d.cts") {
+    } else if has_extension(name, ".d.ts")
+        || has_extension(name, ".d.mts")
+        || has_extension(name, ".d.cts")
+    {
         // Declaration files are TypeScript but never JSX; flag them as module.
         SourceType::ts()
-    } else if name.ends_with(".ts") || name.ends_with(".mts") || name.ends_with(".cts") {
+    } else if has_extension(name, ".ts") || has_extension(name, ".mts") || has_extension(name, ".cts") {
         SourceType::ts()
     } else {
         SourceType::mjs()
@@ -293,10 +292,10 @@ fn reference_attr(directive_text: &str, name: &str) -> Option<String> {
 /// doc comment.
 fn top_level_require_targets<'a>(program: &'a Program<'a>) -> Vec<String> {
     let mut out = Vec::new();
-    for stmt in program.body.iter() {
+    for stmt in &program.body {
         match stmt {
             Statement::VariableDeclaration(v) => {
-                for d in v.declarations.iter() {
+                for d in &v.declarations {
                     if let Some(init) = &d.init
                         && let Some(spec) = as_require_call(init)
                     {

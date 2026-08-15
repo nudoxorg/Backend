@@ -48,7 +48,7 @@ pub fn crc32_of(bytes: &[u8]) -> u32 {
 fn crc32_ieee(data: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;
     for &byte in data {
-        let idx = ((crc ^ byte as u32) & 0xFF) as usize;
+        let idx = ((crc ^ u32::from(byte)) & 0xFF) as usize;
         crc = CRC32_TABLE[idx] ^ (crc >> 8);
     }
     crc ^ 0xFFFF_FFFF
@@ -220,7 +220,7 @@ fn bytemuck_cast_slice(bytes: &[u8]) -> &[[u8; 4]] {
     assert_eq!(bytes.len() % 4, 0, "slice length must be a multiple of 4");
     // SAFETY: &[u8] is a valid byte representation for &[[u8; 4]] when aligned
     // to 1 (which &[u8] always is) and the length is a multiple of 4.
-    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const [u8; 4], bytes.len() / 4) }
+    unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<[u8; 4]>(), bytes.len() / 4) }
 }
 
 // ---------------------------------------------------------------------------

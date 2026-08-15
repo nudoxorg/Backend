@@ -75,7 +75,7 @@ impl VoyageEmbedder {
     ) -> Result<Vec<Embedding<VoyageCode3>>, EmbedError> {
         let input_type = role_to_input_type(role);
         let body = VoyageEmbedRequest {
-            input: texts.iter().map(|s| s.to_string()).collect(),
+            input: texts.iter().map(std::string::ToString::to_string).collect(),
             model: VOYAGE_MODEL.to_owned(),
             input_type: input_type.to_owned(),
             output_dimension: VOYAGE_DIMENSIONS,
@@ -337,7 +337,7 @@ mod tests {
             assert!(chunk.len() <= MAX_TEXTS_PER_REQUEST);
         }
         // Total count is preserved.
-        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        let total: usize = chunks.iter().map(std::vec::Vec::len).sum();
         assert_eq!(total, 1_201);
     }
 
@@ -474,22 +474,21 @@ mod tests {
         // Sanity-check the constants so the test fails loudly if the formula changes.
         assert_eq!(COST, 200, "cost formula: 796/4+1=200");
         assert_eq!(MAX_FIT, 600, "floor(120000/200)=600");
-        assert!(
-            MAX_FIT * COST <= MAX_APPROX_TOKENS_PER_REQUEST,
-            "600 texts must fit: {} * {} = {} ≤ {}",
-            MAX_FIT,
-            COST,
-            MAX_FIT * COST,
-            MAX_APPROX_TOKENS_PER_REQUEST,
-        );
+        const {
+            assert!(
+                MAX_FIT * COST <= MAX_APPROX_TOKENS_PER_REQUEST,
+                "600 texts must fit within the token budget"
+            );
+        }
         // The whole point of this test is the TOKEN cap; guard against the
         // TEXT-count cap silently taking over again (which is exactly how
         // this test broke the first time).
-        assert!(
-            MAX_FIT < MAX_TEXTS_PER_REQUEST,
-            "MAX_FIT ({MAX_FIT}) must stay under MAX_TEXTS_PER_REQUEST \
-             ({MAX_TEXTS_PER_REQUEST}), or this test stops isolating the token cap"
-        );
+        const {
+            assert!(
+                MAX_FIT < MAX_TEXTS_PER_REQUEST,
+                "MAX_FIT must stay under MAX_TEXTS_PER_REQUEST, or this test stops isolating the token cap"
+            );
+        }
 
         let text = "B".repeat(LEN);
         let texts: Vec<&str> = vec![text.as_str(); MAX_FIT];
@@ -509,14 +508,12 @@ mod tests {
         const MAX_FIT: usize = MAX_APPROX_TOKENS_PER_REQUEST / COST; // = 1188
         const N: usize = MAX_FIT + 1; // 1189
 
-        assert!(
-            N * COST > MAX_APPROX_TOKENS_PER_REQUEST,
-            "1189 texts must exceed budget: {} * {} = {} > {}",
-            N,
-            COST,
-            N * COST,
-            MAX_APPROX_TOKENS_PER_REQUEST,
-        );
+        const {
+            assert!(
+                N * COST > MAX_APPROX_TOKENS_PER_REQUEST,
+                "1189 texts must exceed the token budget"
+            );
+        }
 
         let text = "C".repeat(LEN);
         let texts: Vec<&str> = vec![text.as_str(); N];
@@ -527,7 +524,7 @@ mod tests {
             chunks.len()
         );
         // Total count preserved.
-        let total: usize = chunks.iter().map(|c| c.len()).sum();
+        let total: usize = chunks.iter().map(std::vec::Vec::len).sum();
         assert_eq!(total, N, "no texts lost in token-cap split");
         // Every chunk respects both limits.
         for (i, chunk) in chunks.iter().enumerate() {

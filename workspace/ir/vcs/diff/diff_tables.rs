@@ -263,8 +263,8 @@ fn compare_payloads(
         _ => {}
     }
     {
-        let a0: BTreeSet<&str> = s0.aliases.iter().map(|s| s.as_str()).collect();
-        let a1: BTreeSet<&str> = s1.aliases.iter().map(|s| s.as_str()).collect();
+        let a0: BTreeSet<&str> = s0.aliases.iter().map(std::string::String::as_str).collect();
+        let a1: BTreeSet<&str> = s1.aliases.iter().map(std::string::String::as_str).collect();
         if a0 != a1 {
             let added: Vec<SmolStr> = a1.difference(&a0).map(SmolStr::new).collect();
             let removed: Vec<SmolStr> = a0.difference(&a1).map(SmolStr::new).collect();
@@ -469,21 +469,16 @@ fn compare_kind_bodies(k0: &KindWire, k1: &KindWire) -> Vec<IrOp> {
             ops.extend(diff_auto_facts(&ta0.auto, &ta1.auto));
         }
 
-        (KindWire::Reexport(r0), KindWire::Reexport(r1)) => {
-            if r0.target != r1.target {
-                ops.push(IrOp::ReexportRetargeted {
-                    old: r0.target.clone(),
-                    new: r1.target.clone(),
-                });
-            }
-        }
-
-        (KindWire::Module(_), KindWire::Module(_)) => {
-            // ModuleWire has no fields; no kind-specific ops possible.
+        (KindWire::Reexport(r0), KindWire::Reexport(r1)) if r0.target != r1.target => {
+            ops.push(IrOp::ReexportRetargeted {
+                old: r0.target.clone(),
+                new: r1.target.clone(),
+            });
         }
 
         _ => {
-            // Kind mismatch — should not occur at diff time (kind is in IntroId
+            // Kind mismatch (or a Module pair, which has no kind-specific
+            // fields) — should not occur at diff time (kind is in IntroId
             // preimage in v2, so a kind change yields a new id). Emit nothing;
             // the lifecycle Introduced/Deleted pair covers this at the id level.
         }
@@ -581,29 +576,29 @@ fn param_sort_key(p: &ParamIdent) -> (Option<String>, String) {
 /// Longest-common-subsequence index pairing under a custom match predicate.
 ///
 /// Standard O(n·m) DP; parameter/child lists are small in practice.
-fn lcs_pairs_by<T>(a: &[T], b: &[T], eq: impl Fn(&T, &T) -> bool) -> Vec<(usize, usize)> {
-    let (n, m) = (a.len(), b.len());
-    let mut dp = vec![vec![0usize; m + 1]; n + 1];
-    for i in 1..=n {
-        for j in 1..=m {
-            dp[i][j] = if eq(&a[i - 1], &b[j - 1]) {
-                dp[i - 1][j - 1] + 1
+fn lcs_pairs_by<T>(left: &[T], right: &[T], eq: impl Fn(&T, &T) -> bool) -> Vec<(usize, usize)> {
+    let (left_len, right_len) = (left.len(), right.len());
+    let mut dp = vec![vec![0usize; right_len + 1]; left_len + 1];
+    for row in 1..=left_len {
+        for col in 1..=right_len {
+            dp[row][col] = if eq(&left[row - 1], &right[col - 1]) {
+                dp[row - 1][col - 1] + 1
             } else {
-                dp[i - 1][j].max(dp[i][j - 1])
+                dp[row - 1][col].max(dp[row][col - 1])
             };
         }
     }
     let mut pairs = Vec::new();
-    let (mut i, mut j) = (n, m);
-    while i > 0 && j > 0 {
-        if eq(&a[i - 1], &b[j - 1]) {
-            pairs.push((i - 1, j - 1));
-            i -= 1;
-            j -= 1;
-        } else if dp[i - 1][j] >= dp[i][j - 1] {
-            i -= 1;
+    let (mut row, mut col) = (left_len, right_len);
+    while row > 0 && col > 0 {
+        if eq(&left[row - 1], &right[col - 1]) {
+            pairs.push((row - 1, col - 1));
+            row -= 1;
+            col -= 1;
+        } else if dp[row - 1][col] >= dp[row][col - 1] {
+            row -= 1;
         } else {
-            j -= 1;
+            col -= 1;
         }
     }
     pairs.reverse();
@@ -676,7 +671,7 @@ fn diff_generics(g0: &[GenericParamWire], g1: &[GenericParamWire]) -> GenericsDe
     let mut default_removed = Vec::new();
 
     // For params present in both, check bound and default changes.
-    for g_new in g1.iter() {
+    for g_new in g1 {
         let name = generic_name(g_new);
         if let Some(g_old) = g0.iter().find(|g| generic_name(g) == name) {
             // Bounds comparison (type params only).
@@ -693,8 +688,8 @@ fn diff_generics(g0: &[GenericParamWire], g1: &[GenericParamWire]) -> GenericsDe
                 },
             ) = (g_old, g_new)
             {
-                let set0: BTreeSet<String> = b0.iter().map(|t| format!("{:?}", t)).collect();
-                let set1: BTreeSet<String> = b1.iter().map(|t| format!("{:?}", t)).collect();
+                let set0: BTreeSet<String> = b0.iter().map(|t| format!("{t:?}")).collect();
+                let set1: BTreeSet<String> = b1.iter().map(|t| format!("{t:?}")).collect();
                 if set1.is_superset(&set0) && set1 != set0 {
                     bounds_tightened.push(SmolStr::new(name));
                 } else if set0.is_superset(&set1) && set0 != set1 {
@@ -721,9 +716,9 @@ fn diff_generics(g0: &[GenericParamWire], g1: &[GenericParamWire]) -> GenericsDe
 
 fn generic_name(g: &GenericParamWire) -> &str {
     match g {
-        GenericParamWire::Lifetime { name } => name,
-        GenericParamWire::Type { name, .. } => name,
-        GenericParamWire::Const { name, .. } => name,
+        GenericParamWire::Lifetime { name }
+        | GenericParamWire::Type { name, .. }
+        | GenericParamWire::Const { name, .. } => name,
     }
 }
 
@@ -745,7 +740,7 @@ fn diff_wheres(w0: &[WherePredWire], w1: &[WherePredWire]) -> Vec<IrOp> {
         return vec![];
     }
     // Represent each predicate by its debug string for set comparison.
-    let key = |p: &WherePredWire| format!("{:?}", p);
+    let key = |p: &WherePredWire| format!("{p:?}");
     let set0: BTreeSet<String> = w0.iter().map(key).collect();
     let set1: BTreeSet<String> = w1.iter().map(key).collect();
     if set0 == set1 {
@@ -753,12 +748,12 @@ fn diff_wheres(w0: &[WherePredWire], w1: &[WherePredWire]) -> Vec<IrOp> {
     }
     let added: Vec<WherePred> = w1
         .iter()
-        .filter(|p| !set0.contains(&format!("{:?}", p)))
+        .filter(|p| !set0.contains(&format!("{p:?}")))
         .cloned()
         .collect();
     let removed: Vec<WherePred> = w0
         .iter()
-        .filter(|p| !set1.contains(&format!("{:?}", p)))
+        .filter(|p| !set1.contains(&format!("{p:?}")))
         .cloned()
         .collect();
     vec![IrOp::WhereChanged { added, removed }]
@@ -805,10 +800,9 @@ fn diff_auto_facts(a0: &[AutoFact], a1: &[AutoFact]) -> Vec<IrOp> {
 
 fn autostate_to_tristate(s: Option<&AutoState>) -> TriState {
     match s {
-        None => TriState::Unknown,
+        None | Some(AutoState::Cond) => TriState::Unknown,
         Some(AutoState::Yes) => TriState::Yes,
         Some(AutoState::No) => TriState::No,
-        Some(AutoState::Cond) => TriState::Unknown,
     }
 }
 
@@ -834,7 +828,7 @@ where
     if s0 == s1 {
         return vec![];
     }
-    let key = |t: &TypeRefWire| format!("{:?}", t);
+    let key = |t: &TypeRefWire| format!("{t:?}");
     let set0: BTreeSet<String> = s0.iter().map(key).collect();
     let set1: BTreeSet<String> = s1.iter().map(key).collect();
     if set0 == set1 {
@@ -842,12 +836,12 @@ where
     }
     let added: Vec<TypeRefWire> = s1
         .iter()
-        .filter(|t| !set0.contains(&format!("{:?}", t)))
+        .filter(|t| !set0.contains(&format!("{t:?}")))
         .cloned()
         .collect();
     let removed: Vec<TypeRefWire> = s0
         .iter()
-        .filter(|t| !set1.contains(&format!("{:?}", t)))
+        .filter(|t| !set1.contains(&format!("{t:?}")))
         .cloned()
         .collect();
     vec![make_op(added, removed)]

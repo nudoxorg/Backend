@@ -134,12 +134,12 @@ pub fn decode_typeref(s: &str) -> Result<TypeRefWire, Error> {
     } else if let Some(rest) = s.strip_prefix("F:") {
         let hash_pos = rest
             .rfind('#')
-            .ok_or_else(|| Error::Malformed(format!("no '#' in typeref: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("no '#' in typeref: {s}")))?;
         let intro_hex = &rest[hash_pos + 1..];
         let eco_pkg = &rest[..hash_pos];
         let slash_pos = eco_pkg
             .find('/')
-            .ok_or_else(|| Error::Malformed(format!("no '/' in typeref: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("no '/' in typeref: {s}")))?;
         let eco = &eco_pkg[..slash_pos];
         let pkg = &eco_pkg[slash_pos + 1..];
         Ok(TypeRefWire::Foreign(StableRef::new(
@@ -148,8 +148,7 @@ pub fn decode_typeref(s: &str) -> Result<TypeRefWire, Error> {
         )))
     } else {
         Err(Error::Malformed(format!(
-            "unknown typeref prefix: {}",
-            s
+            "unknown typeref prefix: {s}"
         )))
     }
 }
@@ -171,7 +170,7 @@ pub fn decode_width(s: &str) -> Result<WidthWire, Error> {
     } else {
         let n: u32 = s
             .parse()
-            .map_err(|_| Error::Malformed(format!("invalid width: {}", s)))?;
+            .map_err(|_| Error::Malformed(format!("invalid width: {s}")))?;
         Ok(WidthWire::Fixed(n))
     }
 }
@@ -237,14 +236,13 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
         if let Some(r) = rest.strip_prefix("int:") {
             let colon = r
                 .find(':')
-                .ok_or_else(|| Error::Malformed(format!("bad prim:int: {}", s)))?;
+                .ok_or_else(|| Error::Malformed(format!("bad prim:int: {s}")))?;
             let signed = match &r[..colon] {
                 "s" => true,
                 "u" => false,
                 other => {
                     return Err(Error::Malformed(format!(
-                        "bad int sign '{}': {}",
-                        other, s
+                        "bad int sign '{other}': {s}"
                     )));
                 }
             };
@@ -269,14 +267,13 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
         if let Some(r) = rest.strip_prefix("ref:") {
             let colon = r
                 .find(':')
-                .ok_or_else(|| Error::Malformed(format!("bad prim:ref: {}", s)))?;
+                .ok_or_else(|| Error::Malformed(format!("bad prim:ref: {s}")))?;
             let mutable = match &r[..colon] {
                 "mut" => true,
                 "shared" => false,
                 other => {
                     return Err(Error::Malformed(format!(
-                        "bad ref mutability '{}': {}",
-                        other, s
+                        "bad ref mutability '{other}': {s}"
                     )));
                 }
             };
@@ -289,7 +286,7 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
         if let Some(r) = rest.strip_prefix("builtin:") {
             return Ok(TypeWire::Primitive(PrimitiveWire::Builtin(unescape(r)?)));
         }
-        return Err(Error::Malformed(format!("unknown prim: {}", s)));
+        return Err(Error::Malformed(format!("unknown prim: {s}")));
     }
     if let Some(r) = s.strip_prefix("tuple:") {
         let parts = split_comma(r);
@@ -302,10 +299,10 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
     if let Some(r) = s.strip_prefix("array:") {
         let colon = r
             .rfind(':')
-            .ok_or_else(|| Error::Malformed(format!("bad array: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("bad array: {s}")))?;
         let length: u64 = r[colon + 1..]
             .parse()
-            .map_err(|_| Error::Malformed(format!("bad array length in: {}", s)))?;
+            .map_err(|_| Error::Malformed(format!("bad array length in: {s}")))?;
         return Ok(TypeWire::Array {
             ty: Box::new(decode_typeref(&r[..colon])?),
             length,
@@ -321,7 +318,7 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
         let refs: Result<Vec<_>, _> = parts.iter().map(|p| decode_typeref(p)).collect();
         return Ok(TypeWire::Intersection(refs?.into_boxed_slice()));
     }
-    Err(Error::Malformed(format!("unknown typeexpr: {}", s)))
+    Err(Error::Malformed(format!("unknown typeexpr: {s}")))
 }
 
 pub fn split_comma(s: &str) -> Vec<&str> {

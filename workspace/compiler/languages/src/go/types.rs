@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 
 use nudox_ir::{
-    build::*,
+    build::{EcosystemId, Lowering, RawRef},
     foreign::ForeignKey,
     kinds::{
         function::Receiver,
@@ -206,8 +206,7 @@ fn lower_type_depth_low(
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
             Type::Primitive(Primitive::MutPointer(Box::new(elem)))
         }
 
@@ -215,8 +214,7 @@ fn lower_type_depth_low(
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
             Type::Slice(Box::new(elem))
         }
 
@@ -224,8 +222,7 @@ fn lower_type_depth_low(
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
             Type::Array {
                 ty: Box::new(elem),
                 length: t.len.max(0) as usize,
@@ -239,13 +236,11 @@ fn lower_type_depth_low(
             let key = t
                 .key
                 .as_deref()
-                .map(|k| lower_type_depth_low(k, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |k| lower_type_depth_low(k, low, local, depth + 1));
             let val = t
                 .value
                 .as_deref()
-                .map(|v| lower_type_depth_low(v, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |v| lower_type_depth_low(v, low, local, depth + 1));
             Type::Apply {
                 base: Box::new(Type::TypeVar("map".to_string())),
                 args: Box::new([key, val]),
@@ -259,8 +254,7 @@ fn lower_type_depth_low(
             let elem = t
                 .elem
                 .as_deref()
-                .map(|e| lower_type_depth_low(e, low, local, depth + 1))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
             Type::Apply {
                 base: Box::new(Type::TypeVar(op)),
                 args: Box::new([elem]),
@@ -293,8 +287,7 @@ fn lower_type_depth_low(
                 .map(|p| {
                     p.r#type
                         .as_ref()
-                        .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                        .unwrap_or(Type::ORACLE_GAP)
+                        .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1))
                 })
                 .collect();
 
@@ -305,8 +298,7 @@ fn lower_type_depth_low(
                     let ty = r
                         .r#type
                         .as_ref()
-                        .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                        .unwrap_or(Type::ORACLE_GAP);
+                        .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1));
                     Some(Box::new(ty))
                 }
                 _ => {
@@ -318,8 +310,7 @@ fn lower_type_depth_low(
                             let ty = r
                                 .r#type
                                 .as_ref()
-                                .map(|ty| lower_type_depth_low(ty, low, local, depth + 1))
-                                .unwrap_or(Type::ORACLE_GAP);
+                                .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1));
                             TupleElement::Positional(ty)
                         })
                         .collect();
@@ -349,8 +340,7 @@ fn lower_type_depth_low(
                     ty: f
                         .r#type
                         .as_ref()
-                        .map(|ft| lower_type_depth_low(ft, low, local, depth + 1))
-                        .unwrap_or(Type::ORACLE_GAP),
+                        .map_or(Type::ORACLE_GAP, |ft| lower_type_depth_low(ft, low, local, depth + 1)),
                     optional: false,
                     readonly: false,
                 })
@@ -382,8 +372,7 @@ fn lower_type_depth_low(
                         let ty = m
                             .signature
                             .as_ref()
-                            .map(|sig| lower_type_depth_low(sig, low, local, depth + 1))
-                            .unwrap_or(Type::ORACLE_GAP);
+                            .map_or(Type::ORACLE_GAP, |sig| lower_type_depth_low(sig, low, local, depth + 1));
                         AnonField {
                             name: m.name.clone(),
                             ty,
@@ -412,8 +401,7 @@ fn lower_type_depth_low(
                     let inner = term
                         .r#type
                         .as_ref()
-                        .map(|inner| lower_type_depth_low(inner, low, local, depth + 1))
-                        .unwrap_or(Type::ORACLE_GAP);
+                        .map_or(Type::ORACLE_GAP, |inner| lower_type_depth_low(inner, low, local, depth + 1));
                     if term.tilde {
                         // Encode tilde-approximation: ~T ≠ T
                         Type::Apply {
@@ -491,22 +479,17 @@ pub fn lower_basic(name: &str) -> Type {
         "int16" => Type::I16,
         "int32" => Type::I32,
         "int64" => Type::I64,
-        "uint" => Type::Primitive(Primitive::Integer {
+        // uintptr: pointer-sized unsigned int, not a pointer.
+        "uint" | "uintptr" => Type::Primitive(Primitive::Integer {
             signed: false,
             width: Width::Arch,
         }),
-        "uint8" => Type::U8,
         "uint16" => Type::U16,
         "uint32" => Type::U32,
         "uint64" => Type::U64,
-        // uintptr: pointer-sized unsigned int, not a pointer.
-        "uintptr" => Type::Primitive(Primitive::Integer {
-            signed: false,
-            width: Width::Arch,
-        }),
         // `byte` is an *alias* for uint8 — the same type, by spec. See the doc
         // comment for why `Type::Any` here was wrong rather than cautious.
-        "byte" => Type::U8,
+        "uint8" | "byte" => Type::U8,
         "rune" => Type::Primitive(Primitive::Char),
         "float32" => Type::Primitive(Primitive::Float(Width::W32)),
         "float64" | "float" => Type::Primitive(Primitive::Float(Width::W64)),
@@ -547,10 +530,9 @@ pub fn lower_type_param_decl(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> GenericParam {
-    let bounds: Box<[Type]> = tp
-        .constraint
-        .as_ref()
-        .map(|c| {
+    let bounds: Box<[Type]> = tp.constraint.as_ref().map_or_else(
+        || Vec::new().into_boxed_slice(),
+        |c| {
             if c.is_empty_interface() {
                 // `any` constraint = unconstrained
                 Vec::<Type>::new().into_boxed_slice()
@@ -558,8 +540,8 @@ pub fn lower_type_param_decl(
                 let t = lower_type_with_lowering(c, low, local);
                 vec![t].into_boxed_slice()
             }
-        })
-        .unwrap_or_else(|| Vec::new().into_boxed_slice());
+        },
+    );
 
     GenericParam::Type {
         name: tp.name.clone(),
@@ -715,7 +697,7 @@ mod tests {
         let mut low = make_low();
         let t = oracle::Type {
             kind: TypeKind::Named,
-            pkg: "".to_string(),
+            pkg: String::new(),
             name: "any".to_string(),
             ..Default::default()
         };
@@ -925,7 +907,7 @@ mod tests {
                 }),
             }]),
             results: Box::new([oracle::Param {
-                name: "".to_string(),
+                name: String::new(),
                 r#type: Some(oracle::Type {
                     kind: TypeKind::Basic,
                     name: "int32".to_string(),
@@ -982,7 +964,7 @@ mod tests {
             ]),
             results: Box::new([
                 oracle::Param {
-                    name: "".to_string(),
+                    name: String::new(),
                     r#type: Some(oracle::Type {
                         kind: TypeKind::Basic,
                         name: "string".to_string(),
@@ -990,7 +972,7 @@ mod tests {
                     }),
                 },
                 oracle::Param {
-                    name: "".to_string(),
+                    name: String::new(),
                     r#type: Some(oracle::Type {
                         kind: TypeKind::Basic,
                         name: "error".to_string(), // lowered to Any (universe type)
@@ -1009,7 +991,7 @@ mod tests {
                         assert_eq!(elems.len(), 2, "2 return values wrapped in Tuple");
                         // All multi-return elements are positional (Go has no named returns
                         // at the type level — names are local to the function body).
-                        for e in elems.iter() {
+                        for e in elems {
                             assert!(
                                 matches!(e, TupleElement::Positional(_)),
                                 "multi-return elements must be Positional, got {e:?}"

@@ -558,8 +558,7 @@ impl TypeSig {
     /// The metadata name for named/error uses, when meaningful.
     pub fn named_name(&self) -> Option<&str> {
         match self {
-            TypeSig::Named { name, .. } => Some(name),
-            TypeSig::Error { name } => Some(name),
+            TypeSig::Named { name, .. } | TypeSig::Error { name } => Some(name),
             _ => None,
         }
     }

@@ -5,9 +5,14 @@
 # wire over.
 [package]
 name = "transport"
+description = "Shared iroh/bao content-transfer plane for the Nudox backend"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true

@@ -372,28 +372,35 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
         // is a value here rather than a null, and the schema comment above
         // `interface Symbol` for what a caller does with each tier.
         "keyTier" => FieldValue::String(key_tier_name(sv.package.key_tier(sv.intro)).into()),
-        "keyIsContentDerived" => match sv.package.key_tier(sv.intro) {
-            Some(tier) => FieldValue::Boolean(tier.is_content_derived()),
-            // Null, not `false`: "we do not know how this key was minted" is
-            // not "this key is fragile". Reporting the unknown as fragile
-            // would make every fixture-backed corpus look unusable; reporting
-            // it as sound would be the silent repair this field exists to
-            // prevent.
-            None => FieldValue::Null,
-        },
+        // Null, not `false`: "we do not know how this key was minted" is
+        // not "this key is fragile". Reporting the unknown as fragile
+        // would make every fixture-backed corpus look unusable; reporting
+        // it as sound would be the silent repair this field exists to
+        // prevent.
+        "keyIsContentDerived" => sv
+            .package
+            .key_tier(sv.intro)
+            .map_or(FieldValue::Null, |tier| {
+                FieldValue::Boolean(tier.is_content_derived())
+            }),
         "name" => FieldValue::String(sym.name.clone().into()),
+        "signature" => FieldValue::String(
+            crate::chunk::signature::tokens_to_text(&crate::chunk::signature::tokens(
+                entry,
+                &sv.package,
+            ))
+            .into(),
+        ),
         "path" => sv
             .package
             .indexes()
             .path_of(sv.intro)
-            .map(|p| FieldValue::String(p.as_ref().into()))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |p| FieldValue::String(p.as_ref().into())),
         "kind" => {
             let kind_str = entry
                 .kind()
                 .discriminant()
-                .map(|d| format!("{d:?}"))
-                .unwrap_or_else(|| "Reference".to_string());
+                .map_or_else(|| "Reference".to_string(), |d| format!("{d:?}"));
             FieldValue::String(kind_str.into())
         }
         "isPublic" => FieldValue::Boolean(matches!(sym.visibility, Visibility::Public)),
@@ -445,28 +452,21 @@ fn location_property(loc: &SourceLocation, property_name: &str) -> Result<FieldV
         ),
         "file" => loc
             .file()
-            .map(|f| FieldValue::String(f.as_str().into()))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |f| FieldValue::String(f.as_str().into())),
         "byteStart" => loc
             .bytes()
-            .map(|b| FieldValue::Int64(b.as_range().start as i64))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |b| FieldValue::Int64(b.as_range().start as i64)),
         "byteEnd" => loc
             .bytes()
-            .map(|b| FieldValue::Int64(b.as_range().end as i64))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |b| FieldValue::Int64(b.as_range().end as i64)),
         "startLine" => lines
-            .map(|(s, _)| FieldValue::Int64(i64::from(s.line())))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |(s, _)| FieldValue::Int64(i64::from(s.line()))),
         "startColumn" => lines
-            .map(|(s, _)| FieldValue::Int64(i64::from(s.column())))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |(s, _)| FieldValue::Int64(i64::from(s.column()))),
         "endLine" => lines
-            .map(|(_, e)| FieldValue::Int64(i64::from(e.line())))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |(_, e)| FieldValue::Int64(i64::from(e.line()))),
         "endColumn" => lines
-            .map(|(_, e)| FieldValue::Int64(i64::from(e.column())))
-            .unwrap_or(FieldValue::Null),
+            .map_or(FieldValue::Null, |(_, e)| FieldValue::Int64(i64::from(e.column()))),
         "unlocatedReason" => match loc {
             SourceLocation::Unlocated(reason) => {
                 FieldValue::String(unlocated_name(*reason).into())
@@ -493,10 +493,7 @@ fn location_property(loc: &SourceLocation, property_name: &str) -> Result<FieldV
 /// name.
 fn rendered_type_property(type_name: &str) -> Option<&'static str> {
     Some(match type_name {
-        "Field" => "typeStr",
-        "Const" => "typeStr",
-        "Static" => "typeStr",
-        "Param" => "typeStr",
+        "Field" | "Const" | "Static" | "Param" => "typeStr",
         "Alias" => "targetStr",
         "Impl" => "selfTypeStr",
         _ => return None,
@@ -572,10 +569,9 @@ fn type_to_stable_ref_str(ty: &Type, package: &PackageLineageId) -> Option<Strin
             // even when the trait's package is not in the corpus. Returning
             // `None` there is how the previous version silently shortened
             // every `Trait.supertraits` list instead of failing.
-            Ref::Foreign { key, target } => Some(match target {
-                Some(sr) => sr.to_string(),
-                None => key.path.to_string(),
-            }),
+            Ref::Foreign { key, target } => {
+                Some(target.as_ref().map_or_else(|| key.path.to_string(), |sr| sr.to_string()))
+            }
             Ref::Local(_) => None,
         },
         Type::Apply { base, .. } => type_to_stable_ref_str(base, package),
@@ -816,7 +812,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                     resolve_info.statically_required_property("key"),
                     resolve_info.statically_required_property("name"),
                     resolve_info.statically_required_property("kind"),
-                    resolve_info.coerced_to_type().map(|t| t.as_ref()),
+                    resolve_info.coerced_to_type().map(AsRef::as_ref),
                 );
                 match plan {
                     Err(e) => error_stream(e),
@@ -920,13 +916,13 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                     let occs = ov.owner.package.view().occurrences_of(ov.owner.intro);
                     let occ = occs
                         .get(ov.occ_index)
-                        .ok_or_else(|| Error::SymbolNotFound(ov.owner.intro))?;
+                        .ok_or(Error::SymbolNotFound(ov.owner.intro))?;
                     Ok(match prop.as_str() {
                         "targetKey" => FieldValue::String(occ.target.to_string().into()),
                         "referenceKind" => FieldValue::String(format!("{:?}", occ.kind).into()),
                         "confidence" => FieldValue::String(format!("{:?}", occ.confidence).into()),
-                        "spanStart" => FieldValue::Int64(occ.span.start as i64),
-                        "spanEnd" => FieldValue::Int64(occ.span.end as i64),
+                        "spanStart" => FieldValue::Int64(i64::from(occ.span.start)),
+                        "spanEnd" => FieldValue::Int64(i64::from(occ.span.end)),
                         _ => {
                             return Err(Error::UnknownProperty {
                                 ty: "Occurrence".to_string(),
@@ -949,9 +945,9 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         .ok_or(Error::SymbolNotFound(sv.intro))?;
                     match entry.kind().as_owned_kind() {
                         Some(Kind::Function(f)) => Ok(match prop.as_str() {
-                            "isAsync" => FieldValue::Boolean(
-                                f.modifiers.iter().any(|m| *m == FnModifier::Async),
-                            ),
+                            "isAsync" => {
+                                FieldValue::Boolean(f.modifiers.contains(&FnModifier::Async))
+                            }
                             "receiverKind" => {
                                 let s = match f.receiver {
                                     None => "none",
@@ -1012,10 +1008,9 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                         Some(Kind::Impl(i)) => Some(&i.self_ty),
                         _ => None,
                     };
-                    Ok(match ty {
-                        Some(ty) => FieldValue::String(type_str(ty, &sv.package).into()),
-                        None => FieldValue::Null,
-                    })
+                    Ok(ty.map_or(FieldValue::Null, |ty| {
+                        FieldValue::String(type_str(ty, &sv.package).into())
+                    }))
                 })
             }
 
@@ -1055,8 +1050,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             .of
                             .as_ref()
                             .and_then(|ty| type_to_stable_ref_str(ty, sv.package.lineage()))
-                            .map(|s| FieldValue::String(s.into()))
-                            .unwrap_or(FieldValue::Null),
+                            .map_or(FieldValue::Null, |s| FieldValue::String(s.into())),
                         _ => FieldValue::Null,
                     })
                 })
@@ -1069,13 +1063,15 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                 // bound on the resolver closure (type_name: &str is shorter).
                 let ty_for_err = type_name.to_string();
                 async_helpers::try_resolve_property_with(contexts, move |vertex| {
-                    match crate::graph::vertex::as_symbol_vertex(vertex) {
-                        Some(sv) => symbol_property(sv, &prop),
-                        None => Err(Error::UnknownProperty {
-                            ty: ty_for_err.clone(),
-                            prop: prop.clone(),
-                        }),
-                    }
+                    crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                        || {
+                            Err(Error::UnknownProperty {
+                                ty: ty_for_err.clone(),
+                                prop: prop.clone(),
+                            })
+                        },
+                        |sv| symbol_property(sv, &prop),
+                    )
                 })
             }
         }
@@ -1101,15 +1097,20 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // ── Package → members ──────────────────────────────────────────
             ("Package", "members") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match vertex.as_package() {
-                        None => error_stream(Error::UnknownEdge {
-                            ty: "Package".to_string(),
-                            edge: "members".to_string(),
-                        }),
-                        Some(pkg) => {
+                    vertex.as_package().map_or_else(
+                        || {
+                            error_stream(Error::UnknownEdge {
+                                ty: "Package".to_string(),
+                                edge: "members".to_string(),
+                            })
+                        },
+                        |pkg| {
                             let pkg = pkg.clone();
                             // `entries_sorted`: `Package.members` is a user-
                             // visible row order, and `entries()` is hash order.
+                            // The iterator borrows `pkg.view()`, so it must be
+                            // collected before the returned stream outlives it.
+                            #[allow(clippy::needless_collect)]
                             let intros: Vec<IntroId> =
                                 pkg.view().entries_sorted().map(|(id, _)| id).collect();
                             Box::pin(stream::iter(
@@ -1117,23 +1118,25 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                     .into_iter()
                                     .map(move |intro| vertex_for_intro(pkg.clone(), intro)),
                             ))
-                        }
-                    }
+                        },
+                    )
                 })
             }
 
             // ── Symbol → package ───────────────────────────────────────────
             (_, "package") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match crate::graph::vertex::as_symbol_vertex(vertex) {
-                    None => error_stream(Error::UnknownEdge {
-                        ty: "Symbol".to_string(),
-                        edge: "package".to_string(),
-                    }),
-                    Some(sv) => {
+                crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                    || {
+                        error_stream(Error::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "package".to_string(),
+                        })
+                    },
+                    |sv| {
                         let pkg = sv.package.clone();
                         Box::pin(stream::once(async move { Ok(Vertex::Package(pkg)) }))
-                    }
-                }
+                    },
+                )
             }),
 
             // ── Symbol → location ──────────────────────────────────────────
@@ -1144,28 +1147,32 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // Modelling it as `location: SourceLocation!` rather than an
             // optional edge is what forces a reader to confront the reason.
             (_, "location") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match crate::graph::vertex::as_symbol_vertex(vertex) {
-                    None => error_stream(Error::UnknownEdge {
-                        ty: "Symbol".to_string(),
-                        edge: "location".to_string(),
-                    }),
-                    Some(sv) => {
+                crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                    || {
+                        error_stream(Error::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "location".to_string(),
+                        })
+                    },
+                    |sv| {
                         let sv = sv.clone();
                         Box::pin(stream::once(async move {
                             Ok(Vertex::SourceLocation(sv))
                         }))
-                    }
-                }
+                    },
+                )
             }),
 
             // ── Symbol → members (children) ────────────────────────────────
             (_, "members") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match crate::graph::vertex::as_symbol_vertex(vertex) {
-                    None => error_stream(Error::UnknownEdge {
-                        ty: "Symbol".to_string(),
-                        edge: "members".to_string(),
-                    }),
-                    Some(sv) => {
+                crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                    || {
+                        error_stream(Error::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "members".to_string(),
+                        })
+                    },
+                    |sv| {
                         let children: Vec<IntroId> =
                             sv.package.view().children_of(sv.intro).to_vec();
                         let pkg = sv.package.clone();
@@ -1174,18 +1181,20 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                 .into_iter()
                                 .map(move |child| vertex_for_intro(pkg.clone(), child)),
                         ))
-                    }
-                }
+                    },
+                )
             }),
 
             // ── Symbol → parent ────────────────────────────────────────────
             (_, "parent") => async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                match crate::graph::vertex::as_symbol_vertex(vertex) {
-                    None => error_stream(Error::UnknownEdge {
-                        ty: "Symbol".to_string(),
-                        edge: "parent".to_string(),
-                    }),
-                    Some(sv) => match sv.package.view().parent_of(sv.intro) {
+                crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                    || {
+                        error_stream(Error::UnknownEdge {
+                            ty: "Symbol".to_string(),
+                            edge: "parent".to_string(),
+                        })
+                    },
+                    |sv| match sv.package.view().parent_of(sv.intro) {
                         None => Box::pin(stream::empty()),
                         Some(parent_intro) => {
                             let pkg = sv.package.clone();
@@ -1194,7 +1203,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                             ))
                         }
                     },
-                }
+                )
             }),
 
             // ── Symbol → usages (resolved references across all packages) ──
@@ -1322,12 +1331,14 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // ── Symbol → occurrencesOf ─────────────────────────────────────
             (_, "occurrencesOf") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match crate::graph::vertex::as_symbol_vertex(vertex) {
-                        None => error_stream(Error::UnknownEdge {
-                            ty: "Symbol".to_string(),
-                            edge: "occurrencesOf".to_string(),
-                        }),
-                        Some(sv) => {
+                    crate::graph::vertex::as_symbol_vertex(vertex).map_or_else(
+                        || {
+                            error_stream(Error::UnknownEdge {
+                                ty: "Symbol".to_string(),
+                                edge: "occurrencesOf".to_string(),
+                            })
+                        },
+                        |sv| {
                             let count = sv.package.view().occurrences_of(sv.intro).len();
                             let sv_clone = sv.clone();
                             Box::pin(stream::iter((0..count).map(move |idx| {
@@ -1336,8 +1347,8 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                                     occ_index: idx,
                                 }))
                             })))
-                        }
-                    }
+                        },
+                    )
                 })
             }
 
@@ -1350,18 +1361,20 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             // unreachable: `owner { location { byteStart } }` is that base.
             ("Occurrence", "owner") => {
                 async_helpers::try_resolve_neighbors_with(contexts, move |vertex| {
-                    match vertex.as_occurrence() {
-                        None => error_stream(Error::UnknownEdge {
-                            ty: "Occurrence".to_string(),
-                            edge: "owner".to_string(),
-                        }),
-                        Some(ov) => {
+                    vertex.as_occurrence().map_or_else(
+                        || {
+                            error_stream(Error::UnknownEdge {
+                                ty: "Occurrence".to_string(),
+                                edge: "owner".to_string(),
+                            })
+                        },
+                        |ov| {
                             let owner = ov.owner.clone();
                             Box::pin(stream::once(async move {
                                 vertex_for_intro(owner.package, owner.intro)
                             }))
-                        }
-                    }
+                        },
+                    )
                 })
             }
 

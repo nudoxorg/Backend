@@ -158,13 +158,13 @@ impl<Id: fmt::Debug> fmt::Display for Error<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Undeclared(ids) => {
-                write!(f, "referred but never declared: {:?}", ids)
+                write!(f, "referred but never declared: {ids:?}")
             }
             Error::Duplicate(ids) => {
-                write!(f, "declared more than once: {:?}", ids)
+                write!(f, "declared more than once: {ids:?}")
             }
             Error::Cycle(ids) => {
-                write!(f, "parent-pointer cycle detected among: {:?}", ids)
+                write!(f, "parent-pointer cycle detected among: {ids:?}")
             }
         }
     }
@@ -341,12 +341,11 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             self.rejected_facts.duplicate_bodies += 1;
             return;
         }
-        if let (Some(expected), BodyEmbed::Present(facts)) = (self.language, &body) {
-            if facts.language != expected {
+        if let (Some(expected), BodyEmbed::Present(facts)) = (self.language, &body)
+            && facts.language != expected {
                 self.rejected_facts.mismatched_body_languages += 1;
                 return;
             }
-        }
         self.bodies.push(PendingBody { owner, body });
     }
 
@@ -470,7 +469,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// with that id as their parent would produce dangling parent links once
     /// the duplicate is reported by [`finish`](Self::finish).
     pub fn is_declared(&self, id: &Id) -> bool {
-        self.slots.get(id).is_some_and(|s| s.is_some())
+        self.slots.get(id).is_some_and(std::option::Option::is_some)
     }
 
     /// Return a typed [`Ref`] for `id` without declaring it.

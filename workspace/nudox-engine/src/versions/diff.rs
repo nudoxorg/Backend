@@ -94,6 +94,7 @@ struct Decl {
     path: SharedStr,
     name: SharedStr,
     kind: &'static str,
+    signature: SharedStr,
     tier: KeyTierLabel,
 }
 
@@ -156,6 +157,7 @@ pub(crate) fn build(
             path: decl.path.clone(),
             name: decl.name.clone(),
             kind: SharedStr::from(decl.kind),
+            signature: decl.signature.clone(),
             verdict: DiffVerdict::Changed { change },
         });
     }
@@ -193,6 +195,7 @@ pub(crate) fn build(
             path: after.path.clone(),
             name: after.name.clone(),
             kind: SharedStr::from(after.kind),
+            signature: after.signature.clone(),
             verdict: DiffVerdict::Rekeyed {
                 from_key: StableRef::new(package.clone(), before.intro),
                 to_key: StableRef::new(package.clone(), after.intro),
@@ -240,6 +243,7 @@ pub(crate) fn build(
             path: decl.path.clone(),
             name: decl.name.clone(),
             kind: SharedStr::from(decl.kind),
+            signature: decl.signature.clone(),
             verdict,
         });
     }
@@ -257,6 +261,7 @@ pub(crate) fn build(
             path: decl.path.clone(),
             name: decl.name.clone(),
             kind: SharedStr::from(decl.kind),
+            signature: decl.signature.clone(),
             verdict: DiffVerdict::Added,
         });
     }
@@ -289,20 +294,26 @@ fn declarations(package: &PackageView) -> Vec<Decl> {
     package
         .view()
         .entries_sorted()
-        .map(|(intro, entry)| Decl {
-            intro,
-            path: package
-                .indexes()
-                .path_of(intro)
-                .map(|p| SharedStr::from(p.as_ref()))
-                // An entry with no precomputed path is one whose parent chain
-                // did not resolve. Its own name is still a usable join axis
-                // within its kind, and dropping the declaration entirely would
-                // silently shrink the diff.
-                .unwrap_or_else(|| SharedStr::from(entry.sym().name.as_str())),
-            name: SharedStr::from(entry.sym().name.as_str()),
-            kind: kind_label(entry),
-            tier: tier_label(package, intro),
+        .map(|(intro, entry)| {
+            let signature = signature::tokens(entry, package);
+            Decl {
+                intro,
+                path: package
+                    .indexes()
+                    .path_of(intro)
+                    // An entry with no precomputed path is one whose parent chain
+                    // did not resolve. Its own name is still a usable join axis
+                    // within its kind, and dropping the declaration entirely would
+                    // silently shrink the diff.
+                    .map_or_else(
+                        || SharedStr::from(entry.sym().name.as_str()),
+                        |p| SharedStr::from(p.as_ref()),
+                    ),
+                name: SharedStr::from(entry.sym().name.as_str()),
+                kind: kind_label(entry),
+                signature: SharedStr::from(signature::tokens_to_text(&signature)),
+                tier: tier_label(package, intro),
+            }
         })
         .collect()
 }

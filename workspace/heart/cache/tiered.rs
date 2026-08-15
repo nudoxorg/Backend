@@ -14,7 +14,7 @@ const PROMOTE_COST: Duration = Duration::from_millis(1);
 
 /// Soft TTL for L1 entries. Cached producer outputs are content-addressed and
 /// immutable under a fixed job key; a long TTL just bounds memory residency.
-const L1_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+const L1_TTL: Duration = Duration::from_hours(24);
 
 /// Zero-sized sentinel meaning "no L3 configured".
 ///
@@ -120,9 +120,9 @@ impl<L3: Cas> Cas for Tiered<L3> {
                     self.l1.insert(key, v.clone(), PROMOTE_COST).await;
                     return Ok(Some(v));
                 }
-                Ok(None) => {}
-                // Integrity errors already deleted the blob; treat as miss.
-                Err(CasError::Integrity { .. }) => {}
+                // `None` and Integrity errors are both misses; the latter has
+                // already deleted the blob, so treat it as absent.
+                Ok(None) | Err(CasError::Integrity { .. }) => {}
                 Err(e) => return Err(e),
             }
         }

@@ -55,14 +55,12 @@ use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
 /// files honour the same `NUDOX_REAL_CRATE_ROOT` override and the same default
 /// location `../../result/axum`.
 fn axum_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        })
+        }, PathBuf::from)
 }
 
 /// Lower the axum crate at `root` via the Rust producer.
@@ -170,10 +168,9 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
             .filter(|(_, e)| e.sym().name == "Router" && !e.sym().doc_links.is_empty())
             .count();
         eprintln!(
-            "SKIP: found {} Router entries, {} with doc_links. \
+            "SKIP: found {router_count} Router entries, {with_links} with doc_links. \
              The producer may not yet populate doc_links for Router \
-             (see nudox-languages::rust intra-doc link resolution).",
-            router_count, with_links
+             (see nudox-languages::rust intra-doc link resolution)."
         );
         return;
     };
@@ -182,8 +179,7 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
         "Router entry found: id={}…, doc_links count={}",
         &router_id.to_hex()[..12],
         view.entry(router_id)
-            .map(|e| e.sym().doc_links.len())
-            .unwrap_or(0)
+            .map_or(0, |e| e.sym().doc_links.len())
     );
 
     // Run the full chunk pipeline — this is the real code path the app uses.
@@ -240,7 +236,7 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
         }
     }
 
-    eprintln!("Symbol links found in Router prose: {:?}", symbol_links);
+    eprintln!("Symbol links found in Router prose: {symbol_links:?}");
 
     assert!(
         !symbol_links.is_empty(),
@@ -288,7 +284,6 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
          Router's doc says 'See [`Router::with_state`] for more details.' \
          and `with_state` must be resolved to the actual method entry, not \
          left as plain text.\n\
-         Symbol links found: {:?}",
-        symbol_links,
+         Symbol links found: {symbol_links:?}",
     );
 }

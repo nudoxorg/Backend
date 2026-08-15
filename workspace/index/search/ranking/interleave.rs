@@ -37,7 +37,7 @@ pub fn interleave_by_ecosystem<T>(
 	ranked_per_eco: Vec<(Language, Vec<Candidate<T>>)>,
 	limit_hint: usize,
 ) -> Vec<Candidate<T>> {
-	let _fairness_hint = limit_hint;
+	let _ = limit_hint;
 
 	// Key columns by the stable wire token (not `Language`'s derived `Ord`,
 	// which is declaration order, not alphabetical) so column order here

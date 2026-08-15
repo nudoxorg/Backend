@@ -203,16 +203,13 @@ async fn stream_symbol(
     // strictly worse for the < 50 ms first-paint target (§9.1).
     let intro = key.intro;
     let view = pkg_arc.view();
-    let (head, sections) = match chunk::chunk(intro, view, &pkg_arc) {
-        Some(pair) => pair,
-        None => {
-            let _ = tx
-                .send_async(DocEvent::Failed(EngineError::Chunk {
-                    message: "chunker returned None for a live entry".into(),
-                }))
-                .await;
-            return;
-        }
+    let Some((head, sections)) = chunk::chunk(intro, view, &pkg_arc) else {
+        let _ = tx
+            .send_async(DocEvent::Failed(EngineError::Chunk {
+                message: "chunker returned None for a live entry".into(),
+            }))
+            .await;
+        return;
     };
 
     // --- Emit Head ---------------------------------------------------------
@@ -418,6 +415,39 @@ async fn stream_symbol(
 }
 
 // ---------------------------------------------------------------------------
+// Code-block extraction
+// ---------------------------------------------------------------------------
+
+/// The first code block in a section, as `(source, language)`.
+///
+/// # Why only the first
+///
+/// A `Highlight` event carries one span list per `SectionId`, and spans are
+/// byte offsets relative to the block they came from. Concatenating the spans
+/// of several blocks would silently reinterpret the second block's offsets
+/// against the first block's text — colouring the wrong characters, which is
+/// worse than no colour. One block per section is the overwhelmingly common
+/// shape; carrying more would need a per-block id in the wire protocol.
+fn first_code_block(section: &crate::wire::RenderSection) -> Option<(&str, &str)> {
+    use crate::wire::{ProseBlock, RenderSection};
+
+    fn from_blocks(blocks: &[ProseBlock]) -> Option<(&str, &str)> {
+        blocks.iter().find_map(|block| match block {
+            ProseBlock::Code { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
+            _ => None,
+        })
+    }
+
+    match section {
+        RenderSection::CodeBlock { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
+        RenderSection::Prose { blocks, .. }
+        | RenderSection::Examples { blocks, .. }
+        | RenderSection::Callout { blocks, .. } => from_blocks(blocks),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -574,8 +604,7 @@ mod tests {
         let ev = rx.recv_async().await.expect("must receive an event");
         assert!(
             matches!(ev, DocEvent::Failed(_)),
-            "missing symbol must produce Failed, got {:?}",
-            ev
+            "missing symbol must produce Failed, got {ev:?}"
         );
     }
 
@@ -702,38 +731,5 @@ mod tests {
         assert_eq!(t.rows.len(), 1, "no row for the version that lacked it");
         assert_eq!(t.rows[0].change, TimelineChange::Introduced);
         assert_eq!(t.versions_examined, 2, "but both generations were examined");
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Code-block extraction
-// ---------------------------------------------------------------------------
-
-/// The first code block in a section, as `(source, language)`.
-///
-/// # Why only the first
-///
-/// A `Highlight` event carries one span list per `SectionId`, and spans are
-/// byte offsets relative to the block they came from. Concatenating the spans
-/// of several blocks would silently reinterpret the second block's offsets
-/// against the first block's text — colouring the wrong characters, which is
-/// worse than no colour. One block per section is the overwhelmingly common
-/// shape; carrying more would need a per-block id in the wire protocol.
-fn first_code_block(section: &crate::wire::RenderSection) -> Option<(&str, &str)> {
-    use crate::wire::{ProseBlock, RenderSection};
-
-    fn from_blocks(blocks: &[ProseBlock]) -> Option<(&str, &str)> {
-        blocks.iter().find_map(|block| match block {
-            ProseBlock::Code { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
-            _ => None,
-        })
-    }
-
-    match section {
-        RenderSection::CodeBlock { text, lang, .. } => Some((text.as_ref(), lang.0.as_ref())),
-        RenderSection::Prose { blocks, .. }
-        | RenderSection::Examples { blocks, .. }
-        | RenderSection::Callout { blocks, .. } => from_blocks(blocks),
-        _ => None,
     }
 }

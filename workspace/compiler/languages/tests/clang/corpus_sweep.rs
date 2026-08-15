@@ -349,11 +349,10 @@ fn walk_and_shim(dir: &Path, lang: Lang, shims: &mut Vec<PathBuf>) {
         let path = entry.path();
         if path.is_dir() {
             walk_and_shim(&path, lang, shims);
-        } else if is_header(&path, lang) {
-            if let Some(twin) = shim_one(&path, lang) {
+        } else if is_header(&path, lang)
+            && let Some(twin) = shim_one(&path, lang) {
                 shims.push(twin);
             }
-        }
     }
 }
 

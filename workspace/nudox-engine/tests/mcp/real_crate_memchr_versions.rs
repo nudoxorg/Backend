@@ -152,8 +152,7 @@ async fn wait_for_all_generations(tools: &NudoxTools) {
 fn list_versions_reports_all_three_real_memchr_generations() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
-            MEMCHR_VERSIONS
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. Run: nix build .#checks.corpus"
         );
         return;
     }
@@ -214,8 +213,7 @@ fn list_versions_reports_all_three_real_memchr_generations() {
 fn select_version_switches_the_current_generation_and_reports_not_loaded_honestly() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
-            MEMCHR_VERSIONS
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. Run: nix build .#checks.corpus"
         );
         return;
     }
@@ -314,8 +312,7 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
 fn get_symbol_timeline_spans_three_real_memchr_generations() {
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
-            MEMCHR_VERSIONS
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. Run: nix build .#checks.corpus"
         );
         return;
     }
@@ -478,8 +475,7 @@ fn diffing_two_real_memchr_releases_never_claims_an_unsupported_deletion() {
 
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
-            MEMCHR_VERSIONS
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. Run: nix build .#checks.corpus"
         );
         return;
     }
@@ -640,8 +636,7 @@ fn key_provenance_reaches_a_really_produced_package() {
 
     if !all_memchr_versions_available() {
         eprintln!(
-            "SKIP: not all of {:?} are fetched under result/. Run: nix build .#checks.corpus",
-            MEMCHR_VERSIONS
+            "SKIP: not all of {MEMCHR_VERSIONS:?} are fetched under result/. Run: nix build .#checks.corpus"
         );
         return;
     }

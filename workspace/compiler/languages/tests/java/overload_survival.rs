@@ -30,6 +30,7 @@
 //! 1459), including all four named in the defect report:
 //! `(String, Class)`, `(String, Type)`, `(Reader, Class)`, `(Reader, Type)`.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use nudox_ir::{
@@ -51,7 +52,7 @@ fn error_chain(err: &dyn std::error::Error) -> String {
     let mut chain = err.to_string();
     let mut cursor: &dyn std::error::Error = err;
     while let Some(source) = std::error::Error::source(cursor) {
-        chain.push_str(&format!("\n  caused by: {source}"));
+        let _ = write!(chain, "\n  caused by: {source}");
         cursor = source;
     }
     chain
@@ -98,7 +99,7 @@ fn gson_fromjson_overloads_survive_seal_as_distinct_declarations() {
         report
             .collisions
             .iter()
-            .map(|c| c.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
     );
     assert!(
@@ -126,7 +127,7 @@ fn gson_fromjson_overloads_survive_seal_as_distinct_declarations() {
         // Render each parameter's type by name. A foreign type must name
         // itself; `Type::Any` here means the erasure is back.
         let mut params: Vec<String> = Vec::new();
-        for pref in f.input_params.iter() {
+        for pref in &f.input_params {
             let Ref::Intro(pid) = pref else {
                 panic!("a param ref must be same-package and sealed, got {pref:?}");
             };
@@ -192,7 +193,7 @@ fn gson_fromjson_overloads_survive_seal_as_distinct_declarations() {
     );
 
     // Distinct signatures, not merely distinct ids.
-    let mut uniq = rendered.clone();
+    let mut uniq = rendered;
     uniq.sort();
     uniq.dedup();
     assert_eq!(
@@ -215,9 +216,7 @@ fn type_name(ty: Option<&Type>, table: &nudox_ir::apply::PristineIntroTable) -> 
         Some(Type::Nominal(Ref::Foreign { key, .. })) => key.display.to_string(),
         Some(Type::Nominal(Ref::Local(_))) => "<dangling>".to_owned(),
         Some(Type::Nominal(Ref::Intro(id))) => table
-            .get(*id)
-            .map(|e| e.sym().name.clone())
-            .unwrap_or_else(|| "<unresolved-intro>".to_owned()),
+            .get(*id).map_or_else(|| "<unresolved-intro>".to_owned(), |e| e.sym().name.clone()),
         Some(Type::TypeVar(n)) => n.clone(),
         Some(other) => format!("{other:?}"),
     }

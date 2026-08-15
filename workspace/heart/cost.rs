@@ -1,8 +1,10 @@
 //! Cost measurement for integration tests: wall time, peak RSS, disk delta.
 
-use std::fs;
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::{
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// Cost metadata collected around one test case.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +20,53 @@ pub struct RunCost {
 
 /// Measure one case and print a stable line suitable for nextest/CI parsers.
 pub fn measured<T>(case: &str, directory: &Path, run: impl FnOnce() -> T) -> (T, RunCost) {
+    let (value, cost) = measure(directory, run);
+    println_cost(case, cost, None);
+    (value, cost)
+}
+
+/// Measure a text-producing case and include its output size in the cost line.
+///
+/// `output_tokens` is a deterministic, model-independent estimate: runs of
+/// word characters count as one token and punctuation counts one character at
+/// a time. It is intentionally not presented as a tokenizer for any specific
+/// model; it gives the Markdown facet benchmarks a stable number that can be
+/// compared across packages, contexts, and revisions without pulling a model
+/// tokenizer into every integration test.
+pub fn measured_text(
+    case: &str,
+    directory: &Path,
+    run: impl FnOnce() -> String,
+) -> (String, RunCost) {
+    let (text, cost) = measure(directory, run);
+    println_cost(case, cost, Some((text.len(), estimated_text_tokens(&text))));
+    (text, cost)
+}
+
+/// Estimate the number of text tokens in a deterministic way.
+///
+/// This is a useful relative metric for compact-output benchmarks, not a
+/// claim about the vocabulary or merge rules of a particular model.
+pub fn estimated_text_tokens(text: &str) -> usize {
+    let mut count = 0;
+    let mut in_word = false;
+    for character in text.chars() {
+        if character.is_alphanumeric() || character == '_' {
+            if !in_word {
+                count += 1;
+                in_word = true;
+            }
+        } else {
+            in_word = false;
+            if !character.is_whitespace() {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn measure<T>(directory: &Path, run: impl FnOnce() -> T) -> (T, RunCost) {
     let before_disk = disk_bytes(directory);
     let before_rss = process_rss_bytes();
     let started = Instant::now();
@@ -30,19 +79,25 @@ pub fn measured<T>(case: &str, directory: &Path, run: impl FnOnce() -> T) -> (T,
             (Some(rss), None) | (None, Some(rss)) => Some(rss),
             (None, None) => None,
         },
-        disk_delta_bytes: (disk_bytes(directory) as i128)
-            .saturating_sub(before_disk as i128)
-            .clamp(i64::MIN as i128, i64::MAX as i128) as i64,
+        disk_delta_bytes: i128::from(disk_bytes(directory))
+            .saturating_sub(i128::from(before_disk))
+            .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64,
     };
 
+    (value, cost)
+}
+
+fn println_cost(case: &str, cost: RunCost, output: Option<(usize, usize)>) {
+    let output_fields = output.map_or_else(String::new, |(bytes, tokens)| {
+        format!(" output_bytes={bytes} output_tokens={tokens}")
+    });
     println!(
-        "cost case={case} wall_ms={} rss_bytes={} disk_delta_bytes={}",
+        "cost case={case} wall_ms={} rss_bytes={} disk_delta_bytes={}{output_fields}",
         cost.wall.as_secs_f64() * 1_000.0,
         cost.peak_rss_bytes
             .map_or_else(|| "unknown".to_owned(), |rss| rss.to_string()),
         cost.disk_delta_bytes,
     );
-    (value, cost)
 }
 
 /// Recursively count regular-file bytes. Errors and disappearing files are
@@ -97,22 +152,22 @@ mod macos_rss {
 
     #[repr(C)]
     struct Rusage {
-        ru_utime: Timeval,
-        ru_stime: Timeval,
-        ru_maxrss: isize,
-        ru_ixrss: isize,
-        ru_idrss: isize,
-        ru_isrss: isize,
-        ru_minflt: isize,
-        ru_majflt: isize,
-        ru_nswap: isize,
-        ru_inblock: isize,
-        ru_oublock: isize,
-        ru_msgsnd: isize,
-        ru_msgrcv: isize,
-        ru_nsignals: isize,
-        ru_nvcsw: isize,
-        ru_nivcsw: isize,
+        utime: Timeval,
+        stime: Timeval,
+        maxrss: isize,
+        ixrss: isize,
+        idrss: isize,
+        isrss: isize,
+        minflt: isize,
+        majflt: isize,
+        nswap: isize,
+        inblock: isize,
+        oublock: isize,
+        msgsnd: isize,
+        msgrcv: isize,
+        nsignals: isize,
+        nvcsw: isize,
+        nivcsw: isize,
     }
 
     const RUSAGE_SELF: i32 = 0;
@@ -129,7 +184,7 @@ mod macos_rss {
         }
         let r = unsafe { usage.assume_init() };
         // On macOS (and Apple Silicon) ru_maxrss is in bytes.
-        u64::try_from(r.ru_maxrss).ok()
+        u64::try_from(r.maxrss).ok()
     }
 }
 
@@ -140,7 +195,7 @@ fn rusage_maxrss_bytes() -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{disk_bytes, measured};
+    use super::{disk_bytes, estimated_text_tokens, measured};
     use std::fs;
 
     #[test]
@@ -163,6 +218,13 @@ mod tests {
         assert_eq!(value, 42);
         assert_eq!(cost.disk_delta_bytes, 11);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn estimated_text_tokens_is_stable_and_counts_punctuation() {
+        assert_eq!(estimated_text_tokens("fn f(x: i32) -> i32"), 10);
+        assert_eq!(estimated_text_tokens("a  b\n| c |"), 5);
+        assert_eq!(estimated_text_tokens(""), 0);
     }
 
     fn tempfile_dir() -> std::path::PathBuf {

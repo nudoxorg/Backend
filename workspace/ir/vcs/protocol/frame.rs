@@ -254,7 +254,7 @@ pub struct WireEntry {
 /// 2. `Hello` must appear exactly once.
 /// 3. After `Finish` or `Abort`, no further frames may be sent.
 /// 4. `Finish.emitted` must equal the sum of all `Symbols` batch lengths.
-#[derive(Clone, PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub enum StreamFrame {
     /// Handshake: identifies the stream version, the job being compiled, and
     /// the producer generating the IR.

@@ -51,7 +51,7 @@ pub struct PartialDelta {
 
 /// The full structural delta between two package IR generations (§7.2).
 ///
-/// Produced by [`crate::diff::diff::diff_tables`] and consumed by the semver
+/// Produced by [`crate::diff::diff_tables::diff_tables`] and consumed by the semver
 /// classifier (`nudox-semver`), the archive, and the GUI. The `ops` map is
 /// keyed by `IntroId`; within each entry's `Vec<IrOp>` the ops are sorted in
 /// canonical order (lifecycle < continuity < meta < kind-specific < links;
@@ -106,8 +106,8 @@ impl PackageDelta {
             None => out.push(0u8),
             Some(p) => {
                 out.push(1u8);
-                out.push(p.deletions_valid as u8);
-                out.push(p.identity_final as u8);
+                out.push(u8::from(p.deletions_valid));
+                out.push(u8::from(p.identity_final));
             }
         }
 

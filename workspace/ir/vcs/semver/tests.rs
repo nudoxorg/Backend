@@ -13,7 +13,7 @@ fn make_sym(name: &str, vis: Visibility, doc: Option<&str>) -> SymbolWire {
     SymbolWire {
         name: name.into(),
         visibility: vis,
-        documentation: doc.map(|s| s.to_string()),
+        documentation: doc.map(std::string::ToString::to_string),
         source_path: "src/lib.rs".into(),
         span_start: 0,
         span_end: 10,

@@ -124,10 +124,7 @@ impl Value {
 
     /// Wrap an optional value, mapping `None` to [`Value::Null`].
     pub fn from_optional<T>(value: Option<T>, wrap: impl FnOnce(T) -> Value) -> Value {
-        match value {
-            Some(inner) => wrap(inner),
-            None => Value::Null,
-        }
+        value.map_or(Value::Null, wrap)
     }
 }
 

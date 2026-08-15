@@ -11,7 +11,10 @@ mod values;
 
 use std::{collections::HashSet, ops::Range, path::PathBuf};
 
-use nudox_ir::build::*;
+use nudox_ir::build::{
+    Deprecation, DocLink, Function, IrPackage, Lowering, Module, PackageId, PackageLineageId, Param,
+    ParamAttribute, Ref, Symbol, Visibility,
+};
 
 use crate::go::{
     error::{self, Result},
@@ -65,7 +68,7 @@ struct IotaEnums<'a> {
     variant_names: std::collections::HashSet<&'a str>,
 }
 
-fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
+fn detect_iota_enums(pkg: &oracle::Package) -> IotaEnums<'_> {
     // Which defined types exist?
     let defined_types: std::collections::HashMap<&str, &oracle::Decl> = pkg
         .decls
@@ -77,7 +80,7 @@ fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
     let mut variants_by_type: std::collections::HashMap<&str, Vec<&oracle::Decl>> =
         std::collections::HashMap::new();
 
-    for decl in pkg.decls.iter() {
+    for decl in &pkg.decls {
         if decl.kind != DeclKind::Const || !decl.group_has_iota {
             continue;
         }
@@ -97,8 +100,7 @@ fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
         let is_sum_like = type_decl
             .underlying
             .as_ref()
-            .map(|u| !matches!(u.kind, TypeKind::Struct | TypeKind::Interface))
-            .unwrap_or(false);
+            .is_none_or(|u| !matches!(u.kind, TypeKind::Struct | TypeKind::Interface));
         if is_sum_like {
             variants_by_type
                 .entry(const_type.name.as_str())
@@ -112,8 +114,7 @@ fn detect_iota_enums<'a>(pkg: &'a oracle::Package) -> IotaEnums<'a> {
         variants.sort_by_key(|d| {
             d.pos
                 .as_ref()
-                .map(|p| (p.file.as_str(), p.line))
-                .unwrap_or(("", 0))
+                .map_or(("", 0), |p| (p.file.as_str(), p.line))
         });
     }
 
@@ -345,8 +346,8 @@ pub fn lower_into(output: &oracle::Output, low: &mut Lowering<GoId>) -> Result<(
         .iter()
         .map(|pkg| pkg.import_path.clone())
         .collect();
-    for pkg in output.packages.iter() {
-        lower_package(pkg, low, &local)?;
+    for pkg in &output.packages {
+        lower_package(pkg, low, &local);
     }
     Ok(())
 }
@@ -371,22 +372,20 @@ pub fn lower_output(
 }
 
 /// Lower a single oracle package into the `Lowering` sink.
-fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSet<String>) -> Result<()> {
+fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSet<String>) {
     let pkg_id = GoId::Package {
         import_path: pkg.import_path.clone(),
     };
 
     let pkg_sym = sym_for(&pkg.import_path, &pkg.doc, true, None, None);
     // Declare the package as a Module, child of root (None).
-    low.declare(pkg_id.clone(), None, pkg_sym, Module);
+    low.declare(pkg_id, None, pkg_sym, Module);
 
     let enums = detect_iota_enums(pkg);
 
-    for decl in pkg.decls.iter() {
-        lower_decl(pkg, decl, &enums, low, local)?;
+    for decl in &pkg.decls {
+        lower_decl(pkg, decl, &enums, low, local);
     }
-
-    Ok(())
 }
 
 /// Lower one package-level declaration.
@@ -396,7 +395,7 @@ fn lower_decl(
     enums: &IotaEnums<'_>,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let parent_pkg = GoId::Package {
         import_path: pkg.import_path.clone(),
     };
@@ -408,9 +407,8 @@ fn lower_decl(
         DeclKind::Const => {
             // Skip constants that were consumed as enum variants.
             if !enums.variant_names.contains(decl.name.as_str()) {
-                values::lower_const(pkg, decl, parent_pkg, low, local)?;
+                values::lower_const(pkg, decl, parent_pkg, low, local);
             }
-            Ok(())
         }
         DeclKind::Var => values::lower_var(pkg, decl, parent_pkg, low, local),
     }
@@ -427,7 +425,7 @@ fn lower_type_decl(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
@@ -435,7 +433,8 @@ fn lower_type_decl(
 
     // ── iota enum ────────────────────────────────────────────────────────────
     if let Some(variants) = enums.variants_by_type.get(decl.name.as_str()) {
-        return types::lower_iota_enum(pkg, decl, variants, item_id, parent, low, local);
+        types::lower_iota_enum(pkg, decl, variants, item_id, parent, low, local);
+        return;
     }
 
     // ── struct ───────────────────────────────────────────────────────────────
@@ -456,14 +455,13 @@ fn lower_methods(
     parent: &GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
-    for method in decl.methods.iter() {
-        lower_one_method(pkg, decl, method, false, parent, low, local)?;
+) {
+    for method in &decl.methods {
+        lower_one_method(pkg, decl, method, false, parent, low, local);
     }
-    for method in decl.promoted_methods.iter() {
-        lower_one_method(pkg, decl, method, true, parent, low, local)?;
+    for method in &decl.promoted_methods {
+        lower_one_method(pkg, decl, method, true, parent, low, local);
     }
-    Ok(())
 }
 
 fn lower_one_method(
@@ -474,7 +472,7 @@ fn lower_one_method(
     parent: &GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let mid = GoId::Member {
         import_path: pkg.import_path.clone(),
         type_name: type_decl.name.clone(),
@@ -518,7 +516,6 @@ fn lower_one_method(
         .build();
 
     low.declare(mid, Some(parent.clone()), msym, fn_kind);
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -538,8 +535,9 @@ fn lower_sig_params_into_lowering(
     local: &HashSet<String>,
 ) -> (Vec<Ref<Param>>, Vec<Ref<Param>>) {
     let (params, results, variadic) = sig
-        .map(|s| (s.params.as_ref(), s.results.as_ref(), s.variadic))
-        .unwrap_or((&[], &[], false));
+        .map_or((&[][..], &[][..], false), |s| {
+            (s.params.as_ref(), s.results.as_ref(), s.variadic)
+        });
 
     let fn_id = if type_name.is_empty() {
         GoId::Item {

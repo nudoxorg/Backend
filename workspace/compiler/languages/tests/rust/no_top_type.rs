@@ -38,7 +38,7 @@ use nudox_ir::{
     entry::{EntryInner, Symbol, Visibility},
     foreign::Unlinked,
     kind::Kind,
-    kinds::{Type, UnknownType},
+    kinds::Type,
     lower::Lowering,
     package::PackageId,
 };
@@ -159,7 +159,7 @@ fn all_types(dir: &str, pkg_name: &str, body: &str) -> Vec<Type> {
                 }
             }
             Kind::Record(r) => {
-                for f in r.fields.iter() {
+                for f in &r.fields {
                     let _ = f;
                 }
             }
@@ -167,7 +167,7 @@ fn all_types(dir: &str, pkg_name: &str, body: &str) -> Vec<Type> {
                 if let Some(t) = &a.target {
                     flatten(t, &mut out);
                 }
-                for b in a.bounds.iter() {
+                for b in &a.bounds {
                     flatten(b, &mut out);
                 }
             }
@@ -198,38 +198,40 @@ fn all_types(dir: &str, pkg_name: &str, body: &str) -> Vec<Type> {
 fn flatten(ty: &Type, out: &mut Vec<Type>) {
     out.push(ty.clone());
     match ty {
-        Type::Slice(t) | Type::Array { ty: t, .. } => flatten(t, out),
+        Type::Slice(t)
+        | Type::Array { ty: t, .. }
+        | Type::Annotated { inner: t, .. }
+        | Type::Wildcard { bound: Some(t), .. }
+        | Type::Primitive(
+            nudox_ir::kinds::ty::Primitive::MutPointer(t)
+            | nudox_ir::kinds::ty::Primitive::ConstPointer(t)
+            | nudox_ir::kinds::ty::Primitive::Reference { ty: t, .. },
+        ) => flatten(t, out),
         Type::Union(ts) | Type::Intersection(ts) | Type::ImplTrait(ts) | Type::DynTrait(ts) => {
-            for t in ts.iter() {
+            for t in ts {
                 flatten(t, out);
             }
         }
         Type::Apply { base, args } => {
             flatten(base, out);
-            for a in args.iter() {
+            for a in args {
                 flatten(a, out);
             }
         }
         Type::Tuple(elems) => {
-            for e in elems.iter() {
+            for e in elems {
                 match e {
                     nudox_ir::kinds::ty::TupleElement::Positional(t) => flatten(t, out),
                     nudox_ir::kinds::ty::TupleElement::Named { ty, .. } => flatten(ty, out),
                 }
             }
         }
-        Type::Annotated { inner, .. } => flatten(inner, out),
         Type::FunctionPointer { params, ret, .. } => {
-            for p in params.iter() {
+            for p in params {
                 flatten(p, out);
             }
             if let Some(r) = ret {
                 flatten(r, out);
-            }
-        }
-        Type::Wildcard { bound, .. } => {
-            if let Some(b) = bound {
-                flatten(b, out);
             }
         }
         Type::QualifiedPath {
@@ -240,12 +242,6 @@ fn flatten(ty: &Type, out: &mut Vec<Type>) {
                 flatten(t, out);
             }
         }
-        Type::Primitive(p) => match p {
-            nudox_ir::kinds::ty::Primitive::MutPointer(t)
-            | nudox_ir::kinds::ty::Primitive::ConstPointer(t)
-            | nudox_ir::kinds::ty::Primitive::Reference { ty: t, .. } => flatten(t, out),
-            _ => {}
-        },
         _ => {}
     }
 }
@@ -302,7 +298,7 @@ fn well_formed_rust_produces_named_types_not_gaps() {
     let mut nominal_names: Vec<String> = types
         .iter()
         .filter(|t| matches!(t, Type::Nominal(_)))
-        .map(|t| t.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     nominal_names.sort();
     nominal_names.dedup();

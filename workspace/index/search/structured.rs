@@ -170,13 +170,12 @@ impl StructuredQuery {
 
 		// When the ecosystem is known, apply per-ecosystem query normalization.
 		// An explicit `scope:`/`group:`/`ns:` token wins over any derived namespace.
-		let mut derived_namespace: Option<String> = None;
-		if let Some(lang) = ecosystem {
+		let derived_namespace: Option<String> = ecosystem.and_then(|lang| {
 			let norms = lang.spec().search_norms();
 			let normalized = (norms.normalize_query)(&terms);
 			terms = normalized.terms;
-			derived_namespace = normalized.namespace;
-		}
+			normalized.namespace
+		});
 
 		// Explicit ns token wins.
 		let namespace = explicit_namespace.or(derived_namespace);

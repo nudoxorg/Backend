@@ -367,7 +367,7 @@ pub fn render_class(class: BreakClass) -> &'static str {
 pub fn render_moniker(path: &MonikerPath) -> String {
     path.0
         .iter()
-        .map(|s| s.as_str())
+        .map(smol_str::SmolStr::as_str)
         .collect::<Vec<_>>()
         .join("::")
 }

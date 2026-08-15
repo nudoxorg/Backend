@@ -106,7 +106,7 @@ fn overloads_with_fully_erased_parameters_all_survive_seal() {
         overloads.len()
     );
 
-    let mut distinct = overloads.clone();
+    let mut distinct = overloads;
     distinct.sort();
     distinct.dedup();
     assert_eq!(
@@ -202,12 +202,12 @@ fn distinct_spans_stop_at_the_span_tier() {
 
     let outcome = pkg.seal(&lineage(), &Unlinked);
 
-    let overloads: Vec<_> = outcome
+    let overload_count = outcome
         .table
         .iter()
         .filter(|(_, e)| e.sym().name == "overload")
-        .collect();
-    assert_eq!(overloads.len(), 3, "all three overloads survive");
+        .count();
+    assert_eq!(overload_count, 3, "all three overloads survive");
 
     let fn_forced: Vec<_> = outcome
         .report

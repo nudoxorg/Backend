@@ -9,14 +9,14 @@
 //! # Usage pattern
 //!
 //! ```no_run
-//! use crate::oracle;
+//! use nudox_languages::oracle;
 //! use serde::Deserialize;
 //!
 //! #[derive(Deserialize)]
 //! struct GoOutput { /* … */ }
 //!
 //! let output: GoOutput = oracle::run_json("go-oracle/1", "go", &["run", "./oracle", "/pkg/root"])?;
-//! # Ok::<(), crate::ProducerError>(())
+//! # Ok::<(), nudox_languages::ProducerError>(())
 //! ```
 //!
 //! # Memory
@@ -36,7 +36,8 @@ use serde::de::DeserializeOwned;
 
 use crate::ProducerError;
 
-/// Run an oracle command, capture stdout/stderr, and deserialize stdout as JSON.
+/// Run an oracle command, capture stdout/stderr, and deserialize stdout as
+/// JSON.
 ///
 /// * `producer_label` — the [`ProducerId`] string; embedded in error messages
 ///   so a failure trace names the producer.
@@ -81,8 +82,7 @@ where
         let code = output
             .status
             .code()
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "signal".to_owned());
+            .map_or_else(|| "signal".to_owned(), |c| c.to_string());
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(ProducerError::OracleExit {
             command: label,

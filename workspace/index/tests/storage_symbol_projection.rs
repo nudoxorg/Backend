@@ -100,7 +100,7 @@ fn walk_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
         return;
     };
     let mut entries: Vec<_> = entries.filter_map(Result::ok).collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
         let Ok(file_type) = entry.file_type() else {
@@ -127,11 +127,10 @@ fn module_path_for(crate_name: &str, src_root: &Path, file: &Path) -> String {
         .components()
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
-    if let Some(last) = segments.last_mut() {
-        if let Some(stripped) = last.strip_suffix(".rs") {
+    if let Some(last) = segments.last_mut()
+        && let Some(stripped) = last.strip_suffix(".rs") {
             *last = stripped.to_owned();
         }
-    }
     if matches!(segments.last().map(String::as_str), Some("mod")) {
         segments.pop();
     }
@@ -162,15 +161,14 @@ fn scan_real_pub_items(crate_name: &str, src_root: &Path) -> Vec<ScannedSymbol> 
         for line in text.lines() {
             let trimmed = line.trim_start();
             for (prefix, kind) in PUB_ITEM_PREFIXES {
-                if let Some(rest) = trimmed.strip_prefix(prefix) {
-                    if let Some(name) = extract_identifier(rest) {
+                if let Some(rest) = trimmed.strip_prefix(prefix)
+                    && let Some(name) = extract_identifier(rest) {
                         out.push(ScannedSymbol {
                             moniker: format!("{module_path}::{name}"),
                             kind,
                         });
                         break;
                     }
-                }
             }
         }
     }
@@ -243,7 +241,7 @@ fn ingest_real_symbols(
     let scanned_count = symbols.len();
 
     let engine = writer.engine();
-    let (_, cost) = heart::cost::measured(case, scratch_dir, || {
+    let ((), cost) = heart::cost::measured(case, scratch_dir, || {
         for symbol in &symbols {
             upsert_symbol_projection(
                 engine,

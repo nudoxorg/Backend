@@ -330,7 +330,7 @@ fn walk_doc_shortcut_link_becomes_symbol_link() {
 /// produce an `InlineRun::Link`, not a bare `Code` run.
 ///
 /// pulldown-cmark emits the backtick form as:
-///   Text("[")  /  Code("child_fn")  /  Text("]...")
+///   Text("[")  /  Code(`child_fn`)  /  Text("]...")
 ///
 /// The event-stream lookahead in `build_prose_blocks` handles the `Code`
 /// inner event specifically — this test verifies that branch.
@@ -1242,7 +1242,7 @@ fn build_pkg_with_root_doc(doc: &str, doc_links: Vec<DocLink>) -> (PackageView, 
 /// Run `walk_doc` and return the first paragraph's `InlineRun`s.
 fn first_paragraph_runs(pkg: &PackageView, root_id: IntroId) -> Vec<InlineRun> {
     let root_entry = pkg.view().entry(root_id).expect("root must exist");
-    let output = walk_doc(root_id, root_entry, pkg.view(), &pkg);
+    let output = walk_doc(root_id, root_entry, pkg.view(), pkg);
 
     let prose_section = output
         .sections
@@ -1268,8 +1268,8 @@ fn assert_no_leaked_brackets(runs: &[InlineRun]) {
             InlineRun::Text { text }
             | InlineRun::Code { text }
             | InlineRun::Strong { text }
-            | InlineRun::Em { text } => text,
-            InlineRun::Link { text, .. } => text,
+            | InlineRun::Em { text }
+            | InlineRun::Link { text, .. } => text,
         };
         assert!(
             !text.contains('[') && !text.contains(']'),

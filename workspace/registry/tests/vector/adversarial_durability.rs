@@ -6,7 +6,7 @@
 mod common;
 
 use common::*;
-use registry::vector::{JinaCodeV2, StoreError, VectorStore};
+use registry::vector::{StoreError, VectorStore};
 use registry::vector::local::{LocalShardStore, SCHEMA_FILE, open_or_create, upsert_raw};
 
 // ─── Area 1: Kill-9 shaped durability ────────────────────────────────────────
@@ -284,7 +284,7 @@ async fn schema_deleted_with_edge_data_present_recovers() {
 /// Search results must be identical: same ids, same order, exact f32 scores.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upsert_raw_and_upsert_give_identical_search_results() {
-    use registry::vector::VectorPoint;
+    
 
     let dir_actor = tempfile::tempdir().unwrap();
     let dir_raw = tempfile::tempdir().unwrap();

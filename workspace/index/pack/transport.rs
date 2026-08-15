@@ -330,26 +330,23 @@ impl<S: ObjectPackStore + 'static> ObjectPackProvider<S> {
                 start,
                 end,
             } => {
-                match self.store.outboard(id, key)? {
-                    Some(outboard) => {
-                        // Verified range streaming via Bao.
-                        let member = self.store.get_member(id, key)?;
-                        let encoded = outboard.encode_range(&member, *start, *end)?;
-                        Ok(PackResponse::VerifiedRange {
-                            root_hash: outboard.root_hash,
-                            uncompressed_length: outboard.uncompressed_length,
-                            encoded: encoded.to_vec(),
-                        })
-                    }
-                    None => {
-                        // No outboard (sub-threshold member): whole-member fetch.
-                        let member = self.store.get_member(id, key)?;
-                        let content = heart::content::ContentHash::of_bytes(&member);
-                        Ok(PackResponse::WholeMember {
-                            content,
-                            bytes: member.to_vec(),
-                        })
-                    }
+                if let Some(outboard) = self.store.outboard(id, key)? {
+                    // Verified range streaming via Bao.
+                    let member = self.store.get_member(id, key)?;
+                    let encoded = outboard.encode_range(&member, *start, *end)?;
+                    Ok(PackResponse::VerifiedRange {
+                        root_hash: outboard.root_hash,
+                        uncompressed_length: outboard.uncompressed_length,
+                        encoded: encoded.to_vec(),
+                    })
+                } else {
+                    // No outboard (sub-threshold member): whole-member fetch.
+                    let member = self.store.get_member(id, key)?;
+                    let content = heart::content::ContentHash::of_bytes(&member);
+                    Ok(PackResponse::WholeMember {
+                        content,
+                        bytes: member.to_vec(),
+                    })
                 }
             }
         }
@@ -492,7 +489,7 @@ impl<S: ObjectPackStore + 'static> ObjectPackFetcher<S> {
                 Ok(Bytes::copy_from_slice(&bytes[start as usize..end as usize]))
             }
             PackResponse::Refused { reason } => Err(PackError::ProviderRefused { reason }),
-            _ => Err(PackError::Transport(io::Error::new(
+            PackResponse::WholePack { .. } => Err(PackError::Transport(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "provider returned an unexpected response to MemberRange",
             ))),

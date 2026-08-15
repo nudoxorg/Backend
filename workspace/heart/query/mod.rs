@@ -194,10 +194,12 @@ pub enum QueryMode {
 /// online by definition; `Local` is the client-side default).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum QualityMode {
     /// Client-local dense stage only; the server runs no dense stage.
     Local,
     /// The parity (compiled-in) embedding collection.
+    #[default]
     Parity,
     /// The premium embedding collection.
     Premium,
@@ -205,11 +207,6 @@ pub enum QualityMode {
     Deep,
 }
 
-impl Default for QualityMode {
-    fn default() -> Self {
-        Self::Parity
-    }
-}
 
 /// What slice of the world a dense query addresses (09-vector §20.5).
 ///
@@ -218,20 +215,17 @@ impl Default for QualityMode {
 /// `From` this. Absent on the wire → [`QueryReach::Org`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum QueryReach {
     /// The caller's own project.
     Project,
     /// The caller's dependency closure.
     Deps,
     /// The whole organization index.
+    #[default]
     Org,
 }
 
-impl Default for QueryReach {
-    fn default() -> Self {
-        Self::Org
-    }
-}
 
 /// The vector-plane routing knobs (09-vector §20.5).
 ///

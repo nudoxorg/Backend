@@ -21,6 +21,9 @@ use std::fmt::Write as _;
 /// present because an occurrence cannot exist without its owner.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SymbolSummary {
+    /// Complete rendered declaration signature, when the target/owner is
+    /// loaded. This is the primary identity shown to an agent.
+    pub signature: Option<String>,
     /// The unqualified symbol name, when the graph query selected it.
     pub name: Option<String>,
     /// The canonical kind label, when the graph query selected it.
@@ -217,11 +220,15 @@ fn render_owner_group(output: &mut String, owner_key: &str, rows: &[&OccurrenceR
 }
 
 fn render_summary(output: &mut String, summary: &SymbolSummary) {
-    for value in [&summary.name, &summary.kind, &summary.path]
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(output, " · {}", inline_code(value));
+    if let Some(signature) = summary.signature.as_deref() {
+        let _ = write!(output, " · {}", inline_code(signature));
+    } else {
+        for value in [&summary.name, &summary.kind, &summary.path]
+            .into_iter()
+            .flatten()
+        {
+            let _ = write!(output, " · {}", inline_code(value));
+        }
     }
 }
 
@@ -328,6 +335,7 @@ mod tests {
         OccurrenceOwner {
             key: key.to_owned(),
             summary: SymbolSummary {
+                signature: None,
                 name: Some(name.to_owned()),
                 kind: Some("function".to_owned()),
                 path: Some(path.to_owned()),
@@ -355,6 +363,7 @@ mod tests {
 
     fn target(name: &str) -> SymbolSummary {
         SymbolSummary {
+            signature: None,
             name: Some(name.to_owned()),
             kind: Some("function".to_owned()),
             path: Some("src/lib.rs".to_owned()),
@@ -429,6 +438,7 @@ mod tests {
         let mut occurrence = row(
             "target|`key`<&",
             Some(SymbolSummary {
+                signature: None,
                 name: Some("name * [x]".to_owned()),
                 kind: Some("kind|x".to_owned()),
                 path: Some("src/<bad>\nnext".to_owned()),

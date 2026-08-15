@@ -129,7 +129,7 @@ mod tests {
     fn ties_break_deterministically_by_key_ascending() {
         // Three hits, two of them score-tied. A score-only order left the two
         // tied rows in arbitrary relative position; the key tiebreak pins it.
-        let mut rows = vec![s(9, 0.5), s(2, 0.9), s(4, 0.5)];
+        let mut rows = [s(9, 0.5), s(2, 0.9), s(4, 0.5)];
         rows.sort();
         let order: Vec<u32> = rows.iter().map(|r| r.value.id).collect();
         // Best score first (id 2), then the tie group by key ascending (4, 9).

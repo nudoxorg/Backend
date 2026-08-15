@@ -85,8 +85,10 @@ fn extract_uses_ecosystem_norms_for_stopwords() {
         ..Default::default()
     };
     let meta = extract(&input, rust_norms, None, None);
-    let kw_slugs: Vec<&str> = meta.keywords.iter().map(|(_, k)| k.as_str()).collect();
-    assert!(!kw_slugs.contains(&"rust"), "'rust' must be filtered by Rust norms");
+    assert!(
+        !meta.keywords.iter().any(|(_, k)| k.as_str() == "rust"),
+        "'rust' must be filtered by Rust norms"
+    );
 
     // "node" is a stopword for npm norms → must not appear.
     let npm_norms = crate::ecosystem::spec(crate::ecosystem::Language::Typescript).search_norms();
@@ -96,8 +98,10 @@ fn extract_uses_ecosystem_norms_for_stopwords() {
         ..input
     };
     let meta_npm = extract(&input_npm, npm_norms, None, None);
-    let kw_npm: Vec<&str> = meta_npm.keywords.iter().map(|(_, k)| k.as_str()).collect();
-    assert!(!kw_npm.contains(&"node"), "'node' must be filtered by npm norms");
+    assert!(
+        !meta_npm.keywords.iter().any(|(_, k)| k.as_str() == "node"),
+        "'node' must be filtered by npm norms"
+    );
 }
 
 // -----------------------------------------------------------------------

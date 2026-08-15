@@ -1,5 +1,5 @@
 //! Crate-private `Visitor` derive for walking every `Ref`.
-use crate::index::{Indexable, RawRef, Ref};
+use crate::index::{erase_mut, Indexable, RawRef, Ref};
 
 // derive macro re-export
 pub(crate) use self::m::Visitor;
@@ -12,14 +12,14 @@ pub(crate) trait Visitor {
 
 impl<T: Indexable> Visitor for Ref<T> {
     fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
-        f(self.erase_mut());
+        f(erase_mut(self));
     }
 }
 
 mod default_impl {
     use std::{num::NonZeroU16, ops::Range, path::PathBuf};
 
-    use super::*;
+    use super::{m, RawRef, Visitor};
 
     impl<T: Visitor> Visitor for Option<T> {
         fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
@@ -71,8 +71,6 @@ mod default_impl {
 }
 
 mod m {
-    use super::*;
-
     /// derive macro to implement Visitor pattern recursively
     pub(crate) macro Visitor {
 		// special-case `struct Struct;`: gets a no-op visitor impl
@@ -94,9 +92,9 @@ mod m {
 		    }
 		) => {
 	    	#[automatically_derived]
-	    	impl Visitor for $ident
+	    	impl $crate::visitor::Visitor for $ident
 			{
-				fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
+				fn visit_mut(&mut self, f: &impl Fn(&mut $crate::index::RawRef)) {
 					$(
 					self.$field.visit_mut(f);
 					)*
@@ -252,9 +250,9 @@ mod m {
         // to visit all the children of the enum variants.
 	    (@derive $ident:ident [$([$variant:pat] [$($expr:expr),*])+]) => {
 	    	#[automatically_derived]
-	    	impl Visitor for $ident
+	    	impl $crate::visitor::Visitor for $ident
 	    	{
-	    		fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
+	    		fn visit_mut(&mut self, f: &impl Fn(&mut $crate::index::RawRef)) {
 	    			match self {
 	    				$(
 	    				$variant => {

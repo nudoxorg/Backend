@@ -230,11 +230,11 @@ fn candidate_strings(candidate: CandidateValue<FieldValue>) -> Option<Vec<String
         CandidateValue::Single(_)
         | CandidateValue::Range(_)
         | CandidateValue::All
-        | CandidateValue::Impossible => None,
+        | CandidateValue::Impossible
         // `CandidateValue` is `#[non_exhaustive]`: a future variant is a new
         // *opportunity*, and treating it as "no pushdown" is the only safe
         // default — it yields the same rows, more slowly.
-        _ => None,
+        | _ => None,
     }
 }
 

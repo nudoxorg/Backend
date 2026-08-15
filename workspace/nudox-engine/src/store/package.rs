@@ -262,12 +262,12 @@ mod typerefs {
                 );
             }
             Kind::Trait(trait_) => {
-                for super_ty in trait_.supers.iter() {
+                for super_ty in &trait_.supers {
                     push_type(&mut refs, TypePosition::Supertrait, super_ty, package);
                 }
             }
             Kind::Record(record) => {
-                for super_ty in record.super_types.iter() {
+                for super_ty in &record.super_types {
                     push_type(&mut refs, TypePosition::SuperType, super_ty, package);
                 }
             }
@@ -277,13 +277,13 @@ mod typerefs {
                 }
             }
             Kind::Function(function) => {
-                for param in function.input_params.iter() {
+                for param in &function.input_params {
                     push_param(&mut refs, TypePosition::Parameter, param, view);
                 }
-                for param in function.output_params.iter() {
+                for param in &function.output_params {
                     push_param(&mut refs, TypePosition::Return, param, view);
                 }
-                for thrown in function.throws.iter() {
+                for thrown in &function.throws {
                     push_type(&mut refs, TypePosition::Throws, thrown, package);
                 }
             }
@@ -303,9 +303,9 @@ mod typerefs {
             // on its own `Field`s, so both are already covered by
             // `Kind::Field` above; recording them again here would double the
             // postings for every payload-carrying variant.
-            Kind::Module(_) | Kind::Enum(_) | Kind::Variant(_) | Kind::Reexport(_) => {}
+            Kind::Module(_) | Kind::Enum(_) | Kind::Variant(_) | Kind::Reexport(_)
             // See the doc comment: a parameter's type belongs to its function.
-            Kind::Param(_) => {}
+            | Kind::Param(_) => {}
         }
 
         refs.sort_unstable();
@@ -577,11 +577,10 @@ pub struct PackageIndexes {
     /// discriminant). This lets the search layer cheaply filter to, e.g., all
     /// functions without scanning the full entry set.
     pub by_kind: HashMap<KindDiscriminant, Vec<IntroId>>,
-    /// Reverse resolved-reference postings: `target StableRef → owners`.
+    /// Reverse occurrence postings: `target StableRef → owners`.
     ///
-    /// This is the union of declaration type references and body occurrences
-    /// with `confidence >= Confidence::Index`. Both are resolved facts from
-    /// the canonical IR; textual or syntax-only guesses never enter it.
+    /// Only occurrences with `confidence >= Confidence::Index` are projected
+    /// here (the graph-worthy floor, mirroring the prior art).
     pub usages: PostingList<StableRef, IntroId>,
     /// Reverse type-reference postings: `target StableRef → (position, owner)`.
     ///
@@ -657,13 +656,11 @@ impl PackageIndexes {
             // its `Param` entries, not on the function.
             for TypeRef { position, target } in typerefs_of_entry(view, intro) {
                 type_refs_builder.push(target.clone(), (position, intro));
-                usages_builder.push(target, intro);
             }
         }
 
-        // -- body references (graph-worthy only) -----------------------------
-        // Declaration type references were added to the same canonical usage
-        // index in the declaration pass above.
+        // -- usages (occurrence postings, graph-worthy only) -----------------
+        // Mirrors the prior art: filter to confidence >= Index.
         for (owner, occ) in view.all_occurrences() {
             if occ.confidence >= Confidence::Index {
                 usages_builder.push(occ.target.clone(), owner);
@@ -685,8 +682,8 @@ impl PackageIndexes {
         }
     }
 
-    /// The sorted, deduplicated owners that hold a resolved declaration or
-    /// graph-worthy body reference whose target is `target`.
+    /// The sorted, deduplicated owners that hold a graph-worthy occurrence
+    /// whose target is `target`.
     pub fn usages_of(&self, target: &StableRef) -> &[IntroId] {
         self.usages.get(target)
     }
@@ -777,7 +774,7 @@ impl core::fmt::Debug for PackageView {
             .field("package", &format_args!("{}", self.view.package()))
             .field("entries", &self.view.table().len())
             .field("provenance", &self.provenance)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -1381,7 +1378,7 @@ mod tests {
                 false,
                 Type::Apply {
                     base: Box::new(Type::Nominal(Ref::Intro(intro(3)))),
-                    args: [config.clone()].into(),
+                    args: [config].into(),
                 },
             ),
         );

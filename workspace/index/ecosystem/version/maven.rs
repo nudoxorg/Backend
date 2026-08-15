@@ -183,7 +183,7 @@ fn split_transitions(chunk: &str, out: &mut Vec<MavenToken>) {
         return;
     }
     // Work in (byte_offset, char) pairs.
-    let chars = chunk.char_indices().peekable();
+    let chars = chunk.char_indices();
     let mut seg_start = 0usize;
     let mut prev_digit: Option<bool> = None;
     for (byte_pos, ch) in chars {
@@ -314,22 +314,21 @@ fn maven_parse_range(spec: &str) -> Option<MavenRange> {
         });
     }
     let inner = &spec[1..spec.len() - 1];
-    let (lo_str, hi_str) = match inner.split_once(',') {
-        Some((lo, hi)) => (lo.trim(), hi.trim()),
+    let (lo_str, hi_str) = if let Some((lo, hi)) = inner.split_once(',') {
+        (lo.trim(), hi.trim())
+    } else {
         // `[1.0]` — exact single version.
-        None => {
-            let v = MavenVersion::parse(inner.trim())?;
-            return Some(MavenRange {
-                lower: MavenBound {
-                    version: Some(v.clone()),
-                    inclusive: true,
-                },
-                upper: MavenBound {
-                    version: Some(v),
-                    inclusive: true,
-                },
-            });
-        }
+        let v = MavenVersion::parse(inner.trim())?;
+        return Some(MavenRange {
+            lower: MavenBound {
+                version: Some(v.clone()),
+                inclusive: true,
+            },
+            upper: MavenBound {
+                version: Some(v),
+                inclusive: true,
+            },
+        });
     };
     let lower = MavenBound {
         version: if lo_str.is_empty() {
@@ -361,11 +360,13 @@ impl VersionGrammar for MavenVersion {
         self.tokens.iter().any(|t| {
             matches!(
                 t,
-                MavenToken::Qual(QualRank::Alpha)
-                    | MavenToken::Qual(QualRank::Beta)
-                    | MavenToken::Qual(QualRank::Milestone)
-                    | MavenToken::Qual(QualRank::Rc)
-                    | MavenToken::Qual(QualRank::Snapshot)
+                MavenToken::Qual(
+                    QualRank::Alpha
+                        | QualRank::Beta
+                        | QualRank::Milestone
+                        | QualRank::Rc
+                        | QualRank::Snapshot
+                )
             )
         })
     }
@@ -600,7 +601,7 @@ mod tests {
                     sorted[j].original
                 );
                 if sorted[i] < sorted[j] {
-                    assert!(!(sorted[j] < sorted[i]));
+                    assert!(sorted[j] >= sorted[i]);
                 }
             }
         }
@@ -614,7 +615,7 @@ mod tests {
             v
         };
         let perm2: Vec<MavenVersion> = {
-            let mut v = parsed.clone();
+            let mut v = parsed;
             v.rotate_left(5);
             v.sort();
             v

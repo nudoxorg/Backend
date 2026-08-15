@@ -88,9 +88,9 @@ impl Default for TypescriptProducer<OwnedOracle> {
     }
 }
 
-impl<O: TsOracle> Producer for TypescriptProducer<O>
+impl<O> Producer for TypescriptProducer<O>
 where
-    O: From<OwnedOracle>,
+    O: TsOracle + From<OwnedOracle>,
 {
     type Id = TsId;
     type Oracle = O;

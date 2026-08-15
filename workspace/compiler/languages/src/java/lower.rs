@@ -95,7 +95,10 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use nudox_ir::build::*;
+use nudox_ir::build::{
+    AttrTok, Deprecation, DocLink, EcosystemId, GenericParam, Lowering, ParamAttribute, Primitive,
+    RawRef, Ref, Symbol, Type, WherePred, Width,
+};
 use nudox_ir::entry::Visibility;
 use nudox_ir::foreign::ForeignKey;
 use nudox_ir::kinds::function::FnModifier;
@@ -204,19 +207,15 @@ fn typevar_bounds_map<'a>(class_type_params: &'a [TypeParam], method_type_params
 /// reports source names.
 fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
     match t {
-        TypeMirror::Primitive { name, .. } => name.to_string(),
-        TypeMirror::Void => "void".to_owned(),
-        TypeMirror::Declared { name, .. } => {
-            // Strip generic args for erasure — same as JVM erasure.
+        TypeMirror::Primitive { name, .. } | TypeMirror::Declared { name, .. } => {
             name.to_string()
         }
+        TypeMirror::Void => "void".to_owned(),
         TypeMirror::Array { component, .. } => format!("{}[]", type_erase(component, typevar_bounds)),
-        TypeMirror::Typevar { name, .. } => match typevar_bounds.get(name.as_ref()) {
-            // A bounded type variable erases to its bound, not its letter —
-            // see `typevar_bounds_map`'s doc comment for why this matters.
-            Some(bound) => type_erase(bound, typevar_bounds),
-            None => name.to_string(),
-        },
+        TypeMirror::Typevar { name, .. } => typevar_bounds.get(name.as_ref()).map_or_else(
+            || name.to_string(),
+            |bound| type_erase(bound, typevar_bounds),
+        ),
         TypeMirror::Wildcard { .. } => "?".to_owned(),
         TypeMirror::Intersection { bounds } => {
             if bounds.is_empty() {
@@ -424,10 +423,7 @@ fn deprecation_doc_section(flagged: bool, parsed: Option<&ParsedJavadoc>) -> Opt
 // ── Source location ──────────────────────────────────────────────────────────
 
 fn source_of(position: Option<&schema::Position>) -> (&str, Option<u64>) {
-    match position {
-        Some(p) => (p.file.as_ref(), p.line),
-        None => ("", None),
-    }
+    position.map_or(("", None), |p| (p.file.as_ref(), p.line))
 }
 
 // ── Implicit superclasses to skip ────────────────────────────────────────────
@@ -484,10 +480,7 @@ pub fn lower_type(ctx: &mut LoweringCtx<'_>, t: &TypeMirror) -> Type {
 /// limitation instead of fabricating a coordinate that would render as a
 /// working hyperlink and never resolve.
 fn java_foreign_key(fqn: &str) -> ForeignKey {
-    let (namespace, simple) = match fqn.rfind('.') {
-        Some(i) => (&fqn[..i], &fqn[i + 1..]),
-        None => ("", fqn),
-    };
+    let (namespace, simple) = fqn.rfind('.').map_or(("", fqn), |i| (&fqn[..i], &fqn[i + 1..]));
     ForeignKey::in_namespace(EcosystemId::new("maven"), namespace, fqn, simple)
 }
 
@@ -730,8 +723,6 @@ fn lower_type_params(
                 target: Type::TypeVar(tp.name.to_string()),
                 bounds: bounds.into_boxed_slice(),
             });
-        } else {
-            let _ = bounds.drain(..);
         }
     }
 
@@ -745,17 +736,17 @@ fn lower_type_params(
 /// Call `low.finish()` after to validate and produce the `IrPackage`.
 pub fn lower_extraction(ctx: &mut LoweringCtx<'_>, extraction: &Extraction) {
     // Packages → Module entries.
-    for pkg in extraction.packages.iter() {
+    for pkg in &extraction.packages {
         lower_package(ctx, pkg);
     }
 
     // JPMS modules → Module entries.
-    for m in extraction.modules.iter() {
+    for m in &extraction.modules {
         lower_module(ctx, m);
     }
 
     // Types (flat list; nesting expressed via parent pointer).
-    for decl in extraction.types.iter() {
+    for decl in &extraction.types {
         lower_type_decl(ctx, decl, extraction);
     }
 }
@@ -856,14 +847,14 @@ fn render_directive(d: &Directive) -> String {
                 format!("- requires {} `{module}`", mods.join(" "))
             }
         }
-        Directive::Exports { package, to } => match to {
-            Some(targets) => format!("- exports `{package}` to {}", targets.join(", ")),
-            None => format!("- exports `{package}`"),
-        },
-        Directive::Opens { package, to } => match to {
-            Some(targets) => format!("- opens `{package}` to {}", targets.join(", ")),
-            None => format!("- opens `{package}`"),
-        },
+        Directive::Exports { package, to } => to.as_ref().map_or_else(
+            || format!("- exports `{package}`"),
+            |targets| format!("- exports `{package}` to {}", targets.join(", ")),
+        ),
+        Directive::Opens { package, to } => to.as_ref().map_or_else(
+            || format!("- opens `{package}`"),
+            |targets| format!("- opens `{package}` to {}", targets.join(", ")),
+        ),
         Directive::Uses { service } => format!("- uses `{service}`"),
         Directive::Provides {
             service,
@@ -882,11 +873,10 @@ fn lower_type_decl(ctx: &mut LoweringCtx<'_>, decl: &TypeDecl, extraction: &Extr
     }
 
     // Parent: the enclosing type, or else the package.
-    let parent_id: Option<JavaId> = if let Some(enc) = &decl.enclosing {
-        Some(JavaId::type_(enc.as_ref()))
-    } else {
-        Some(JavaId::package(decl.package.as_ref()))
-    };
+    let parent_id: Option<JavaId> = decl.enclosing.as_ref().map_or_else(
+        || Some(JavaId::package(decl.package.as_ref())),
+        |enc| Some(JavaId::type_(enc.as_ref())),
+    );
 
     match decl.kind {
         TypeDeclKind::Interface | TypeDeclKind::AnnotationType => {
@@ -919,7 +909,7 @@ fn lower_class_like(
 
     // Record components first (immutable, declared-order).
     if is_record {
-        for component in decl.record_components.iter() {
+        for component in &decl.record_components {
             let fid = JavaId::member(qname, component.name.as_ref());
             let comp_parsed = ctx.parse_doc(
                 component.doc.as_deref(),
@@ -967,7 +957,7 @@ fn lower_class_like(
         .map(|c| c.name.as_ref())
         .collect();
 
-    for f in decl.fields.iter() {
+    for f in &decl.fields {
         if is_synthetic(f.origin) {
             continue;
         }
@@ -984,7 +974,7 @@ fn lower_class_like(
     }
 
     // --- Constructors. -----------------------------------------------------
-    for ctor in decl.constructors.iter() {
+    for ctor in &decl.constructors {
         if is_synthetic(ctor.origin) {
             continue;
         }
@@ -992,7 +982,7 @@ fn lower_class_like(
     }
 
     // --- Methods. ----------------------------------------------------------
-    for m in decl.methods.iter() {
+    for m in &decl.methods {
         if is_synthetic(m.origin) {
             continue;
         }
@@ -1012,7 +1002,7 @@ fn lower_class_like(
             }
         }
     }
-    for iface in decl.interfaces.iter() {
+    for iface in &decl.interfaces {
         match iface {
             TypeMirror::None | TypeMirror::Null | TypeMirror::Void => {}
             _ => super_types.push(lower_type(ctx, iface)),
@@ -1112,7 +1102,7 @@ fn lower_interface(
     let (src, line) = source_of(decl.position.as_ref());
 
     // Methods are standalone child entries (see below).
-    for m in decl.methods.iter() {
+    for m in &decl.methods {
         if is_synthetic(m.origin) {
             continue;
         }
@@ -1209,13 +1199,13 @@ fn lower_enum(
 
     // Enum constants → Variant entries.
     let mut variant_refs: Vec<Ref<nudox_ir::kinds::sum::Variant>> = Vec::new();
-    for c in decl.enum_constants.iter() {
+    for c in &decl.enum_constants {
         let vref = lower_enum_constant(ctx, qname, c);
         variant_refs.push(vref);
     }
 
     // Enum methods as standalone Function entries.
-    for m in decl.methods.iter() {
+    for m in &decl.methods {
         if is_synthetic(m.origin) {
             continue;
         }
@@ -1223,7 +1213,7 @@ fn lower_enum(
     }
 
     // Enum fields as standalone Field/Static entries.
-    for f in decl.fields.iter() {
+    for f in &decl.fields {
         if is_synthetic(f.origin) {
             continue;
         }
@@ -2357,7 +2347,7 @@ mod tests {
             .expect("defaultDraw must exist");
         // We verify it exists; is_defaulted is inside the kind payload.
         // (Accessing the kind internals requires pattern matching on Entry::kind().)
-        assert!(default_draw.1.sym().name == "defaultDraw");
+        assert_eq!(default_draw.1.sym().name, "defaultDraw");
     }
 
     #[test]
@@ -2982,7 +2972,7 @@ mod tests {
             owner: None,
             annotations: vec![Annotation {
                 ty: "com.example.NonNull".into(),
-                values: Default::default(),
+                values: std::collections::BTreeMap::default(),
             }],
         };
         let result = lower_type(&mut ctx, &annotated_string);

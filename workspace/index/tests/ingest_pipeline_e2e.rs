@@ -199,7 +199,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
 
     // ── Poll 1: first observation of a real repo with N real tagged releases.
     let (outcome1, _cost1) = heart::cost::measured(&format!("{case_prefix}.poll1_first_observation"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 1_000, 20250101000000)
+        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 1_000, 20_250_101_000_000)
     });
     let rev1 = match outcome1 {
         TickOutcome::Moved { rev, ops } => {
@@ -247,7 +247,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // `ops` Vec that happens not to be asserted on.
     let before_cursor = writer.changed_since(CatalogCursor::default()).expect("page before poll 2").next;
     let (outcome2, _cost2) = heart::cost::measured(&format!("{case_prefix}.poll2_true_noop"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 2_000, 20250101000000)
+        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 2_000, 20_250_101_000_000)
     });
     assert!(
         matches!(outcome2, TickOutcome::Unchanged { .. }),
@@ -280,7 +280,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // committed, tagged changelog entry pushed to the SAME repo.
     let new_tag = push_one_more_tagged_commit(dir.path(), N);
     let (outcome3, _cost3) = heart::cost::measured(&format!("{case_prefix}.poll3_new_release"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 3_000, 20250101000000)
+        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 3_000, 20_250_101_000_000)
     });
     let version_ops_in_poll3 = match outcome3 {
         TickOutcome::Moved { ops, .. } => {
@@ -361,7 +361,7 @@ fn ingest_throughput_and_storage_scale_with_real_tag_count() {
         // Phase B: enumerate — the real cost of one `ls-remote` + parse
         // against a repo with n tags.
         let (ops, enumerate_cost) = heart::cost::measured(&format!("{case}.enumerate"), dir.path(), || {
-            enumerate_git_versions(&adapter, &slug, &url, 20250101000000).expect("enumerate real repo")
+            enumerate_git_versions(&adapter, &slug, &url, 20_250_101_000_000).expect("enumerate real repo")
         });
         let version_ops = ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count();
         assert_eq!(version_ops, n, "case n={n} must enumerate exactly n real tags, not a fixture-sized stand-in");
@@ -434,7 +434,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     writer.commit_batch("register").expect("commit register");
 
     let (ops, enumerate_cost) = heart::cost::measured("ingest/breakdown.enumerate", dir.path(), || {
-        enumerate_git_versions(&adapter, slug, &url, 20250101000000).expect("enumerate")
+        enumerate_git_versions(&adapter, slug, &url, 20_250_101_000_000).expect("enumerate")
     });
     assert_eq!(
         ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count(),
@@ -458,7 +458,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     assert_eq!(report.outbox_rows, N, "every UpsertVersion fans out exactly one outbox row");
 
     let watermarks = MemoryWatermarkStore::new();
-    let (_, watermark_cost) = heart::cost::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
+    let ((), watermark_cost) = heart::cost::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
         watermarks
             .put_git_watermark(&GitWatermark {
                 stem_id: stem,
@@ -466,7 +466,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
                 last_checked_at: 9_000,
                 last_error: None,
             })
-            .expect("persist watermark")
+            .expect("persist watermark");
     });
 
     println!(

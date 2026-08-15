@@ -193,7 +193,7 @@ pub fn parse_cargo_toml(text: &str) -> ExtractedFacts {
     let dependencies: Vec<String> = value
         .get("dependencies")
         .and_then(toml::Value::as_table)
-        .map(|t| t.keys().map(|k| k.to_owned()).collect())
+        .map(|t| t.keys().map(std::borrow::ToOwned::to_owned).collect())
         .unwrap_or_default();
 
     let repository = string_field("repository").filter(|s| !s.is_empty());

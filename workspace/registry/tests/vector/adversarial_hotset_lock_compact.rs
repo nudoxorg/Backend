@@ -16,9 +16,8 @@ use common::*;
 use heart::PackageId;
 use registry::vector::{AdmissionBudget, StoreError, VectorStore, NAMESPACE_NUDOX};
 use registry::vector::local::{
-    AdmissionState, HotSetManager, InstallPlan, LocalShardStore, PackageStats,
+    HotSetManager,
     COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, ShardLock,
-    diff_plan,
 };
 
 fn pkg(name: &str) -> PackageId {

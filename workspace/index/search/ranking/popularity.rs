@@ -75,10 +75,7 @@ impl PopularitySignals {
 		scale: Option<f32>,
 		popularity_pct: Option<f32>,
 	) -> Self {
-		let downloads = match scale {
-			Some(s) => raw_downloads.map(|n| (n as f32 * s) as u64),
-			None => None,
-		};
+		let downloads = scale.and_then(|s| raw_downloads.map(|n| (n as f32 * s) as u64));
 		Self {
 			downloads,
 			dependents,

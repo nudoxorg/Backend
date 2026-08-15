@@ -23,7 +23,7 @@ impl MemoryCas {
 
 impl Cas for MemoryCas {
     async fn get(&self, key: ContentHash) -> Result<Option<Bytes>, CasError> {
-        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(guard.get(&key).cloned())
     }
 
@@ -34,7 +34,7 @@ impl Cas for MemoryCas {
     }
 
     async fn put_keyed(&self, key: ContentHash, bytes: Bytes) -> Result<bool, CasError> {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         use std::collections::hash_map::Entry;
         match guard.entry(key) {
             Entry::Occupied(_) => Ok(false),
@@ -48,7 +48,7 @@ impl Cas for MemoryCas {
 
 impl EvictableCas for MemoryCas {
     async fn invalidate(&self, key: ContentHash) -> Result<(), CasError> {
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&key);
         Ok(())
     }

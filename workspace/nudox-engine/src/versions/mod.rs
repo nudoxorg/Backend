@@ -161,18 +161,20 @@ impl VersionOrder {
             core.push(0);
         }
 
-        let pre = match pre_str {
-            None => PreOrder(1, Vec::new()),
-            Some(p) => PreOrder(
-                0,
-                p.split('.')
-                    .map(|seg| match seg.parse::<u64>() {
-                        Ok(n) => PreSeg::Num(n),
-                        Err(_) => PreSeg::Alpha(seg.to_owned()),
-                    })
-                    .collect(),
-            ),
-        };
+        let pre = pre_str.map_or_else(
+            || PreOrder(1, Vec::new()),
+            |p| {
+                PreOrder(
+                    0,
+                    p.split('.')
+                        .map(|seg| seg.parse::<u64>().map_or_else(
+                            |_| PreSeg::Alpha(seg.to_owned()),
+                            PreSeg::Num,
+                        ))
+                        .collect(),
+                )
+            },
+        );
 
         Self::Semver { core, pre }
     }

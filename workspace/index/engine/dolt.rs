@@ -47,7 +47,7 @@ impl DoltEngine {
     pub fn open(path: &std::path::Path) -> Result<Self, EngineError> {
         let path_text = path
             .to_str()
-            .ok_or_else(|| EngineError::Open(format!("non-UTF-8 catalog path {path:?}")))?;
+            .ok_or_else(|| EngineError::Open(format!("non-UTF-8 catalog path {}", path.display())))?;
         let connection = engine::Connection::open(path_text).map_err(from_engine_error)?;
         Ok(Self {
             connection: Mutex::new(connection),

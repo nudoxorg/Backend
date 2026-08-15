@@ -166,7 +166,7 @@ fn assemble_archive(
         link_count: link_count.to_le_bytes(),
         kind_table_version: 1u16.to_le_bytes(),
         reserved: [0u8; 2],
-        _reserved_tail: [0u8; 12],
+        reserved_tail: [0u8; 12],
     };
 
     out[0..64].copy_from_slice(hdr.as_bytes());
@@ -344,8 +344,7 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, Error> {
         let parent_arena = entry
             .parent
             .and_then(|p| intro_to_arena.get(&p).copied())
-            .map(|a| a.0)
-            .unwrap_or(EntryHead::NO_PARENT);
+            .map_or(EntryHead::NO_PARENT, |a| a.0);
 
         // EntryHead.
         let eh = EntryHead {
@@ -615,8 +614,7 @@ pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedA
         let parent_arena = table
             .parent_of(*intro_id)
             .and_then(|p| intro_to_arena.get(&p).copied())
-            .map(|a| a.0)
-            .unwrap_or(EntryHead::NO_PARENT);
+            .map_or(EntryHead::NO_PARENT, |a| a.0);
 
         // Build EntryHead.
         let eh = EntryHead {
@@ -769,8 +767,8 @@ mod tests {
     use super::*;
     use crate::vcs_types::type_wire_skeleton;
     use crate::wire::{
-        EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, PayloadTable,
-        SymbolWire, TypeAliasWire, TypeWire,
+        EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
+        PayloadTable, SymbolWire, TypeAliasWire, TypeWire,
     };
     use ir::change::IntroId;
     use ir::entry::Visibility;
@@ -820,7 +818,7 @@ mod tests {
             KindWire::Function(FunctionWire {
                 input_params: Box::new([]),
                 output_params: Box::new([]),
-                sig: Default::default(),
+                sig: FnSigFlags::default(),
                 generics: Box::new([]),
                 wheres: Box::new([]),
             }),
@@ -877,24 +875,22 @@ mod tests {
         let arena_ty = view.lookup_intro(intro(0x03)).expect("ty not found");
 
         // Name lookup.
-        let root_hits: Vec<_> = view.lookup_name("root").collect();
-        assert!(root_hits.contains(&arena_root));
+        assert!(view.lookup_name("root").any(|h| h == arena_root));
 
-        let fn_hits: Vec<_> = view.lookup_name("do_thing").collect();
-        assert!(fn_hits.contains(&arena_fn));
+        assert!(view.lookup_name("do_thing").any(|h| h == arena_fn));
 
         // Alias lookup.
-        let alias_hits: Vec<_> = view.lookup_name("fn_alias").collect();
-        assert!(alias_hits.contains(&arena_fn));
+        assert!(view.lookup_name("fn_alias").any(|h| h == arena_fn));
 
         // Children of root should contain the fn.
-        let children: Vec<_> = view.children(arena_root).collect();
-        assert!(children.contains(&arena_fn), "fn should be child of root");
+        assert!(
+            view.children(arena_root).any(|c| c == arena_fn),
+            "fn should be child of root"
+        );
 
         // Type fingerprint lookup.
         let fp = type_fingerprint(&TypeWire::Never);
-        let ty_hits: Vec<_> = view.by_type_fingerprint(fp).collect();
-        assert!(ty_hits.contains(&arena_ty));
+        assert!(view.by_type_fingerprint(fp).any(|h| h == arena_ty));
     }
 
     #[test]
@@ -1060,32 +1056,35 @@ mod tests {
         let arena_ty = view.lookup_intro(intro_ty).expect("type not found");
 
         // lookup_name by primary name.
-        let module_hits: Vec<_> = view.lookup_name("root_module").collect();
         assert!(
-            module_hits.contains(&arena_module),
+            view.lookup_name("root_module").any(|h| h == arena_module),
             "root_module name lookup failed"
         );
 
-        let fn_hits: Vec<_> = view.lookup_name("do_function").collect();
         assert!(
-            fn_hits.contains(&arena_fn),
+            view.lookup_name("do_function").any(|h| h == arena_fn),
             "do_function name lookup failed"
         );
 
-        let ty_hits: Vec<_> = view.lookup_name("NeverType").collect();
-        assert!(ty_hits.contains(&arena_ty), "NeverType name lookup failed");
+        assert!(
+            view.lookup_name("NeverType").any(|h| h == arena_ty),
+            "NeverType name lookup failed"
+        );
 
         // lookup_name by aliases.
-        let alias_a: Vec<_> = view.lookup_name("fn_alias_a").collect();
-        assert!(alias_a.contains(&arena_fn), "fn_alias_a lookup failed");
+        assert!(
+            view.lookup_name("fn_alias_a").any(|h| h == arena_fn),
+            "fn_alias_a lookup failed"
+        );
 
-        let alias_b: Vec<_> = view.lookup_name("fn_alias_b").collect();
-        assert!(alias_b.contains(&arena_fn), "fn_alias_b lookup failed");
+        assert!(
+            view.lookup_name("fn_alias_b").any(|h| h == arena_fn),
+            "fn_alias_b lookup failed"
+        );
 
         // children(root) must contain the function.
-        let children: Vec<_> = view.children(arena_module).collect();
         assert!(
-            children.contains(&arena_fn),
+            view.children(arena_module).any(|c| c == arena_fn),
             "fn should be child of root module"
         );
 
@@ -1100,9 +1099,8 @@ mod tests {
 
         // by_type_fingerprint must find the type entry.
         let fp = type_fp_never();
-        let fp_hits: Vec<_> = view.by_type_fingerprint(fp).collect();
         assert!(
-            fp_hits.contains(&arena_ty),
+            view.by_type_fingerprint(fp).any(|h| h == arena_ty),
             "type entry not found by fingerprint"
         );
 

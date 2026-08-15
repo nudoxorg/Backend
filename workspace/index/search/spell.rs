@@ -307,7 +307,7 @@ fn damerau_levenshtein(a: &str, b: &str) -> usize {
 
 	for i in 1..=la {
 		for j in 1..=lb {
-			let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+			let cost = usize::from(a[i - 1] != b[j - 1]);
 			d[i][j] = (d[i - 1][j] + 1)        // delete
 				.min(d[i][j - 1] + 1)           // insert
 				.min(d[i - 1][j - 1] + cost);   // replace
@@ -446,7 +446,7 @@ mod tests {
 	fn limit_caps_results() {
 		// Many single-char edits from "se": sea, seb, sec, ...
 		let vocab: Vec<String> = (b'a'..=b'z').map(|c| format!("se{}", c as char)).collect();
-		let vocab_refs: Vec<&str> = vocab.iter().map(|s| s.as_str()).collect();
+		let vocab_refs: Vec<&str> = vocab.iter().map(String::as_str).collect();
 		let idx = index(&vocab_refs);
 		let suggestions = idx.suggest("sec", 3);
 		assert!(suggestions.len() <= 3, "limit must be respected");

@@ -248,21 +248,17 @@ impl<'a> PackageArchiveView<'a> {
     }
 
     fn lookup_name_inner(&self, name: &str) -> Vec<ArenaIdx> {
-        let st_bytes = match self.string_table_bytes() {
-            Some(b) => b,
-            None => return vec![],
+        let Some(st_bytes) = self.string_table_bytes() else {
+            return vec![];
         };
-        let st = match StringTableView::from_bytes(st_bytes) {
-            Ok(v) => v,
-            Err(_) => return vec![],
+        let Ok(st) = StringTableView::from_bytes(st_bytes) else {
+            return vec![];
         };
-        let ni_bytes = match self.name_index_bytes() {
-            Some(b) => b,
-            None => return vec![],
+        let Some(ni_bytes) = self.name_index_bytes() else {
+            return vec![];
         };
-        let ni = match PostingIndexView::from_bytes(ni_bytes) {
-            Ok(v) => v,
-            Err(_) => return vec![],
+        let Ok(ni) = PostingIndexView::from_bytes(ni_bytes) else {
+            return vec![];
         };
 
         // Scan StringTable for a StrId matching `name`.
@@ -311,13 +307,11 @@ impl<'a> PackageArchiveView<'a> {
 
     /// Return an iterator over all link ends for `idx`.
     pub fn links(&self, idx: ArenaIdx) -> impl Iterator<Item = LinkEnd> + 'a {
-        let bytes = match self.link_csr_bytes() {
-            Some(b) => b,
-            None => return itertools_either::Either::Left(std::iter::empty()),
+        let Some(bytes) = self.link_csr_bytes() else {
+            return itertools_either::Either::Left(std::iter::empty());
         };
-        let csr = match LinkCsrView::from_bytes(bytes) {
-            Ok(v) => v,
-            Err(_) => return itertools_either::Either::Left(std::iter::empty()),
+        let Ok(csr) = LinkCsrView::from_bytes(bytes) else {
+            return itertools_either::Either::Left(std::iter::empty());
         };
         itertools_either::Either::Right(csr.links_for(idx).filter_map(|e| {
             let kind_self = KindDiscriminant::from_u16(e.kind_self)?;
@@ -343,8 +337,7 @@ impl<'a> PackageArchiveView<'a> {
         let vals: &'a [u8] = self
             .type_skel_bytes()
             .and_then(|bytes| DensePostingIndexView::from_bytes(bytes).ok())
-            .map(|view| view.lookup(fp))
-            .unwrap_or(&[]);
+            .map_or(&[], |view| view.lookup(fp));
         vals.as_chunks::<4>()
             .0
             .iter()

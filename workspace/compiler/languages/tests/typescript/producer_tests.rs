@@ -238,7 +238,7 @@ fn test_generic_function_typevar() {
 
     // Return type should also be T.
     match &body.return_type {
-        Some(TypeOwned::TypeVar(name)) | Some(TypeOwned::Nominal(name)) => {
+        Some(TypeOwned::TypeVar(name) | TypeOwned::Nominal(name)) => {
             assert_eq!(name, "T", "return type should be T");
         }
         other => {
@@ -1087,8 +1087,7 @@ fn test_object_type_literal_lowers_to_object_literal() {
             assert!(y.optional, "y must be optional");
         }
         other => panic!(
-            "object type literal must lower to ObjectLiteral; got {:?}",
-            other
+            "object type literal must lower to ObjectLiteral; got {other:?}"
         ),
     }
 }

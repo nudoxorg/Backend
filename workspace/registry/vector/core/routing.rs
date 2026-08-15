@@ -101,7 +101,7 @@ pub enum RouteLabel {
 }
 
 /// The routing decision: run every `dense` target, fuse (RRF), then `stage2`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RoutePlan {
     pub dense: Vec<DenseTarget>,
     /// True when local and remote targets race concurrently (latency hedge).
@@ -596,8 +596,7 @@ mod tests {
                             });
 
                             let cell_desc = format!(
-                                "scope={:?} mode={:?} online={} premium={} ready={}",
-                                scope, mode, online, premium_enabled, project_ready
+                                "scope={scope:?} mode={mode:?} online={online} premium={premium_enabled} ready={project_ready}"
                             );
 
                             // (a) Offline plans have no remote targets.
@@ -611,8 +610,7 @@ mod tests {
                                 });
                                 assert!(
                                     !has_remote,
-                                    "(a) offline must have no remote targets — {}",
-                                    cell_desc
+                                    "(a) offline must have no remote targets — {cell_desc}"
                                 );
                             }
 
@@ -620,16 +618,14 @@ mod tests {
                             if !plan.omitted_cold.is_empty() {
                                 assert!(
                                     plan.labels.contains(&RouteLabel::ColdDepsOmitted),
-                                    "(b) omitted_cold without ColdDepsOmitted label — {}",
-                                    cell_desc
+                                    "(b) omitted_cold without ColdDepsOmitted label — {cell_desc}"
                                 );
                             }
                             // Contrapositive: ColdDepsOmitted label → omitted_cold non-empty.
                             if plan.labels.contains(&RouteLabel::ColdDepsOmitted) {
                                 assert!(
                                     !plan.omitted_cold.is_empty(),
-                                    "(b) ColdDepsOmitted label without any omitted cold deps — {}",
-                                    cell_desc
+                                    "(b) ColdDepsOmitted label without any omitted cold deps — {cell_desc}"
                                 );
                             }
 
@@ -638,14 +634,12 @@ mod tests {
                             if effective_is_deep {
                                 assert!(
                                     plan.stage2.is_some(),
-                                    "(c) effective Deep must have stage2 — {}",
-                                    cell_desc
+                                    "(c) effective Deep must have stage2 — {cell_desc}"
                                 );
                             } else {
                                 assert!(
                                     plan.stage2.is_none(),
-                                    "(c) non-Deep effective mode must not have stage2 — {}",
-                                    cell_desc
+                                    "(c) non-Deep effective mode must not have stage2 — {cell_desc}"
                                 );
                             }
 

@@ -299,8 +299,9 @@ impl Retryable for TextError {
 			// A local-disk index blip is worth a retry; catalog faults are
 			// structural (local engine), matching IndexError's posture.
 			TextError::Io(_) => true,
-			TextError::Poll(_) | TextError::Symbols(_) => false,
-			TextError::Engine(_)
+			TextError::Poll(_)
+			| TextError::Symbols(_)
+			| TextError::Engine(_)
 			| TextError::Query(_)
 			| TextError::Cursor(_)
 			| TextError::Codec(_)
@@ -333,10 +334,8 @@ pub enum SessionError {
 impl Retryable for SessionError {
 	fn is_retryable(&self) -> bool {
 		match self {
-			SessionError::Io(_) => true,
-			// A local sqlite scratch fault (e.g. a transient lock) is worth a
-			// retry; a codec/not-found error is not.
-			SessionError::Scratch(_) => true,
+			SessionError::Io(_) | SessionError::Scratch(_) => true,
+			// A codec/not-found error is not retryable.
 			_ => false,
 		}
 	}

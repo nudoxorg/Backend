@@ -275,11 +275,13 @@ impl<Engine: VersioningEngine + Send + Sync> Outbox<Engine> {
 	/// drainer holds it. Replaces the pg advisory lock (single process per
 	/// deployment drains a sink; INDEX-PLAN single-writer discipline).
 	pub async fn try_lock_sink(&self, kind: SinkKind) -> Result<Option<SinkLockGuard>, OutboxError> {
-		let slot = sink_slot(kind);
-		match Arc::clone(&self.sink_guards[slot]).try_lock_owned() {
-			Ok(permit) => Ok(Some(SinkLockGuard { _permit: permit, kind })),
-			Err(_) => Ok(None),
-		}
+        let slot = sink_slot(kind);
+        Arc::clone(&self.sink_guards[slot])
+            .try_lock_owned()
+            .map_or_else(
+                |_| Ok(None),
+                |permit| Ok(Some(SinkLockGuard { _permit: permit, kind })),
+            )
 	}
 
 	/// Drop outbox rows consumed by every sink. Returns rows removed.

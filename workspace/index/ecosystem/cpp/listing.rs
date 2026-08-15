@@ -106,25 +106,22 @@ fn record_tag(
         _ => (after_prefix, false),
     };
     let key = SmolStr::from(tag_name);
-    match tags.get_mut(&key) {
-        Some(existing) => {
-            // Only a peeled line may overwrite; a peel always wins over a
-            // non-peel, and a later non-peel never clobbers a recorded peel.
-            if is_peeled && !existing.peeled {
-                existing.object_id = SmolStr::from(object_id);
-                existing.peeled = true;
-            }
+    if let Some(existing) = tags.get_mut(&key) {
+        // Only a peeled line may overwrite; a peel always wins over a
+        // non-peel, and a later non-peel never clobbers a recorded peel.
+        if is_peeled && !existing.peeled {
+            existing.object_id = SmolStr::from(object_id);
+            existing.peeled = true;
         }
-        None => {
-            order.push(key.clone());
-            tags.insert(
-                key,
-                TagEntry {
-                    object_id: SmolStr::from(object_id),
-                    peeled: is_peeled,
-                },
-            );
-        }
+    } else {
+        order.push(key.clone());
+        tags.insert(
+            key,
+            TagEntry {
+                object_id: SmolStr::from(object_id),
+                peeled: is_peeled,
+            },
+        );
     }
 }
 

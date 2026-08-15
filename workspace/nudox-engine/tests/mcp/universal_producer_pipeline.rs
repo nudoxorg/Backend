@@ -168,7 +168,7 @@ async fn real_rust_source_reaches_precise_usages_and_compact_batched_mcp() {
         target_usages
             .usages
             .iter()
-            .map(|usage| (&usage.name, &usage.path))
+            .map(|usage| (&usage.signature, &usage.path))
             .collect::<Vec<_>>()
     );
 
@@ -186,7 +186,7 @@ async fn real_rust_source_reaches_precise_usages_and_compact_batched_mcp() {
     let payload_users: Vec<&str> = payload_usages
         .usages
         .iter()
-        .map(|usage| usage.name.as_str())
+        .map(|usage| usage.signature.as_str())
         .collect();
     assert!(
         payload_users.contains(&"target"),

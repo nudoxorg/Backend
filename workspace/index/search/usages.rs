@@ -213,7 +213,7 @@ impl UsageQueryBackend for ReverseIndexUsageBackend {
         let mut uses: Vec<Usage> = scope
             .view
             .all_occurrences()
-            .filter(|(owner, occ)| &occ.target == &target && owners.contains(owner))
+            .filter(|(owner, occ)| occ.target == target && owners.contains(owner))
             .map(|(owner, occ)| Usage {
                 within: stable_ref_to_wire(&StableRef::new(package.clone(), owner)),
                 kind: reference_kind_token(occ.kind).to_owned(),
@@ -282,7 +282,7 @@ fn decode_hex_32(hex: &str) -> Option<[u8; 32]> {
         return None;
     }
     let mut out = [0u8; 32];
-    for (index, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let hi = (chunk[0] as char).to_digit(16)?;
         let lo = (chunk[1] as char).to_digit(16)?;
         out[index] = ((hi << 4) | lo) as u8;

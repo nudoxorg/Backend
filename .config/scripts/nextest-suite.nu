@@ -183,7 +183,7 @@ def main [
     )
     print $"==> root workspace: cargo ($root_args | str join ' ')"
     let root_started = (date now)
-    let root_exit = (run-and-capture $capture -- cargo ...$root_args)
+    let root_exit = (run-and-capture $capture cargo ...$root_args)
     let root_elapsed = ((date now) - $root_started | into int) / 1_000_000_000
     mut overall_ok = ($root_exit == 0)
     if $root_exit != 0 {
@@ -200,7 +200,7 @@ def main [
         )
         print $"==> GUI workspace \(nextest-compatible suites only\): cargo ($gui_args | str join ' ')"
         let gui_started = (date now)
-        let gui_exit = (run-and-capture $capture -- cargo ...$gui_args)
+        let gui_exit = (run-and-capture $capture cargo ...$gui_args)
         let gui_elapsed = ((date now) - $gui_started | into int) / 1_000_000_000
         if $gui_exit != 0 {
             $overall_ok = false
@@ -220,7 +220,8 @@ def main [
         # so nothing else is building workspace/gui concurrently.
         print "==> GUI workspace: shot_probe (direct cargo test, harness = false)"
         let probe_started = (date now)
-        let probe_exit = (run-and-capture $capture -- cargo test --manifest-path workspace/gui/Cargo.toml --test shot_probe)
+        let probe_args = ["cargo", "test", "--manifest-path", "workspace/gui/Cargo.toml", "--test", "shot_probe"]
+        let probe_exit = (run-and-capture $capture ...$probe_args)
         let probe_elapsed = ((date now) - $probe_started | into int) / 1_000_000_000
         if $probe_exit != 0 {
             $overall_ok = false
@@ -231,7 +232,8 @@ def main [
 
         print "==> GUI workspace: screenshots (direct cargo test, harness = false)"
         let shots_started = (date now)
-        let shots_exit = (run-and-capture $capture -- cargo test --manifest-path workspace/gui/Cargo.toml --test screenshots -- --nocapture)
+        let shots_args = ["cargo", "test", "--manifest-path", "workspace/gui/Cargo.toml", "--test", "screenshots", "--", "--nocapture"]
+        let shots_exit = (run-and-capture $capture ...$shots_args)
         let shots_elapsed = ((date now) - $shots_started | into int) / 1_000_000_000
         if $shots_exit != 0 {
             $overall_ok = false

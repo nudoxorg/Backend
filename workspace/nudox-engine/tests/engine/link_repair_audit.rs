@@ -47,14 +47,12 @@ const MEMCHR_VERSION: &str = "2.8.3";
 /// Path to the memchr checkout, honouring the same `NUDOX_REAL_CRATE_ROOT`
 /// override every other real-crate test uses.
 fn memchr_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("../../result/memchr-{MEMCHR_VERSION}"))
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        })
+        }, PathBuf::from)
 }
 
 /// Lower the memchr crate at `root` via the real Rust producer.
@@ -105,7 +103,7 @@ fn count_repairs_independently(sections: &[RenderSection]) -> u32 {
             ProseBlock::Paragraph { runs } | ProseBlock::Heading { runs, .. } => {
                 vec![runs.as_slice()]
             }
-            ProseBlock::List { items, .. } => items.iter().map(|i| i.as_slice()).collect(),
+            ProseBlock::List { items, .. } => items.iter().map(std::vec::Vec::as_slice).collect(),
             _ => Vec::new(),
         }
     }

@@ -178,7 +178,7 @@ impl RetryPolicy {
 	pub fn backoff_for(&self, attempt: u32) -> Duration {
 		// base * 2^attempt, saturating, then clamped to max_backoff.
 		let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
-		let scaled = self.base_backoff.saturating_mul(factor.min(u32::MAX as u64) as u32);
+		let scaled = self.base_backoff.saturating_mul(factor.min(u64::from(u32::MAX)) as u32);
 		scaled.min(self.max_backoff)
 	}
 
@@ -498,12 +498,12 @@ impl Queue {
 			store.release_job_claim(&claim.job_key).map_err(QueueError::Scratch)?;
 			// Only reset jobs still marked Running (a settled job may have released
 			// its own claim after expiry stamping; do not resurrect it).
-			if let Some(job) = store.get_job(&claim.job_key).map_err(QueueError::Scratch)? {
-				if job.state == JobState::Running {
-					store
-						.set_job_state(&claim.job_key, JobState::Queued, now)
-						.map_err(QueueError::Scratch)?;
-				}
+			if let Some(job) = store.get_job(&claim.job_key).map_err(QueueError::Scratch)?
+				&& job.state == JobState::Running
+			{
+				store
+					.set_job_state(&claim.job_key, JobState::Queued, now)
+					.map_err(QueueError::Scratch)?;
 			}
 			reclaimed += 1;
 		}
@@ -626,8 +626,7 @@ fn state_from_discriminant(
 fn now_unix() -> i64 {
 	std::time::SystemTime::now()
 		.duration_since(std::time::UNIX_EPOCH)
-		.map(|d| d.as_secs() as i64)
-		.unwrap_or(0)
+		.map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Convert a Unix-seconds timestamp into a UTC [`DateTime`], clamping an

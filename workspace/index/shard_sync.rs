@@ -142,5 +142,5 @@ impl ContentIo for ShardContentIo {
 // ---------------------------------------------------------------------------
 
 fn store_err_to_io(e: StoreError) -> io::Error {
-    io::Error::new(io::ErrorKind::Other, e.to_string())
+    io::Error::other(e)
 }

@@ -5,7 +5,7 @@
 use heart::PackageId;
 
 /// Frozen per-symbol RAM estimate: 768 int8 quantized components (768 B)
-/// + ~130 B HNSW graph links at m=16 + ~24 B id/payload overhead ≈ 922 B
+/// plus ~130 B HNSW graph links at m=16 plus ~24 B id/payload overhead ≈ 922 B
 /// (≈0.9 KB/symbol). Frozen so budget math is reproducible across planes;
 /// re-deriving it is a plan change, not a tuning knob.
 pub const BYTES_PER_SYMBOL: u64 = 922;
@@ -37,7 +37,7 @@ pub struct DepCandidate {
 impl DepCandidate {
     /// The §20.4 admission score: `3·direct + 2·ref_density + 1·ema`.
     fn score(&self) -> f32 {
-        3.0 * f32::from(u8::from(self.is_direct)) + 2.0 * self.ref_density + self.query_hit_ema
+        2.0f32.mul_add(self.ref_density, 3.0 * f32::from(u8::from(self.is_direct))) + self.query_hit_ema
     }
 
     /// Value-per-byte for the greedy knapsack (score / cost).
@@ -280,7 +280,7 @@ mod tests {
         p2.pinned = true;
         let out = admit(
             budget,
-            vec![p2.clone(), p1.clone(), cand("x", 10, true, 1.0, 1.0)],
+            vec![p2, p1, cand("x", 10, true, 1.0, 1.0)],
         );
         // Both pins admitted (80 > 50), deterministic PackageId order.
         let mut pins = vec![pkg("p1"), pkg("p2")];
@@ -366,7 +366,7 @@ mod tests {
             budget_bytes: DEFAULT_BUDGET_BYTES,
             project_ram: 0,
         };
-        let mut huge = DepCandidate {
+        let huge = DepCandidate {
             package: pkg("huge_pinned"),
             ram_estimate: u64::MAX,
             is_direct: false,
@@ -577,13 +577,11 @@ mod tests {
             rejected.sort();
             assert_eq!(
                 admitted, base_admitted,
-                "admitted set must be identical under permutation (rotation {})",
-                rotation
+                "admitted set must be identical under permutation (rotation {rotation})"
             );
             assert_eq!(
                 rejected, base_rejected,
-                "rejected set must be identical under permutation (rotation {})",
-                rotation
+                "rejected set must be identical under permutation (rotation {rotation})"
             );
             assert_eq!(out.over_budget, base_out.over_budget);
         }
@@ -593,14 +591,17 @@ mod tests {
     fn hit_ema_halves_at_half_life() {
         let mut ema = HitEma::new(0);
         ema.update(0, true);
-        assert_eq!(ema.value_at(0), 1.0);
+        assert!((ema.value_at(0) - 1.0).abs() < 1e-6, "fresh hit: {}", ema.value_at(0));
         let half = ema.value_at(HIT_EMA_HALF_LIFE_SECS);
         assert!((half - 0.5).abs() < 1e-6, "14-day half-life: {half}");
         // Two hits then a full half-life: (1·d + 1) halves.
         ema.update(HIT_EMA_HALF_LIFE_SECS, true);
         assert!((ema.value_at(HIT_EMA_HALF_LIFE_SECS) - 1.5).abs() < 1e-6);
         // Time going backwards decays by zero (clamped), never grows.
-        assert_eq!(ema.value_at(0), ema.value_at(HIT_EMA_HALF_LIFE_SECS));
+        assert!(
+            (ema.value_at(0) - ema.value_at(HIT_EMA_HALF_LIFE_SECS)).abs() < 1e-6,
+            "backwards time must not change the value"
+        );
         // A miss decays without adding.
         let mut idle = HitEma::new(0);
         idle.update(0, true);

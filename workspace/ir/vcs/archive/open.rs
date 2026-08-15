@@ -60,7 +60,7 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, Error> {
     if hdr.flags() != 0 {
         return Err(Error::ReservedNonzero("header.flags"));
     }
-    if hdr.reserved != [0u8; 2] || hdr._reserved_tail != [0u8; 12] {
+    if hdr.reserved != [0u8; 2] || hdr.reserved_tail != [0u8; 12] {
         return Err(Error::ReservedNonzero("header.reserved"));
     }
 
@@ -127,9 +127,8 @@ pub fn open_archive(bytes: Arc<[u8]>) -> Result<YokedArchive, Error> {
         if SectionId::try_from(section_id).is_none() {
             if toc_e.is_optional() {
                 continue; // skip gracefully
-            } else {
-                return Err(Error::UnknownSection(section_id));
             }
+            return Err(Error::UnknownSection(section_id));
         }
 
         sections.insert(section_id, (offset, length as usize));

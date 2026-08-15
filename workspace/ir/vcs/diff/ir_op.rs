@@ -11,7 +11,7 @@
 //! Within a single `IntroId`'s op list, ops are sorted:
 //! `lifecycle < continuity < meta < kind-specific < links`
 //!
-//! This is the canonical render order used by both [`crate::diff::diff::diff_tables`]
+//! This is the canonical render order used by both [`crate::diff::diff_tables::diff_tables`]
 //! and [`crate::diff::delta::PackageDelta::canonical_bytes`].
 
 use crate::vcs_types::LinkDomainKey;
@@ -306,7 +306,7 @@ pub enum IrOp {
 
 /// Canonical sort order among [`IrOp`] variants within one `IntroId`'s list.
 ///
-/// Lower = emitted first. Used by [`crate::diff::diff`] when building the op list
+/// Lower = emitted first. Used by [`crate::diff::diff_tables`] when building the op list
 /// and by [`crate::diff::delta::PackageDelta::canonical_bytes`].
 pub fn op_sort_key(op: &IrOp) -> u8 {
     match op {

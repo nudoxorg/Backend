@@ -77,13 +77,13 @@ pub fn parse(text: &str) -> CppManifest {
                 manifest
                     .push_dependency(DependencyRecord::new(token, DependencyMechanism::PkgConfig));
             }
-        } else if command.eq_ignore_ascii_case("fetchcontent_declare") {
-            if let Some(url) = extract_fetchcontent_url(&arguments) {
-                manifest.push_dependency(DependencyRecord::new(
-                    url,
-                    DependencyMechanism::FetchContent,
-                ));
-            }
+        } else if command.eq_ignore_ascii_case("fetchcontent_declare")
+            && let Some(url) = extract_fetchcontent_url(&arguments)
+        {
+            manifest.push_dependency(DependencyRecord::new(
+                url,
+                DependencyMechanism::FetchContent,
+            ));
         }
     }
 
@@ -199,12 +199,10 @@ fn collect_arguments(text: &str, position: &mut usize) -> Vec<String> {
 fn extract_project_description(arguments: &[String]) -> Option<String> {
     let mut iterator = arguments.iter();
     while let Some(arg) = iterator.next() {
-        if arg.eq_ignore_ascii_case("DESCRIPTION") {
-            if let Some(value) = iterator.next() {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_owned());
-                }
+        if arg.eq_ignore_ascii_case("DESCRIPTION") && let Some(value) = iterator.next() {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
             }
         }
     }
@@ -257,11 +255,8 @@ fn extract_pkg_check_modules_deps(arguments: &[String]) -> Vec<String> {
 /// `bar` → `bar`.
 fn strip_version_constraint(spec: &str) -> &str {
     // Find the first `>`, `<`, `=`, or `!` character.
-    if let Some(position) = spec.find(|c| matches!(c, '>' | '<' | '=' | '!')) {
-        spec[..position].trim_end()
-    } else {
-        spec.trim()
-    }
+    spec.find(['>', '<', '=', '!'])
+        .map_or_else(|| spec.trim(), |position| spec[..position].trim_end())
 }
 
 /// Extract the `GIT_REPOSITORY` URL from a `FetchContent_Declare` argument list.
@@ -273,12 +268,10 @@ fn extract_fetchcontent_url(arguments: &[String]) -> Option<String> {
     // Skip the content name argument.
     let _ = iterator.next();
     while let Some(arg) = iterator.next() {
-        if arg.eq_ignore_ascii_case("GIT_REPOSITORY") {
-            if let Some(url) = iterator.next() {
-                let trimmed = url.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_owned());
-                }
+        if arg.eq_ignore_ascii_case("GIT_REPOSITORY") && let Some(url) = iterator.next() {
+            let trimmed = url.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
             }
         }
     }

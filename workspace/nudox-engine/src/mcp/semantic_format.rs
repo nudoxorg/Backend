@@ -95,6 +95,7 @@ pub(crate) struct SemanticHit {
     pub(crate) key: String,
     pub(crate) symbol: String,
     pub(crate) kind: String,
+    pub(crate) signature: String,
     pub(crate) evidence: Option<DocumentationEvidence>,
     pub(crate) score: Option<f32>,
 }
@@ -104,11 +105,13 @@ impl SemanticHit {
         key: impl Into<String>,
         symbol: impl Into<String>,
         kind: impl Into<String>,
+        signature: impl Into<String>,
     ) -> Self {
         Self {
             key: key.into(),
             symbol: symbol.into(),
             kind: kind.into(),
+            signature: signature.into(),
             evidence: None,
             score: None,
         }
@@ -275,7 +278,7 @@ pub(crate) fn render_semantic_markdown_with(
     }
 
     output.push('\n');
-    output.push_str("| # | symbol | kind | key | doc");
+    output.push_str("| # | declaration | key | doc");
     if options.include_scores {
         output.push_str(" | score");
     }
@@ -289,9 +292,7 @@ pub(crate) fn render_semantic_markdown_with(
         output.push('|');
         output.push_str(&format!(" {} |", rank + 1));
         output.push(' ');
-        output.push_str(&table_cell(&hit.symbol));
-        output.push_str(" | ");
-        output.push_str(&table_cell(&hit.kind));
+        output.push_str(&table_cell(&hit.declaration()));
         output.push_str(" | ");
         output.push_str(&table_cell(&hit.key));
         output.push_str(" | ");
@@ -330,6 +331,16 @@ pub(crate) fn render_semantic_markdown_with(
     }
 
     output
+}
+
+impl SemanticHit {
+    fn declaration(&self) -> String {
+        if self.signature.is_empty() {
+            format!("{} {}", self.kind, self.symbol)
+        } else {
+            self.signature.clone()
+        }
+    }
 }
 
 /// Return the first row for each stable key, retaining the search pipeline's
@@ -448,7 +459,7 @@ mod tests {
     use super::*;
 
     fn hit(key: &str, symbol: &str) -> SemanticHit {
-        SemanticHit::new(key, symbol, "fn")
+        SemanticHit::new(key, symbol, "fn", format!("fn {symbol}()"))
     }
 
     #[test]
@@ -475,7 +486,7 @@ mod tests {
         assert!(no_match.contains("status: no matches"));
         assert!(!unavailable.contains("status: no matches"));
         assert!(!building.contains("status: no matches"));
-        assert!(!unavailable.contains("| # | symbol |"));
+        assert!(!unavailable.contains("| # | declaration |"));
     }
 
     #[test]
@@ -507,7 +518,7 @@ mod tests {
         );
         let rendered = render_semantic_markdown(&result);
 
-        assert!(rendered.contains("| 1 | `parser` | `fn` | `cargo:docs#1` | exact |"));
+        assert!(rendered.contains("| 1 | `fn parser()` | `cargo:docs#1` | exact |"));
         assert!(rendered.contains(documentation), "{rendered}");
         assert!(
             rendered.contains("````text"),
@@ -549,7 +560,7 @@ mod tests {
 
         assert!(rendered.contains("status: ready · 2 matches"));
         assert_eq!(rendered.matches("cargo:req#1").count(), 1);
-        assert!(rendered.contains("| 1 | `first` |"));
+        assert!(rendered.contains("| 1 | `fn first()` |"));
         assert!(!rendered.contains("duplicate"));
     }
 

@@ -33,7 +33,7 @@ fn scored_pairs_value_with_score() {
     assert_eq!(s.score, Score::try_new(0.9).unwrap());
 
     // Mapping preserves the score.
-    let mapped = s.map(|v| v.len());
+    let mapped = s.map(str::len);
     assert_eq!(mapped.value, 4);
     assert_eq!(mapped.score, Score::try_new(0.9).unwrap());
 }

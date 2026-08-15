@@ -209,20 +209,18 @@ impl<R: Read> StreamReceiver<R> {
                 // The peer must close after a terminal frame. Draining here is
                 // what *detects* a violating peer: a clean EOF is the normal
                 // end-of-stream, any further frame is a protocol error.
-                return match self.reader.read_frame()? {
-                    None => Ok(None),
-                    Some(frame) => Err(Error::Protocol(format!(
+                return self.reader.read_frame()?.map_or(Ok(None), |frame| {
+                    Err(Error::Protocol(format!(
                         "{} frame received after terminal frame",
                         frame.variant_name()
-                    ))),
-                };
+                    )))
+                });
             }
             ReceiverState::Ready => {}
         }
 
-        let frame = match self.reader.read_frame()? {
-            Some(f) => f,
-            None => return Ok(None),
+        let Some(frame) = self.reader.read_frame()? else {
+            return Ok(None);
         };
 
         match frame {

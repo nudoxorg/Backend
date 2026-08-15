@@ -5,9 +5,9 @@
 
 use std::collections::HashSet;
 
-use nudox_ir::build::*;
+use nudox_ir::build::{Alias, Const, Function, GenericParam, Lowering, Static, Type};
 
-use super::{GoId, Result, lower_sig_params_into_lowering, sym_for};
+use super::{GoId, lower_sig_params_into_lowering, sym_for};
 use crate::go::{oracle, types};
 
 // ── Alias (`type A = B`) ──────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ pub(super) fn lower_alias(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
@@ -40,7 +40,6 @@ pub(super) fn lower_alias(
         .generics(generics)
         .build();
     low.declare(item_id, Some(parent), sym, alias_kind);
-    Ok(())
 }
 
 // ── Package-level function ─────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ pub(super) fn lower_func(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
@@ -75,7 +74,6 @@ pub(super) fn lower_func(
         .build();
 
     low.declare(item_id, Some(parent), sym, fn_kind);
-    Ok(())
 }
 
 // ── Constant ──────────────────────────────────────────────────────────────────
@@ -86,7 +84,7 @@ pub(super) fn lower_const(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
@@ -96,11 +94,7 @@ pub(super) fn lower_const(
     let ty = decl
         .r#type
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low, local))
-        // `const Foo = 1` writes no type; Go infers one. The source-level fact
-        // is that the annotation is absent, which is not the same claim as
-        // "this constant accepts any value".
-        .unwrap_or(Type::UNANNOTATED);
+        .map_or(Type::UNANNOTATED, |t| types::lower_type_with_lowering(t, low, local));
     let value = if decl.value.is_empty() {
         None
     } else {
@@ -109,7 +103,6 @@ pub(super) fn lower_const(
 
     let const_kind = Const::builder().ty(ty).maybe_value(value).build();
     low.declare(item_id, Some(parent), sym, const_kind);
-    Ok(())
 }
 
 // ── Variable ──────────────────────────────────────────────────────────────────
@@ -120,7 +113,7 @@ pub(super) fn lower_var(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let item_id = GoId::Item {
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
@@ -130,11 +123,8 @@ pub(super) fn lower_var(
     let ty = decl
         .r#type
         .as_ref()
-        .map(|t| types::lower_type_with_lowering(t, low, local))
-        // `var x = f()` writes no type; Go infers one. See `lower_const`.
-        .unwrap_or(Type::UNANNOTATED);
+        .map_or(Type::UNANNOTATED, |t| types::lower_type_with_lowering(t, low, local));
 
     let static_kind = Static::builder().ty(ty).mutable(true).build();
     low.declare(item_id, Some(parent), sym, static_kind);
-    Ok(())
 }

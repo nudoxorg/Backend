@@ -50,9 +50,10 @@ pub async fn emit<Engine: crate::engine::VersioningEngine + Send + Sync>(
     // 1. Every section lands in `cas/` idempotently.
     let mut emitted = Emitted { written: 0, deduped: 0 };
     for section in &sections {
-        match store.put_section(section).await.map_err(BlobError::from)? {
-            true => emitted.written += 1,
-            false => emitted.deduped += 1,
+        if store.put_section(section).await.map_err(BlobError::from)? {
+            emitted.written += 1;
+        } else {
+            emitted.deduped += 1;
         }
     }
 

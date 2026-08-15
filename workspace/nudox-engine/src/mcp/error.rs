@@ -244,7 +244,6 @@ impl McpError {
         let message = self.to_string();
         let data = Some(self.error_data_json());
         match self {
-            Self::Unauthenticated => rmcp::ErrorData::invalid_request(message, data),
             Self::MalformedKey { .. }
             | Self::MalformedPackage { .. }
             | Self::InvalidArgument { .. } => rmcp::ErrorData::invalid_params(message, data),
@@ -270,15 +269,16 @@ impl McpError {
                     rmcp::ErrorData::internal_error(message, data)
                 }
             }
-            // Every account denial is `invalid_request`, the same code
-            // `Unauthenticated` already uses, and for the same reason: the
-            // request is well-formed and cannot be served *as this caller*.
-            // No new JSON-RPC code is invented — `data.kind` is where the
-            // seven-way distinction lives, which is precisely what a stable
-            // machine tag is for. An agent that only understands codes gets
-            // "do not retry with different arguments"; one that reads `data`
-            // gets "you are over quota until the period rolls over".
-            Self::NotSignedIn
+            // Every account denial — including `Unauthenticated` — is
+            // `invalid_request`, and for the same reason: the request is
+            // well-formed and cannot be served *as this caller*. No new
+            // JSON-RPC code is invented — `data.kind` is where the eight-way
+            // distinction lives, which is precisely what a stable machine tag
+            // is for. An agent that only understands codes gets "do not retry
+            // with different arguments"; one that reads `data` gets "you are
+            // over quota until the period rolls over".
+            Self::Unauthenticated
+            | Self::NotSignedIn
             | Self::CredentialStoreUnavailable { .. }
             | Self::AuthorizationPending
             | Self::NeverVerified { .. }
@@ -326,7 +326,6 @@ impl McpError {
     /// the identical call is reasonable, but there is no input to change).
     fn help(&self) -> Option<&'static str> {
         match self {
-            Self::Unauthenticated => None,
             Self::MalformedKey { .. } => Some(
                 "Copy this key verbatim from a search_symbols, get_symbol, find_usages, or \
                  graph_query result rather than constructing one by hand.",
@@ -349,7 +348,15 @@ impl McpError {
             Self::InvalidArgument { argument, .. } if *argument == "query" => {
                 Some("Call graph_schema for the queryable types and edges, then retry.")
             }
-            Self::InvalidArgument { .. } => None,
+            // No next step beyond what `message` says: these need no `help`.
+            Self::InvalidArgument { .. }
+            | Self::Unauthenticated
+            | Self::Engine(EngineError::Chunk { .. })
+            | Self::Engine(EngineError::Cancelled)
+            | Self::TruncatedStream
+            | Self::UnknownResource(_)
+            | Self::Bind { .. }
+            | Self::Serve(_) => None,
             Self::Engine(EngineError::PackageNotLoaded { attempted, .. }) => Some(if attempted.is_some() {
                 "The load for this package was attempted and failed — see data.engine.attempted \
                  for why. Retrying this call will not help until the underlying problem (a bad \
@@ -374,13 +381,6 @@ impl McpError {
                 "Call graph_schema for the exact type, edge, and property names this query must \
                  be written against, then retry."
             }),
-            Self::Engine(EngineError::Chunk { .. }) => None,
-            Self::Engine(EngineError::Cancelled) => None,
-            Self::Engine(_) => None,
-            Self::TruncatedStream => None,
-            Self::UnknownResource(_) => None,
-            Self::Bind { .. } => None,
-            Self::Serve(_) => None,
             Self::Index { error } => error.help(),
 
             // -- Account -----------------------------------------------------
@@ -435,7 +435,6 @@ impl McpError {
         use serde_json::json;
 
         let obj = match self {
-            Self::Unauthenticated => json!({}),
             Self::MalformedKey { key, reason } => json!({
                 "input": key,
                 "reason": reason,
@@ -465,7 +464,6 @@ impl McpError {
                 "engine": serde_json::to_value(engine_err)
                     .unwrap_or(serde_json::Value::Null),
             }),
-            Self::TruncatedStream => json!({}),
             Self::UnknownResource(uri) => json!({ "uri": uri }),
             Self::Bind { addr, source } => json!({
                 "addr": addr.to_string(),
@@ -484,11 +482,14 @@ impl McpError {
 
             // -- Account -----------------------------------------------------
             //
-            // Nothing here is a credential or a fragment of one. `NotSignedIn`
-            // and `AuthorizationPending` carry no fields at all, on the same
-            // reasoning as `Unauthenticated`: a caller that is not signed in
-            // learns only that, and there is nothing else it could act on.
-            Self::NotSignedIn | Self::AuthorizationPending => json!({}),
+            // Nothing here is a credential or a fragment of one. These variants
+            // carry no fields at all: a caller that is not signed in (or that
+            // hit a truncated stream) learns only that, and there is nothing
+            // else it could act on.
+            Self::Unauthenticated
+            | Self::TruncatedStream
+            | Self::NotSignedIn
+            | Self::AuthorizationPending => json!({}),
             Self::CredentialStoreUnavailable { message, .. } => json!({ "detail": message }),
             Self::NeverVerified { cause } => json!({ "cause": cause }),
             Self::OfflineGraceExpired {
@@ -504,8 +505,7 @@ impl McpError {
                 // up showing a different instant than the dashboard.
                 "lastVerifiedAt": last_verified_at
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
+                    .map_or(0, |d| d.as_secs()),
                 "cause": cause,
                 // Stated in-band so an agent does not have to infer it from
                 // prose. The difference between this and `key_revoked` is the
@@ -603,7 +603,6 @@ mod tests {
         let rmcp_err = err.into_error_data();
         let data = rmcp_err
             .data
-            .clone()
             .expect("every McpError must carry a structured error.data object");
         assert_eq!(
             data.get("kind").and_then(serde_json::Value::as_str),
@@ -778,6 +777,6 @@ mod tests {
         // guessed wrong — this pins that the structured `data` upgrade did
         // not accidentally leak anything beyond the bare kind tag.
         let data = assert_structured(McpError::Unauthenticated);
-        assert_eq!(data.as_object().map(|m| m.len()), Some(1));
+        assert_eq!(data.as_object().map(serde_json::Map::len), Some(1));
     }
 }

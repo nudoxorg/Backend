@@ -24,10 +24,10 @@
 //! [`host::McpHost`] exists for (docs/LIMITATIONS.md L35):
 //!
 //! ```no_run
-//! # fn run(engine: crate::EngineHandle) -> Result<(), crate::mcp::McpError> {
-//! use crate::mcp::McpHost;
+//! # fn run(engine: nudox_engine::EngineHandle) -> Result<(), nudox_engine::mcp::McpError> {
+//! use nudox_engine::mcp::{AccountGate, McpHost};
 //!
-//! let mut host = McpHost::start(&engine)?;
+//! let mut host = McpHost::start(&engine, AccountGate::unmetered("documentation example"))?;
 //! println!("listening on {:?}", host.url());                 // status bar
 //! println!("{:?}", host.client_config_snippet());            // Settings → Connection
 //! host.stop();                                               // window close
@@ -38,10 +38,13 @@
 //! From async code, one layer lower:
 //!
 //! ```no_run
-//! # async fn run(engine: crate::EngineHandle) -> Result<(), crate::mcp::McpError> {
-//! use crate::mcp::{McpEndpoint, NudoxMcpServer};
+//! # async fn run(engine: nudox_engine::EngineHandle) -> Result<(), nudox_engine::mcp::McpError> {
+//! use nudox_engine::mcp::{AccountGate, McpEndpoint, NudoxMcpServer};
 //!
-//! let endpoint = McpEndpoint::start(NudoxMcpServer::new(engine)).await?;
+//! let endpoint = McpEndpoint::start(NudoxMcpServer::new(
+//!     engine,
+//!     AccountGate::unmetered("documentation example"),
+//! )).await?;
 //! println!("listening on {}", endpoint.url());       // status bar
 //! println!("{}", endpoint.client_config_snippet());  // Settings → Connection
 //! endpoint.stop().await;                             // window close
@@ -84,10 +87,10 @@ pub(crate) mod markdown;
 pub(crate) mod occurrence_format;
 /// Typed-result Markdown projections.
 pub(crate) mod result_format;
-pub mod server;
-pub mod session;
 /// Semantic-search Markdown projection.
 pub(crate) mod semantic_format;
+pub mod server;
+pub mod session;
 pub mod tools;
 
 pub use account::{
@@ -98,9 +101,21 @@ pub use endpoint::{LOOPBACK_BIND, MCP_PATH, McpEndpoint};
 pub use error::McpError;
 pub use host::{DRAIN_TIMEOUT, McpHost, ShutdownOutcome};
 pub use key::SymbolKeyDto;
+pub use result_format::MarkdownResult;
 pub use server::{NudoxMcpServer, PACKAGE_URI_PREFIX, SCHEMA_URI};
 pub use session::{Session, SessionToken, Unauthenticated};
 pub use tools::NudoxTools;
+
+/// Render a typed MCP result with the canonical compact Markdown projection.
+///
+/// The server uses this same projection for every successful tool call. The
+/// public wrapper lets integration benches exercise status variants that are
+/// not practical to create through a live transport (for example an indexing
+/// job observed while it is still downloading) without maintaining a second
+/// formatter in the test harness.
+pub fn render_markdown<T: MarkdownResult>(result: &T) -> String {
+    result.to_markdown()
+}
 
 /// The Trustfall schema, served to agents verbatim (LR-7).
 ///

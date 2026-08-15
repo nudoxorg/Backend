@@ -97,7 +97,7 @@ impl LinkRepairKind {
 /// parallel counter anywhere: the runs are the single source of truth, so a
 /// count and the thing it counts cannot drift (doctrine §8 — a degraded case
 /// must not be representable as the good one).
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct LinkRepair {
     /// Which of the closed set of repairs this was.
     pub kind: LinkRepairKind,

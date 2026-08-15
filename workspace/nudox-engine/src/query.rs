@@ -269,8 +269,9 @@ pub(crate) async fn run_query(
                     // is ambiguous between `Borrow<str>` and the reflexive
                     // `Borrow<Arc<str>>`, so name the lookup type explicitly.
                     .get::<str>(col.as_ref())
-                    .map(|fv| SharedStr::from(field_value_to_string(fv).as_str()))
-                    .unwrap_or_else(|| SharedStr::from(""))
+                    .map_or_else(|| SharedStr::from(""), |fv| {
+                        SharedStr::from(field_value_to_string(fv).as_str())
+                    })
             })
             .collect();
 
@@ -318,9 +319,8 @@ fn field_value_to_string(fv: &FieldValue) -> String {
         FieldValue::Int64(n) => n.to_string(),
         FieldValue::Uint64(n) => n.to_string(),
         FieldValue::Float64(f) => f.to_string(),
-        FieldValue::String(s) => s.as_ref().to_owned(),
+        FieldValue::String(s) | FieldValue::Enum(s) => s.as_ref().to_owned(),
         FieldValue::Boolean(b) => b.to_string(),
-        FieldValue::Enum(s) => s.as_ref().to_owned(),
         FieldValue::List(items) => {
             let parts: Vec<_> = items.iter().map(field_value_to_string).collect();
             format!("[{}]", parts.join(", "))
@@ -409,7 +409,6 @@ fn coerce_variable(
 /// message; a JSON-RPC error has no terminal to draw one in, but it can still
 /// hand back the coordinates, so a client that *does* have the source text can
 /// draw its own.
-
 fn position_in_frontend_error(
     err: &trustfall_core::frontend::error::FrontendError,
 ) -> Option<QueryErrorPosition> {

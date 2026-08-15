@@ -39,7 +39,7 @@ impl NuGetVersion {
             return None;
         }
         let pre = pre_str
-            .map(|p| p.split('.').map(|s| s.to_ascii_lowercase()).collect())
+            .map(|p| p.split('.').map(str::to_ascii_lowercase).collect())
             .unwrap_or_default();
         Some(NuGetVersion { parts, pre })
     }
@@ -134,22 +134,21 @@ fn nuget_parse_range(spec: &str) -> Option<NuGetRange> {
         });
     }
     let inner = &spec[1..spec.len() - 1];
-    let (lo_str, hi_str) = match inner.split_once(',') {
-        Some((lo, hi)) => (lo.trim(), hi.trim()),
+    let (lo_str, hi_str) = if let Some((lo, hi)) = inner.split_once(',') {
+        (lo.trim(), hi.trim())
+    } else {
         // `[1.0]` — an exact single version.
-        None => {
-            let v = NuGetVersion::parse(inner.trim())?;
-            return Some(NuGetRange {
-                lower: NuGetBound {
-                    version: Some(v.clone()),
-                    inclusive: true,
-                },
-                upper: NuGetBound {
-                    version: Some(v),
-                    inclusive: true,
-                },
-            });
-        }
+        let v = NuGetVersion::parse(inner.trim())?;
+        return Some(NuGetRange {
+            lower: NuGetBound {
+                version: Some(v.clone()),
+                inclusive: true,
+            },
+            upper: NuGetBound {
+                version: Some(v),
+                inclusive: true,
+            },
+        });
     };
     let lower = NuGetBound {
         version: if lo_str.is_empty() {

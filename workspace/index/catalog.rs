@@ -245,7 +245,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             }
             crate::ecosystem::upstream::ListingStatus::Withdrawn { reason } => (
                 crate::enums::ListingStatus::Withdrawn,
-                reason.as_ref().map(|r| r.to_string()),
+                reason.as_ref().map(smol_str::SmolStr::to_string),
             ),
         };
         self.writer.apply_ops(&[CatalogOp::SetListing {
@@ -267,10 +267,11 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             return Ok(None);
         };
         Ok(match status_token.as_str() {
-            "listed" => Some(crate::ecosystem::upstream::ListingStatus::Listed),
             // `advisory` / `deprecated` rows are advisory-plane events, not a
             // listing observation — the resolve path treats them as listed.
-            "advisory" | "deprecated" => Some(crate::ecosystem::upstream::ListingStatus::Listed),
+            "listed" | "advisory" | "deprecated" => {
+                Some(crate::ecosystem::upstream::ListingStatus::Listed)
+            }
             _ => Some(crate::ecosystem::upstream::ListingStatus::Withdrawn {
                 reason: reason.map(Into::into),
             }),

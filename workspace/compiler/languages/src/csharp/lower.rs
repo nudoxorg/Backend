@@ -121,10 +121,10 @@ pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
 /// has the source text in hand while walking the compilation, so it is the
 /// only side that can do the conversion once instead of per-consumer.
 fn symbol_location(location: Option<&schema::Location>) -> (PathBuf, std::ops::Range<usize>) {
-    match location {
-        Some(loc) => (PathBuf::from(&loc.file), loc.start..loc.end),
-        None => (PathBuf::new(), 0..0),
-    }
+    location.map_or_else(
+        || (PathBuf::new(), 0..0),
+        |loc| (PathBuf::from(&loc.file), loc.start..loc.end),
+    )
 }
 
 /// Build the IR [`Symbol`] for a type-level entry.
@@ -438,10 +438,7 @@ fn lower_class_like(
 
     // Determine record form: structs are Struct; others Struct (no Tuple/Unit
     // needed).
-    let form = match decl.kind.as_str() {
-        "STRUCT" | "RECORD_STRUCT" => RecordForm::Struct,
-        _ => RecordForm::Struct,
-    };
+    let form = RecordForm::Struct;
 
     // --- Declare the Record entry itself first (children refer to it). ---
     let type_doc_id = decl.doc_id.clone();
@@ -491,7 +488,7 @@ fn lower_class_like(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent.clone(), sym, record);
+    out.declare(type_doc_id.clone(), parent, sym, record);
 
     // Step 2: declare const fields as Const entries.
     for f in &decl.members.fields {
@@ -566,7 +563,7 @@ fn lower_interface(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent.clone(), sym, trait_kind);
+    out.declare(type_doc_id.clone(), parent, sym, trait_kind);
 
     // Properties as Field children.
     for p in &decl.members.properties {
@@ -642,7 +639,7 @@ fn lower_enum(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent.clone(), sym, enum_kind);
+    out.declare(type_doc_id.clone(), parent, sym, enum_kind);
 
     // Declare each variant.
     for f in decl
@@ -682,7 +679,7 @@ fn lower_delegate(
     // Document the delegate's invoke signature in the doc string (kept for
     // rendering, complementary to the structural target below).
     // Also build a `Type::FunctionPointer` target for the `Alias` entry.
-    let delegate_target: Option<Type> = if let Some(sig) = &decl.delegate_sig {
+    let delegate_target: Option<Type> = decl.delegate_sig.as_ref().and_then(|sig| {
         let params_text: Vec<String> = sig
             .params
             .iter()
@@ -691,8 +688,7 @@ fn lower_delegate(
         let ret_text = sig
             .return_type
             .as_ref()
-            .map(types::type_display)
-            .unwrap_or_else(|| "void".to_string());
+            .map_or_else(|| "void".to_string(), types::type_display);
         extra.push(format!(
             "Invoke signature: `({}) → {}`",
             params_text.join(", "),
@@ -721,9 +717,7 @@ fn lower_delegate(
             ret: ir_ret,
             abi: None, // managed delegate; no unmanaged calling convention.
         })
-    } else {
-        None
-    };
+    });
 
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
     let (generics, wheres) = types::lower_type_params(&decl.type_params, name_to_doc_id, out);
@@ -1060,7 +1054,7 @@ fn lower_method(
     {
         let ret_id = format!("{method_id}#ret");
         // Forward-refer first so the ref is stable.
-        let r: Ref<Param> = out.refer(ret_id.clone());
+        let r: Ref<Param> = out.refer(ret_id);
         output_refs.push(r);
         let parsed_returns = parsed.as_ref().and_then(|p| p.returns.clone());
         lower_return_param(ret, m, &parsed_returns, &method_id, name_to_doc_id, out);
@@ -1100,11 +1094,11 @@ fn lower_method(
             // and a `<exception cref="IOException">` produced the same throws
             // entry — the whole point of the `throws` list is to say *which*.
             let fqn = cref.strip_prefix("T:").unwrap_or(cref.as_str());
-            let throws_ty = if let Some(doc_id) = name_to_doc_id.get(fqn) {
-                out.nominal::<Record>(doc_id.clone())
-            } else {
-                Type::unresolved_external(fqn)
-            };
+            let throws_ty = name_to_doc_id
+                .get(fqn)
+                .map_or_else(|| Type::unresolved_external(fqn), |doc_id| {
+                    out.nominal::<Record>(doc_id.clone())
+                });
             throws_types.push(throws_ty);
 
             exception_doc_links.push(DocLink {
@@ -1208,8 +1202,7 @@ fn lower_param(
 
     let mut attrs: Vec<ParamAttribute> = Vec::new();
     match p.ref_kind.as_str() {
-        "ref" => attrs.push(ParamAttribute::Inout),
-        "out" => attrs.push(ParamAttribute::Inout),
+        "ref" | "out" => attrs.push(ParamAttribute::Inout),
         "in" | "refReadonly" => attrs.push(ParamAttribute::Borrowing),
         _ => {}
     }
@@ -1374,10 +1367,10 @@ fn member_id(type_doc_id: &str, kind: &str, name: &str) -> String {
 /// to a synthetic key.  The oracle doc_id for methods is already unique per
 /// overload (it includes parameter types).
 fn method_doc_id(m: &schema::Method, parent_id: &str) -> String {
-    if !m.doc_id.is_empty() {
-        m.doc_id.clone()
-    } else {
+    if m.doc_id.is_empty() {
         member_id(parent_id, "M", &m.name)
+    } else {
+        m.doc_id.clone()
     }
 }
 
@@ -1399,10 +1392,10 @@ fn method_doc_id(m: &schema::Method, parent_id: &str) -> String {
 /// `P:Ns.Type.Item(System.String)` — exactly like it does for methods, so
 /// preferring it here is the same fix as `method_doc_id`, not a new one.
 fn property_doc_id(p: &schema::Property, parent_id: &str, kind: &str) -> String {
-    if !p.doc_id.is_empty() {
-        p.doc_id.clone()
-    } else {
+    if p.doc_id.is_empty() {
         member_id(parent_id, kind, &p.name)
+    } else {
+        p.doc_id.clone()
     }
 }
 

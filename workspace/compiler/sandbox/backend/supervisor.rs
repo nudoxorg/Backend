@@ -129,7 +129,7 @@ pub(crate) fn supervise(
                     }
                 }
 
-                let peak_mem = cgroup.as_ref().and_then(|c| c.peak_mem());
+                let peak_mem = cgroup.as_ref().and_then(super::super::cgroup::Cgroup::peak_mem);
                 let wall = start.elapsed();
                 return Ok(Output {
                     stdout: stdout_buf,
@@ -215,7 +215,7 @@ fn make_nonblocking(pipe: Option<&mut impl std::os::fd::AsFd>) {
 /// jemalloc). We set AS to **4×** `mem_bytes` as headroom so rustc is not
 /// killed for legitimate mappings while still bounding runaway mmap.
 /// soft==hard so the guest cannot raise its own budget.
-pub(crate) fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
+pub(crate) fn apply_rlimits(limits: &Limits) {
     #[cfg(unix)]
     {
         use rlimit::Resource;
@@ -236,7 +236,6 @@ pub(crate) fn apply_rlimits(limits: &Limits) -> Result<(), SandboxError> {
     {
         let _ = limits;
     }
-    Ok(())
 }
 
 /// Shared setup: pipes, clear inherit.

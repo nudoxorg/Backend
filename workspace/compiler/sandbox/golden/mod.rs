@@ -166,14 +166,12 @@ impl GoldenContentIo {
         // STATUS and can be checkpointed again; a golden that is merely paused
         // by the OS reports paused, which is still forkable.
         let status = control_socket_cmd(&ctl, "STATUS").map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::Other,
+            io::Error::other(
                 format!("golden '{name}' control socket STATUS failed: {e}"),
             )
         })?;
         if !status.starts_with("OK") {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("golden '{name}' not ready for checkpoint: {status}"),
             ));
         }
@@ -187,14 +185,13 @@ impl GoldenContentIo {
         // is always fresh (not a replay of old RAM state).
         if checkpoint_dir.exists() {
             std::fs::remove_dir_all(&checkpoint_dir).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
+                io::Error::other(
                     format!("remove stale checkpoint dir: {e}"),
                 )
             })?;
         }
         std::fs::create_dir_all(&checkpoint_dir).map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("create checkpoint dir: {e}"))
+            io::Error::other(format!("create checkpoint dir: {e}"))
         })?;
 
         // Drive the FORK command: freezes the golden, writes memfd RAM + device
@@ -202,14 +199,12 @@ impl GoldenContentIo {
         // the shared CoW base; subsequent fork_golden calls still work.
         let reply = control_socket_cmd(&ctl, &format!("FORK {}", checkpoint_dir.display()))
             .map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::Other,
+                io::Error::other(
                     format!("golden '{name}' FORK command failed: {e}"),
                 )
             })?;
         if !reply.starts_with("OK") {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 format!("golden '{name}' FORK returned non-OK: {reply}"),
             ));
         }

@@ -76,6 +76,7 @@ pub struct FindUsagesRow {
     pub key: String,
     pub name: String,
     pub kind: String,
+    pub signature: String,
     pub path: Option<String>,
 }
 

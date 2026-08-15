@@ -52,11 +52,9 @@ use nudox_engine::store::source::producer::PackageDescriptor;
 /// `result/` checkout) puts the checkout. `NUDOX_PKG_ROOT` overrides it,
 /// matching the convention `real_package.rs` uses.
 fn bytes_root() -> PathBuf {
-    std::env::var("NUDOX_PKG_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("NUDOX_PKG_ROOT").map_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/bytes-1.11.0")
-        })
+        }, PathBuf::from)
 }
 
 /// Symbols that exist *only* in `benches/bytes.rs` — the target whose crate

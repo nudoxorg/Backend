@@ -46,7 +46,7 @@ use crate::{EngineHandle, IndexEvent, IndexStage, Integrity, Purl, StreamHandle}
 /// entry per package it has ever been asked about. A job evicted after
 /// completion is not lost information — the package is in the corpus and
 /// `list_packages` reports it.
-const TERMINAL_RETENTION: Duration = Duration::from_secs(15 * 60);
+const TERMINAL_RETENTION: Duration = Duration::from_mins(15);
 
 /// What a job has reported so far.
 #[derive(Clone, Debug)]
@@ -193,7 +193,6 @@ impl IndexJobs {
         engine.runtime_handle().spawn(async move {
             while let Ok(event) = rx.recv_async().await {
                 let next = match event {
-                    IndexEvent::Started { .. } => continue,
                     IndexEvent::Stage {
                         stage,
                         received,
@@ -256,10 +255,7 @@ fn prune(jobs: &mut HashMap<String, Arc<Job>>) {
             .finished
             .lock()
             .expect("job clock lock is never held across a panic");
-        match *finished {
-            Some(at) => at.elapsed() < TERMINAL_RETENTION,
-            None => true,
-        }
+        finished.map_or(true, |at| at.elapsed() < TERMINAL_RETENTION)
     });
 }
 

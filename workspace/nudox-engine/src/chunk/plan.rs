@@ -70,10 +70,10 @@ mod tests {
             for p in section_plan(intro, entry, pkg.view(), &pkg) {
                 match p.size_hint {
                     SizeHint::Lines(n) => {
-                        assert!(n > 0, "zero line count in plan for '{}'", entry.sym().name)
+                        assert!(n > 0, "zero line count in plan for '{}'", entry.sym().name);
                     }
                     SizeHint::Rows(n) => {
-                        assert!(n > 0, "zero row count in plan for '{}'", entry.sym().name)
+                        assert!(n > 0, "zero row count in plan for '{}'", entry.sym().name);
                     }
                     SizeHint::Unknown => {}
                 }

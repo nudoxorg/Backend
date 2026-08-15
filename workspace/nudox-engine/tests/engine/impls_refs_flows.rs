@@ -532,19 +532,16 @@ async fn two_index_confidence_usages_appear_in_refs_events() {
         .collect();
     assert!(
         paths.iter().any(|p| p.contains("caller_a")),
-        "caller_a must appear in refs; got {:?}",
-        paths
+        "caller_a must appear in refs; got {paths:?}"
     );
     assert!(
         paths.iter().any(|p| p.contains("caller_b")),
-        "caller_b must appear in refs; got {:?}",
-        paths
+        "caller_b must appear in refs; got {paths:?}"
     );
     // Syntactic-confidence caller_c must NOT appear.
     assert!(
         !paths.iter().any(|p| p.contains("caller_c")),
-        "caller_c (Syntactic confidence) must not appear; got {:?}",
-        paths
+        "caller_c (Syntactic confidence) must not appear; got {paths:?}"
     );
 }
 

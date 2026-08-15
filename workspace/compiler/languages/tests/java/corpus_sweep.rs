@@ -441,7 +441,7 @@ struct ScopedEnv {
 /// Locks, then applies all three per-entry knobs in `Entry` field order.
 fn scoped_env(entry: &Entry) -> ScopedEnv {
     // Poison is ignored on purpose — see `ENV_LOCK`'s doc comment.
-    let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     ScopedEnv {
         knobs: [
             ScopedJavaEnv::set("NUDOX_JAVA_RELEASE", entry.release),

@@ -29,7 +29,7 @@ fn repo_root() -> PathBuf {
 
 /// The `(ecosystem, name, version)` triples in the Nix corpus catalog.
 fn manifest_entries() -> Vec<(String, String, String)> {
-    let path = repo_root().join("nix/corpus.nix");
+    let _path = repo_root().join("nix/corpus.nix");
     #[derive(serde::Deserialize)]
     struct Package {
         ecosystem: String,

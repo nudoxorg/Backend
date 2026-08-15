@@ -78,7 +78,7 @@ pub fn ndcg_at_k(ranked: &[&str], judgments: &[Judgment], k: usize) -> f64 {
 		.take(k)
 		.enumerate()
 		.map(|(i, name)| {
-			let gain = gain_map.get(*name).copied().unwrap_or(0) as f64;
+			let gain = f64::from(gain_map.get(*name).copied().unwrap_or(0));
 			gain / (i as f64 + 2.0_f64).log2()
 		})
 		.sum();
@@ -90,7 +90,7 @@ pub fn ndcg_at_k(ranked: &[&str], judgments: &[Judgment], k: usize) -> f64 {
 		.iter()
 		.take(k)
 		.enumerate()
-		.map(|(i, &gain)| gain as f64 / (i as f64 + 2.0_f64).log2())
+		.map(|(i, &gain)| f64::from(gain) / (i as f64 + 2.0_f64).log2())
 		.sum();
 
 	if ideal_dcg == 0.0 {

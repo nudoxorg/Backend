@@ -230,7 +230,7 @@ fn extract_zip_into_builder(
 
         // Reject symlink entries (unix mode bits 0o120000 = 0xA000).
         if let Some(mode) = entry.unix_mode()
-            && (mode & 0o170000) == 0o120000
+            && (mode & 0o170_000) == 0o120_000
         {
             return Err(IngestError::Unsafe(UnsafeArchive::DisallowedEntry {
                 kind: crate::error::EntryKind::Symlink,

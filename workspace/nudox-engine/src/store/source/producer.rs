@@ -327,23 +327,16 @@ impl ProducerRegistry {
                     detail: chain(&err),
                 }
             }
-            ProducerError::UnsupportedConstruct { .. } => Error::OracleFailed {
-                package: lineage.clone(),
-                detail: chain(&err),
-            },
             // The environment could not hand the producer a complete dependency
             // graph, so any table it produced would be silently partial. That is
             // an oracle-side failure, not a lowering bug, so it maps to
             // `OracleFailed` rather than `LoweringFailed`.
             //
             // `detail` goes through `chain` instead of calling `to_string()`
-            // like its neighbours: this variant's own `Display` is deliberately
+            // like its neighbours: these variants' own `Display` is deliberately
             // terse, and everything a reader needs — *which* dependency failed
             // and why — lives in the cause.
-            ProducerError::DependenciesUnresolved { .. } => Error::OracleFailed {
-                package: lineage.clone(),
-                detail: chain(&err),
-            },
+            //
             // The build tool could not tell the producer which `cfg`s hold, so
             // any table it produced would not merely be partial — it would carry
             // the `#[cfg(not(...))]` side of every gate as though the author had
@@ -352,13 +345,6 @@ impl ProducerRegistry {
             // with the lowering code, the environment did not hand it a usable
             // graph.
             //
-            // `chain` rather than `to_string()` for the same reason as its
-            // neighbour above — this variant's own `Display` describes the
-            // consequence, and only the cause carries what cargo actually said.
-            ProducerError::BuildScriptsFailed { .. } => Error::OracleFailed {
-                package: lineage.clone(),
-                detail: chain(&err),
-            },
             // The producer said it would contribute declarations and did not:
             // the lowering that came back holds nothing but the root module
             // `produce` synthesized. That is an *oracle-side* outcome — the
@@ -373,7 +359,10 @@ impl ProducerRegistry {
             // register a producer only helps for producers nobody registers;
             // this arm makes the distinction hold for every registered one,
             // including a future Python registration.
-            ProducerError::NoDeclarationsContributed { .. } => Error::OracleFailed {
+            ProducerError::UnsupportedConstruct { .. }
+            | ProducerError::DependenciesUnresolved { .. }
+            | ProducerError::BuildScriptsFailed { .. }
+            | ProducerError::NoDeclarationsContributed { .. } => Error::OracleFailed {
                 package: lineage.clone(),
                 detail: chain(&err),
             },
@@ -483,7 +472,7 @@ fn chain(err: &ProducerError) -> String {
     let full = std::iter::successors(Some(err as &dyn std::error::Error), |e| {
         std::error::Error::source(*e)
     })
-    .map(|e| e.to_string())
+    .map(ToString::to_string)
     .collect::<Vec<_>>()
     .join(": ");
 
@@ -822,7 +811,7 @@ impl IrSource for ProducerSource {
         });
 
         // Flatten each `Vec<Result<LoadEvent, _>>` into individual items.
-        event_stream.flat_map(|events| stream::iter(events)).boxed()
+        event_stream.flat_map(stream::iter).boxed()
     }
 }
 
@@ -1012,18 +1001,17 @@ mod tests {
     fn run_names_the_unsupported_language_in_its_error() {
         let reg = ProducerRegistry::with_all_available();
         let src = PackageSource::new("/tmp", "test", "0.1.0");
-        for language in [Language::Python] {
-            let lineage =
-                PackageLineageId::new(EcosystemId::new("test-ecosystem"), PackageName::new("test"));
-            match reg.run(language, &src, &lineage) {
-                Err(Error::ToolchainMissing { language: named, .. }) => {
-                    assert_eq!(
-                        named, language,
-                        "error must name the language that was actually requested"
-                    );
-                }
-                other => panic!("expected ToolchainMissing naming {language:?}, got {other:?}"),
+        let language = Language::Python;
+        let lineage =
+            PackageLineageId::new(EcosystemId::new("test-ecosystem"), PackageName::new("test"));
+        match reg.run(language, &src, &lineage) {
+            Err(Error::ToolchainMissing { language: named, .. }) => {
+                assert_eq!(
+                    named, language,
+                    "error must name the language that was actually requested"
+                );
             }
+            other => panic!("expected ToolchainMissing naming {language:?}, got {other:?}"),
         }
     }
 

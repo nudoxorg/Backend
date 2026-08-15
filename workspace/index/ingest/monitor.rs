@@ -24,6 +24,8 @@
 //! [`GitRepository`]. Persisting the watermark and applying ops is the driver's
 //! job; this type hands back a typed [`TickOutcome`] describing what to persist.
 
+use std::fmt::Write as _;
+
 use crate::ids::PackageStemId;
 use crate::protocol::{CatalogOp, GitRev};
 
@@ -134,7 +136,7 @@ fn combined_ref_digest(refs: &[crate::ingest::git::LsRemoteRef]) -> String {
     // Hex-encode; a 64-char string fits `git_watermarks.last_rev` (TEXT).
     let mut out = String::with_capacity(64);
     for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
+        let _ = write!(out, "{byte:02x}");
     }
     out
 }

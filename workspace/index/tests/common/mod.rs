@@ -120,7 +120,7 @@ pub fn load_corpus_manifest() -> Vec<ManifestPackage> {
 pub fn safe_dir_name(name: &str, version: &str) -> String {
     format!(
         "{}-{version}",
-        name.replace('/', "__").replace(':', "__")
+        name.replace(['/', ':'], "__")
     )
 }
 

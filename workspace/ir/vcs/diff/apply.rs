@@ -142,7 +142,7 @@ pub fn apply_delta_with_t1(
             if let IrOp::Moved { new_parent: np, .. } = op {
                 new_parent = *np;
             } else {
-                apply_op_to_payload(op, payload)?;
+                apply_op_to_payload(op, payload);
             }
         }
 
@@ -171,24 +171,39 @@ pub fn apply_delta_with_t1(
 // Per-op mutation logic
 // ---------------------------------------------------------------------------
 
-fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(), Error> {
+fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) {
     match op {
-        // Already handled at caller.
-        IrOp::Introduced | IrOp::Resurrected | IrOp::Deleted | IrOp::Moved { .. } => {}
+        // No-ops: already handled at caller, derived, signal-only, or not
+        // round-trippable through this apply path.
+        IrOp::Introduced
+        | IrOp::Resurrected
+        | IrOp::Deleted
+        | IrOp::Moved { .. }
+        | IrOp::SignatureEvolved { .. }
+        | IrOp::DocChanged
+        | IrOp::SpanChanged
+        | IrOp::SourcePathChanged
+        | IrOp::ParamRenamed { .. }
+        | IrOp::ParamsReordered
+        | IrOp::RecFormChanged
+        | IrOp::FieldsReordered
+        | IrOp::VariantFormChanged
+        | IrOp::VariantDiscrChanged
+        | IrOp::ImplHeaderChanged
+        | IrOp::ConstTypeChanged
+        | IrOp::ConstValueChanged
+        | IrOp::TypeExprChanged
+        | IrOp::LinkAdded { .. }
+        | IrOp::LinkRemoved { .. }
+        | IrOp::AutoTraitsChanged { .. } => {}
 
         IrOp::Renamed { new, .. } => {
             payload.symbol.name = new.to_string();
-        }
-        IrOp::SignatureEvolved { .. } => {
-            // Derived; body mutations update the SigKey implicitly.
         }
 
         // Meta
         IrOp::VisChanged { new, .. } => {
             payload.symbol.visibility = *new;
-        }
-        IrOp::DocChanged => {
-            // Signal only — no old/new text in op.
         }
         IrOp::DeprecationChanged { added } => {
             if !added {
@@ -197,7 +212,7 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
             // added=true: new DeprecationWire not in op; skipped.
         }
         IrOp::AliasesChanged { added, removed } => {
-            let removed_set: BTreeSet<String> = removed.iter().map(|s| s.to_string()).collect();
+            let removed_set: BTreeSet<String> = removed.iter().map(smol_str::SmolStr::to_string).collect();
             payload.symbol.aliases.retain(|a| !removed_set.contains(a));
             for a in added {
                 if !payload.symbol.aliases.iter().any(|x| x == a.as_str()) {
@@ -205,10 +220,8 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 }
             }
         }
-        IrOp::SpanChanged => {}
-        IrOp::SourcePathChanged => {}
         IrOp::CfgChanged { new, .. } => {
-            payload.symbol.cfg = new.clone();
+            payload.symbol.cfg.clone_from(new);
         }
         IrOp::AttrsChanged { added, removed } => {
             let removed_set: BTreeSet<(String, Option<String>)> = removed
@@ -258,9 +271,6 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 f.input_params = params.into_boxed_slice();
             }
         }
-        IrOp::ParamRenamed { .. } => {
-            // No new name in op.
-        }
         IrOp::ParamTypeChanged { index, new, .. } => {
             if let KindWire::Function(ref mut f) = payload.kind {
                 let mut params = f.input_params.to_vec();
@@ -270,7 +280,6 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 f.input_params = params.into_boxed_slice();
             }
         }
-        IrOp::ParamsReordered => {}
         IrOp::ReturnChanged { new, .. } => {
             if let KindWire::Function(ref mut f) = payload.kind {
                 let new_outputs: Vec<crate::wire::ParamWire> = new
@@ -290,15 +299,15 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
         }
         IrOp::GenericsChanged { detail } => {
             let removed_set: BTreeSet<String> =
-                detail.removed.iter().map(|s| s.to_string()).collect();
+                detail.removed.iter().map(smol_str::SmolStr::to_string).collect();
             let apply_to = |generics: &mut Box<[GenericParamWire]>| {
                 let mut gs: Vec<GenericParamWire> = generics
                     .iter()
                     .filter(|g| {
                         let name: &str = match g {
-                            GenericParamWire::Lifetime { name } => name,
-                            GenericParamWire::Type { name, .. } => name,
-                            GenericParamWire::Const { name, .. } => name,
+                            GenericParamWire::Lifetime { name }
+                            | GenericParamWire::Type { name, .. }
+                            | GenericParamWire::Const { name, .. } => name,
                         };
                         !removed_set.contains(name)
                     })
@@ -322,12 +331,12 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
             }
         }
         IrOp::WhereChanged { added, removed } => {
-            let key = |p: &WherePredWire| format!("{:?}", p);
+            let key = |p: &WherePredWire| format!("{p:?}");
             let removed_keys: BTreeSet<String> = removed.iter().map(key).collect();
             let apply_to = |wheres: &mut Box<[WherePredWire]>| {
                 let mut ws: Vec<WherePredWire> = wheres
                     .iter()
-                    .filter(|p| !removed_keys.contains(&format!("{:?}", p)))
+                    .filter(|p| !removed_keys.contains(&format!("{p:?}")))
                     .cloned()
                     .collect();
                 ws.extend(added.iter().cloned());
@@ -347,11 +356,9 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
         // Records / Enums / Variants
         IrOp::FieldTypeChanged { new, .. } => {
             if let KindWire::Field(ref mut f) = payload.kind {
-                f.ty = new.clone();
+                f.ty.clone_from(new);
             }
         }
-        IrOp::RecFormChanged => {}
-        IrOp::FieldsReordered => {}
         IrOp::ChildAdded { child } => match &mut payload.kind {
             KindWire::Record(r) => {
                 let mut v = r.fields.to_vec();
@@ -388,18 +395,15 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
             }
             _ => {}
         },
-        IrOp::VariantFormChanged => {}
-        IrOp::VariantDiscrChanged => {}
-
         // Traits / Impls
         IrOp::SupertraitsChanged { added, removed } => {
             if let KindWire::Trait(ref mut t) = payload.kind {
-                let key = |r: &TypeRefWire| format!("{:?}", r);
+                let key = |r: &TypeRefWire| format!("{r:?}");
                 let removed_keys: BTreeSet<String> = removed.iter().map(key).collect();
                 let mut supers: Vec<TypeRefWire> = t
                     .supers
                     .iter()
-                    .filter(|s| !removed_keys.contains(&format!("{:?}", s)))
+                    .filter(|s| !removed_keys.contains(&format!("{s:?}")))
                     .cloned()
                     .collect();
                 supers.extend(added.iter().cloned());
@@ -411,12 +415,6 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 t.flags = new.clone();
             }
         }
-        IrOp::ImplHeaderChanged => {}
-
-        // Consts / aliases
-        IrOp::ConstTypeChanged => {}
-        IrOp::ConstValueChanged => {}
-        IrOp::TypeExprChanged => {}
 
         // Reexports
         IrOp::ReexportRetargeted { new, .. } => {
@@ -424,10 +422,5 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(),
                 r.target = new.clone();
             }
         }
-
-        // Not round-trippable
-        IrOp::LinkAdded { .. } | IrOp::LinkRemoved { .. } => {}
-        IrOp::AutoTraitsChanged { .. } => {}
     }
-    Ok(())
 }

@@ -127,7 +127,7 @@ fn map_kind(sigma: &Sigma, kind: &KindWire) -> KindWire {
     match kind {
         KindWire::Module(m) => KindWire::Module(m.clone()),
         KindWire::Record(r) => KindWire::Record(RecordWire {
-            form: r.form.clone(),
+            form: r.form,
             fields: map_ids(sigma, &r.fields),
             generics: map_generics(sigma, &r.generics),
             wheres: map_wheres(sigma, &r.wheres),
@@ -169,7 +169,7 @@ fn map_kind(sigma: &Sigma, kind: &KindWire) -> KindWire {
             auto: e.auto.clone(),
         }),
         KindWire::Variant(v) => KindWire::Variant(VariantWire {
-            form: v.form.clone(),
+            form: v.form,
             discr: v.discr.clone(),
             fields: map_ids(sigma, &v.fields),
         }),
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn identity_sigma_is_noop() {
         let p = fn_with_param("f", intro(9));
-        let sigma: Sigma = [(intro(9), intro(9))].into_iter().collect();
+        let sigma: Sigma = std::iter::once((intro(9), intro(9))).collect();
         assert_eq!(substitute_and_reseal(&p, &sigma), p);
     }
 
@@ -278,7 +278,7 @@ mod tests {
         // f(x: Same(7)) with σ: 7 → 3  ⇒  f(x: Same(3)), payload_hash matches a
         // from-scratch f(x: Same(3)).
         let staged = fn_with_param("f", intro(7));
-        let sigma: Sigma = [(intro(7), intro(3))].into_iter().collect();
+        let sigma: Sigma = std::iter::once((intro(7), intro(3))).collect();
         let got = substitute_and_reseal(&staged, &sigma);
         let expected = fn_with_param("f", intro(3));
         assert_eq!(
@@ -301,7 +301,7 @@ mod tests {
                 EntryPayloadFlags::default(),
             )
         };
-        let sigma: Sigma = [(intro(5), intro(2))].into_iter().collect();
+        let sigma: Sigma = std::iter::once((intro(5), intro(2))).collect();
         assert_eq!(substitute_and_reseal(&mk(intro(5)), &sigma), mk(intro(2)));
     }
 

@@ -75,12 +75,12 @@ fn validate_relative_path(path: &RelativePath) -> PackResult<()> {
         let mut chars = raw.chars();
         let first = chars.next();
         let second = chars.next();
-        if let (Some(drive), Some(':')) = (first, second) {
-            if drive.is_ascii_alphabetic() {
-                return Err(PackError::AbsolutePath {
-                    path: raw.to_owned(),
-                });
-            }
+        if let (Some(drive), Some(':')) = (first, second)
+            && drive.is_ascii_alphabetic()
+        {
+            return Err(PackError::AbsolutePath {
+                path: raw.to_owned(),
+            });
         }
     }
 
@@ -95,7 +95,7 @@ fn validate_relative_path(path: &RelativePath) -> PackResult<()> {
         if segment == "." || segment == ".." {
             return Err(PackError::UnsafePathSegment {
                 path: raw.to_owned(),
-                reason: format!("`.` / `..` segment not permitted: {:?}", segment),
+                reason: format!("`.` / `..` segment not permitted: {segment:?}"),
             });
         }
     }
@@ -282,10 +282,9 @@ impl ObjectPackBuilder {
                     compressed_frame_len
                         .try_into()
                         .map_err(|_| PackError::TooLarge {
-                            detail: format!(
-                                "compressed frame length {} overflows u64",
-                                compressed_frame_len
-                            ),
+                        detail: format!(
+                            "compressed frame length {compressed_frame_len} overflows u64"
+                        ),
                         })?;
 
                 let chunk_entry = ChunkEntry {
@@ -320,8 +319,7 @@ impl ObjectPackBuilder {
                     .try_into()
                     .map_err(|_| PackError::TooLarge {
                         detail: format!(
-                            "uncompressed member length {} overflows u64",
-                            uncompressed_total_len
+                            "uncompressed member length {uncompressed_total_len} overflows u64"
                         ),
                     })?;
 
@@ -363,7 +361,7 @@ impl ObjectPackBuilder {
         let toc_length: u64 = toc_length_usize
             .try_into()
             .map_err(|_| PackError::TooLarge {
-                detail: format!("TOC length {} overflows u64", toc_length_usize),
+                detail: format!("TOC length {toc_length_usize} overflows u64"),
             })?;
 
         file.extend_from_slice(&toc_bytes);

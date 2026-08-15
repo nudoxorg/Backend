@@ -169,8 +169,7 @@ fn documents_of(
         // `fmt::Error` when the doc comments are both one line.
         let path = indexes
             .path_of(intro)
-            .map(|p| p.as_ref().to_owned())
-            .unwrap_or_else(|| entry.sym().name.clone());
+            .map_or_else(|| entry.sym().name.clone(), |p| p.as_ref().to_owned());
         let mut text = format!("{path}\n{discriminant:?}\n");
         let documentation = entry.sym().documentation.trim();
         if !documentation.is_empty() {

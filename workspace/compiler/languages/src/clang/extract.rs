@@ -129,21 +129,21 @@ fn visit_entity(
         EntityKind::Namespace => visit_namespace(oracle, entity, parent_usr, main_file),
         EntityKind::StructDecl => visit_record(oracle, entity, parent_usr, false, main_file),
         EntityKind::ClassDecl | EntityKind::ClassTemplate => {
-            visit_record(oracle, entity, parent_usr, false, main_file)
+            visit_record(oracle, entity, parent_usr, false, main_file);
         }
         EntityKind::UnionDecl => visit_record(oracle, entity, parent_usr, true, main_file),
         EntityKind::FunctionDecl | EntityKind::FunctionTemplate => {
-            visit_function(oracle, entity, parent_usr, None)
+            visit_function(oracle, entity, parent_usr, None);
         }
         EntityKind::Method
         | EntityKind::Constructor
         | EntityKind::Destructor
         | EntityKind::ConversionFunction => {
-            visit_function(oracle, entity, parent_usr, Some(receiver_kind(entity)))
+            visit_function(oracle, entity, parent_usr, Some(receiver_kind(entity)));
         }
         EntityKind::EnumDecl => visit_enum(oracle, entity, parent_usr, main_file),
         EntityKind::TypedefDecl | EntityKind::TypeAliasDecl => {
-            visit_alias(oracle, entity, parent_usr)
+            visit_alias(oracle, entity, parent_usr);
         }
         EntityKind::VarDecl => visit_var(oracle, entity, parent_usr),
         EntityKind::FieldDecl => visit_field(oracle, entity, parent_usr),
@@ -177,7 +177,7 @@ fn visit_namespace(
 
     let this_usr = usr.clone();
     oracle.namespaces.push(OracleNamespace {
-        usr: usr.clone(),
+        usr,
         name,
         source_file: entity_file(entity),
         byte_offset: entity_offset(entity),
@@ -238,7 +238,7 @@ fn visit_record(
         parent_usr: parent_usr.map(str::to_owned),
     });
 
-    let this_usr = usr.clone();
+    let this_usr = usr;
     for child in children {
         visit_entity(oracle, child, Some(&this_usr), main_file);
     }
@@ -256,10 +256,7 @@ fn visit_field(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
         return;
     }
 
-    let ty = entity
-        .get_type()
-        .map(|t| resolve_type(t))
-        .unwrap_or(OracleType::Inferred);
+    let ty = entity.get_type().map_or(OracleType::Inferred, resolve_type);
 
     let is_static = matches!(entity.get_kind(), EntityKind::VarDecl);
     let is_mutable =
@@ -301,10 +298,7 @@ fn visit_function(
     let children = entity.get_children();
     let generics = generic_params(&children);
     let (params, variadic) = function_params(entity, &children);
-    let ret = entity
-        .get_result_type()
-        .map(resolve_type)
-        .unwrap_or(OracleType::Void);
+    let ret = entity.get_result_type().map_or(OracleType::Void, resolve_type);
 
     let modifiers = fn_modifiers(entity, &children);
     let abi = fn_abi(entity);
@@ -334,10 +328,7 @@ fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OraclePa
         // The common path: `clang_Cursor_getNumArguments` reports a real
         // count for concrete function/method declarations.
         for arg in args {
-            let ty = arg
-                .get_type()
-                .map(resolve_type)
-                .unwrap_or(OracleType::Inferred);
+            let ty = arg.get_type().map_or(OracleType::Inferred, resolve_type);
             params.push(OracleParam {
                 name: arg.get_name().unwrap_or_default(),
                 ty,
@@ -355,10 +346,7 @@ fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OraclePa
         // non-template function, so filter for those directly instead.
         for child in children {
             if child.get_kind() == EntityKind::ParmDecl {
-                let ty = child
-                    .get_type()
-                    .map(resolve_type)
-                    .unwrap_or(OracleType::Inferred);
+                let ty = child.get_type().map_or(OracleType::Inferred, resolve_type);
                 params.push(OracleParam {
                     name: child.get_name().unwrap_or_default(),
                     ty,
@@ -478,8 +466,7 @@ fn visit_alias(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
     let target = entity
         .get_typedef_underlying_type()
         .or_else(|| entity.get_type())
-        .map(resolve_type)
-        .unwrap_or(OracleType::Inferred);
+        .map_or(OracleType::Inferred, resolve_type);
 
     oracle.aliases.push(OracleAlias {
         usr,
@@ -505,10 +492,7 @@ fn visit_var(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&s
         return;
     }
 
-    let ty = entity
-        .get_type()
-        .map(resolve_type)
-        .unwrap_or(OracleType::Inferred);
+    let ty = entity.get_type().map_or(OracleType::Inferred, resolve_type);
     let is_const = entity.get_type().is_some_and(|t| t.is_const_qualified());
 
     oracle.vars.push(OracleVar {
@@ -538,8 +522,7 @@ fn generic_params(children: &[Entity<'_>]) -> Vec<OracleGenericParam> {
                 let name = child.get_name().unwrap_or_default();
                 let ty = child
                     .get_type()
-                    .map(|t| t.get_display_name())
-                    .unwrap_or_else(|| "auto".to_owned());
+                    .map_or_else(|| "auto".to_owned(), |t| t.get_display_name());
                 params.push(OracleGenericParam::Const { name, ty });
             }
             EntityKind::TemplateTemplateParameter => {
@@ -568,9 +551,10 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         TypeKind::Void => OracleType::Void,
         TypeKind::Bool => OracleType::Bool,
 
-        TypeKind::CharS | TypeKind::SChar => width_int(ty, true),
-        TypeKind::CharU | TypeKind::UChar => width_int(ty, false),
-        TypeKind::WChar => width_int(ty, false),
+        TypeKind::CharS | TypeKind::SChar | TypeKind::Short | TypeKind::Int | TypeKind::Long
+        | TypeKind::LongLong => width_int(ty, true),
+        TypeKind::CharU | TypeKind::UChar | TypeKind::WChar | TypeKind::UShort | TypeKind::UInt
+        | TypeKind::ULong | TypeKind::ULongLong => width_int(ty, false),
         TypeKind::Char16 => OracleType::Integer {
             signed: false,
             bits: 16,
@@ -580,19 +564,11 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
             bits: 32,
         },
 
-        TypeKind::Short => width_int(ty, true),
-        TypeKind::Int => width_int(ty, true),
-        TypeKind::Long => width_int(ty, true),
-        TypeKind::LongLong => width_int(ty, true),
         TypeKind::Int128 => OracleType::Integer {
             signed: true,
             bits: 128,
         },
 
-        TypeKind::UShort => width_int(ty, false),
-        TypeKind::UInt => width_int(ty, false),
-        TypeKind::ULong => width_int(ty, false),
-        TypeKind::ULongLong => width_int(ty, false),
         TypeKind::UInt128 => OracleType::Integer {
             signed: false,
             bits: 128,
@@ -603,53 +579,41 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         TypeKind::Double => OracleType::Float { bits: 64 },
         TypeKind::LongDouble | TypeKind::Float128 => width_float(ty),
 
-        TypeKind::Pointer => {
-            if let Some(pointee) = ty.get_pointee_type() {
-                if pointee.is_const_qualified() {
-                    OracleType::ConstPointer(Box::new(resolve_type(pointee)))
-                } else {
-                    OracleType::MutPointer(Box::new(resolve_type(pointee)))
-                }
+        TypeKind::Pointer => ty.get_pointee_type().map_or(OracleType::Inferred, |pointee| {
+            if pointee.is_const_qualified() {
+                OracleType::ConstPointer(Box::new(resolve_type(pointee)))
             } else {
-                OracleType::Inferred
+                OracleType::MutPointer(Box::new(resolve_type(pointee)))
             }
-        }
-        TypeKind::LValueReference => {
-            if let Some(referent) = ty.get_pointee_type().or_else(|| ty.get_element_type()) {
+        }),
+        TypeKind::LValueReference => ty
+            .get_pointee_type()
+            .or_else(|| ty.get_element_type())
+            .map_or(OracleType::Inferred, |referent| {
                 let mutable = !referent.is_const_qualified();
                 OracleType::LValueRef {
                     mutable,
                     ty: Box::new(resolve_type(referent)),
                 }
-            } else {
-                OracleType::Inferred
-            }
-        }
-        TypeKind::RValueReference => {
-            if let Some(referent) = ty.get_pointee_type().or_else(|| ty.get_element_type()) {
+            }),
+        TypeKind::RValueReference => ty
+            .get_pointee_type()
+            .or_else(|| ty.get_element_type())
+            .map_or(OracleType::Inferred, |referent| {
                 OracleType::RValueRef(Box::new(resolve_type(referent)))
-            } else {
-                OracleType::Inferred
-            }
-        }
+            }),
         TypeKind::ConstantArray | TypeKind::VariableArray | TypeKind::DependentSizedArray => {
-            if let Some(elem) = ty.get_element_type() {
+            ty.get_element_type().map_or(OracleType::Inferred, |elem| {
                 let len = ty.get_size().unwrap_or(0);
                 OracleType::Array {
                     ty: Box::new(resolve_type(elem)),
                     len,
                 }
-            } else {
-                OracleType::Inferred
-            }
+            })
         }
-        TypeKind::IncompleteArray => {
-            if let Some(elem) = ty.get_element_type() {
-                OracleType::Slice(Box::new(resolve_type(elem)))
-            } else {
-                OracleType::Inferred
-            }
-        }
+        TypeKind::IncompleteArray => ty.get_element_type().map_or(OracleType::Inferred, |elem| {
+            OracleType::Slice(Box::new(resolve_type(elem)))
+        }),
         TypeKind::FunctionNoPrototype | TypeKind::FunctionPrototype => {
             let params = ty
                 .get_argument_types()
@@ -659,8 +623,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 .collect();
             let ret = ty
                 .get_result_type()
-                .map(resolve_type)
-                .unwrap_or(OracleType::Void);
+                .map_or(OracleType::Void, resolve_type);
             OracleType::FnPtr {
                 ret: Box::new(ret),
                 params,
@@ -668,8 +631,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         }
         TypeKind::Elaborated => ty
             .get_elaborated_type()
-            .map(resolve_type)
-            .unwrap_or(OracleType::Inferred),
+            .map_or(OracleType::Inferred, resolve_type),
         TypeKind::Typedef => {
             let name = ty
                 .get_typedef_name()
@@ -716,13 +678,13 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         TypeKind::Auto | TypeKind::Dependent => OracleType::Inferred,
         _ => {
             let name = ty.get_display_name();
-            if !name.is_empty() {
+            if name.is_empty() {
+                OracleType::Inferred
+            } else {
                 OracleType::Named {
                     name,
                     args: Vec::new(),
                 }
-            } else {
-                OracleType::Inferred
             }
         }
     }
@@ -761,8 +723,7 @@ fn entity_file(entity: Entity<'_>) -> PathBuf {
 fn entity_offset(entity: Entity<'_>) -> usize {
     entity
         .get_location()
-        .map(|loc| loc.get_file_location().offset as usize)
-        .unwrap_or(0)
+        .map_or(0, |loc| loc.get_file_location().offset as usize)
 }
 
 fn documentation(entity: Entity<'_>) -> String {
@@ -798,7 +759,11 @@ fn clean_comment(raw: String) -> String {
             line.trim()
                 .strip_prefix("///")
                 .or_else(|| line.trim().strip_prefix("//"))
-                .unwrap_or_else(|| line.trim().strip_prefix('*').unwrap_or(line.trim()))
+                .unwrap_or_else(|| {
+                    line.trim()
+                        .strip_prefix('*')
+                        .unwrap_or_else(|| line.trim())
+                })
                 .trim()
         })
         .filter(|l| !l.is_empty())

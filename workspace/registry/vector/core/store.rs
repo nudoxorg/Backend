@@ -312,10 +312,10 @@ mod tests {
         // Confirm in a BTreeMap: iteration order must be deterministic.
         let mut map: std::collections::BTreeMap<PayloadValue, &str> =
             std::collections::BTreeMap::new();
-        map.insert(str_a.clone(), "str_a");
-        map.insert(int_zero.clone(), "int_zero");
-        map.insert(bool_false.clone(), "bool_false");
-        map.insert(bool_true.clone(), "bool_true");
+        map.insert(str_a, "str_a");
+        map.insert(int_zero, "int_zero");
+        map.insert(bool_false, "bool_false");
+        map.insert(bool_true, "bool_true");
 
         let keys: Vec<_> = map.keys().cloned().collect();
         // Must be in ascending order.

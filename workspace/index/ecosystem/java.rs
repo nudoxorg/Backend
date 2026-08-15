@@ -67,9 +67,6 @@ impl EcosystemSpec for Java {
                     original: raw.into(),
                 })
             }
-            // `:` present but malformed — fall through to bare check, which will
-            // also fail because `:` is not in the allowed set.
-            Some(_) => None,
             None if component_ok(raw) => {
                 // Bare artifactId — legacy form; no namespace.
                 Some(name::StructuredName {
@@ -81,7 +78,9 @@ impl EcosystemSpec for Java {
                     original: raw.into(),
                 })
             }
-            None => None,
+            // `:` present but malformed — fall through to bare check, which will
+            // also fail because `:` is not in the allowed set.
+            Some(_) | None => None,
         }
     }
 
@@ -137,8 +136,7 @@ impl EcosystemSpec for Java {
                 Ok(quick_xml::events::Event::End(_)) => {
                     in_version_tag = false;
                 }
-                Ok(quick_xml::events::Event::Eof) => break,
-                Err(_) => break,
+                Ok(quick_xml::events::Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();

@@ -472,7 +472,7 @@ fn sample_timeline() -> Timeline {
 
 #[test]
 fn search_result_serialises() {
-    use std::sync::Arc;
+    
     let value = SearchResult {
         hits: vec![HitRow {
             key: sample_wire_key(),
@@ -686,6 +686,7 @@ fn usages_result_round_trips() {
             key: sample_key_dto(),
             name: "from_str".to_owned(),
             kind: "Function".to_owned(),
+            signature: "fn from_str(input: &str) -> Result<T>".to_owned(),
             path: "serde_json::from_str".to_owned(),
         }],
         truncated: false,
@@ -842,7 +843,7 @@ fn wire_key_serialises_as_canonical_string() {
     let key = sample_wire_key();
     // Serialise via the HitRow wrapper (which uses serialize_symbol_key).
     let hit = HitRow {
-        key: key.clone(),
+        key,
         display_name: nudox_engine::wire::SharedStr::from("test"),
         sig_preview: vec![],
         kind: KindTag::Unknown(0),
@@ -900,7 +901,7 @@ fn sig_token_kw_serialises_with_kind() {
 
 #[test]
 fn provenance_stale_serialises_unix_secs() {
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, UNIX_EPOCH};
     let t = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
     let prov = Provenance::Stale { as_of: t };
     let json = serde_json::to_string(&prov).expect("Provenance must serialise");

@@ -40,11 +40,17 @@ def main [
     let total_started = (date now)
 
     run-required "root Cargo workspace tests" {
-        ^env RUSTC_BOOTSTRAP=1 cargo test --workspace --locked --no-fail-fast
+        # Use the repository's default nextest profile rather than plain
+        # `cargo test --workspace`: the profile excludes corpus sweeps and
+        # ignored real-package tests that require the opt-in `result/` corpus.
+        ^env RUSTC_BOOTSTRAP=1 cargo nextest run -P default --workspace
     }
 
     run-required "fixture engine integration tests" {
-        ^env RUSTC_BOOTSTRAP=1 cargo test -p nudox-engine --features fixtures --locked --no-fail-fast
+        # The fixture feature is package-local, so this is a second scoped
+        # nextest invocation. It includes the MCP token-budget matrix while
+        # retaining the same default-profile exclusions for real corpora.
+        ^env RUSTC_BOOTSTRAP=1 cargo nextest run -P default -p nudox-engine --features fixtures
     }
 
     run-required "test measurement support" {

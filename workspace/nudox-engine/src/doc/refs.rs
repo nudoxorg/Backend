@@ -40,16 +40,18 @@ pub(crate) fn collect_refs(
             let entry = view.entry(owner)?;
             let path = indexes
                 .path_of(owner)
-                .map(|p| SharedStr::from(&**p))
-                .unwrap_or_else(|| SharedStr::from(entry.sym().name.as_str()));
+                .map_or_else(|| SharedStr::from(entry.sym().name.as_str()), |p| {
+                    SharedStr::from(&**p)
+                });
 
             // Derive a short kind label from the entry's kind discriminant.
             // This is the "precision badge" the wire spec describes on `RefRow`.
             let kind_tag = entry
                 .kind()
                 .discriminant()
-                .map(|d| SharedStr::from(format!("{d:?}").as_str()))
-                .unwrap_or_else(|| SharedStr::from("ref"));
+                .map_or_else(|| SharedStr::from("ref"), |d| {
+                    SharedStr::from(format!("{d:?}").as_str())
+                });
 
             Some(RefRow {
                 target: SymbolKey::new(lineage.clone(), owner),
@@ -59,8 +61,9 @@ pub(crate) fn collect_refs(
         })
         .collect();
 
-    // Sort by path for deterministic ordering.
-    rows.sort_unstable_by(|a, b| (*a.path).cmp(&*b.path));
+    // Sort by path for deterministic ordering. The key is the triomphe Arc
+    // (cheap clone) so no heap string is allocated per row.
+    rows.sort_unstable_by_key(|a| a.path.as_arc().clone());
     rows
 }
 
@@ -94,7 +97,7 @@ pub(crate) async fn emit_refs_pages(
         }
         let done = chunks.peek().is_none();
         let page = RefsPage {
-            refs: chunk.iter().cloned().collect::<Vec<_>>().into(),
+            refs: chunk.to_vec().into(),
             total,
         };
         if tx.send_async(DocEvent::Refs { page, done }).await.is_err() {

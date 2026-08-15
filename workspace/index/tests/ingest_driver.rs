@@ -155,7 +155,7 @@ fn driver_commits_homebrew_batch_and_advances_watermark() {
     let outcome = driver.drive_once(&follower, 1000).expect("drive brew");
     match outcome {
         DriveOutcome::Committed { applied, .. } => assert_eq!(applied, 9),
-        other => panic!("expected commit, got {other:?}"),
+        other @ DriveOutcome::NoChange => panic!("expected commit, got {other:?}"),
     }
 
     // The watermark now carries the server ETag.
@@ -224,7 +224,7 @@ impl BadBatchFollower {
 }
 
 impl Follower for BadBatchFollower {
-    fn feed_id(&self) -> &str {
+    fn feed_id(&self) -> &'static str {
         "bad-batch"
     }
     fn cadence(&self) -> PollCadence {

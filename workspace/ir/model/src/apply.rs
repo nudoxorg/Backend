@@ -222,13 +222,13 @@ impl PristineIntroTable {
     ///
     /// See [`RelationSet::iter_sorted`] for the ordering guarantee.
     /// Complexity: O(n log n).
-    pub fn relations_sorted<'a>(&'a self) -> impl Iterator<Item = &'a Relation> + 'a {
+    pub fn relations_sorted(&self) -> impl Iterator<Item = &Relation> + '_ {
         self.relations.iter_sorted()
     }
 
     /// Iterate relations in unspecified order (cheaper when determinism is not
     /// required).
-    pub fn relations_unordered<'a>(&'a self) -> impl Iterator<Item = &'a Relation> + 'a {
+    pub fn relations_unordered(&self) -> impl Iterator<Item = &Relation> + '_ {
         self.relations.iter_unordered()
     }
 
@@ -267,7 +267,7 @@ impl PristineIntroTable {
     ///
     /// Returns `&[]` when the intro has no children or is not present.
     pub fn children_of(&self, intro: IntroId) -> &[IntroId] {
-        self.children.get(&intro).map(Vec::as_slice).unwrap_or(&[])
+        self.children.get(&intro).map_or(&[], Vec::as_slice)
     }
 
     /// Number of live entries.
@@ -435,8 +435,8 @@ mod tests {
         assert_eq!(forward.iter_sorted().count(), forward.iter().count());
         for (id, e) in forward.iter_sorted() {
             assert_eq!(
-                e as *const _,
-                forward.get(id).expect("id came from the table") as *const _,
+                std::ptr::from_ref(e),
+                std::ptr::from_ref(forward.get(id).expect("id came from the table")),
                 "iter_sorted paired an id with an entry that is not its own"
             );
         }

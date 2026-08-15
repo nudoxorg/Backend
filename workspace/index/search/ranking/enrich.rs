@@ -51,7 +51,7 @@ pub fn enrich_package_text(
 
 	let existing: HashSet<String> = existing_keywords
 		.split_whitespace()
-		.map(|s| s.to_ascii_lowercase())
+		.map(str::to_ascii_lowercase)
 		.collect();
 
 	let lower = name.to_ascii_lowercase();
@@ -90,7 +90,7 @@ pub fn enrich_package_text(
 	if extras.len() >= 2 && extras.len() < MAX_EXTRA_PARTS {
 		let collapsed: String = lower
 			.chars()
-			.filter(|c| c.is_ascii_alphanumeric())
+			.filter(char::is_ascii_alphanumeric)
 			.collect();
 		if collapsed.len() >= 2
 			&& !existing.contains(&collapsed)

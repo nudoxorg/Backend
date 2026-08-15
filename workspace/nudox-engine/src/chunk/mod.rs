@@ -227,8 +227,7 @@ mod tests {
                     assert!(have_head, "Highlight before Head");
                     assert!(
                         sent_sections.contains(section),
-                        "Highlight references unsent section {:?}",
-                        section
+                        "Highlight references unsent section {section:?}"
                     );
                 }
                 DocEvent::Refs { .. } | DocEvent::Impls { .. } => {

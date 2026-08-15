@@ -525,7 +525,7 @@ async fn prefix_search_many_matches_latency() {
                 id,
                 entry.map(|e| e.sym().name.clone()),
                 entry.and_then(|e| e.kind().discriminant()),
-                entry.map(|e| e.kind().as_owned_kind().is_some()).unwrap_or(false),
+                entry.is_some_and(|e| e.kind().as_owned_kind().is_some()),
             );
         }
     }

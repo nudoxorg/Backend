@@ -191,10 +191,7 @@ fn enum_base_is_detected() {
 #[test]
 fn protocol_and_typed_dict_and_named_tuple_bases_are_detected() {
     let proto = oracle_for("from typing import Protocol\n\nclass P(Protocol):\n    pass\n");
-    assert_eq!(
-        matches!(&only_item(&proto, "P").body, ItemBody::Class(c) if c.form == ClassForm::Protocol),
-        true
-    );
+    assert!(matches!(&only_item(&proto, "P").body, ItemBody::Class(c) if c.form == ClassForm::Protocol));
 
     let td = oracle_for("from typing import TypedDict\n\nclass D(TypedDict):\n    x: int\n");
     assert!(matches!(&only_item(&td, "D").body, ItemBody::Class(c) if c.form == ClassForm::TypedDict));

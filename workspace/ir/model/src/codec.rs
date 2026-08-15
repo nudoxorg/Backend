@@ -479,8 +479,7 @@ mod tests {
         let err = decode_entry(&bytes).expect_err("must reject corrupted magic");
         assert!(
             matches!(err, Error::BadMagic(_)),
-            "expected BadMagic, got: {:?}",
-            err
+            "expected BadMagic, got: {err:?}"
         );
     }
 
@@ -497,8 +496,7 @@ mod tests {
         let err = decode_entry(&bytes).expect_err("must reject bumped version");
         assert!(
             matches!(err, Error::UnsupportedVersion { .. }),
-            "expected UnsupportedVersion, got: {:?}",
-            err
+            "expected UnsupportedVersion, got: {err:?}"
         );
     }
 
@@ -559,7 +557,7 @@ mod tests {
         let intro = make_intro(0xff);
         let good = ir_path(intro, Plane::Declaration);
         assert!(!is_ir_path(
-            &format!("symbols/{}", good),
+            &format!("symbols/{good}"),
             Plane::Declaration
         ));
         // Wrong extension.

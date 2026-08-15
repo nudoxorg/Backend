@@ -1,10 +1,10 @@
 //! [`RemoteStore<M>`]: `VectorStore<M>` over Qdrant (09b §5.2/5.3).
 //!
 //! Collection schemas (frozen):
-//! - Parity:  `"symbols__jina_v2_code_768"`  — 768-dim Cosine, named vec "sym",
-//!            hnsw m=0/payload_m=16 (per-tenant graphs), scalar int8 q=0.99
-//!            always_ram, on_disk vectors; payload indexes language/kind/package
-//!            (package is tenant, is_tenant=true).
+//! - Parity: `"symbols__jina_v2_code_768"` — 768-dim Cosine, named vec "sym",
+//!   hnsw m=0/payload_m=16 (per-tenant graphs), scalar int8 q=0.99
+//!   always_ram, on_disk vectors; payload indexes language/kind/package
+//!   (package is tenant, is_tenant=true).
 //! - Premium: `"symbols__voyage_code3_1024"` — 1024-dim Cosine, same quant.
 //!
 //! Search: always sends quantization search params rescore=true oversampling=2.0
@@ -65,22 +65,20 @@ impl CollectionConfig {
     /// Which [`SourceTag`] to stamp on hits from this collection.
     pub fn source_tag(self) -> SourceTag {
         match self {
-            CollectionConfig::JinaParity => SourceTag::IndexJina,
+            // Dev-only stand-in for the parity tier (same `SourceTag`); there
+            // is no dedicated `SourceTag` for it and adding one would ripple
+            // into every exhaustive match over `SourceTag` for a brand that
+            // exists only to unblock local dev without provisioned ONNX weights.
+            CollectionConfig::JinaParity | CollectionConfig::NomicDev => SourceTag::IndexJina,
             CollectionConfig::VoyagePremium => SourceTag::IndexVoyage,
-            // Dev-only stand-in for the parity tier; there is no dedicated
-            // `SourceTag` for it and adding one would ripple into every
-            // exhaustive match over `SourceTag` for a brand that exists only
-            // to unblock local dev without provisioned ONNX weights.
-            CollectionConfig::NomicDev => SourceTag::IndexJina,
         }
     }
 
     /// Number of dimensions for this collection.
     pub fn dimensions(self) -> u64 {
         match self {
-            CollectionConfig::JinaParity => 768,
+            CollectionConfig::JinaParity | CollectionConfig::NomicDev => 768,
             CollectionConfig::VoyagePremium => 1024,
-            CollectionConfig::NomicDev => 768,
         }
     }
 
@@ -264,7 +262,7 @@ impl<M: EmbeddingModel + 'static> VectorStore<M> for RemoteStore<M> {
             .await
             .map_err(|error| StoreError::Backend(error.to_string()))?;
 
-        Ok(reply.result.map(|result| result.count).unwrap_or(0))
+        Ok(reply.result.map_or(0, |result| result.count))
     }
 
     async fn flush(&self) -> Result<(), StoreError> {
@@ -312,7 +310,7 @@ fn convert_payload(payload: &Payload) -> qdrant_client::Payload {
             PayloadValue::Str(string_val) => payload_map.insert(key.as_str(), string_val.as_str()),
             PayloadValue::Int(integer_val) => payload_map.insert(key.as_str(), *integer_val),
             PayloadValue::Bool(boolean_val) => payload_map.insert(key.as_str(), *boolean_val),
-        };
+        }
     }
     payload_map
 }
@@ -478,11 +476,10 @@ async fn is_collection_present(
     client: &Qdrant,
     collection_name: &str,
 ) -> Result<bool, Error> {
-    if let Ok(info) = client.collection_info(collection_name).await {
-        if info.result.is_some() {
+    if let Ok(info) = client.collection_info(collection_name).await
+        && info.result.is_some() {
             return Ok(true);
         }
-    }
     Ok(false)
 }
 

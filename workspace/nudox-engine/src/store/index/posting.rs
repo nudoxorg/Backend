@@ -100,7 +100,7 @@ impl<K: Ord, V: Ord> PostingList<K, V> {
     /// Returns `&[]` when `key` is not present — callers need not check for
     /// `None`.
     pub fn get(&self, key: &K) -> &[V] {
-        self.inner.get(key).map(Vec::as_slice).unwrap_or(&[])
+        self.inner.get(key).map_or(&[], Vec::as_slice)
     }
 
     /// Iterate all `(key, postings)` pairs in key order.

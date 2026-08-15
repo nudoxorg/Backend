@@ -68,12 +68,9 @@ pub fn changed_since<E: CatalogEngine>(
     let rows = engine::query(engine, stmt, &mut |row| {
         outbox_from_row(row).map_err(Into::into)
     })?;
-    let next = match rows.last() {
-        Some(last) => CatalogCursor {
-            after_seq: last.seq,
-        },
-        None => cursor,
-    };
+    let next = rows.last().map_or(cursor, |last| CatalogCursor {
+        after_seq: last.seq,
+    });
     Ok(ChangedPage { rows, next })
 }
 

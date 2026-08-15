@@ -285,8 +285,7 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
         .collect();
 
     // Variadic trailing param.
-    let mut variadic_ref = None;
-    if fun.variadic {
+    let variadic_ref = if fun.variadic {
         let vusr = format!("{}::param::variadic", fun.usr);
         let vref = out.refer::<Param>(vusr.clone());
         let vsym = Symbol {
@@ -305,8 +304,10 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
             .attributes([ParamAttribute::Variadic])
             .build();
         out.declare(vusr, Some(fun.usr.clone()), vsym, kind);
-        variadic_ref = Some(vref);
-    }
+        Some(vref)
+    } else {
+        None
+    };
 
     // Output param (return type) unless void.
     let mut output_refs: Vec<_> = Vec::new();

@@ -1491,7 +1491,7 @@ mod tests {
     /// Tags are unique — a metrics sink keyed on `tag()` must not merge rows.
     #[test]
     fn reason_tags_are_unique_and_spellings_are_carried() {
-        let mut tags: Vec<&str> = every_reason().iter().map(|r| r.tag()).collect();
+        let mut tags: Vec<&str> = every_reason().iter().map(super::UnknownType::tag).collect();
         let count = tags.len();
         tags.sort_unstable();
         tags.dedup();

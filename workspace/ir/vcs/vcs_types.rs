@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use ir::change::{ContentBlake3, IntroId, StableRef};
+use ir::change::{ContentBlake3, StableRef};
 use ir::kind::KindDiscriminant;
 use ir::manifest::ChangeId;
 

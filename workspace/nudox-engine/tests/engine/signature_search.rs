@@ -31,22 +31,26 @@
 
 use std::sync::Arc;
 
+use nudox_engine::store::package::{PackageView, Provenance};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName},
     entry::{Entry, Node, Symbol, Visibility},
-    index::{Ref, RawRef},
+    index::{RawRef, Ref},
     kind::Kind,
     kinds::{Field, FieldKey, Function, Module, Param, Record, Type, ty::Primitive},
     view::IrView,
 };
-use nudox_engine::store::package::{PackageView, Provenance};
 
-use nudox_engine::store::source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error};
+use nudox_engine::store::source::{
+    Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor,
+};
 
-use nudox_engine::search::SECTION_TYPE;
-use nudox_engine::wire::{Gen, SearchEvent};
-use nudox_engine::{Engine, EngineConfig, SearchQuery};
+use nudox_engine::{
+    Engine, EngineConfig, SearchQuery,
+    search::SECTION_TYPE,
+    wire::{Gen, SearchEvent},
+};
 
 // ---------------------------------------------------------------------------
 // Fixture construction
@@ -394,13 +398,10 @@ fn facets_conjoin_rather_than_union() {
     // …and each half on its own really does match, so the emptiness above is
     // the conjunction and not two broken facets.
     assert_eq!(hits("return:Point"), vec!["make"]);
-    // `plain` only, not `plain` + `borrow`: the borrowed parameter is the
-    // known `nudox-store` gap pinned by `a_param_facet_finds_borrowed_parameters_too`.
-    // Asserting the number that is *true today* rather than the one that ought
-    // to be keeps this test measuring conjunction instead of silently
-    // duplicating that one — and it will fail loudly, here, the day the gap is
-    // fixed, which is the correct time to revisit it.
-    assert_eq!(hits("param:Point"), vec!["plain"]);
+    // Borrowed parameters participate in the same posting list as owned
+    // parameters, so this half also proves that conjunction does not discard
+    // a structurally wrapped type reference.
+    assert_eq!(hits("param:Point"), vec!["borrow", "plain"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -437,34 +438,13 @@ fn a_bare_type_name_does_not_activate_signature_search() {
 // Borrowed parameters — the case real signatures are made of
 // ---------------------------------------------------------------------------
 
-/// `param:Point` must find `fn borrow(p: &Point)` as well as `fn plain(p: Point)`.
+/// `param:Point` must find `fn borrow(p: &Point)` as well as `fn plain(p:
+/// Point)`.
 ///
-/// # Why this test is separate from the other parameter test
-///
-/// It is the one that fails, and it fails in `nudox-store`, not here.
-///
-/// `typerefs_of_entry` walks a parameter's type through
-/// `collect_stable_refs`, whose match treats `Type::Primitive(_)` as a **leaf
-/// that reaches nothing** (`crates/nudox-store/src/package.rs:472-479`). But a
-/// Rust reference is not a leaf: `&Point` is
-/// `Type::Primitive(Primitive::Reference { ty: Box<Type>, .. })` with the
-/// nominal *inside* it, and the same is true of `*const T` (`MutPointer`) and
-/// `*mut T` (`ConstPointer`).
-///
-/// So every borrowed parameter, every raw pointer parameter, and every borrowed
-/// return type is missing from `type_refs` entirely — not ranked low, absent.
-/// In Rust that is most of the API surface, and it is precisely the brief's
-/// second worked example (`functions accepting a &Path`).
-///
-/// This is `#[ignore]`d rather than deleted so it is a standing, runnable
-/// statement of the gap: `cargo test -p nudox-engine --test signature_search --
-/// --ignored` reproduces it in about a second, and the day
-/// `collect_stable_refs` descends into those three variants it goes green and
-/// the `#[ignore]` comes off.
+/// This is a regression guard for recursive traversal through references and
+/// raw pointers: the nominal type is nested inside the wrapper, but it must
+/// still reach the same type posting list as an owned parameter.
 #[test]
-#[ignore = "known gap: nudox-store's collect_stable_refs treats Type::Primitive \
-            as a leaf, so `&T`, `*const T` and `*mut T` never reach the type \
-            index. See this test's doc comment."]
 fn a_param_facet_finds_borrowed_parameters_too() {
     assert_eq!(
         hits("param:Point"),

@@ -13,7 +13,7 @@ use crate::wire::{HitRow, KindTag, PackageDiff, RenderSection, SymbolHead, Timel
 /// as a flat, self-describing shape an agent can read without a discriminated
 /// union — and because collapsing the two cases to a boolean would lose
 /// precisely the part that matters.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct IntegrityReport {
     /// True only when the registry published a digest of these exact bytes on
     /// a separate endpoint and it matched what was downloaded.
@@ -137,9 +137,11 @@ pub struct SymbolDoc {
 }
 
 /// Compact MCP projection of the canonical symbol model.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CompactSymbolDoc {
+    /// Stable symbol identity shared by every MCP navigation tool.
     pub key: SymbolKeyDto,
+    /// Fully-qualified declaration path.
     pub path: String,
     /// Rendered signature. Omitted when exact source already carries it;
     /// retained as the fallback for declarations without source text.
@@ -154,10 +156,13 @@ pub struct CompactSymbolDoc {
     /// deduplicated instead of repeating the full token stream.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<CompactSymbolReference>,
+    /// Source location in package-relative file/line form, when declared.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<String>,
+    /// Exact declaration source, including the body when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+    /// Deprecation message, when the declaration is deprecated.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<String>,
 }
@@ -165,25 +170,30 @@ pub struct CompactSymbolDoc {
 /// One first-class resolved link in a compact signature.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 pub struct CompactSymbolReference {
+    /// The type text as it appears in the declaration signature.
     pub text: String,
+    /// Stable key of the resolved referenced declaration.
     pub target: SymbolKeyDto,
 }
 
 /// Batched compact symbol result, preserving input order.
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct SymbolsResult {
+    /// Compact symbol records in the same order as the requested keys.
     pub symbols: Vec<CompactSymbolDoc>,
 }
 
 /// One symbol that references the symbol passed to `find_usages`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UsageRow {
     /// The referencing symbol's key; pass it to `get_symbol` to read it.
     pub key: SymbolKeyDto,
-    /// Its unqualified name.
+    /// Its unqualified name, retained for typed callers.
     pub name: String,
-    /// Its kind label.
+    /// Its kind label, retained for typed callers.
     pub kind: String,
+    /// Its complete rendered declaration signature.
+    pub signature: String,
     /// Fully-qualified path of the referencing declaration.
     pub path: String,
 }
@@ -202,10 +212,15 @@ pub struct UsagesResult {
 }
 
 /// One exact reference owned by a symbol.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct OccurrenceRow {
     /// The stable key of the referenced symbol. The target may be unloaded.
     pub target_key: String,
+    /// The resolved target's declaration context, when it remains loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<OccurrenceSymbol>,
+    /// The declaration that owns this occurrence.
+    pub owner: OccurrenceSymbol,
     /// Producer-specific reference category, such as `call` or `type`.
     pub reference_kind: String,
     /// Producer confidence label.
@@ -214,6 +229,18 @@ pub struct OccurrenceRow {
     pub span_start: u32,
     /// Exclusive byte offset relative to the owning symbol's span start.
     pub span_end: u32,
+}
+
+/// The type-bearing identity attached to an occurrence target or owner.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OccurrenceSymbol {
+    /// Stable key for following the declaration.
+    pub key: SymbolKeyDto,
+    /// Complete rendered declaration signature.
+    pub signature: String,
+    /// Package-relative declaration path, when available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
 }
 
 /// Exact occurrences owned by one symbol.
@@ -262,7 +289,9 @@ pub struct SemanticHitRow {
     pub key: SymbolKeyDto,
     /// The leaf display name emitted by the search pipeline.
     pub display_name: String,
-    /// Canonical symbol kind.
+    /// Complete rendered declaration signature.
+    pub signature: String,
+    /// Canonical symbol kind, retained for typed callers and fallback output.
     pub kind: KindTag,
     /// Relevance score retained for optional diagnostics, not default output.
     pub score: f32,
@@ -286,7 +315,7 @@ pub struct SemanticSearchResult {
 }
 
 /// One loaded package.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackageSummary {
     /// The `ecosystem:name` lineage key — the prefix of every `SymbolKey` in
     /// this package, and the value `search_symbols`'s `packages` filter takes.
@@ -305,7 +334,7 @@ pub struct PackagesResult {
 }
 
 /// One loaded generation of a package.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VersionSummary {
     /// The version string exactly as it was loaded (e.g. `"2.8.0"`). Pass this
     /// verbatim to `select_version`.
@@ -393,7 +422,7 @@ pub struct ListVersionsResult {
 // construction, so it takes the whole endpoint down rather than one tool).
 // Stating it here is a true statement the generator omitted, not a widening;
 // `tests/schemas.rs` pins that every tool result says it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("type" = "object"))]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SelectVersionResult {
@@ -476,7 +505,7 @@ pub enum DiffVersionsResult {
 }
 
 /// One row of a `graph_query` result.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueryResultRow {
     /// Cell values, positionally aligned with [`QueryResult::columns`].
     pub cells: Vec<String>,
@@ -500,7 +529,7 @@ pub struct QueryResult {
 }
 
 /// The result of `graph_schema`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SchemaResult {
     /// The GraphQL SDL that `graph_query` queries are checked against.
     pub schema: String,

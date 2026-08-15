@@ -535,7 +535,7 @@ async fn collect_semantic_hits(
 /// maximally-dissimilar row into one tie.
 fn cosine_to_relevance(cosine: f32) -> f32 {
     let clamped = cosine.clamp(-1.0, 1.0);
-    ((clamped + 1.0) / 2.0).max(f32::EPSILON)
+    f32::midpoint(clamped, 1.0).max(f32::EPSILON)
 }
 
 // ---------------------------------------------------------------------------
@@ -688,7 +688,7 @@ mod tests {
         wait_for_corpus(&engine).await;
 
         let q = SearchQuery {
-            text: "".to_owned(),
+            text: String::new(),
             ..Default::default()
         };
         let (_handle, rx) = engine.search(q, Gen(6));
@@ -717,9 +717,8 @@ mod tests {
         let type_section = events.iter().find(
             |e| matches!(e, SearchEvent::Section { section, .. } if *section == SECTION_TYPE),
         );
-        let rows = match type_section {
-            Some(SearchEvent::Section { rows, .. }) => rows,
-            _ => panic!("must have SECTION_TYPE"),
+        let Some(SearchEvent::Section { rows, .. }) = type_section else {
+            panic!("must have SECTION_TYPE");
         };
         // The rich corpus has several functions; at least one must appear.
         assert!(
@@ -966,6 +965,7 @@ mod tests {
     /// each constant means the weights can be re-argued without the test
     /// having to be edited to agree with them.
     #[test]
+    #[allow(clippy::float_cmp)] // the reference point must be *exactly* 1.0
     fn public_top_level_exact_match_is_the_scoring_reference_point() {
         use nudox_ir::entry::Visibility;
         use nudox_ir::kind::KindDiscriminant as K;

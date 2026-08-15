@@ -1,8 +1,12 @@
 [package]
 name = "registry"
+description = "Vector search and retrieval serving crate for the Nudox backend"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true

@@ -209,7 +209,7 @@ pub fn parse_nuspec(bytes: &[u8]) -> Option<ExtractedFacts> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) => {
+            Ok(Event::Start(ref e) | Event::Empty(ref e)) => {
                 let local = std::str::from_utf8(e.local_name().as_ref())
                     .unwrap_or("")
                     .to_ascii_lowercase();

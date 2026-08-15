@@ -52,10 +52,7 @@ where
 }
 
 fn stmt_params(stmt: &Statement) -> Vec<Value> {
-    match &stmt.values {
-        Some(values) => values_to_engine(values),
-        None => Vec::new(),
-    }
+    stmt.values.as_ref().map_or_else(Vec::new, values_to_engine)
 }
 
 /// Convert sea-query bind values into the engine facade vocabulary.

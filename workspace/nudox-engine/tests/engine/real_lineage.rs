@@ -156,12 +156,10 @@ fn settle(engine: &EngineHandle, lid: &PackageLineageId, expected: usize) -> Ver
         if list.len() == expected && list.current().is_some() {
             return list;
         }
-        if started.elapsed() > budget {
-            panic!(
-                "engine did not settle within {budget:?}: got {} of {expected} generations",
-                list.len()
-            );
-        }
+        assert!(started.elapsed() <= budget, 
+            "engine did not settle within {budget:?}: got {} of {expected} generations",
+            list.len()
+        );
         std::thread::sleep(Duration::from_millis(500));
     }
 }
@@ -183,8 +181,8 @@ fn search_exact(engine: &EngineHandle, name: &str) -> Vec<HitRow> {
     let mut hits = Vec::new();
     loop {
         match rx.recv() {
-            Ok(nudox_engine::wire::SearchEvent::Section { rows, .. })
-            | Ok(nudox_engine::wire::SearchEvent::Merge { rows, .. }) => {
+            Ok(nudox_engine::wire::SearchEvent::Section { rows, .. } |
+nudox_engine::wire::SearchEvent::Merge { rows, .. }) => {
                 hits.extend(rows.iter().filter(|r| &*r.display_name == name).cloned());
             }
             Ok(nudox_engine::wire::SearchEvent::Done { .. }) => break,
@@ -270,7 +268,7 @@ fn real_memchr_lineage_loads_all_three_generations_with_stable_intro_ids() {
     }
 
     let dir = memchr_root("2.8.3");
-    let (_, _cost) = heart::cost::measured(
+    let ((), _cost) = heart::cost::measured(
         "real_lineage/memchr-3gen-scrambled-order",
         &dir,
         || {
@@ -403,7 +401,7 @@ fn real_memchr_lineage_loads_all_three_generations_with_stable_intro_ids() {
             // label (`corpus()` is not reachable from this integration test,
             // so `open_symbol` succeeding under the old key against the new
             // generation is the only externally-observable proof available).
-            let events_after_switch = open_and_drain(&engine, key.clone(), Gen(2));
+            let events_after_switch = open_and_drain(&engine, key, Gen(2));
             assert!(
                 !events_after_switch
                     .iter()
@@ -442,7 +440,7 @@ fn real_memchr_single_version_and_unloaded_version_request() {
         return;
     }
 
-    let (_, _cost) = heart::cost::measured("real_lineage/memchr-1gen", &root, || {
+    let ((), _cost) = heart::cost::measured("real_lineage/memchr-1gen", &root, || {
         let lid = lineage();
         let spec = history_spec(&["2.8.3"]);
         let engine = Engine::start_with_versions(EngineConfig::default(), vec![spec]);

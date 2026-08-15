@@ -62,9 +62,9 @@ fn var(key: &str) -> Option<String> {
 }
 
 fn root() -> PathBuf {
-    var("NUDOX_PKG_ROOT").map(PathBuf::from).unwrap_or_else(|| {
+    var("NUDOX_PKG_ROOT").map_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-    })
+    }, PathBuf::from)
 }
 
 fn render_text(toks: &[SigToken]) -> String {
@@ -161,11 +161,11 @@ fn memchr_impl_labels_name_their_real_traits() {
         report
             .collisions
             .iter()
-            .map(|c| c.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
     );
 
-    let view = IrView::with_package(descriptor.lineage.clone(), produced.table);
+    let view = IrView::with_package(descriptor.lineage, produced.table);
     let package = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
     let v = package.view();
 

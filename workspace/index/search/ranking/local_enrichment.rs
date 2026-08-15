@@ -373,14 +373,13 @@ fn reorder_with_climb_cap(items: Vec<Working>, max_rank_climb: usize) -> Vec<Wor
 			.max_by(|(_, a), (_, b)| cmp_working(a, b))
 			.map(|(i, _)| i);
 
-		let best_idx = match best_idx {
-			Some(i) => i,
-			None => {
-				if remaining.is_empty() {
-					break;
-				}
-				0
+		let best_idx = if let Some(i) = best_idx {
+			i
+		} else {
+			if remaining.is_empty() {
+				break;
 			}
+			0
 		};
 		out.push(remaining.remove(best_idx));
 	}
@@ -450,7 +449,7 @@ mod tests {
 		for (i, hit) in out.iter().enumerate() {
 			assert_eq!(hit.package_id, Some(ranked[i].id));
 			assert_eq!(hit.name, ranked[i].name);
-			assert_eq!(hit.score, ranked[i].score);
+			assert_eq!(hit.score.to_bits(), ranked[i].score.to_bits());
 			assert_eq!(hit.source, HitSource::Registry);
 			assert!(hit.dep_relation.is_none());
 			assert!(hit.usage.is_none());
@@ -686,7 +685,7 @@ mod tests {
 
 		// Keys that *are* on the wire stay only the public query surface.
 		use std::collections::HashSet;
-		let keys: HashSet<&str> = obj.keys().map(|s| s.as_str()).collect();
+		let keys: HashSet<&str> = obj.keys().map(String::as_str).collect();
 		assert!(keys.contains("text"));
 		assert!(keys.contains("target"));
 	}

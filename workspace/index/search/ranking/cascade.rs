@@ -452,15 +452,16 @@ fn fuse_scores<T>(
 	// Pre-compute the top-4 BM25 (the cap target for the contains bonus).
 	let mut top4_bm25: Vec<f32> = candidates.iter().map(|c| c.bm25).collect();
 	top4_bm25.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-	let top4_score = top4_bm25.get(3).copied().unwrap_or(top4_bm25.first().copied().unwrap_or(0.0));
+	let top4_score = top4_bm25
+		.get(3)
+		.copied()
+		.unwrap_or_else(|| top4_bm25.first().copied().unwrap_or(0.0));
 
 	// R2: use the scoped ecosystem's separators when available; else the shared set.
-	let query_is_specific = match ecosystem_scope {
-		Some(lang) => lang.spec().search_norms().query_is_specific(query),
-		None => {
-			query.contains(DEFAULT_SPECIFICITY_SEPARATORS) || query.len() > 15
-		}
-	};
+	let query_is_specific = ecosystem_scope.map_or_else(
+		|| query.contains(DEFAULT_SPECIFICITY_SEPARATORS) || query.len() > 15,
+		|lang| lang.spec().search_norms().query_is_specific(query),
+	);
 
 	let query_lower = query.to_ascii_lowercase();
 	let mut boosted = 0usize;
@@ -482,7 +483,7 @@ fn fuse_scores<T>(
 		if cfg.quality_popularity_path_scale > 0.0 {
 			let pop = c.popularity_weight(1) as f32;
 			let pop_factor = (pop + 1.0).log2() / 20.0;
-			score += cfg.quality_popularity_path_scale * c.quality * pop_factor;
+			score = (cfg.quality_popularity_path_scale * c.quality).mul_add(pop_factor, score);
 		}
 
 		// ── Exact / contains name bonus (assign_doc_score / contains_query) ───
@@ -502,8 +503,7 @@ fn fuse_scores<T>(
 			// Contains bonus: capped so keyword-spam can't reach top-3.
 			// Lib.rs formula: `capped = ((top4 * 3 + boosted_score) / 4).max(minimal)`
 			// with bonus multiplier = 1 + quality_bonus * specificity_factor.
-			let quality_bonus =
-				(c.quality * c.quality + 0.25) * 2.0_f32.min(1.1);
+			let quality_bonus = c.quality.mul_add(c.quality, 0.25) * 2.0_f32.min(1.1);
 			let specificity = if query_is_specific {
 				cfg.contains_specificity_when_specific
 			} else {
@@ -513,7 +513,7 @@ fn fuse_scores<T>(
 				1.0 + quality_bonus * specificity * 2.0 / (2.0 + boosted as f32);
 			let boosted_score = score * bonus_factor;
 			let cap = top4_score * 3.0 + boosted_score;
-			let capped = (cap / 4.0).max(score * (1.0 + (bonus_factor - 1.0) * 0.1));
+			let capped = (cap / 4.0).max(score * (bonus_factor - 1.0).mul_add(0.1, 1.0));
 			score = if boosted_score > top4_score { capped } else { boosted_score };
 			boosted += 1;
 		}
@@ -582,7 +582,7 @@ fn diversity_pass<T>(cfg: &RankingConfig, candidates: &mut [Candidate<T>], score
 	let kw_keys: Vec<String> = candidates
 		.iter()
 		.map(|c| {
-			let mut kws: Vec<&str> = c.keywords.iter().map(|s| s.as_str()).collect();
+			let mut kws: Vec<&str> = c.keywords.iter().map(smol_str::SmolStr::as_str).collect();
 			kws.sort_unstable();
 			kws.join("\x00")
 		})
@@ -715,7 +715,7 @@ fn pull_up_representatives<T>(
 
 	let high_rank = (max_quality * cfg.representative_quality_fraction)
 		.max(cfg.representative_quality_floor);
-	let high_dl = ((max_downloads as f64 * cfg.representative_downloads_fraction as f64) as u64)
+	let high_dl = ((max_downloads as f64 * f64::from(cfg.representative_downloads_fraction)) as u64)
 		.max(cfg.representative_downloads_floor);
 
 	// Collect indices (within `candidates`) to pull up, skipping top-3.
@@ -1142,7 +1142,7 @@ mod tests {
 	fn dependents_beat_absent_downloads_in_pullup() {
 		// Build enough candidates to trigger pull-up (needs ≥ 7).
 		let mut candidates: Vec<Candidate<&'static str>> = (0..15)
-			.map(|i| make(&format!("crate-{i:02}"), 1.0 - (i as f32 * 0.05), 0.3, Some(100), &[]))
+			.map(|i| make(&format!("crate-{i:02}"), (i as f32).mul_add(-0.05, 1.0), 0.3, Some(100), &[]))
 			.collect();
 		// Insert a candidate with dependents=100 (≡ 250_000 downloads) at position 12.
 		candidates.insert(12, Candidate {
@@ -1233,7 +1233,7 @@ mod tests {
 	fn representative_pullup_popular_item() {
 		// Build 20 mediocre items plus one very popular item buried at position 15.
 		let mut candidates: Vec<Candidate<&'static str>> = (0..20)
-			.map(|i| make(&format!("crate-{i:02}"), 1.0 - (i as f32 * 0.04), 0.3, Some(500), &[]))
+			.map(|i| make(&format!("crate-{i:02}"), (i as f32).mul_add(-0.04, 1.0), 0.3, Some(500), &[]))
 			.collect();
 		// Popular item has high downloads (5M) and high quality (0.9), inserted at index 15.
 		candidates.insert(15, make("popular-crate", 0.5, 0.9, Some(5_000_000), &[]));

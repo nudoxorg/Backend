@@ -86,7 +86,7 @@ impl Cage for DevPassthrough {
             let limits = limits;
             unsafe {
                 proc.pre_exec(move || {
-                    apply_rlimits(&limits).map_err(crate::error::to_io_error)?;
+                    apply_rlimits(&limits);
                     Ok(())
                 });
             }

@@ -205,17 +205,17 @@ struct FreeList {
 
 impl FreeList {
     fn take(&self) -> WorkerSlot {
-        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(slot) = slots.pop() {
                 return slot;
             }
-            slots = self.cv.wait(slots).unwrap_or_else(|e| e.into_inner());
+            slots = self.cv.wait(slots).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
     fn put(&self, slot: WorkerSlot) {
-        let mut slots = self.slots.lock().unwrap_or_else(|e| e.into_inner());
+        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         slots.push(slot);
         self.cv.notify_one();
     }
@@ -406,8 +406,8 @@ fn spawn_worker(config: &WorkerPoolConfig) -> Result<WorkerSlot, SandboxError> {
         let limits = config.limits;
         unsafe {
             cmd.pre_exec(move || {
-                crate::backend::supervisor::apply_rlimits(&limits)
-                    .map_err(crate::error::to_io_error)
+                crate::backend::supervisor::apply_rlimits(&limits);
+                Ok(())
             });
         }
     }
@@ -578,10 +578,9 @@ fn read_line_nonblock(slot: &mut WorkerSlot) -> Result<Option<String>, SandboxEr
                     return Ok(Some(s));
                 }
                 // More data may still be available.
-                continue;
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
-            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => {
                 return Err(CageError::WorkerProtocol {
                     detail: format!("worker read: {e}"),

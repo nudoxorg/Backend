@@ -238,11 +238,10 @@ pub struct ClientServerEntry {
 impl ClientConfig {
     /// Build the configuration that talks to `endpoint`.
     pub fn for_endpoint(endpoint: &McpEndpoint) -> Self {
-        let headers = [(
+        let headers = std::iter::once((
             axum::http::header::AUTHORIZATION.as_str().to_owned(),
             endpoint.token.bearer_header_value(),
-        )]
-        .into_iter()
+        ))
         .collect();
 
         let entry = ClientServerEntry {
@@ -252,7 +251,7 @@ impl ClientConfig {
         };
 
         Self {
-            mcp_servers: [("nudox".to_owned(), entry)].into_iter().collect(),
+            mcp_servers: std::iter::once(("nudox".to_owned(), entry)).collect(),
         }
     }
 }

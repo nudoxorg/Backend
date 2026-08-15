@@ -57,8 +57,7 @@ pub(crate) fn qualified_display_name(
 ) -> SharedStr {
     let base = indexes
         .path_of(intro)
-        .map(|p| p.as_ref().to_owned())
-        .unwrap_or_else(|| leaf.to_owned());
+        .map_or_else(|| leaf.to_owned(), |p| p.as_ref().to_owned());
     if base.split(['.', ':']).next() == Some(pkg_name) {
         SharedStr::from(base)
     } else {
@@ -398,7 +397,7 @@ fn collect_signature_hits(
                 Some(previous) => previous.intersection(&this_facet).copied().collect(),
             });
             // Nothing left to intersect with — stop probing this package.
-            if owners.as_ref().is_some_and(|o| o.is_empty()) {
+            if owners.as_ref().is_some_and(std::collections::BTreeSet::is_empty) {
                 break;
             }
         }
@@ -474,11 +473,11 @@ fn collect_kind_facet_hits(
     //   1. If the query text matches a kind keyword, use that kind.
     //   2. If an explicit kind filter is set, use that filter.
     //   3. Otherwise, emit nothing (name section already covers everything).
-    let target_kinds: Vec<KindDiscriminant> = if !query.kinds.is_empty() {
-        query.kinds.clone()
-    } else {
+    let target_kinds: Vec<KindDiscriminant> = if query.kinds.is_empty() {
         let lower = query.text.to_lowercase();
         keyword_to_kinds(&lower)
+    } else {
+        query.kinds.clone()
     };
 
     if target_kinds.is_empty() {
@@ -502,7 +501,7 @@ fn collect_kind_facet_hits(
             let Some(intros) = indexes.by_kind.get(&disc) else {
                 continue;
             };
-            for &intro in intros.iter() {
+            for &intro in intros {
                 if candidates.len() >= limit {
                     break;
                 }

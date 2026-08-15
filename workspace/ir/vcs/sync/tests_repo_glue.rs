@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::wire::{
-    EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, PayloadTable, SymbolWire,
+    EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, OwnedEntryPayload, PayloadTable,
+    SymbolWire,
 };
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use ir::entry::Visibility;
@@ -53,7 +54,7 @@ fn function_payload(name: &str) -> OwnedEntryPayload {
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
-            sig: Default::default(),
+            sig: FnSigFlags::default(),
             generics: Box::new([]),
             wheres: Box::new([]),
         }),
@@ -106,7 +107,7 @@ fn fs_change_io_path_compat() {
     io.verify(&change_id, &bytes)
         .expect("verify must pass for genuine bytes");
 
-    let mut bad = bytes.clone();
+    let mut bad = bytes;
     let mid = bad.len() / 2;
     bad[mid] ^= 0xff;
     let err = io.verify(&change_id, &bad);
@@ -156,7 +157,7 @@ fn apply_external_changes_cross_repo() {
     );
     assert_eq!(mat_b.symbols.len(), mat_a.symbols.len());
     for intro in mat_a.intros() {
-        assert!(mat_b.get(intro).is_some(), "B must have intro {:?}", intro);
+        assert!(mat_b.get(intro).is_some(), "B must have intro {intro:?}");
         assert_eq!(
             mat_a.get(intro).unwrap()[..],
             mat_b.get(intro).unwrap()[..],

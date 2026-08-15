@@ -23,8 +23,8 @@ pub fn hash_domain(domain: &str, preimage: &[u8]) -> [u8; 32] {
 pub fn to_hex(bytes: &[u8; 32]) -> String {
     let mut s = String::with_capacity(64);
     for b in bytes {
-        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-        s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
+        s.push(char::from_digit(u32::from(b >> 4), 16).unwrap());
+        s.push(char::from_digit(u32::from(b & 0xf), 16).unwrap());
     }
     s
 }

@@ -178,10 +178,9 @@ fn shortest_alias_module_path(
         // Only a *strict* improvement over the physical chain is worth
         // taking — otherwise we would replace a correct chain with an
         // equally-long (or longer) one for no reason.
-        let is_shorter = match &best {
-            None => segs.len() < ancestors.len(),
-            Some(b) => segs.len() < b.len(),
-        };
+        let is_shorter = best.as_ref().map_or(segs.len() < ancestors.len(), |b| {
+            segs.len() < b.len()
+        });
         if is_shorter {
             best = Some(segs);
         }
@@ -235,8 +234,7 @@ pub(crate) fn projection(
     while let Some(parent_id) = cursor {
         let label = view
             .entry(parent_id)
-            .map(|e| e.sym().name.clone())
-            .unwrap_or_else(|| "?".to_owned());
+            .map_or_else(|| "?".to_owned(), |e| e.sym().name.clone());
         ancestors.push((parent_id, label));
         cursor = view.parent_of(parent_id);
     }
@@ -267,8 +265,7 @@ pub(crate) fn projection(
     let kind = entry
         .kind()
         .discriminant()
-        .map(KindTag::Known)
-        .unwrap_or(KindTag::Unknown(0));
+        .map_or(KindTag::Unknown(0), KindTag::Known);
 
     // ── Visibility ────────────────────────────────────────────────────────────
 
@@ -285,13 +282,15 @@ pub(crate) fn projection(
     // fall back to an empty marker when the struct exists but the note is absent.
 
     let deprecation = entry.sym().deprecation.as_ref().map(|d| {
-        if let Some(note) = d.note.as_deref() {
-            SharedStr::from(note)
-        } else if let Some(since) = d.since.as_deref() {
-            SharedStr::from(format!("Deprecated since {}", since).as_str())
-        } else {
-            SharedStr::from("Deprecated")
-        }
+        d.note.as_deref().map_or_else(
+            || {
+                d.since.as_deref().map_or_else(
+                    || SharedStr::from("Deprecated"),
+                    |since| SharedStr::from(format!("Deprecated since {since}").as_str()),
+                )
+            },
+            SharedStr::from,
+        )
     });
 
     // ── Cfg ───────────────────────────────────────────────────────────────────
@@ -348,11 +347,12 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
 /// session is always trusted.  Future store variants are handled by `_ =>
 /// TrustedLocal` so that adding a new store tier never silently panics.
 fn store_provenance_to_wire(p: crate::store::package::Provenance) -> Provenance {
-    use crate::store::package::Provenance as StoreP;
-    match p {
-        StoreP::TrustedLocal | StoreP::SnapshotLocal => Provenance::TrustedLocal,
-        _ => Provenance::TrustedLocal,
-    }
+    // Local IR produced in this session is always trusted. The store currently
+    // has only trusted tiers (`TrustedLocal`, `SnapshotLocal`); future tiers
+    // fold into `TrustedLocal` here rather than panicking, so there is no
+    // per-variant match arm.
+    let _ = p;
+    Provenance::TrustedLocal
 }
 
 // ---------------------------------------------------------------------------

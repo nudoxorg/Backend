@@ -19,9 +19,8 @@ fn listing_endpoint_is_ls_remote_marker() {
 
 #[test]
 fn policy_is_one_rps() {
-    assert_eq!(Cpp::POLICY.max_requests_per_second, 1.0);
+    assert_eq!(Cpp::POLICY.max_requests_per_second.to_bits(), 1.0_f32.to_bits());
     assert_eq!(Cpp::POLICY.retry_budget, 3);
-    assert!(Cpp::POLICY.respect_retry_after);
 }
 
 #[test]

@@ -525,17 +525,17 @@ fn name_stem(name: &str) -> String {
 
 struct PriorIndexes {
     /// (kind, name) → sorted vec of `IntroId`
-    by_kind_name: BTreeMap<(KindDiscriminant, String), Vec<IntroId>>,
+    kind_name: BTreeMap<(KindDiscriminant, String), Vec<IntroId>>,
     /// kind_shape_hash bytes → sorted vec of `IntroId`
-    by_shape: BTreeMap<[u8; 32], Vec<IntroId>>,
+    shape: BTreeMap<[u8; 32], Vec<IntroId>>,
     /// (kind, parent_opt, name_stem) → sorted vec of `IntroId`
-    by_kind_parent_stem: BTreeMap<(KindDiscriminant, Option<IntroId>, String), Vec<IntroId>>,
+    kind_parent_stem: BTreeMap<(KindDiscriminant, Option<IntroId>, String), Vec<IntroId>>,
 }
 
 fn build_indexes(prior: &IrView) -> PriorIndexes {
-    let mut by_kind_name: BTreeMap<(KindDiscriminant, String), Vec<IntroId>> = BTreeMap::new();
-    let mut by_shape: BTreeMap<[u8; 32], Vec<IntroId>> = BTreeMap::new();
-    let mut by_kind_parent_stem: BTreeMap<
+    let mut kind_name: BTreeMap<(KindDiscriminant, String), Vec<IntroId>> = BTreeMap::new();
+    let mut shape: BTreeMap<[u8; 32], Vec<IntroId>> = BTreeMap::new();
+    let mut kind_parent_stem: BTreeMap<
         (KindDiscriminant, Option<IntroId>, String),
         Vec<IntroId>,
     > = BTreeMap::new();
@@ -548,31 +548,31 @@ fn build_indexes(prior: &IrView) -> PriorIndexes {
         let name = entry.sym().name.clone();
         let stem = name_stem(&name);
         let parent = prior.parent_of(id);
-        let shape = kind_shape_hash(entry);
+        let shape_hash = kind_shape_hash(entry);
 
-        by_kind_name.entry((disc, name)).or_default().push(id);
-        by_shape.entry(*shape.as_bytes()).or_default().push(id);
-        by_kind_parent_stem
+        kind_name.entry((disc, name)).or_default().push(id);
+        shape.entry(*shape_hash.as_bytes()).or_default().push(id);
+        kind_parent_stem
             .entry((disc, parent, stem))
             .or_default()
             .push(id);
     }
 
     // Sort all vecs for determinism (insertion order is HashMap-undefined).
-    for v in by_kind_name.values_mut() {
+    for v in kind_name.values_mut() {
         v.sort_unstable();
     }
-    for v in by_shape.values_mut() {
+    for v in shape.values_mut() {
         v.sort_unstable();
     }
-    for v in by_kind_parent_stem.values_mut() {
+    for v in kind_parent_stem.values_mut() {
         v.sort_unstable();
     }
 
     PriorIndexes {
-        by_kind_name,
-        by_shape,
-        by_kind_parent_stem,
+        kind_name,
+        shape,
+        kind_parent_stem,
     }
 }
 
@@ -596,14 +596,14 @@ fn candidates_for(
     let mut cands: BTreeSet<IntroId> = BTreeSet::new();
 
     // Index 1: same (kind, name)
-    if let Some(ids) = indexes.by_kind_name.get(&(disc, name)) {
+    if let Some(ids) = indexes.kind_name.get(&(disc, name)) {
         for &id in ids.iter().take(cap) {
             cands.insert(id);
         }
     }
 
     // Index 2: same kind_shape_hash
-    if let Some(ids) = indexes.by_shape.get(shape.as_bytes()) {
+    if let Some(ids) = indexes.shape.get(shape.as_bytes()) {
         for &id in ids.iter().take(cap) {
             cands.insert(id);
         }
@@ -611,7 +611,7 @@ fn candidates_for(
 
     // Index 3: same (kind, resolved parent, name stem)
     if let Some(ids) = indexes
-        .by_kind_parent_stem
+        .kind_parent_stem
         .get(&(disc, durable_parent, stem))
     {
         for &id in ids.iter().take(cap) {
@@ -1018,8 +1018,7 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
             let score = all_pairs
                 .iter()
                 .find(|&&(_, n, p)| n == next_id && p == prior_id)
-                .map(|&(s, _, _)| s)
-                .unwrap_or(0);
+                .map_or(0, |&(s, _, _)| s);
             rename_edges.push(RenameEdge {
                 prior_id,
                 next_id,
@@ -1159,7 +1158,7 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
     for &id in &stable_ids {
         if let Some(next_entry) = next.entry(id) {
             let prior_entry = prev.entry(id);
-            let unchanged = prior_entry.map(|pe| pe == next_entry).unwrap_or(false);
+            let unchanged = prior_entry.is_some_and(|pe| pe == next_entry);
             if unchanged {
                 // No meaningful "evidence" to record for an identity match.
                 assignments.push(Assignment::Continuation {
@@ -1191,9 +1190,7 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
                         band: EvidenceBand::High,
                         r_ov_forced: false,
                         shape_matched: kind_shape_hash(next_entry)
-                            == prior_entry
-                                .map(kind_shape_hash)
-                                .unwrap_or_else(|| kind_shape_hash(next_entry)),
+                            == prior_entry.map_or_else(|| kind_shape_hash(next_entry), kind_shape_hash),
                         name_matched: true,
                         parent_matched: true,
                         sig_matched: false,
@@ -1241,7 +1238,7 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
     }
 
     // Sort assignments by next_id for determinism.
-    assignments.sort_unstable_by_key(|a| a.next_id());
+    assignments.sort_unstable_by_key(Assignment::next_id);
 
     // Deletions: prior entries not matched by any next entry.
     let mut deletions: Vec<Deletion> = deleted_ids

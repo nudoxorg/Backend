@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use crate::wire::PayloadTable;
 use crate::wire::{
-    EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
+    EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
+    SymbolWire,
 };
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use ir::entry::Visibility;
@@ -51,7 +52,7 @@ fn function(name: &str) -> OwnedEntryPayload {
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
-            sig: Default::default(),
+            sig: FnSigFlags::default(),
             generics: Box::new([]),
             wheres: Box::new([]),
         }),

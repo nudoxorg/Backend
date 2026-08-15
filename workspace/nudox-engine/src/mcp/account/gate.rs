@@ -57,7 +57,7 @@ use crate::mcp::error::McpError;
 /// rarely is what makes recovery from a lost network fast — the first tick
 /// after the wifi comes back re-verifies — without turning a healthy client
 /// into a poller.
-pub const REFRESH_INTERVAL: Duration = Duration::from_secs(15 * 60);
+pub const REFRESH_INTERVAL: Duration = Duration::from_mins(15);
 
 /// How often the supervisor wakes to consider flushing usage.
 ///
@@ -269,8 +269,7 @@ impl AccountGate {
         self.inner
             .ledger
             .read()
-            .map(|g| Arc::clone(&g))
-            .unwrap_or_else(|e| Arc::clone(&e.into_inner()))
+            .map_or_else(|e| Arc::clone(&e.into_inner()), |g| Arc::clone(&g))
     }
 
     // -----------------------------------------------------------------------
@@ -350,11 +349,11 @@ impl AccountGate {
         // Best-effort: a fresh sign-in should show real numbers rather than
         // "usage unknown", but a `GET /v1/usage` that fails must not turn a
         // successful sign-in into a failure.
-        if let Some(credential) = self.credential_clone() {
-            if let Ok(snapshot) = service.usage(&credential.key).await {
-                self.ledger().adopt_anchor(&snapshot);
-                self.observe_quota(snapshot);
-            }
+        if let Some(credential) = self.credential_clone()
+            && let Ok(snapshot) = service.usage(&credential.key).await
+        {
+            self.ledger().adopt_anchor(&snapshot);
+            self.observe_quota(snapshot);
         }
 
         Ok(self.posture_at(now))
@@ -538,8 +537,7 @@ impl AccountGate {
         loop {
             let due_for_refresh = SystemTime::now()
                 .duration_since(last_refresh)
-                .map(|d| d >= REFRESH_INTERVAL)
-                .unwrap_or(true);
+                .map_or(true, |d| d >= REFRESH_INTERVAL);
 
             if due_for_refresh {
                 self.refresh_once().await;
@@ -549,8 +547,8 @@ impl AccountGate {
             self.flush_once(false).await;
 
             tokio::select! {
-                _ = shutdown.cancelled() => break,
-                _ = tokio::time::sleep(TICK) => {}
+                () = shutdown.cancelled() => break,
+                () = tokio::time::sleep(TICK) => {}
             }
         }
 
@@ -697,8 +695,7 @@ impl AccountGate {
             .inner
             .last_flush
             .lock()
-            .map(|g| *g)
-            .unwrap_or_else(|e| *e.into_inner());
+            .map_or_else(|e| *e.into_inner(), |g| *g);
         SystemTime::now()
             .duration_since(last)
             .unwrap_or(Duration::ZERO)
@@ -822,9 +819,7 @@ fn open_ledger(
     state_dir: Option<&std::path::Path>,
     credential: Option<&StoredCredential>,
 ) -> UsageLedger {
-    let fingerprint = credential
-        .map(|c| c.key.fingerprint())
-        .unwrap_or_else(no_account_fingerprint);
+    let fingerprint = credential.map_or_else(no_account_fingerprint, |c| c.key.fingerprint());
     UsageLedger::open(state_dir, &fingerprint)
 }
 

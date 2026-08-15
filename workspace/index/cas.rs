@@ -306,9 +306,8 @@ impl Store<Live> {
         for meta in metas {
             // Strip the "cas/" prefix to get the hex leaf.
             let path_str = meta.location.as_ref();
-            let hex = match path_str.strip_prefix("cas/") {
-                Some(h) => h,
-                None => continue, // Shouldn't happen, but skip malformed keys.
+            let Some(hex) = path_str.strip_prefix("cas/") else {
+                continue; // Shouldn't happen, but skip malformed keys.
             };
             // Skip the sentinel and any non-CAS entries (not 64 hex chars = 32 bytes).
             if hex.len() != 64 {

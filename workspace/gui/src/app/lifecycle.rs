@@ -181,6 +181,14 @@ pub fn wire(cx: &mut App) {
 /// dock click; putting the work in [`WindowSession::show`] means the part that
 /// *can* be tested is, and the part that cannot is a single line.
 pub fn wire_reopen(app: &Application) {
+    // The dock-click reopen route exists only where background residency does
+    // (macOS): on Linux/Windows closing the window ends the process, so there
+    // is no dismissed process for a dock click to summon. `on_reopen` is a
+    // harmless no-op off macOS, but the guard makes the intent explicit rather
+    // than relying on the platform to ignore it.
+    if !crate::platform::supports_background_residency() {
+        return;
+    }
     app.on_reopen(|cx| {
         WindowSession::show(cx);
     });
@@ -208,18 +216,26 @@ pub fn wire_reopen(app: &Application) {
 /// whole bar and every later transition has to call this rather than build a
 /// second, competing menu somewhere else.
 pub fn refresh_menus(cx: &mut App) {
-    // The macOS global menu bar is the only place a dismissed window still has
-    // UI. On every other platform the window closing ends the process (see
-    // `platform::supports_background_residency`), so there is no windowless
-    // state to route through a menu — and no global menu to install it into.
-    // `cx.set_menus` is a no-op off macOS in any case; the guard makes the
-    // intent explicit rather than relying on that.
-    if !crate::platform::has_global_menu() {
-        return;
-    }
     let mcp = McpStatus::from_app(cx);
     let account = AccountStatus::from_app(cx);
+
+    // macOS: gpui's platform renders this list as the AppKit global menu bar
+    // (the only UI a dismissed window still has).
     cx.set_menus(menus::main_menu(&mcp, &account));
+
+    // Windows/Linux: the same definition is read back through
+    // `GlobalState::app_menus()` by `gpui_component::menu::AppMenuBar`, which
+    // draws an in-window bar. Populate it now so a window that mounts one sees
+    // the menu. `Menu` is not `Clone`, and `owned()` consumes, so the (pure,
+    // cheap) list is rebuilt rather than cloned — the same shape
+    // gpui-component's own story example uses. See `platform::has_global_menu`
+    // for which of the two renderings a platform uses.
+    gpui_component::GlobalState::global_mut(cx).set_app_menus(
+        menus::main_menu(&mcp, &account)
+            .into_iter()
+            .map(|menu| menu.owned())
+            .collect(),
+    );
 }
 
 /// Whether the reader currently has a window.

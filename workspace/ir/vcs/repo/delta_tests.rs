@@ -1,6 +1,6 @@
 //! Tests for O(delta) incremental materialization.
 use super::*;
-use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, PayloadTable, SymbolWire};
+use crate::wire::{EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, PayloadTable, SymbolWire};
 use ir::change::{EcosystemId, PackageName};
 use ir::entry::Visibility;
 use ir::kind::KindDiscriminant;
@@ -33,7 +33,7 @@ fn func(name: &str) -> OwnedEntryPayload {
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
-            sig: Default::default(),
+            sig: FnSigFlags::default(),
             generics: Box::new([]),
             wheres: Box::new([]),
         }),

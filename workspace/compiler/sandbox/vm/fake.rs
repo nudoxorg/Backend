@@ -36,7 +36,7 @@ impl FakeVmRuntime {
         self.inner
             .scripted
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push_back(result);
     }
 
@@ -45,7 +45,7 @@ impl FakeVmRuntime {
         self.inner
             .launched
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -54,7 +54,7 @@ impl FakeVmRuntime {
         self.inner
             .forked
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
@@ -63,7 +63,7 @@ impl FakeVmRuntime {
         self.inner
             .execs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -94,13 +94,13 @@ impl VmHandle for FakeVmHandle {
         self.inner
             .execs
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(spec.clone());
         if let Some(result) = self
             .inner
             .scripted
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop_front()
         {
             return result;
@@ -135,7 +135,7 @@ impl VmRuntime for FakeVmRuntime {
         self.inner
             .launched
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(cfg.clone());
         Ok(FakeVmHandle {
             inner: Arc::clone(&self.inner),
@@ -147,7 +147,7 @@ impl VmRuntime for FakeVmRuntime {
         self.inner
             .forked
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(golden.clone());
         Ok(FakeVmHandle {
             inner: Arc::clone(&self.inner),
@@ -161,7 +161,7 @@ impl VmRuntime for FakeVmRuntime {
             self.inner
                 .launched
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .len()
         )))
     }

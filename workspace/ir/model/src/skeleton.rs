@@ -152,8 +152,8 @@ impl<'a> Skeleton<'a> {
         self.ty(self_ty);
         self.generics(generics);
         self.wheres(wheres);
-        self.out.push(negative as u8);
-        self.out.push(blanket as u8);
+        self.out.push(u8::from(negative));
+        self.out.push(u8::from(blanket));
         self.out
     }
 
@@ -317,7 +317,7 @@ impl<'a> Skeleton<'a> {
             Type::TemplateLiteral(parts) => {
                 self.out.push(0x12);
                 write_u32le(&mut self.out, parts.len() as u32);
-                for part in parts.iter() {
+                for part in parts {
                     match part {
                         TemplatePart::Literal(s) => {
                             self.out.push(0x01);
@@ -336,11 +336,11 @@ impl<'a> Skeleton<'a> {
                 self.out.push(0x13);
                 self.anon_record_form(form);
                 write_u32le(&mut self.out, members.len() as u32);
-                for m in members.iter() {
+                for m in members {
                     encode_str(&mut self.out, &m.name);
                     self.ty(&m.ty);
-                    self.out.push(m.optional as u8);
-                    self.out.push(m.readonly as u8);
+                    self.out.push(u8::from(m.optional));
+                    self.out.push(u8::from(m.readonly));
                 }
             }
             Type::ImplTrait(bounds) => {
@@ -451,7 +451,7 @@ impl<'a> Skeleton<'a> {
         match p {
             Primitive::Integer { signed, width } => {
                 self.out.push(0x01);
-                self.out.push(*signed as u8);
+                self.out.push(u8::from(*signed));
                 self.width(width);
             }
             Primitive::Float(w) => {
@@ -477,7 +477,7 @@ impl<'a> Skeleton<'a> {
                 ty,
             } => {
                 self.out.push(0x08);
-                self.out.push(*mutable as u8);
+                self.out.push(u8::from(*mutable));
                 self.ty(ty);
             }
             Primitive::Builtin(s) => {

@@ -322,7 +322,7 @@ impl Renderer<'_> {
             // Backticks and `${}` exactly as TypeScript writes them.
             Type::TemplateLiteral(parts) => {
                 f.write_str("`")?;
-                for part in parts.iter() {
+                for part in parts {
                     match part {
                         TemplatePart::Literal(s) => f.write_str(s)?,
                         TemplatePart::Interpolated(t) => {
@@ -368,18 +368,15 @@ impl Renderer<'_> {
                 self_ty,
                 trait_ref,
                 assoc,
-            } => match trait_ref {
-                Some(tr) => {
-                    f.write_str("<")?;
-                    self.ty(f, self_ty)?;
-                    f.write_str(" as ")?;
-                    self.ty(f, tr)?;
-                    write!(f, ">::{assoc}")
-                }
-                None => {
-                    self.nested(f, self_ty)?;
-                    write!(f, "::{assoc}")
-                }
+            } => if let Some(tr) = trait_ref {
+                f.write_str("<")?;
+                self.ty(f, self_ty)?;
+                f.write_str(" as ")?;
+                self.ty(f, tr)?;
+                write!(f, ">::{assoc}")
+            } else {
+                self.nested(f, self_ty)?;
+                write!(f, "::{assoc}")
             },
         }
     }

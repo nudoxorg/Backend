@@ -133,7 +133,7 @@ impl PackageIndex {
         std::fs::create_dir_all(path)
             .map_err(|error| SearchError::Tantivy(tantivy::TantivyError::from(error)))?;
 
-        Self::maybe_wipe_for_schema_change(path)?;
+        Self::maybe_wipe_for_schema_change(path);
 
         let directory = tantivy::directory::MmapDirectory::open(path)
             .map_err(|error| SearchError::Tantivy(error.into()))?;
@@ -177,7 +177,7 @@ impl PackageIndex {
 
     /// Wipe the index directory contents and reset the watermark when the
     /// on-disk schema version does not match `SCHEMA_VERSION`.
-    fn maybe_wipe_for_schema_change(path: &std::path::Path) -> Result<(), SearchError> {
+    fn maybe_wipe_for_schema_change(path: &std::path::Path) {
         let marker_path = path.join(SCHEMA_VERSION_FILE);
         let on_disk_version = std::fs::read_to_string(&marker_path)
             .ok()
@@ -203,7 +203,6 @@ impl PackageIndex {
                 "failed to write schema_version marker"
             );
         }
-        Ok(())
     }
 
     /// Schema v4: all fields (v3 text/facet filters + FAST ranking columns).
@@ -319,7 +318,7 @@ impl PackageIndex {
                 Ok(record) => records.push(record),
                 // A version row can trail its outbox intent (or be tombstoned);
                 // skip and let the next intent re-deliver it.
-                Err(crate::error::IndexError::NotFound { .. }) => continue,
+                Err(crate::error::IndexError::NotFound { .. }) => {}
                 Err(error) => {
                     return Err(SearchError::OutboxRead {
                         detail: error.to_string(),
@@ -694,9 +693,7 @@ fn resolve_fields(index: &Index) -> Result<Fields, SearchError> {
 }
 
 fn directory_has_content(path: &std::path::Path) -> bool {
-    std::fs::read_dir(path)
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false)
+    std::fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_some())
 }
 
 fn wipe_directory_contents(path: &std::path::Path) {
@@ -733,20 +730,16 @@ fn must_conjunction_of_terms(field: Field, tokens: &[String]) -> tantivy::query:
 /// written by `absorb` has the columns present and collectors never see
 /// “field missing”.
 fn ranking_signals_from_facets(facets: Option<&crate::metadata::SearchFacets>) -> (u64, u64, u64) {
-    match facets {
-        Some(facets) => {
-            let quality_ppm = u64::from(facets.quality_ppm);
-            let downloads = facets.downloads.unwrap_or(0);
-            // popularity_pct is stored as 0..=10_000 (basis points of a percent).
-            // Scale by 100 → 0..=1_000_000 so it shares the same domain as quality_ppm.
-            let popularity_pct_ppm = facets
-                .popularity_pct
-                .map(|value| u64::from(value.min(10_000)) * 100)
-                .unwrap_or(0);
-            (quality_ppm, downloads, popularity_pct_ppm)
-        }
-        None => (0, 0, 0),
-    }
+    facets.map_or((0, 0, 0), |facets| {
+        let quality_ppm = u64::from(facets.quality_ppm);
+        let downloads = facets.downloads.unwrap_or(0);
+        // popularity_pct is stored as 0..=10_000 (basis points of a percent).
+        // Scale by 100 → 0..=1_000_000 so it shares the same domain as quality_ppm.
+        let popularity_pct_ppm = facets
+            .popularity_pct
+            .map_or(0, |value| u64::from(value.min(10_000)) * 100);
+        (quality_ppm, downloads, popularity_pct_ppm)
+    })
 }
 
 /// Construct a complete TantivyDocument for a single GlobalPackage.
@@ -803,7 +796,7 @@ fn build_document(
     let base_keywords = record
         .facets
         .as_ref()
-        .map(|facets| facets.keyword_text())
+        .map(crate::metadata::SearchFacets::keyword_text)
         .unwrap_or_default();
     let enrichment = super::ranking::enrich::enrich_package_text(
         &search_surface_lower,

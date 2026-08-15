@@ -7,7 +7,8 @@
 use crate::vcs_types::LinkRecord;
 use crate::wire::PayloadTable;
 use crate::wire::{
-    EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
+    EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
+    SymbolWire,
 };
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use ir::entry::Visibility;
@@ -53,7 +54,7 @@ fn function(name: &str) -> OwnedEntryPayload {
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
-            sig: Default::default(),
+            sig: FnSigFlags::default(),
             generics: Box::new([]),
             wheres: Box::new([]),
         }),
@@ -244,14 +245,13 @@ fn seal_archive_serves_zero_copy() {
     // Hot-path lookups straight from the zerocopy indices.
     let m = view.lookup_intro(intro(1)).expect("module in archive");
     let f = view.lookup_intro(intro(2)).expect("function in archive");
-    assert!(view.lookup_name("root").collect::<Vec<_>>().contains(&m));
+    assert!(view.lookup_name("root").any(|x| x == m));
     assert!(
         view.lookup_name("do_thing")
-            .collect::<Vec<_>>()
-            .contains(&f)
+            .any(|x| x == f)
     );
     assert!(
-        view.children(m).collect::<Vec<_>>().contains(&f),
+        view.children(m).any(|x| x == f),
         "function is a child of the module"
     );
 
@@ -821,7 +821,7 @@ fn change_ref_is_not_servable() {
         .unwrap()
         .unwrap();
 
-    let change_ref = Ref::Change(h.clone());
+    let change_ref = Ref::Change(h);
     assert_eq!(change_ref.kind(), RefKind::Change);
     assert!(!change_ref.is_channel_backed());
     assert!(matches!(
@@ -1237,14 +1237,12 @@ fn session_equivalence_property() {
         assert_eq!(
             mat_b.get(i),
             Some(payload),
-            "payload for intro {:?} differs",
-            i
+            "payload for intro {i:?} differs"
         );
         assert_eq!(
             mat_a.parent_of(i),
             mat_b.parent_of(i),
-            "parent mismatch for {:?}",
-            i
+            "parent mismatch for {i:?}"
         );
     }
     assert_eq!(
@@ -1480,7 +1478,7 @@ fn session_large_batch_stage() {
             .collect();
         assert_eq!(batch.len(), N as usize, "batch has exactly N entries");
         let stage_report = session.stage(batch).unwrap();
-        assert_eq!(stage_report.added, N as u64, "all N are new");
+        assert_eq!(stage_report.added, u64::from(N), "all N are new");
         assert_eq!(stage_report.updated, 0);
         assert_eq!(stage_report.unchanged, 0);
         assert!(stage_report.sample.len() <= 5, "sample capped at 5");
@@ -1488,7 +1486,7 @@ fn session_large_batch_stage() {
     };
 
     assert!(report.change.is_some(), "a change must be recorded");
-    assert_eq!(report.added, N as u64);
+    assert_eq!(report.added, u64::from(N));
     assert_eq!(report.deleted, 0);
 
     // Materialized IR must match the reference.
@@ -1502,8 +1500,7 @@ fn session_large_batch_stage() {
         assert_eq!(
             mat_ses.get(i),
             Some(payload),
-            "payload mismatch for intro {:?}",
-            i
+            "payload mismatch for intro {i:?}"
         );
     }
 }
@@ -1524,7 +1521,7 @@ fn session_foreign_package_rejected() {
     // Build a foreign entry (different package).
     let foreign_intro = intro(42);
     let foreign_entry = StagedEntry {
-        stable: StableRef::new(foreign_pkg.clone(), foreign_intro),
+        stable: StableRef::new(foreign_pkg, foreign_intro),
         payload: function("foreign_sym"),
         parent: None,
         links: vec![],
@@ -1614,7 +1611,7 @@ fn wire_entry(name: &str, seed: u8) -> WireEntry {
     let kind = KindWire::Function(FunctionWire {
         input_params: Box::new([]),
         output_params: Box::new([]),
-        sig: Default::default(),
+        sig: FnSigFlags::default(),
         generics: Box::new([]),
         wheres: Box::new([]),
     });
@@ -1755,14 +1752,12 @@ fn stream_happy_path_equivalence() {
         assert_eq!(
             mat_stream.get(i),
             Some(payload),
-            "payload mismatch for intro {:?}",
-            i
+            "payload mismatch for intro {i:?}"
         );
         assert_eq!(
             mat_ref.parent_of(i),
             mat_stream.parent_of(i),
-            "parent mismatch for {:?}",
-            i
+            "parent mismatch for {i:?}"
         );
     }
     assert_eq!(
@@ -1975,7 +1970,7 @@ fn stream_abort_mid_stream() {
     );
 
     // Resync path: a subsequent record_generation must succeed.
-    let mut ir2 = ir.clone();
+    let mut ir2 = ir;
     ir2.insert_live(IntroId::from_raw([0x99; 32]), function("new_thing"), None);
     let change = repo.record_generation(&ir2).unwrap();
     assert!(
@@ -2084,7 +2079,7 @@ fn stream_foreign_package_rejected() {
             KindWire::Function(FunctionWire {
                 input_params: Box::new([]),
                 output_params: Box::new([]),
-                sig: Default::default(),
+                sig: FnSigFlags::default(),
                 generics: Box::new([]),
                 wheres: Box::new([]),
             }),

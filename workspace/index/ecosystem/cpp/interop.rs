@@ -25,7 +25,7 @@ pub fn purl(stem: &StructuredName, version: &str, rev: Option<&str>) -> String {
         let org = stem
             .namespace
             .first()
-            .map(|s| s.as_str())
+            .map(smol_str::SmolStr::as_str)
             .unwrap_or_default();
         return format!("pkg:github/{org}/{}@{version}", stem.name);
     }

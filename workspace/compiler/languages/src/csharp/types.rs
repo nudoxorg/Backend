@@ -60,14 +60,13 @@ pub fn map_visibility(s: &str) -> nudox_ir::entry::Visibility {
     use nudox_ir::entry::Visibility;
     match s {
         "public" => Visibility::Public,
-        "protected" => Visibility::Protected,
-        "internal" => Visibility::Internal,
         // Protected OR internal → Protected (the wider of the two).
-        "protectedInternal" => Visibility::Protected,
+        "protected" | "protectedInternal" => Visibility::Protected,
+        "internal" => Visibility::Internal,
         // Protected AND internal → Package (closest narrower).
         "privateProtected" => Visibility::Package,
-        "private" => Visibility::Private,
-        // Unknown / empty → Private (safe default: member-level default in C#).
+        // Private, unknown, or empty → Private (safe default: member-level
+        // default in C#).
         _ => Visibility::Private,
     }
 }
@@ -337,10 +336,7 @@ fn lower_named(
 /// [`ForeignOrigin::Namespace`]: nudox_ir::foreign::ForeignOrigin::Namespace
 fn csharp_foreign_key(fqn: &str) -> ForeignKey {
     let bare = strip_arity(fqn);
-    let namespace = match bare.rfind('.') {
-        Some(i) => &bare[..i],
-        None => "",
-    };
+    let namespace = bare.rfind('.').map_or("", |i| &bare[..i]);
     ForeignKey::in_namespace(
         EcosystemId::new("nuget"),
         namespace,
@@ -567,7 +563,7 @@ pub fn strip_arity(name: &str) -> String {
     let mut chars = name.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '`' {
-            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
                 chars.next();
             }
         } else {

@@ -125,11 +125,8 @@ fn is_version_operator(word: &str) -> bool {
 ///
 /// Examples: `glib-2.0>=2.40` → `glib-2.0`, `foo` → `foo`.
 fn strip_embedded_version_constraint(spec: &str) -> &str {
-    if let Some(position) = spec.find(|c| matches!(c, '>' | '<' | '=' | '!')) {
-        spec[..position].trim_end()
-    } else {
-        spec.trim()
-    }
+    spec.find(['>', '<', '=', '!'])
+        .map_or_else(|| spec.trim(), |position| spec[..position].trim_end())
 }
 
 #[cfg(test)]

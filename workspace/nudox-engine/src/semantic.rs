@@ -625,6 +625,7 @@ mod tests {
 
     /// A zero vector scores zero rather than NaN.
     #[test]
+    #[allow(clippy::float_cmp)] // must be *exactly* 0.0, not NaN
     fn a_zero_vector_scores_zero_and_does_not_poison_the_sort() {
         let index = SemanticIndex::new();
         index

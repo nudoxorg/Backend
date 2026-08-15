@@ -11,7 +11,7 @@
 //! - **Declarative**: animation has a fixed endpoint and cannot be interrupted
 //!   mid-flight (entrances, fades, shimmer, badge pop, nav flash). The easing
 //!   curve is chosen once; the target is baked in.
-//! - **Springs** (`spring.rs`/`motion2.rs`): the target can change at any time
+//! - **Springs** (`spring.rs`/`motion2d.rs`): the target can change at any time
 //!   (dock toggle, selection bar, overlay) and velocity must be preserved across
 //!   retarget. Springs live in view state; declarative animations do not.
 //!

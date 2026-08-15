@@ -131,7 +131,7 @@ fn end_to_end_apply_commit_claim_changed_since_and_historical_read() {
     use index::engine::stmt;
     use sea_orm::sea_query::{Asterisk, Expr, Func, Query};
     let mut tip = Query::select();
-    tip.from(index::entity::packages::Entity::default())
+    tip.from(index::entity::packages::Entity)
         .expr(Func::count(Expr::col(Asterisk)));
     let now_count: Vec<i64> =
         stmt::query_select(writer.engine(), tip, &mut |row| row.get_integer(0)).expect("count now");

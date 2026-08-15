@@ -18,31 +18,31 @@
 //!
 //! # Modules
 //!
-//! * [`wire`]    — the complete type vocabulary crossing the engine↔GUI seam
-//!                (§L2).  `lindsey` imports only from here.
-//! * [`chunk`]   — LR-3/LR-4: the one place IR becomes presentation.
+//! * [`wire`] — the complete type vocabulary crossing the engine↔GUI seam
+//!   (§L2).  `lindsey` imports only from here.
+//! * [`chunk`] — LR-3/LR-4: the one place IR becomes presentation.
 //! * [`runtime`] — LR-9: Tokio multi-thread runtime + `LocalSet` for query
-//!                 execution; `Engine::start` → `EngineHandle`.
-//! * [`doc`]     — `open_symbol`: drives the chunker and emits `DocEvent`
-//!                 streams following the §9.3 protocol.
-//! * [`search`]  — name/type/semantic fan-out over `PackageIndexes` (LR-10).
-//! * [`query`]   — drives `CorpusAdapter` on the `LocalSet`; emits
-//!                 `QueryEvent` streams.
+//!   execution; `Engine::start` → `EngineHandle`.
+//! * [`doc`] — `open_symbol`: drives the chunker and emits `DocEvent`
+//!   streams following the §9.3 protocol.
+//! * [`search`] — name/type/semantic fan-out over `PackageIndexes` (LR-10).
+//! * [`query`] — drives `CorpusAdapter` on the `LocalSet`; emits
+//!   `QueryEvent` streams.
 //! * [`versions`] — the version plane: holding several generations of one
-//!                 package, and choosing which one the corpus serves.
+//!   package, and choosing which one the corpus serves.
 //! * [`timeline`] — a symbol's history across those generations, keyed on
-//!                 `IntroId`.
-//! * [`purl`]     — the one thing a *user* can type that names a package this
-//!                 corpus has never seen. An input parser and a rendering, not
-//!                 a second identity beside `PackageLineageId`.
-//! * [`acquire`]  — resolve → fetch → verify → extract, and the typed failure
-//!                 vocabulary for each. Read its module docs before assuming
-//!                 anything about what a fetch guarantees.
-//! * [`store`]    — the live corpus (`Corpus`, `PackageView`, `IrSource`) at the
-//!                 base of the stack, directly above `nudox-ir`.
-//! * [`graph`]    — the Trustfall query plane (`CorpusAdapter`) over the corpus.
-//! * [`embed`]    — the production ONNX embedder adapter behind `semantic::Embedder`.
-//! * [`mcp`]      — the MCP server `lindsey` hosts; a *view* of `EngineHandle`.
+//!   `IntroId`.
+//! * [`purl`] — the one thing a *user* can type that names a package this
+//!   corpus has never seen. An input parser and a rendering, not
+//!   a second identity beside `PackageLineageId`.
+//! * [`acquire`] — resolve → fetch → verify → extract, and the typed failure
+//!   vocabulary for each. Read its module docs before assuming
+//!   anything about what a fetch guarantees.
+//! * [`store`] — the live corpus (`Corpus`, `PackageView`, `IrSource`) at the
+//!   base of the stack, directly above `nudox-ir`.
+//! * [`graph`] — the Trustfall query plane (`CorpusAdapter`) over the corpus.
+//! * [`embed`] — the production ONNX embedder adapter behind `semantic::Embedder`.
+//! * [`mcp`] — the MCP server `lindsey` hosts; a *view* of `EngineHandle`.
 //!
 //! # `EngineHandle` public surface (§7.1 + §L5)
 //!

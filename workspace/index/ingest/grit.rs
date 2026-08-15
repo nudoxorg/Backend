@@ -237,9 +237,11 @@ fn parse_smart_advertisement(
             // ref list (or EOF) ends the walk. An empty repository advertises
             // only the `capabilities^{}` carrier, yielding zero refs.
             None => break,
-            Some(pkt_line::Packet::Flush)
-            | Some(pkt_line::Packet::Delim)
-            | Some(pkt_line::Packet::ResponseEnd) => {
+            Some(
+                pkt_line::Packet::Flush
+                | pkt_line::Packet::Delim
+                | pkt_line::Packet::ResponseEnd,
+            ) => {
                 if refs.is_empty() {
                     continue;
                 }

@@ -255,7 +255,7 @@ fn lower_fixture(case: &str, root: &Path) -> Arc<PackageView> {
         })
     .table});
     eprintln!("fixture lowered in {:.1}s", cost.wall.as_secs_f64());
-    let view = IrView::with_package(descriptor.lineage.clone(), table);
+    let view = IrView::with_package(descriptor.lineage, table);
     Arc::new(PackageView::build(view, Provenance::TrustedLocal))
 }
 
@@ -283,7 +283,7 @@ fn render_text(toks: &[SigToken]) -> String {
 /// Find `fn_name`'s output-param `Type`, by walking straight through the raw
 /// IR (not the renderer) — this is what isolates defect (1)/(2) above from
 /// what `ty.rs` itself produced.
-fn output_type_of<'a>(view: &'a nudox_ir::view::IrView, fn_name: &str) -> Option<Type> {
+fn output_type_of(view: &nudox_ir::view::IrView, fn_name: &str) -> Option<Type> {
     let (_, entry) = view.entries().find(|(_, e)| e.sym().name == fn_name)?;
     let Some(Kind::Function(f)) = entry.kind().as_owned_kind() else {
         return None;

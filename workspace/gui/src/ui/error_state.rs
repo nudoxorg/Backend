@@ -3,7 +3,7 @@
 //! # Guarantees
 //!
 //! Every slot has a designed error state (LD-16).  This component provides it.
-//! The error message comes from [`SlotError`]; callers supply a `on_retry`
+//! The error message comes from [`Error`]; callers supply a `on_retry`
 //! callback when the error is transient (retryable).
 //!
 //! **No motion on errors** (§5.2: "errors must be calm").  The component
@@ -14,7 +14,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, IconName, Icon, v_flex};
 
-use crate::bridge::slot::SlotError;
+use crate::bridge::slot::Error;
 use crate::theme::ext::ThemeExtAccessor as _;
 use gpui::prelude::*;
 use gpui_component::Sizable as _;
@@ -25,14 +25,14 @@ use gpui_component::Sizable as _;
 ///
 /// The component renders:
 /// - A danger-coloured icon.
-/// - The error message from [`SlotError`].
+/// - The error message from [`Error`].
 /// - A "Retry" button when `on_retry` is `Some` (for transient errors).
 /// - For `Permanent` errors, the message itself is the explanation; no
 ///   separate "details" disclosure is needed at this abstraction level.
 #[derive(IntoElement)]
 pub struct ErrorState {
     /// The terminal error to display.
-    error: SlotError,
+    error: Error,
     /// Callback invoked when the user clicks "Retry".  `None` for permanent
     /// errors where a retry cannot help.
     on_retry: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
@@ -43,7 +43,7 @@ impl ErrorState {
     ///
     /// Pass `on_retry: None` for permanent errors (auth failures, missing
     /// packages, schema mismatches — anything a retry cannot resolve).
-    pub fn new(error: SlotError, on_retry: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>) -> Self {
+    pub fn new(error: Error, on_retry: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>) -> Self {
         Self { error, on_retry }
     }
 
@@ -53,7 +53,7 @@ impl ErrorState {
         on_retry: impl Fn(&mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
-            error: SlotError::Transient { message: message.into() },
+            error: Error::Transient { message: message.into() },
             on_retry: Some(Box::new(on_retry)),
         }
     }
@@ -61,7 +61,7 @@ impl ErrorState {
     /// Convenience: build from a permanent error (no retry).
     pub fn permanent(message: impl Into<String>) -> Self {
         Self {
-            error: SlotError::Permanent { message: message.into() },
+            error: Error::Permanent { message: message.into() },
             on_retry: None,
         }
     }
@@ -75,7 +75,7 @@ impl RenderOnce for ErrorState {
         let al = ext.alpha;
         let theme = cx.theme();
 
-        // Error message — pre-computed via Display impl on SlotError (not format! in render).
+        // Error message — pre-computed via Display impl on Error (not format! in render).
         let message: gpui::SharedString = self.error.to_string().into();
 
         // Whether to show a retry button.

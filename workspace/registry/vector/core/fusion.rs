@@ -105,7 +105,10 @@ mod tests {
             },
         ];
         let fused = rrf_fuse(&lists, RRF_K);
-        assert_eq!(fused[0].rrf_score, fused[1].rrf_score);
+        assert!(
+            (fused[0].rrf_score - fused[1].rrf_score).abs() < f32::EPSILON,
+            "tied inputs must produce identical rrf scores"
+        );
         assert_eq!(fused[0].id, lo, "tie breaks to the smaller PointId");
         assert_eq!(fused[1].id, hi);
     }

@@ -10,6 +10,10 @@ use std::time::Duration;
 
 use smol_str::SmolStr;
 use uuid::Uuid;
+// Re-exported so `use common::*` in sibling test files brings the `VectorStore`
+// trait into scope (the `.upsert`/`.close` methods live on the trait, not on
+// `LocalShardStore`). This module itself never names it directly.
+#[allow(unused_imports)]
 pub use registry::vector::VectorStore;
 use registry::vector::{
 	Embedding, FilterClause, JinaCodeV2, Payload, PayloadValue, PointId, QP1, QuantProfile,

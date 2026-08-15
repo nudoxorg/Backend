@@ -128,7 +128,7 @@ impl SectionId {
 /// 44..48  link_count: u32 LE
 /// 48..50  kind_table_version: u16 LE
 /// 50..52  reserved: [u8; 2]
-/// 52..64  _reserved_tail: [u8; 12] (must be 0)
+/// 52..64  reserved_tail: [u8; 12] (must be 0)
 /// ```
 #[derive(Clone, Copy, Debug, FromBytes, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -159,7 +159,7 @@ pub struct ArchiveHeader {
     /// Reserved (must be 0).
     pub reserved: [u8; 2], //         offset 50
     /// Tail padding to reach 64 bytes (must be 0).
-    pub _reserved_tail: [u8; 12], //         offset 52..64
+    pub reserved_tail: [u8; 12], //         offset 52..64
 }
 
 const _: () = assert!(std::mem::size_of::<ArchiveHeader>() == 64);

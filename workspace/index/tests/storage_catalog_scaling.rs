@@ -129,8 +129,9 @@ fn ops_for_fixture(fixture: &CorpusFixture) -> Option<(CatalogOp, CatalogOp)> {
     let version_id = version_id_for(stem_id, &fixture.version);
 
     let (license, edges) = if fixture.ecosystem == "crates.io" {
-        match std::fs::read(fixture.path.join("Cargo.toml")) {
-            Ok(bytes) => {
+        std::fs::read(fixture.path.join("Cargo.toml")).map_or_else(
+            |_| (None, Vec::new()),
+            |bytes| {
                 let (license, deps) = parse_cargo_toml_dependencies(&bytes);
                 let edges = deps
                     .into_iter()
@@ -144,9 +145,8 @@ fn ops_for_fixture(fixture: &CorpusFixture) -> Option<(CatalogOp, CatalogOp)> {
                     })
                     .collect::<Vec<_>>();
                 (license, edges)
-            }
-            Err(_) => (None, Vec::new()),
-        }
+            },
+        )
     } else {
         (None, Vec::new())
     };

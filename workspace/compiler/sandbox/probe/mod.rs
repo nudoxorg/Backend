@@ -82,8 +82,7 @@ fn hv_support() -> bool {
         .arg("-n")
         .arg("kern.hv_support")
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
-        .unwrap_or(false)
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
 }
 
 /// Snapshot of what this host can enforce.
@@ -120,10 +119,10 @@ impl IsolationPolicy {
     pub fn env_requires_production() -> bool {
         matches!(
             std::env::var("NUDOX_SANDBOX_REQUIRE").as_deref(),
-            Ok("1") | Ok("true")
+            Ok("1" | "true")
         ) || matches!(
             std::env::var("NUDOX_ENV").as_deref(),
-            Ok("prod") | Ok("production")
+            Ok("prod" | "production")
         )
     }
 

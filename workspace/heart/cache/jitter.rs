@@ -16,6 +16,6 @@ pub fn jittered(base: Duration, frac: f64) -> Duration {
         return base;
     }
     let u: f64 = rand::random::<f64>(); // [0, 1)
-    let factor = 1.0 - frac + u * (2.0 * frac);
+    let factor = u.mul_add(2.0 * frac, 1.0 - frac);
     base.mul_f64(factor.max(0.0))
 }

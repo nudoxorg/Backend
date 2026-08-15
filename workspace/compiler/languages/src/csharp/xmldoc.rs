@@ -11,7 +11,7 @@
 //! decoding; unknown tags still degrade to their text content rather than
 //! failing (doc comments are often slightly broken).
 
-use std::{collections::HashMap, io::Cursor};
+use std::{collections::HashMap, fmt::Write as _, io::Cursor};
 
 use quick_xml::{Reader, events::Event};
 
@@ -160,7 +160,7 @@ fn strip_arity(name: &str) -> String {
     let mut chars = name.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '`' {
-            while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+            while chars.peek().is_some_and(char::is_ascii_digit) {
                 chars.next();
             }
         } else {
@@ -221,16 +221,14 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
             Ok(Event::Start(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
                 let attrs = attrs_to_string(&e);
-                if stack.is_empty() {
-                    stack.push((name, attrs, String::new()));
-                } else {
+                if !stack.is_empty() {
                     // Nested open: re-emit into parent inner so markdown sees it.
                     let open = format!("<{name}{attrs}>");
                     if let Some((_, _, inner)) = stack.last_mut() {
                         inner.push_str(&open);
                     }
-                    stack.push((name, attrs, String::new()));
                 }
+                stack.push((name, attrs, String::new()));
             }
             Ok(Event::Empty(e)) => {
                 let name = String::from_utf8_lossy(e.name().as_ref()).into_owned();
@@ -238,7 +236,7 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
                 if stack.is_empty() {
                     out.push((name, attrs, String::new()));
                 } else if let Some((_, _, inner)) = stack.last_mut() {
-                    inner.push_str(&format!("<{name}{attrs}/>"));
+                    let _ = write!(inner, "<{name}{attrs}/>");
                 }
             }
             Ok(Event::End(e)) => {
@@ -250,7 +248,7 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
                     } else if let Some((_, _, parent_inner)) = stack.last_mut() {
                         // Nested close: fold child back into parent.
                         parent_inner.push_str(&inner);
-                        parent_inner.push_str(&format!("</{name}>"));
+                        let _ = write!(parent_inner, "</{name}>");
                         let _ = open_name;
                         let _ = attrs;
                     }
@@ -273,9 +271,8 @@ fn top_level_elements(xml: &str) -> Vec<(String, String, String)> {
             }
             // quick-xml 0.37 has no `Event::GeneralRef`: named entities arrive
             // inside `Event::Text` and are expanded by `decode_entities` above.
-            Ok(Event::Eof) => break,
+            Ok(Event::Eof) | Err(_) => break,
             Ok(_) => {}
-            Err(_) => break,
         }
         buf.clear();
     }
@@ -295,10 +292,10 @@ fn attrs_to_string(e: &quick_xml::events::BytesStart<'_>) -> String {
     let mut out = String::new();
     for a in e.attributes().flatten() {
         let key = String::from_utf8_lossy(a.key.as_ref());
-        let val = a
-            .unescape_value()
-            .map(|c| c.into_owned())
-            .unwrap_or_else(|_| String::from_utf8_lossy(&a.value).into_owned());
+        let val = a.unescape_value().map_or_else(
+            |_| String::from_utf8_lossy(&a.value).into_owned(),
+            std::borrow::Cow::into_owned,
+        );
         out.push(' ');
         out.push_str(&key);
         out.push_str("=\"");
@@ -311,10 +308,10 @@ fn attrs_to_string(e: &quick_xml::events::BytesStart<'_>) -> String {
 /// Split `<tag attrs...>` body into `(name, attrs)`.
 fn split_tag(body: &str) -> (String, String) {
     let body = body.trim();
-    match body.find(|c: char| c.is_whitespace()) {
-        Some(sp) => (body[..sp].to_string(), body[sp..].trim().to_string()),
-        None => (body.to_string(), String::new()),
-    }
+    body.find(|c: char| c.is_whitespace()).map_or_else(
+        || (body.to_string(), String::new()),
+        |sp| (body[..sp].to_string(), body[sp..].trim().to_string()),
+    )
 }
 
 /// Convert an element's inner XML to Markdown, lowering the common inline tags
@@ -343,9 +340,9 @@ fn inline_to_markdown(inner: &str) -> String {
             // Self-closing inline references.
             "see" | "seealso" if self_closing => {
                 if let Some(cref) = attr(&attrs, "cref") {
-                    out.push_str(&format!("`{}`", strip_doc_id_prefix(&cref)));
+                    let _ = write!(out, "`{}`", strip_doc_id_prefix(&cref));
                 } else if let Some(kw) = attr(&attrs, "langword") {
-                    out.push_str(&format!("`{kw}`"));
+                    let _ = write!(out, "`{kw}`");
                 } else if let Some(href) = attr(&attrs, "href") {
                     out.push_str(&href);
                 }
@@ -353,7 +350,7 @@ fn inline_to_markdown(inner: &str) -> String {
             }
             "paramref" | "typeparamref" if self_closing => {
                 if let Some(n) = attr(&attrs, "name") {
-                    out.push_str(&format!("`{n}`"));
+                    let _ = write!(out, "`{n}`");
                 }
                 i = gt + 1;
             }
@@ -368,15 +365,16 @@ fn inline_to_markdown(inner: &str) -> String {
             // Inline / block code: reproduce content verbatim in backticks/fences.
             "c" if !self_closing => {
                 let (content, next) = take_until_close(inner, gt + 1, "c");
-                out.push_str(&format!("`{}`", decode_entities(content.trim())));
+                let _ = write!(out, "`{}`", decode_entities(content.trim()));
                 i = next;
             }
             "code" if !self_closing => {
                 let (content, next) = take_until_close(inner, gt + 1, "code");
-                out.push_str(&format!(
+                let _ = write!(
+                    out,
                     "\n```\n{}\n```\n",
                     trim_code(&decode_entities(&content))
-                ));
+                );
                 i = next;
             }
             // Lists → Markdown bullets (item text only; term/description flattened).
@@ -401,13 +399,13 @@ fn inline_to_markdown(inner: &str) -> String {
 /// `</name>` and the index past it.
 fn take_until_close(s: &str, from: usize, name: &str) -> (String, usize) {
     let close = format!("</{name}>");
-    match s[from..].find(&close) {
-        Some(rel) => {
+    s[from..].find(&close).map_or(
+        (s[from..].to_string(), s.len()),
+        |rel| {
             let end = from + rel;
             (s[from..end].to_string(), end + close.len())
-        }
-        None => (s[from..].to_string(), s.len()),
-    }
+        },
+    )
 }
 
 /// Trim shared leading blank lines from a code block.
@@ -450,15 +448,16 @@ fn collapse_whitespace(s: &str) -> String {
 /// Prefers `quick_xml::escape::unescape` (handles numeric entities too);
 /// falls back to the five XML named entities on error.
 fn decode_entities(text: &str) -> String {
-    match quick_xml::escape::unescape(text) {
-        Ok(cow) => cow.into_owned(),
-        Err(_) => text
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'")
-            .replace("&amp;", "&"),
-    }
+    quick_xml::escape::unescape(text).map_or_else(
+        |_| {
+            text.replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&apos;", "'")
+                .replace("&amp;", "&")
+        },
+        std::borrow::Cow::into_owned,
+    )
 }
 
 // ---------------------------------------------------------------------------

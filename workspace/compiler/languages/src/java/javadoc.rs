@@ -13,7 +13,7 @@
 //!
 //! Everything here is pure and unit-tested at the bottom of the file.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Write as _};
 
 /// The comment flavor, per JEP 467.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub fn flavor(doc_kind: Option<&str>) -> DocFlavor {
 }
 
 /// A structured view of one javadoc comment.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedJavadoc {
     pub summary: Option<String>,
     pub body: Option<String>,
@@ -221,7 +221,7 @@ fn block_tag_name(line: &str) -> Option<String> {
     let rest = line.strip_prefix('@')?;
     let name: String = rest
         .chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
+        .take_while(char::is_ascii_alphanumeric)
         .collect();
     if name.is_empty() || !name.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
         return None;
@@ -248,7 +248,7 @@ fn split_summary(main: &str) -> (Option<String>, Option<String>) {
     for (i, c) in text.char_indices() {
         if matches!(c, '.' | '!' | '?') {
             let next = bytes.get(i + 1);
-            if next.is_none() || next.is_some_and(|b| b.is_ascii_whitespace()) {
+            if next.is_none_or(u8::is_ascii_whitespace) {
                 sentence_end = Some(i + 1);
                 break;
             }
@@ -369,7 +369,7 @@ fn render_inline_tag(
         DocFlavor::Markdown => s.to_string(),
     };
     match tag {
-        "code" => format!("`{}`", protect(body)),
+        "code" | "systemProperty" => format!("`{}`", protect(body)),
         "literal" => protect(body),
         "link" | "linkplain" => {
             let (reference, label) = split_link_body(body);
@@ -388,16 +388,14 @@ fn render_inline_tag(
             }
             format!("`{body}`")
         }
-        "inheritDoc" => String::new(),
+        "inheritDoc" | "docRoot" => String::new(),
         "snippet" => match body.split_once(':') {
             Some((_, code)) => {
                 format!("\n```\n{}\n```\n", protect(code.trim_matches('\n')))
             }
             None => String::new(),
         },
-        "docRoot" => String::new(),
         "index" => split_first_token(body).0,
-        "systemProperty" => format!("`{}`", protect(body)),
         _ => body.to_string(),
     }
 }
@@ -482,7 +480,7 @@ fn is_element_reference(s: &str) -> bool {
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
     });
-    type_ok && member_ok && !(type_part.is_empty() && member.is_none())
+    type_ok && member_ok && (!type_part.is_empty() || member.is_some())
 }
 
 // ---------------------------------------------------------------------------
@@ -491,7 +489,7 @@ fn is_element_reference(s: &str) -> bool {
 
 fn html_to_text(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut chars = text.char_indices().peekable();
+    let mut chars = text.char_indices();
 
     while let Some((i, c)) = chars.next() {
         if c != '<' {
@@ -513,17 +511,14 @@ fn html_to_text(text: &str) -> String {
         let closing = tag_body.starts_with('/');
         match (tag.as_str(), closing) {
             ("p", false) => out.push_str("\n\n"),
-            ("br", _) => out.push('\n'),
-            ("li", false) => out.push_str("\n- "),
-            ("tr", false)
+            ("br", _)
+            | ("pre", false)
+            | ("tr", false)
             | ("ul", true)
             | ("ol", true)
             | ("table", true)
-            | ("pre", true)
-            | ("blockquote", true) => {
-                out.push('\n');
-            }
-            ("pre", false) => out.push('\n'),
+            | ("blockquote", true) => out.push('\n'),
+            ("li", false) => out.push_str("\n- "),
             _ => {}
         }
         for _ in 0..=close {
@@ -555,11 +550,11 @@ fn decode_entities(text: &str) -> String {
                 _ => entity
                     .strip_prefix('#')
                     .and_then(|num| {
-                        if let Some(hex) = num.strip_prefix('x').or_else(|| num.strip_prefix('X')) {
-                            u32::from_str_radix(hex, 16).ok()
-                        } else {
-                            num.parse::<u32>().ok()
-                        }
+                        num.strip_prefix('x')
+                            .or_else(|| num.strip_prefix('X'))
+                            .map_or_else(|| num.parse::<u32>().ok(), |hex| {
+                                u32::from_str_radix(hex, 16).ok()
+                            })
                     })
                     .and_then(char::from_u32),
             };
@@ -637,7 +632,7 @@ fn resolve_markdown_refs(
                 _ => {
                     if is_element_reference(first) {
                         links.push(resolve_reference(first, self_type, resolver));
-                        out.push_str(&format!("`{first}`"));
+                        let _ = write!(out, "`{first}`");
                         i = close + 1;
                         continue;
                     }

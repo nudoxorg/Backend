@@ -13,7 +13,6 @@
 //! outbox, job queue, blob/CAS, object-pack, and upstream pollers all live in
 //! the `index` crate; the client/GUI composes `index` and `registry`. registry
 //! therefore has NO dependency on `index` (or doltlite).
-#![feature(return_type_notation)]
 
 pub mod graph;
 /// The vector-search plane (`core` + feature-gated `local`/`remote`/`embed`,

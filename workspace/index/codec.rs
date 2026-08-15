@@ -39,26 +39,17 @@ pub fn read_text_enum<E: TextEnum>(token: &str) -> Result<E, CodecError> {
 
 /// Bind an optional `TEXT`-enum column.
 pub fn bind_optional_text_enum<E: TextEnum>(value: Option<E>) -> Value {
-    match value {
-        Some(inner) => bind_text_enum(inner),
-        None => Value::Null,
-    }
+    value.map_or(Value::Null, bind_text_enum)
 }
 
 /// Bind an optional owned string as `TEXT`.
 pub fn bind_optional_text(value: Option<String>) -> Value {
-    match value {
-        Some(text) => Value::Text(text),
-        None => Value::Null,
-    }
+    value.map_or(Value::Null, Value::Text)
 }
 
 /// Bind an optional integer.
 pub fn bind_optional_integer(value: Option<i64>) -> Value {
-    match value {
-        Some(integer) => Value::Integer(integer),
-        None => Value::Null,
-    }
+    value.map_or(Value::Null, Value::Integer)
 }
 
 /// Bind a boolean as `INTEGER` 0/1 (schema v4 stores flags as INTEGER).

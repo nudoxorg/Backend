@@ -17,12 +17,12 @@
 //! │  None         │  Loading { since } │  Skeleton { show_after: since }         │
 //! │  None         │  Streaming { .. }  │  Skeleton { show_after: Instant::now()} │
 //! │  None         │  Ready { .. }      │  (unreachable — Ready implies a value)  │
-//! │  None         │  Failed { .. }     │  Error(&SlotError)                      │
+//! │  None         │  Failed { .. }     │  Error(&Error)                      │
 //! │  Some(v)      │  Idle              │  (unreachable — Idle clears value)      │
 //! │  Some(v)      │  Loading { .. }    │  Stale(v) — dim 70 % + shimmer strip   │
 //! │  Some(v)      │  Streaming { .. }  │  Partial(v) — content + progress cues  │
 //! │  Some(v)      │  Ready { .. }      │  Fresh(v)                               │
-//! │  Some(v)      │  Failed { .. }     │  StaleWithError(v, &SlotError)          │
+//! │  Some(v)      │  Failed { .. }     │  StaleWithError(v, &Error)          │
 //! └───────────────┴────────────────────┴─────────────────────────────────────────┘
 //! ```
 //!
@@ -146,20 +146,20 @@ impl Phase {
     }
 }
 
-// ── SlotError ─────────────────────────────────────────────────────────────────
+// ── Error ─────────────────────────────────────────────────────────────────────
 
 /// A terminal error from a stream.
 ///
 /// The variants are intentionally vague here; the engine crate owns the concrete
 /// error taxonomy (`EngineError`). GUI-PLAN §8.1 / LD-16 requires every slot to
-/// have a designed error state with a retry affordance. `SlotError` is the
+/// have a designed error state with a retry affordance. `Error` is the
 /// bridge crate's representation of that; it carries a displayable message and an
 /// optional structured tag so views can branch without string-matching.
 ///
 /// `#[non_exhaustive]` per LR-12.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
-pub enum SlotError {
+pub enum Error {
     /// The underlying channel or task was cancelled before the stream completed.
     Cancelled,
     /// The engine returned an error it considers retryable (transient network
@@ -176,17 +176,17 @@ pub enum SlotError {
     },
 }
 
-impl fmt::Display for SlotError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SlotError::Cancelled => write!(f, "stream cancelled"),
-            SlotError::Transient { message } => write!(f, "transient error: {message}"),
-            SlotError::Permanent { message } => write!(f, "error: {message}"),
+            Error::Cancelled => write!(f, "stream cancelled"),
+            Error::Transient { message } => write!(f, "transient error: {message}"),
+            Error::Permanent { message } => write!(f, "error: {message}"),
         }
     }
 }
 
-impl std::error::Error for SlotError {}
+impl std::error::Error for Error {}
 
 // ── Display ───────────────────────────────────────────────────────────────────
 
@@ -230,11 +230,11 @@ pub enum Display<'slot, T> {
     Fresh(&'slot T),
     /// Cold-load failure (no prior value to show). Render a full-page error
     /// state with a retry affordance (LD-16).
-    Error(&'slot SlotError),
+    Error(&'slot Error),
     /// There is stale content *and* the refresh failed. Show the stale
     /// content so the user can still read it, and surface the error in a
     /// slim retry bar — do not obliterate the page.
-    StaleWithError(&'slot T, &'slot SlotError),
+    StaleWithError(&'slot T, &'slot Error),
 }
 
 // ── StreamSlot ────────────────────────────────────────────────────────────────
@@ -275,7 +275,7 @@ pub struct StreamSlot<T> {
     /// (stale-while-revalidate). Set to `None` only by `reset`.
     pub value: Option<T>,
     /// Terminal error from the most recent stream, if any.
-    pub error: Option<SlotError>,
+    pub error: Option<Error>,
     /// Generation that owns the current query. The drain closure compares
     /// incoming event gens against this value and drops mismatches.
     pub generation: Gen,
@@ -340,7 +340,7 @@ impl<T> StreamSlot<T> {
     /// Transitions to `Failed`, stores the error, and releases the handle.
     /// The `value` from any previous generation is preserved so `display()`
     /// can return `StaleWithError` instead of discarding readable content.
-    pub fn fail(&mut self, e: SlotError) {
+    pub fn fail(&mut self, e: Error) {
         self.phase = Phase::Failed {
             at: Instant::now(),
         };
@@ -405,7 +405,7 @@ impl<T> StreamSlot<T> {
                 Display::Error(self.error.as_ref().unwrap_or_else(|| {
                     // Belt-and-suspenders: should not happen, but avoids panic.
                     // A review finding if this is ever triggered in practice.
-                    static FALLBACK: SlotError = SlotError::Cancelled;
+                    static FALLBACK: Error = Error::Cancelled;
                     &FALLBACK
                 }))
             }
@@ -427,7 +427,7 @@ impl<T> StreamSlot<T> {
             // Refresh failed — stale content + slim error bar.
             (Some(v), Phase::Failed { .. }) => {
                 Display::StaleWithError(v, self.error.as_ref().unwrap_or_else(|| {
-                    static FALLBACK: SlotError = SlotError::Cancelled;
+                    static FALLBACK: Error = Error::Cancelled;
                     &FALLBACK
                 }))
             }
@@ -489,7 +489,7 @@ mod tests {
     fn none_failed_is_error() {
         let mut slot: StreamSlot<String> = StreamSlot::new();
         slot.begin_loading();
-        slot.fail(SlotError::Cancelled);
+        slot.fail(Error::Cancelled);
         assert!(matches!(slot.display(), Display::Error(_)));
     }
 
@@ -523,7 +523,7 @@ mod tests {
     fn some_failed_is_stale_with_error() {
         let mut slot = slot_with_value("old");
         slot.begin_loading();
-        slot.fail(SlotError::Transient { message: "network".to_string() });
+        slot.fail(Error::Transient { message: "network".to_string() });
         assert!(matches!(slot.display(), Display::StaleWithError(_, _)));
     }
 
@@ -540,7 +540,7 @@ mod tests {
     fn begin_loading_clears_error() {
         let mut slot: StreamSlot<String> = StreamSlot::new();
         slot.begin_loading();
-        slot.fail(SlotError::Cancelled);
+        slot.fail(Error::Cancelled);
         slot.begin_loading();
         assert!(slot.error.is_none(), "error cleared on new loading cycle");
     }
@@ -575,7 +575,7 @@ mod tests {
     fn reset_clears_everything() {
         let mut slot = slot_with_value("old");
         slot.begin_loading();
-        slot.fail(SlotError::Cancelled);
+        slot.fail(Error::Cancelled);
         slot.reset();
         assert!(matches!(slot.phase, Phase::Idle));
         assert!(slot.value.is_none());

@@ -448,7 +448,7 @@ fn enum_entry_has_variants() {
     );
 
     // Verify variant children exist.
-    let variants: Vec<_> = pkg
+    let variants = pkg
         .iter()
         .filter(|(_, e)| {
             matches!(
@@ -456,10 +456,9 @@ fn enum_entry_has_variants() {
                 nudox_ir::entry::EntryInner::Owned(Kind::Variant(_))
             )
         })
-        .collect();
+        .count();
     assert_eq!(
-        variants.len(),
-        2,
+        variants, 2,
         "AnimalKind must have 2 variants (Dog, Cat)"
     );
 }

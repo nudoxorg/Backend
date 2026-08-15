@@ -87,21 +87,36 @@ use crate::wire::{SharedStr, SigToken, SymbolKey};
 pub fn tokens(entry: &Entry, package: &PackageView) -> Vec<SigToken> {
     let name = entry.sym().name.as_str();
 
-    let inner = match entry.kind().as_owned_kind() {
-        Some(k) => k,
-        None => {
-            // EntryInner::Reference — re-export; render as `pub use <name>`
-            return vec![
-                SigToken::Kw("pub"),
-                SigToken::Ws,
-                SigToken::Kw("use"),
-                SigToken::Ws,
-                SigToken::Ident(SharedStr::from(name)),
-            ];
-        }
+    let Some(inner) = entry.kind().as_owned_kind() else {
+        // EntryInner::Reference — re-export; render as `pub use <name>`
+        return vec![
+            SigToken::Kw("pub"),
+            SigToken::Ws,
+            SigToken::Kw("use"),
+            SigToken::Ws,
+            SigToken::Ident(SharedStr::from(name)),
+        ];
     };
 
-    match inner {
+    // A declaration signature is the compact, type-bearing source context
+    // shared by search, MCP records, graph rows, and diffs.  Visibility is
+    // part of that declaration for the declaration kinds where Rust-like
+    // syntax expresses it; fields already add their own prefix and impls,
+    // variants, and parameters do not have a declaration-level visibility
+    // prefix.
+    let prefix_visibility = matches!(
+        &inner,
+        Kind::Module(_)
+            | Kind::Record(_)
+            | Kind::Enum(_)
+            | Kind::Trait(_)
+            | Kind::Alias(_)
+            | Kind::Const(_)
+            | Kind::Static(_)
+            | Kind::Function(_)
+    );
+
+    let rendered = match inner {
         Kind::Module(_) => vec![
             SigToken::Kw("mod"),
             SigToken::Ws,
@@ -158,7 +173,7 @@ pub fn tokens(entry: &Entry, package: &PackageView) -> Vec<SigToken> {
                 toks.push(SigToken::Punct(":"));
                 toks.push(SigToken::Ws);
                 let mut first = true;
-                for sup in t.supers.iter() {
+                for sup in &t.supers {
                     if !first {
                         toks.push(SigToken::Ws);
                         toks.push(SigToken::Punct("+"));
@@ -278,6 +293,15 @@ pub fn tokens(entry: &Entry, package: &PackageView) -> Vec<SigToken> {
             }
             toks
         }
+    };
+
+    if prefix_visibility {
+        let mut prefixed = Vec::with_capacity(rendered.len() + 2);
+        push_visibility(&mut prefixed, entry.sym().visibility);
+        prefixed.extend(rendered);
+        prefixed
+    } else {
+        rendered
     }
 }
 
@@ -289,7 +313,7 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
     let mut toks = Vec::new();
 
     // Modifiers in standard order
-    for m in f.modifiers.iter() {
+    for m in &f.modifiers {
         match m {
             FnModifier::Async => {
                 toks.push(SigToken::Kw("async"));
@@ -312,7 +336,7 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
         toks.push(SigToken::Kw("extern"));
         toks.push(SigToken::Ws);
         toks.push(SigToken::Ident(SharedStr::from(
-            format!("\"{}\"", abi).as_str(),
+            format!("\"{abi}\"").as_str(),
         )));
         toks.push(SigToken::Ws);
     }
@@ -352,7 +376,7 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
 
     // Input params — resolve each through the view if possible
     let view = package.view();
-    for param_ref in f.input_params.iter() {
+    for param_ref in &f.input_params {
         if !first {
             toks.push(SigToken::Punct(","));
             toks.push(SigToken::Ws);
@@ -365,12 +389,12 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
                     toks.push(SigToken::Ident(SharedStr::from(
                         param_entry.sym().name.as_str(),
                     )));
-                    if let Some(Kind::Param(p)) = param_entry.kind().as_owned_kind() {
-                        if let Some(ty) = &p.ty {
-                            toks.push(SigToken::Punct(":"));
-                            toks.push(SigToken::Ws);
-                            push_type(&mut toks, ty, package);
-                        }
+                    if let Some(Kind::Param(p)) = param_entry.kind().as_owned_kind()
+                        && let Some(ty) = &p.ty
+                    {
+                        toks.push(SigToken::Punct(":"));
+                        toks.push(SigToken::Ws);
+                        push_type(&mut toks, ty, package);
                     }
                 } else {
                     toks.push(SigToken::Ident(SharedStr::from("_")));
@@ -404,7 +428,7 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
             // Multiple outputs: render as tuple
             toks.push(SigToken::Punct("("));
             let mut first_out = true;
-            for op_ref in f.output_params.iter() {
+            for op_ref in &f.output_params {
                 if !first_out {
                     toks.push(SigToken::Punct(","));
                     toks.push(SigToken::Ws);
@@ -422,17 +446,16 @@ fn render_function(f: &Function, name: &str, package: &PackageView) -> Vec<SigTo
 /// Append the type of a `Ref<Param>` to `toks`, or `"?"` if unresolvable.
 fn push_param_type(toks: &mut Vec<SigToken>, param_ref: &Ref<Param>, package: &PackageView) {
     let view = package.view();
-    let mut rendered = false;
-    if let Ref::Intro(id) = param_ref {
-        if let Some(param_entry) = view.entry(*id) {
-            if let Some(Kind::Param(p)) = param_entry.kind().as_owned_kind() {
-                if let Some(ty) = &p.ty {
-                    push_type(toks, ty, package);
-                    rendered = true;
-                }
-            }
-        }
-    }
+    let rendered = if let Ref::Intro(id) = param_ref
+        && let Some(param_entry) = view.entry(*id)
+        && let Some(Kind::Param(p)) = param_entry.kind().as_owned_kind()
+        && let Some(ty) = &p.ty
+    {
+        push_type(toks, ty, package);
+        true
+    } else {
+        false
+    };
     if !rendered {
         toks.push(SigToken::Ident(SharedStr::from("?")));
     }
@@ -481,12 +504,11 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
         // as `any`, even with no jump target behind it.
         Type::Unknown(reason) => {
             let text = match reason {
-                UnknownType::Unannotated => SharedStr::from("?"),
+                UnknownType::Unannotated | UnknownType::OracleGap => SharedStr::from("?"),
                 UnknownType::DynamicallyTyped => SharedStr::from("dynamic"),
                 UnknownType::UnresolvedLocalName { name }
                 | UnknownType::UnresolvedExternal { name } => SharedStr::from(name.as_str()),
                 UnknownType::TruncatedAtDepthLimit => SharedStr::from("…"),
-                UnknownType::OracleGap => SharedStr::from("?"),
                 UnknownType::NoIrRepresentation { construct } => {
                     SharedStr::from(construct.as_str())
                 }
@@ -519,7 +541,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
             push_type(toks, base, package);
             toks.push(SigToken::Punct("<"));
             let mut first = true;
-            for arg in args.iter() {
+            for arg in args {
                 if !first {
                     toks.push(SigToken::Punct(","));
                     toks.push(SigToken::Ws);
@@ -550,7 +572,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
         Type::Tuple(elems) => {
             toks.push(SigToken::Punct("("));
             let mut first = true;
-            for elem in elems.iter() {
+            for elem in elems {
                 if !first {
                     toks.push(SigToken::Punct(","));
                     toks.push(SigToken::Ws);
@@ -577,7 +599,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 });
             } else {
                 let mut first = true;
-                for ty in tys.iter() {
+                for ty in tys {
                     if !first {
                         toks.push(SigToken::Ws);
                         toks.push(SigToken::Punct("|"));
@@ -597,7 +619,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 });
             } else {
                 let mut first = true;
-                for ty in tys.iter() {
+                for ty in tys {
                     if !first {
                         toks.push(SigToken::Ws);
                         toks.push(SigToken::Punct("&"));
@@ -614,14 +636,14 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 toks.push(SigToken::Kw("extern"));
                 toks.push(SigToken::Ws);
                 toks.push(SigToken::Ident(SharedStr::from(
-                    format!("\"{}\"", abi).as_str(),
+                    format!("\"{abi}\"").as_str(),
                 )));
                 toks.push(SigToken::Ws);
             }
             toks.push(SigToken::Kw("fn"));
             toks.push(SigToken::Punct("("));
             let mut first = true;
-            for p in params.iter() {
+            for p in params {
                 if !first {
                     toks.push(SigToken::Punct(","));
                     toks.push(SigToken::Ws);
@@ -649,7 +671,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
                 push_type(&mut bound_toks, b, package);
                 let bound_text = tokens_to_text(&bound_toks);
                 toks.push(SigToken::Ty {
-                    text: SharedStr::from(format!("{} extends {}", prefix, bound_text).as_str()),
+                    text: SharedStr::from(format!("{prefix} extends {bound_text}").as_str()),
                     target: None,
                 });
             } else {
@@ -661,11 +683,10 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
         }
 
         Type::Annotated { inner, annotation } => {
-            let ann_text = if let Some(arg) = &annotation.arg {
-                format!("@{}({}) ", annotation.token, arg)
-            } else {
-                format!("@{} ", annotation.token)
-            };
+            let ann_text = annotation.arg.as_ref().map_or_else(
+                || format!("@{} ", annotation.token),
+                |arg| format!("@{}({}) ", annotation.token, arg),
+            );
             toks.push(SigToken::Ident(SharedStr::from(ann_text.as_str())));
             push_type(toks, inner, package);
         }
@@ -754,7 +775,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
 
         Type::TemplateLiteral(parts) => {
             let mut text = String::from("`");
-            for part in parts.iter() {
+            for part in parts {
                 match part {
                     TemplatePart::Literal(s) => text.push_str(s),
                     TemplatePart::Interpolated(ty) => {
@@ -777,7 +798,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
             toks.push(SigToken::Punct("{"));
             toks.push(SigToken::Ws);
             let mut first = true;
-            for m in members.iter() {
+            for m in members {
                 if !first {
                     toks.push(SigToken::Punct(";"));
                     toks.push(SigToken::Ws);
@@ -810,7 +831,7 @@ pub(crate) fn push_type(toks: &mut Vec<SigToken>, ty: &Type, package: &PackageVi
 /// Render a list of `Type` bounds joined by ` + `.
 fn push_plus_bounds(toks: &mut Vec<SigToken>, bounds: &[Type], package: &PackageView) {
     let mut first = true;
-    for b in bounds.iter() {
+    for b in bounds {
         if !first {
             toks.push(SigToken::Ws);
             toks.push(SigToken::Punct("+"));
@@ -832,11 +853,10 @@ fn resolve_nominal(
             let lineage = package.lineage().clone();
             let key = nudox_ir::change::StableRef::new(lineage, *id);
             // Use precomputed path when available, else fallback to hex
-            let text = if let Some(path) = package.indexes().path_of(*id) {
-                display_path(path.as_ref(), *id, package)
-            } else {
-                SharedStr::from(id.to_hex().as_str())
-            };
+            let text = package.indexes().path_of(*id).map_or_else(
+                || SharedStr::from(id.to_hex().as_str()),
+                |path| display_path(path.as_ref(), *id, package),
+            );
             (text, Some(key))
         }
         // Cross-package reference. The KEY supplies the text, always — never
@@ -1008,14 +1028,9 @@ fn display_path(
 /// conservatively treated as "not a re-export", which only means it can still
 /// contribute to disambiguation, never that a real collision gets hidden.
 fn is_reexport(view: &nudox_ir::view::IrView, intro: nudox_ir::change::IntroId) -> bool {
-    match view.entry(intro) {
-        Some(entry) => match entry.kind().as_owned_kind() {
-            None => true,
-            Some(Kind::Reexport(_)) => true,
-            Some(_) => false,
-        },
-        None => false,
-    }
+    view.entry(intro).is_some_and(|entry| {
+        matches!(entry.kind().as_owned_kind(), None | Some(Kind::Reexport(_)))
+    })
 }
 
 /// Collapse adjacent identical segments in a `.`-joined moniker path.
@@ -1047,23 +1062,23 @@ fn primitive_text(prim: &Primitive, package: &PackageView) -> SharedStr {
         Primitive::Integer { signed, width } => {
             let prefix = if *signed { "i" } else { "u" };
             let w = width_str(width);
-            SharedStr::from(format!("{}{}", prefix, w).as_str())
+            SharedStr::from(format!("{prefix}{w}").as_str())
         }
         Primitive::Float(width) => {
             let w = width_str(width);
-            SharedStr::from(format!("f{}", w).as_str())
+            SharedStr::from(format!("f{w}").as_str())
         }
         Primitive::MutPointer(inner) => {
             let mut inner_toks = Vec::new();
             push_type(&mut inner_toks, inner, package);
             let inner_text = tokens_to_text(&inner_toks);
-            SharedStr::from(format!("*mut {}", inner_text).as_str())
+            SharedStr::from(format!("*mut {inner_text}").as_str())
         }
         Primitive::ConstPointer(inner) => {
             let mut inner_toks = Vec::new();
             push_type(&mut inner_toks, inner, package);
             let inner_text = tokens_to_text(&inner_toks);
-            SharedStr::from(format!("*const {}", inner_text).as_str())
+            SharedStr::from(format!("*const {inner_text}").as_str())
         }
         Primitive::Reference {
             lifetime,
@@ -1078,7 +1093,7 @@ fn primitive_text(prim: &Primitive, package: &PackageView) -> SharedStr {
                 .map(|l| format!("{} ", nudox_ir::kinds::lifetime_label(l)))
                 .unwrap_or_default();
             let mut_kw = if *mutable { "mut " } else { "" };
-            SharedStr::from(format!("&{}{}{}", lt, mut_kw, inner_text).as_str())
+            SharedStr::from(format!("&{lt}{mut_kw}{inner_text}").as_str())
         }
         Primitive::Builtin(name) => SharedStr::from(name.as_str()),
     }
@@ -1114,7 +1129,7 @@ fn push_generics(toks: &mut Vec<SigToken>, generics: &[GenericParam], package: &
     }
     toks.push(SigToken::Punct("<"));
     let mut first = true;
-    for gp in generics.iter() {
+    for gp in generics {
         if !first {
             toks.push(SigToken::Punct(","));
             toks.push(SigToken::Ws);
@@ -1236,7 +1251,7 @@ mod tests {
                 | SigToken::Lifetime(s) => s.to_string(),
                 SigToken::Ws => " ".to_string(),
             };
-            assert!(!text.is_empty(), "empty token in {}: {:?}", ctx, tok);
+            assert!(!text.is_empty(), "empty token in {ctx}: {tok:?}");
         }
     }
 
@@ -1259,8 +1274,8 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "module");
         let t = text_of(&toks);
-        assert!(t.contains("mod"), "expected mod kw: {}", t);
-        assert!(t.contains("root"), "expected name: {}", t);
+        assert!(t.contains("mod"), "expected mod kw: {t}");
+        assert!(t.contains("root"), "expected name: {t}");
     }
 
     #[test]
@@ -1277,8 +1292,9 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "struct");
         let t = text_of(&toks);
-        assert!(t.contains("struct"), "expected struct: {}", t);
-        assert!(t.contains("Point"), "expected name: {}", t);
+        assert!(t.starts_with("pub struct Point"), "visibility must be in signature: {t}");
+        assert!(t.contains("struct"), "expected struct: {t}");
+        assert!(t.contains("Point"), "expected name: {t}");
     }
 
     #[test]
@@ -1298,7 +1314,7 @@ mod tests {
         let e = pkg.view().entry(id(2)).unwrap();
         let toks = tokens(e, &pkg);
         let t = text_of(&toks);
-        assert!(t.contains("union"), "expected union kw: {}", t);
+        assert!(t.contains("union"), "expected union kw: {t}");
     }
 
     #[test]
@@ -1323,8 +1339,8 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "const");
         let t = text_of(&toks);
-        assert!(t.contains("const"), "expected const kw: {}", t);
-        assert!(t.contains("1024"), "expected value: {}", t);
+        assert!(t.contains("const"), "expected const kw: {t}");
+        assert!(t.contains("1024"), "expected value: {t}");
     }
 
     #[test]
@@ -1347,7 +1363,7 @@ mod tests {
         let e = pkg.view().entry(id(2)).unwrap();
         let toks = tokens(e, &pkg);
         let t = text_of(&toks);
-        assert!(t.contains("mut"), "expected mut: {}", t);
+        assert!(t.contains("mut"), "expected mut: {t}");
     }
 
     #[test]
@@ -1364,9 +1380,10 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "fn noop");
         let t = text_of(&toks);
-        assert!(t.contains("fn"), "expected fn: {}", t);
-        assert!(t.contains("noop"), "expected name: {}", t);
-        assert!(t.contains("()"), "expected parens: {}", t);
+        assert!(t.starts_with("pub fn noop"), "visibility must be in signature: {t}");
+        assert!(t.contains("fn"), "expected fn: {t}");
+        assert!(t.contains("noop"), "expected name: {t}");
+        assert!(t.contains("()"), "expected parens: {t}");
     }
 
     #[test]
@@ -1385,7 +1402,7 @@ mod tests {
         let e = pkg.view().entry(id(2)).unwrap();
         let toks = tokens(e, &pkg);
         let t = text_of(&toks);
-        assert!(t.contains("&self"), "expected &self: {}", t);
+        assert!(t.contains("&self"), "expected &self: {t}");
     }
 
     #[test]
@@ -1408,8 +1425,8 @@ mod tests {
         let e = pkg.view().entry(id(2)).unwrap();
         let toks = tokens(e, &pkg);
         let t = text_of(&toks);
-        assert!(t.contains('='), "expected = in alias: {}", t);
-        assert!(t.contains("str"), "expected target str: {}", t);
+        assert!(t.contains('='), "expected = in alias: {t}");
+        assert!(t.contains("str"), "expected target str: {t}");
     }
 
     #[test]
@@ -1664,8 +1681,8 @@ mod tests {
         let e = pkg.view().entry(id(2)).unwrap();
         let toks = tokens(e, &pkg);
         let t = text_of(&toks);
-        assert!(t.contains('<'), "generics should produce <: {}", t);
-        assert!(t.contains('T'), "generic param T should be present: {}", t);
+        assert!(t.contains('<'), "generics should produce <: {t}");
+        assert!(t.contains('T'), "generic param T should be present: {t}");
     }
 
     // -----------------------------------------------------------------------
@@ -1743,7 +1760,7 @@ mod tests {
         ]);
 
         assert_eq!(
-            pkg.indexes().path_of(id(4)).map(|p| p.as_ref()),
+            pkg.indexes().path_of(id(4)).map(AsRef::as_ref),
             Some("memchr.memchr.memchr.Memchr"),
             "test setup must reproduce the real memchr ancestor chain"
         );

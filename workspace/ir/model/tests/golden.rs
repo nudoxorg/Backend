@@ -802,25 +802,25 @@ fn update_golden_print_all() {
     println!("// GOLDEN_DRAW_FIRST:");
     println!(
         "{}",
-        draws.first().map(String::as_str).unwrap_or("(missing)")
+        draws.first().map_or("(missing)", String::as_str)
     );
     println!();
     println!("// GOLDEN_DRAW_SECOND:");
     println!(
         "{}",
-        draws.get(1).map(String::as_str).unwrap_or("(missing)")
+        draws.get(1).map_or("(missing)", String::as_str)
     );
     println!();
     println!("// GOLDEN_IMPL_FIRST:");
     println!(
         "{}",
-        impls.first().map(String::as_str).unwrap_or("(missing)")
+        impls.first().map_or("(missing)", String::as_str)
     );
     println!();
     println!("// GOLDEN_IMPL_SECOND:");
     println!(
         "{}",
-        impls.get(1).map(String::as_str).unwrap_or("(missing)")
+        impls.get(1).map_or("(missing)", String::as_str)
     );
     println!();
     println!("╚═══════════════════════════════════════════════════════════╝");

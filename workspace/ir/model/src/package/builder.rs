@@ -124,7 +124,10 @@ impl<Id: Eq + Hash> EntryBuilder<'_, Id> {
 
         let mut children = Vec::new();
 
-        let idx = id.map_or(ir.info.root_export(), |id| ir.info.create_export(id));
+        let idx = match id {
+            Some(id) => ir.info.create_export(id),
+            None => ir.info.root_export(),
+        };
 
         let kind = build(EntryBuilder {
             ir,

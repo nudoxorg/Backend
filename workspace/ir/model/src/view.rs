@@ -203,8 +203,7 @@ impl IrView {
     pub fn occurrences_of(&self, intro: IntroId) -> &[Occurrence] {
         self.occurrences
             .get(&intro)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Every occurrence across all owners, yielding `(owner, &Occurrence)`.

@@ -29,7 +29,7 @@ use std::time::Duration;
 use heart::{content::ContentHash, PackageId};
 use registry::vector::{EdgepackKey, ModelId, QuantProfile, EDGE_FORMAT_VERSION, QP1};
 
-use crate::engine::{CatalogEngine, EngineError, VersioningEngine, Value};
+use crate::engine::{EngineError, VersioningEngine, Value};
 
 /// The embed-text recipe this bakery runs: the symbol's **fully-qualified
 /// name**, exactly like the outbox vector consumer — reuse of the one canonical

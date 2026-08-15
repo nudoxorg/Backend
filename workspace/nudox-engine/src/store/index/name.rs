@@ -108,7 +108,7 @@ impl NameIndex {
     /// The input is assumed to already be lowercased; callers must fold before
     /// calling this method.
     pub fn get_exact(&self, name_lower: &str) -> &[NameEntry] {
-        self.inner.get(name_lower).map(Vec::as_slice).unwrap_or(&[])
+        self.inner.get(name_lower).map_or(&[], Vec::as_slice)
     }
 
     /// Iterate all entries whose lowercased name starts with `prefix_lower`.

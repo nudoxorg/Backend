@@ -581,8 +581,7 @@ async fn out_of_order_arrival_newer_is_still_current() {
     assert!(
         !events.iter().any(|e| matches!(e, DocEvent::Failed(_))),
         "corpus must hold the newest (3-symbol) generation (intro(2) must resolve); \
-         got events: {:?}",
-        events
+         got events: {events:?}"
     );
     // Also verify via the version list's symbol_count which is set at insertion.
     assert_eq!(

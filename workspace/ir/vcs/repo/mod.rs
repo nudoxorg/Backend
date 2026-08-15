@@ -5,7 +5,6 @@
 //! API for recording generations, materializing the current tip, and sealing
 //! serve archives.
 
-use std::io;
 use std::io::Write as IoWrite;
 use std::path::Path;
 
@@ -22,7 +21,6 @@ use libpijul::{MutTxnTExt, TxnTExt};
 use crate::archive::{SealEntry, SealedArchive, seal_from_entries};
 use crate::vcs_types::{ChangeSetFingerprint, LinkRecord};
 use crate::wire::{OwnedEntryPayload, PayloadTable};
-use ir::apply::PristineIntroTable;
 use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::kind::KindDiscriminant;
 
@@ -75,12 +73,12 @@ pub(crate) fn hash_to_hex(h: &Hash) -> String {
         Hash::Blake3(b) => {
             let mut s = String::with_capacity(64);
             for byte in b {
-                s.push(char::from_digit((byte >> 4) as u32, 16).unwrap());
-                s.push(char::from_digit((byte & 0xf) as u32, 16).unwrap());
+                s.push(char::from_digit(u32::from(byte >> 4), 16).unwrap());
+                s.push(char::from_digit(u32::from(byte & 0xf), 16).unwrap());
             }
             s
         }
-        _ => panic!("unexpected hash algorithm"),
+        Hash::None => panic!("unexpected hash algorithm"),
     }
 }
 
@@ -161,7 +159,7 @@ impl IrRepository<MemChanges> {
         // always well-formed and the working branch can't sit in a reserved
         // (tag/ or version/) namespace.
         let branch = BranchName::new(channel)?;
-        let env = Pristine::new_anon().map_err(|e| pijul_err(e))?;
+        let env = Pristine::new_anon().map_err(pijul_err)?;
         Ok(Self {
             env,
             changes: MemChanges::new(),
@@ -236,7 +234,7 @@ impl IrRepository<FsChanges> {
             let already_applied = txn
                 .read()
                 .has_change(&channel, &hash)
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .is_some();
             if already_applied {
                 continue;
@@ -268,8 +266,8 @@ impl IrRepository<FsChanges> {
         let merkle = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
+        txn.commit().map_err(pijul_err)?;
 
         // The in-memory working copy no longer reflects the channel tip; force
         // resync on the next record/begin_recording call.
@@ -300,7 +298,7 @@ where
     }
 
     fn arc_txn(&self) -> Result<ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, Error> {
-        self.env.arc_txn_begin().map_err(|e| pijul_err(e))
+        self.env.arc_txn_begin().map_err(pijul_err)
     }
 
     fn open_or_create_channel<T>(txn: &ArcTxn<T>, name: &str) -> Result<ChannelRef<T>, Error>
@@ -309,7 +307,7 @@ where
     {
         txn.write()
             .open_or_create_channel(name)
-            .map_err(|e| pijul_err(e))
+            .map_err(pijul_err)
     }
 
     /// Output the current channel state into the working copy so that
@@ -346,7 +344,7 @@ where
             1,    // n_workers
             0,    // salt
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
         Ok(())
     }
 
@@ -387,7 +385,7 @@ where
             let current_tip = txn
                 .read()
                 .current_state(&channel.read())
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .to_bytes();
 
             if current_tip != self.working_copy_tip.get() {
@@ -489,8 +487,8 @@ where
         for path in current_files.difference(&desired_files) {
             self.working_copy
                 .remove_path(path, false)
-                .map_err(|e| pijul_err(e))?;
-            txn.write().remove_file(path).map_err(|e| pijul_err(e))?;
+                .map_err(pijul_err)?;
+            txn.write().remove_file(path).map_err(pijul_err)?;
         }
 
         // Files to add or update:
@@ -514,13 +512,13 @@ where
                 let mut existing = Vec::new();
                 self.working_copy
                     .read_file(&path, &mut existing)
-                    .map_err(|e| pijul_err(e))?;
+                    .map_err(pijul_err)?;
                 if existing != bytes {
                     self.working_copy
                         .write_file(&path, libpijul::pristine::Inode::ROOT)
-                        .map_err(|e| pijul_err(e))?
+                        .map_err(pijul_err)?
                         .write_all(&bytes)
-                        .map_err(|e| pijul_err(e))?;
+                        .map_err(pijul_err)?;
                     // libpijul's record consults a per-file stat cache: a file
                     // is re-diffed only when its mtime is >= the channel's
                     // last-modified time (truncated to the second). The mtime
@@ -535,13 +533,13 @@ where
                         std::time::UNIX_EPOCH + std::time::Duration::from_millis(channel_ms);
                     self.working_copy
                         .touch(&path, self.now().max(floor))
-                        .map_err(|e| pijul_err(e))?;
+                        .map_err(pijul_err)?;
                 }
                 // else: identical content — leave the file and its mtime alone.
             } else {
                 // Add: put content into working copy and track in txn.
                 self.working_copy.add_file(&path, bytes);
-                txn.write().add_file(&path, 0).map_err(|e| pijul_err(e))?;
+                txn.write().add_file(&path, 0).map_err(pijul_err)?;
             }
         }
 
@@ -559,13 +557,13 @@ where
                 "", // prefix: whole tree
                 1,  // n_workers
             )
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
 
         let rec = builder.finish();
 
         // If there are no actions, nothing changed.
         if rec.actions.is_empty() {
-            txn.commit().map_err(|e| pijul_err(e))?;
+            txn.commit().map_err(pijul_err)?;
             return Ok(None);
         }
 
@@ -573,7 +571,7 @@ where
         let actions = rec
             .actions
             .into_iter()
-            .map(|a| a.globalize(&*txn.read()).map_err(|e| pijul_err(e)))
+            .map(|a| a.globalize(&*txn.read()).map_err(pijul_err))
             .collect::<Result<Vec<_>, _>>()?;
 
         // 6. Make Change with GenerationMeta (§7.6).
@@ -592,7 +590,7 @@ where
             },
             gen_meta,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         // 7. Save change.
         let hash = self
@@ -600,12 +598,13 @@ where
             .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
             .map_err(|e| {
                 // anyhow::Error wraps the actual error; try to downcast common types.
-                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                    Error::Io(std::io::Error::new(io_err.kind(), e.to_string()))
-                } else {
-                    // Preserve the error chain as a string message in a generic Pijul error.
-                    Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
-                }
+                e.downcast_ref::<std::io::Error>().map_or_else(
+                    || {
+                        // Preserve the error chain as a string message in a generic Pijul error.
+                        Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                    },
+                    |io_err| Error::Io(std::io::Error::new(io_err.kind(), e.to_string())),
+                )
             })?;
 
         // 8. Apply local change.
@@ -616,7 +615,7 @@ where
             &hash,
             &rec.updatables,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         // Snapshot the NEW tip (after apply, before commit) so we can update
         // `working_copy_tip` once the commit succeeds.  The WC reflects the
@@ -625,11 +624,11 @@ where
         let new_tip = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .to_bytes();
 
         // 9. Commit.
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         // WC is now consistent with `new_tip`.
         self.working_copy_tip.set(new_tip);
@@ -665,14 +664,14 @@ where
             1,
             0,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         if !conflicts.is_empty() {
-            let paths: Vec<String> = conflicts.iter().map(|c| format!("{:?}", c)).collect();
+            let paths: Vec<String> = conflicts.iter().map(|c| format!("{c:?}")).collect();
             return Err(Error::ConflictedState { paths });
         }
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         let mut table = PayloadTable::new();
         let package_id = &self.package;
@@ -683,7 +682,7 @@ where
             let intro = parse_intro_hex(hex, path)?;
 
             let mut buf = Vec::new();
-            wc.read_file(path, &mut buf).map_err(|e| pijul_err(e))?;
+            wc.read_file(path, &mut buf).map_err(pijul_err)?;
 
             // Parse F1 canonical format.
             let view =
@@ -720,13 +719,13 @@ where
 
     /// Return the current channel tip as an [`IrTip`].
     pub fn tip(&self) -> Result<IrTip, Error> {
-        let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
+        let txn = self.env.arc_txn_begin().map_err(pijul_err)?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let merkle = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
+        txn.commit().map_err(pijul_err)?;
         Ok(IrTip {
             merkle_bytes: merkle.to_bytes(),
         })
@@ -739,14 +738,14 @@ where
     /// Returns `true` if the given change hash is in the channel.
     pub fn has_change(&self, hex: &ChangeHashHex) -> Result<bool, Error> {
         let hash = hex_to_hash(&hex.0)?;
-        let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
+        let txn = self.env.arc_txn_begin().map_err(pijul_err)?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let result = txn
             .read()
             .has_change(&channel, &hash)
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .is_some();
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(result)
     }
 
@@ -756,21 +755,21 @@ where
 
     /// Return all change hashes in the channel, in recorded order (oldest first).
     pub fn log(&self) -> Result<Vec<ChangeHashHex>, Error> {
-        let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
+        let txn = self.env.arc_txn_begin().map_err(pijul_err)?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
         let mut result = Vec::new();
         let reader = txn.read();
-        let log_iter = reader.log(&channel.read(), 0).map_err(|e| pijul_err(e))?;
+        let log_iter = reader.log(&channel.read(), 0).map_err(pijul_err)?;
 
         for item in log_iter {
-            let (_n, (serialized_hash, _merkle)) = item.map_err(|e| pijul_err(e))?;
+            let (_n, (serialized_hash, _merkle)) = item.map_err(pijul_err)?;
             let hash: Hash = serialized_hash.into();
             result.push(ChangeHashHex(hash_to_hex(&hash)));
         }
 
         drop(reader);
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         Ok(result)
     }
@@ -787,7 +786,7 @@ where
     /// the expensive whole-tree resync.
     pub fn unrecord(&self, hex: &ChangeHashHex) -> Result<(), Error> {
         let hash = hex_to_hash(&hex.0)?;
-        let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
+        let txn = self.env.arc_txn_begin().map_err(pijul_err)?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
         // `unrecord` is exposed as a `MutTxnTExt` method (the free `unrecord`
@@ -795,7 +794,7 @@ where
         // It reverts the pristine and updates the working copy itself.
         txn.write()
             .unrecord(&self.changes, &channel, &hash, 0, &self.working_copy)
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
 
         // Snapshot the tip AFTER unrecord (but before commit) so we can mark
         // the WC as consistent with the new channel state once the commit
@@ -803,10 +802,10 @@ where
         let new_tip = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .to_bytes();
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         // `self.working_copy` now reflects `new_tip`.
         self.working_copy_tip.set(new_tip);
@@ -922,7 +921,7 @@ where
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let index = self.index_from_channel(&txn, &channel)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(index)
     }
 
@@ -944,7 +943,7 @@ where
         let tip = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .to_bytes();
 
         let wc = MemWc::new();
@@ -959,16 +958,15 @@ where
             1,
             0,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         let mut symbols = std::collections::HashMap::new();
         for path in wc.list_files().into_iter().filter(|p| is_symbol_path(p)) {
-            let intro = match crate::checkout::try_intro_from_path(&path) {
-                Some(i) => i,
-                None => continue,
+            let Some(intro) = crate::checkout::try_intro_from_path(&path) else {
+                continue;
             };
             let mut buf = Vec::new();
-            wc.read_file(&path, &mut buf).map_err(|e| pijul_err(e))?;
+            wc.read_file(&path, &mut buf).map_err(pijul_err)?;
             let arc: std::sync::Arc<[u8]> = buf.into();
             symbols.insert(intro, arc);
         }
@@ -1038,7 +1036,7 @@ where
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let result = self.incremental_core(&txn, &channel, prev)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(result)
     }
 
@@ -1049,7 +1047,7 @@ where
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let result = self.incremental_core(&txn, &channel, prev)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(result)
     }
 
@@ -1065,7 +1063,7 @@ where
         let tip = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .to_bytes();
 
         // Fast path: nothing changed.
@@ -1095,12 +1093,12 @@ where
                         1,
                         0,
                     )
-                    .map_err(|e| pijul_err(e))?;
+                    .map_err(pijul_err)?;
                     outputs += 1;
 
                     if wc.list_files().iter().any(|p| p == &path) {
                         let mut buf = Vec::new();
-                        wc.read_file(&path, &mut buf).map_err(|e| pijul_err(e))?;
+                        wc.read_file(&path, &mut buf).map_err(pijul_err)?;
                         // Only allocate a new Arc if the bytes actually differ,
                         // so a spuriously-touched-but-identical symbol keeps its
                         // exact prior Arc.
@@ -1142,9 +1140,9 @@ where
                 &graph,
                 Position::ROOT,
             )
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
             for entry in it {
-                let (_pos, _vertex, meta, name) = entry.map_err(|e| pijul_err(e))?;
+                let (_pos, _vertex, meta, name) = entry.map_err(pijul_err)?;
                 if meta.is_dir() {
                     continue;
                 }
@@ -1162,9 +1160,9 @@ where
             let graph = channel.read();
             for entry in txn_read
                 .reverse_log(&graph, None)
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
             {
-                let (_n, (ser_hash, ser_merkle)) = entry.map_err(|e| pijul_err(e))?;
+                let (_n, (ser_hash, ser_merkle)) = entry.map_err(pijul_err)?;
                 let merkle: Merkle = ser_merkle.into();
                 if merkle.to_bytes() == prev.tip {
                     found_prev = true;
@@ -1186,10 +1184,10 @@ where
         {
             let txn_read = txn.read();
             for hash in &new_changes {
-                let touched = txn_read.touched_files(hash).map_err(|e| pijul_err(e))?;
+                let touched = txn_read.touched_files(hash).map_err(pijul_err)?;
                 let Some(touched) = touched else { continue };
                 for pos in touched {
-                    let pos = pos.map_err(|e| pijul_err(e))?;
+                    let pos = pos.map_err(pijul_err)?;
                     match txn_read.find_youngest_path(&self.changes, channel, pos) {
                         // The resolved path is authoritative; libpijul reports
                         // flat root files with `is_dir = true`, so we must NOT
@@ -1242,18 +1240,17 @@ where
             1,
             0,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         let mut symbols = prev.symbols.clone();
         let mut new_intros: std::collections::HashSet<IntroId> = std::collections::HashSet::new();
         for path in wc.list_files().into_iter().filter(|p| is_symbol_path(p)) {
-            let intro = match crate::checkout::try_intro_from_path(&path) {
-                Some(i) => i,
-                None => continue,
+            let Some(intro) = crate::checkout::try_intro_from_path(&path) else {
+                continue;
             };
             new_intros.insert(intro);
             let mut buf = Vec::new();
-            wc.read_file(&path, &mut buf).map_err(|e| pijul_err(e))?;
+            wc.read_file(&path, &mut buf).map_err(pijul_err)?;
             match prev.symbols.get(&intro) {
                 Some(a) if &a[..] == buf.as_slice() => {}
                 _ => {
@@ -1282,7 +1279,7 @@ where
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(out)
     }
 
@@ -1310,12 +1307,12 @@ where
             1,
             0,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         let files = wc.list_files();
         if files.iter().any(|p| p == &path) {
             let mut buf = Vec::new();
-            wc.read_file(&path, &mut buf).map_err(|e| pijul_err(e))?;
+            wc.read_file(&path, &mut buf).map_err(pijul_err)?;
             Ok(Some(buf.into()))
         } else {
             Ok(None)
@@ -1363,7 +1360,7 @@ where
         name: &str,
     ) -> Result<Option<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>>, Error> {
         let reader = txn.read();
-        reader.load_channel(name).map_err(|e| pijul_err(e))
+        reader.load_channel(name).map_err(pijul_err)
     }
 
     /// Require the channel backing a reference. A bare [`Ref::Change`] is not a
@@ -1403,10 +1400,10 @@ where
             let reader = txn.read();
             reader
                 .current_state(&channel.read())
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .to_bytes()
         };
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(ResolvedRef {
             kind: reference.kind(),
             channel_name,
@@ -1437,13 +1434,13 @@ where
             let reader = txn.read();
             reader
                 .current_state(&src.read())
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .to_bytes()
         };
         txn.write()
             .fork(&src, new_channel)
-            .map_err(|e| pijul_err(e))?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
+        txn.commit().map_err(pijul_err)?;
         Ok(VersionState::from_bytes(state))
     }
 
@@ -1458,12 +1455,12 @@ where
             let reader = txn.read();
             reader
                 .channels("")
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .into_iter()
                 .map(|ch| ch.read().name.as_str().to_owned())
                 .collect()
         };
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         names.sort();
         Ok(names.iter().filter_map(|n| pick(n)).collect())
     }
@@ -1475,8 +1472,8 @@ where
         let existed = txn
             .write()
             .drop_channel(channel_name)
-            .map_err(|e| pijul_err(e))?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
+        txn.commit().map_err(pijul_err)?;
         if existed {
             Ok(())
         } else {
@@ -1506,8 +1503,8 @@ where
                 })?;
         txn.write()
             .rename_channel(&mut channel, new_channel)
-            .map_err(|e| pijul_err(e))?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
+        txn.commit().map_err(pijul_err)?;
         Ok(())
     }
 
@@ -1523,7 +1520,7 @@ where
             });
         }
         Self::open_or_create_channel(&txn, &name)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(())
     }
 
@@ -1538,7 +1535,7 @@ where
         let exists = self
             .load_channel_ref(&txn, &branch.channel_name())?
             .is_some();
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(exists)
     }
 
@@ -1605,7 +1602,7 @@ where
     pub fn tag_exists(&self, tag: &TagName) -> Result<bool, Error> {
         let txn = self.arc_txn()?;
         let exists = self.load_channel_ref(&txn, &tag.channel_name())?.is_some();
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(exists)
     }
 
@@ -1667,7 +1664,7 @@ where
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let index = self.index_from_channel(&txn, &channel)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(index)
     }
 
@@ -1681,7 +1678,7 @@ where
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(out)
     }
 
@@ -1695,7 +1692,7 @@ where
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let hashes = self.symbol_history_in_channel(&txn, &channel, intro)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(hashes)
     }
 
@@ -1717,9 +1714,9 @@ where
         let mut position: Option<Position<libpijul::pristine::ChangeId>> = None;
         for entry in
             libpijul::fs::iter_graph_children(&*reader, &self.changes, &graph, Position::ROOT)
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
         {
-            let (pos, _vertex, meta, name) = entry.map_err(|e| pijul_err(e))?;
+            let (pos, _vertex, meta, name) = entry.map_err(pijul_err)?;
             if meta.is_dir() {
                 continue;
             }
@@ -1732,9 +1729,9 @@ where
         if let Some(pos) = position {
             for item in reader
                 .log_for_path(&graph, pos, 0)
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
             {
-                let hash = item.map_err(|e| pijul_err(e))?;
+                let hash = item.map_err(pijul_err)?;
                 hashes.push(ChangeHashHex(hash_to_hex(&hash)));
             }
         }
@@ -1809,7 +1806,7 @@ where
             .filter(|h| !from_set.contains(&h.0))
             .collect();
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(delta)
     }
 
@@ -1893,7 +1890,7 @@ where
         // history rather than an error.
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let hashes = self.symbol_history_in_channel(&txn, &channel, intro)?;
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
         Ok(hashes)
     }
 
@@ -1936,7 +1933,7 @@ where
             let current_tip = txn
                 .read()
                 .current_state(&channel.read())
-                .map_err(|e| pijul_err(e))?
+                .map_err(pijul_err)?
                 .to_bytes();
 
             if current_tip != self.working_copy_tip.get() {
@@ -1945,7 +1942,7 @@ where
             }
         }
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         // Capture the current set of symbol intros in the WC.
         let symbol_paths: Vec<String> = self
@@ -1980,9 +1977,8 @@ where
         // PristineIntroTable so that ir::continuity::resolve can operate on it.
         let mut tip_table = ir::apply::PristineIntroTable::new();
         for path in &symbol_paths {
-            let intro = match crate::checkout::try_intro_from_path(path) {
-                Some(i) => i,
-                None => continue,
+            let Some(intro) = crate::checkout::try_intro_from_path(path) else {
+                continue;
             };
             let mut buf = Vec::new();
             if self.working_copy.read_file(path, &mut buf).is_err() {
@@ -2063,8 +2059,8 @@ where
     ) -> Result<Vec<ChangeHashHex>, Error> {
         let reader = txn.read();
         let mut out = Vec::new();
-        for item in reader.log(&channel.read(), 0).map_err(|e| pijul_err(e))? {
-            let (_n, (serialized_hash, _merkle)) = item.map_err(|e| pijul_err(e))?;
+        for item in reader.log(&channel.read(), 0).map_err(pijul_err)? {
+            let (_n, (serialized_hash, _merkle)) = item.map_err(pijul_err)?;
             let hash: Hash = serialized_hash.into();
             out.push(ChangeHashHex(hash_to_hex(&hash)));
         }

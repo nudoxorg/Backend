@@ -226,13 +226,10 @@ pub fn merge_event(
 
     let new_changes: Vec<ChangeId> = if let Some(prev) = prev_tip {
         let pos = log.iter().position(|h| h.0 == prev.0);
-        match pos {
-            Some(idx) => log[idx + 1..].iter(),
-            None => log[..].iter(),
-        }
-        .map(|h| h.0.parse::<ChangeId>())
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Error::InvalidChangeId)?
+        pos.map_or_else(|| log[..].iter(), |idx| log[idx + 1..].iter())
+            .map(|h| h.0.parse::<ChangeId>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Error::InvalidChangeId)?
     } else {
         log.iter()
             .map(|h| h.0.parse::<ChangeId>())

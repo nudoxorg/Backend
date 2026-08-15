@@ -21,13 +21,16 @@
 //!   ⌃⌥⇧⌘ / ctrl-alt-shift-super / ctrl-alt-shift-win. The rest of key-cap
 //!   formatting (the `⏎`/`⌫`/arrow symbols, the "esc is a word" rule) is
 //!   platform-neutral and stays in `ui::key_hint`.
-//! * **Menus** — next. [`crate::app::menus`] builds a macOS global menu bar;
-//!   on Windows that concept is a per-window menu strip and on Linux it is
-//!   often absent. Moving menu *shape* behind this seam is the follow-up to
-//!   the key-cap work (see [`crate::app::menus`]'s module docs).
-//! * **Lifecycle** — after menus. [`crate::app::lifecycle`] models dock-click
-//!   reopen and `cmd-H`, both macOS gestures, on top of gpui's own (already
-//!   cross-platform) `App` API.
+//! * **Menus** — [`has_global_menu`]. The menu *definition* is already
+//!   platform-neutral: [`crate::app::lifecycle::refresh_menus`] hands the same
+//!   `Vec<Menu>` to both `cx.set_menus` (macOS AppKit bar) and
+//!   `gpui_component::GlobalState::set_app_menus` (the Windows/Linux
+//!   `AppMenuBar`). Mounting that `AppMenuBar` in the window on non-macOS is
+//!   the remaining piece.
+//! * **Lifecycle** — [`supports_background_residency`]. The dock-click reopen
+//!   route and `cmd-H` are macOS gestures; `app::lifecycle` gates them on this
+//!   predicate so Linux/Windows fall back to gpui's default quit-on-last-window
+//!   model.
 //!
 //! # The rule
 //!
@@ -97,10 +100,12 @@ impl ModifierLabels {
 /// with the window dismissed — the macOS menu bar.
 ///
 /// Windows has a per-window menu strip instead; Linux typically has no global
-/// menu. [`crate::app::lifecycle::refresh_menus`] installs the bar only when
-/// this is true; a Windows menu strip (and its per-window shape, which is not
-/// the [`crate::app::menus`] `Vec<Menu>` shape) is follow-up work behind this
-/// same seam.
+/// menu. The predicate describes *where* the menu renders, not *whether* to
+/// define it: [`crate::app::lifecycle::refresh_menus`] calls `cx.set_menus` on
+/// every platform, because that one `app_menus()` list feeds both the macOS
+/// AppKit bar and the in-window `gpui_component::menu::AppMenuBar` that
+/// Windows/Linux render. Wiring that `AppMenuBar` into the window (non-macOS)
+/// is the remaining piece of the cross-platform menu story.
 pub const fn has_global_menu() -> bool {
     cfg!(target_os = "macos")
 }

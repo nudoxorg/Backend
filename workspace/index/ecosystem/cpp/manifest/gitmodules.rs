@@ -52,15 +52,10 @@ pub fn parse(text: &str) -> CppManifest {
             continue;
         }
 
-        if let Some(key_value) = try_parse_key_value(line) {
-            match key_value.key {
-                "url" => {
-                    current_url = Some(key_value.value.to_owned());
-                }
-                // `path` and other keys are silently ignored — only `url`
-                // contributes a dependency edge.
-                _ => {}
-            }
+        if let Some(key_value) = try_parse_key_value(line)
+            && key_value.key == "url"
+        {
+            current_url = Some(key_value.value.to_owned());
         }
     }
 
@@ -95,10 +90,8 @@ struct KeyValue<'line> {
 /// was found.
 fn flush_submodule(manifest: &mut CppManifest, url: Option<String>) {
     let Some(raw_url) = url else { return };
-    let token = match crate::ecosystem::repo::normalize_repo_url(&raw_url) {
-        Some(slug) => slug.as_str().to_owned(),
-        None => raw_url,
-    };
+    let token = crate::ecosystem::repo::normalize_repo_url(&raw_url)
+        .map_or(raw_url, |slug| slug.as_str().to_owned());
     manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Submodule));
 }
 
@@ -110,9 +103,8 @@ fn flush_submodule(manifest: &mut CppManifest, url: Option<String>) {
 /// only the first unquoted `#` or `;` is treated as a comment start.
 fn strip_inline_comment(line: &str) -> &str {
     // Comments are rare inside `url = ...` values; a simple scan suffices.
-    let mut chars = line.char_indices();
     let mut in_double_quote = false;
-    while let Some((index, character)) = chars.next() {
+    for (index, character) in line.char_indices() {
         match character {
             '"' => in_double_quote = !in_double_quote,
             '#' | ';' if !in_double_quote => return &line[..index],

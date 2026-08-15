@@ -99,7 +99,7 @@ fn visit_directory(
         .map_err(PackError::Io)?;
 
     // Sort by file name (byte order) for determinism.
-    entries.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let entry_path = entry.path();
@@ -154,8 +154,9 @@ fn visit_directory(
 fn build_relative_path(root: &Path, absolute_entry: &Path) -> PackResult<RelativePath> {
     let stripped = absolute_entry.strip_prefix(root).map_err(|_| PackError::BadStructure {
         detail: format!(
-            "entry {:?} is not under root {:?}",
-            absolute_entry, root
+            "entry {} is not under root {}",
+            absolute_entry.display(),
+            root.display()
         ),
     })?;
 
@@ -184,10 +185,10 @@ fn build_relative_path(root: &Path, absolute_entry: &Path) -> PackResult<Relativ
 /// Falls back to the absolute path if stripping fails (should not happen during
 /// a well-formed walk, but we never panic).
 fn relative_path_string(root: &Path, absolute_entry: &Path) -> String {
-    absolute_entry
-        .strip_prefix(root)
-        .map(|rel| rel.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| absolute_entry.to_string_lossy().into_owned())
+    absolute_entry.strip_prefix(root).map_or_else(
+        |_| absolute_entry.to_string_lossy().into_owned(),
+        |rel| rel.to_string_lossy().into_owned(),
+    )
 }
 
 // ---------------------------------------------------------------------------

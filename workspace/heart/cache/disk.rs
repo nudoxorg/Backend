@@ -37,9 +37,7 @@ impl DiskCas {
     /// Process default: `$NUDOX_PARSE_CACHE` or temp `nudox-parse-cache`
     /// (same env as the historical parse cache so existing ops configs work).
     pub fn default_open() -> Result<Self, CasError> {
-        let root = std::env::var_os("NUDOX_PARSE_CACHE")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("nudox-parse-cache"));
+        let root = std::env::var_os("NUDOX_PARSE_CACHE").map_or_else(|| std::env::temp_dir().join("nudox-parse-cache"), PathBuf::from);
         Self::open(root)
     }
 
@@ -64,14 +62,14 @@ impl DiskCas {
     pub fn get_sync(&self, key: ContentHash) -> Result<Option<Bytes>, CasError> {
         let path = self.blob_path(key);
         match fs::read(&path) {
-            Ok(raw) => match strip_envelope(&raw) {
-                Some(value) => Ok(Some(Bytes::from(value))),
-                None => {
+            Ok(raw) => strip_envelope(&raw).map_or_else(
+                || {
                     tracing::warn!(path = %path.display(), "disk cas envelope corrupt");
                     let _ = fs::remove_file(&path);
                     Err(CasError::Integrity { path })
-                }
-            },
+                },
+                |value| Ok(Some(Bytes::from(value))),
+            ),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(source) => Err(CasError::io(Some(path), source)),
         }

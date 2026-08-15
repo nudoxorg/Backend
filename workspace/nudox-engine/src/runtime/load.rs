@@ -139,7 +139,7 @@ pub(crate) async fn drive_load(
                 let ecosystem = lineage.ecosystem.as_str().to_owned();
                 let version = pending
                     .get_mut(&lineage)
-                    .and_then(|q| q.pop_front())
+                    .and_then(std::collections::VecDeque::pop_front)
                     .flatten();
 
                 // Record the generation first. The registry decides

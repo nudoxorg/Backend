@@ -144,7 +144,7 @@ fn declared_modules(source: &str) -> Vec<String> {
 /// `dir/name/mod.rs`. `dir` is the file's own directory for a crate root or a
 /// `mod.rs`, and the sibling directory named after the file otherwise.
 fn candidate_paths(source: &Path, module: &str) -> [PathBuf; 2] {
-    let parent = source.parent().unwrap_or(Path::new(""));
+    let parent = source.parent().unwrap_or_else(|| Path::new(""));
     let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     let base = if matches!(stem, "lib" | "main" | "mod") {
@@ -259,7 +259,7 @@ fn every_compile_time_include_is_tracked() {
         let Ok(text) = std::fs::read_to_string(root.join(relative)) else {
             continue;
         };
-        let dir = Path::new(relative).parent().unwrap_or(Path::new(""));
+        let dir = Path::new(relative).parent().unwrap_or_else(|| Path::new(""));
 
         for macro_name in ["include_str!", "include_bytes!"] {
             for (offset, _) in text.match_indices(macro_name) {
@@ -329,7 +329,7 @@ fn every_autodiscovered_integration_test_is_tracked() {
     for manifest in &manifests {
         let tests_dir = Path::new(manifest)
             .parent()
-            .unwrap_or(Path::new(""))
+            .unwrap_or_else(|| Path::new(""))
             .join("tests");
         let Ok(entries) = std::fs::read_dir(root.join(&tests_dir)) else {
             continue;
@@ -383,7 +383,7 @@ fn every_build_script_is_tracked() {
     let mut missing = Vec::new();
 
     for manifest in &manifests {
-        let dir = Path::new(manifest).parent().unwrap_or(Path::new(""));
+        let dir = Path::new(manifest).parent().unwrap_or_else(|| Path::new(""));
         let script = dir.join("build.rs");
         if root.join(&script).is_file() && !known.contains(script.to_string_lossy().as_ref()) {
             missing.push(format!("  {}", script.display()));

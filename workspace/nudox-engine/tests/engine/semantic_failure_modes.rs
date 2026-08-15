@@ -257,12 +257,10 @@ async fn wait_for_n_loaded(engine: &nudox_engine::EngineHandle, n: usize) {
 async fn wait_for_document_calls(counter: &AtomicUsize, n: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while counter.load(Ordering::SeqCst) < n {
-        if tokio::time::Instant::now() >= deadline {
-            panic!(
-                "embedder saw only {} document batches within 5s, expected {n}",
-                counter.load(Ordering::SeqCst)
-            );
-        }
+        assert!(tokio::time::Instant::now() < deadline, 
+            "embedder saw only {} document batches within 5s, expected {n}",
+            counter.load(Ordering::SeqCst)
+        );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }

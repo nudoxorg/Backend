@@ -432,8 +432,7 @@ struct Vec2 {
     let names: Vec<_> = pkg.iter().map(|(_, e)| e.sym().name.clone()).collect();
     assert!(
         names.iter().any(|n| n == "Vec2"),
-        "Vec2 must be in the IR: {:?}",
-        names
+        "Vec2 must be in the IR: {names:?}"
     );
 }
 
@@ -575,8 +574,7 @@ typedef int (*BinaryOp)(int, int);
                 Type::Primitive(nudox_ir::kinds::ty::Primitive::MutPointer(inner)) => {
                     assert!(
                         matches!(inner.as_ref(), Type::FunctionPointer { .. }),
-                        "inner of MutPointer must be FunctionPointer; got {:?}",
-                        inner
+                        "inner of MutPointer must be FunctionPointer; got {inner:?}"
                     );
                     if let Type::FunctionPointer { params, ret, abi } = inner.as_ref() {
                         // int (*)(int, int) → 2 int params, int return, no ABI.

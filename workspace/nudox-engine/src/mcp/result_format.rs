@@ -19,12 +19,11 @@ use std::fmt::Write as _;
 use crate::mcp::key::SymbolKeyDto;
 use crate::mcp::tools::{
     CompactSymbolDoc, DiffVersionsResult, GetOccurrencesResult, IndexPackageResult,
-    ListVersionsResult, PackagesResult, QueryResult, SchemaResult, SearchResult,
+    ListVersionsResult, PackagesResult, QueryResult, QueryResultRow, SchemaResult, SearchResult,
     SelectVersionResult, SemanticSearchResult, SemanticStatus, SymbolsResult, UsagesResult,
 };
 use crate::wire::{
-    DiffVerdict, HitRow, KeyTierLabel, KindTag, PackageDiff, Provenance, SigToken, TimelineChange,
-    Visibility,
+    DiffVerdict, HitRow, KeyTierLabel, KindTag, PackageDiff, SigToken, TimelineChange,
 };
 
 /// The public formatting contract used by the MCP transport adapter.
@@ -111,11 +110,7 @@ impl MarkdownResult for SearchResult {
                 .enumerate()
                 .map(|(index, hit)| search_row(index + 1, hit))
                 .collect::<Vec<_>>();
-            table(
-                &mut out,
-                &["#", "symbol", "kind", "trust", "signature", "key"],
-                &rows,
-            );
+            table(&mut out, &["#", "declaration", "key"], &rows);
         }
         pagination(&mut out, self.truncated, self.next_cursor.as_deref());
         out
@@ -139,38 +134,9 @@ impl MarkdownResult for SymbolsResult {
             return out;
         }
 
-        let rows = self
-            .symbols
-            .iter()
-            .enumerate()
-            .map(|(index, symbol)| symbol_row(index + 1, symbol))
-            .collect::<Vec<_>>();
-        table(
-            &mut out,
-            &[
-                "#",
-                "symbol",
-                "kind",
-                "visibility",
-                "location",
-                "signature",
-                "source",
-                "key",
-            ],
-            &rows,
-        );
-
-        // Source is intentionally a separate exact snippet.  Putting it in a
-        // table cell would make a multi-line declaration ambiguous and would
-        // invite Markdown parsers to rewrite it.
         for symbol in &self.symbols {
-            if symbol.source.is_some()
-                || !symbol.references.is_empty()
-                || symbol.deprecation.is_some()
-            {
-                out.push('\n');
-                append_symbol_details(&mut out, symbol);
-            }
+            out.push('\n');
+            append_symbol(&mut out, symbol, 3);
         }
         out
     }
@@ -186,16 +152,9 @@ impl MarkdownResult for UsagesResult {
             let rows = self
                 .usages
                 .iter()
-                .map(|usage| {
-                    vec![
-                        usage.name.clone(),
-                        usage.kind.clone(),
-                        usage.path.clone(),
-                        usage.key.0.clone(),
-                    ]
-                })
+                .map(|usage| vec![usage.signature.clone(), usage.path.clone(), usage.key.0.clone()])
                 .collect::<Vec<_>>();
-            table(&mut out, &["name", "kind", "path", "key"], &rows);
+            table(&mut out, &["declaration", "path", "key"], &rows);
         }
         pagination(&mut out, self.truncated, self.next_cursor.as_deref());
         out
@@ -411,6 +370,7 @@ impl MarkdownResult for QueryResult {
         if self.rows.is_empty() {
             out.push_str("(no rows)\n");
         } else {
+            let has_signature = self.columns.iter().any(|column| column == "signature");
             let width = self.columns.len().max(
                 self.rows
                     .iter()
@@ -418,25 +378,37 @@ impl MarkdownResult for QueryResult {
                     .max()
                     .unwrap_or(0),
             );
-            let headers = (0..width)
-                .map(|index| {
-                    self.columns
-                        .get(index)
-                        .filter(|column| !column.is_empty())
-                        .cloned()
-                        .unwrap_or_else(|| format!("#{index_plus_one}", index_plus_one = index + 1))
-                })
-                .collect::<Vec<_>>();
-            let rows = self
-                .rows
-                .iter()
-                .map(|row| {
-                    (0..width)
-                        .map(|index| row.cells.get(index).cloned().unwrap_or_default())
-                        .collect::<Vec<_>>()
-                })
-                .collect::<Vec<_>>();
-            table_owned(&mut out, &headers, &rows);
+            if has_signature {
+                render_signature_query(&mut out, &self.columns, &self.rows, width);
+            } else {
+                let headers = (0..width)
+                    .map(|index| {
+                        let name = self.columns.get(index).map(String::as_str).unwrap_or("");
+                        if name.is_empty() {
+                            format!("#{index_plus_one}", index_plus_one = index + 1)
+                        } else {
+                            name.to_owned()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let rows = self
+                    .rows
+                    .iter()
+                    .map(|row| {
+                        (0..width)
+                            .map(|index| row.cells.get(index).cloned().unwrap_or_default())
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>();
+                if self.columns.iter().any(|column| column == "name")
+                    && self.columns.iter().any(|column| column == "kind")
+                {
+                    out.push_str(
+                        "note: symbol rows omit `signature`; request it for type-complete declarations.\n\n",
+                    );
+                }
+                table_owned(&mut out, &headers, &rows);
+            }
         }
         pagination(&mut out, self.truncated, self.next_cursor.as_deref());
         out
@@ -458,15 +430,23 @@ impl MarkdownResult for GetOccurrencesResult {
             .iter()
             .map(|row| crate::mcp::occurrence_format::OccurrenceRow {
                 target_key: row.target_key.clone(),
-                // The scalar occurrence query intentionally does not traverse
-                // the optional target edge: doing so can drop rows when a
-                // target package is unloaded. `Some(empty)` means "target
-                // identity is known, enrichment was not requested" and avoids
-                // falsely claiming that every target is unloaded.
-                target: Some(crate::mcp::occurrence_format::SymbolSummary::default()),
+                target: row.target.as_ref().map(|target| {
+                    crate::mcp::occurrence_format::SymbolSummary {
+                        signature: (!target.signature.is_empty()).then(|| target.signature.clone()),
+                        name: None,
+                        kind: None,
+                        path: target.path.clone(),
+                    }
+                }),
                 owner: crate::mcp::occurrence_format::OccurrenceOwner {
-                    key: self.owner.0.clone(),
-                    summary: crate::mcp::occurrence_format::SymbolSummary::default(),
+                    key: row.owner.key.0.clone(),
+                    summary: crate::mcp::occurrence_format::SymbolSummary {
+                        signature: (!row.owner.signature.is_empty())
+                            .then(|| row.owner.signature.clone()),
+                        name: None,
+                        kind: None,
+                        path: row.owner.path.clone(),
+                    },
                 },
                 reference_kind: row.reference_kind.clone(),
                 confidence: row.confidence.clone(),
@@ -510,6 +490,7 @@ impl MarkdownResult for SemanticSearchResult {
                     hit.key.0.clone(),
                     hit.display_name.clone(),
                     kind_label(&hit.kind),
+                    hit.signature.clone(),
                 )
                 .with_score(hit.score);
                 match hit.documentation.as_deref() {
@@ -545,75 +526,42 @@ fn heading(out: &mut String, label: &str, count: usize) {
 fn append_symbol(out: &mut String, symbol: &CompactSymbolDoc, level: u8) {
     let hashes = "#".repeat(level as usize);
     writeln!(out, "{hashes} {}\n", inline(&symbol.path)).expect("String write");
-    append_symbol_details(out, symbol);
-}
-
-fn append_symbol_details(out: &mut String, symbol: &CompactSymbolDoc) {
-    write!(
-        out,
-        "key: {} · kind: {} · visibility: {}\n",
-        inline(&symbol.key.0),
-        escape_table_cell(&kind_label(&symbol.kind)),
-        visibility_label(&symbol.visibility)
-    )
-    .expect("String write");
+    writeln!(out, "key: {}", inline(&symbol.key.0)).expect("String write");
     if let Some(location) = &symbol.location {
         writeln!(out, "location: {}", inline(location)).expect("String write");
     }
     if let Some(deprecation) = &symbol.deprecation {
         writeln!(out, "deprecated: {}", inline(deprecation)).expect("String write");
     }
-    if !symbol.references.is_empty() {
-        out.push_str("references: ");
-        for (index, reference) in symbol.references.iter().enumerate() {
-            if index > 0 {
-                out.push_str(", ");
-            }
-            write!(
-                out,
-                "{} → {}",
-                inline(&reference.text),
-                inline(&reference.target.0)
-            )
-            .expect("String write");
-        }
-        out.push('\n');
-    }
+    out.push('\n');
     if let Some(source) = &symbol.source {
         fenced(out, None, source);
     } else if let Some(signature) = &symbol.signature {
-        writeln!(out, "signature: {}", inline(signature)).expect("String write");
+        fenced(out, None, signature);
+    } else {
+        out.push_str("(declaration unavailable)\n");
+    }
+    if !symbol.references.is_empty() {
+        out.push_str("\nreferences:\n");
+        let rows = symbol
+            .references
+            .iter()
+            .map(|reference| vec![reference.text.clone(), reference.target.0.clone()])
+            .collect::<Vec<_>>();
+        table(out, &["type", "target"], &rows);
     }
 }
 
-fn symbol_row(index: usize, symbol: &CompactSymbolDoc) -> Vec<String> {
-    vec![
-        index.to_string(),
-        symbol.path.clone(),
-        kind_label(&symbol.kind),
-        visibility_label(&symbol.visibility).to_owned(),
-        symbol.location.clone().unwrap_or_default(),
-        if symbol.source.is_some() {
-            String::new()
-        } else {
-            symbol.signature.clone().unwrap_or_default()
-        },
-        if symbol.source.is_some() {
-            "exact".to_owned()
-        } else {
-            String::new()
-        },
-        symbol.key.0.clone(),
-    ]
-}
-
 fn search_row(index: usize, hit: &HitRow) -> Vec<String> {
+    let declaration = signature(&hit.sig_preview);
+    let declaration = if declaration.is_empty() {
+        format!("{} {}", kind_label(&hit.kind), hit.display_name)
+    } else {
+        declaration
+    };
     vec![
         index.to_string(),
-        hit.display_name.to_string(),
-        kind_label(&hit.kind),
-        provenance_label(&hit.provenance).to_owned(),
-        signature(&hit.sig_preview),
+        declaration,
         SymbolKeyDto::from_wire(&hit.key).0,
     ]
 }
@@ -642,10 +590,14 @@ fn format_diff(out: &mut String, diff: &PackageDiff, truncated: bool, cursor: Op
             .iter()
             .map(|row| {
                 let (status, detail) = diff_verdict(&row.verdict);
+                let declaration = if row.signature.is_empty() {
+                    format!("{} {}", row.kind, row.path)
+                } else {
+                    row.signature.to_string()
+                };
                 vec![
+                    declaration,
                     row.path.to_string(),
-                    row.name.to_string(),
-                    row.kind.to_string(),
                     status,
                     detail,
                     SymbolKeyDto::from_wire(&row.key).0,
@@ -654,7 +606,7 @@ fn format_diff(out: &mut String, diff: &PackageDiff, truncated: bool, cursor: Op
             .collect::<Vec<_>>();
         table(
             out,
-            &["path", "name", "kind", "change", "detail", "key"],
+            &["declaration", "path", "change", "detail", "key"],
             &rows,
         );
     }
@@ -715,6 +667,68 @@ fn table(out: &mut String, headers: &[&str], rows: &[Vec<String>]) {
         .map(|header| (*header).to_owned())
         .collect::<Vec<_>>();
     table_owned(out, &dynamic_headers, rows);
+}
+
+/// Render graph rows that carry a declaration signature as source-shaped
+/// records. The signature is the code; every other selected field remains
+/// immediately above it as a comment, with `key` first when present. This
+/// keeps graph queries lossless without turning a declaration into a wall of
+/// derivable columns. Queries without a signature remain relationship tables.
+fn render_signature_query(
+    out: &mut String,
+    columns: &[String],
+    rows: &[QueryResultRow],
+    width: usize,
+) {
+    let signature_index = columns.iter().position(|column| column == "signature");
+    let mut comment_indices = (0..width)
+        .filter(|index| Some(*index) != signature_index)
+        .collect::<Vec<_>>();
+    if let Some(key_index) = columns.iter().position(|column| column == "key") {
+        if let Some(position) = comment_indices.iter().position(|index| *index == key_index) {
+            comment_indices.remove(position);
+            comment_indices.insert(0, key_index);
+        }
+    }
+
+    for row in rows {
+        let mut body = String::new();
+        for index in &comment_indices {
+            let name = columns
+                .get(*index)
+                .filter(|name| !name.is_empty())
+                .cloned()
+                .unwrap_or_else(|| format!("#{index_plus_one}", index_plus_one = *index + 1));
+            let value = row.cells.get(*index).map(String::as_str).unwrap_or("");
+            push_query_comment(&mut body, &name, value);
+        }
+
+        let signature = signature_index
+            .and_then(|index| row.cells.get(index))
+            .map(String::as_str)
+            .unwrap_or("");
+        if signature.is_empty() {
+            body.push_str("// declaration: unavailable\n");
+        } else {
+            body.push_str(signature);
+            if !signature.ends_with('\n') {
+                body.push('\n');
+            }
+        }
+        fenced(out, Some("text"), &body);
+        out.push('\n');
+    }
+}
+
+fn push_query_comment(out: &mut String, name: &str, value: &str) {
+    let label = escape_table_cell(name);
+    let value = value.replace('\r', "␍");
+    let mut lines = value.split('\n');
+    let first = lines.next().unwrap_or("");
+    writeln!(out, "// {label}: {first}").expect("String write");
+    for line in lines {
+        writeln!(out, "// {line}").expect("String write");
+    }
 }
 
 fn table_owned(out: &mut String, headers: &[String], rows: &[Vec<String>]) {
@@ -836,27 +850,6 @@ fn kind_label(kind: &KindTag) -> String {
     }
 }
 
-fn visibility_label(visibility: &Visibility) -> &'static str {
-    match visibility {
-        Visibility::Public => "public",
-        Visibility::Private => "private",
-        Visibility::Protected => "protected",
-        Visibility::Internal => "internal",
-        Visibility::Package => "package",
-        Visibility::Crate => "crate",
-    }
-}
-
-fn provenance_label(provenance: &Provenance) -> &'static str {
-    match provenance {
-        Provenance::TrustedLocal => "local",
-        Provenance::SyncedLocal { .. } => "synced",
-        Provenance::Remote { .. } => "remote",
-        Provenance::Stale { .. } => "stale",
-        _ => "unknown",
-    }
-}
-
 fn key_tier_label(tier: KeyTierLabel) -> &'static str {
     match tier {
         KeyTierLabel::Structural => "structural",
@@ -882,8 +875,8 @@ mod tests {
     use crate::mcp::key::PackageLineageDto;
     use crate::mcp::tools::QueryResultRow;
     use crate::wire::{
-        DiffRow, EcosystemId, GenerationId, IntroId, PackageLineageId, PackageName, SharedStr,
-        SymbolKey,
+        DiffRow, EcosystemId, GenerationId, IntroId, PackageLineageId, PackageName, Provenance,
+        SharedStr, SymbolKey, Visibility,
     };
     use std::sync::Arc;
 
@@ -987,6 +980,39 @@ mod tests {
         assert!(rendered.contains("column\\|↵#"));
         assert!(rendered.contains("value\\|↵### injected↵\\\\slash"));
         assert!(!rendered.contains("\n### injected"));
+    }
+
+    #[test]
+    fn signature_queries_keep_selected_fields_as_comments_above_code() {
+        let result = QueryResult {
+            columns: vec![
+                "key".into(),
+                "signature".into(),
+                "kind".into(),
+                "name".into(),
+                "path".into(),
+            ],
+            rows: vec![QueryResultRow {
+                cells: vec![
+                    "fixture:demo#key".into(),
+                    "pub struct Point".into(),
+                    "Record".into(),
+                    "Point".into(),
+                    "demo::Point".into(),
+                ],
+            }],
+            truncated: false,
+            next_cursor: None,
+        };
+        let rendered = format_query_result(&result);
+        assert!(rendered.contains("```text"));
+        assert!(rendered.contains("// key: fixture:demo#key"));
+        assert!(rendered.contains("// kind: Record"));
+        assert!(rendered.contains("// name: Point"));
+        assert!(rendered.contains("// path: demo::Point"));
+        assert!(rendered.contains("\npub struct Point\n"));
+        assert!(!rendered.contains("| declaration |"));
+        assert!(!rendered.contains("| kind |"));
     }
 
     #[test]
@@ -1105,6 +1131,7 @@ mod tests {
                     path: SharedStr::from("demo::Thing"),
                     name: SharedStr::from("Thing"),
                     kind: SharedStr::from("Record"),
+                    signature: SharedStr::from("pub struct Thing<T>"),
                     verdict: DiffVerdict::Removed,
                 }]),
                 unchanged: 1,
@@ -1116,6 +1143,10 @@ mod tests {
         };
         let rendered = format_diff_versions_result(&diff);
         assert!(rendered.contains("removed"));
+        assert!(rendered.contains("| declaration |"));
+        assert!(rendered.contains("pub struct Thing<T>"));
+        assert!(!rendered.contains("| name |"));
+        assert!(!rendered.contains("| kind |"));
         assert!(rendered.contains("cargo:demo#080808"));
     }
 
@@ -1167,6 +1198,7 @@ mod tests {
                 key: key_dto(),
                 display_name: "retry_with_backoff".into(),
                 kind: KindTag::Unknown(44),
+                signature: "fn retry_with_backoff(request: Request) -> Result<Response>".into(),
                 score: 0.93,
                 documentation: Some("Retries a failed request.\nUse `backoff` carefully.".into()),
             }],
@@ -1175,7 +1207,9 @@ mod tests {
         });
 
         assert!(rendered.contains("status: ready · 1 match"));
-        assert!(rendered.contains("| 1 | `retry_with_backoff` | `unknown:44` |"));
+        assert!(rendered.contains(
+            "| 1 | `fn retry_with_backoff(request: Request) -> Result<Response>` | `cargo:demo#1111111111111111111111111111111111111111111111111111111111111111` | exact |"
+        ));
         assert!(rendered.contains("| exact |"));
         assert!(rendered.contains("Retries a failed request.\nUse `backoff` carefully."));
         assert!(!rendered.contains("score"), "scores stay opt-in");

@@ -27,13 +27,13 @@ mod differential {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         };
-        let valid = match raw.strip_prefix('@') {
-            Some(scoped) => match scoped.split_once('/') {
+        let valid = raw.strip_prefix('@').map_or_else(
+            || segment_ok(raw) && !raw.contains('/'),
+            |scoped| match scoped.split_once('/') {
                 Some((scope, name)) => segment_ok(scope) && segment_ok(name) && !name.contains('/'),
                 None => false,
             },
-            None => segment_ok(raw) && !raw.contains('/'),
-        };
+        );
         valid.then(|| raw.to_ascii_lowercase())
     }
 
@@ -788,8 +788,7 @@ mod symbol_roots_tests {
         // fq == root is false; strip_prefix gives "_extra::Router" which does not start with ':'|'.'|'/'
         let rest = fq.strip_prefix(root.as_str());
         assert!(
-            rest.map(|r| !r.starts_with([':', '.', '/']))
-                .unwrap_or(true),
+            rest.is_none_or(|r| !r.starts_with([':', '.', '/'])),
             "axum root must not match axum_extra"
         );
     }
@@ -977,7 +976,7 @@ mod cpp_names {
         assert_eq!(
             name.namespace
                 .iter()
-                .map(|s| s.as_str())
+                .map(smol_str::SmolStr::as_str)
                 .collect::<Vec<_>>(),
             vec!["group", "subgroup"]
         );

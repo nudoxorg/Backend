@@ -825,7 +825,26 @@ impl Engine {
     /// above it.
     #[cfg(feature = "fixtures")]
     pub fn start_with_fixtures(config: EngineConfig) -> EngineHandle {
-        Self::start(config, crate::store::source::fixtures::FixtureSource::rich())
+        Self::start_with_fixture_set(
+            config,
+            crate::store::source::fixtures::FixtureSet::RichOnly,
+        )
+    }
+
+    /// Start an engine over one of the deterministic fixture corpus sizes.
+    ///
+    /// This is primarily useful to integration benches that need to compare a
+    /// relationship-rich package with a large, repetitive package while still
+    /// exercising the production engine and MCP server path.
+    #[cfg(feature = "fixtures")]
+    pub fn start_with_fixture_set(
+        config: EngineConfig,
+        set: crate::store::source::fixtures::FixtureSet,
+    ) -> EngineHandle {
+        Self::start(
+            config,
+            crate::store::source::fixtures::FixtureSource { set },
+        )
     }
 
     /// Start an engine that produces IR for real on-disk packages.

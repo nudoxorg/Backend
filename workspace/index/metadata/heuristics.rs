@@ -228,7 +228,7 @@ impl Synonyms {
                             .ok_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::InvalidData,
-                                    format!("Missing or invalid score in record: {:?}", record),
+                                    format!("Missing or invalid score in record: {record:?}"),
                                 )
                             })?;
                         (Some(lang), find, replace, score)
@@ -242,7 +242,7 @@ impl Synonyms {
                             .ok_or_else(|| {
                                 io::Error::new(
                                     io::ErrorKind::InvalidData,
-                                    format!("Missing or invalid score in record: {:?}", record),
+                                    format!("Missing or invalid score in record: {record:?}"),
                                 )
                             })?;
                         (None, find, replace, score)
@@ -256,7 +256,7 @@ impl Synonyms {
                         .ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                format!("Missing or invalid score in record: {:?}", record),
+                                format!("Missing or invalid score in record: {record:?}"),
                             )
                         })?;
                     (None, find, replace, score)
@@ -266,10 +266,7 @@ impl Synonyms {
                 tracing::error!("synonym borked score: {record:?}");
             }
 
-            let target = match eco {
-                Some(lang) => by_eco.entry(lang).or_default(),
-                None => &mut mapping,
-            };
+            let target = eco.map_or(&mut mapping, |lang| by_eco.entry(lang).or_default());
             Self::insert_synonym(target, find_keyword, replace_keyword, score);
         }
 
@@ -378,15 +375,11 @@ impl Synonyms {
 
     fn max_normalize_inner<'a>(&'a self, keyword: &'a str, depth: u8) -> Cow<'a, str> {
         let mut current_keyword: Cow<str> = Cow::Borrowed(
-            self.mapping
-                .get(keyword)
-                .map(|(first_hop, _)| {
-                    self.mapping
-                        .get(first_hop.as_str())
-                        .map(|(second_hop, _)| second_hop.as_str())
-                        .unwrap_or(first_hop.as_str())
-                })
-                .unwrap_or(keyword),
+            self.mapping.get(keyword).map_or(keyword, |(first_hop, _)| {
+                self.mapping
+                    .get(first_hop.as_str())
+                    .map_or(first_hop.as_str(), |(second_hop, _)| second_hop.as_str())
+            }),
         );
 
         if depth == 0 {
@@ -403,10 +396,10 @@ impl Synonyms {
             let normalized_end = self.max_normalize_inner(end, next_depth);
 
             if normalized_start != start || normalized_end != end {
-                current_keyword = if normalized_start != normalized_end {
-                    format!("{normalized_start}-{normalized_end}").into()
-                } else {
+                current_keyword = if normalized_start == normalized_end {
                     normalized_start.to_string().into()
+                } else {
+                    format!("{normalized_start}-{normalized_end}").into()
                 };
             }
         }
@@ -809,7 +802,7 @@ impl Specifics {
     }
 
     pub fn all_bland_keywords(&self) -> impl Iterator<Item = &str> + '_ {
-        self.bland.iter().map(|string| string.as_str())
+        self.bland.iter().map(smol_str::SmolStr::as_str)
     }
 }
 

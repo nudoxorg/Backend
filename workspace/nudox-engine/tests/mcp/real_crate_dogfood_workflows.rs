@@ -174,9 +174,7 @@ macro_rules! log_step {
 /// input.
 fn head_name(head: &nudox_engine::wire::SymbolHead) -> String {
     head.breadcrumb
-        .last()
-        .map(|c| c.label.to_string())
-        .unwrap_or_else(|| "<no breadcrumb>".to_owned())
+        .last().map_or_else(|| "<no breadcrumb>".to_owned(), |c| c.label.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -291,21 +289,19 @@ fn memchr_agent_workflow_chain() {
         );
 
         // --- Step 4: graph_query — "what does this type implement" -------------
-        let implements_q = format!(
-            r#"query {{
-                Symbols {{
-                    ... on Record {{
+        let implements_q = r#"query {
+                Symbols {
+                    ... on Record {
                         name @filter(op: "=", value: ["$name"]) @output
-                        implementedBy {{
-                            ... on Impl {{
+                        implementedBy {
+                            ... on Impl {
                                 ofTrait @output
                                 key @output(name: "implKey")
-                            }}
-                        }}
-                    }}
-                }}
-            }}"#
-        );
+                            }
+                        }
+                    }
+                }
+            }"#.to_string();
         let mut args = std::collections::BTreeMap::new();
         args.insert("name".to_owned(), "Memchr".to_owned());
         let implements = tools
@@ -409,9 +405,7 @@ fn memchr_agent_workflow_chain() {
             "graph_query(\"deprecated symbols\", Boolean via $variable)",
             "{}",
             variable_attempt
-                .as_ref()
-                .map(|r| format!("rows={}", r.rows.len()))
-                .unwrap_or_else(|e| format!("FAILED: {e}"))
+                .as_ref().map_or_else(|e| format!("FAILED: {e}"), |r| format!("rows={}", r.rows.len()))
         );
         variable_attempt.expect(
             "a correctly-typed Boolean $variable must now succeed against a real corpus \
@@ -437,13 +431,11 @@ fn memchr_agent_workflow_chain() {
             "graph_query(\"deprecated symbols\", Boolean via literal \"true\", no $variable)",
             "{}",
             literal_attempt
-                .as_ref()
-                .map(|r| format!(
+                .as_ref().map_or_else(|e| format!("FAILED: {e}"), |r| format!(
                     "rows={} (memchr 2.8.3 may legitimately have zero — this is the honest \
                      count, not a fabricated one)",
                     r.rows.len()
                 ))
-                .unwrap_or_else(|e| format!("FAILED: {e}"))
         );
 
         // --- Step 7: semantic search — expected empty by design -----------------
@@ -666,7 +658,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "get_symbol(key=\"not-a-key-at-all\")",
         "{}",
-        bad_key.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+        bad_key.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(bad_key.is_err(), "a malformed key must be rejected, not silently accepted");
 
@@ -677,7 +669,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "list_versions(package=\"no-colon-here\")",
         "{}",
-        bad_lineage.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+        bad_lineage.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(bad_lineage.is_err());
 
@@ -693,7 +685,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "graph_query(\"{{ this is not valid graphql !! }}\")",
         "{}",
-        bad_query.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+        bad_query.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(bad_query.is_err());
 
@@ -710,7 +702,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "search_symbols(kinds=[\"Struct\"]) — a plausible-but-wrong guess",
         "{}",
-        bad_kind.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+        bad_kind.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(bad_kind.is_err());
 
@@ -727,7 +719,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "search_symbols(cursor=\"not-a-real-cursor\")",
         "{}",
-        bad_cursor.as_ref().err().map(|e| e.to_string()).unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+        bad_cursor.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(bad_cursor.is_err());
 
@@ -745,9 +737,7 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
         "{}",
         never_requested
             .as_ref()
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| "(unexpectedly Ok)".to_owned())
+            .err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
     );
     assert!(never_requested.is_err());
 }

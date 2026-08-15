@@ -86,9 +86,7 @@ impl LocalShardStore {
     ) -> Result<Self, StoreError> {
         let rescore = RescorePolicy::for_profile(&schema.quant_profile);
         let name = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "shard".to_owned());
+            .file_name().map_or_else(|| "shard".to_owned(), |n| n.to_string_lossy().into_owned());
         let dir = dir.to_path_buf();
         let handle =
             StoreHandle::spawn(&name, move || shard::open_or_create(&dir, &schema)).await?;
@@ -130,7 +128,7 @@ impl LocalShardStore {
         // themselves are always valid.
         self.policy
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -266,7 +264,6 @@ pub fn upsert_raw(
         .update(UpdateOperation::PointOperation(
             PointOperations::UpsertPoints(PointInsertOperations::PointsList(vec![point])),
         ))
-        .map(|_| ())
         .map_err(backend_error)
 }
 

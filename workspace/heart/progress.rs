@@ -84,7 +84,7 @@ pub trait Progressive {
             ProgressStatus::Completed => 100,
             ProgressStatus::Progressing { phase, fraction } => {
                 let done = phases.iter().position(|p| *p == phase).unwrap_or(0) as u32;
-                let frac = fraction.into_inner() as u32;
+                let frac = u32::from(fraction.into_inner());
                 (done * 100 + frac) / n
             }
             ProgressStatus::Failed { phase } => {

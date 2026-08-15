@@ -6,9 +6,12 @@
 
 use std::collections::HashSet;
 
-use nudox_ir::build::*;
+use nudox_ir::build::{
+    AttrTok, Enum, Field, FieldAttribute, FieldKey, Function, GenericParam, Lowering, Record,
+    RecordForm, Ref, Trait, TraitFlags, Type, Variant, VariantForm,
+};
 
-use super::{GoId, Result, lower_methods, lower_sig_params_into_lowering, sym_for};
+use super::{GoId, lower_methods, lower_sig_params_into_lowering, sym_for};
 use crate::go::{oracle, types};
 
 // ── Struct ────────────────────────────────────────────────────────────────────
@@ -20,12 +23,12 @@ pub(super) fn lower_struct(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     // Collect field Refs (forward-refer them — declare will happen below).
     let underlying = decl.underlying.as_ref();
-    let fields_slice = underlying.map(|u| u.fields.as_ref()).unwrap_or(&[]);
+    let fields_slice: &[oracle::StructField] = underlying.map_or(&[], |u| u.fields.as_ref());
 
     let mut field_refs: Vec<Ref<Field>> = Vec::with_capacity(fields_slice.len());
     for f in fields_slice {
@@ -67,11 +70,7 @@ pub(super) fn lower_struct(
             type_name: decl.name.clone(),
             member_name: f.name.clone(),
         };
-        let fdoc = decl
-            .field_docs
-            .get(&f.name)
-            .map(|s| s.as_str())
-            .unwrap_or("");
+        let fdoc = decl.field_docs.get(&f.name).map_or("", String::as_str);
         let mut fsym = sym_for(&f.name, fdoc, f.exported, None, None);
 
         // Item 5: Struct field tags and embedded markers.
@@ -109,7 +108,7 @@ pub(super) fn lower_struct(
         low.declare(fid, Some(item_id.clone()), fsym, field_kind);
     }
 
-    lower_methods(pkg, decl, &item_id, low, local)
+    lower_methods(pkg, decl, &item_id, low, local);
 }
 
 // ── Interface ─────────────────────────────────────────────────────────────────
@@ -121,7 +120,7 @@ pub(super) fn lower_interface(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let generics: Vec<GenericParam> = decl
@@ -131,11 +130,7 @@ pub(super) fn lower_interface(
         .collect();
 
     // Item 7a: surface IsComparable as an AttrTok.
-    let is_comparable = decl
-        .underlying
-        .as_ref()
-        .map(|u| u.is_comparable)
-        .unwrap_or(false);
+    let is_comparable = decl.underlying.as_ref().is_none_or(|u| u.is_comparable);
     if is_comparable {
         sym.attrs = Box::new([AttrTok {
             token: "comparable".to_string(),
@@ -166,7 +161,7 @@ pub(super) fn lower_interface(
     // Interface methods become Function children of the Trait entry.
     let underlying = decl.underlying.as_ref();
     if let Some(iface) = underlying {
-        for sig in iface.all_methods.iter() {
+        for sig in &iface.all_methods {
             let mid = GoId::Member {
                 import_path: pkg.import_path.clone(),
                 type_name: decl.name.clone(),
@@ -175,8 +170,7 @@ pub(super) fn lower_interface(
             let mdoc = decl
                 .method_docs
                 .get(&sig.name)
-                .map(|s| s.as_str())
-                .unwrap_or(&sig.pkg);
+                .map_or(sig.pkg.as_str(), String::as_str);
             let actual_doc = if !sig.pkg.is_empty() && sig.pkg != pkg.import_path {
                 format!(
                     "{mdoc}\n\nInherited via embedded interface (declared in `{}`).",
@@ -207,8 +201,6 @@ pub(super) fn lower_interface(
             low.declare(mid, Some(item_id.clone()), msym, fn_kind);
         }
     }
-
-    Ok(())
 }
 
 // ── Newtype ───────────────────────────────────────────────────────────────────
@@ -220,7 +212,7 @@ pub(super) fn lower_newtype(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let inner_id = GoId::Member {
@@ -255,7 +247,7 @@ pub(super) fn lower_newtype(
         .build();
     low.declare(inner_id, Some(item_id.clone()), inner_sym, inner_field);
 
-    lower_methods(pkg, decl, &item_id, low, local)
+    lower_methods(pkg, decl, &item_id, low, local);
 }
 
 // ── Iota enum ─────────────────────────────────────────────────────────────────
@@ -268,11 +260,11 @@ pub(super) fn lower_iota_enum(
     parent: GoId,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
-) -> Result<()> {
+) {
     let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
 
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(variants.len());
-    for v in variants.iter() {
+    for v in variants {
         let vid = GoId::Variant {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
@@ -293,7 +285,7 @@ pub(super) fn lower_iota_enum(
         .build();
     low.declare(item_id.clone(), Some(parent), sym, enum_kind);
 
-    for v in variants.iter() {
+    for v in variants {
         let vid = GoId::Variant {
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
@@ -312,5 +304,5 @@ pub(super) fn lower_iota_enum(
         low.declare(vid, Some(item_id.clone()), vsym, variant_kind);
     }
 
-    lower_methods(pkg, decl, &item_id, low, local)
+    lower_methods(pkg, decl, &item_id, low, local);
 }

@@ -133,7 +133,7 @@ fn one_of_over_keys_plans_a_lookup_per_key() {
     else {
         panic!("expected a Keys plan");
     };
-    let rendered: Vec<String> = refs.iter().map(|r| r.to_string()).collect();
+    let rendered: Vec<String> = refs.iter().map(std::string::ToString::to_string).collect();
     assert_eq!(rendered, vec![KEY_A.to_string(), KEY_B.to_string()]);
 }
 
@@ -308,7 +308,7 @@ fn one_of_over_lineages_plans_a_lookup_per_lineage() {
     else {
         panic!("expected a Lineages plan");
     };
-    let rendered: Vec<String> = ids.iter().map(|i| i.to_string()).collect();
+    let rendered: Vec<String> = ids.iter().map(std::string::ToString::to_string).collect();
     assert_eq!(rendered, vec!["cargo:memchr", "npm:left-pad"]);
 }
 

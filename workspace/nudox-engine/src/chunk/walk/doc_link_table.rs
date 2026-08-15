@@ -110,24 +110,16 @@ impl DocLinkTable {
         let mut inner: HashMap<String, SymbolKey> = HashMap::new();
         let declared = !entry.sym().doc_links.is_empty();
 
-        for doc_link in entry.sym().doc_links.iter() {
+        for doc_link in &entry.sym().doc_links {
             let target = doc_link.target.as_str();
 
             // Step 1: strip namespace tag.
-            let stripped_tag = match target.find('!') {
-                Some(idx) => &target[..idx],
-                None => target,
-            };
+            let stripped_tag = target.find('!').map_or(target, |idx| &target[..idx]);
 
             // Step 2: strip rustdoc anchor prefix.
-            let stripped_anchor: &str = if let Some(rest) = stripped_tag.strip_prefix('#') {
-                match rest.find('.') {
-                    Some(dot) => &rest[dot + 1..],
-                    None => rest,
-                }
-            } else {
-                stripped_tag
-            };
+            let stripped_anchor: &str = stripped_tag.strip_prefix('#').map_or(stripped_tag, |rest| {
+                rest.find('.').map_or(rest, |dot| &rest[dot + 1..])
+            });
 
             // Step 3: unify path separators.
             let normalised: String = stripped_anchor.replace("::", ".");
@@ -154,7 +146,7 @@ impl DocLinkTable {
                             let path_lower = stored_path.to_lowercase();
                             if path_lower.ends_with(&normalised_lower) {
                                 let len = stored_path.len();
-                                if best.map_or(true, |(_, prev_len)| len > prev_len) {
+                                if best.is_none_or(|(_, prev_len)| len > prev_len) {
                                     best = Some((hit.intro, len));
                                 }
                             }
@@ -169,7 +161,7 @@ impl DocLinkTable {
                             .as_deref()
                             .unwrap_or("")
                             .split("::")
-                            .map(|s| s.to_lowercase())
+                            .map(str::to_lowercase)
                             .filter(|s| !s.is_empty())
                             .collect();
 
@@ -182,15 +174,15 @@ impl DocLinkTable {
                                     let mut label_iter = label_segs_lower.iter();
                                     let mut current_label_seg = label_iter.next();
                                     for stored_seg in &stored_segs {
-                                        if let Some(ls) = current_label_seg {
-                                            if stored_seg.to_lowercase() == *ls {
-                                                current_label_seg = label_iter.next();
-                                            }
+                                        if let Some(ls) = current_label_seg
+                                            && stored_seg.to_lowercase() == *ls
+                                        {
+                                            current_label_seg = label_iter.next();
                                         }
                                     }
                                     if current_label_seg.is_none() {
                                         let len = stored_path.len();
-                                        if seg_best.map_or(true, |(_, prev)| len > prev) {
+                                        if seg_best.is_none_or(|(_, prev)| len > prev) {
                                             seg_best = Some((hit.intro, len));
                                         }
                                     }
@@ -198,7 +190,7 @@ impl DocLinkTable {
                             }
                         }
 
-                        seg_best.map(|(id, _)| id).unwrap_or_else(|| hits[0].intro)
+                        seg_best.map_or_else(|| hits[0].intro, |(id, _)| id)
                     }
                 }
             };
@@ -208,10 +200,10 @@ impl DocLinkTable {
             inner.insert(target.to_owned(), key.clone());
 
             if normalised != target {
-                inner.entry(normalised.clone()).or_insert(key.clone());
+                inner.entry(normalised.clone()).or_insert_with(|| key.clone());
             }
 
-            inner.entry(leaf.to_owned()).or_insert(key.clone());
+            inner.entry(leaf.to_owned()).or_insert_with(|| key.clone());
 
             if let Some(label) = &doc_link.label {
                 inner.entry(label.clone()).or_insert(key);
@@ -226,17 +218,16 @@ impl DocLinkTable {
         if let Some(key) = self.inner.get(target) {
             return Some(key);
         }
-        if let Some(leaf) = target.rsplit("::").next() {
-            if leaf != target {
-                if let Some(key) = self.inner.get(leaf) {
-                    return Some(key);
-                }
-            }
+        if let Some(leaf) = target.rsplit("::").next()
+            && leaf != target
+            && let Some(key) = self.inner.get(leaf)
+        {
+            return Some(key);
         }
-        if let Some(leaf) = target.rsplit('.').next() {
-            if !leaf.is_empty() {
-                return self.inner.get(leaf);
-            }
+        if let Some(leaf) = target.rsplit('.').next()
+            && !leaf.is_empty()
+        {
+            return self.inner.get(leaf);
         }
         None
     }

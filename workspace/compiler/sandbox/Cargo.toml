@@ -1,8 +1,13 @@
 [package]
 name = "sandbox"
+description = "Sealed-compute plane: SmolvmCage and the budget/typestate layer"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true

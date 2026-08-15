@@ -57,7 +57,7 @@ pub use results::{
     CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, GetOccurrencesResult,
     IndexPackageResult,
     IntegrityReport, ListVersionsResult, PackageSummary, PackagesResult, QueryResult, QueryResultRow,
-    SchemaResult, SearchResult, SelectVersionResult, SemanticHitRow, SemanticSearchResult,
+    OccurrenceSymbol, SchemaResult, SearchResult, SelectVersionResult, SemanticHitRow, SemanticSearchResult,
     SemanticStatus, SymbolDoc, SymbolsResult, UsageRow, UsagesResult, VersionSummary,
     OccurrenceRow,
 };
@@ -82,12 +82,20 @@ pub const GET_OCCURRENCES_QUERY: &str = r#"
 {
     Symbols {
         key @filter(op: "=", value: ["$key"])
+        key @output(name: "ownerKey")
+        signature @output(name: "ownerSignature")
+        path @output(name: "ownerPath")
         occurrencesOf {
             targetKey @output
             referenceKind @output
             confidence @output
             spanStart @output
             spanEnd @output
+            target @optional {
+                key @output(name: "targetResolvedKey")
+                signature @output(name: "targetSignature")
+                path @output(name: "targetPath")
+            }
         }
     }
 }
@@ -466,6 +474,7 @@ impl NudoxTools {
                 key: SymbolKeyDto(column(&columns, row, "key").unwrap_or_default()),
                 name: column(&columns, row, "name").unwrap_or_default(),
                 kind: column(&columns, row, "kind").unwrap_or_default(),
+                signature: column(&columns, row, "signature").unwrap_or_default(),
                 path: column(&columns, row, "path").unwrap_or_default(),
             })
             .collect();
@@ -502,8 +511,22 @@ impl NudoxTools {
 
         let mut occurrences = Vec::with_capacity(page.len());
         for row in &page {
+            let owner = OccurrenceSymbol {
+                key: SymbolKeyDto(column(&columns, row, "ownerKey").unwrap_or_default()),
+                signature: column(&columns, row, "ownerSignature").unwrap_or_default(),
+                path: column(&columns, row, "ownerPath"),
+            };
+            let target = column(&columns, row, "targetResolvedKey")
+                .filter(|key| !key.is_empty())
+                .map(|key| OccurrenceSymbol {
+                    key: SymbolKeyDto(key),
+                    signature: column(&columns, row, "targetSignature").unwrap_or_default(),
+                    path: column(&columns, row, "targetPath"),
+                });
             occurrences.push(OccurrenceRow {
                 target_key: column(&columns, row, "targetKey").unwrap_or_default(),
+                target,
+                owner,
                 reference_kind: column(&columns, row, "referenceKind").unwrap_or_default(),
                 confidence: column(&columns, row, "confidence").unwrap_or_default(),
                 span_start: parse_occurrence_offset(&column(&columns, row, "spanStart"), "spanStart")?,
@@ -596,6 +619,7 @@ impl NudoxTools {
             hits.push(SemanticHitRow {
                 key: SymbolKeyDto::from_wire(&hit.key),
                 display_name: hit.display_name.to_string(),
+                signature: hit.sig_preview.iter().map(signature_text).collect(),
                 kind: hit.kind,
                 score: hit.score,
                 documentation,

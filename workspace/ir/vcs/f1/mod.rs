@@ -141,7 +141,7 @@ fn decode_vis(s: &str) -> Result<Visibility, Error> {
         "internal" => Ok(Visibility::Internal),
         "package" => Ok(Visibility::Package),
         "crate" => Ok(Visibility::Crate),
-        _ => Err(Error::Malformed(format!("unknown visibility: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown visibility: {s}"))),
     }
 }
 
@@ -182,7 +182,7 @@ fn decode_kind_token(s: &str) -> Result<KindDiscriminant, Error> {
         "static" => Ok(KindDiscriminant::Static),
         "reexport" => Ok(KindDiscriminant::Reexport),
         "param" => Ok(KindDiscriminant::Param),
-        _ => Err(Error::Malformed(format!("unknown kind token: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown kind token: {s}"))),
     }
 }
 
@@ -266,7 +266,7 @@ fn decode_fnsig(tokens: &[&str]) -> Result<FnSigFlags, Error> {
                 if let Some(rest) = tok.strip_prefix("abi:") {
                     abi = Some(unescape(rest)?);
                 } else {
-                    return Err(Error::Malformed(format!("unknown fnsig token: {}", tok)));
+                    return Err(Error::Malformed(format!("unknown fnsig token: {tok}")));
                 }
             }
         }
@@ -348,7 +348,7 @@ fn decode_gparam(s: &str) -> Result<GenericParamWire, Error> {
     if let Some(rest) = s.strip_prefix("const:") {
         let parts: Vec<&str> = rest.splitn(3, '\t').collect();
         if parts.len() < 2 {
-            return Err(Error::Malformed(format!("bad const gparam: {}", s)));
+            return Err(Error::Malformed(format!("bad const gparam: {s}")));
         }
         let name = unescape(parts[0])?;
         let ty = decode_typeref(parts[1])?;
@@ -361,7 +361,7 @@ fn decode_gparam(s: &str) -> Result<GenericParamWire, Error> {
         };
         return Ok(GenericParamWire::Const { name, ty, default });
     }
-    Err(Error::Malformed(format!("unknown gparam prefix: {}", s)))
+    Err(Error::Malformed(format!("unknown gparam prefix: {s}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +380,7 @@ fn encode_where(wp: &WherePredWire) -> String {
 fn decode_where(s: &str) -> Result<WherePredWire, Error> {
     let tab = s
         .find('\t')
-        .ok_or_else(|| Error::Malformed(format!("where missing TAB: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("where missing TAB: {s}")))?;
     let target = decode_typeexpr(&s[..tab])?;
     let bounds = decode_bound_list(&s[tab + 1..])?;
     Ok(WherePredWire { target, bounds })
@@ -441,7 +441,7 @@ fn decode_tflags(tokens: &[&str]) -> Result<TraitFlags, Error> {
             "sealed:none" => flags.sealed = Sealed::None,
             "sealed:pubapi" => flags.sealed = Sealed::PubApi,
             "sealed:full" => flags.sealed = Sealed::Full,
-            _ => return Err(Error::Malformed(format!("unknown tflags token: {}", tok))),
+            _ => return Err(Error::Malformed(format!("unknown tflags token: {tok}"))),
         }
     }
     Ok(flags)
@@ -469,7 +469,7 @@ fn decode_iflags(tokens: &[&str]) -> Result<ImplFlags, Error> {
             "negative" => flags.negative = true,
             "blanket" => flags.blanket = true,
             "" => {}
-            _ => return Err(Error::Malformed(format!("unknown iflags token: {}", tok))),
+            _ => return Err(Error::Malformed(format!("unknown iflags token: {tok}"))),
         }
     }
     Ok(flags)
@@ -494,7 +494,7 @@ fn decode_recform(s: &str) -> Result<RecordForm, Error> {
         "tuple" => Ok(RecordForm::Tuple),
         "unit" => Ok(RecordForm::Unit),
         "union" => Ok(RecordForm::Union),
-        _ => Err(Error::Malformed(format!("unknown recform: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown recform: {s}"))),
     }
 }
 
@@ -515,7 +515,7 @@ fn decode_vform(s: &str) -> Result<VariantForm, Error> {
         "unit" => Ok(VariantForm::Unit),
         "tuple" => Ok(VariantForm::Tuple),
         "struct" => Ok(VariantForm::Struct),
-        _ => Err(Error::Malformed(format!("unknown vform: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown vform: {s}"))),
     }
 }
 
@@ -539,7 +539,7 @@ fn encode_auto(facts: &[AutoFact]) -> Vec<String> {
                 AutoState::No => "no",
                 AutoState::Cond => "cond",
             };
-            format!("{}:{}", trait_str, state_str)
+            format!("{trait_str}:{state_str}")
         })
         .collect()
 }
@@ -547,20 +547,20 @@ fn encode_auto(facts: &[AutoFact]) -> Vec<String> {
 fn decode_auto_line(s: &str) -> Result<AutoFact, Error> {
     let colon = s
         .find(':')
-        .ok_or_else(|| Error::Malformed(format!("bad auto line: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("bad auto line: {s}")))?;
     let trait_ = match &s[..colon] {
         "send" => AutoTrait::Send,
         "sync" => AutoTrait::Sync,
         "unpin" => AutoTrait::Unpin,
         "unwindsafe" => AutoTrait::UnwindSafe,
         "refunwindsafe" => AutoTrait::RefUnwindSafe,
-        other => return Err(Error::Malformed(format!("unknown auto trait: {}", other))),
+        other => return Err(Error::Malformed(format!("unknown auto trait: {other}"))),
     };
     let state = match &s[colon + 1..] {
         "yes" => AutoState::Yes,
         "no" => AutoState::No,
         "cond" => AutoState::Cond,
-        other => return Err(Error::Malformed(format!("unknown auto state: {}", other))),
+        other => return Err(Error::Malformed(format!("unknown auto state: {other}"))),
     };
     Ok(AutoFact { trait_, state })
 }
@@ -611,7 +611,7 @@ fn decode_cfg(s: &str) -> Result<CfgExpr, Error> {
     if let Some(rest) = s.strip_prefix("other:") {
         return Ok(CfgExpr::Other(unescape(rest)?));
     }
-    Err(Error::Malformed(format!("unknown cfg expr: {}", s)))
+    Err(Error::Malformed(format!("unknown cfg expr: {s}")))
 }
 
 fn split_cfg_args(s: &str) -> Result<Vec<CfgExpr>, Error> {
@@ -642,11 +642,9 @@ fn split_cfg_args(s: &str) -> Result<Vec<CfgExpr>, Error> {
 // ---------------------------------------------------------------------------
 
 fn encode_attr(a: &AttrTok) -> String {
-    if let Some(arg) = &a.arg {
-        format!("{}\t{}", a.token, escape(arg))
-    } else {
-        a.token.clone()
-    }
+    a.arg
+        .as_ref()
+        .map_or_else(|| a.token.clone(), |arg| format!("{}\t{}", a.token, escape(arg)))
 }
 
 fn decode_attr(s: &str) -> Result<AttrTok, Error> {
@@ -673,15 +671,15 @@ fn decode_stable_ref(s: &str) -> Result<StableRef, Error> {
     // Per §6.2: `stable-ref` = `F:<eco>/<pkg>#<64hex>` (same as typeref foreign).
     let rest = s
         .strip_prefix("F:")
-        .ok_or_else(|| Error::Malformed(format!("stable-ref must start with F:: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("stable-ref must start with F:: {s}")))?;
     let hash_pos = rest
         .rfind('#')
-        .ok_or_else(|| Error::Malformed(format!("no '#' in stable-ref: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("no '#' in stable-ref: {s}")))?;
     let intro_hex = &rest[hash_pos + 1..];
     let eco_pkg = &rest[..hash_pos];
     let slash = eco_pkg
         .find('/')
-        .ok_or_else(|| Error::Malformed(format!("no '/' in stable-ref: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("no '/' in stable-ref: {s}")))?;
     let eco = &eco_pkg[..slash];
     let pkg = &eco_pkg[slash + 1..];
     Ok(StableRef::new(
@@ -870,7 +868,7 @@ pub fn serialize_f1(
             out.push_str(&encode_fnsig(&f.sig));
             out.push('\n');
             // gparam
-            for gp in f.generics.iter() {
+            for gp in &f.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -879,7 +877,7 @@ pub fn serialize_f1(
             // where (set → sort)
             emit_where_set(&mut out, &f.wheres);
             // in
-            for param in f.input_params.iter() {
+            for param in &f.input_params {
                 out.push_str(KEY_IN);
                 out.push('\t');
                 out.push_str(&escape(param.name.as_deref().unwrap_or("")));
@@ -888,7 +886,7 @@ pub fn serialize_f1(
                 out.push('\n');
             }
             // out
-            for param in f.output_params.iter() {
+            for param in &f.output_params {
                 out.push_str(KEY_OUT);
                 out.push('\t');
                 out.push_str(&escape(param.name.as_deref().unwrap_or("")));
@@ -899,7 +897,7 @@ pub fn serialize_f1(
         }
         KindWire::Record(r) => {
             // gparam
-            for gp in r.generics.iter() {
+            for gp in &r.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -910,7 +908,7 @@ pub fn serialize_f1(
         }
         KindWire::Trait(t) => {
             // gparam
-            for gp in t.generics.iter() {
+            for gp in &t.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -921,7 +919,7 @@ pub fn serialize_f1(
         }
         KindWire::Impl(im) => {
             // gparam
-            for gp in im.generics.iter() {
+            for gp in &im.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -932,7 +930,7 @@ pub fn serialize_f1(
         }
         KindWire::Enum(e) => {
             // gparam
-            for gp in e.generics.iter() {
+            for gp in &e.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -943,7 +941,7 @@ pub fn serialize_f1(
         }
         KindWire::Type(ta) => {
             // gparam
-            for gp in ta.generics.iter() {
+            for gp in &ta.generics {
                 out.push_str(KEY_GPARAM);
                 out.push('\t');
                 out.push_str(&encode_gparam(gp));
@@ -972,7 +970,7 @@ pub fn serialize_f1(
         out.push('\t');
         out.push_str(encode_recform(&r.form));
         out.push('\n');
-        for field_id in r.fields.iter() {
+        for field_id in &r.fields {
             out.push_str(KEY_RECFIELD);
             out.push('\t');
             out.push_str(&field_id.to_hex());
@@ -983,7 +981,7 @@ pub fn serialize_f1(
     // distinguish them from record fields); they share key 21 and MUST be
     // emitted here in canonical order, before vform/super/link.
     if let KindWire::Variant(v) = &payload.kind {
-        for field_id in v.fields.iter() {
+        for field_id in &v.fields {
             out.push_str(KEY_RECFIELD);
             out.push('\t');
             out.push_str(&field_id.to_hex());
@@ -1125,7 +1123,7 @@ pub fn serialize_f1(
 
     // Enum variants list
     if let KindWire::Enum(e) = &payload.kind {
-        for var_id in e.variants.iter() {
+        for var_id in &e.variants {
             // Per §8.2, enum variant order stored as vdiscr's sibling.
             // The plan lists `recfield` for records and has no separate "variantfield".
             // Using lfact with a special prefix to convey ordered variant list.
@@ -1159,7 +1157,7 @@ fn emit_auto_set(out: &mut String, facts: &[AutoFact]) {
     }
     let mut auto_lines: Vec<String> = encode_auto(facts)
         .into_iter()
-        .map(|s| format!("{}\t{}\n", KEY_AUTO, s))
+        .map(|s| format!("{KEY_AUTO}\t{s}\n"))
         .collect();
     auto_lines.sort();
     for line in auto_lines {
@@ -1274,7 +1272,7 @@ impl<'a> F1View<'a> {
             let ver_str = parts.next().unwrap_or("");
             let ver: u16 = ver_str
                 .parse()
-                .map_err(|_| Error::Malformed(format!("bad version: {}", ver_str)))?;
+                .map_err(|_| Error::Malformed(format!("bad version: {ver_str}")))?;
             if ver != 1 {
                 return Err(Error::UnsupportedVersion(ver));
             }
@@ -1381,12 +1379,12 @@ impl<'a> F1View<'a> {
                     span_start = Some(
                         s_str
                             .parse()
-                            .map_err(|_| Error::Malformed(format!("bad span: {}", val)))?,
+                            .map_err(|_| Error::Malformed(format!("bad span: {val}")))?,
                     );
                     span_end = Some(
                         e_str
                             .parse()
-                            .map_err(|_| Error::Malformed(format!("bad span: {}", val)))?,
+                            .map_err(|_| Error::Malformed(format!("bad span: {val}")))?,
                     );
                 }
                 KEY_SRC => src = Some(val),
@@ -1811,7 +1809,7 @@ impl<'a> F1View<'a> {
             .iter()
             .map(|s| decode_gparam(s))
             .collect::<Result<Vec<_>, _>>()
-            .map(|v| v.into_boxed_slice())
+            .map(std::vec::Vec::into_boxed_slice)
     }
 
     fn parse_wheres(&self) -> Result<Box<[WherePredWire]>, Error> {
@@ -1819,7 +1817,7 @@ impl<'a> F1View<'a> {
             .iter()
             .map(|s| decode_where(s))
             .collect::<Result<Vec<_>, _>>()
-            .map(|v| v.into_boxed_slice())
+            .map(std::vec::Vec::into_boxed_slice)
     }
 
     fn parse_auto(&self) -> Result<Box<[AutoFact]>, Error> {
@@ -1827,7 +1825,7 @@ impl<'a> F1View<'a> {
             .iter()
             .map(|s| decode_auto_line(s))
             .collect::<Result<Vec<_>, _>>()
-            .map(|v| v.into_boxed_slice())
+            .map(std::vec::Vec::into_boxed_slice)
     }
 }
 
@@ -1840,19 +1838,19 @@ fn parse_link_line(rest: &str) -> Result<LinkWire, Error> {
     let mut parts = rest.splitn(6, '\t');
     let eco = parts
         .next()
-        .ok_or_else(|| Error::Malformed(format!("link missing eco: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing eco: {rest}")))?;
     let pkg = parts
         .next()
-        .ok_or_else(|| Error::Malformed(format!("link missing pkg: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing pkg: {rest}")))?;
     let intro_hex = parts
         .next()
-        .ok_or_else(|| Error::Malformed(format!("link missing intro: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing intro: {rest}")))?;
     let ks_str = parts
         .next()
-        .ok_or_else(|| Error::Malformed(format!("link missing kind_self: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing kind_self: {rest}")))?;
     let ko_str = parts
         .next()
-        .ok_or_else(|| Error::Malformed(format!("link missing kind_other: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing kind_other: {rest}")))?;
     Ok(LinkWire {
         other: StableRef::new(
             PackageLineageId::new(EcosystemId::new(eco), PackageName::new(pkg)),
@@ -1871,7 +1869,7 @@ fn parse_param_line(rest: &str) -> Result<ParamWire, Error> {
     // format: <escaped_name>TAB<typeref>
     let tab = rest
         .find('\t')
-        .ok_or_else(|| Error::Malformed(format!("param line missing TAB: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("param line missing TAB: {rest}")))?;
     let name_raw = &rest[..tab];
     let tr_str = &rest[tab + 1..];
     let name = unescape(name_raw)?;

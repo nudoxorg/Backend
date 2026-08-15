@@ -186,10 +186,7 @@ impl RootfsStore {
     ///
     /// Returns [`VmError::RootfsUnavailable`] when the directory does not exist.
     pub fn resolve(&self, digest: Option<&ImageDigest>) -> Result<PathBuf, VmError> {
-        let candidate = match digest {
-            Some(d) => self.root.join(d.to_string()),
-            None => self.root.join("base"),
-        };
+        let candidate = digest.map_or_else(|| self.root.join("base"), |d| self.root.join(d.to_string()));
         if candidate.is_dir() {
             Ok(candidate)
         } else {
@@ -221,20 +218,20 @@ fn translate_network(net: &NetworkPolicy, resources: &mut VmResources) -> Result
                 DnsPolicy::Deny => {
                     // No DNS nameserver → effectively deny DNS. CIDRs still enforced.
                     resources.dns = None;
-                    if !allowed_cidrs.is_empty() {
-                        resources.allowed_cidrs =
-                            Some(allowed_cidrs.iter().map(|c| c.to_string()).collect());
-                    } else {
+                    if allowed_cidrs.is_empty() {
                         resources.allowed_cidrs = None;
+                    } else {
+                        resources.allowed_cidrs =
+                            Some(allowed_cidrs.iter().map(std::string::ToString::to_string).collect());
                     }
                 }
                 DnsPolicy::AllowAll => {
                     resources.dns = None;
-                    if !allowed_cidrs.is_empty() {
-                        resources.allowed_cidrs =
-                            Some(allowed_cidrs.iter().map(|c| c.to_string()).collect());
-                    } else {
+                    if allowed_cidrs.is_empty() {
                         resources.allowed_cidrs = None;
+                    } else {
+                        resources.allowed_cidrs =
+                            Some(allowed_cidrs.iter().map(std::string::ToString::to_string).collect());
                     }
                 }
                 DnsPolicy::Allowlist(_names) => {
@@ -1252,7 +1249,7 @@ mod tests {
                 eprintln!("smolvm registry unavailable (expected in some CI): {reason}");
             }
             // prepare_fork rejects a golden with no live/forkable control socket.
-            Err(VmError::Launch { .. }) | Err(VmError::Unsupported { .. }) => {}
+            Err(VmError::Launch { .. } | VmError::Unsupported { .. }) => {}
             Err(e) => panic!("unexpected fork error: {e:?}"),
         }
     }

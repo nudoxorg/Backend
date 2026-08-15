@@ -84,25 +84,28 @@ fn module_census() {
     // would have to guess the cargo package from the directory, and
     // `documented_package_names` matches that string exactly, so a wrong guess
     // fails with "no documented packages found" rather than with the mistake.
-    let (root, name, version, censusing_default) = match std::env::var("NUDOX_PKG_ROOT") {
-        Ok(root) => (
-            PathBuf::from(root),
-            std::env::var("NUDOX_PKG_NAME").expect(
-                "NUDOX_PKG_ROOT was set without NUDOX_PKG_NAME; the cargo package name cannot \
-                 be inferred from the directory (`unicode-width-0.1.11` holds package \
-                 `unicode-width`, `memchr-2.8.3` holds `memchr`) and is matched exactly",
-            ),
-            std::env::var("NUDOX_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()),
-            false,
-        ),
-        Err(_) => {
-            let (dir, name, version) = DEFAULT_PACKAGE;
-            let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../../result")
-                .join(dir);
-            (root, name.to_owned(), version.to_owned(), true)
-        }
-    };
+    let (root, name, version, censusing_default) =
+        std::env::var("NUDOX_PKG_ROOT").map_or_else(
+            |_| {
+                let (dir, name, version) = DEFAULT_PACKAGE;
+                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../result")
+                    .join(dir);
+                (root, name.to_owned(), version.to_owned(), true)
+            },
+            |root| {
+                (
+                    PathBuf::from(root),
+                    std::env::var("NUDOX_PKG_NAME").expect(
+                        "NUDOX_PKG_ROOT was set without NUDOX_PKG_NAME; the cargo package name cannot \
+                         be inferred from the directory (`unicode-width-0.1.11` holds package \
+                         `unicode-width`, `memchr-2.8.3` holds `memchr`) and is matched exactly",
+                    ),
+                    std::env::var("NUDOX_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()),
+                    false,
+                )
+            },
+        );
 
     assert!(
         root.join("Cargo.toml").is_file(),
@@ -168,9 +171,7 @@ fn module_census() {
         parts.reverse();
         let kind = entry
             .kind()
-            .discriminant()
-            .map(|d| format!("{d:?}"))
-            .unwrap_or_else(|| "Reference".to_owned());
+            .discriminant().map_or_else(|| "Reference".to_owned(), |d| format!("{d:?}"));
         let path = parts.join("::");
         // Attribute the entry to its parent path (its enclosing module/type).
         let owner = if parts.len() > 1 {

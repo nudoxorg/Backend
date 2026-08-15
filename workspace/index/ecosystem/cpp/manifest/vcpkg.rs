@@ -38,8 +38,8 @@ pub fn parse(text: &str) -> CppManifest {
     let mut manifest = CppManifest {
         facts: ExtractedFacts {
             description,
-            license,
             repository,
+            license,
             ..ExtractedFacts::default()
         },
         dependencies: Vec::new(),

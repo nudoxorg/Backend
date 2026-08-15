@@ -60,8 +60,9 @@ pub const PACKAGE_URI_PREFIX: &str = "nudox://package/";
 /// has called any of them, so it says which to reach for first.
 const INSTRUCTIONS: &str = "\
 Local documentation and code intelligence for the packages loaded in this nudox \
-workspace. Every answer comes from IR produced on this machine or verified \
-against a remote generation, and carries a `provenance` field saying which.
+workspace. Tool results are compact Markdown: a declaration's rendered signature \
+is its primary identity, exact source is fenced verbatim, and tables are reserved \
+for repeated relationships. Every stable key is reusable across the tools.
 
 Start with `list_packages` to see what is loaded, then `search_symbols` to find \
 a symbol by name, or `semantic_search` for a concept/behavior. Use `get_symbols` to read one or \
@@ -218,6 +219,48 @@ symbol key it declares, and is what `search_symbols`'s `packages` filter accepts
 
         Ok(resources)
     }
+
+    /// List the resources visible to an MCP client at this moment.
+    ///
+    /// This is the transport-independent equivalent of `resources/list` and
+    /// exists so integration tests and embedded clients can exercise the same
+    /// resource projection without manufacturing an rmcp request context.
+    pub async fn list_resources_snapshot(&self) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(self.resources().await?))
+    }
+
+    /// Read one resource through the same projection used by `resources/read`.
+    pub async fn read_resource_uri(
+        &self,
+        uri: impl Into<String>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        let uri = uri.into();
+
+        if uri == SCHEMA_URI {
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                crate::mcp::SCHEMA_SDL,
+                &uri,
+            )]));
+        }
+
+        if let Some(lineage) = uri.strip_prefix(PACKAGE_URI_PREFIX) {
+            let packages = self.tools.do_list_packages().await?;
+            let found = packages
+                .packages
+                .into_iter()
+                .find(|p| p.lineage == lineage)
+                .ok_or_else(|| McpError::UnknownResource(uri.clone()))?;
+            let body = PackagesResult {
+                packages: vec![found],
+            }
+            .to_markdown();
+            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
+                body, &uri,
+            )]));
+        }
+
+        Err(McpError::UnknownResource(uri).into())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -230,9 +273,9 @@ impl NudoxMcpServer {
     #[tool(
         name = "search_symbols",
         description = "PREFER THIS FIRST when looking for a symbol by name. Searches the \
-loaded local corpus by symbol name and by kind, returning ranked hits — each with its stable \
-key, rendered signature (as text and as typed tokens), kind, trust provenance and relevance \
-score. A key looks like `ecosystem:name#introhex`, for example \
+loaded local corpus by symbol name and by kind, returning ranked Markdown hits — each with its \
+stable key and complete rendered declaration signature. A key looks like \
+`ecosystem:name#introhex`, for example \
 `cargo:serde#3f1a…` with 64 hex characters after the `#`; pass it straight to `get_symbol` to \
 read the symbol or to `find_usages` to find its callers. Narrow with `kinds` (Function, Record, \
 Trait, Enum, Impl, Alias, Field, Const, Static, Module, Variant, Reexport, Param) and with \
@@ -252,7 +295,7 @@ Treat `cursor` as opaque; never construct one yourself."
     /// Find documented public APIs by concept or behavior.
     #[tool(
         name = "semantic_search",
-        description = "Use for natural-language questions such as `retry failed requests` or `which API parses URLs`. Searches embeddings of public symbol paths, kinds and documentation. Results are ranked Markdown rows with stable keys; use `get_symbol` for exact source. The status line distinguishes complete coverage, partial indexing and an unavailable model. Narrow with `kinds` or `packages`; pagination cursors are opaque. This is semantic retrieval, not a claim that the implementation body was searched."
+        description = "Use for natural-language questions such as `retry failed requests` or `which API parses URLs`. Searches embeddings of public symbol paths, kinds and documentation. Results are ranked Markdown rows with complete declaration signatures and stable keys; documentation evidence is fenced below the relationship table. Use `get_symbol` for exact source. The status line distinguishes complete coverage, partial indexing and an unavailable model. Narrow with `kinds` or `packages`; pagination cursors are opaque. This is semantic retrieval, not a claim that the implementation body was searched."
     )]
     pub async fn semantic_search(
         &self,
@@ -264,10 +307,7 @@ Treat `cursor` as opaque; never construct one yourself."
     /// Read one symbol through the compact source-first projection.
     #[tool(
         name = "get_symbol",
-        description = "Read one symbol as a compact source-first record: stable key, path, \
-deduplicated resolved signature references, kind, visibility, location, deprecation and exact declaration source \
-(including the body when present). This intentionally does not serialize GUI token and layout \
-structures or duplicate a signature already present in source. Prefer `get_symbols` when reading more than one key."
+        description = "Read one symbol as a compact source-first Markdown record: stable key and path, then exact declaration source (including the body when present) in a fenced block. When source is unavailable, the complete rendered signature is fenced instead. Resolved type references, location and deprecation follow only when present; kind and visibility are derivable from the declaration and are not repeated. Prefer `get_symbols` when reading more than one key."
     )]
     pub async fn get_symbol(
         &self,
@@ -281,8 +321,9 @@ structures or duplicate a signature already present in source. Prefer `get_symbo
     #[tool(
         name = "get_symbols",
         description = "PREFER THIS when reading multiple symbols. Accepts 1–32 stable keys and \
-returns compact records in the same order in one MCP round trip. `format=signature` omits source; \
-`format=source` includes the exact declaration and body."
+returns compact Markdown records in the same order in one MCP round trip. Each record keeps its path \
+and key outside a fenced declaration/signature snippet; relationship references are tables. \
+`format=signature` omits source; `format=source` includes the exact declaration and body."
     )]
     pub async fn get_symbols(
         &self,
@@ -295,8 +336,9 @@ returns compact records in the same order in one MCP round trip. `format=signatu
     #[tool(
         name = "find_usages",
         description = "PREFER THIS to answer \"who calls this?\" or \"what breaks if I change \
-this?\". Given a symbol key, returns the symbols holding a resolved reference to it — callers of \
-a function, users of a type — each with its own key, qualified path, name and kind, so you can follow the chain \
+this?\". Given a symbol key, returns a relationship table of symbols holding a resolved reference \
+to it — callers of a function, users of a type — with each complete declaration signature, path \
+and key, so you can follow the chain \
 with `get_symbol`. Only references the producer resolved with index-grade confidence or better \
 are returned, so results are precise rather than textual: a name that merely appears in a comment \
 or belongs to an unrelated identifier will not show up. `key` must be `ecosystem:name#introhex`. \
@@ -313,7 +355,7 @@ more."
     /// Read exact references owned by one symbol.
     #[tool(
         name = "get_occurrences",
-        description = "Read one row per exact reference contained in the symbol identified by `key`. Each span is explicitly labeled as bytes relative to the owner's declaration span, not an absolute file offset. The target key is retained even when its package is unloaded. Use `find_usages` for the different question of which symbols refer to a target."
+        description = "Read exact references contained in the symbol identified by `key`, grouped by target and owner declaration signature. Each relationship row labels bytes relative to the owner's declaration span, not an absolute file offset. The target key is retained even when its package is unloaded. Use `find_usages` for the different question of which symbols refer to a target."
     )]
     pub async fn get_occurrences(
         &self,
@@ -448,10 +490,11 @@ structural or relational questions they do not, such as \"every public function 
 returning type Y\" (the `returnedBy` edge), \"what does this type implement\" (`implementedBy`), \
 \"all implementors of this trait\" (`implementors`), or a join across packages. Takes a \
 Trustfall (GraphQL-subset) query plus string variable bindings referenced as `$name`, and returns \
-column names with positionally aligned string cells, so `rows[i].cells[j]` is the value of \
-`columns[j]`. ALWAYS call `graph_schema` first and write the query against the exact type, \
-property and edge names it returns — queries are validated against that schema, so a guessed \
-field name is an error rather than an empty result. Paginated the same way as `search_symbols`: \
+an agent-facing Markdown relationship table. Select `signature` on symbol rows to retain type context; \
+when present, the formatter suppresses derivable `name` and `kind` columns. ALWAYS call `graph_schema` \
+first and write the query against the exact type, property and edge names it returns — queries are \
+validated against that schema, so a guessed field name is an error rather than an empty result. \
+Paginated the same way as `search_symbols`: \
 check `next_cursor` and pass it back as `cursor` for more."
     )]
     pub async fn graph_query(
@@ -515,7 +558,7 @@ impl ServerHandler for NudoxMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        Ok(ListResourcesResult::with_all_items(self.resources().await?))
+        self.list_resources_snapshot().await
     }
 
     async fn read_resource(
@@ -523,31 +566,6 @@ impl ServerHandler for NudoxMcpServer {
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, ErrorData> {
-        let uri = request.uri;
-
-        if uri == SCHEMA_URI {
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                crate::mcp::SCHEMA_SDL,
-                &uri,
-            )]));
-        }
-
-        if let Some(lineage) = uri.strip_prefix(PACKAGE_URI_PREFIX) {
-            let packages = self.tools.do_list_packages().await?;
-            let found = packages
-                .packages
-                .into_iter()
-                .find(|p| p.lineage == lineage)
-                .ok_or_else(|| McpError::UnknownResource(uri.clone()))?;
-            let body = PackagesResult {
-                packages: vec![found],
-            }
-            .to_markdown();
-            return Ok(ReadResourceResult::new(vec![ResourceContents::text(
-                body, &uri,
-            )]));
-        }
-
-        Err(McpError::UnknownResource(uri).into())
+        self.read_resource_uri(request.uri).await
     }
 }

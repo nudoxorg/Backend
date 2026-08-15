@@ -129,9 +129,9 @@ fn var(key: &str) -> Option<String> {
 }
 
 fn root() -> PathBuf {
-    var("NUDOX_PKG_ROOT").map(PathBuf::from).unwrap_or_else(|| {
+    var("NUDOX_PKG_ROOT").map_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-    })
+    }, PathBuf::from)
 }
 
 fn name() -> String {
@@ -220,7 +220,7 @@ fn real_memchr_return_type_keeps_option_wrapper() {
     // `nudox-store/tests/corpus_contract.rs::corpus_entry_counts_match_the_recorded_baseline`
     // and `nix/entry-baseline.toml`. Do not re-add a count check here.
 
-    let view = IrView::with_package(descriptor.lineage.clone(), table);
+    let view = IrView::with_package(descriptor.lineage, table);
     let package = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
     let v = package.view();
 

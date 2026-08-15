@@ -85,18 +85,18 @@ use super::store::KeySource;
 /// hours means a machine used every working day re-verifies about once per day
 /// without the client ever becoming chatty: one request per half-day, against
 /// an endpoint whose whole job is to answer that question.
-pub const FRESH_FOR: Duration = Duration::from_secs(12 * 60 * 60);
+pub const FRESH_FOR: Duration = Duration::from_hours(12);
 
 /// How long past the last successful verification tool calls keep working with
 /// no reachable service. See the module docs for why this number.
-pub const GRACE_WINDOW: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+pub const GRACE_WINDOW: Duration = Duration::from_hours(7 * 24);
 
 /// How much grace must remain before the UI escalates.
 ///
 /// Two days is enough that a warning seen on a Friday is still actionable on
 /// Monday. The point of the constant is that the user learns *before* being cut
 /// off, not after — the failure mode this whole module is shaped around.
-pub const GRACE_WARNING_AT: Duration = Duration::from_secs(48 * 60 * 60);
+pub const GRACE_WARNING_AT: Duration = Duration::from_hours(48);
 
 /// How close to the quota limit we get before usage stops being batched.
 ///
@@ -480,7 +480,7 @@ impl GateState {
                     return Posture::GraceExpired {
                         account: account.clone(),
                         source: *source,
-                        expired_for: age - GRACE_WINDOW,
+                        expired_for: age.checked_sub(GRACE_WINDOW).unwrap(),
                         cause: last_failure.clone(),
                     };
                 }
@@ -500,7 +500,7 @@ impl GateState {
                         account: account.clone(),
                         source: *source,
                         quota: quota.clone(),
-                        remaining: GRACE_WINDOW - age,
+                        remaining: GRACE_WINDOW.checked_sub(age).unwrap(),
                         cause: last_failure.clone(),
                     };
                 }
@@ -880,7 +880,7 @@ mod tests {
         let early = state.posture(t0() + FRESH_FOR);
         match &early {
             Posture::GraceOffline { remaining, .. } => {
-                assert_eq!(*remaining, GRACE_WINDOW - FRESH_FOR);
+                assert_eq!(*remaining, GRACE_WINDOW.checked_sub(FRESH_FOR).unwrap());
             }
             other => panic!("expected grace, got {other:?}"),
         }
@@ -911,7 +911,7 @@ mod tests {
         assert_eq!(posture.tag(), "grace_expired");
         match posture.verdict() {
             Verdict::Deny(d) => assert_eq!(d.kind(), "offline_grace_expired"),
-            other => panic!("expected denial, got {other:?}"),
+            other @ Verdict::Allow => panic!("expected denial, got {other:?}"),
         }
     }
 
@@ -980,11 +980,11 @@ mod tests {
 
         let pending_denial = match pending.posture(t0()).verdict() {
             Verdict::Deny(d) => d,
-            other => panic!("expected denial, got {other:?}"),
+            other @ Verdict::Allow => panic!("expected denial, got {other:?}"),
         };
         let failed_denial = match failed.posture(t0()).verdict() {
             Verdict::Deny(d) => d,
-            other => panic!("expected denial, got {other:?}"),
+            other @ Verdict::Allow => panic!("expected denial, got {other:?}"),
         };
 
         assert_eq!(pending_denial.kind(), "authorization_pending");
@@ -1025,7 +1025,7 @@ mod tests {
             UserId(24),
             fp(),
             KeySource::Keychain,
-            t0() + Duration::from_secs(86_400),
+            t0() + Duration::from_hours(24),
             t0(),
             QuotaKnowledge::Unknown,
         );

@@ -53,10 +53,10 @@ pub fn classify_intent(
 	}
 
 	let resolved = resolve_norms(ecosystem_scope, norms);
-	let is_specific = match resolved {
-		Some(n) => n.query_is_specific(q),
-		None => q.contains(DEFAULT_SPECIFICITY_SEPARATORS) || q.len() > 15,
-	};
+	let is_specific = resolved.map_or_else(
+		|| q.contains(DEFAULT_SPECIFICITY_SEPARATORS) || q.len() > 15,
+		|n| n.query_is_specific(q),
+	);
 	if is_specific {
 		return QueryIntent::Navigate;
 	}
@@ -122,12 +122,12 @@ fn is_only_bland(query: &str, norms: Option<&SearchNorms>) -> bool {
 	}
 	tokens.iter().all(|t| {
 		let lower = t.to_ascii_lowercase();
-		match norms {
-			Some(n) => n.is_stopword(&lower),
-			None => crate::ecosystem::search::ENGLISH_STOPWORDS
+		norms.map_or_else(
+			|| crate::ecosystem::search::ENGLISH_STOPWORDS
 				.binary_search(&lower.as_str())
 				.is_ok(),
-		}
+			|n| n.is_stopword(&lower),
+		)
 	})
 }
 

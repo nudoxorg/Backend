@@ -305,11 +305,10 @@ fn record(out: &mut Inferred, id: &str, ty: &PyType) {
     };
     for param in list.items() {
         let (name, ty) = match param {
-            Param::PosOnly(n, t, _) => (n.as_ref().map(|n| n.to_string()), t),
-            Param::Pos(n, t, _) => (Some(n.to_string()), t),
-            Param::Varargs(n, t) => (n.as_ref().map(|n| n.to_string()), t),
-            Param::KwOnly(n, t, _) => (Some(n.to_string()), t),
-            Param::Kwargs(n, t) => (n.as_ref().map(|n| n.to_string()), t),
+            Param::PosOnly(n, t, _) => (n.as_ref().map(ToString::to_string), t),
+            Param::Pos(n, t, _) | Param::KwOnly(n, t, _) => (Some(n.to_string()), t),
+            Param::Varargs(n, t) => (n.as_ref().map(ToString::to_string), t),
+            Param::Kwargs(n, t) => (n.as_ref().map(ToString::to_string), t),
         };
         if let Some(name) = name {
             out.insert(SlotKey::param(id, name), convert(ty));
@@ -330,7 +329,7 @@ fn callable_of(ty: &PyType) -> Option<Callable> {
         PyType::Forall(fa) => match &fa.body {
             Forallable::Function(f) => Some(f.signature.clone()),
             Forallable::Callable(c) => Some(c.clone()),
-            _ => None,
+            Forallable::TypeAlias(_) => None,
         },
         // An overload group's slots are keyed by the base id; the syntactic
         // tier already split the branches, and only the first signature can be
@@ -346,10 +345,7 @@ fn callable_of(ty: &PyType) -> Option<Callable> {
 /// location. `types.rs::lower_nominal` does the same on the way out; doing it
 /// here too keeps the ids comparable to the syntactic tier's.
 fn strip_loc(name: &str) -> &str {
-    match name.find('@') {
-        Some(at) => &name[..at],
-        None => name,
-    }
+    name.find('@').map_or(name, |at| &name[..at])
 }
 
 /// Convert a solved pyrefly type into the producer's owned [`TypeData`].
@@ -598,6 +594,21 @@ fn module_dotted_name(file: &Path) -> String {
     segments.join(".")
 }
 
+/// The runtime class behind a literal type.
+///
+/// `Literal['x']` is a `str` as far as a reader of documentation is concerned;
+/// keeping the literal spelling would put a value where a type belongs.
+fn literal_runtime_class(lit: &pyrefly_types::literal::Lit) -> String {
+    use pyrefly_types::literal::Lit;
+    match lit {
+        Lit::Str(_) => "builtins.str".to_owned(),
+        Lit::Int(_) => "builtins.int".to_owned(),
+        Lit::Bool(_) => "builtins.bool".to_owned(),
+        Lit::Bytes(_) => "builtins.bytes".to_owned(),
+        Lit::Enum(e) => strip_loc(&format!("{}", e.class.qname())).to_owned(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -809,20 +820,5 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 6, "expected all 6 zero-annotation corpus packages provisioned; got {checked}");
-    }
-}
-
-/// The runtime class behind a literal type.
-///
-/// `Literal['x']` is a `str` as far as a reader of documentation is concerned;
-/// keeping the literal spelling would put a value where a type belongs.
-fn literal_runtime_class(lit: &pyrefly_types::literal::Lit) -> String {
-    use pyrefly_types::literal::Lit;
-    match lit {
-        Lit::Str(_) => "builtins.str".to_owned(),
-        Lit::Int(_) => "builtins.int".to_owned(),
-        Lit::Bool(_) => "builtins.bool".to_owned(),
-        Lit::Bytes(_) => "builtins.bytes".to_owned(),
-        Lit::Enum(e) => strip_loc(&format!("{}", e.class.qname())).to_owned(),
     }
 }

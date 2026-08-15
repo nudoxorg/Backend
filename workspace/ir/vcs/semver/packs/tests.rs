@@ -118,8 +118,7 @@ fn a1_item_removed_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A1 && f.class == BreakClass::Major),
-        "expected A-1 Major; got: {:?}",
-        findings
+        "expected A-1 Major; got: {findings:?}"
     );
 }
 
@@ -153,8 +152,7 @@ fn a2_kind_changed_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A2 && f.class == BreakClass::Major),
-        "expected A-2 Major; got: {:?}",
-        findings
+        "expected A-2 Major; got: {findings:?}"
     );
 }
 
@@ -184,8 +182,7 @@ fn a3_vis_lowered_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A3 && f.class == BreakClass::Major),
-        "expected A-3 Major; got: {:?}",
-        findings
+        "expected A-3 Major; got: {findings:?}"
     );
 }
 
@@ -201,8 +198,7 @@ fn a3_lowering_below_floor_is_item_missing() {
         findings
             .iter()
             .any(|f| f.lint == A1 && f.class == BreakClass::Major),
-        "expected A-1 Major (item left public surface); got: {:?}",
-        findings
+        "expected A-1 Major (item left public surface); got: {findings:?}"
     );
 }
 
@@ -230,8 +226,7 @@ fn a6_variant_added_exhaustive_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A6 && f.class == BreakClass::Major),
-        "expected A-6 Major; got: {:?}",
-        findings
+        "expected A-6 Major; got: {findings:?}"
     );
 }
 
@@ -294,8 +289,7 @@ fn a7_variant_added_non_exhaustive_is_minor() {
         findings
             .iter()
             .any(|f| f.lint == A7 && f.class == BreakClass::Minor),
-        "expected A-7 Minor; got: {:?}",
-        findings
+        "expected A-7 Minor; got: {findings:?}"
     );
 }
 
@@ -330,8 +324,7 @@ fn a12_must_use_added_is_minor() {
         findings
             .iter()
             .any(|f| f.lint == A12 && f.class == BreakClass::Minor),
-        "expected A-12 Minor; got: {:?}",
-        findings
+        "expected A-12 Minor; got: {findings:?}"
     );
 }
 
@@ -368,8 +361,7 @@ fn a14_non_exhaustive_added_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A14 && f.class == BreakClass::Major),
-        "expected A-14 Major; got: {:?}",
-        findings
+        "expected A-14 Major; got: {findings:?}"
     );
 }
 
@@ -407,8 +399,7 @@ fn internal_deleted_no_finding() {
     // Should have no A-1 finding for the private item.
     assert!(
         !findings.iter().any(|f| f.item == Some(priv_id)),
-        "private deletion should produce no finding; got: {:?}",
-        findings
+        "private deletion should produce no finding; got: {findings:?}"
     );
 }
 
@@ -482,8 +473,7 @@ fn a8_required_item_added_unsealed_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A8 && f.class == BreakClass::Major),
-        "expected A-8 Major; got: {:?}",
-        findings
+        "expected A-8 Major; got: {findings:?}"
     );
 }
 
@@ -502,13 +492,11 @@ fn a9_defaulted_item_added_is_minor() {
         findings
             .iter()
             .any(|f| f.lint == A9 && f.class == BreakClass::Minor),
-        "expected A-9 Minor; got: {:?}",
-        findings
+        "expected A-9 Minor; got: {findings:?}"
     );
     assert!(
         !findings.iter().any(|f| f.lint == A8),
-        "a defaulted addition must NOT fire A-8; got: {:?}",
-        findings
+        "a defaulted addition must NOT fire A-8; got: {findings:?}"
     );
 }
 
@@ -526,8 +514,7 @@ fn a10_trait_item_removed_is_major() {
         findings
             .iter()
             .any(|f| f.lint == A10 && f.class == BreakClass::Major),
-        "expected A-10 Major; got: {:?}",
-        findings
+        "expected A-10 Major; got: {findings:?}"
     );
 }
 
@@ -547,7 +534,6 @@ fn a8_required_add_on_sealed_trait_is_minor() {
         findings
             .iter()
             .any(|f| f.lint == A9 && f.class == BreakClass::Minor),
-        "sealed trait item add should be A-9 Minor; got: {:?}",
-        findings
+        "sealed trait item add should be A-9 Minor; got: {findings:?}"
     );
 }

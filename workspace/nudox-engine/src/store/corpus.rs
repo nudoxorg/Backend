@@ -174,7 +174,7 @@ impl EntryRef {
     /// Returns `None` only if the intro is absent from the package's
     /// declaration table (should not happen for a well-formed `EntryRef`
     /// produced by [`Corpus::entry`]).
-    pub fn get<'a>(&'a self) -> Option<&'a Entry> {
+    pub fn get(&self) -> Option<&Entry> {
         self.package.view().entry(self.intro)
     }
 

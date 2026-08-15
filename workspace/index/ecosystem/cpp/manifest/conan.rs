@@ -80,10 +80,8 @@ fn parse_conanfile_txt(text: &str) -> CppManifest {
             continue;
         }
 
-        if in_requires_section {
-            if let Some(token) = conan_dep_token(trimmed) {
-                manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
-            }
+        if in_requires_section && let Some(token) = conan_dep_token(trimmed) {
+            manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Recipe));
         }
     }
 
@@ -119,25 +117,23 @@ fn parse_conanfile_py(text: &str) -> CppManifest {
         let effective = strip_inline_comment(trimmed);
 
         // ── Metadata assignments ──────────────────────────────────────────
-        if manifest.facts.description.is_none() {
-            if let Some(value) = extract_string_assignment(effective, "description") {
-                manifest.facts.description = Some(value);
-            }
+        if manifest.facts.description.is_none()
+            && let Some(value) = extract_string_assignment(effective, "description")
+        {
+            manifest.facts.description = Some(value);
         }
-        if manifest.facts.license.is_none() {
-            if let Some(value) = extract_string_assignment(effective, "license") {
-                manifest.facts.license = Some(value);
-            }
+        if manifest.facts.license.is_none()
+            && let Some(value) = extract_string_assignment(effective, "license")
+        {
+            manifest.facts.license = Some(value);
         }
-        if manifest.facts.repository.is_none() {
-            if let Some(value) = extract_string_assignment(effective, "homepage") {
-                manifest.facts.repository = Some(value);
-            }
+        if manifest.facts.repository.is_none()
+            && let Some(value) = extract_string_assignment(effective, "homepage")
+        {
+            manifest.facts.repository = Some(value);
         }
-        if manifest.facts.keywords.is_empty() {
-            if let Some(keywords) = extract_topics(effective) {
-                manifest.facts.keywords = keywords;
-            }
+        if manifest.facts.keywords.is_empty() && let Some(keywords) = extract_topics(effective) {
+            manifest.facts.keywords = keywords;
         }
 
         // ── Requirement declarations ──────────────────────────────────────
@@ -215,7 +211,7 @@ fn conan_dep_token(spec: &str) -> Option<String> {
 /// Extract a single-line `key = "value"` or `key = 'value'` assignment.
 /// Returns the unquoted value, or `None` when the line does not match the
 /// pattern or the value is not a simple string literal.
-fn extract_string_assignment<'a>(line: &'a str, key: &str) -> Option<String> {
+fn extract_string_assignment(line: &str, key: &str) -> Option<String> {
     // Trim leading/trailing whitespace and look for `key` at word boundary.
     let rest = line.trim().strip_prefix(key)?.trim_start();
     let rest = rest.strip_prefix('=')?;
@@ -291,13 +287,9 @@ fn extract_topics(line: &str) -> Option<Vec<String>> {
     let rest = rest.strip_prefix('=')?;
     let rest = rest.trim_start();
     // Accept both `(` and `[`.
-    let rest = if let Some(r) = rest.strip_prefix('(') {
-        r
-    } else if let Some(r) = rest.strip_prefix('[') {
-        r
-    } else {
-        return None;
-    };
+    let rest = rest
+        .strip_prefix('(')
+        .or_else(|| rest.strip_prefix('['))?;
 
     let keywords: Vec<String> = extract_all_quoted_strings(rest);
     if keywords.is_empty() {
@@ -311,7 +303,7 @@ fn extract_topics(line: &str) -> Option<Vec<String>> {
 /// contents.
 fn extract_all_quoted_strings(text: &str) -> Vec<String> {
     let mut result = Vec::new();
-    let mut chars = text.chars().peekable();
+    let mut chars = text.chars();
     while let Some(c) = chars.next() {
         if c == '"' || c == '\'' {
             let quote = c;
@@ -354,28 +346,21 @@ fn extract_all_quoted_dep_tokens(text: &str) -> Vec<String> {
 /// the text after the opening bracket/paren. Returns `None` otherwise.
 fn try_strip_requires_collection_start(line: &str) -> Option<&str> {
     let rest = line.strip_prefix("requires")?.trim_start();
-    let rest = rest.strip_prefix('=')?;
-    let rest = rest.trim_start();
+    let rest = rest.strip_prefix('=')?.trim_start();
     // Must start with `(` or `[`, not a quote (single string handled separately).
-    if rest.starts_with('(') {
-        Some(&rest[1..])
-    } else if rest.starts_with('[') {
-        Some(&rest[1..])
-    } else {
-        None
-    }
+    rest.strip_prefix('(').or_else(|| rest.strip_prefix('['))
 }
 
 /// Extract the dep token from a `self.requires("dep/ver")` call.
 fn extract_single_call_dep(line: &str) -> Option<String> {
     // Find the opening paren of the `requires(` call.
-    let after_paren = if let Some(pos) = line.find("self.requires(") {
-        &line[pos + "self.requires(".len()..]
-    } else if let Some(pos) = line.find("self.tool_requires(") {
-        &line[pos + "self.tool_requires(".len()..]
-    } else {
-        return None;
-    };
+    let after_paren = line
+        .find("self.requires(")
+        .map(|pos| &line[pos + "self.requires(".len()..])
+        .or_else(|| {
+            line.find("self.tool_requires(")
+                .map(|pos| &line[pos + "self.tool_requires(".len()..])
+        })?;
 
     let after_paren = after_paren.trim_start();
     let quote = after_paren.chars().next()?;

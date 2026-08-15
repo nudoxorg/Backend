@@ -10,7 +10,7 @@
 //! fades. These are zero-maintenance: `AnimationElement` self-invalidates
 //! until done (or forever for `.repeat()`), so no view entity is notified.
 //!
-//! ## Tier 2 — Retained spring physics (`spring.rs`, `motion2.rs`, `color.rs`)
+//! ## Tier 2 — Retained spring physics (`spring.rs`, `motion2d.rs`, `color.rs`)
 //!
 //! For anything whose target can change mid-flight: dock widths, collapse/
 //! expand, pan/zoom, count tickers, graph node positions. Uses critically-
@@ -53,7 +53,7 @@
 
 pub mod color;
 pub mod declarative;
-pub mod motion2;
+pub mod motion2d;
 pub mod permits;
 pub mod spring;
 pub mod tokens;
@@ -63,7 +63,7 @@ pub use declarative::{
     delayed, empty_state_enter, entrance_id, fade_in, fade_out, overlay_out, rise_in,
     row_enter, shimmer,
 };
-pub use motion2::Motion2;
+pub use motion2d::Motion2d;
 pub use permits::{LoopCensus, LoopPermit, MAX_LOOP_PERMITS};
 pub use spring::{Motion, Spring};
 pub use tokens::{

@@ -152,7 +152,7 @@ fn camel_to_snake(s: &str) -> String {
 pub(crate) fn combine_weights(existing: f32, new: f32) -> f32 {
     let hi = existing.max(new);
     let lo = existing.min(new);
-    hi + lo * 0.3
+    lo.mul_add(0.3, hi)
 }
 
 /// Parse README into sections and return `(text, weight)` pairs for relevant

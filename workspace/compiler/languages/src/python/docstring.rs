@@ -532,9 +532,8 @@ fn parse_sphinx_param(
         .trim_start_matches(":parameter")
         .trim_start_matches(":param")
         .trim_start();
-    let (name_part, desc_part) = match after.split_once(':') {
-        Some(parts) => parts,
-        None => return idx + 1,
+    let Some((name_part, desc_part)) = after.split_once(':') else {
+        return idx + 1;
     };
     let name = name_part
         .split_whitespace()
@@ -706,7 +705,7 @@ mod tests {
     fn doc_catalog_item_and_member() {
         let mut catalog = DocCatalog::default();
         let doc = parse("\"\"\"A class.\"\"\"");
-        catalog.insert_item("MyClass", doc.clone());
+        catalog.insert_item("MyClass", doc);
         catalog.insert_member("MyClass", "my_method", parse("\"\"\"A method.\"\"\""));
 
         assert_eq!(

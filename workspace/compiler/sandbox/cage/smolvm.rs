@@ -55,7 +55,7 @@ impl GoldenPool {
     pub fn lookup(&self, image: &ImageDigest) -> Option<GoldenId> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(image)
             .cloned()
     }
@@ -64,13 +64,13 @@ impl GoldenPool {
     pub fn install(&self, image: ImageDigest, golden: GoldenId) {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(image, golden);
     }
 
     /// Number of parked goldens.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
     }
 
     /// Whether the pool is empty.
@@ -405,7 +405,7 @@ mod tests {
                 assert_eq!(egress.allowed_cidrs, vec![cidr]);
                 assert_eq!(egress.dns, DnsPolicy::Allowlist(vec![dns]));
             }
-            other => panic!("expected egress, got {other:?}"),
+            other @ NetworkPolicy::None => panic!("expected egress, got {other:?}"),
         }
     }
 
@@ -416,7 +416,7 @@ mod tests {
                 assert_eq!(egress.allowed_cidrs, vec![Cidr::ANY_V4]);
                 assert_eq!(egress.dns, DnsPolicy::AllowAll);
             }
-            other => panic!("expected egress, got {other:?}"),
+            other @ NetworkPolicy::None => panic!("expected egress, got {other:?}"),
         }
     }
 
@@ -489,7 +489,7 @@ mod tests {
 
         let cmd = SealedCommand::new("/bin/true", Vec::<String>::new(), budget);
         let spec = project_run_spec(&cmd);
-        assert_eq!(spec.timeout, Duration::from_secs(15 * 60));
+        assert_eq!(spec.timeout, Duration::from_mins(15));
         assert_eq!(spec.rlimits.cpu_secs, limits.cpu_secs);
         assert_eq!(spec.rlimits.pids, limits.pids);
         assert_eq!(spec.rlimits.nofile, limits.nofile);

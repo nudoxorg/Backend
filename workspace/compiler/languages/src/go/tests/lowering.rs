@@ -622,8 +622,7 @@ fn type_param_use_lowers_to_typevar_not_self_type() {
             assert_eq!(name, "T", "TypeVar name must match the type param name");
         }
         other => panic!(
-            "Value's type (a TypeParam use) must be Type::TypeVar, not {:?}",
-            other
+            "Value's type (a TypeParam use) must be Type::TypeVar, not {other:?}"
         ),
     }
 }
@@ -926,8 +925,7 @@ fn method_aliases_populated() {
         .find(|(_, e)| {
             e.sym().name == "Area"
                 && e.downcast::<Function>()
-                    .map(|f| f.body().receiver.is_some())
-                    .unwrap_or(false)
+                    .is_none_or(|f| f.body().receiver.is_some())
         })
         .expect("Rect.Area method with receiver must be declared");
 
@@ -939,7 +937,7 @@ fn method_aliases_populated() {
         aliases.len()
     );
 
-    let alias_set: std::collections::BTreeSet<&str> = aliases.iter().map(|s| s.as_str()).collect();
+    let alias_set: std::collections::BTreeSet<&str> = aliases.iter().map(String::as_str).collect();
 
     for expected in &[
         "Rect.Area",
@@ -966,8 +964,7 @@ fn interface_method_has_no_aliases() {
         .find(|(_, e)| {
             e.sym().name == "Area"
                 && e.downcast::<Function>()
-                    .map(|f| f.body().receiver.is_none())
-                    .unwrap_or(false)
+                    .is_none_or(|f| f.body().receiver.is_none())
         })
         .expect("Shape.Area interface method (no receiver) must be declared");
 
@@ -1174,7 +1171,7 @@ fn constraint_type_set_survives_in_trait_supers() {
 
             // Every arm must be a tilde term:
             // Apply { base: TypeVar("~"), args: [primitive] }
-            for arm in arms.iter() {
+            for arm in arms {
                 match arm {
                     Type::Apply { base, args } => {
                         assert!(

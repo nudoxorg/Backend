@@ -57,15 +57,15 @@ fn init_repo(tagged: bool) -> (tempfile::TempDir, String) {
 /// The tagged-repo enumeration contract, generic over the adapter under test
 /// so both the grit default and the subprocess fallback are held to it.
 fn assert_tagged_repo_enumerates_one_version_per_tag(case: &str, adapter: &impl GitRepository) {
-    let (_dir, url) = init_repo(true);
+    let (dir, url) = init_repo(true);
     let slug = "example.test/lib";
 
     // Doctrine §4: enumeration against a *real* on-disk git repository is the
     // measured region. The reliable figure is the op count asserted below; the
     // emitted wall time is per-adapter (subprocess `git` vs in-process grit) and
     // is only comparable between them on an otherwise idle host.
-    let (ops, _cost) = heart::cost::measured(case, _dir.path(), || {
-        enumerate_git_versions(adapter, slug, &url, 20250101000000)
+    let (ops, _cost) = heart::cost::measured(case, dir.path(), || {
+        enumerate_git_versions(adapter, slug, &url, 20_250_101_000_000)
     });
     let ops = ops.expect("enumerate tagged repo");
 
@@ -115,7 +115,7 @@ fn assert_untagged_repo_yields_one_pseudo_version(adapter: &impl GitRepository) 
     let (_dir, url) = init_repo(false);
     let slug = "example.test/untagged";
 
-    let ops = enumerate_git_versions(adapter, slug, &url, 20250101000000)
+    let ops = enumerate_git_versions(adapter, slug, &url, 20_250_101_000_000)
         .expect("enumerate untagged repo");
 
     let versions: Vec<&CatalogOp> = ops
@@ -134,7 +134,7 @@ fn assert_untagged_repo_yields_one_pseudo_version(adapter: &impl GitRepository) 
         assert!(
             coordinates
                 .version_canonical
-                .starts_with("v0.0.0-20250101000000-"),
+                .starts_with("v0.0.0-20_250_101_000_000-"),
             "pseudo-version form 1: {}",
             coordinates.version_canonical
         );
@@ -162,7 +162,7 @@ fn assert_nonexistent_repo_is_typed_error(adapter: &impl GitRepository) {
         adapter,
         "x/y",
         "file:///nonexistent/repo/path",
-        20250101000000,
+        20_250_101_000_000,
     );
     assert!(result.is_err(), "nonexistent repo must be a typed error");
 }
@@ -287,7 +287,7 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
 
     // First tick with no watermark → Moved (records the digest).
     let first = monitor
-        .tick(stem, "example.test/repo", url, None, 1000, 20250101000000)
+        .tick(stem, "example.test/repo", url, None, 1000, 20_250_101_000_000)
         .unwrap();
     let digest = match first {
         TickOutcome::Moved { rev, ops } => {
@@ -309,7 +309,7 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
             url,
             Some(&digest),
             2000,
-            20250101000000,
+            20_250_101_000_000,
         )
         .unwrap();
     assert!(
@@ -333,7 +333,7 @@ fn monitor_emits_source_moved_and_versions_on_change() {
             url,
             Some("stale-digest"),
             3000,
-            20250101000000,
+            20_250_101_000_000,
         )
         .unwrap();
     match outcome {
@@ -358,7 +358,7 @@ fn monitor_git_failure_is_typed_error() {
     let fake = FakeGitRepository::new().with_ls_remote_error(url, "repository not found");
     let monitor = GitMonitor::new(fake);
     let stem = cpp_stem_id("example.test/gone");
-    let result = monitor.tick(stem, "example.test/gone", url, None, 4000, 20250101000000);
+    let result = monitor.tick(stem, "example.test/gone", url, None, 4000, 20_250_101_000_000);
     assert!(
         result.is_err(),
         "adapter failure surfaces as a typed MonitorError"

@@ -148,8 +148,7 @@ where
 
     if alpn != ANNOUNCE_ALPN {
         return Err(SyncError::RemoteRefused(format!(
-            "unexpected ALPN on announce listener: {:?}",
-            alpn
+            "unexpected ALPN on announce listener: {alpn:?}"
         )));
     }
 

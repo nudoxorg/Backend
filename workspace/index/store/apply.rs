@@ -356,7 +356,7 @@ fn upsert_version(
     source: Option<&crate::protocol::SourceAcquisitionWire>,
 ) -> Result<(), MetaError> {
     // Metadata upsert only — never touch lifecycle columns on conflict.
-    let source_kind = source.map(|s| s.source_kind).unwrap_or(SourceKind::Unknown);
+    let source_kind = source.map_or(SourceKind::Unknown, |s| s.source_kind);
     let am = versions::ActiveModel {
         id: Set(*coordinates.version_id.as_uuid()),
         stem_id: Set(coordinates.stem_id),
@@ -364,7 +364,7 @@ fn upsert_version(
         version_original: Set(coordinates.version_original.clone()),
         published_at: Set(published_at),
         toolchain: Set(toolchain.map(|t| t.0.to_string())),
-        license_spdx: Set(license.map(|s| s.to_owned())),
+        license_spdx: Set(license.map(std::borrow::ToOwned::to_owned)),
         yanked_upstream: Set(false),
         parse_state: Set(ParseState::Pending),
         parse_phase: Set(None),

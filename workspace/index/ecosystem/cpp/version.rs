@@ -103,10 +103,10 @@ impl CppVersion {
                 // not the inverse of parsing). `base` holds the displayed numeric
                 // core; `None` is Go form 1 (`v0.0.0-<ts>-<hash>`), `Some(core)` is
                 // form 2 (`v<core>-0.<ts>-<hash>`).
-                match base {
-                    None => format!("v0.0.0-{timestamp}-{hash12}"),
-                    Some(core) => format!("{}-0.{timestamp}-{hash12}", core.canonical()),
-                }
+                base.as_ref().map_or_else(
+                    || format!("v0.0.0-{timestamp}-{hash12}"),
+                    |core| format!("{}-0.{timestamp}-{hash12}", core.canonical()),
+                )
             }
             CppVersion::Raw(raw) => raw.to_string(),
         }

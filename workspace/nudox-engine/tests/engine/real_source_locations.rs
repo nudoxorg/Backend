@@ -120,7 +120,7 @@ fn real_package() -> (PackageLineageId, Arc<PackageView>) {
 
     let view = IrView::with_package(descriptor.lineage.clone(), table);
     (
-        descriptor.lineage.clone(),
+        descriptor.lineage,
         Arc::new(PackageView::build(view, Provenance::TrustedLocal)),
     )
 }

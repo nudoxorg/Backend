@@ -404,8 +404,6 @@
               helpers = helpersFor nixPackages fenixPackages;
               inherit (helpers) rustToolchainDev;
 
-              gitHookConfiguration = config.checks.preCommitGitHooks;
-
               # Build script PATH: fenix rustc + nix package manager + system paths.
               # Consumed by nix/build/third-party/defs.bzl via read_config("build","devshell_bin").
               devshellBin = nixPackages.lib.concatStringsSep ":" [
@@ -615,14 +613,28 @@
 
                   # Buck2 loads `.buckconfig.local` after the tracked config. Keep
                   # Nix store paths here: they are host-specific and must never
-                  # dirty the checkout.
-                  cp "${buckconfigLocal}" "$PRJ_ROOT/.buckconfig.local.tmp"
-                  mv "$PRJ_ROOT/.buckconfig.local.tmp" "$PRJ_ROOT/.buckconfig.local"
+                  # dirty the checkout. Stage outside the checkout before the
+                  # atomic rename: a stale/root-owned `.buckconfig.local.tmp`
+                  # from an older shell hook otherwise makes `cp` fail before
+                  # the shell is usable (especially after switching users or
+                  # crossing a host filesystem boundary).
+                  buckconfigLocalTmp="$(mktemp "''${TMPDIR:-/tmp}/nudox-buckconfig.XXXXXX")" || {
+                    echo "failed to allocate a temporary Buck2 config" >&2
+                    return 1
+                  }
+                  if ! cp "${buckconfigLocal}" "$buckconfigLocalTmp"; then
+                    rm -f "$buckconfigLocalTmp"
+                    echo "failed to stage the generated Buck2 config" >&2
+                    return 1
+                  fi
+                  if ! mv -f "$buckconfigLocalTmp" "$PRJ_ROOT/.buckconfig.local"; then
+                    rm -f "$buckconfigLocalTmp"
+                    echo "failed to install $PRJ_ROOT/.buckconfig.local" >&2
+                    return 1
+                  fi
 
                   export RUST_TARGET=$(rustc --version --verbose | grep '^host:' | awk '{print $2}')
                   unset RUSTC_WRAPPER
-
-                  ${gitHookConfiguration.shellHook}
 
                   (
                     flock -n 9 || exit 1

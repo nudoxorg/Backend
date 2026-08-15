@@ -24,8 +24,11 @@ pub fn edge_kind_to_alias_kind(kind: EdgeKind) -> Option<&'static str> {
         EdgeKind::Wrap => Some("meson_wrap"),
         EdgeKind::Recipe => Some("vcpkg_port"),
         EdgeKind::BazelDep => Some("bazel_module"),
-        EdgeKind::Submodule | EdgeKind::FetchContent => None,
-        EdgeKind::Runtime | EdgeKind::Build | EdgeKind::Vendored => None,
+        EdgeKind::Submodule
+        | EdgeKind::FetchContent
+        | EdgeKind::Runtime
+        | EdgeKind::Build
+        | EdgeKind::Vendored => None,
     }
 }
 

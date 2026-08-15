@@ -304,8 +304,10 @@ fn range_read_edge_cases() {
     assert!(matches!(err, PackError::RangeOutOfBounds { .. }), "got {err:?}");
 
     // start > end -> typed error.
+    let start = 10_u64;
+    let end = 5_u64;
     let err = reader
-        .get_member_range(&key, 10..5)
+        .get_member_range(&key, start..end)
         .expect_err("inverted range");
     assert!(matches!(err, PackError::RangeOutOfBounds { .. }), "got {err:?}");
 }

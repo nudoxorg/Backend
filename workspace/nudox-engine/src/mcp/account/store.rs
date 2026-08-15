@@ -363,7 +363,7 @@ impl MemoryStore {
     /// carries no information here and propagating it would turn an unrelated
     /// test failure into a cascade.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<ApiKey>> {
-        self.slot.lock().unwrap_or_else(|e| e.into_inner())
+        self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 

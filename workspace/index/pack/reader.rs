@@ -680,7 +680,10 @@ mod tests {
         let packed = build_pack(&[("x.txt", content)]);
         let reader = ObjectPackReader::open_bytes(packed).unwrap();
 
-        let err = reader.get_member_range(&key("x.txt"), 8..3).unwrap_err();
+        // `start > end` is a reversed (empty) range and must be rejected.
+        let start = 8_u64;
+        let end = 3_u64;
+        let err = reader.get_member_range(&key("x.txt"), start..end).unwrap_err();
         assert!(
             matches!(
                 err,

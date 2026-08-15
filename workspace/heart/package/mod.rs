@@ -141,12 +141,9 @@ pub const fn length_limit(ecosystem: Language) -> usize {
     match ecosystem {
         Language::Rust => 64,
         Language::Typescript | Language::Python => 214,
-        Language::Go | Language::Java => 256,
-        Language::CSharp => 256,
-        Language::Nix => 256,
         // `cpp` names are repository slugs (`host/org/repo`) or scoped forms —
         // roomier than a bare package name; match Go/Java's 256 ceiling.
-        Language::Cpp => 256,
+        Language::Go | Language::Java | Language::CSharp | Language::Nix | Language::Cpp => 256,
     }
 }
 

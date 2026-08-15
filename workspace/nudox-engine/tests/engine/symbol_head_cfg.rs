@@ -165,14 +165,12 @@ fn cfg_absent_on_symbol_stays_none_on_symbol_head() {
 /// Path to the memchr checkout, mirroring `axum_root()` in
 /// `real_producer_links.rs`: same env override, same default location.
 fn memchr_root() -> PathBuf {
-    std::env::var("NUDOX_PKG_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("NUDOX_PKG_ROOT").map_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/memchr-2.8.3")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        })
+        }, PathBuf::from)
 }
 
 /// A genuinely `target_arch`-gated public item from real memchr

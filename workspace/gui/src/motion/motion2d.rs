@@ -1,6 +1,6 @@
 //! Two-dimensional spring motion for 2-D positions and pan offsets.
 //!
-//! `Motion2` wraps two independent [`Motion`] scalars that share a single
+//! `Motion2d` wraps two independent [`Motion`] scalars that share a single
 //! `tick` call. This is the right abstraction for:
 //!
 //! - **Graph node positions** (`graph.settle`, §5.2): layout iterations arrive
@@ -10,7 +10,7 @@
 //!   Y share the same time step so the path curves smoothly, not in two
 //!   separate straight lines.
 //!
-//! The physics tier carries no GPUI dependency, so `Motion2` is testable
+//! The physics tier carries no GPUI dependency, so `Motion2d` is testable
 //! without a window.
 
 use std::time::Instant;
@@ -24,15 +24,15 @@ use crate::motion::spring::{Motion, Spring};
 /// and tick them in sequence — that is just as efficient; this wrapper is
 /// convenience only.
 #[derive(Clone, Debug)]
-pub struct Motion2 {
+pub struct Motion2d {
     /// Horizontal axis.
     pub x: Motion,
     /// Vertical axis.
     pub y: Motion,
 }
 
-impl Motion2 {
-    /// Construct a resting `Motion2` at `(x, y)` with the given `spring`.
+impl Motion2d {
+    /// Construct a resting `Motion2d` at `(x, y)` with the given `spring`.
     pub fn new(x: f32, y: f32, spring: Spring) -> Self {
         Self {
             x: Motion::new(x, spring),
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn motion2_both_axes_settle() {
-        let mut m = Motion2::new(0.0, 0.0, Spring::GENTLE);
+        let mut m = Motion2d::new(0.0, 0.0, Spring::GENTLE);
         m.animate_to(100.0, 200.0);
 
         let start = Instant::now();
@@ -113,14 +113,14 @@ mod tests {
             }
         }
 
-        assert!(settled, "Motion2 with GENTLE spring should settle within ~1.6 s at 120 Hz");
+        assert!(settled, "Motion2d with GENTLE spring should settle within ~1.6 s at 120 Hz");
         assert!((m.x.value() - 100.0).abs() < 0.01);
         assert!((m.y.value() - 200.0).abs() < 0.01);
     }
 
     #[test]
     fn snap_to_is_immediate_2d() {
-        let mut m = Motion2::new(50.0, 75.0, Spring::DEFAULT);
+        let mut m = Motion2d::new(50.0, 75.0, Spring::DEFAULT);
         m.snap_to(0.0, 0.0);
         let (x, y) = m.value();
         assert_eq!(x, 0.0);
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn retarget_preserves_velocity() {
-        let mut m = Motion2::new(0.0, 0.0, Spring::SNAPPY);
+        let mut m = Motion2d::new(0.0, 0.0, Spring::SNAPPY);
         m.animate_to(200.0, 400.0);
 
         let start = Instant::now();

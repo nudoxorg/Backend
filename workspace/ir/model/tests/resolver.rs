@@ -1,4 +1,4 @@
-//! `ExampleResolver`, a test resolver backed by an in-memory VFS.
+/// `ExampleResolver`, a test resolver backed by an in-memory VFS.
 use serde::{Deserialize, Serialize};
 use vfs::{MemoryFS, VfsPath, error::VfsErrorKind};
 
@@ -29,10 +29,7 @@ impl ExampleResolver {
             .expect("serializing PackageInfo failed");
 
         for (id, entry) in package.iter() {
-            let id = match id {
-                Some(id) => format!("{id}"),
-                None => String::from("root"),
-            };
+            let id = id.map_or_else(|| String::from("root"), |id| format!("{id}"));
 
             let file = dir.join(id).unwrap().create_file().unwrap();
 
@@ -72,10 +69,9 @@ impl RegistryResolver for ExampleResolver {
             PackageIdView::Path(path) => format!("{}", path.display()),
         };
 
-        let entry = match id.entry() {
-            Some(entry) => format!("{entry}"),
-            None => String::from("root"),
-        };
+        let entry = id
+            .entry()
+            .map_or_else(|| String::from("root"), |entry| format!("{entry}"));
 
         let file = self.fs.join(package)?.join(entry)?.open_file();
 

@@ -75,7 +75,7 @@ fn nlohmann_json_v3_10_5_lineage_pair_also_resolves() {
 
     let names: Vec<&str> = intro.table.iter().map(|(_, e)| e.sym().name.as_str()).collect();
     assert!(
-        names.iter().any(|n| *n == "basic_json"),
+        names.contains(&"basic_json"),
         "v3.10.5 must lower basic_json same as v3.11.3; got {} entries, sample: {:?}",
         names.len(),
         &names[..names.len().min(20)]

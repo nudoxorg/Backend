@@ -27,7 +27,7 @@
 use gpui::{AnyElement, App, IntoElement, Window, div, prelude::FluentBuilder as _};
 use gpui_component::{ActiveTheme as _, StyledExt as _, skeleton::Skeleton, spinner::Spinner};
 
-use crate::bridge::slot::{Display as SlotDisplay, SKELETON_GRACE, SlotError, StreamSlot};
+use crate::bridge::slot::{Display as SlotDisplay, SKELETON_GRACE, Error, StreamSlot};
 use crate::motion::declarative::shimmer;
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::MotionTokens;
@@ -187,7 +187,7 @@ where
 
 /// A one-line error bar for `StaleWithError` — keeps the page readable while
 /// surfacing the failure (LD-16).
-fn slim_error_bar(error: &SlotError) -> impl IntoElement {
+fn slim_error_bar(error: &Error) -> impl IntoElement {
     // We need cx for tokens but this is a free function without cx.
     // Use a RenderOnce wrapper to get cx at render time.
     SlimErrorBar {
@@ -195,11 +195,11 @@ fn slim_error_bar(error: &SlotError) -> impl IntoElement {
     }
 }
 
-fn error_message(error: &SlotError) -> SharedString {
+fn error_message(error: &Error) -> SharedString {
     match error {
-        SlotError::Cancelled => SharedString::from("Request cancelled"),
-        SlotError::Transient { message } => SharedString::from(message.as_str()),
-        SlotError::Permanent { message } => SharedString::from(message.as_str()),
+        Error::Cancelled => SharedString::from("Request cancelled"),
+        Error::Transient { message } => SharedString::from(message.as_str()),
+        Error::Permanent { message } => SharedString::from(message.as_str()),
     }
 }
 

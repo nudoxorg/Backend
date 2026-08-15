@@ -308,7 +308,6 @@ impl ScratchStore {
     }
 
     /// Return all claims whose lease has expired as of `now`.
-
     pub fn expired_claims(&self, now: i64) -> Result<Vec<ClaimRow>, Error> {
         Ok(claims::expired(&self.connection, now)?)
     }

@@ -86,9 +86,9 @@ pub(crate) fn discover_entry_points_with(
                 found.insert(path);
             }
         }
-        Err(ResolveError::Builtin { .. })
-        | Err(ResolveError::NotFound(_))
-        | Err(ResolveError::PackagePathNotExported { .. }) => {}
+        Err(ResolveError::Builtin { .. }
+            | ResolveError::NotFound(_)
+            | ResolveError::PackagePathNotExported { .. }) => {}
         Err(other) => {
             tracing::debug!(
                 root = %root.display(),
@@ -179,10 +179,10 @@ fn exports_entry_points(
                     out.insert(path);
                 }
             }
-            Err(ResolveError::Builtin { .. })
-            | Err(ResolveError::NotFound(_))
-            | Err(ResolveError::PackagePathNotExported { .. })
-            | Err(ResolveError::Ignored(_)) => {}
+            Err(ResolveError::Builtin { .. }
+                | ResolveError::NotFound(_)
+                | ResolveError::PackagePathNotExported { .. }
+                | ResolveError::Ignored(_)) => {}
             Err(err) => {
                 tracing::debug!(
                     package_root = %package_root.display(),
@@ -244,11 +244,10 @@ fn deep_import_roots(root: &Path) -> Vec<PathBuf> {
                     continue;
                 }
                 stack.push(path);
-            } else if file_type.is_file() {
-                let lower = name.to_ascii_lowercase();
-                if lower.ends_with(".js") || lower.ends_with(".d.ts") {
-                    out.push(path);
-                }
+            } else if file_type.is_file()
+                && (has_extension(name, ".js") || has_extension(name, ".d.ts"))
+            {
+                out.push(path);
             }
         }
     }
@@ -265,18 +264,24 @@ pub(crate) fn is_ts_module_path(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
-    let lower = name.to_ascii_lowercase();
-    lower.ends_with(".d.ts")
-        || lower.ends_with(".d.mts")
-        || lower.ends_with(".d.cts")
-        || lower.ends_with(".ts")
-        || lower.ends_with(".tsx")
-        || lower.ends_with(".mts")
-        || lower.ends_with(".cts")
-        || lower.ends_with(".js")
-        || lower.ends_with(".mjs")
-        || lower.ends_with(".cjs")
-        || lower.ends_with(".jsx")
+    has_extension(name, ".d.ts")
+        || has_extension(name, ".d.mts")
+        || has_extension(name, ".d.cts")
+        || has_extension(name, ".ts")
+        || has_extension(name, ".tsx")
+        || has_extension(name, ".mts")
+        || has_extension(name, ".cts")
+        || has_extension(name, ".js")
+        || has_extension(name, ".mjs")
+        || has_extension(name, ".cjs")
+        || has_extension(name, ".jsx")
+}
+
+/// Case-insensitive suffix test for a file name. Kept as explicit suffix
+/// strings (rather than `Path::extension`) because `.d.ts`/`.d.mts`/`.d.cts`
+/// are two-part extensions that `Path::extension` would misread as `ts`.
+pub(crate) fn has_extension(name: &str, ext: &str) -> bool {
+    name.len() >= ext.len() && name[name.len() - ext.len()..].eq_ignore_ascii_case(ext)
 }
 
 fn collect_export_specifiers(value: &serde_json::Value, out: &mut Vec<String>) {
@@ -359,12 +364,10 @@ mod tests {
     fn write_fixture(exports_field: Option<&str>) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path();
-        let manifest = match exports_field {
-            Some(exports) => format!(
-                r#"{{"name":"fixture","main":"index.js","exports":{exports}}}"#
-            ),
-            None => r#"{"name":"fixture","main":"index.js"}"#.to_string(),
-        };
+        let manifest = exports_field.map_or_else(
+            || r#"{"name":"fixture","main":"index.js"}"#.to_string(),
+            |exports| format!(r#"{{"name":"fixture","main":"index.js","exports":{exports}}}"#),
+        );
         std::fs::write(root.join("package.json"), manifest).expect("write package.json");
         std::fs::write(root.join("index.js"), "module.exports = {};\n").expect("write index.js");
         std::fs::write(root.join("sibling.js"), "module.exports = {};\n")

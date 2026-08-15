@@ -63,14 +63,12 @@ use nudox_languages::{PackageSource, produce};
 
 /// Where `scripts/fetch-real-crate.sh axum 0.8.9` puts the checkout.
 fn axum_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        })
+        }, PathBuf::from)
 }
 
 /// Where `scripts/fetch-real-crate.sh <name> <version>` puts a crate checkout.
@@ -119,7 +117,7 @@ fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
         elapsed.as_secs_f32()
     );
 
-    let view = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
+    let view = nudox_ir::view::IrView::with_package(descriptor.lineage, table);
     Some(PackageView::build(view, Provenance::TrustedLocal))
 }
 
@@ -167,13 +165,13 @@ fn lowers_a_real_crate() {
     .table;
     let elapsed = started.elapsed();
 
-    let view = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
+    let view = nudox_ir::view::IrView::with_package(descriptor.lineage, table);
     let package = PackageView::build(view, Provenance::TrustedLocal);
 
     let names: Vec<String> = package
         .view()
         .entries()
-        .map(|(_, entry)| entry.sym().name.to_string())
+        .map(|(_, entry)| entry.sym().name.clone())
         .collect();
 
     eprintln!(
@@ -229,7 +227,7 @@ fn the_lowered_package_is_named_after_its_source() {
     )
     .expect("axum must lower without error")
     .table;
-    let view = nudox_ir::view::IrView::with_package(lineage.clone(), table);
+    let view = nudox_ir::view::IrView::with_package(lineage, table);
 
     assert_eq!(
         view.package().name.as_str(),
@@ -425,17 +423,15 @@ fn impl_members_are_keyed_under_their_impl() {
     // needing a full trace.
     let mut non_impl_parents: Vec<String> = Vec::new();
     for id in &fmt_entries {
-        if let Some(parent_id) = view.parent_of(*id) {
-            if let Some(parent_entry) = view.entry(parent_id) {
-                if let Some(k) = parent_entry.kind().as_owned_kind() {
-                    if k.discriminant() != KindDiscriminant::Impl {
+        if let Some(parent_id) = view.parent_of(*id)
+            && let Some(parent_entry) = view.entry(parent_id)
+                && let Some(k) = parent_entry.kind().as_owned_kind()
+                    && k.discriminant() != KindDiscriminant::Impl {
                         // Walk one more level to identify the grandparent
                         // (the module that *should* contain the failing impl).
                         let grandparent_name = view
                             .parent_of(parent_id)
-                            .and_then(|gid| view.entry(gid))
-                            .map(|ge| ge.sym().name.clone())
-                            .unwrap_or_else(|| "<root>".to_owned());
+                            .and_then(|gid| view.entry(gid)).map_or_else(|| "<root>".to_owned(), |ge| ge.sym().name.clone());
 
                         non_impl_parents.push(format!(
                             "fmt@{}  parent «{}» ({:?})  grandparent «{}»\n\
@@ -449,9 +445,6 @@ fn impl_members_are_keyed_under_their_impl() {
                             parent_entry.sym().name,
                         ));
                     }
-                }
-            }
-        }
     }
 
     assert!(
@@ -488,9 +481,7 @@ fn same_name_in_different_scopes_has_distinct_ids() {
     for (id, entry) in view.entries() {
         let parent_name = view
             .parent_of(id)
-            .and_then(|p| view.entry(p))
-            .map(|e| e.sym().name.clone())
-            .unwrap_or_else(|| "<root>".to_string());
+            .and_then(|p| view.entry(p)).map_or_else(|| "<root>".to_string(), |e| e.sym().name.clone());
         by_name
             .entry(entry.sym().name.clone())
             .or_default()
@@ -613,8 +604,8 @@ fn all_intro_refs_resolve_locally() {
     for (id, entry) in view.entries() {
         // Check Node children/parent refs.
         for child_ref in entry.children() {
-            if let Ref::Intro(target) = child_ref {
-                if !live.contains(target) {
+            if let Ref::Intro(target) = child_ref
+                && !live.contains(target) {
                     dangling.push(format!(
                         "entry «{}» ({}) has Intro child ref {} that is not in the local table",
                         entry.sym().name,
@@ -622,11 +613,10 @@ fn all_intro_refs_resolve_locally() {
                         &target.to_hex()[..12]
                     ));
                 }
-            }
         }
-        if let Some(parent_ref) = entry.parent() {
-            if let Ref::Intro(target) = parent_ref {
-                if !live.contains(target) {
+        if let Some(parent_ref) = entry.parent()
+            && let Ref::Intro(target) = parent_ref
+                && !live.contains(target) {
                     dangling.push(format!(
                         "entry «{}» ({}) has Intro parent ref {} that is not in the local table",
                         entry.sym().name,
@@ -634,15 +624,15 @@ fn all_intro_refs_resolve_locally() {
                         &target.to_hex()[..12]
                     ));
                 }
-            }
-        }
 
         // Also check that every Impl's self_ty and of Nominal refs resolve.
         if let Some(Kind::Impl(impl_)) = entry.kind().as_owned_kind() {
             let check_ty_ref = |ty: &nudox_ir::kinds::Type, label: &str| -> Option<String> {
                 match ty {
                     nudox_ir::kinds::Type::Nominal(Ref::Intro(target)) => {
-                        if !live.contains(target) {
+                        if live.contains(target) {
+                            None
+                        } else {
                             Some(format!(
                                 "Impl «{}» ({}) has dangling Intro {} in {}",
                                 entry.sym().name,
@@ -650,8 +640,6 @@ fn all_intro_refs_resolve_locally() {
                                 &target.to_hex()[..12],
                                 label
                             ))
-                        } else {
-                            None
                         }
                     }
                     _ => None,
@@ -660,11 +648,10 @@ fn all_intro_refs_resolve_locally() {
             if let Some(msg) = check_ty_ref(&impl_.self_ty, "self_ty") {
                 dangling.push(msg);
             }
-            if let Some(of) = &impl_.of {
-                if let Some(msg) = check_ty_ref(of, "of") {
+            if let Some(of) = &impl_.of
+                && let Some(msg) = check_ty_ref(of, "of") {
                     dangling.push(msg);
                 }
-            }
         }
     }
 
@@ -887,7 +874,7 @@ fn generic_params_survive_lowering() {
     eprintln!(
         "found {} entries with generic parameters (e.g. {:?})",
         generic_entries.len(),
-        &generic_entries[..generic_entries.len().min(5)]
+        generic_entries[..generic_entries.len().min(5)]
             .iter()
             .map(|(_, n)| n.as_str())
             .collect::<Vec<_>>()
@@ -938,7 +925,7 @@ fn names_contain_no_path_separators() {
         // Whitespace-only names were already caught by `lowers_a_real_crate`,
         // but we include them here for completeness.
         if name.trim().is_empty() && !name.is_empty() {
-            bad_names.push((id, format!("<whitespace: {:?}>", name)));
+            bad_names.push((id, format!("<whitespace: {name:?}>")));
         }
     }
 
@@ -996,9 +983,9 @@ fn all_impl_members_are_parented_to_an_impl() {
     let mut non_impl_parents: Vec<String> = Vec::new();
     for (id, name) in &fmt_entries {
         if let Some(parent_id) = view.parent_of(*id) {
-            if let Some(parent_entry) = view.entry(parent_id) {
-                if let Some(k) = parent_entry.kind().as_owned_kind() {
-                    if k.discriminant() != KindDiscriminant::Impl {
+            if let Some(parent_entry) = view.entry(parent_id)
+                && let Some(k) = parent_entry.kind().as_owned_kind()
+                    && k.discriminant() != KindDiscriminant::Impl {
                         non_impl_parents.push(format!(
                             "{}@{}… has parent «{}» (kind={:?})",
                             name,
@@ -1007,8 +994,6 @@ fn all_impl_members_are_parented_to_an_impl() {
                             k.discriminant()
                         ));
                     }
-                }
-            }
         } else {
             non_impl_parents.push(format!(
                 "{}@{}… has no parent at all",
@@ -1187,7 +1172,7 @@ fn occurrences_are_recorded_for_axum_functions() {
     );
 
     // ── 3. Populate the view and confirm occurrences are accessible ───────────
-    let mut view = IrView::with_package(descriptor.lineage.clone(), table);
+    let mut view = IrView::with_package(descriptor.lineage, table);
     let mut total_added: usize = 0;
     for (owner_intro, occ) in resolved_occs {
         view.add_occurrence(owner_intro, occ);
@@ -1197,14 +1182,12 @@ fn occurrences_are_recorded_for_axum_functions() {
     let total_in_view: usize = view.all_occurrences().count();
     assert_eq!(
         total_in_view, total_added,
-        "occurrence count in view ({}) differs from number added ({}). \
-         IrView::add_occurrence must not silently drop or deduplicate occurrences.",
-        total_in_view, total_added
+        "occurrence count in view ({total_in_view}) differs from number added ({total_added}). \
+         IrView::add_occurrence must not silently drop or deduplicate occurrences."
     );
 
     eprintln!(
-        "occurrence test passed: {} Oracle occurrences across axum",
-        total_in_view
+        "occurrence test passed: {total_in_view} Oracle occurrences across axum"
     );
 }
 
@@ -1405,15 +1388,14 @@ fn two_crates_have_disjoint_ids_and_correct_names() {
 
     assert!(
         axum_count > 100,
-        "axum yielded only {} entries — suspiciously low",
-        axum_count
+        "axum yielded only {axum_count} entries — suspiciously low"
     );
     assert!(
         itoa_count >= 1,
         "itoa yielded 0 entries — the producer produced an empty table",
     );
 
-    eprintln!("axum: {} entries, itoa: {} entries", axum_count, itoa_count);
+    eprintln!("axum: {axum_count} entries, itoa: {itoa_count} entries");
 
     // The id sets must be completely disjoint.
     let axum_ids: HashSet<IntroId> = axum_pkg.view().entries().map(|(id, _)| id).collect();

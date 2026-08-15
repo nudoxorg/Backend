@@ -124,7 +124,7 @@ impl ToolchainSet {
             &self.go_root,
         ]
         .into_iter()
-        .filter_map(|p| p.clone())
+        .filter_map(std::clone::Clone::clone)
         .chain(self.path_dirs.iter().cloned())
         .filter(|p| p.exists())
         .collect()

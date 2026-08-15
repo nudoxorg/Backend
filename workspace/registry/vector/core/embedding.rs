@@ -99,9 +99,9 @@ impl<M: EmbeddingModel> Embedding<M> {
         let mut na = 0.0f64;
         let mut nb = 0.0f64;
         for (&a, &b) in self.values.iter().zip(other.values.iter()) {
-            dot += f64::from(a) * f64::from(b);
-            na += f64::from(a) * f64::from(a);
-            nb += f64::from(b) * f64::from(b);
+            dot = f64::from(a).mul_add(f64::from(b), dot);
+            na = f64::from(a).mul_add(f64::from(a), na);
+            nb = f64::from(b).mul_add(f64::from(b), nb);
         }
         let denom = na.sqrt() * nb.sqrt();
         if denom == 0.0 {
@@ -241,8 +241,7 @@ mod tests {
             err_str.contains("768")
                 || err_str.contains("dimension")
                 || err_str.contains("mismatch"),
-            "error should mention dimension mismatch: {}",
-            err_str
+            "error should mention dimension mismatch: {err_str}"
         );
     }
 
@@ -294,9 +293,9 @@ mod tests {
     fn cosine_orthogonal_identical_zero() {
         let a = unit(0);
         let b = unit(1);
-        assert_eq!(a.cosine(&b), 0.0);
+        assert!(a.cosine(&b).abs() < 1e-6, "orthogonal must be ~0");
         assert!((a.cosine(&a) - 1.0).abs() < 1e-6);
         let zero = Embedding::<JinaCodeV2>::from_vec(vec![0.0; 768]).unwrap();
-        assert_eq!(a.cosine(&zero), 0.0);
+        assert!(a.cosine(&zero).abs() < 1e-6, "cosine with zero must be ~0");
     }
 }

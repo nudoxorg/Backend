@@ -8,7 +8,7 @@ mod common;
 use std::sync::Arc;
 
 use common::*;
-use registry::vector::{JinaCodeV2, Payload, PayloadValue, SearchHit, SourceTag, VectorStore};
+use registry::vector::{Payload, PayloadValue, SearchHit, SourceTag, VectorStore};
 use registry::vector::local::{LocalShardStore, WorkingSet, merge_hits};
 use heart::PackageId;
 use registry::vector::NAMESPACE_NUDOX;
@@ -229,10 +229,10 @@ fn merge_hits_large_interleaved_tie_break_is_exact() {
     // Shard A: ids 0,2,4,...998 with scores 1.0, 0.99, 0.98, ... (even ids)
     // Shard B: ids 1,3,5,...999 with scores 1.0, 0.99, 0.98, ... (odd ids, same scores → ties)
     let shard_a: Vec<SearchHit> = (0..500)
-        .map(|i| hit(i as u128 * 2, 1.0 - i as f32 * 0.001))
+        .map(|i| hit(i as u128 * 2, (i as f32).mul_add(-0.001, 1.0)))
         .collect();
     let shard_b: Vec<SearchHit> = (0..500)
-        .map(|i| hit(i as u128 * 2 + 1, 1.0 - i as f32 * 0.001))
+        .map(|i| hit(i as u128 * 2 + 1, (i as f32).mul_add(-0.001, 1.0)))
         .collect();
 
     let merged = merge_hits(vec![shard_a, shard_b], 1000);
@@ -240,7 +240,7 @@ fn merge_hits_large_interleaved_tie_break_is_exact() {
 
     // Every pair must be (even_id, odd_id) because even < odd for the same score.
     for (i, pair) in merged.chunks(2).enumerate() {
-        let expected_score = 1.0 - i as f32 * 0.001;
+        let expected_score = (i as f32).mul_add(-0.001, 1.0);
         assert!(
             (pair[0].score - expected_score).abs() < 1e-6,
             "pair {i}: expected score {expected_score}, got {}",
@@ -259,10 +259,10 @@ fn merge_hits_large_interleaved_tie_break_is_exact() {
 
     // Idempotent: same inputs same outputs.
     let shard_a2: Vec<SearchHit> = (0..500)
-        .map(|i| hit(i as u128 * 2, 1.0 - i as f32 * 0.001))
+        .map(|i| hit(i as u128 * 2, (i as f32).mul_add(-0.001, 1.0)))
         .collect();
     let shard_b2: Vec<SearchHit> = (0..500)
-        .map(|i| hit(i as u128 * 2 + 1, 1.0 - i as f32 * 0.001))
+        .map(|i| hit(i as u128 * 2 + 1, (i as f32).mul_add(-0.001, 1.0)))
         .collect();
     let merged2 = merge_hits(vec![shard_a2, shard_b2], 1000);
     assert_eq!(merged, merged2, "merge_hits must be idempotent for identical inputs");

@@ -54,7 +54,7 @@ pub enum FetchError {
 
 /// One row of the signed package manifest the server publishes per baked
 /// shard (§20.3 step 5).
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DepManifestEntry {
     pub package: PackageId,
     /// Resolved package version (one directory level under the package).

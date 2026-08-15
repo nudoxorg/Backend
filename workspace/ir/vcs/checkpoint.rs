@@ -247,9 +247,9 @@ impl CheckpointCache {
     /// replay base for a neighbouring cold state. `None` if no checkpoint exists.
     fn hottest_checkpoint(&self) -> Option<Arc<Checkpoint>> {
         let mut best: Option<(u64, Arc<Checkpoint>)> = None;
-        for (state, cp) in self.checkpoints.iter() {
+        for (state, cp) in &self.checkpoints {
             let demand = self.demand.get(&*state).unwrap_or(0);
-            if best.as_ref().map(|(d, _)| demand > *d).unwrap_or(true) {
+            if best.as_ref().is_none_or(|(d, _)| demand > *d) {
                 best = Some((demand, cp));
             }
         }

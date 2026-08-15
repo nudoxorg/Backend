@@ -122,7 +122,7 @@ impl CratesCatalogFollower {
 				continue;
 			}
 			if entry.updated_at > max_ts {
-				max_ts = entry.updated_at.clone();
+				max_ts.clone_from(&entry.updated_at);
 			}
 			let event = if entry.yanked {
 				CatalogEvent::Withdrawn {

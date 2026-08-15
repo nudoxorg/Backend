@@ -112,8 +112,7 @@ fn fuse(local: &[SearchHit], remote: &[SearchHit]) -> Vec<FusedHit> {
     let remote_list = RankedList {
         source: remote
             .first()
-            .map(|h| h.source)
-            .unwrap_or(SourceTag::IndexJina),
+            .map_or(SourceTag::IndexJina, |h| h.source),
         ids: remote.iter().map(|h| h.id).collect(),
     };
     rrf_fuse(&[local_list, remote_list], RRF_K)
@@ -122,14 +121,14 @@ fn fuse(local: &[SearchHit], remote: &[SearchHit]) -> Vec<FusedHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vector::core::{PointId, SearchHit, SourceTag};
+    use crate::vector::core::{Payload, PointId, SearchHit, SourceTag};
     use uuid::Uuid;
 
     fn hit(n: u128, source: SourceTag) -> SearchHit {
         SearchHit {
             id: PointId::from_uuid(Uuid::from_u128(n)),
-            score: 0.9 - (n as f32 * 0.01),
-            payload: Default::default(),
+            score: (n as f32).mul_add(-0.01, 0.9),
+            payload: Payload::default(),
             source,
         }
     }
@@ -357,7 +356,7 @@ mod tests {
             SearchHit {
                 id,
                 score,
-                payload: Default::default(),
+                payload: Payload::default(),
                 source,
             }
         }
@@ -423,13 +422,13 @@ mod tests {
         let local_hits = vec![SearchHit {
             id: shared,
             score: 0.5,
-            payload: Default::default(),
+            payload: Payload::default(),
             source: SourceTag::Local,
         }];
         let remote_hits = vec![SearchHit {
             id: shared,
             score: 0.99,
-            payload: Default::default(),
+            payload: Payload::default(),
             source: SourceTag::IndexVoyage,
         }];
 

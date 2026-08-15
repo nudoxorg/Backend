@@ -256,7 +256,7 @@ impl Relation {
 /// * `forward` and `reverse` index vecs may contain duplicates only if the same
 ///   `RelationKey` is re-inserted with higher confidence (the index is not
 ///   updated on confidence-only upgrades, because the key is unchanged).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RelationSet {
     /// Primary store: `RelationKey → Relation`, in insertion order.
     ///
@@ -337,29 +337,26 @@ impl RelationSet {
     /// Complexity: O(n log n) to build the sorted key list, then O(n)
     /// iteration. The sort materialises an owned `Vec<RelationKey>` of the
     /// primary map's keys; the returned iterator yields `&Relation` references
-    /// that are valid for `'a`. The caller receives a `Vec`-backed iterator,
-    /// not a lazy view, so all keys are cloned and all `&Relation` pointers
-    /// are collected upfront. This is intentional: the alternative
-    /// (`&RelationKey` borrows from a local `Vec`) cannot be returned as
-    /// `impl Iterator` because the `Vec` would be dropped at function exit
-    /// before the iterator is consumed.
-    pub fn iter_sorted<'a>(&'a self) -> impl Iterator<Item = &'a Relation> + 'a {
+    /// that are valid for `'a`. The caller receives an iterator that owns the
+    /// sorted key `Vec`, not a lazy view over `self.primary`, so all keys are
+    /// cloned upfront. This is intentional: the alternative (`&RelationKey`
+    /// borrows from a local `Vec`) cannot be returned as `impl Iterator`
+    /// because the `Vec` would be dropped at function exit before the iterator
+    /// is consumed.
+    pub fn iter_sorted(&self) -> impl Iterator<Item = &Relation> + '_ {
         // Clone keys so the Vec can be owned and sorted independently of
         // `self.primary`'s internal storage.
         let mut keys: Vec<RelationKey> = self.primary.keys().cloned().collect();
         keys.sort_unstable();
-        // Collect the final &'a Relation vec immediately; the local `keys` Vec
-        // is consumed before this function returns — no dangling borrow.
-        let sorted: Vec<&'a Relation> = keys
-            .iter()
-            .map(|k| self.primary.get(k).expect("key must exist in primary"))
-            .collect();
-        sorted.into_iter()
+        // Consume `keys` so the returned iterator owns the sorted key list;
+        // each `&'a Relation` borrows `self`, never the local `keys` vec.
+        keys.into_iter()
+            .map(|k| self.primary.get(&k).expect("key must exist in primary"))
     }
 
     /// All relations (no ordering guarantee — use
     /// [`iter_sorted`](Self::iter_sorted) when determinism is required).
-    pub fn iter_unordered<'a>(&'a self) -> impl Iterator<Item = &'a Relation> + 'a {
+    pub fn iter_unordered(&self) -> impl Iterator<Item = &Relation> + '_ {
         self.primary.values()
     }
 
@@ -478,7 +475,7 @@ mod tests {
         );
         let r2 = rel(
             from_end.clone(),
-            to_end.clone(),
+            to_end,
             ReferenceKind::MethodCall,
             Confidence::Syntactic, // same confidence
             Some(RelSpan::new(5, 15)),
@@ -531,7 +528,7 @@ mod tests {
         // Now insert a lower confidence after: must not downgrade.
         let lower = rel(
             from_end.clone(),
-            to_end.clone(),
+            to_end,
             ReferenceKind::TypeReference,
             Confidence::Index,
             Some(RelSpan::new(10, 20)),
@@ -580,8 +577,8 @@ mod tests {
         }
 
         // Sorted iteration must produce identical keys.
-        let keys_a: Vec<RelationKey> = set_a.iter_sorted().map(|r| r.key()).collect();
-        let keys_b: Vec<RelationKey> = set_b.iter_sorted().map(|r| r.key()).collect();
+        let keys_a: Vec<RelationKey> = set_a.iter_sorted().map(super::Relation::key).collect();
+        let keys_b: Vec<RelationKey> = set_b.iter_sorted().map(super::Relation::key).collect();
         assert_eq!(
             keys_a, keys_b,
             "sorted iteration must be insertion-order-independent"

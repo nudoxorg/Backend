@@ -36,6 +36,7 @@
 //! `nix build .#checks.corpus` first to materialize the corpus.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
@@ -309,7 +310,7 @@ fn lower(root: &Path, name: &str, version: &str) -> Result<Lowered, String> {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             chain

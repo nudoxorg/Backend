@@ -66,8 +66,9 @@ pub fn extract_module<'a>(
         module_record.local_export_entries.iter().find_map(|e| {
             if matches!(e.export_name, ExportExportName::Default(_)) {
                 match &e.local_name {
-                    ExportLocalName::Default(ns) => Some(ns.name.to_string()),
-                    ExportLocalName::Name(ns) => Some(ns.name.to_string()),
+                    ExportLocalName::Default(ns) | ExportLocalName::Name(ns) => {
+                        Some(ns.name.to_string())
+                    }
                     ExportLocalName::Null => None,
                 }
             } else {
@@ -95,7 +96,7 @@ pub fn extract_module<'a>(
     }
 
     // ── Walk program body ─────────────────────────────────────────────────────
-    for stmt in program.body.iter() {
+    for stmt in &program.body {
         let decls = extract_statement(
             stmt,
             source,
@@ -255,14 +256,14 @@ fn as_plain_identifier(expr: &Expression) -> Option<String> {
 
 /// Scan `body` for the CommonJS export assignment forms `CommonJsExports`
 /// documents.
-fn scan_commonjs_exports<'a>(body: &[Statement<'a>]) -> CommonJsExports {
+fn scan_commonjs_exports(body: &[Statement<'_>]) -> CommonJsExports {
     let mut out = CommonJsExports::default();
 
     // Pass 1: find `module.exports = <ident>;` first, so pass 2 can
     // recognise `<ident>.X = …` regardless of where in the file that
     // assignment appears relative to the ones establishing `<ident>` as the
     // export binding.
-    for stmt in body.iter() {
+    for stmt in body {
         let Statement::ExpressionStatement(expr_stmt) = stmt else {
             continue;
         };
@@ -288,7 +289,7 @@ fn scan_commonjs_exports<'a>(body: &[Statement<'a>]) -> CommonJsExports {
 
     // Pass 2: `exports.X = ident;`, `module.exports.X = ident;`, and
     // `<export-binding>.X = ident;`.
-    for stmt in body.iter() {
+    for stmt in body {
         let Statement::ExpressionStatement(expr_stmt) = stmt else {
             continue;
         };
@@ -355,45 +356,47 @@ fn extract_statement<'a>(
             let decl = stmt
                 .as_declaration()
                 .expect("FunctionDeclaration is a Declaration");
-            let name = f.id.as_ref().map(|id| id.name.to_string());
-            if let Some(name) = name {
-                let is_exported =
-                    exported_names.contains(&name) || default_local_name.as_deref() == Some(&name);
-                extract_declaration(
-                    decl,
-                    source,
-                    semantic,
-                    path,
-                    is_exported,
-                    false,
-                    exported_names,
-                    name_counts,
-                )
-            } else {
-                vec![]
-            }
+            f.id.as_ref().map_or_else(
+                Vec::new,
+                |id| {
+                    let name = id.name.to_string();
+                    let is_exported = exported_names.contains(&name)
+                        || default_local_name.as_deref() == Some(&name);
+                    extract_declaration(
+                        decl,
+                        source,
+                        semantic,
+                        path,
+                        is_exported,
+                        false,
+                        exported_names,
+                        name_counts,
+                    )
+                },
+            )
         }
 
         Statement::ClassDeclaration(c) => {
             let decl = stmt
                 .as_declaration()
                 .expect("ClassDeclaration is a Declaration");
-            let name = c.id.as_ref().map(|id| id.name.to_string());
-            if let Some(name) = name {
-                let is_exported = exported_names.contains(&name);
-                extract_declaration(
-                    decl,
-                    source,
-                    semantic,
-                    path,
-                    is_exported,
-                    false,
-                    exported_names,
-                    name_counts,
-                )
-            } else {
-                vec![]
-            }
+            c.id.as_ref().map_or_else(
+                Vec::new,
+                |id| {
+                    let name = id.name.to_string();
+                    let is_exported = exported_names.contains(&name);
+                    extract_declaration(
+                        decl,
+                        source,
+                        semantic,
+                        path,
+                        is_exported,
+                        false,
+                        exported_names,
+                        name_counts,
+                    )
+                },
+            )
         }
 
         Statement::VariableDeclaration(_v) => {
@@ -668,10 +671,10 @@ fn extract_default_export<'a>(
     use nudox_ir::entry::Visibility;
     match kind {
         ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-            let name =
-                f.id.as_ref()
-                    .map(|id| id.name.to_string())
-                    .unwrap_or_else(|| "default".to_string());
+            let name = f
+                .id
+                .as_ref()
+                .map_or_else(|| "default".to_string(), |id| id.name.to_string());
             let span = f.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
@@ -689,10 +692,10 @@ fn extract_default_export<'a>(
             }]
         }
         ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-            let name =
-                c.id.as_ref()
-                    .map(|id| id.name.to_string())
-                    .unwrap_or_else(|| "default".to_string());
+            let name = c
+                .id
+                .as_ref()
+                .map_or_else(|| "default".to_string(), |id| id.name.to_string());
             let span = c.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
@@ -934,7 +937,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
         )
     });
     if let Some(ClassElement::MethodDefinition(ctor)) = ctor_elem {
-        for param in ctor.value.params.items.iter() {
+        for param in &ctor.value.params.items {
             // Only parameter properties: must have accessibility OR readonly.
             if param.accessibility.is_none() && !param.readonly {
                 continue;
@@ -973,7 +976,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
         if let Some(ref ctor_body) = ctor.value.body {
             let mut synth_seen: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
-            for stmt in ctor_body.statements.iter() {
+            for stmt in &ctor_body.statements {
                 if let Statement::ExpressionStatement(expr_stmt) = stmt
                     && let Expression::AssignmentExpression(assign) = &expr_stmt.expression
                     && assign.operator == AssignmentOperator::Assign
@@ -1006,15 +1009,15 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
     // We rename them here to `__static`, `__static_1`, `__static_2`, … in
     // declaration order.
     let mut static_count: usize = 0;
-    for m in members.iter_mut() {
+    for m in &mut members {
         if let MemberKind::StaticBlock { ref mut name } = m.kind {
             let real_name = if static_count == 0 {
                 "__static".to_string()
             } else {
-                format!("__static_{}", static_count)
+                format!("__static_{static_count}")
             };
             static_count += 1;
-            *name = real_name.clone();
+            name.clone_from(&real_name);
             m.name = real_name;
         }
     }
@@ -1235,7 +1238,7 @@ fn lower_interface<'a>(
     let mut index_signatures: Vec<IndexSignatureFact> = Vec::new();
     let mut construct_signatures: Vec<FunctionBody> = Vec::new();
 
-    for sig in iface.body.body.iter() {
+    for sig in &iface.body.body {
         match sig {
             TSSignature::TSMethodSignature(m) => {
                 let name = property_key_name(&m.key, source);
@@ -1381,7 +1384,7 @@ fn lower_interface<'a>(
     }
 }
 
-fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
+fn lower_enum(e: &TSEnumDeclaration<'_>) -> EnumBody {
     let is_const = e.r#const;
     let variants: Vec<VariantFact> = e
         .body
@@ -1391,7 +1394,7 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
             let name = match &m.id {
                 TSEnumMemberName::Identifier(id) => id.name.to_string(),
                 TSEnumMemberName::String(s) => s.value.to_string(),
-                other => format!("{:?}", other),
+                other => format!("{other:?}"),
             };
             let discriminant = m.initializer.as_ref().map(|init| match init {
                 Expression::StringLiteral(s) => format!("\"{}\"", s.value),
@@ -1400,7 +1403,7 @@ fn lower_enum<'a>(e: &TSEnumDeclaration<'a>) -> EnumBody {
                     // Handle `-1` style numeric enum values.
                     format!("{:?}", u.operator)
                 }
-                other => format!("{:?}", other),
+                other => format!("{other:?}"),
             });
             let span = m.span();
             VariantFact {
@@ -1427,7 +1430,7 @@ fn lower_variable<'a>(
 
     let is_const = matches!(v.kind, VariableDeclarationKind::Const);
     let mut out = Vec::new();
-    for d in v.declarations.iter() {
+    for d in &v.declarations {
         let Some(name) = binding_pattern_name(&d.id) else {
             continue;
         };
@@ -1538,15 +1541,16 @@ fn lower_namespace<'a>(
 
     let children = match &m.body {
         Some(TSModuleDeclarationBody::TSModuleBlock(block)) => {
-            let mut child_counts: std::collections::HashMap<String, u32> = Default::default();
+            let mut child_counts: std::collections::HashMap<String, u32> =
+                std::collections::HashMap::default();
             let mut children = Vec::new();
-            for stmt in block.body.iter() {
+            for stmt in &block.body {
                 let decls = extract_statement(
                     stmt,
                     source,
                     semantic,
                     path,
-                    &Default::default(),
+                    &std::collections::HashSet::default(),
                     &None,
                     &mut child_counts,
                 );
@@ -1590,8 +1594,8 @@ fn lower_namespace<'a>(
 
 // ── Export / import table builders ─────────────────────────────────────────────
 
-fn build_export_table<'a>(
-    module_record: &ModuleRecord<'a>,
+fn build_export_table(
+    module_record: &ModuleRecord<'_>,
     exported_names: &std::collections::HashSet<String>,
     default_local_name: &Option<String>,
     declarations: &[DeclFact],
@@ -1624,7 +1628,7 @@ fn build_export_table<'a>(
         .map(|e| e.statement_span)
         .collect();
 
-    for e in module_record.indirect_export_entries.iter() {
+    for e in &module_record.indirect_export_entries {
         let Some(module_request) = e.module_request.as_ref().map(|n| n.name.to_string()) else {
             continue;
         };
@@ -1650,7 +1654,7 @@ fn build_export_table<'a>(
         });
     }
 
-    for e in module_record.star_export_entries.iter() {
+    for e in &module_record.star_export_entries {
         let Some(module_request) = e.module_request.as_ref().map(|n| n.name.to_string()) else {
             continue;
         };
@@ -1714,8 +1718,8 @@ fn build_export_table<'a>(
 /// this module produces *without* a `from` clause. See [`LocalExport`]'s doc
 /// comment for why an export's externally-visible name and the `TsId` this
 /// module's own emitter declares for it can differ.
-fn build_local_export_map<'a>(
-    module_record: &ModuleRecord<'a>,
+fn build_local_export_map(
+    module_record: &ModuleRecord<'_>,
     declarations: &[DeclFact],
 ) -> std::collections::HashMap<String, LocalExport> {
     // Namespace-object imports, keyed by their local binding name
@@ -1762,7 +1766,7 @@ fn build_local_export_map<'a>(
 
     let mut locals = std::collections::HashMap::new();
 
-    for e in module_record.local_export_entries.iter() {
+    for e in &module_record.local_export_entries {
         let export_name = match &e.export_name {
             ExportExportName::Name(ns) => ns.name.to_string(),
             ExportExportName::Default(_) => "default".to_string(),
@@ -1770,8 +1774,7 @@ fn build_local_export_map<'a>(
         };
 
         let local_name: Option<&str> = match &e.local_name {
-            ExportLocalName::Name(ns) => Some(ns.name.as_str()),
-            ExportLocalName::Default(ns) => Some(ns.name.as_str()),
+            ExportLocalName::Name(ns) | ExportLocalName::Default(ns) => Some(ns.name.as_str()),
             ExportLocalName::Null => None,
         };
 
@@ -1800,7 +1803,7 @@ fn build_local_export_map<'a>(
     locals
 }
 
-fn build_import_table<'a>(module_record: &ModuleRecord<'a>) -> Vec<ImportFact> {
+fn build_import_table(module_record: &ModuleRecord<'_>) -> Vec<ImportFact> {
     module_record
         .import_entries
         .iter()
@@ -1838,7 +1841,7 @@ fn ts_accessibility(acc: &Option<TSAccessibility>) -> Accessibility {
     }
 }
 
-fn binding_pattern_name<'a>(pat: &BindingPattern<'a>) -> Option<String> {
+fn binding_pattern_name(pat: &BindingPattern<'_>) -> Option<String> {
     match pat {
         BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),
         BindingPattern::AssignmentPattern(ap) => binding_pattern_name(&ap.left),

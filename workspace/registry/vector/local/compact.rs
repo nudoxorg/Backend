@@ -16,7 +16,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crate::vector::core::{JinaCodeV2, VectorStore as _};
+use crate::vector::core::JinaCodeV2;
 
 use super::store::LocalShardStore;
 
@@ -103,7 +103,7 @@ pub fn spawn_compactor(
                 let policy = store.compact_policy();
                 let policy = policy
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 policy.should_compact(Instant::now())
             };
             if !due {

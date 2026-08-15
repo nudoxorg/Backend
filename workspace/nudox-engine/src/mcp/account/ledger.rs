@@ -536,7 +536,7 @@ impl UsageLedger {
         // A panic elsewhere cannot have left these integers torn; propagating
         // the poison would turn one unrelated failure into a permanently
         // unusable ledger, which for a billing counter is the worse outcome.
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn persist_locked(&self, file: &LedgerFile, durability: Durability) {
@@ -597,7 +597,7 @@ mod tests {
     }
 
     fn t0() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+        SystemTime::UNIX_EPOCH + Duration::from_hours(500_000)
     }
 
     struct Scratch(PathBuf);

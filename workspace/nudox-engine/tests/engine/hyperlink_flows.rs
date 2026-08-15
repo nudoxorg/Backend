@@ -189,10 +189,9 @@ fn bare_shortcut_link_becomes_symbol_link_through_chunk() {
         .find(|r| matches!(r, InlineRun::Link { .. }))
         .unwrap_or_else(|| {
             panic!(
-                "paragraph must contain a Link run; got: {:?}\n\
+                "paragraph must contain a Link run; got: {runs:?}\n\
                  REGRESSION: pulldown-cmark splits [Foo] into 3 events; \
-                 the event-stream lookahead must fire, not the string-level helper",
-                runs
+                 the event-stream lookahead must fire, not the string-level helper"
             )
         });
 
@@ -246,7 +245,7 @@ fn backtick_shortcut_link_becomes_symbol_link_through_chunk() {
     let link = runs
         .iter()
         .find(|r| matches!(r, InlineRun::Link { .. }))
-        .unwrap_or_else(|| panic!("backtick shortcut must produce a Link run; got: {:?}", runs));
+        .unwrap_or_else(|| panic!("backtick shortcut must produce a Link run; got: {runs:?}"));
 
     match link {
         InlineRun::Link {
@@ -396,8 +395,7 @@ fn cross_crate_link_strips_brackets_and_emits_plain_text() {
     });
     assert!(
         dead_link.is_none(),
-        "cross-crate link must NOT produce a Symbol link; got {:?}",
-        dead_link
+        "cross-crate link must NOT produce a Symbol link; got {dead_link:?}"
     );
 
     // The inner text must appear, without literal brackets.
@@ -548,8 +546,7 @@ fn real_markdown_url_link_stays_url_link() {
 
     assert!(
         url_link.is_some(),
-        "explicit Markdown URL must produce a Url link; got: {:?}",
-        runs
+        "explicit Markdown URL must produce a Url link; got: {runs:?}"
     );
 
     match url_link.unwrap() {
@@ -634,24 +631,20 @@ fn ambiguous_leaf_name_does_not_resolve_to_wrong_symbol() {
                 ..
             }
         )
-    }) {
-        match link {
-            InlineRun::Link {
+    })
+        && let InlineRun::Link {
                 target: LinkTarget::Symbol { key },
                 ..
-            } => {
-                // Both are valid because we can't know which one is "io::Read"
-                // without a real module path — but neither must be a fabricated one.
-                assert!(
-                    key.intro == read_a_id || key.intro == read_b_id,
-                    "the Symbol link must point at one of the two 'Read' entries; \
-                     got intro {:?}",
-                    key.intro
-                );
-            }
-            _ => {}
+            } = link {
+            // Both are valid because we can't know which one is "io::Read"
+            // without a real module path — but neither must be a fabricated one.
+            assert!(
+                key.intro == read_a_id || key.intro == read_b_id,
+                "the Symbol link must point at one of the two 'Read' entries; \
+                 got intro {:?}",
+                key.intro
+            );
         }
-    }
     // No assertion that a link MUST be present — "no link" is the correct
     // fallback when ambiguity cannot be resolved.
 }
@@ -689,8 +682,7 @@ fn shortcut_link_inside_strong_is_still_a_link() {
     assert!(
         link.is_some(),
         "shortcut link inside **strong** must produce a Link run, not just Strong; \
-         got: {:?}",
-        runs
+         got: {runs:?}"
     );
 
     match link.unwrap() {
@@ -839,8 +831,7 @@ fn qualified_path_shortcut_resolves_via_leaf_fallback() {
     assert!(
         link.is_some(),
         "qualified-path shortcut [Router::with_state] must produce a Symbol link \
-         when the leaf 'with_state' is in the corpus; got: {:?}",
-        runs
+         when the leaf 'with_state' is in the corpus; got: {runs:?}"
     );
 
     match link.unwrap() {

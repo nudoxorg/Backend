@@ -18,7 +18,7 @@ use std::path::Path;
 use libpijul::changestore::filesystem::FileSystem as FsChanges;
 
 use crate::wire::PayloadTable;
-use crate::wire::{EntryPayloadFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
+use crate::wire::{EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, OwnedEntryPayload, SymbolWire};
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use ir::entry::Visibility;
 use ir::kind::KindDiscriminant;
@@ -54,7 +54,7 @@ fn func(name: &str) -> OwnedEntryPayload {
         KindWire::Function(FunctionWire {
             input_params: Box::new([]),
             output_params: Box::new([]),
-            sig: Default::default(),
+            sig: FnSigFlags::default(),
             generics: Box::new([]),
             wheres: Box::new([]),
         }),

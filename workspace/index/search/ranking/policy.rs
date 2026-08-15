@@ -110,7 +110,7 @@ mod tests {
 		let policy = RankingPolicy::default();
 		let cfg = policy.config_for_intent(QueryIntent::Navigate);
 		assert!(cfg.exact_name_bonus >= 10.0);
-		assert_eq!(cfg.quality_popularity_path_scale, 0.0);
+		assert_eq!(cfg.quality_popularity_path_scale.to_bits(), 0.0_f32.to_bits());
 	}
 
 	#[test]

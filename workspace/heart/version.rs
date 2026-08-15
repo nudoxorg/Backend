@@ -110,7 +110,8 @@ pub enum NoConstraint {}
 
 impl<V> Constraint<V> for NoConstraint {
     fn matches(&self, _v: &V) -> bool {
-        match *self {}
+        // `NoConstraint` is uninhabited, so no reference to it can exist.
+        unreachable!("NoConstraint is uninhabited")
     }
 }
 
@@ -381,12 +382,12 @@ mod selection_tests {
         }
 
         fn numeric_prefix(&self, v: &SimpleVer) -> Vec<u64> {
-            vec![v.major as u64, v.minor as u64, v.patch as u64]
+            vec![u64::from(v.major), u64::from(v.minor), u64::from(v.patch)]
         }
     }
 
     fn tags(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+        v.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[test]

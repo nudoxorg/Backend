@@ -72,7 +72,10 @@ fn parse_crates_io(body: &[u8], version_raw: &str, now: DateTime<Utc>) -> Option
 			continue;
 		};
 		total = total.saturating_add(1);
-		let yanked = entry.get("yanked").and_then(|x| x.as_bool()).unwrap_or(false);
+		let yanked = entry
+			.get("yanked")
+			.and_then(serde_json::Value::as_bool)
+			.unwrap_or(false);
 		if yanked {
 			withdrawn = withdrawn.saturating_add(1);
 		}
@@ -158,11 +161,11 @@ fn parse_pypi(body: &[u8], version_raw: &str, now: DateTime<Utc>) -> Option<List
 	let this_withdrawn = releases
 		.get(version_raw)
 		.and_then(|files| files.as_array())
-		.is_some_and(|files| files.is_empty());
+		.is_some_and(std::vec::Vec::is_empty);
 	// Yanked releases on PyPI are often empty arrays.
 	let withdrawn = releases
 		.values()
-		.filter(|files| files.as_array().is_some_and(|a| a.is_empty()))
+		.filter(|files| files.as_array().is_some_and(std::vec::Vec::is_empty))
 		.count() as u32;
 	let mut newest: Option<DateTime<Utc>> = None;
 	for files in releases.values() {

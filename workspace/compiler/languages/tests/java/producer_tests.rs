@@ -40,6 +40,7 @@
 //! string that really was extracted, a real compiler error message) — never
 //! bare `is_ok()` or a nonzero count.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
@@ -69,7 +70,7 @@ fn error_chain(err: &dyn std::error::Error) -> String {
     let mut chain = err.to_string();
     let mut cursor: &dyn std::error::Error = err;
     while let Some(source) = std::error::Error::source(cursor) {
-        chain.push_str(&format!("\n  caused by: {source}"));
+        let _ = write!(chain, "\n  caused by: {source}");
         cursor = source;
     }
     chain
@@ -91,7 +92,7 @@ fn lower_fixture(fixture: &str, package_name: &str) -> IrPackage<JavaId> {
         name: package_name.to_owned(),
         visibility: Visibility::Public,
         documentation: String::new(),
-        source: root.clone(),
+        source: root,
         span: 0..0,
         aliases: Box::new([]),
         deprecation: None,

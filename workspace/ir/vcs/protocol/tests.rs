@@ -15,7 +15,8 @@
 #![cfg(test)]
 
 use crate::wire::{
-    EntryPayloadFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload, SymbolWire,
+    EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, ModuleWire, OwnedEntryPayload,
+    SymbolWire,
 };
 use heart::content::{ContentHash, JobKey};
 use ir::body::{BodyEmbed, BodyMergeNote, OracleBody, TreesitterBody, merge_body};
@@ -52,7 +53,7 @@ fn make_entry(name: &str, seed: u8) -> WireEntry {
     let sym = SymbolWire {
         name: name.into(),
         visibility: Visibility::Public,
-        documentation: Some(format!("docs for {}", name)),
+        documentation: Some(format!("docs for {name}")),
         source_path: "src/lib.rs".into(),
         span_start: 0,
         span_end: 100,
@@ -65,7 +66,7 @@ fn make_entry(name: &str, seed: u8) -> WireEntry {
     let kind = KindWire::Function(FunctionWire {
         input_params: Box::new([]),
         output_params: Box::new([]),
-        sig: Default::default(),
+        sig: FnSigFlags::default(),
         generics: Box::new([]),
         wheres: Box::new([]),
     });
@@ -153,7 +154,7 @@ fn test_full_roundtrip() {
     loop {
         match rx.recv().unwrap() {
             Some(Received::Symbols(batch)) => symbols_received.extend(batch),
-            Some(Received::Links { .. }) => {}
+            Some(Received::Links { .. } | Received::Occurrences(_) | Received::Bodies(_)) => {}
             Some(Received::SourceDigest {
                 path,
                 hash: _,
@@ -163,8 +164,6 @@ fn test_full_roundtrip() {
                 assert_eq!(size, 1234);
                 source_digests += 1;
             }
-            Some(Received::Occurrences(_)) => {}
-            Some(Received::Bodies(_)) => {}
             Some(Received::Progress { phase, .. }) => {
                 assert_eq!(phase, PhaseWire::Emit);
                 progress_seen = true;
@@ -215,7 +214,7 @@ fn test_links_and_occurrences() {
     .unwrap();
     // Also emit a batch of links.
     sink.emit_links(
-        src_ref.clone(),
+        src_ref,
         vec![
             WireLink {
                 other: make_stable_ref("pkg_a", 30),
@@ -241,9 +240,8 @@ fn test_links_and_occurrences() {
     loop {
         match rx.recv().unwrap() {
             Some(Received::Links { batch, .. }) => links_seen += batch.len(),
-            Some(Received::Finish { .. }) => break,
+            Some(Received::Finish { .. }) | None => break,
             Some(Received::Abort { .. }) => panic!("abort"),
-            None => break,
             _ => {}
         }
     }
@@ -267,8 +265,8 @@ fn test_auto_batch_splitting() {
                 visibility: Visibility::Public,
                 documentation: Some(big_doc.clone()),
                 source_path: "src/lib.rs".into(),
-                span_start: i as u32,
-                span_end: i as u32 + 1,
+                span_start: u32::from(i),
+                span_end: u32::from(i) + 1,
                 aliases: Vec::new(),
                 deprecation: None,
                 doc_links: Vec::new(),
@@ -291,7 +289,7 @@ fn test_auto_batch_splitting() {
         })
         .collect();
 
-    let (bytes, produced_count) = produce_shared(entries.clone());
+    let (bytes, produced_count) = produce_shared(entries);
     assert_eq!(produced_count, 21);
 
     // Verify the receiver collects all entries.
@@ -345,7 +343,7 @@ fn test_oversize_frame_rejected() {
             assert!(actual > MAX_FRAME_BYTES);
             assert_eq!(variant, Some("Occurrences"));
         }
-        other => panic!("expected FrameTooLarge, got {:?}", other),
+        other => panic!("expected FrameTooLarge, got {other:?}"),
     }
 }
 
@@ -374,8 +372,7 @@ fn test_oversize_single_entry_rejected_at_emit() {
             assert_eq!(variant, Some("Symbols"));
         }
         other => panic!(
-            "expected FrameTooLarge at emit, got {:?}",
-            other.map(|_| ())
+            "expected FrameTooLarge at emit, got {other:?}"
         ),
     }
 }
@@ -412,7 +409,7 @@ fn test_truncated_stream() {
         Error::Io(io_err) => {
             assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);
         }
-        other => panic!("expected Io(UnexpectedEof), got {:?}", other),
+        other => panic!("expected Io(UnexpectedEof), got {other:?}"),
     }
 }
 
@@ -439,7 +436,7 @@ fn test_version_mismatch() {
             assert_eq!(ours, IR_STREAM_VERSION);
             assert_eq!(theirs, IR_STREAM_VERSION + 99);
         }
-        other => panic!("expected VersionMismatch, got {:?}", other),
+        other => panic!("expected VersionMismatch, got {other:?}"),
     }
 }
 
@@ -456,7 +453,7 @@ fn test_next_before_accept() {
         Error::Protocol(msg) => {
             assert!(msg.contains("accept"), "message: {msg}");
         }
-        other => panic!("expected Protocol, got {:?}", other),
+        other => panic!("expected Protocol, got {other:?}"),
     }
 }
 
@@ -478,7 +475,7 @@ fn test_non_hello_first_frame() {
         Error::Protocol(msg) => {
             assert!(msg.contains("Hello"), "message: {msg}");
         }
-        other => panic!("expected Protocol, got {:?}", other),
+        other => panic!("expected Protocol, got {other:?}"),
     }
 }
 
@@ -511,7 +508,7 @@ fn test_double_hello() {
         Error::Protocol(msg) => {
             assert!(msg.contains("Hello"), "message: {msg}");
         }
-        other => panic!("expected Protocol, got {:?}", other),
+        other => panic!("expected Protocol, got {other:?}"),
     }
 }
 
@@ -552,7 +549,7 @@ fn test_emitted_count_mismatch() {
             assert_eq!(declared, 5);
             assert_eq!(observed, 2);
         }
-        other => panic!("expected EmittedCountMismatch, got {:?}", other),
+        other => panic!("expected EmittedCountMismatch, got {other:?}"),
     }
 }
 
@@ -584,8 +581,9 @@ fn test_abort_roundtrip() {
                 aborted = true;
                 break;
             }
-            Some(Received::Symbols(_)) => {} // buffered entries might be flushed before abort clears
             None => break,
+            // Ignore buffered Symbols (may be flushed before abort clears) and
+            // any other non-terminal frame.
             _ => {}
         }
     }
@@ -632,7 +630,7 @@ fn test_reader_rejects_oversized_declared_length() {
             assert_eq!(actual, claimed as usize);
             assert!(variant.is_none()); // not known on the read path
         }
-        other => panic!("expected FrameTooLarge, got {:?}", other),
+        other => panic!("expected FrameTooLarge, got {other:?}"),
     }
 }
 
@@ -692,7 +690,7 @@ fn bodies_frame_round_trips() {
             body: present_body.clone(),
         },
     ];
-    sink.emit_bodies(batch.clone()).unwrap();
+    sink.emit_bodies(batch).unwrap();
 
     // Finish the stream (no symbol entries — emitted count is 0).
     sink.finish(make_content_hash(0x42)).unwrap();

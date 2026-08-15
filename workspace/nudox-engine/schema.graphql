@@ -135,6 +135,10 @@ interface Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    # The complete typed declaration signature, rendered from the same token
+    # stream used by search_symbols and get_symbol. Prefer this over pairing
+    # `name` and `kind`: the declaration carries its own type context.
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -287,6 +291,7 @@ type Function implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -354,6 +359,7 @@ type Record implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -418,6 +424,7 @@ type Trait implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -494,6 +501,7 @@ type Impl implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -571,6 +579,7 @@ type Enum implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -635,6 +644,7 @@ type Field implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -711,6 +721,7 @@ type Const implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -787,6 +798,7 @@ type Alias implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -863,6 +875,7 @@ type Static implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -939,6 +952,7 @@ type Variant implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -1003,6 +1017,7 @@ type Module implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -1067,6 +1082,7 @@ type Reexport implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -1131,6 +1147,7 @@ type Param implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!
@@ -1207,6 +1224,7 @@ type OtherSymbol implements Symbol {
     # minted" is not "this key is fragile".
     keyIsContentDerived: Boolean
     name: String!
+    signature: String!
     path: String
     kind: String!
     isPublic: Boolean!

@@ -64,11 +64,9 @@ use trustfall::{FieldValue, Schema, execute_query_async};
 fn root() -> PathBuf {
     std::env::var("NUDOX_PKG_ROOT")
         .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
+        .filter(|v| !v.trim().is_empty()).map_or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-        })
+        }, PathBuf::from)
 }
 
 /// Lower memchr once, wrapped in the `cost case=` line doctrine §4 requires.
@@ -109,7 +107,7 @@ fn lower_memchr(case: &str) -> PackageView {
         cost.wall.as_secs_f64()
     );
 
-    let view = IrView::with_package(descriptor.lineage.clone(), produced.table);
+    let view = IrView::with_package(descriptor.lineage, produced.table);
     PackageView::build(view, Provenance::TrustedLocal)
 }
 

@@ -182,18 +182,20 @@ impl EmbedText {
 /// `Sig` get the full header; `Body` gets the lite header (language, package,
 /// kind, path) — the name/moniker live in the other two vectors.
 fn header(facets: &EmbedFacets<'_>, vector: VectorName) -> String {
+    use std::fmt::Write as _;
+
     let mut out = String::new();
-    out.push_str(&format!("// language: {}\n", facets.language.as_token()));
-    out.push_str(&format!("// package: {}\n", facets.package_stem));
-    out.push_str(&format!("// kind: {}\n", facets.kind));
+    writeln!(out, "// language: {}", facets.language.as_token()).unwrap();
+    writeln!(out, "// package: {}", facets.package_stem).unwrap();
+    writeln!(out, "// kind: {}", facets.kind).unwrap();
     match vector {
         VectorName::Sym | VectorName::Sig => {
-            out.push_str(&format!("// moniker: {}\n", facets.moniker));
-            out.push_str(&format!("// path: {}\n", facets.path));
-            out.push_str(&format!("// name: {}\n", facets.name));
+            writeln!(out, "// moniker: {}", facets.moniker).unwrap();
+            writeln!(out, "// path: {}", facets.path).unwrap();
+            writeln!(out, "// name: {}", facets.name).unwrap();
         }
         VectorName::Body => {
-            out.push_str(&format!("// path: {}\n", facets.path));
+            writeln!(out, "// path: {}", facets.path).unwrap();
         }
     }
     out
@@ -313,8 +315,7 @@ mod tests {
         let text = build_embed_text(&facets("fn f()", "", ""), VectorName::Sym, &c);
         assert!(
             !text.as_str().contains("\n\n"),
-            "no empty section artifacts: {:?}",
-            text
+            "no empty section artifacts: {text:?}"
         );
         assert!(text.as_str().ends_with("fn f()\n"));
     }
@@ -342,7 +343,7 @@ mod tests {
         let body_budget = TOTAL_TOKEN_BUDGET - header_tokens - 10 - 10;
         // Body is taken from the start of the stream.
         assert!(text.as_str().contains("w0 w1 w2"));
-        assert!(!text.as_str().contains(&format!("w{}", body_budget)));
+        assert!(!text.as_str().contains(&format!("w{body_budget}")));
         assert_eq!(c.count(text.as_str()), TOTAL_TOKEN_BUDGET);
     }
 
@@ -389,17 +390,12 @@ mod tests {
                 // valid UTF-8 (panics otherwise — caught by test harness)
                 assert!(
                     std::str::from_utf8(truncated.as_bytes()).is_ok(),
-                    "not valid UTF-8: input={:?} n={}",
-                    s,
-                    n
+                    "not valid UTF-8: input={s:?} n={n}"
                 );
                 // must be a byte-level prefix of the original
                 assert!(
                     s.starts_with(truncated.as_str()),
-                    "not a prefix: input={:?} n={} out={:?}",
-                    s,
-                    n,
-                    truncated
+                    "not a prefix: input={s:?} n={n} out={truncated:?}"
                 );
             }
         }
@@ -416,11 +412,7 @@ mod tests {
                 assert_eq!(
                     c.count(&truncated),
                     total.min(n),
-                    "count(truncate_to({:?}, {})) != min({}, {})",
-                    s,
-                    n,
-                    total,
-                    n
+                    "count(truncate_to({s:?}, {n})) != min({total}, {n})"
                 );
             }
         }
@@ -439,7 +431,7 @@ mod tests {
             s.contains("body tokens here"),
             "body present with empty sig"
         );
-        assert!(!s.contains("\n\n"), "no blank lines: {:?}", s);
+        assert!(!s.contains("\n\n"), "no blank lines: {s:?}");
     }
 
     #[test]
@@ -453,8 +445,7 @@ mod tests {
         // Header ends with "// name: to_string\n" — nothing after.
         assert!(
             s.ends_with("// name: to_string\n"),
-            "header-only Sig ends at last header line: {:?}",
-            s
+            "header-only Sig ends at last header line: {s:?}"
         );
     }
 
@@ -506,8 +497,7 @@ mod tests {
             assert_eq!(
                 a.as_str(),
                 b.as_str(),
-                "EmbedText for {:?} must be byte-identical on re-call",
-                vector
+                "EmbedText for {vector:?} must be byte-identical on re-call"
             );
         }
     }
@@ -532,15 +522,13 @@ mod tests {
         // Real header is first.
         assert!(
             s.starts_with("// language: rust\n"),
-            "real language header must come first: {:?}",
-            s
+            "real language header must come first: {s:?}"
         );
 
         // The injected string appears verbatim (frozen behavior — not sanitized).
         assert!(
             s.contains("// language: evil"),
-            "injected comment present verbatim (frozen): {:?}",
-            s
+            "injected comment present verbatim (frozen): {s:?}"
         );
 
         // Real header precedes the injection.
@@ -548,9 +536,7 @@ mod tests {
         let injected_pos = s.find("// language: evil").unwrap();
         assert!(
             real_pos < injected_pos,
-            "real header before injection (frozen): real={} injected={}",
-            real_pos,
-            injected_pos
+            "real header before injection (frozen): real={real_pos} injected={injected_pos}"
         );
     }
 

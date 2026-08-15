@@ -15,12 +15,12 @@ use crate::ecosystem::{Language, LanguageExt};
 ///
 /// Examples (authority / namespace / name):
 /// - Rust   `serde_json`                      → (None, [], "serde-json")
-/// - npm    `@types/node`                     → (None, ["types"], "node")
+/// - npm    `@types/node`                     → (None, [`types`], `node`)
 /// - PyPI   `typing-extensions`               → (None, [], "typing-extensions")
-/// - Go     `github.com/gorilla/mux/v2`       → (Some("github.com"), ["gorilla"], "mux") + major=Some(2)
-/// - Maven  `org.springframework:spring-core` → (None, ["org","springframework"], "spring-core")
-/// - NuGet  `Newtonsoft.Json`                 → (None, ["newtonsoft"], "json")
-/// - Nix    `NixOS/nixpkgs`                   → (None, ["nixos"], "nixpkgs")
+/// - Go     `github.com/gorilla/mux/v2`       → (Some(`github.com`), [`gorilla`], `mux`) + major=Some(2)
+/// - Maven  `org.springframework:spring-core` → (None, [`org`,`springframework`], `spring-core`)
+/// - NuGet  `Newtonsoft.Json`                 → (None, [`newtonsoft`], `json`)
+/// - Nix    `NixOS/nixpkgs`                   → (None, [`nixos`], `nixpkgs`)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StructuredName {
     pub ecosystem: Language,
@@ -70,19 +70,15 @@ impl StructuredName {
     pub fn symbol_roots(&self) -> Vec<String> {
         match self.ecosystem {
             // Rust symbol paths use the underscore (crate-ident) form of a
-            // hyphenated package name.
-            Language::Rust => vec![self.name.replace('-', "_")],
+            // hyphenated package name; Python modules use the same underscore
+            // import form.
+            Language::Rust | Language::Python => vec![self.name.replace('-', "_")],
 
             // npm symbols may be qualified by the scoped or the bare form.
-            Language::Typescript => match self.namespace.first() {
-                Some(scope) => {
-                    vec![format!("@{scope}/{}", self.name), self.name.to_string()]
-                }
-                None => vec![self.name.to_string()],
-            },
-
-            // Python modules use the underscore import form.
-            Language::Python => vec![self.name.replace('-', "_")],
+            Language::Typescript => self.namespace.first().map_or_else(
+                || vec![self.name.to_string()],
+                |scope| vec![format!("@{scope}/{}", self.name), self.name.to_string()],
+            ),
 
             // Go symbols are anchored at the full module path (major suffix
             // included when present).
@@ -98,7 +94,8 @@ impl StructuredName {
                 root.push('/');
                 root.push_str(&self.name);
                 if let Some(major) = self.major {
-                    root.push_str(&format!("/v{major}"));
+                    use std::fmt::Write as _;
+                    let _ = write!(root, "/v{major}");
                 }
                 vec![root]
             }
@@ -108,7 +105,6 @@ impl StructuredName {
             Language::Java if !self.namespace.is_empty() => {
                 vec![self.namespace.join(".")]
             }
-            Language::Java => vec![self.name.to_string()],
 
             // C# namespaces follow the dotted package id.
             Language::CSharp => {
@@ -117,12 +113,9 @@ impl StructuredName {
                 vec![segments.join(".")]
             }
 
-            // Nix flake outputs are addressed by the project slug.
-            Language::Nix => vec![self.name.to_string()],
-
-            // C/C++ has no language-level module path; the repo slug is the
-            // identity, so the terminal name segment is the only sensible root.
-            Language::Cpp => vec![self.name.to_string()],
+            // Bare Java, Nix flake outputs, and C/C++ repo slugs are all
+            // addressed by the terminal name segment.
+            Language::Java | Language::Nix | Language::Cpp => vec![self.name.to_string()],
         }
     }
 }

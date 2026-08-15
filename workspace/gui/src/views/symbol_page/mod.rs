@@ -157,7 +157,7 @@ use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, skeleton::Ske
 use nudox_engine::wire::{SourceLocation as WireSourceLocation, SymbolKey, TimelineChange};
 
 use crate::app::actions::{CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, OpenVersionPicker};
-use crate::bridge::slot::{Display as SlotDisplay, SlotError};
+use crate::bridge::slot::{Display as SlotDisplay, Error};
 use crate::motion::tokens::MotionTokens;
 use crate::stores::events::OpenDisposition;
 use crate::stores::symbol::{SymbolDoc, SymbolEngine, SymbolStore, TabId};
@@ -450,7 +450,7 @@ pub struct SymbolPage<E: SymbolEngine> {
     head_gen: Option<u64>,
     /// Cached stream state, recomputed on every store notification.
     state: PageState,
-    error: Option<SlotError>,
+    error: Option<Error>,
     /// The error's message, formatted once when it changes rather than on every
     /// frame the retry bar is on screen (§1.1.4).
     error_text: Option<SharedString>,
@@ -800,7 +800,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
             }
             if doc.slot_meta.error != self.error {
                 self.error = doc.slot_meta.error.clone();
-                // `SlotError: Display`. Formatted here, once per failure, so the
+                // `Error: Display`. Formatted here, once per failure, so the
                 // retry bar costs nothing per frame (§1.1.4).
                 self.error_text = self
                     .error
@@ -1733,7 +1733,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
         // be an early `return` of a second, bare root — see `page_root` for why
         // that cost `cmd-W` (L22).
         if self.state == PageState::ColdError {
-            let error = self.error.clone().unwrap_or(SlotError::Cancelled);
+            let error = self.error.clone().unwrap_or(Error::Cancelled);
             let tab = self.tab;
             let store = self.store.clone();
             return vec![

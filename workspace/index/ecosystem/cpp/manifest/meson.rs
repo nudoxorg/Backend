@@ -145,7 +145,7 @@ fn advance_past_line_end(bytes: &[u8], position: usize) -> usize {
 /// immediately after the closing quote sequence. Never panics on unterminated
 /// input.
 fn advance_past_single_quoted_string(bytes: &[u8], position: usize) -> usize {
-    debug_assert!(bytes.get(position) == Some(&b'\''));
+    debug_assert_eq!(bytes.get(position), Some(&b'\''));
     // Detect triple-quote.
     if bytes.get(position..position + 3) == Some(b"'''") {
         let mut index = position + 3;
@@ -185,7 +185,7 @@ fn advance_past_single_quoted_string(bytes: &[u8], position: usize) -> usize {
 /// Tracks nested parentheses so triple/single-quoted strings that contain `)`
 /// do not cause early termination.
 fn extract_first_string_arg(bytes: &[u8], paren_position: usize) -> Option<(String, usize)> {
-    debug_assert!(bytes.get(paren_position) == Some(&b'('));
+    debug_assert_eq!(bytes.get(paren_position), Some(&b'('));
     let mut depth = 0i32;
     let mut index = paren_position;
 
@@ -213,10 +213,10 @@ fn extract_first_string_arg(bytes: &[u8], paren_position: usize) -> Option<(Stri
                     };
                     let content_end = content_end.min(bytes.len());
                     let content_start = content_start.min(content_end);
-                    if let Ok(token) = std::str::from_utf8(&bytes[content_start..content_end]) {
-                        if !token.is_empty() {
-                            return Some((token.to_owned(), after_string));
-                        }
+                    if let Ok(token) = std::str::from_utf8(&bytes[content_start..content_end])
+                        && !token.is_empty()
+                    {
+                        return Some((token.to_owned(), after_string));
                     }
                 }
                 index = after_string;

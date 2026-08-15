@@ -452,10 +452,9 @@ fn module_path_args(root: &Path) -> Vec<String> {
 /// always ≥ 9 on any toolchain this crate can run on (the doclet API it uses
 /// is itself JDK 9+).
 fn module_system_available() -> bool {
-    match std::env::var("NUDOX_JAVA_RELEASE") {
-        Ok(release) => release.trim().parse::<u32>().ok().is_none_or(|n| n >= 9),
-        Err(_) => true,
-    }
+    std::env::var("NUDOX_JAVA_RELEASE").map_or(true, |release| {
+        release.trim().parse::<u32>().ok().is_none_or(|n| n >= 9)
+    })
 }
 
 /// `--add-modules <value>` from `NUDOX_JAVA_ADD_MODULES`; unset contributes

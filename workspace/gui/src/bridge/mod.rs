@@ -23,7 +23,7 @@
 //! |----------------|---------------------------------------------------------------|
 //! | [`generation`]        | `Gen(u64)` + `GenSource` — per-slot monotonic counters        |
 //! | [`handle`]     | `StreamHandle` — single-owner cancellation token             |
-//! | [`slot`]       | `Phase`, `StreamSlot<T>`, `SlotError`, `Display<'_, T>`       |
+//! | [`slot`]       | `Phase`, `StreamSlot<T>`, `Error`, `Display<'_, T>`           |
 //! | [`progressive`]| `Progressive<T>` — append-only streamed document accumulator |
 //! | [`drain`]      | `drain()` — the batched event-to-GPUI bridge function         |
 //! | [`channels`]   | `ChannelSpec` constants from GUI-PLAN Appendix C              |

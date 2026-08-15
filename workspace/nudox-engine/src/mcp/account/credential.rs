@@ -477,7 +477,7 @@ mod tests {
         // `is_err()`. Each case is a real paste failure observed in the wild.
         let long = format!("ndx_{}", "a".repeat(MAX_LEN));
         let cases: Vec<(String, ApiKeyError)> = vec![
-            ("".to_owned(), ApiKeyError::Empty),
+            (String::new(), ApiKeyError::Empty),
             ("   \n ".to_owned(), ApiKeyError::Empty),
             (
                 // The loopback session token, pasted into the wrong field.

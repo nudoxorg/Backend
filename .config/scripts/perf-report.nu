@@ -44,6 +44,8 @@
 #   --markdown <path>  write the table to a file as well as stdout
 
 # Parse one `cost case=` line into a record, or null if it is not one.
+# MCP rows may also carry `output_bytes` and the deterministic
+# `output_tokens` estimate emitted by `heart::cost::measured_text`.
 def parse-cost-line [line: string] {
     if not ($line | str contains "cost case=") { return null }
 
@@ -77,7 +79,9 @@ def parse-cost-line [line: string] {
         wall_ms: (if ("wall_ms" in ($pairs | columns)) { $pairs.wall_ms | into float } else { 0.0 })
         rss_bytes: $rss
         disk_delta_bytes: (if ("disk_delta_bytes" in ($pairs | columns)) { $pairs.disk_delta_bytes | into int } else { 0 })
-        kind: (if ($pairs.case | str starts-with "shot/") { "shot" } else { "lower" })
+        output_bytes: (if ("output_bytes" in ($pairs | columns)) { $pairs.output_bytes | into int } else { null })
+        output_tokens: (if ("output_tokens" in ($pairs | columns)) { $pairs.output_tokens | into int } else { null })
+        kind: (if ($pairs.case | str starts-with "shot/") { "shot" } else if ($pairs.case | str starts-with "mcp/") { "mcp" } else { "lower" })
     }
 }
 
@@ -122,9 +126,10 @@ export def main [
 
     let lowers = ($table | where kind == "lower")
     let shots  = ($table | where kind == "shot")
+    let mcps   = ($table | where kind == "mcp")
 
     mut md = "# Performance report\n\n"
-    $md = $md + $"Rows: ($table | length) — ($lowers | length) lowering, ($shots | length) frame captures.\n\n"
+    $md = $md + $"Rows: ($table | length) — ($lowers | length) lowering, ($mcps | length) MCP outputs, ($shots | length) frame captures.\n\n"
 
     if not ($lowers | is-empty) {
         let total = ($lowers | get wall_ms | math sum)
@@ -146,6 +151,19 @@ export def main [
         $md = $md + "| frame | capture (ms) |\n|---|---:|\n"
         for r in $shots {
             $md = $md + $"| `($r.case)` | ($r.wall_ms | math round --precision 1) |\n"
+        }
+        $md = $md + "\n"
+    }
+
+    if not ($mcps | is-empty) {
+        $md = $md + "## MCP output budget\n\n"
+        $md = $md + "Agent-facing bodies are Markdown; `/wire` rows are protocol metadata. Both use the deterministic relative token estimate emitted by `measured_text`.\n\n"
+        $md = $md + "| case | format | wall (ms) | output tokens | output bytes |\n|---|---|---:|---:|---:|\n"
+        for r in $mcps {
+            let output_tokens = ($r.output_tokens | default "—")
+            let output_bytes = ($r.output_bytes | default "—")
+            let format = (if ($r.case | str ends-with "/wire") { "wire" } else { "markdown" })
+            $md = $md + $"| `($r.case)` | ($format) | ($r.wall_ms | math round --precision 1) | ($output_tokens) | ($output_bytes) |\n"
         }
         $md = $md + "\n"
     }

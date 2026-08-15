@@ -125,7 +125,7 @@ fn advance_past_line_end(bytes: &[u8], position: usize) -> usize {
 /// opening `"`. Returns the index immediately after the closing `"`. Handles
 /// `\"` escape sequences. Never panics on unterminated input.
 fn advance_past_double_quoted_string(bytes: &[u8], position: usize) -> usize {
-    debug_assert!(bytes.get(position) == Some(&b'"'));
+    debug_assert_eq!(bytes.get(position), Some(&b'"'));
     let mut index = position + 1;
     while index < bytes.len() {
         match bytes[index] {
@@ -151,7 +151,7 @@ fn advance_past_double_quoted_string(bytes: &[u8], position: usize) -> usize {
 /// Tracks nested parentheses and skips string contents so `name` that appears
 /// inside a string value is not mistaken for a keyword argument.
 fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(String, usize)> {
-    debug_assert!(bytes.get(paren_position) == Some(&b'('));
+    debug_assert_eq!(bytes.get(paren_position), Some(&b'('));
     let mut depth = 0i32;
     let mut index = paren_position;
     // Where we last saw the identifier `name` as a keyword (not inside a string).
@@ -206,7 +206,7 @@ fn extract_name_keyword_arg(bytes: &[u8], paren_position: usize) -> Option<(Stri
                     let after_name = index + 4;
                     let following_ok = bytes
                         .get(after_name)
-                        .map_or(true, |&b| !b.is_ascii_alphanumeric() && b != b'_');
+                        .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
                     if preceding_ok && following_ok {
                         name_keyword_position = Some(index);
                     }

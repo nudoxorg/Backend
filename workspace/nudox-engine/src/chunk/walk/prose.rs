@@ -255,13 +255,12 @@ pub(crate) fn build_prose_blocks(
             Event::End(TagEnd::Link) => {
                 if let Some(url) = link_url.take() {
                     let target = if is_symbol_path(&url) {
-                        if let Some(key) = doc_link_table.resolve(&url) {
-                            LinkTarget::Symbol { key: key.clone() }
-                        } else {
-                            LinkTarget::Url {
+                        doc_link_table.resolve(&url).map_or_else(
+                            || LinkTarget::Url {
                                 url: SharedStr::from(url.as_str()),
-                            }
-                        }
+                            },
+                            |key| LinkTarget::Symbol { key: key.clone() },
+                        )
                     } else {
                         LinkTarget::Url {
                             url: SharedStr::from(url.as_str()),
@@ -336,24 +335,26 @@ fn shortcut_link(
     candidate: &str,
     key: &SymbolKey,
 ) -> (InlineRun, ShortcutOutcome) {
-    let (origin, outcome) = match shape.repair_kind() {
-        None => (LinkOrigin::Authored, ShortcutOutcome::Linked),
-        Some(kind) => (
-            LinkOrigin::Repaired(LinkRepair {
-                kind,
-                raw: SharedStr::from(raw),
-                resolved: SharedStr::from(candidate),
-                note: SharedStr::from(
-                    format!(
-                        "Repaired link \u{2014} the source reads {raw} ({}); we linked {candidate}.",
-                        kind.label()
-                    )
-                    .as_str(),
-                ),
-            }),
-            ShortcutOutcome::Repaired(kind),
-        ),
-    };
+    let (origin, outcome) = shape.repair_kind().map_or_else(
+        || (LinkOrigin::Authored, ShortcutOutcome::Linked),
+        |kind| {
+            (
+                LinkOrigin::Repaired(LinkRepair {
+                    kind,
+                    raw: SharedStr::from(raw),
+                    resolved: SharedStr::from(candidate),
+                    note: SharedStr::from(
+                        format!(
+                            "Repaired link \u{2014} the source reads {raw} ({}); we linked {candidate}.",
+                            kind.label()
+                        )
+                        .as_str(),
+                    ),
+                }),
+                ShortcutOutcome::Repaired(kind),
+            )
+        },
+    );
     (
         InlineRun::Link {
             text: SharedStr::from(candidate),
@@ -487,7 +488,7 @@ fn consume_bracket_run(
             idx += 1;
         }
         Event::Code(t) => {
-            let stripped = t.as_ref().strip_prefix('[').unwrap_or(t.as_ref());
+            let stripped = t.as_ref().strip_prefix('[').unwrap_or_else(|| t.as_ref());
             depth = 1;
             raw.push('`'); // ← the author's backtick, which came first
             raw.push('[');
@@ -625,10 +626,10 @@ fn consume_bracket_run(
         idx += consumed2.max(1);
     }
 
-    if let Some(rest) = trailing {
-        if !rest.is_empty() {
-            out.push(make_text_run(&rest, in_strong, in_em));
-        }
+    if let Some(rest) = trailing
+        && !rest.is_empty()
+    {
+        out.push(make_text_run(&rest, in_strong, in_em));
     }
 
     (idx - start, out, outcome)

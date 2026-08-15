@@ -392,10 +392,9 @@ impl Purl {
         };
 
         // Namespace / name.
-        let (namespace, name) = match path.rfind('/') {
-            Some(slash) => (Some(&path[..slash]), &path[slash + 1..]),
-            None => (None, path),
-        };
+        let (namespace, name) = path
+            .rfind('/')
+            .map_or((None, path), |slash| (Some(&path[..slash]), &path[slash + 1..]));
 
         let name = percent_decode(name, "name")?;
         if name.is_empty() {
@@ -584,7 +583,7 @@ impl Purl {
     /// package produce the same directory name and the second one is a cache
     /// hit rather than a duplicate tree.
     pub fn cache_dir_name(&self) -> String {
-        let clean = self.lineage_name().replace('/', "__").replace(':', "__");
+        let clean = self.lineage_name().replace(['/', ':'], "__");
         match &self.version {
             Some(v) => format!("{clean}-{v}"),
             None => clean,

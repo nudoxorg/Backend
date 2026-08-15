@@ -30,7 +30,7 @@ use ir::kind::KindDiscriminant;
 
 use crate::diff::apply::apply_delta_with_t1;
 use crate::diff::delta::{PackageDelta, delta_digest};
-use crate::diff::diff::diff_tables;
+use crate::diff::diff_tables::diff_tables;
 use crate::diff::ir_op::IrOp;
 
 // ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ fn doc_only_change_emits_only_doc_changed() {
     let delta = diff(&t0, &t1);
     let ops = ops_for(&delta, id);
 
-    assert_eq!(ops.len(), 1, "expected exactly one op, got: {:?}", ops);
+    assert_eq!(ops.len(), 1, "expected exactly one op, got: {ops:?}");
     assert!(
         matches!(ops[0], IrOp::DocChanged),
         "expected DocChanged, got {:?}",
@@ -198,30 +198,16 @@ fn param_insert_middle_emits_param_added_at_correct_index() {
     let ops = ops_for(&delta, id);
 
     // Should have: ParamAdded{index:1} and SignatureEvolved
-    let param_added: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::ParamAdded { index: 1 }))
-        .collect();
     assert!(
-        !param_added.is_empty(),
-        "expected ParamAdded{{index:1}}, got: {:?}",
-        ops
+        ops.iter().any(|op| matches!(op, IrOp::ParamAdded { index: 1 })),
+        "expected ParamAdded{{index:1}}, got: {ops:?}"
     );
 
     // The param that was NOT added should not appear as affected.
-    let unchanged_removed: Vec<_> = ops
-        .iter()
-        .filter(|op| {
-            matches!(
-                op,
-                IrOp::ParamRemoved { index: 0 } | IrOp::ParamRemoved { index: 2 }
-            )
-        })
-        .collect();
     assert!(
-        unchanged_removed.is_empty(),
-        "params a and c should be unchanged, got: {:?}",
-        ops
+        ops.iter()
+            .all(|op| !matches!(op, IrOp::ParamRemoved { index: 0 | 2 })),
+        "params a and c should be unchanged, got: {ops:?}"
     );
 }
 
@@ -239,24 +225,15 @@ fn param_reorder_emits_params_reordered_not_n_changes() {
     let delta = diff(&t0, &t1);
     let ops = ops_for(&delta, id);
 
-    let reordered: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::ParamsReordered))
-        .collect();
     assert!(
-        !reordered.is_empty(),
-        "expected ParamsReordered, got: {:?}",
-        ops
+        ops.iter().any(|op| matches!(op, IrOp::ParamsReordered)),
+        "expected ParamsReordered, got: {ops:?}"
     );
 
-    let adds_removes: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::ParamAdded { .. } | IrOp::ParamRemoved { .. }))
-        .collect();
     assert!(
-        adds_removes.is_empty(),
-        "should not emit individual add/remove on reorder, got: {:?}",
-        ops
+        ops.iter()
+            .all(|op| !matches!(op, IrOp::ParamAdded { .. } | IrOp::ParamRemoved { .. })),
+        "should not emit individual add/remove on reorder, got: {ops:?}"
     );
 }
 
@@ -280,8 +257,7 @@ fn field_type_change_emits_field_type_changed() {
         .collect();
     assert!(
         !changed.is_empty(),
-        "expected FieldTypeChanged, got: {:?}",
-        ops
+        "expected FieldTypeChanged, got: {ops:?}"
     );
 
     if let IrOp::FieldTypeChanged { old, new } = changed[0] {
@@ -328,24 +304,15 @@ fn enum_variant_add_remove_emits_child_ops() {
     let delta = diff(&t0, &t1);
     let ops = ops_for(&delta, enum_id);
 
-    let added: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::ChildAdded { child } if *child == variant_c))
-        .collect();
-    let removed: Vec<_> = ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::ChildRemoved { child } if *child == variant_b))
-        .collect();
-
     assert!(
-        !added.is_empty(),
-        "expected ChildAdded for variant_c, got: {:?}",
-        ops
+        ops.iter()
+            .any(|op| matches!(op, IrOp::ChildAdded { child } if *child == variant_c)),
+        "expected ChildAdded for variant_c, got: {ops:?}"
     );
     assert!(
-        !removed.is_empty(),
-        "expected ChildRemoved for variant_b, got: {:?}",
-        ops
+        ops.iter()
+            .any(|op| matches!(op, IrOp::ChildRemoved { child } if *child == variant_b)),
+        "expected ChildRemoved for variant_b, got: {ops:?}"
     );
 }
 
@@ -369,8 +336,7 @@ fn reexport_retarget_emits_reexport_retargeted() {
         .collect();
     assert!(
         !retargeted.is_empty(),
-        "expected ReexportRetargeted, got: {:?}",
-        ops
+        "expected ReexportRetargeted, got: {ops:?}"
     );
 
     if let IrOp::ReexportRetargeted { old, new } = retargeted[0] {
@@ -412,7 +378,7 @@ fn visibility_change_emits_vis_changed() {
         .iter()
         .filter(|op| matches!(op, IrOp::VisChanged { .. }))
         .collect();
-    assert!(!vis.is_empty(), "expected VisChanged, got: {:?}", ops);
+    assert!(!vis.is_empty(), "expected VisChanged, got: {ops:?}");
     if let IrOp::VisChanged { old, new } = vis[0] {
         assert_eq!(*old, Visibility::Public);
         assert_eq!(*new, Visibility::Crate);
@@ -454,8 +420,7 @@ fn aliases_changed_emits_aliases_changed() {
         .collect();
     assert!(
         !alias_ops.is_empty(),
-        "expected AliasesChanged, got: {:?}",
-        ops
+        "expected AliasesChanged, got: {ops:?}"
     );
     if let IrOp::AliasesChanged { added, removed } = alias_ops[0] {
         assert!(added.iter().any(|a| a.as_str() == "C"), "C should be added");
@@ -499,8 +464,7 @@ fn deprecation_toggle_emits_deprecation_changed() {
     assert!(
         ops.iter()
             .any(|op| matches!(op, IrOp::DeprecationChanged { added: true })),
-        "expected DeprecationChanged{{added:true}}, got: {:?}",
-        ops
+        "expected DeprecationChanged{{added:true}}, got: {ops:?}"
     );
 
     // Reverse: deprecation removed
@@ -530,8 +494,7 @@ fn deprecation_toggle_emits_deprecation_changed() {
     assert!(
         ops2.iter()
             .any(|op| matches!(op, IrOp::DeprecationChanged { added: false })),
-        "expected DeprecationChanged{{added:false}}, got: {:?}",
-        ops2
+        "expected DeprecationChanged{{added:false}}, got: {ops2:?}"
     );
 }
 
@@ -561,7 +524,7 @@ fn trait_flags_change_emits_trait_flags_changed() {
         is_unsafe: true,
         ..TraitFlags::default()
     };
-    let p1 = make(new_flags.clone());
+    let p1 = make(new_flags);
 
     let (t0, t1) = single_entry_tables(id, p0, p1);
     let delta = diff(&t0, &t1);
@@ -573,8 +536,7 @@ fn trait_flags_change_emits_trait_flags_changed() {
         .collect();
     assert!(
         !flag_ops.is_empty(),
-        "expected TraitFlagsChanged, got: {:?}",
-        ops
+        "expected TraitFlagsChanged, got: {ops:?}"
     );
     if let IrOp::TraitFlagsChanged { new, .. } = flag_ops[0] {
         assert!(new.is_unsafe);
@@ -620,7 +582,7 @@ fn introduced_and_deleted_lifecycle_ops() {
 fn assert_round_trip(t0: &PayloadTable, t1: &PayloadTable, label: &str) {
     let delta = diff(t0, t1);
     let applied = apply_delta_with_t1(t0, &delta, Some(t1))
-        .unwrap_or_else(|e| panic!("apply_delta failed on {}: {}", label, e));
+        .unwrap_or_else(|e| panic!("apply_delta failed on {label}: {e}"));
 
     // Compare all ids that are in T1 (the ground truth).
     for (id, p1_payload) in t1.live_entries() {
@@ -793,11 +755,10 @@ fn param_remove_middle_others_untouched() {
     assert_eq!(
         removed.len(),
         1,
-        "expected exactly one ParamRemoved, got: {:?}",
-        ops
+        "expected exactly one ParamRemoved, got: {ops:?}"
     );
     if let IrOp::ParamRemoved { index } = removed[0] {
-        assert_eq!(*index, 1, "expected removal at index 1 (b), got {}", index);
+        assert_eq!(*index, 1, "expected removal at index 1 (b), got {index}");
     }
 }
 
@@ -833,15 +794,13 @@ fn added_link_emits_one_op_on_canonical_owner() {
     let delta = diff(&t0, &t1);
 
     let owner_ops = ops_for(&delta, small);
-    let added: Vec<_> = owner_ops
-        .iter()
-        .filter(|op| matches!(op, IrOp::LinkAdded { .. }))
-        .collect();
     assert_eq!(
-        added.len(),
-        1,
-        "exactly one LinkAdded on the owner intro, got: {:?}",
         owner_ops
+            .iter()
+            .filter(|op| matches!(op, IrOp::LinkAdded { .. }))
+            .count(),
+        1,
+        "exactly one LinkAdded on the owner intro, got: {owner_ops:?}"
     );
 
     // The non-owner endpoint must carry no link op (no smearing).
@@ -886,13 +845,12 @@ fn ops_within_entry_are_canonically_ordered() {
     let (t0, t1) = single_entry_tables(id, p0, p1);
     let delta = diff(&t0, &t1);
     let ops = ops_for(&delta, id);
-    assert!(ops.len() >= 3, "expected several ops, got: {:?}", ops);
+    assert!(ops.len() >= 3, "expected several ops, got: {ops:?}");
 
     let keys: Vec<u8> = ops.iter().map(|op| op_sort_key(op)).collect();
     assert!(
         keys.windows(2).all(|w| w[0] <= w[1]),
-        "ops not in canonical order: {:?}",
-        keys
+        "ops not in canonical order: {keys:?}"
     );
     // Sanity: the categories we triggered are present.
     assert!(ops.iter().any(|op| matches!(op, IrOp::Renamed { .. })));

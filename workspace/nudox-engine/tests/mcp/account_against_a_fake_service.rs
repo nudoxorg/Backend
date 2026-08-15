@@ -412,17 +412,15 @@ fn good_key() -> ApiKey {
 /// Panics rather than skipping, for the same reason the live suite panics on a
 /// missing key: a suite that quietly tests nothing is worse than one that stops.
 fn require_a_clean_environment() {
-    if std::env::var_os(nudox_engine::mcp::account::API_KEY_ENV).is_some() {
-        panic!(
-            "{} is set in this environment. This suite's subject is a gate with NO \
-             credential, and the gate reads that variable before the store it is given, so \
-             every 'fresh machine' assertion below would silently be testing something \
-             else.\n\nRun it without the variable:\n\n    env -u {} cargo test -p nudox-mcp \
-             --test account_against_a_fake_service\n",
-            nudox_engine::mcp::account::API_KEY_ENV,
-            nudox_engine::mcp::account::API_KEY_ENV,
-        );
-    }
+    assert!(std::env::var_os(nudox_engine::mcp::account::API_KEY_ENV).is_none(), 
+        "{} is set in this environment. This suite's subject is a gate with NO \
+         credential, and the gate reads that variable before the store it is given, so \
+         every 'fresh machine' assertion below would silently be testing something \
+         else.\n\nRun it without the variable:\n\n    env -u {} cargo test -p nudox-mcp \
+         --test account_against_a_fake_service\n",
+        nudox_engine::mcp::account::API_KEY_ENV,
+        nudox_engine::mcp::account::API_KEY_ENV,
+    );
 }
 
 fn gate_for(fake: &FakeService, dir: &Path) -> AccountGate {
@@ -468,7 +466,7 @@ fn the_suite_never_points_at_production() {
 fn a_valid_key_is_accepted_and_signs_the_user_in() {
     let rt = runtime();
     let scratch = Scratch::new("signin");
-    let (_, _cost) = heart::cost::measured("account_sign_in", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_sign_in", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -515,7 +513,7 @@ fn a_valid_key_is_accepted_and_signs_the_user_in() {
             );
 
             assert!(!fake.saw_bad_credential());
-        })
+        });
     });
 }
 
@@ -523,7 +521,7 @@ fn a_valid_key_is_accepted_and_signs_the_user_in() {
 fn a_revoked_key_is_refused_and_the_refusal_is_sticky() {
     let rt = runtime();
     let scratch = Scratch::new("revoked");
-    let (_, _cost) = heart::cost::measured("account_revoked_key", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_revoked_key", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -560,7 +558,7 @@ fn a_revoked_key_is_refused_and_the_refusal_is_sticky() {
             fake.go_offline();
             let after_offline = gate.refresh_once().await;
             assert_eq!(after_offline.tag(), "revoked");
-        })
+        });
     });
 }
 
@@ -637,7 +635,7 @@ fn a_malformed_key_never_reaches_the_network() {
 fn tool_calls_accumulate_locally_and_flush_in_one_batch() {
     let rt = runtime();
     let scratch = Scratch::new("batching");
-    let (_, _cost) = heart::cost::measured("account_usage_batching", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_usage_batching", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -672,7 +670,7 @@ fn tool_calls_accumulate_locally_and_flush_in_one_batch() {
             assert_eq!(gate.ledger().pending(), 0);
             assert_eq!(gate.ledger().unreported_calls(), 0);
             assert_eq!(gate.ledger().dropped(), DroppedTally::default());
-        })
+        });
     });
 }
 
@@ -680,7 +678,7 @@ fn tool_calls_accumulate_locally_and_flush_in_one_batch() {
 fn a_429_puts_the_account_over_limit_and_stops_tool_calls() {
     let rt = runtime();
     let scratch = Scratch::new("overlimit");
-    let (_, _cost) = heart::cost::measured("account_over_limit", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_over_limit", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -718,7 +716,7 @@ fn a_429_puts_the_account_over_limit_and_stops_tool_calls() {
                 DroppedTally::default(),
                 "a 429 is an answer, so it is not a dropped batch"
             );
-        })
+        });
     });
 }
 
@@ -726,7 +724,7 @@ fn a_429_puts_the_account_over_limit_and_stops_tool_calls() {
 fn an_unreachable_service_keeps_a_verified_account_working() {
     let rt = runtime();
     let scratch = Scratch::new("offline");
-    let (_, _cost) = heart::cost::measured("account_offline_grace", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_offline_grace", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -757,7 +755,7 @@ fn an_unreachable_service_keeps_a_verified_account_working() {
                 5,
                 "and the calls are counted for when the network comes back"
             );
-        })
+        });
     });
 }
 
@@ -793,7 +791,7 @@ fn an_unreachable_service_never_loses_pending_usage() {
 fn a_hung_request_drops_the_batch_rather_than_double_billing() {
     let rt = runtime();
     let scratch = Scratch::new("ambiguous");
-    let (_, _cost) = heart::cost::measured("account_ambiguous_flush", case_dir(), || {
+    let ((), _cost) = heart::cost::measured("account_ambiguous_flush", case_dir(), || {
         rt.block_on(async {
             let fake = FakeService::start().await;
             let gate = gate_for(&fake, scratch.path());
@@ -833,7 +831,7 @@ fn a_hung_request_drops_the_batch_rather_than_double_billing() {
                 6,
                 "so a status bar can show it"
             );
-        })
+        });
     });
 }
 

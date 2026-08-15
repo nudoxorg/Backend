@@ -599,8 +599,7 @@ mod tests {
         assert_eq!(hits, vec![ArenaIdx(10), ArenaIdx(20)]);
         let hits2: Vec<_> = view.iter_key(99).collect();
         assert_eq!(hits2, vec![ArenaIdx(30)]);
-        let hits3: Vec<_> = view.iter_key(0).collect();
-        assert!(hits3.is_empty());
+        assert!(view.iter_key(0).next().is_none());
     }
 
     #[test]
@@ -613,7 +612,7 @@ mod tests {
         let view = DensePostingIndexView::from_bytes(&bytes).unwrap();
         let decode = |fp: u32| -> Vec<u32> {
             view.lookup(TypeFingerprintId(fp))
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect()
         };

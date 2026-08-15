@@ -108,7 +108,9 @@ pub enum StreamedRecording {
         /// The producer type and version from the `Hello` handshake.
         producer: ProducerId,
         /// The finish report: tip, change hash, added/updated/deleted counts.
-        report: FinishReport,
+        ///
+        /// Boxed to keep the `Finished` variant close in size to `Aborted`.
+        report: Box<FinishReport>,
         /// Content hash of the producer's own output (for dedup / provenance).
         producer_digest: ContentHash,
         /// Source file provenance records emitted during the stream.
@@ -298,7 +300,7 @@ where
                 return Ok(StreamedRecording::Finished {
                     job,
                     producer,
-                    report,
+                    report: Box::new(report),
                     producer_digest,
                     sources,
                     occurrences,

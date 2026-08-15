@@ -5,24 +5,21 @@ use super::types::ExtractionInput;
 
 fn readme_score(readme: Option<&str>) -> Score {
     let mut s = Score::new();
-    let (text_len, code_blocks, sections) = match readme {
-        None => (0usize, 0u32, 0u32),
-        Some(r) => {
-            let text_len = r.len();
-            // Count fenced code blocks: lines starting with ```
-            let code_blocks = r
-                .lines()
-                .filter(|l| l.trim_start().starts_with("```"))
-                .count() as u32
-                / 2; // open+close = 1 block
-            // Count headings.
-            let sections = r
-                .lines()
-                .filter(|l| l.trim_start().starts_with('#'))
-                .count() as u32;
-            (text_len, code_blocks, sections)
-        }
-    };
+    let (text_len, code_blocks, sections) = readme.map_or((0usize, 0u32, 0u32), |r| {
+        let text_len = r.len();
+        // Count fenced code blocks: lines starting with ```
+        let code_blocks = r
+            .lines()
+            .filter(|l| l.trim_start().starts_with("```"))
+            .count() as u32
+            / 2; // open+close = 1 block
+        // Count headings.
+        let sections = r
+            .lines()
+            .filter(|l| l.trim_start().starts_with('#'))
+            .count() as u32;
+        (text_len, code_blocks, sections)
+    });
     s.frac("readme_text", 75, (text_len as f64 / 3000.).min(1.0));
     s.n("readme_code_blocks", 25, (code_blocks * 5).min(25));
     s.has("readme_has_code", 30, code_blocks > 0);
@@ -91,7 +88,7 @@ pub(crate) fn compute_quality(input: &ExtractionInput<'_>) -> f32 {
     let mut score = Score::new();
 
     // Description length.
-    let desc_len = input.description.map(|d| d.len()).unwrap_or(0);
+    let desc_len = input.description.map_or(0, str::len);
     score.frac("description_len", 30, (desc_len as f64 / 300.).min(1.0));
 
     // Manifest completeness.
@@ -108,7 +105,7 @@ pub(crate) fn compute_quality(input: &ExtractionInput<'_>) -> f32 {
     // Code size.
     score.has("non_trivial", 2, input.loc > 700);
     score.has("non_giant", 1, input.loc < 80_000);
-    score.frac("loc", 3, (input.loc as f64 / 10_000.).min(1.0));
+    score.frac("loc", 3, (f64::from(input.loc) / 10_000.).min(1.0));
 
     // Release-history group — only contributes when release_count is known.
     if let Some(release_count) = input.release_count {

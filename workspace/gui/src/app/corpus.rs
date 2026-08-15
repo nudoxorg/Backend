@@ -10,7 +10,7 @@
 //! That symptom is expensive because it points at the wrong subsystem.
 //!
 //! So selection is a total function from the environment to a [`CorpusChoice`]
-//! or a [`CorpusError`], and every ambiguity is resolved loudly. A typo is an
+//! or a [`Error`], and every ambiguity is resolved loudly. A typo is an
 //! error, not a silent fall back to fixtures.
 //!
 //! # The pure core
@@ -79,7 +79,7 @@ pub enum CorpusChoice {
 
 /// Why corpus selection could not be resolved.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CorpusError {
+pub enum Error {
     /// `NUDOX_CORPUS` held something other than `fixtures` or `package`.
     UnknownKind { value: String },
     /// `NUDOX_CORPUS=package` without a `NUDOX_PACKAGE_ROOT` to point at.
@@ -91,23 +91,23 @@ pub enum CorpusError {
     UnknownLanguage { value: String },
 }
 
-impl std::fmt::Display for CorpusError {
+impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CorpusError::UnknownKind { value } => write!(
+            Error::UnknownKind { value } => write!(
                 f,
                 "{ENV_CORPUS}={value:?} is not a corpus kind; expected \"fixtures\" or \"package\"",
             ),
-            CorpusError::MissingRoot => write!(
+            Error::MissingRoot => write!(
                 f,
                 "{ENV_CORPUS}=package requires {ENV_PACKAGE_ROOT} to point at a package directory",
             ),
-            CorpusError::RootNotADirectory { root } => write!(
+            Error::RootNotADirectory { root } => write!(
                 f,
                 "{ENV_PACKAGE_ROOT}={} is not a readable directory",
                 root.display(),
             ),
-            CorpusError::UnknownLanguage { value } => write!(
+            Error::UnknownLanguage { value } => write!(
                 f,
                 "{ENV_PACKAGE_LANGUAGE}={value:?} is not a known language; expected one of \
                  \"rust\", \"go\", \"java\", \"csharp\", \"python\", \"typescript\", \"cpp\"",
@@ -116,7 +116,7 @@ impl std::fmt::Display for CorpusError {
     }
 }
 
-impl std::error::Error for CorpusError {}
+impl std::error::Error for Error {}
 
 // ---------------------------------------------------------------------------
 // Selection
@@ -128,7 +128,7 @@ impl std::error::Error for CorpusError {}
 /// producer: a wrong path caught at startup names itself, whereas the same
 /// path reaching the producer surfaces as a load failure in the status bar,
 /// several seconds later, next to a window that already looks empty.
-pub fn from_env() -> Result<CorpusChoice, CorpusError> {
+pub fn from_env() -> Result<CorpusChoice, Error> {
     select(
         |key| std::env::var(key).ok().filter(|v| !v.trim().is_empty()),
         |path| path.is_dir(),
@@ -144,7 +144,7 @@ pub fn from_env() -> Result<CorpusChoice, CorpusError> {
 pub fn select(
     lookup: impl Fn(&str) -> Option<String>,
     is_dir: impl Fn(&Path) -> bool,
-) -> Result<CorpusChoice, CorpusError> {
+) -> Result<CorpusChoice, Error> {
     let root = lookup(ENV_PACKAGE_ROOT).map(PathBuf::from);
 
     // A bare `NUDOX_PACKAGE_ROOT` is unambiguous intent, so it implies the
@@ -160,9 +160,9 @@ pub fn select(
     match kind.trim().to_ascii_lowercase().as_str() {
         "fixtures" => Ok(CorpusChoice::Fixtures),
         "package" => {
-            let root = root.ok_or(CorpusError::MissingRoot)?;
+            let root = root.ok_or(Error::MissingRoot)?;
             if !is_dir(&root) {
-                return Err(CorpusError::RootNotADirectory { root });
+                return Err(Error::RootNotADirectory { root });
             }
             let name = lookup(ENV_PACKAGE_NAME).unwrap_or_else(|| default_name(&root));
             let version =
@@ -178,18 +178,18 @@ pub fn select(
                 language,
             }))
         }
-        _ => Err(CorpusError::UnknownKind { value: kind }),
+        _ => Err(Error::UnknownKind { value: kind }),
     }
 }
 
 /// Parse a [`ProducerLanguage`] from `NUDOX_PACKAGE_LANGUAGE`.
 ///
 /// Case- and padding-insensitive, matching [`select`]'s handling of
-/// `NUDOX_CORPUS`. An unrecognised value is a loud [`CorpusError`], for the
+/// `NUDOX_CORPUS`. An unrecognised value is a loud [`Error`], for the
 /// same reason a mistyped corpus kind is: a language that silently falls back
 /// to Rust would document one producer, load a different one, and look like a
 /// search or lowering bug rather than a typo.
-fn parse_language(value: &str) -> Result<ProducerLanguage, CorpusError> {
+fn parse_language(value: &str) -> Result<ProducerLanguage, Error> {
     match value.trim().to_ascii_lowercase().as_str() {
         "rust" => Ok(ProducerLanguage::Rust),
         "go" => Ok(ProducerLanguage::Go),
@@ -198,7 +198,7 @@ fn parse_language(value: &str) -> Result<ProducerLanguage, CorpusError> {
         "python" => Ok(ProducerLanguage::Python),
         "typescript" | "ts" => Ok(ProducerLanguage::TypeScript),
         "cpp" | "c++" | "c" => Ok(ProducerLanguage::Cpp),
-        _ => Err(CorpusError::UnknownLanguage {
+        _ => Err(Error::UnknownLanguage {
             value: value.to_owned(),
         }),
     }
@@ -294,7 +294,7 @@ mod tests {
     fn package_without_a_root_is_an_error() {
         assert_eq!(
             select(env(&[(ENV_CORPUS, "package")]), any_dir).unwrap_err(),
-            CorpusError::MissingRoot,
+            Error::MissingRoot,
         );
     }
 
@@ -303,7 +303,7 @@ mod tests {
         let err = select(env(&[(ENV_PACKAGE_ROOT, "/nope")]), no_dir).unwrap_err();
         assert_eq!(
             err,
-            CorpusError::RootNotADirectory {
+            Error::RootNotADirectory {
                 root: PathBuf::from("/nope"),
             },
         );
@@ -315,7 +315,7 @@ mod tests {
         let err = select(env(&[(ENV_CORPUS, "packages")]), any_dir).unwrap_err();
         assert_eq!(
             err,
-            CorpusError::UnknownKind {
+            Error::UnknownKind {
                 value: "packages".to_owned(),
             },
         );
@@ -417,7 +417,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             err,
-            CorpusError::UnknownLanguage {
+            Error::UnknownLanguage {
                 value: "rustlang".to_owned(),
             },
         );

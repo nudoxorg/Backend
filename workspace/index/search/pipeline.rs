@@ -124,8 +124,8 @@ pub async fn retrieve_and_rank(
 			// kink, exact/contains bonus) keep their calibration. The rescaling
 			// factor is max_bm25 / max_rrf; when no BM25 hits exist the RRF scores
 			// stand as-is.
-			let max_bm25 = bm25_scores.values().cloned().fold(0.0_f32, f32::max);
-			let max_rrf = fused.first().map(|(_, s)| *s).unwrap_or(1.0_f32);
+			let max_bm25 = bm25_scores.values().copied().fold(0.0_f32, f32::max);
+			let max_rrf = fused.first().map_or(1.0_f32, |(_, s)| *s);
 			let rescale = if max_rrf > 0.0 && max_bm25 > 0.0 {
 				max_bm25 / max_rrf
 			} else {
@@ -198,32 +198,34 @@ pub async fn retrieve_and_rank(
 			) = package
 				.facets
 				.as_ref()
-				.map(|facets| {
+				.map_or(
 					(
-						facets.quality(),
-						facets.keywords.clone(),
-						facets.downloads,
-						facets.dependents,
-						facets.withdrawn,
-						facets.popularity_pct_f32(),
-						facets.squat_suspect,
-						facets.malware,
-						facets.verified_repo,
-						facets.repo_slug.as_deref(),
-					)
-				})
-				.unwrap_or((
-					NEUTRAL_QUALITY,
-					Vec::new(),
-					None,
-					None,
-					false,
-					None,
-					false,
-					false,
-					false,
-					None,
-				));
+						NEUTRAL_QUALITY,
+						Vec::new(),
+						None,
+						None,
+						false,
+						None,
+						false,
+						false,
+						false,
+						None,
+					),
+					|facets| {
+						(
+							facets.quality(),
+							facets.keywords.clone(),
+							facets.downloads,
+							facets.dependents,
+							facets.withdrawn,
+							facets.popularity_pct_f32(),
+							facets.squat_suspect,
+							facets.malware,
+							facets.verified_repo,
+							facets.repo_slug.as_deref(),
+						)
+					},
+				);
 			let ecosystem = package.package.coordinates.ecosystem();
 			let scale = ecosystem.spec().search_norms().downloads_scale;
 			let popularity = popularity::PopularitySignals::from_facets_full(

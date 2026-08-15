@@ -553,8 +553,7 @@ fn lower_width(w: crate::wire::WidthWire) -> Width {
             // In practice all bit widths in use (8, 16, 32, 64, 80, 128) fit in u16.
             // A width of 0 would be malformed; map to Width::Arch as a safe fallback.
             NonZeroU16::new(bits as u16)
-                .map(Width::Fixed)
-                .unwrap_or(Width::Arch)
+                .map_or(Width::Arch, Width::Fixed)
         }
     }
 }
@@ -609,8 +608,8 @@ pub fn summarize_continuity(
                 if pe.sym().name != ne.sym().name {
                     ops.push(ContinuityOp::Renamed {
                         id: *prior_id,
-                        old_name: pe.sym().name.to_string(),
-                        new_name: ne.sym().name.to_string(),
+                        old_name: pe.sym().name.clone(),
+                        new_name: ne.sym().name.clone(),
                     });
                 }
                 let (op, np) = (prev.parent_of(*prior_id), next.parent_of(*next_id));

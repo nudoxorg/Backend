@@ -37,12 +37,8 @@ impl Error {
     }
 
     /// Create an Oracle error from a non-zero exit status.
-    pub fn oracle_exit(cmd: impl Into<String>, code: impl fmt::Display, stderr: String) -> Self {
-        let _cmd = cmd;
-        let _code = code;
-        let _stderr = stderr;
-        Error::Oracle(std::io::Error::new(
-            std::io::ErrorKind::Other,
+    pub fn oracle_exit(_cmd: impl Into<String>, _code: impl fmt::Display, _stderr: String) -> Self {
+        Error::Oracle(std::io::Error::other(
             "oracle subprocess exited with non-zero status",
         ))
     }

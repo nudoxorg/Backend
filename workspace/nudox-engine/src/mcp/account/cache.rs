@@ -311,7 +311,7 @@ mod tests {
     }
 
     fn t0() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+        SystemTime::UNIX_EPOCH + Duration::from_hours(500_000)
     }
 
     /// A scratch directory that removes itself.

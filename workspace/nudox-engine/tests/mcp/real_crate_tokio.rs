@@ -555,10 +555,18 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
     );
 
     // If we got any rows, each target_name must be non-empty.
-    if !result.rows.is_empty() {
+    if result.rows.is_empty() {
+        // No rows is not a hard failure: the tokio functions we picked may not
+        // carry graph-worthy occurrences at the index-or-above confidence floor.
+        // Log so the tester can see what happened.
+        eprintln!(
+            "WARN: occurrencesOf → target returned 0 rows for the sampled functions. \
+             This may be expected if none carry index-or-above confidence occurrences."
+        );
+    } else {
         let name_col = col_names.iter().position(|c| c == "target_name").unwrap();
         for row in &result.rows {
-            let target_name = row.cells.get(name_col).map(|c| c.as_str()).unwrap_or("");
+            let target_name = row.cells.get(name_col).map_or("", std::string::String::as_str);
             assert!(
                 !target_name.is_empty(),
                 "target_name must be a real symbol name, not empty; row: {:?}",
@@ -569,14 +577,6 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
             "occurrencesOf → target: {} rows returned, sample target name: {:?}",
             result.rows.len(),
             result.rows[0].cells.get(name_col)
-        );
-    } else {
-        // No rows is not a hard failure: the tokio functions we picked may not
-        // carry graph-worthy occurrences at the index-or-above confidence floor.
-        // Log so the tester can see what happened.
-        eprintln!(
-            "WARN: occurrencesOf → target returned 0 rows for the sampled functions. \
-             This may be expected if none carry index-or-above confidence occurrences."
         );
     }
 }
@@ -667,7 +667,7 @@ async fn graph_query_variant_coercion_returns_real_rows() {
         .expect("must have a 'variant_kind' column");
 
     for row in &result.rows {
-        let kind = row.cells.get(kind_col).map(|c| c.as_str()).unwrap_or("");
+        let kind = row.cells.get(kind_col).map_or("", std::string::String::as_str);
         assert_eq!(
             kind, "Variant",
             "every row from `... on Variant {{ }}` must have kind=Variant; got {kind:?}"
@@ -681,7 +681,7 @@ async fn graph_query_variant_coercion_returns_real_rows() {
             .rows
             .iter()
             .take(3)
-            .map(|r| r.cells.get(0))
+            .map(|r| r.cells.first())
             .collect::<Vec<_>>()
     );
 }
@@ -726,7 +726,7 @@ async fn graph_query_module_coercion_returns_real_rows() {
         .position(|c| c == "mod_kind")
         .expect("must have a 'mod_kind' column");
     for row in &result.rows {
-        let kind = row.cells.get(kind_col).map(|c| c.as_str()).unwrap_or("");
+        let kind = row.cells.get(kind_col).map_or("", std::string::String::as_str);
         assert_eq!(
             kind, "Module",
             "every Module row must have kind=Module; got {kind:?}"
@@ -867,7 +867,7 @@ async fn graph_query_package_members_traversal_still_works() {
     let names: Vec<&str> = result
         .rows
         .iter()
-        .filter_map(|r| r.cells.get(name_col).map(|c| c.as_str()))
+        .filter_map(|r| r.cells.get(name_col).map(std::string::String::as_str))
         .collect();
 
     eprintln!(

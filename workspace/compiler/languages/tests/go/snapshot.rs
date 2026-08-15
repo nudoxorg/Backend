@@ -151,10 +151,10 @@ fn project(oracle_json: &str, pkg_id: &str, lineage_name: &str) -> Vec<EntryRow>
 
             let receiver = entry
                 .downcast::<Function>()
-                .map(|f| match f.body().receiver {
-                    Some(r) => format!("{r:?}"),
-                    None => "None".to_string(),
-                });
+                .map(|f| f.body().receiver.map_or_else(
+                    || "None".to_string(),
+                    |r| format!("{r:?}"),
+                ));
 
             Some(EntryRow {
                 kind: kind_name.to_string(),

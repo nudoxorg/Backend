@@ -8,9 +8,14 @@
 # model from the light, libpijul-FREE `ir` crate.
 [package]
 name = "ir-vcs"
+description = "libpijul-linked IR patch engine, serve, diff, semver, and transfer"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [lints]
 workspace = true

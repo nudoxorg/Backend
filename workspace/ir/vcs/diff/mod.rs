@@ -34,12 +34,12 @@
 //! |---|---|
 //! | [`ir_op`] | `IrOp` enum, `SigKey`, `GenericsDelta`, `WherePred`, `op_sort_key` |
 //! | [`delta`] | `PackageDelta`, `PartialDelta`, `delta_digest` |
-//! | [`diff`] | `diff_tables`, `diff_tables_partial` |
+//! | [`diff_tables`] | `diff_tables`, `diff_tables_partial` |
 //! | [`apply`] | `apply_delta`, `apply_delta_with_t1`, `Error` |
 
 pub mod apply;
 pub mod delta;
-pub mod diff;
+pub mod diff_tables;
 pub mod ir_op;
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ pub mod ir_op;
 
 pub use apply::{Error, apply_delta, apply_delta_with_t1};
 pub use delta::{PackageDelta, PartialDelta, delta_digest};
-pub use diff::{diff_tables, diff_tables_partial};
+pub use diff_tables::{diff_tables, diff_tables_partial};
 pub use ir_op::{GenericsDelta, IrOp, SigKey, WherePred};
 
 #[cfg(test)]

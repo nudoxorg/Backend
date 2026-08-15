@@ -311,12 +311,11 @@ pub fn facets_to_json(
 pub fn facets_from_json(
 	v: Option<&serde_json::Value>,
 ) -> Result<Option<crate::metadata::SearchFacets>, CodecError> {
-	match v {
-		None => Ok(None),
-		Some(value) => serde_json::from_value(value.clone())
+	v.map_or(Ok(None), |value| {
+		serde_json::from_value(value.clone())
 			.map(Some)
-			.map_err(|source| CodecError::Json { domain: "SearchFacets", source }),
-	}
+			.map_err(|source| CodecError::Json { domain: "SearchFacets", source })
+	})
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

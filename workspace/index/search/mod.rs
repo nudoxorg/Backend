@@ -196,7 +196,7 @@ mod keyset_home_tests {
 	fn paging_is_seam_free_over_a_fixed_order() {
 		// A total order under (score desc, id asc): distinct scores keep it simple.
 		let order: Vec<SearchKey> =
-			(0..10u8).map(|n| (score(10.0 - n as f32), id(n))).collect();
+			(0..10u8).map(|n| (score(10.0 - f32::from(n)), id(n))).collect();
 
 		let mut seen: Vec<SearchKey> = Vec::new();
 		let mut after: Option<SearchKey> = None;

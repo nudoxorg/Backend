@@ -156,18 +156,18 @@ fn visit(ty: &Type, c: &mut Census) {
     match ty {
         Type::Slice(t) | Type::Array { ty: t, .. } => visit(t, c),
         Type::Union(ts) | Type::Intersection(ts) | Type::ImplTrait(ts) | Type::DynTrait(ts) => {
-            for t in ts.iter() {
+            for t in ts {
                 visit(t, c);
             }
         }
         Type::Apply { base, args } => {
             visit(base, c);
-            for a in args.iter() {
+            for a in args {
                 visit(a, c);
             }
         }
         Type::Tuple(elems) => {
-            for e in elems.iter() {
+            for e in elems {
                 match e {
                     TupleElement::Positional(t) => visit(t, c),
                     TupleElement::Named { ty, .. } => visit(ty, c),
@@ -176,7 +176,7 @@ fn visit(ty: &Type, c: &mut Census) {
         }
         Type::Annotated { inner, .. } => visit(inner, c),
         Type::FunctionPointer { params, ret, .. } => {
-            for p in params.iter() {
+            for p in params {
                 visit(p, c);
             }
             if let Some(r) = ret {
@@ -234,12 +234,12 @@ fn census_for(dir: &str, name: &str, version: &str) -> Option<(usize, Census)> {
                 }
             }
             Kind::Record(r) => {
-                for s in r.super_types.iter() {
+                for s in &r.super_types {
                     visit(s, &mut c);
                 }
             }
             Kind::Trait(t) => {
-                for s in t.supers.iter() {
+                for s in &t.supers {
                     visit(s, &mut c);
                 }
             }

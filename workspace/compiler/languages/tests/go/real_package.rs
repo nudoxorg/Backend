@@ -251,8 +251,7 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         .find(|(_, e)| {
             e.sym().name == "Pool"
                 && e.downcast::<Record>()
-                    .map(|r| r.body().generics.len() == 1)
-                    .unwrap_or(false)
+                    .is_some_and(|r| r.body().generics.len() == 1)
         })
         .expect("internal/pool.Pool[T any] must be declared with exactly one generic param");
     let pool_record = pool_entry.downcast::<Record>().unwrap();

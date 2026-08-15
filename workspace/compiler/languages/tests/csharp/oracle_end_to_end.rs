@@ -134,13 +134,10 @@ fn lowered() -> IrPackage<String> {
 /// The single entry whose symbol name matches, panicking with the available
 /// names when it is absent — a bare `unwrap` here costs a re-run to diagnose.
 fn entry<'a>(pkg: &'a IrPackage<String>, name: &str) -> &'a nudox_ir::entry::Entry {
-    match pkg.iter().find(|(_, e)| e.sym().name == name) {
-        Some((_, e)) => e,
-        None => {
-            let mut names: Vec<&str> = pkg.iter().map(|(_, e)| e.sym().name.as_str()).collect();
-            names.sort_unstable();
-            panic!("no entry named {name:?}; present: {names:?}");
-        }
+    if let Some((_, e)) = pkg.iter().find(|(_, e)| e.sym().name == name) { e } else {
+        let mut names: Vec<&str> = pkg.iter().map(|(_, e)| e.sym().name.as_str()).collect();
+        names.sort_unstable();
+        panic!("no entry named {name:?}; present: {names:?}");
     }
 }
 
@@ -639,9 +636,7 @@ fn parameter_modifiers_are_structural() {
     let attributes = |method: &str, param: &str| -> Vec<ParamAttribute> {
         let e = pkg
             .iter()
-            .find(|(id, e)| e.sym().name == param && id.is_some_and(|i| i.contains(method)))
-            .map(|(_, e)| e)
-            .unwrap_or_else(|| panic!("no parameter {param} on {method}"));
+            .find(|(id, e)| e.sym().name == param && id.is_some_and(|i| i.contains(method))).map_or_else(|| panic!("no parameter {param} on {method}"), |(_, e)| e);
 
         match e.kind() {
             EntryInner::Owned(Kind::Param(p)) => p.attributes.to_vec(),

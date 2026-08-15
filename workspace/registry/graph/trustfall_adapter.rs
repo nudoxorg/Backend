@@ -49,7 +49,7 @@ pub enum GraphVertex<'a> {
     Package(&'a PackageLineageId),
 }
 
-impl<'a> GraphVertex<'a> {
+impl GraphVertex<'_> {
     /// The vertex type name used in Trustfall property resolution.
     ///
     /// Returns one of `"Entry"`, `"Occ"`, or `"Package"`.
@@ -144,10 +144,9 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// Field-type mentions are deferred to a later wave (see the `NOTE` in
     /// `typerefs_of_entry`).
     pub fn type_refs(&self, intro: IntroId) -> Vec<StableRef> {
-        match self.ir.entry(intro) {
-            Some(entry) => typerefs_of_entry(entry, self.ir.package()),
-            None => Vec::new(),
-        }
+        self.ir
+            .entry(intro)
+            .map_or_else(Vec::new, |entry| typerefs_of_entry(entry, self.ir.package()))
     }
 
     /// The parent (enclosing) entry of `intro`, if any.
@@ -172,19 +171,20 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// `IrView::all_occurrences()` yields `(owner: IntroId, &Occurrence)` pairs;
     /// the owner is the first tuple element.
     pub fn usages(&self, target: &StableRef) -> Vec<IntroId> {
-        if let Some(rev) = self.reverse {
+        self.reverse.map_or_else(
+            || {
+                // Slow path: O(n) linear scan. Correct but unindexed.
+                // Callers that need repeated reverse look-ups should build a
+                // ReversePositionIndex once and use `with_reverse`.
+                self.ir
+                    .all_occurrences()
+                    .filter(|(_, occ)| occ.confidence.is_graph_worthy() && &occ.target == target)
+                    .map(|(owner, _)| owner)
+                    .collect()
+            },
             // Fast path: O(log n) posting look-up.
-            rev.usages_of(target).to_vec()
-        } else {
-            // Slow path: O(n) linear scan. Correct but unindexed.
-            // Callers that need repeated reverse look-ups should build a
-            // ReversePositionIndex once and use `with_reverse`.
-            self.ir
-                .all_occurrences()
-                .filter(|(_, occ)| occ.confidence.is_graph_worthy() && &occ.target == target)
-                .map(|(owner, _)| owner)
-                .collect()
-        }
+            |rev| rev.usages_of(target).to_vec(),
+        )
     }
 }
 

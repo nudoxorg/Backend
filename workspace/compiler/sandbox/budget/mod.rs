@@ -70,7 +70,7 @@ impl ThreatTier {
             Self::Hostile => Some(Limits {
                 mem_bytes: nz64(2 * 1024 * 1024 * 1024),
                 cpu_secs: nz64(300),
-                wall: Duration::from_secs(5 * 60),
+                wall: Duration::from_mins(5),
                 pids: nz32(128),
                 max_stdout: 16 * 1024 * 1024,
                 max_stderr: 512 * 1024,
@@ -83,7 +83,7 @@ impl ThreatTier {
             Self::Untrusted => Some(Limits {
                 mem_bytes: nz64(8 * 1024 * 1024 * 1024),
                 cpu_secs: nz64(1200),
-                wall: Duration::from_secs(20 * 60),
+                wall: Duration::from_mins(20),
                 pids: nz32(1024),
                 max_stdout: 64 * 1024 * 1024,
                 max_stderr: 4 * 1024 * 1024,

@@ -104,11 +104,10 @@ impl LiteralQuery {
             // Distinguish "provided nothing" from "only whitespace".
             if raw.is_empty() {
                 return Err(Error::Empty);
-            } else {
-                return Err(Error::EmptyAfterTrim {
-                    raw: raw.to_owned(),
-                });
             }
+            return Err(Error::EmptyAfterTrim {
+                raw: raw.to_owned(),
+            });
         }
         let len = trimmed.len();
         if len > Self::MAXIMUM_LENGTH {

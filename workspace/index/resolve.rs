@@ -15,7 +15,7 @@ use crate::package::{Coordinates as PackageCoordinates, PackageName};
 
 use crate::error::ResolveError;
 
-use crate::ecosystem::{self, LanguageExt as _, upstream::ListingStatus};
+use crate::ecosystem::{upstream::ListingStatus, LanguageExt as _};
 
 // The shared version vocabulary: the request enum, its constraint predicate,
 // and the pick_best selection primitive (folded into `heart::version`).
@@ -208,12 +208,15 @@ fn semver_matches(range: &semver::VersionReq, candidate: &PackageVersion) -> boo
 		PackageVersion::Cargo(version)
 		| PackageVersion::Npm(version)
 		| PackageVersion::Nix(version) => range.matches(version),
-		PackageVersion::Python(_) => false,
-		// Go/Java via git tags; NuGet via interval notation, not semver range.
-		PackageVersion::Go(_) | PackageVersion::Java(_) | PackageVersion::CSharp(_) => false,
-		// Cpp ranges live in the cpp grammar (Tag caret semantics only,
-		// REGISTRYLESS-PLAN §3.3), never in a semver::VersionReq.
-		PackageVersion::Cpp(_) => false,
+		// PEP 440 candidates never satisfy a SemVer range; Go/Java come via git
+		// tags; NuGet via interval notation, not semver range; Cpp ranges live in
+		// the cpp grammar (Tag caret semantics only, REGISTRYLESS-PLAN §3.3),
+		// never in a semver::VersionReq.
+		PackageVersion::Python(_)
+		| PackageVersion::Go(_)
+		| PackageVersion::Java(_)
+		| PackageVersion::CSharp(_)
+		| PackageVersion::Cpp(_) => false,
 	}
 }
 

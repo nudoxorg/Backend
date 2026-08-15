@@ -35,6 +35,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 use std::str::FromStr;
 
 use heart::ContentHash;
@@ -48,7 +49,8 @@ use crate::budget::profiles::ProducerProfile;
 fn encode_hex32(bytes: &[u8; 32]) -> String {
     let mut s = String::with_capacity(64);
     for b in bytes {
-        s.push_str(&format!("{b:02x}"));
+        // Writing into a `String` is infallible.
+        let _ = write!(s, "{b:02x}");
     }
     s
 }
@@ -117,11 +119,10 @@ impl FromStr for ImageDigest {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let hex = s
             .strip_prefix("sha256:")
-            .ok_or_else(|| ParseDigestError(format!("missing `sha256:` prefix in {:?}", s)))?;
+            .ok_or_else(|| ParseDigestError(format!("missing `sha256:` prefix in {s:?}")))?;
         let bytes = decode_hex32(hex).ok_or_else(|| {
             ParseDigestError(format!(
-                "expected 64 lowercase hex chars after `sha256:`, got {:?}",
-                s
+                "expected 64 lowercase hex chars after `sha256:`, got {s:?}"
             ))
         })?;
         Ok(Self(bytes))
@@ -197,10 +198,10 @@ impl FromStr for OciImageRef {
             let repo_part = &s[..at];
             let digest_part = &s[at + 1..];
             let (registry, repository) = split_registry_repo(repo_part)
-                .ok_or_else(|| ParseImageRefError(format!("missing registry in {:?}", s)))?;
+                .ok_or_else(|| ParseImageRefError(format!("missing registry in {s:?}")))?;
             let digest = digest_part
                 .parse::<ImageDigest>()
-                .map_err(|e| ParseImageRefError(format!("bad digest in {:?}: {e}", s)))?;
+                .map_err(|e| ParseImageRefError(format!("bad digest in {s:?}: {e}")))?;
             Ok(Self {
                 registry,
                 repository,
@@ -214,22 +215,22 @@ impl FromStr for OciImageRef {
             let after_last_slash = s.rfind('/').map_or(0, |i| i + 1);
             if colon < after_last_slash {
                 // No explicit tag — treat rest as tag-less (error).
-                return Err(ParseImageRefError(format!("no tag or digest in {:?}", s)));
+                return Err(ParseImageRefError(format!("no tag or digest in {s:?}")));
             }
             let repo_part = &s[..colon];
             let tag = s[colon + 1..].to_owned();
             if tag.is_empty() {
-                return Err(ParseImageRefError(format!("empty tag in {:?}", s)));
+                return Err(ParseImageRefError(format!("empty tag in {s:?}")));
             }
             let (registry, repository) = split_registry_repo(repo_part)
-                .ok_or_else(|| ParseImageRefError(format!("missing registry in {:?}", s)))?;
+                .ok_or_else(|| ParseImageRefError(format!("missing registry in {s:?}")))?;
             Ok(Self {
                 registry,
                 repository,
                 reference: OciReference::Tag(tag),
             })
         } else {
-            Err(ParseImageRefError(format!("no tag or digest in {:?}", s)))
+            Err(ParseImageRefError(format!("no tag or digest in {s:?}")))
         }
     }
 }

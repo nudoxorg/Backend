@@ -371,12 +371,12 @@ fn encode_symbol(out: &mut Vec<u8>, sym: &Symbol) {
     encode_opt_deprecation(out, sym.deprecation.as_ref());
     // doc_links
     write_u32le(out, sym.doc_links.len() as u32);
-    for dl in sym.doc_links.iter() {
+    for dl in &sym.doc_links {
         encode_doc_link(out, dl);
     }
     // attrs
     write_u32le(out, sym.attrs.len() as u32);
-    for attr in sym.attrs.iter() {
+    for attr in &sym.attrs {
         encode_attr_tok(out, attr);
     }
     // cfg
@@ -432,14 +432,14 @@ fn encode_cfg_expr(out: &mut Vec<u8>, cfg: &CfgExpr) {
         CfgExpr::All(inner) => {
             out.push(0x01);
             write_u32le(out, inner.len() as u32);
-            for c in inner.iter() {
+            for c in inner {
                 encode_cfg_expr(out, c);
             }
         }
         CfgExpr::Any(inner) => {
             out.push(0x02);
             write_u32le(out, inner.len() as u32);
-            for c in inner.iter() {
+            for c in inner {
                 encode_cfg_expr(out, c);
             }
         }
@@ -558,7 +558,7 @@ fn encode_record(out: &mut Vec<u8>, r: &Record) {
     // fields: refs to child Field entries — encode by ref so the hash
     // captures the identity of the referenced field declarations.
     write_u32le(out, r.fields.len() as u32);
-    for rf in r.fields.iter() {
+    for rf in &r.fields {
         encode_ref(out, &rf.clone().into_raw());
     }
     // super_types
@@ -583,7 +583,7 @@ fn encode_field(out: &mut Vec<u8>, f: &Field) {
     encode_opt_type(out, f.ty.as_ref());
     // attributes
     write_u32le(out, f.attributes.len() as u32);
-    for attr in f.attributes.iter() {
+    for attr in &f.attributes {
         encode_field_attribute(out, attr);
     }
 }
@@ -619,17 +619,17 @@ fn encode_function(out: &mut Vec<u8>, f: &Function) {
     }
     // input_params: typed refs to Param entries
     write_u32le(out, f.input_params.len() as u32);
-    for rf in f.input_params.iter() {
+    for rf in &f.input_params {
         encode_ref(out, &rf.clone().into_raw());
     }
     // output_params
     write_u32le(out, f.output_params.len() as u32);
-    for rf in f.output_params.iter() {
+    for rf in &f.output_params {
         encode_ref(out, &rf.clone().into_raw());
     }
     // modifiers
     write_u32le(out, f.modifiers.len() as u32);
-    for m in f.modifiers.iter() {
+    for m in &f.modifiers {
         encode_fn_modifier(out, m);
     }
     encode_generic_params(out, &f.generics);
@@ -637,7 +637,7 @@ fn encode_function(out: &mut Vec<u8>, f: &Function) {
     // abi
     encode_opt_str(out, f.abi.as_deref());
     // is_defaulted
-    out.push(f.is_defaulted as u8);
+    out.push(u8::from(f.is_defaulted));
     // throws: checked exception types (Java / C#)
     encode_type_seq(out, &f.throws);
 }
@@ -679,8 +679,8 @@ fn encode_trait(out: &mut Vec<u8>, t: &Trait) {
 }
 
 fn encode_trait_flags(out: &mut Vec<u8>, f: &TraitFlags) {
-    out.push(f.is_unsafe as u8);
-    out.push(f.is_auto as u8);
+    out.push(u8::from(f.is_unsafe));
+    out.push(u8::from(f.is_auto));
     encode_tristate(out, &f.dyn_compat);
     encode_sealed(out, &f.sealed);
 }
@@ -712,14 +712,14 @@ fn encode_impl(out: &mut Vec<u8>, i: &Impl) {
 }
 
 fn encode_impl_flags(out: &mut Vec<u8>, f: &ImplFlags) {
-    out.push(f.negative as u8);
-    out.push(f.blanket as u8);
+    out.push(u8::from(f.negative));
+    out.push(u8::from(f.blanket));
 }
 
 fn encode_enum(out: &mut Vec<u8>, e: &Enum) {
     // variants: typed refs to Variant entries
     write_u32le(out, e.variants.len() as u32);
-    for rf in e.variants.iter() {
+    for rf in &e.variants {
         encode_ref(out, &rf.clone().into_raw());
     }
     encode_generic_params(out, &e.generics);
@@ -731,7 +731,7 @@ fn encode_variant(out: &mut Vec<u8>, v: &Variant) {
     encode_variant_form(out, &v.form);
     // fields: typed refs to Field entries
     write_u32le(out, v.fields.len() as u32);
-    for rf in v.fields.iter() {
+    for rf in &v.fields {
         encode_ref(out, &rf.clone().into_raw());
     }
     encode_opt_str(out, v.discr.as_deref());
@@ -753,7 +753,7 @@ fn encode_const(out: &mut Vec<u8>, c: &Const) {
 
 fn encode_static(out: &mut Vec<u8>, s: &Static) {
     encode_type(out, &s.ty);
-    out.push(s.mutable as u8);
+    out.push(u8::from(s.mutable));
 }
 
 fn encode_reexport(_out: &mut Vec<u8>, _rx: &Reexport) {
@@ -764,7 +764,7 @@ fn encode_reexport(_out: &mut Vec<u8>, _rx: &Reexport) {
 fn encode_param(out: &mut Vec<u8>, p: &Param) {
     encode_opt_type(out, p.ty.as_ref());
     write_u32le(out, p.attributes.len() as u32);
-    for attr in p.attributes.iter() {
+    for attr in &p.attributes {
         encode_param_attribute(out, attr);
     }
 }
@@ -971,7 +971,7 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
         Type::TemplateLiteral(parts) => {
             out.push(0x12);
             write_u32le(out, parts.len() as u32);
-            for part in parts.iter() {
+            for part in parts {
                 match part {
                     TemplatePart::Literal(s) => {
                         out.push(0x01);
@@ -988,11 +988,11 @@ fn encode_type(out: &mut Vec<u8>, ty: &Type) {
             out.push(0x13);
             encode_anon_record_form(out, form);
             write_u32le(out, members.len() as u32);
-            for m in members.iter() {
+            for m in members {
                 encode_str(out, &m.name);
                 encode_type(out, &m.ty);
-                out.push(m.optional as u8);
-                out.push(m.readonly as u8);
+                out.push(u8::from(m.optional));
+                out.push(u8::from(m.readonly));
             }
         }
         Type::ImplTrait(bounds) => {
@@ -1095,7 +1095,7 @@ fn encode_primitive(out: &mut Vec<u8>, p: &Primitive) {
     match p {
         Primitive::Integer { signed, width } => {
             out.push(0x01);
-            out.push(*signed as u8);
+            out.push(u8::from(*signed));
             encode_width(out, width);
         }
         Primitive::Float(w) => {
@@ -1123,7 +1123,7 @@ fn encode_primitive(out: &mut Vec<u8>, p: &Primitive) {
             // hash, not a structural fingerprint. `&'a T` and `&'b T` differ
             // in source even if they are semantically alpha-equivalent.
             encode_opt_str(out, lifetime.as_deref());
-            out.push(*mutable as u8);
+            out.push(u8::from(*mutable));
             encode_type(out, ty);
         }
         Primitive::Builtin(s) => {

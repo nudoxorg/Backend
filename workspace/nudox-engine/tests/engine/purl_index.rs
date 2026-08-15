@@ -209,7 +209,7 @@ fn acquire_only(cache: &Path, purl: &str) -> (Integrity, PathBuf) {
 #[ignore = "fetches six real packages from six real registries; run with --ignored"]
 fn a_fetch_is_verified_against_a_published_digest_or_says_it_was_not() {
     let cache = scratch_cache("integrity");
-    let (_, _cost) = measured("purl_integrity_matrix", &cache, || {
+    let ((), _cost) = measured("purl_integrity_matrix", &cache, || {
         for (purl, expect_verified) in [
             ("pkg:cargo/numtoa@0.2.4", true),
             ("pkg:npm/left-pad@1.3.0", true),

@@ -70,13 +70,10 @@ impl CSharpProducer {
     /// package that actually needed it, where the error can name it. See
     /// [`Self::is_available`] for the pre-flight check.
     pub fn from_env() -> Self {
-        let oracle = std::env::var_os(ORACLE_PATH_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(default_oracle_path);
+        let oracle = std::env::var_os(ORACLE_PATH_ENV).map_or_else(default_oracle_path, PathBuf::from);
 
         let dotnet = std::env::var_os(DOTNET_ENV)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("dotnet"));
+            .map_or_else(|| PathBuf::from("dotnet"), PathBuf::from);
 
         Self {
             dotnet,
@@ -149,14 +146,15 @@ impl Producer for CSharpProducer {
             });
         }
 
-        let mut args: Vec<OsString> = Vec::with_capacity(7);
-        args.push(self.oracle_dll.clone().into_os_string());
-        args.push(OsString::from("--mode"));
-        args.push(OsString::from("source"));
-        args.push(OsString::from("--root"));
-        args.push(src.root().as_os_str().to_os_string());
-        args.push(OsString::from("--assembly-name"));
-        args.push(OsString::from(src.name.as_str()));
+        let args: Vec<OsString> = vec![
+            self.oracle_dll.clone().into_os_string(),
+            OsString::from("--mode"),
+            OsString::from("source"),
+            OsString::from("--root"),
+            src.root().as_os_str().to_os_string(),
+            OsString::from("--assembly-name"),
+            OsString::from(src.name.as_str()),
+        ];
 
         let extraction: Extraction = oracle::run_json(Self::ID.0, &self.dotnet, args)?;
 
@@ -249,12 +247,13 @@ mod tests {
 
     /// A directory and the dll inside it must name the same oracle, because
     /// both spellings are handed to `--oracle`/`NUDOX_CSHARP_ORACLE` in practice.
+    ///
+    /// Uses a tempdir rather than the real publish directory so the test is
+    /// hermetic (the publish output is gitignored and may not exist on disk).
     #[test]
     fn directory_and_dll_paths_resolve_to_the_same_oracle() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("oracle")
-            .join("csharp")
-            .join("publish");
+        let dir = tempfile::tempdir().expect("create temp publish dir");
+        let dir = dir.path().to_path_buf();
 
         let from_dir = CSharpProducer::new(&dir);
         let from_dll = CSharpProducer::new(dir.join("oracle.dll"));

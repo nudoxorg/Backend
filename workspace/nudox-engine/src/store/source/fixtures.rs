@@ -524,7 +524,7 @@ pub fn build_rich_view() -> IrView {
     view.add_occurrence(
         fixture_intro(6),
         Occurrence::new(
-            StableRef::new(lineage.clone(), fixture_intro(3)),
+            StableRef::new(lineage, fixture_intro(3)),
             ReferenceKind::TypeReference,
             Confidence::Syntactic,
             RelSpan::new(0, 5),
@@ -673,7 +673,7 @@ fn build_fixture_events(set: FixtureSet) -> Vec<Result<LoadEvent, Error>> {
         let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
 
         events.push(Ok(LoadEvent::Progress {
-            lineage: lineage.clone(),
+            lineage,
             stage: ProduceStage::Indexing,
             done: 0,
             total: 0,
@@ -684,7 +684,7 @@ fn build_fixture_events(set: FixtureSet) -> Vec<Result<LoadEvent, Error>> {
     if matches!(set, FixtureSet::PerfOnly | FixtureSet::Both) {
         let lineage = perf_lineage();
         events.push(Ok(LoadEvent::Discovered {
-            lineage: lineage.clone(),
+            lineage,
             hint: PackageHint {
                 display_name: "nudox-fixture-perf".to_owned(),
                 ecosystem: "fixture".to_owned(),

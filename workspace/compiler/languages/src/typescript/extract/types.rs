@@ -65,11 +65,11 @@ fn lower_ts_type_impl<'a>(
         // ── Primitives ─────────────────────────────────────────────────────
         TSType::TSAnyKeyword(_) => TypeOwned::Any,
         TSType::TSNeverKeyword(_) => TypeOwned::Never,
-        TSType::TSUnknownKeyword(_) => TypeOwned::Unknown,
+        TSType::TSUnknownKeyword(_) | TSType::JSDocUnknownType(_) => TypeOwned::Unknown,
         TSType::TSVoidKeyword(_) => TypeOwned::Void,
         TSType::TSUndefinedKeyword(_) => TypeOwned::Undefined,
         TSType::TSNullKeyword(_) => TypeOwned::Null,
-        TSType::TSBooleanKeyword(_) => TypeOwned::Bool,
+        TSType::TSBooleanKeyword(_) | TSType::TSTypePredicate(_) => TypeOwned::Bool,
         TSType::TSNumberKeyword(_) => TypeOwned::Number,
         TSType::TSBigIntKeyword(_) => TypeOwned::BigInt,
         TSType::TSStringKeyword(_) => TypeOwned::String,
@@ -88,15 +88,9 @@ fn lower_ts_type_impl<'a>(
             // type arguments. If caller supplied a type-params set, use it;
             // otherwise apply the single-identifier heuristic.
             let is_simple_id = !name.contains('.');
-            let is_type_var = tr.type_arguments.is_none() && is_simple_id && {
-                match type_params {
-                    Some(set) => set.contains(&name),
-                    // Heuristic: bare single identifier without type args is
-                    // likely a type parameter (T, K, V, …). This is overridden
-                    // by callers that supply the actual set.
-                    None => true,
-                }
-            };
+            let is_type_var = tr.type_arguments.is_none()
+                && is_simple_id
+                && type_params.is_none_or(|set| set.contains(&name));
 
             if is_type_var {
                 TypeOwned::TypeVar(name)
@@ -192,17 +186,20 @@ fn lower_ts_type_impl<'a>(
             let value_ty = m
                 .type_annotation
                 .as_ref()
-                .map(|v| Box::new(lower_ts_type_impl(v, source, type_params)))
-                .unwrap_or_else(|| Box::new(TypeOwned::Any));
+                .map_or_else(|| Box::new(TypeOwned::Any), |v| {
+                    Box::new(lower_ts_type_impl(v, source, type_params))
+                });
             let readonly = match &m.readonly {
-                Some(TSMappedTypeModifierOperator::True)
-                | Some(TSMappedTypeModifierOperator::Plus) => MappedModifier::Add,
+                Some(TSMappedTypeModifierOperator::True | TSMappedTypeModifierOperator::Plus) => {
+                    MappedModifier::Add
+                }
                 Some(TSMappedTypeModifierOperator::Minus) => MappedModifier::Remove,
                 None => MappedModifier::Absent,
             };
             let optional = match &m.optional {
-                Some(TSMappedTypeModifierOperator::True)
-                | Some(TSMappedTypeModifierOperator::Plus) => MappedModifier::Add,
+                Some(TSMappedTypeModifierOperator::True | TSMappedTypeModifierOperator::Plus) => {
+                    MappedModifier::Add
+                }
                 Some(TSMappedTypeModifierOperator::Minus) => MappedModifier::Remove,
                 None => MappedModifier::Absent,
             };
@@ -225,8 +222,9 @@ fn lower_ts_type_impl<'a>(
                     .value
                     .cooked
                     .as_ref()
-                    .map(|s| s.as_str().to_string())
-                    .unwrap_or_else(|| quasi.value.raw.as_str().to_string());
+                    .map_or_else(|| quasi.value.raw.as_str().to_string(), |s| {
+                        s.as_str().to_string()
+                    });
                 if !s.is_empty() {
                     parts.push(TemplatePart::Literal(s));
                 }
@@ -263,9 +261,6 @@ fn lower_ts_type_impl<'a>(
             }
         }
 
-        // ── Type predicate ─────────────────────────────────────────────────
-        TSType::TSTypePredicate(_) => TypeOwned::Bool,
-
         // ── Type query (typeof expr) ───────────────────────────────────────
         TSType::TSTypeQuery(q) => {
             let name = match &q.expr_name {
@@ -290,10 +285,10 @@ fn lower_ts_type_impl<'a>(
         // using the qualifier name (if present) or the module specifier.
         // This is item 9: no longer Unsupported where a slot exists.
         TSType::TSImportType(imp) => {
-            let name = match &imp.qualifier {
-                Some(q) => import_type_qualifier_to_string(q),
-                None => imp.source.value.as_str().to_string(),
-            };
+            let name = imp.qualifier.as_ref().map_or_else(
+                || imp.source.value.as_str().to_string(),
+                import_type_qualifier_to_string,
+            );
             if let Some(args) = &imp.type_arguments {
                 let lowered_args: Vec<TypeOwned> = args
                     .params
@@ -319,13 +314,13 @@ fn lower_ts_type_impl<'a>(
                         let name = p
                             .key
                             .static_name()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "__computed".to_string());
+                            .map_or_else(|| "__computed".to_string(), |s| s.to_string());
                         let ty = p
                             .type_annotation
                             .as_ref()
-                            .map(|a| lower_ts_type_impl(&a.type_annotation, source, type_params))
-                            .unwrap_or(TypeOwned::Any);
+                            .map_or(TypeOwned::Any, |a| {
+                                lower_ts_type_impl(&a.type_annotation, source, type_params)
+                            });
                         members.push(AnonFieldOwned {
                             name,
                             ty,
@@ -337,8 +332,7 @@ fn lower_ts_type_impl<'a>(
                         let name = m
                             .key
                             .static_name()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "__method".to_string());
+                            .map_or_else(|| "__method".to_string(), |s| s.to_string());
                         let params: Vec<TypeOwned> = m
                             .params
                             .items
@@ -346,10 +340,9 @@ fn lower_ts_type_impl<'a>(
                             .map(|p| {
                                 p.type_annotation
                                     .as_ref()
-                                    .map(|a| {
+                                    .map_or(TypeOwned::Any, |a| {
                                         lower_ts_type_impl(&a.type_annotation, source, type_params)
                                     })
-                                    .unwrap_or(TypeOwned::Any)
                             })
                             .collect();
                         let ret = m
@@ -449,7 +442,6 @@ fn lower_ts_type_impl<'a>(
         TSType::JSDocNonNullableType(n) => {
             lower_ts_type_impl(&n.type_annotation, source, type_params)
         }
-        TSType::JSDocUnknownType(_) => TypeOwned::Unknown,
     }
 }
 
@@ -508,8 +500,7 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
             let repr = b
                 .raw
                 .as_ref()
-                .map(|s| s.as_str().to_string())
-                .unwrap_or_else(|| b.value.as_str().to_string());
+                .map_or_else(|| b.value.as_str().to_string(), |s| s.as_str().to_string());
             TypeOwned::Literal(LiteralOwned::BigInt(repr))
         }
         // A template literal inside `TSLiteralType` — e.g. `` type X = `hello` ``.
@@ -530,8 +521,7 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
                         q.value
                             .cooked
                             .as_ref()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| q.value.raw.to_string())
+                            .map_or_else(|| q.value.raw.to_string(), std::string::ToString::to_string)
                     })
                     .collect::<String>();
                 TypeOwned::TemplateLiteral(vec![TemplatePart::Literal(text)])
@@ -543,7 +533,7 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
         }
         TSLiteral::UnaryExpression(u) => {
             // `-1` literal: render as number.
-            let span_text = format!("{:?}", u);
+            let span_text = format!("{u:?}");
             TypeOwned::Literal(LiteralOwned::Number(span_text))
         }
     }
@@ -555,10 +545,7 @@ fn ts_type_name_to_string(name: &TSTypeName<'_>) -> String {
         TSTypeName::QualifiedName(q) => {
             format!("{}.{}", ts_type_name_to_string(&q.left), q.right.name)
         }
-        // UNCERTAINTY: OXC 0.139.0 may not have `TSTypeName::ThisExpression`.
-        // If this arm causes a compile error, remove it.
-        #[allow(unreachable_patterns)]
-        _ => "this".to_string(),
+        TSTypeName::ThisExpression(_) => "this".to_string(),
     }
 }
 
@@ -606,16 +593,12 @@ fn lower_ts_tuple_element<'a>(
             }
         }
         other => {
-            // UNCERTAINTY: `TSTupleElement::as_ts_type()` exists in 0.139.0.
-            // If this does not compile, replace with:
-            //   TypeOwned::Unsupported("tuple element".to_string())
             // `as_ts_type()` returns `Option<&TSType<'a>>` for the transparent
             // pass-through variants (i.e. variants that ARE TSType variants).
-            if let Some(ty) = other.as_ts_type() {
-                lower_ts_type_impl(ty, source, type_params)
-            } else {
-                TypeOwned::Unsupported("tuple element".to_string())
-            }
+            other.as_ts_type().map_or_else(
+                || TypeOwned::Unsupported("tuple element".to_string()),
+                |ty| lower_ts_type_impl(ty, source, type_params),
+            )
         }
     }
 }
@@ -670,7 +653,7 @@ fn lower_formal_params<'a>(
     out
 }
 
-fn binding_pattern_name<'a>(pat: &oxc_ast::ast::BindingPattern<'a>) -> Option<String> {
+fn binding_pattern_name(pat: &oxc_ast::ast::BindingPattern<'_>) -> Option<String> {
     use oxc_ast::ast::BindingPattern;
     match pat {
         BindingPattern::BindingIdentifier(id) => Some(id.name.to_string()),

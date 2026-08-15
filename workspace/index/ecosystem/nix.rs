@@ -60,10 +60,9 @@ impl EcosystemSpec for Nix {
     }
 
     fn render_canonical(n: &name::StructuredName) -> String {
-        match n.namespace.first() {
-            Some(org) => format!("{org}/{}", n.name),
-            None => n.name.to_string(),
-        }
+        n.namespace
+            .first()
+            .map_or_else(|| n.name.to_string(), |org| format!("{org}/{}", n.name))
     }
 
     fn endpoints() -> upstream::UpstreamEndpoints {
@@ -161,7 +160,7 @@ fn scan_nix_description(text: &str) -> Option<String> {
         let rest = rest.strip_prefix('"')?;
         // Collect until closing `"`, handling `\"` escapes.
         let mut s = String::new();
-        let mut chars = rest.chars().peekable();
+        let mut chars = rest.chars();
         let mut found = false;
         while let Some(c) = chars.next() {
             match c {

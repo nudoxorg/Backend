@@ -470,16 +470,14 @@ mod tests {
     /// Pin: the filter_map contract is correct for out-of-range indices.
     #[test]
     fn voyage_rerank_out_of_range_index_results_in_none() {
-        let docs = vec![
-            RerankDoc {
+        let docs = [RerankDoc {
                 id: "a".to_owned(),
                 text: "tokio::spawn".to_owned(),
             },
             RerankDoc {
                 id: "b".to_owned(),
                 text: "std::thread".to_owned(),
-            },
-        ];
+            }];
         // Index 5 is out of range for 2 docs.
         assert!(
             docs.get(5).is_none(),
@@ -536,16 +534,14 @@ mod tests {
     #[test]
     fn voyage_rerank_scores_for_unsent_docs_are_dropped() {
         // 2 docs sent, Voyage returns index=0 (valid) and index=99 (never sent).
-        let docs = vec![
-            RerankDoc {
+        let docs = [RerankDoc {
                 id: "a".to_owned(),
                 text: "first".to_owned(),
             },
             RerankDoc {
                 id: "b".to_owned(),
                 text: "second".to_owned(),
-            },
-        ];
+            }];
         let raw_indices = [(0usize, 0.9f64), (99, 0.8), (1, 0.7)];
         let scores: Vec<RerankScore> = raw_indices
             .iter()

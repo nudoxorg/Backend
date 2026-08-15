@@ -12,7 +12,7 @@ use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
 // ---------------------------------------------------------------------------
 
 /// Arguments to `search_symbols`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SearchSymbolsArgs {
     /// The text to search for: a symbol name, a prefix, or a kind label such
     /// as `trait`. Matching is by name and by kind; it is not full-text over
@@ -46,7 +46,7 @@ pub struct SearchSymbolsArgs {
 }
 
 /// Arguments to `get_symbol`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetSymbolArgs {
     /// The symbol to open, as `ecosystem:name#introhex` — exactly the `key`
     /// returned by `search_symbols`, `find_usages` or a `graph_query`.
@@ -65,7 +65,7 @@ pub enum SymbolFormat {
 }
 
 /// Arguments to the batched symbol reader.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetSymbolsArgs {
     /// Up to 32 keys from search or reference results.
     pub keys: Vec<SymbolKeyDto>,
@@ -75,7 +75,7 @@ pub struct GetSymbolsArgs {
 }
 
 /// Arguments to `find_usages`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FindUsagesArgs {
     /// The symbol whose callers to find, as `ecosystem:name#introhex`.
     pub key: SymbolKeyDto,
@@ -95,7 +95,7 @@ pub struct FindUsagesArgs {
 /// The key identifies the symbol that owns the occurrences. Each returned row
 /// is one exact reference inside that symbol; use `find_usages` when the
 /// question is instead which symbols refer to a target.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetOccurrencesArgs {
     /// The symbol whose body owns the occurrences, as `ecosystem:name#introhex`.
     pub key: SymbolKeyDto,
@@ -110,7 +110,7 @@ pub struct GetOccurrencesArgs {
 }
 
 /// Arguments to `semantic_search`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SemanticSearchArgs {
     /// A natural-language concept or behavior to find in documented public APIs.
     pub query: String,
@@ -136,11 +136,11 @@ pub struct SemanticSearchArgs {
 ///
 /// Empty, but named rather than omitted so the tool still has a derived schema
 /// (LR-2) and so adding a filter later is not a breaking change.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListPackagesArgs {}
 
 /// Arguments to `list_versions`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListVersionsArgs {
     /// The package lineage to list loaded generations for, as `ecosystem:name`
     /// (for example `cargo:memchr`). Call `list_packages` to see what is
@@ -149,7 +149,7 @@ pub struct ListVersionsArgs {
 }
 
 /// Arguments to `select_version`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SelectVersionArgs {
     /// The package lineage to switch, as `ecosystem:name`.
     pub package: PackageLineageDto,
@@ -160,7 +160,7 @@ pub struct SelectVersionArgs {
 }
 
 /// Arguments to `diff_versions`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct DiffVersionsArgs {
     /// The package lineage to diff, as `ecosystem:name`.
     pub package: PackageLineageDto,
@@ -182,7 +182,7 @@ pub struct DiffVersionsArgs {
 }
 
 /// Arguments to `graph_query`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GraphQueryArgs {
     /// The Trustfall query text. Call `graph_schema` first for the exact type
     /// and edge names it must be written against.
@@ -204,11 +204,11 @@ pub struct GraphQueryArgs {
 }
 
 /// Arguments to `graph_schema`.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GraphSchemaArgs {}
 
 /// Arguments to `index_package`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct IndexPackageArgs {
     /// A package URL: `pkg:<type>/[<namespace>/]<name>@<version>`.
     ///

@@ -267,10 +267,7 @@ pub enum KindTag {
 impl KindTag {
     /// Decode a raw wire discriminant, falling back to `Unknown`.
     pub fn from_u16(v: u16) -> Self {
-        match KindDiscriminant::from_u16(v) {
-            Some(d) => Self::Known(d),
-            None => Self::Unknown(v),
-        }
+        KindDiscriminant::from_u16(v).map_or(Self::Unknown(v), Self::Known)
     }
 }
 
@@ -451,7 +448,7 @@ impl JsonSchema for SigToken {
 /// One crumb in the breadcrumb trail shown above a symbol page.
 ///
 /// Each crumb is clickable: the GUI navigates to `key` when activated.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct CrumbRef {
     /// The stable identity of this ancestor.
     #[serde(serialize_with = "serialize_symbol_key")]
@@ -511,7 +508,7 @@ pub enum SizeHint {
 /// Sent to the GUI in `SymbolHead::section_plan` before any `Section` events
 /// arrive, so it can pre-lay the skeleton.  The chunker computes this from the
 /// same walk that produces the actual sections (one-walk guarantee, §9.4).
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SectionPlan {
     /// Stable id that links this plan entry to its `RenderSection`.
     pub id: SectionId,
@@ -740,7 +737,7 @@ impl RenderSection {
 /// Emitted after the section via `DocEvent::Highlight` so the code block
 /// appears immediately as monochrome text and upgrades in place — zero
 /// geometry change (§9.4.2, `highlight.sweep`).
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct HighlightSpan {
     /// Byte offset of the start of this span in the code block's text.
     pub start: u32,
@@ -839,7 +836,7 @@ pub struct HitRow {
     pub key: SymbolKey,
     /// Display name (may include path prefix for disambiguation).
     pub display_name: SharedStr,
-    /// Abbreviated signature preview (§12.3, LR-4).
+    /// Complete rendered declaration signature (§12.3, LR-4).
     pub sig_preview: Vec<SigToken>,
     /// Kind tag for the badge.
     pub kind: KindTag,
@@ -854,7 +851,7 @@ pub struct HitRow {
 // ---------------------------------------------------------------------------
 
 /// One reference in a `RefsPage`.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct RefRow {
     /// The symbol that holds this reference.
     #[serde(serialize_with = "serialize_symbol_key")]
@@ -876,7 +873,7 @@ pub struct RefsPage {
 }
 
 /// One implementation in an `ImplsPage`.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ImplRow {
     /// The impl entry.
     #[serde(serialize_with = "serialize_symbol_key")]
@@ -1348,6 +1345,11 @@ pub struct DiffRow {
     pub name: SharedStr,
     /// Its kind label (`Function`, `Record`, `Impl`, …).
     pub kind: SharedStr,
+    /// The complete rendered declaration signature for this generation.
+    ///
+    /// This is the type-bearing identity shown by agent-facing projections;
+    /// `name` and `kind` remain available to typed callers and diff logic.
+    pub signature: SharedStr,
     /// What happened.
     pub verdict: DiffVerdict,
 }
@@ -1427,7 +1429,7 @@ impl PackageDiff {
 /// One result row from a Trustfall graph query.
 ///
 /// Column order is established by the preceding `QueryEvent::Columns` event.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct QueryRow {
     /// Cell values in column order.
     pub cells: Arc<[SharedStr]>,
@@ -1491,7 +1493,7 @@ impl fmt::Display for KeyTierName {
 /// fact: by checking whether the key resolves under a *different* loaded
 /// generation of the same package and reporting the tier it was minted at
 /// there.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct KeyStaleness {
     /// A loaded generation (not necessarily the current one) of the same
     /// package lineage in which this exact key *does* resolve. Pass this to
@@ -1738,13 +1740,10 @@ pub enum QueryEvent {
 
 impl From<crate::store::package::Provenance> for Provenance {
     fn from(p: crate::store::package::Provenance) -> Self {
-        // `crate::store::package::Provenance` is #[non_exhaustive]; match both
-        // known variants and treat anything future as TrustedLocal (LR-10:
-        // local is the truth, this is not the exception).
-        match p {
-            crate::store::package::Provenance::TrustedLocal => Provenance::TrustedLocal,
-            crate::store::package::Provenance::SnapshotLocal => Provenance::TrustedLocal,
-            _ => Provenance::TrustedLocal,
-        }
+        // `crate::store::package::Provenance` is #[non_exhaustive]; both known
+        // variants (and anything future) are local IR, which is always trusted
+        // (LR-10: local is the truth, this is not the exception).
+        let _ = p;
+        Provenance::TrustedLocal
     }
 }

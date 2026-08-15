@@ -24,7 +24,7 @@ use libpijul::working_copy::{WorkingCopy, WorkingCopyRead};
 use libpijul::{MutTxnTExt, TxnTExt};
 
 use ir::apply::PristineIntroTable;
-use ir::body::{BodyEmbed, BodyMergeNote};
+use ir::body::BodyEmbed;
 use ir::change::{IntroId, StableRef};
 use ir::codec::{Plane, decode_body, encode_body, ir_path};
 use ir::continuity::Policy as ContinuityPolicy;
@@ -273,20 +273,22 @@ where
                 self.repo
                     .working_copy_ref()
                     .read_file(&path, &mut existing)
-                    .map_err(|e| pijul_err(e))?;
+                    .map_err(pijul_err)?;
 
-                if existing != bytes {
+                if existing == bytes {
+                    report.unchanged += 1;
+                } else {
                     self.repo
                         .working_copy_ref()
                         .write_file(&path, libpijul::pristine::Inode::ROOT)
-                        .map_err(|e| pijul_err(e))?
+                        .map_err(pijul_err)?
                         .write_all(&bytes)
-                        .map_err(|e| pijul_err(e))?;
+                        .map_err(pijul_err)?;
 
                     self.repo
                         .working_copy_ref()
                         .touch(&path, mtime_floor)
-                        .map_err(|e| pijul_err(e))?;
+                        .map_err(pijul_err)?;
 
                     if self.tip_intros.contains(&intro) {
                         report.updated += 1;
@@ -298,16 +300,14 @@ where
                             .sample
                             .push((intro, entry.payload.symbol.name.clone()));
                     }
-                } else {
-                    report.unchanged += 1;
                 }
             } else {
                 self.repo.working_copy_ref().add_file(&path, bytes);
-                txn.write().add_file(&path, 0).map_err(|e| pijul_err(e))?;
+                txn.write().add_file(&path, 0).map_err(pijul_err)?;
                 self.repo
                     .working_copy_ref()
                     .touch(&path, mtime_floor)
-                    .map_err(|e| pijul_err(e))?;
+                    .map_err(pijul_err)?;
 
                 wc_paths.insert(path.clone());
 
@@ -323,7 +323,7 @@ where
                 .insert(intro, (entry.payload, entry.parent, owned_links));
         }
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         self.total_added += report.added;
         self.total_updated += report.updated;
@@ -367,7 +367,7 @@ where
         self.repo
             .working_copy_ref()
             .read_file(&path, &mut existing)
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
 
         let view = F1View::from_bytes(&existing).map_err(|e| Error::CorruptSymbolFile {
             path: path.clone(),
@@ -402,7 +402,7 @@ where
 
         // Update the in-memory staged_payloads entry so Phase B sees the merged links.
         if let Some(entry) = self.staged_payloads.get_mut(&intro) {
-            entry.2 = merged.clone();
+            entry.2.clone_from(&merged);
         }
 
         let new_bytes = serialize_f1(&payload, parent, &merged);
@@ -423,15 +423,15 @@ where
         self.repo
             .working_copy_ref()
             .write_file(&path, libpijul::pristine::Inode::ROOT)
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .write_all(&new_bytes)
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
         self.repo
             .working_copy_ref()
             .touch(&path, mtime_floor)
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         Ok(())
     }
@@ -600,17 +600,7 @@ where
 
             // If the durable id differs from wire id, remove the old file and
             // add the new one at the durable path.
-            if durable_id != *wire_id {
-                // Remove wire-id file.
-                let _ = self.repo.working_copy_ref().remove_path(&old_path, false);
-                let _ = txn.write().remove_file(&old_path);
-
-                // Write durable-id file.
-                self.repo
-                    .working_copy_ref()
-                    .add_file(&new_path, new_bytes.clone());
-                let _ = txn.write().add_file(&new_path, 0);
-            } else {
+            if durable_id == *wire_id {
                 // Overwrite in place (file was already at the correct path).
                 let mut existing = Vec::new();
                 let _ = self
@@ -625,6 +615,16 @@ where
                 {
                     let _ = w.write_all(&new_bytes);
                 }
+            } else {
+                // Remove wire-id file.
+                let _ = self.repo.working_copy_ref().remove_path(&old_path, false);
+                let _ = txn.write().remove_file(&old_path);
+
+                // Write durable-id file.
+                self.repo
+                    .working_copy_ref()
+                    .add_file(&new_path, new_bytes.clone());
+                let _ = txn.write().add_file(&new_path, 0);
             }
             let _ = self.repo.working_copy_ref().touch(&new_path, mtime_floor);
 
@@ -690,7 +690,7 @@ where
             let _ = txn.write().remove_file(&bpath);
         }
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         // Build GenerationMeta with finalized delta_digest.
         let mut meta = self.meta.clone();
@@ -750,19 +750,19 @@ where
                 "",
                 1,
             )
-            .map_err(|e| pijul_err(e))?;
+            .map_err(pijul_err)?;
 
         let rec = builder.finish();
 
         if rec.actions.is_empty() {
-            txn.commit().map_err(|e| pijul_err(e))?;
+            txn.commit().map_err(pijul_err)?;
             return Ok(None);
         }
 
         let actions = rec
             .actions
             .into_iter()
-            .map(|a| a.globalize(&*txn.read()).map_err(|e| pijul_err(e)))
+            .map(|a| a.globalize(&*txn.read()).map_err(pijul_err))
             .collect::<Result<Vec<_>, _>>()?;
 
         let contents = std::mem::take(&mut *rec.contents.lock());
@@ -779,7 +779,7 @@ where
             },
             metadata,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         let hash = self
             .repo
@@ -787,12 +787,13 @@ where
             .save_change(&mut change, |_, _| Ok::<_, anyhow::Error>(()))
             .map_err(|e| {
                 // anyhow::Error wraps the actual error; try to downcast common types.
-                if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                    Error::Io(std::io::Error::new(io_err.kind(), e.to_string()))
-                } else {
-                    // Preserve the error chain as a string message in a generic Pijul error.
-                    Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
-                }
+                e.downcast_ref::<std::io::Error>().map_or_else(
+                    || {
+                        // Preserve the error chain as a string message in a generic Pijul error.
+                        Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                    },
+                    |io_err| Error::Io(std::io::Error::new(io_err.kind(), e.to_string())),
+                )
             })?;
 
         libpijul::apply::apply_local_change(
@@ -802,15 +803,15 @@ where
             &hash,
             &rec.updatables,
         )
-        .map_err(|e| pijul_err(e))?;
+        .map_err(pijul_err)?;
 
         let new_tip = txn
             .read()
             .current_state(&channel.read())
-            .map_err(|e| pijul_err(e))?
+            .map_err(pijul_err)?
             .to_bytes();
 
-        txn.commit().map_err(|e| pijul_err(e))?;
+        txn.commit().map_err(pijul_err)?;
 
         self.repo.set_working_copy_tip(new_tip);
 

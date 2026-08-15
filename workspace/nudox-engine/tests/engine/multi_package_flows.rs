@@ -417,8 +417,7 @@ async fn name_collisions_across_packages_are_disambiguated() {
             unique.len(),
             names.len(),
             "two 'Router' symbols from different packages must have different display names; \
-             got duplicates: {:?}",
-            names
+             got duplicates: {names:?}"
         );
     }
     // If fewer than 2 hits (e.g. only one package loaded in time), we skip
@@ -583,8 +582,7 @@ async fn late_subscriber_sees_already_loaded_packages_exactly_once() {
     assert_eq!(
         unique.len(),
         names.len(),
-        "late subscriber must receive each package exactly once; got duplicates: {:?}",
-        names
+        "late subscriber must receive each package exactly once; got duplicates: {names:?}"
     );
 }
 

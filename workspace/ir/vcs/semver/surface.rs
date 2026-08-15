@@ -218,9 +218,8 @@ pub fn surface_with_config(
     let mut visited_reexports: BTreeSet<IntroId> = BTreeSet::new();
 
     while let Some((parent_id, parent_path, depth)) = queue.pop_front() {
-        let parent_payload = match table.get(parent_id) {
-            Some(p) => p,
-            None => continue,
+        let Some(parent_payload) = table.get(parent_id) else {
+            continue;
         };
 
         // ── (a) child edges ───────────────────────────────────────────────────
@@ -232,18 +231,16 @@ pub fn surface_with_config(
                 if exported.contains_key(&child_id) {
                     // Already exported via another path (e.g. a reexport already
                     // registered it); add extra moniker.
-                    let child_payload = match table.get(child_id) {
-                        Some(p) => p,
-                        None => continue,
+                    let Some(child_payload) = table.get(child_id) else {
+                        continue;
                     };
                     let child_path = parent_path.push(&child_payload.symbol.name);
                     extra_monikers.entry(child_id).or_default().push(child_path);
                     continue;
                 }
 
-                let child_payload = match table.get(child_id) {
-                    Some(p) => p,
-                    None => continue,
+                let Some(child_payload) = table.get(child_id) else {
+                    continue;
                 };
 
                 if !is_exported(child_payload, policy) {
@@ -306,9 +303,8 @@ pub fn surface_with_config(
     let mut monikers: BTreeMap<MonikerPath, IntroId> = BTreeMap::new();
 
     for (intro_id, canonical_path) in &exported {
-        let payload = match table.get(*intro_id) {
-            Some(p) => p,
-            None => continue,
+        let Some(payload) = table.get(*intro_id) else {
+            continue;
         };
 
         // Gather all moniker paths for this item.
@@ -458,7 +454,7 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
         }
     }
     // 9. deprecated flag
-    buf.push(payload.symbol.deprecation.is_some() as u8);
+    buf.push(u8::from(payload.symbol.deprecation.is_some()));
 
     // Kind-specific S-marked fields:
     match &payload.kind {
@@ -470,7 +466,7 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
             // 14. fnsig
             push_fnsig(&mut buf, &fw.sig);
             // 15. gparam*
-            for gp in fw.generics.iter() {
+            for gp in &fw.generics {
                 push_generic_param(&mut buf, gp);
             }
             // 16. where* (sorted)
@@ -480,14 +476,14 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
                 push_where_pred(&mut buf, wp);
             }
             // 17. in*
-            for p in fw.input_params.iter() {
+            for p in &fw.input_params {
                 if let Some(ref n) = p.name {
                     push_str(&mut buf, n);
                 }
                 push_type_ref(&mut buf, &p.ty);
             }
             // 18. out*
-            for p in fw.output_params.iter() {
+            for p in &fw.output_params {
                 if let Some(ref n) = p.name {
                     push_str(&mut buf, n);
                 }
@@ -504,11 +500,11 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
             // 20. recform
             push_record_form(&mut buf, &rw.form);
             // 21. recfield* (ordered)
-            for f in rw.fields.iter() {
+            for f in &rw.fields {
                 buf.extend_from_slice(f.as_bytes());
             }
             // 15. gparam, 16. where
-            for gp in rw.generics.iter() {
+            for gp in &rw.generics {
                 push_generic_param(&mut buf, gp);
             }
             let mut sw: Vec<&WherePredWire> = rw.wheres.iter().collect();
@@ -525,7 +521,7 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
         }
         KindWire::Enum(ew) => {
             // variants listed as children; here we record the generics/where/auto
-            for gp in ew.generics.iter() {
+            for gp in &ew.generics {
                 push_generic_param(&mut buf, gp);
             }
             let mut sw: Vec<&WherePredWire> = ew.wheres.iter().collect();
@@ -557,7 +553,7 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
             // 25. tflags
             push_trait_flags(&mut buf, &tw.flags);
             // 15. gparam, 16. where
-            for gp in tw.generics.iter() {
+            for gp in &tw.generics {
                 push_generic_param(&mut buf, gp);
             }
             let mut sw: Vec<&WherePredWire> = tw.wheres.iter().collect();
@@ -574,10 +570,10 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
             // 27. ifor
             push_type_expr(&mut buf, &iw.self_ty);
             // 28. iflags
-            buf.push(iw.flags.negative as u8);
-            buf.push(iw.flags.blanket as u8);
+            buf.push(u8::from(iw.flags.negative));
+            buf.push(u8::from(iw.flags.blanket));
             // 15. gparam, 16. where
-            for gp in iw.generics.iter() {
+            for gp in &iw.generics {
                 push_generic_param(&mut buf, gp);
             }
             let mut sw: Vec<&WherePredWire> = iw.wheres.iter().collect();
@@ -595,13 +591,13 @@ fn compute_api_surface_hash(payload: &OwnedEntryPayload, _id: IntroId) -> Conten
             // 29. cty
             push_type_ref(&mut buf, &sw.ty);
             // mutable flag (S-marked via static-mut-toggle lint A-16)
-            buf.push(sw.mutable as u8);
+            buf.push(u8::from(sw.mutable));
         }
         KindWire::Type(taw) => {
             // 32. type
             push_type_expr(&mut buf, &taw.ty);
             // 15. gparam, 16. where
-            for gp in taw.generics.iter() {
+            for gp in &taw.generics {
                 push_generic_param(&mut buf, gp);
             }
             let mut sw: Vec<&WherePredWire> = taw.wheres.iter().collect();
@@ -649,7 +645,7 @@ fn compute_embed_hash(
         .iter()
         .map(|p| {
             p.0.iter()
-                .map(|s| s.as_str())
+                .map(smol_str::SmolStr::as_str)
                 .collect::<Vec<_>>()
                 .join("::")
         })
@@ -667,10 +663,10 @@ fn compute_embed_hash(
     // E rendered signature: in/out/fieldty/type
     match &payload.kind {
         KindWire::Function(fw) => {
-            for p in fw.input_params.iter() {
+            for p in &fw.input_params {
                 push_type_ref(&mut buf, &p.ty);
             }
-            for p in fw.output_params.iter() {
+            for p in &fw.output_params {
                 push_type_ref(&mut buf, &p.ty);
             }
         }
@@ -738,7 +734,7 @@ fn push_type_expr(buf: &mut Vec<u8>, tw: &TypeWire) {
         TypeWire::Tuple(refs) => {
             buf.push(0x05);
             buf.extend_from_slice(&(refs.len() as u32).to_le_bytes());
-            for r in refs.iter() {
+            for r in refs {
                 push_type_ref(buf, r);
             }
         }
@@ -780,7 +776,7 @@ fn push_primitive(buf: &mut Vec<u8>, p: &PrimitiveWire) {
     match p {
         PrimitiveWire::Integer { signed, width } => {
             buf.push(0x10);
-            buf.push(*signed as u8);
+            buf.push(u8::from(*signed));
             push_width(buf, width);
         }
         PrimitiveWire::Float(w) => {
@@ -801,7 +797,7 @@ fn push_primitive(buf: &mut Vec<u8>, p: &PrimitiveWire) {
         PrimitiveWire::Reference { mutable, ty, .. } => {
             // lifetime excluded from skeleton (§4.6)
             buf.push(0x17);
-            buf.push(*mutable as u8);
+            buf.push(u8::from(*mutable));
             push_type_ref(buf, ty);
         }
         PrimitiveWire::Builtin(s) => {
@@ -823,17 +819,17 @@ fn push_width(buf: &mut Vec<u8>, w: &WidthWire) {
 
 fn push_fnsig(buf: &mut Vec<u8>, sig: &FnSigFlags) {
     push_self_kind(buf, &sig.self_kind);
-    buf.push(sig.is_async as u8);
-    buf.push(sig.is_const as u8);
-    buf.push(sig.is_unsafe as u8);
+    buf.push(u8::from(sig.is_async));
+    buf.push(u8::from(sig.is_const));
+    buf.push(u8::from(sig.is_unsafe));
     if let Some(ref abi) = sig.abi {
         buf.push(0x01);
         push_str(buf, abi);
     } else {
         buf.push(0x00);
     }
-    buf.push(sig.variadic as u8);
-    buf.push(sig.defaulted as u8);
+    buf.push(u8::from(sig.variadic));
+    buf.push(u8::from(sig.defaulted));
 }
 
 fn push_self_kind(buf: &mut Vec<u8>, sk: &SelfKind) {
@@ -919,8 +915,8 @@ fn push_variant_form(buf: &mut Vec<u8>, vf: &VariantForm) {
 }
 
 fn push_trait_flags(buf: &mut Vec<u8>, tf: &TraitFlags) {
-    buf.push(tf.is_auto as u8);
-    buf.push(tf.is_unsafe as u8);
+    buf.push(u8::from(tf.is_auto));
+    buf.push(u8::from(tf.is_unsafe));
     buf.push(match tf.dyn_compat {
         crate::wire::TriState::Yes => 0x01,
         crate::wire::TriState::No => 0x02,
@@ -957,14 +953,14 @@ fn push_cfg(buf: &mut Vec<u8>, cfg: &CfgExpr) {
         CfgExpr::All(subs) => {
             buf.push(0x01);
             buf.extend_from_slice(&(subs.len() as u32).to_le_bytes());
-            for s in subs.iter() {
+            for s in subs {
                 push_cfg(buf, s);
             }
         }
         CfgExpr::Any(subs) => {
             buf.push(0x02);
             buf.extend_from_slice(&(subs.len() as u32).to_le_bytes());
-            for s in subs.iter() {
+            for s in subs {
                 push_cfg(buf, s);
             }
         }

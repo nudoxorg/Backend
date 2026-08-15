@@ -74,7 +74,7 @@ impl GoProducer {
         lineage: &PackageLineageId,
     ) -> Result<IrPackage<GoId>> {
         let output: oracle::Output = serde_json::from_slice(oracle_json)?;
-        for err in output.errors.iter() {
+        for err in &output.errors {
             // In production code this would go through tracing::warn!.
             eprintln!("[go-oracle] diagnostic: {err}");
         }
@@ -94,14 +94,14 @@ impl GoProducer {
         let output = std::process::Command::new(&oracle_bin)
             .arg(module_root)
             .output()
-            .map_err(|e| error::Error::Oracle(e))?;
+            .map_err(error::Error::Oracle)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            return Err(error::Error::Oracle(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("oracle exited with status {}: {stderr}", output.status),
-            )));
+            return Err(error::Error::Oracle(std::io::Error::other(format!(
+                "oracle exited with status {}: {stderr}",
+                output.status
+            ))));
         }
 
         let oracle: oracle::Output =
@@ -117,7 +117,7 @@ impl GoProducer {
         lineage: &PackageLineageId,
     ) -> Result<IrPackage<GoId>> {
         let output = self.invoke_oracle(module_root)?;
-        for err in output.errors.iter() {
+        for err in &output.errors {
             eprintln!("[go-oracle] diagnostic: {err}");
         }
         lower_output(&output, pkg_id, lineage)
@@ -145,7 +145,7 @@ impl Producer for GoProducer {
         oracle: &oracle::Output,
         out: &mut Lowering<GoId>,
     ) -> std::result::Result<(), ProducerError> {
-        for err in oracle.errors.iter() {
+        for err in &oracle.errors {
             // In production code this would go through tracing::warn!.
             eprintln!("[go-oracle] diagnostic: {err}");
         }

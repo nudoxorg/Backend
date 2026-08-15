@@ -81,7 +81,6 @@ impl UpstreamClient {
                         return Err(Error::Transport(e));
                     }
                     tokio::time::sleep(backoff(attempt, url)).await;
-                    continue;
                 }
                 Ok(resp) => {
                     let status = resp.status();
@@ -210,8 +209,9 @@ impl TokenBucket {
 fn backoff(attempt: u32, url: &str) -> Duration {
     let base_ms = BASE_BACKOFF_MS.saturating_mul(1u64 << attempt.min(6));
     // Simple hash for deterministic jitter: fold url bytes + attempt.
-    let hash: u64 = url.bytes().fold(attempt as u64 ^ 0xDEADBEEF, |acc, b| {
-        acc.wrapping_mul(6364136223846793005).wrapping_add(b as u64 ^ 1442695040888963407)
+    let hash: u64 = url.bytes().fold(u64::from(attempt) ^ 0xDEAD_BEEF, |acc, b| {
+        acc.wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(u64::from(b) ^ 0x1405_7B7E_F767_814F)
     });
     // jitter: ±25% of base_ms.
     let jitter_range = base_ms / 4;

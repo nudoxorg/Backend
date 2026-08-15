@@ -121,10 +121,10 @@ pub fn moniker_path(table: &PristineIntroTable, intro: IntroId) -> Option<String
 /// Entries that are not exported (under `policy`) are silently skipped.
 /// Entries for which [`moniker_path`] returns `None` (absent ancestors) are
 /// also skipped.
-pub fn monikers<'a>(
-    table: &'a PristineIntroTable,
+pub fn monikers(
+    table: &PristineIntroTable,
     policy: ExportPolicy,
-) -> impl Iterator<Item = (String, IntroId)> + 'a {
+) -> impl Iterator<Item = (String, IntroId)> + '_ {
     table.iter().filter_map(move |(intro, _entry)| {
         if !exported(table, policy, intro) {
             return None;

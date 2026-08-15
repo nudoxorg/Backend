@@ -1,8 +1,12 @@
 [package]
 name = "heart"
+description = "Shared vocabulary, content-addressed storage, and stampede cache for the Nudox backend"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [lints]
 workspace = true

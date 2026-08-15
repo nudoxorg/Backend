@@ -312,13 +312,13 @@ impl SourceLocation {
         };
         let start = u32::try_from(span.start).unwrap_or(u32::MAX);
         let end = u32::try_from(span.end).unwrap_or(u32::MAX);
-        match ByteSpan::new(start, end) {
-            Some(bytes) => SourceLocation::BytesOnly { file, bytes },
-            // A real path with an empty span: the producer named the file and
-            // then wrote the `0..0` sentinel. Reporting `BytesOnly` with an
-            // empty range would re-tell the original lie.
-            None => SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation),
-        }
+        // A real path with an empty span (`None`): the producer named the file
+        // and then wrote the `0..0` sentinel. Reporting `BytesOnly` with an
+        // empty range would re-tell the original lie.
+        ByteSpan::new(start, end).map_or(
+            SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation),
+            |bytes| SourceLocation::BytesOnly { file, bytes },
+        )
     }
 
     /// The serde fallback for entries encoded before this field existed.
@@ -372,13 +372,15 @@ impl SourceLocation {
     /// dropped here, because the pair has nowhere to put it; the full location
     /// travels on the entry (see `Entry::location`).
     pub fn legacy_pair(&self) -> (PathBuf, Range<usize>) {
-        match self.file() {
-            Some(file) => (
-                PathBuf::from(file.as_str()),
-                self.bytes().map_or(0..0, ByteSpan::as_range),
-            ),
-            None => (PathBuf::new(), 0..0),
-        }
+        self.file().map_or_else(
+            || (PathBuf::new(), 0..0),
+            |file| {
+                (
+                    PathBuf::from(file.as_str()),
+                    self.bytes().map_or(0..0, ByteSpan::as_range),
+                )
+            },
+        )
     }
 }
 

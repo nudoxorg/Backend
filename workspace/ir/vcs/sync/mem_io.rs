@@ -88,8 +88,8 @@ impl ContentIo for MemChangeIo {
 pub(crate) fn hex_of_blake3(bytes: &[u8; 32]) -> String {
     let mut out = String::with_capacity(64);
     for b in bytes {
-        let hi = char::from_digit((b >> 4) as u32, 16).expect("hex digit");
-        let lo = char::from_digit((b & 0xf) as u32, 16).expect("hex digit");
+        let hi = char::from_digit(u32::from(b >> 4), 16).expect("hex digit");
+        let lo = char::from_digit(u32::from(b & 0xf), 16).expect("hex digit");
         out.push(hi);
         out.push(lo);
     }

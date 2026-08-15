@@ -36,11 +36,11 @@ pub fn set_version_lifecycle<E: CatalogEngine>(
         .col_expr(versions::Column::ParseState, Expr::value(parse_state))
         .col_expr(
             versions::Column::ParsePhase,
-            Expr::value(parse_phase.map(|s| s.to_owned())),
+            Expr::value(parse_phase.map(std::borrow::ToOwned::to_owned)),
         )
         .col_expr(
             versions::Column::Failure,
-            Expr::value(failure.map(|s| s.to_owned())),
+            Expr::value(failure.map(std::borrow::ToOwned::to_owned)),
         )
         .col_expr(
             versions::Column::Attempts,
@@ -340,9 +340,9 @@ pub fn set_facets<E: CatalogEngine>(
 ) -> Result<(), MetaError> {
     let am = facets::ActiveModel {
         version_id: Set(*version.as_uuid()),
-        keywords: Set(keywords.map(|s| s.to_owned())),
+        keywords: Set(keywords.map(std::borrow::ToOwned::to_owned)),
         quality_ppm: Set(quality_ppm),
-        extras: Set(extras_json.map(|s| s.to_owned())),
+        extras: Set(extras_json.map(std::borrow::ToOwned::to_owned)),
     };
     let stmt = facets::Entity::insert(am)
         .on_conflict(

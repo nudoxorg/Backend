@@ -20,7 +20,7 @@ fn score_is_totally_ordered() {
     let hi = Score::try_new(0.9).unwrap();
     assert!(hi > lo);
 
-    let mut scores = vec![hi, lo];
+    let mut scores = [hi, lo];
     scores.sort();
     assert_eq!(scores[0], lo);
     assert_eq!(scores[1], hi);

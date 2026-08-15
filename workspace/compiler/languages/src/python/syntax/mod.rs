@@ -525,16 +525,16 @@ fn function_data(
     }
 
     let mut params = Vec::new();
-    for p in f.parameters.posonlyargs.iter() {
+    for p in &f.parameters.posonlyargs {
         params.push(param_data(p, ParamKind::PositionalOnly, source, &local_typevars, doc));
     }
-    for p in f.parameters.args.iter() {
+    for p in &f.parameters.args {
         params.push(param_data(p, ParamKind::Normal, source, &local_typevars, doc));
     }
     if let Some(va) = f.parameters.vararg.as_deref() {
         params.push(bare_param(va, ParamKind::Varargs, source, &local_typevars, doc));
     }
-    for p in f.parameters.kwonlyargs.iter() {
+    for p in &f.parameters.kwonlyargs {
         params.push(param_data(p, ParamKind::KeywordOnly, source, &local_typevars, doc));
     }
     if let Some(kw) = f.parameters.kwarg.as_deref() {
@@ -622,7 +622,7 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
     let class_id = format!("{parent}.{name}");
     let decorators = decorator_tokens(&c.decorator_list, source);
 
-    let base_exprs: &[Expr] = c.arguments.as_deref().map(|a| a.args.as_ref()).unwrap_or(&[]);
+    let base_exprs: &[Expr] = c.arguments.as_deref().map_or(&[][..], |a| a.args.as_ref());
 
     let mut typevars = module_typevars.clone();
     for n in pep695_names(c.type_params.as_deref()) {
@@ -689,13 +689,13 @@ fn classify_form(base_names: &[String], decorators: &[String]) -> ClassForm {
     {
         return ClassForm::Enum;
     }
-    if base_last.iter().any(|b| *b == "Protocol") {
+    if base_last.contains(&"Protocol") {
         return ClassForm::Protocol;
     }
-    if base_last.iter().any(|b| *b == "TypedDict") {
+    if base_last.contains(&"TypedDict") {
         return ClassForm::TypedDict;
     }
-    if base_last.iter().any(|b| *b == "NamedTuple") {
+    if base_last.contains(&"NamedTuple") {
         return ClassForm::NamedTuple;
     }
     if decorators.iter().any(|d| last_segment(d) == "dataclass") {

@@ -278,14 +278,11 @@ async fn poll_until(
     loop {
         gens.0 += 1;
         let (state, names) = observe_semantic(engine, *gens).await;
-        if let Some(state) = &state {
-            if matches(state) {
+        if let Some(state) = &state
+            && matches(state) {
                 return (state.clone(), names);
             }
-        }
-        if tokio::time::Instant::now() >= deadline {
-            panic!("condition never satisfied within 5s; last state: {state:?}, rows: {names:?}");
-        }
+        assert!(tokio::time::Instant::now() < deadline, "condition never satisfied within 5s; last state: {state:?}, rows: {names:?}");
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
 }

@@ -195,7 +195,7 @@ impl Env {
         let channel = txn.write().open_or_create_channel("main").unwrap();
         let mut b = Builder::new();
         b.record(
-            txn.clone(),
+            txn,
             Algorithm::default(),
             false,
             &DEFAULT_SEPARATOR,
@@ -437,7 +437,7 @@ fn t1_ab_misalignment() {
         twin
     };
     let env2 = Env::new();
-    env2.add_and_record("sym", old_twin.clone());
+    env2.add_and_record("sym", old_twin);
     env2.update("sym", new_twin.clone());
     let rec2 = env2.record_raw();
     let ca2 = content_actions(&rec2);
@@ -524,12 +524,6 @@ For each change in the T-1 and T-2 F1-path fixtures:
 
 F1 cross-key count = **{t12_f1_cross_key}** (required: 0 per L-5). ✓
 "#,
-        f1_count = f1_count,
-        f1_ins = f1_ins,
-        f1_rep = f1_rep,
-        myers_count = myers_count,
-        t12_f1_cross_key = t12_f1_cross_key,
-        t12_myers_baseline = t12_myers_baseline,
     );
 
     std::fs::write(report_path, content).expect("write T1-T12 report");
@@ -850,7 +844,7 @@ fn t6_single_vertex_sub_split() {
     );
 
     // add_file + first record → whole-file NewVertex.
-    env.add_and_record("sym", initial.clone());
+    env.add_and_record("sym", initial);
 
     // Edit 2 field lines: change vis and doc Line 3.
     let edited = f1(&[
@@ -1107,8 +1101,8 @@ fn t8_determinism_golden() {
         .collect();
 
     let env_b = Env::new();
-    env_b.add_and_record("sym", old.clone());
-    env_b.update("sym", new.clone());
+    env_b.add_and_record("sym", old);
+    env_b.update("sym", new);
     let rec_b = env_b.record_raw();
     let ca_b: Vec<Shape> = content_actions(&rec_b)
         .iter()
@@ -1143,8 +1137,8 @@ fn t9_replica_reproducibility() {
     let rec1 = env1.record_raw();
 
     let env2 = Env::new();
-    env2.add_and_record("sym", old.clone());
-    env2.update("sym", new.clone());
+    env2.add_and_record("sym", old);
+    env2.update("sym", new);
     let rec2 = env2.record_raw();
 
     // Action count and shapes must be bit-identical.
@@ -1283,18 +1277,20 @@ fn t10_unrecord_round_trip() {
 fn key_of_line(blob: &[u8], line_idx: usize) -> Option<Vec<u8>> {
     let lines: Vec<&[u8]> = blob.split_inclusive(|&b| b == b'\n').collect();
     let line = lines.get(line_idx)?;
-    let key = match line.iter().position(|&b| b == b'\t') {
-        Some(i) => &line[..i],
-        None => {
-            // strip trailing newline for keyless lines
-            let end = line
-                .iter()
-                .rposition(|&b| b != b'\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            &line[..end]
-        }
-    };
+    let key = line
+        .iter()
+        .position(|&b| b == b'\t')
+        .map_or_else(
+            || {
+                // strip trailing newline for keyless lines
+                let end = line
+                    .iter()
+                    .rposition(|&b| b != b'\n')
+                    .map_or(0, |i| i + 1);
+                &line[..end]
+            },
+            |i| &line[..i],
+        );
     Some(key.to_vec())
 }
 

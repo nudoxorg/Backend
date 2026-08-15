@@ -96,7 +96,7 @@ fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
         cost.wall.as_secs_f64(),
     );
 
-    let view = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
+    let view = nudox_ir::view::IrView::with_package(descriptor.lineage, table);
     Some(PackageView::build(view, Provenance::TrustedLocal))
 }
 

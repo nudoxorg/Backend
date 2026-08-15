@@ -56,12 +56,12 @@ impl HostGlob {
     /// comparison, so the caller passes the raw `url::Url::host_str` result.
     pub fn matches(&self, host: &str) -> bool {
         let host = normalize_host(host);
-        match self.0.strip_prefix("*.") {
-            // Wildcard: the base domain itself, or any `.`-boundary subdomain.
-            Some(base) => host == base || host.ends_with(&format!(".{base}")),
-            // Exact host.
-            None => host == self.0,
-        }
+        // Wildcard: the base domain itself, or any `.`-boundary subdomain.
+        // Otherwise an exact host match.
+        self.0.strip_prefix("*.").map_or_else(
+            || host == self.0,
+            |base| host == base || host.ends_with(&format!(".{base}")),
+        )
     }
 }
 

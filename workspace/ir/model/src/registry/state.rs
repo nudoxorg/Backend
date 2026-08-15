@@ -64,17 +64,18 @@ impl<R: RegistryResolver> RegistryState<R> {
         self.inner.with(|it| {
             let lookup = it.lookup.pin();
 
-            if let Some(idx) = lookup.get(&id) {
-                *idx
-            } else {
-                let idx = UntypedEntryIndex::resolved(it.entries.len());
-                let id = &it.entries.push_get(Box::new(StoredEntry::new(id))).id;
+            lookup.get(&id).map_or_else(
+                || {
+                    let idx = UntypedEntryIndex::resolved(it.entries.len());
+                    let id = &it.entries.push_get(Box::new(StoredEntry::new(id))).id;
 
-                let _old = lookup.insert(id, idx);
-                debug_assert_eq!(_old, None);
+                    let old = lookup.insert(id, idx);
+                    debug_assert_eq!(old, None);
 
-                idx
-            }
+                    idx
+                },
+                |idx| *idx,
+            )
         })
     }
 

@@ -112,8 +112,7 @@ fn python3_ok() -> bool {
         .arg("-c")
         .arg("pass")
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 #[test]
@@ -349,6 +348,6 @@ fn fs_grant_from_mounts_does_not_double_scratch() {
     assert_eq!(g.writable, vec![PathBuf::from("/tmp/out")]);
     // Round-trip: scratch appears once as RW.
     let m = g.to_mounts();
-    let rw: Vec<_> = m.writable.iter().filter(|p| *p == &scratch).collect();
-    assert_eq!(rw.len(), 1);
+    let rw_count = m.writable.iter().filter(|p| *p == &scratch).count();
+    assert_eq!(rw_count, 1);
 }

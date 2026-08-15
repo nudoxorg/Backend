@@ -45,7 +45,7 @@ use crate::bridge::drain::drain;
 use crate::bridge::generation::{Gen as BridgeGen, GenSource};
 use crate::bridge::handle::StreamHandle;
 use crate::bridge::progressive::Progressive;
-use crate::bridge::slot::{SlotError, StreamSlot};
+use crate::bridge::slot::{Error, StreamSlot};
 use crate::stores::events::{
     HeadReady, OpenDisposition, SectionArrived, TabActivated, TabCountsChanged,
 };
@@ -569,7 +569,7 @@ impl<E: SymbolEngine> SymbolStore<E> {
             }
 
             DocEvent::Failed(error) => {
-                doc.slot_meta.fail(SlotError::Transient {
+                doc.slot_meta.fail(Error::Transient {
                     message: error.to_string(),
                 });
             }

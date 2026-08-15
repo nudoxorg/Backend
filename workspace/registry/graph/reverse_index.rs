@@ -137,23 +137,21 @@ fn raw_ref_to_stable(raw: &RawRef, package: &PackageLineageId) -> Option<StableR
 pub fn typerefs_of_entry(entry: &Entry, package: &PackageLineageId) -> Vec<StableRef> {
     let mut refs: Vec<StableRef> = Vec::new();
 
-    let kind = match entry.kind().as_owned_kind() {
-        Some(k) => k,
-        None => return refs, // Reference entry — no kind body to inspect.
+    let Some(kind) = entry.kind().as_owned_kind() else {
+        return refs; // Reference entry — no kind body to inspect.
     };
 
     match kind {
         Kind::Impl(impl_) => {
             // The implemented trait (e.g. `impl Display for T` → trait is load-bearing).
-            if let Some(of_ty) = &impl_.of {
-                if let Some(sr) = type_to_stable_ref(of_ty, package) {
+            if let Some(of_ty) = &impl_.of
+                && let Some(sr) = type_to_stable_ref(of_ty, package) {
                     refs.push(sr);
                 }
-            }
         }
         Kind::Trait(trait_) => {
             // Each supertrait (e.g. `trait Foo: Bar + Baz` → Bar and Baz).
-            for super_ty in trait_.supers.iter() {
+            for super_ty in &trait_.supers {
                 if let Some(sr) = type_to_stable_ref(super_ty, package) {
                     refs.push(sr);
                 }
@@ -273,10 +271,7 @@ impl ReversePositionIndex {
     /// floor.
     #[inline]
     pub fn usages_of(&self, target: &StableRef) -> &[IntroId] {
-        self.occ_postings
-            .get(target)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.occ_postings.get(target).map_or(&[], Vec::as_slice)
     }
 
     /// The sorted, deduplicated list of entries that carry a load-bearing type
@@ -285,10 +280,7 @@ impl ReversePositionIndex {
     /// Returns an empty slice when no entry mentions `ty`.
     #[inline]
     pub fn mentions_of(&self, ty: &StableRef) -> &[IntroId] {
-        self.typeref_postings
-            .get(ty)
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.typeref_postings.get(ty).map_or(&[], Vec::as_slice)
     }
 }
 
@@ -367,14 +359,6 @@ mod tests {
             channel_tip: [0u8; 32],
             schema_version: SCHEMA_VERSION,
         }
-    }
-
-    /// Build a minimal [`IrView`] for `pkg_id()` with the given entries and
-    /// occurrences.  Entries are `(intro_byte, name, parent_byte_or_none)`;
-    /// occurrences are added via `view.add_occurrence(owner, occ)`.
-    fn make_view() -> IrView {
-        let table = PristineIntroTable::new();
-        IrView::with_package(pkg_id(), table)
     }
 
     // -----------------------------------------------------------------------

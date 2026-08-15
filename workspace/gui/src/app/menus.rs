@@ -1,5 +1,15 @@
 //! The macOS menu bar — the only UI lindsey has left once the window is gone.
 //!
+//! # One menu definition, two renderings
+//!
+//! [`main_menu`] is the single source of truth for the application's menus, and
+//! it is platform-neutral (`Vec<Menu>` of GPUI actions). On macOS the same list
+//! becomes the AppKit global menu bar; on Windows/Linux it is read back through
+//! `GlobalState::app_menus()` by `gpui_component::menu::AppMenuBar`, which draws
+//! an in-window bar. The macOS-only parts of this file are the *consequences* it
+//! documents (windowless residency, dock-click routing), not the menu definition
+//! itself. See [`crate::platform`] for the platform facts.
+//!
 //! # Why this file exists at all
 //!
 //! `grep -rn 'set_menus' workspace/gui` returned **nothing** before this change.

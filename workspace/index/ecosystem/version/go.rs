@@ -65,10 +65,9 @@ impl GoVersion {
         // Must start with 'v'.
         let s = raw.strip_prefix('v')?;
         // Strip +incompatible suffix.
-        let (s, incompatible) = match s.strip_suffix("+incompatible") {
-            Some(stripped) => (stripped, true),
-            None => (s, false),
-        };
+        let (s, incompatible) = s
+            .strip_suffix("+incompatible")
+            .map_or((s, false), |stripped| (stripped, true));
         // Split off pre-release from numeric core.
         let (numeric, pre_raw) = match s.split_once('-') {
             Some((n, p)) => (n, Some(p)),
@@ -82,10 +81,7 @@ impl GoVersion {
         if parts.next().is_some() {
             return None; // extra numeric segments not valid in Go
         }
-        let pre = match pre_raw {
-            None => None,
-            Some(p) => Some(parse_go_pre(p)?),
-        };
+        let pre = pre_raw.map(parse_go_pre);
         Some(GoVersion {
             major,
             minor,
@@ -129,7 +125,7 @@ impl GoVersion {
 }
 
 /// Parse the pre-release portion of a Go version (after the first `-`).
-fn parse_go_pre(p: &str) -> Option<GoPreRelease> {
+fn parse_go_pre(p: &str) -> GoPreRelease {
     // A pseudo-version ends with `-<12-hex-chars>` and the segment before that
     // is a 14-digit timestamp, optionally preceded by a base label.
     // Split by `-` to find the hash at the end.
@@ -141,11 +137,11 @@ fn parse_go_pre(p: &str) -> Option<GoPreRelease> {
 
     match parts.as_slice() {
         // vX.Y.Z-YYYYMMDDHHMMSS-hash  (no base)
-        [ts, hash] if is_timestamp(ts) && is_hash(hash) => Some(GoPreRelease::Pseudo {
+        [ts, hash] if is_timestamp(ts) && is_hash(hash) => GoPreRelease::Pseudo {
             base: String::new(),
             timestamp: ts.to_string(),
             hash: hash.to_string(),
-        }),
+        },
         // vX.Y.Z-base.YYYYMMDDHHMMSS-hash  (base present, base may contain dots)
         // The base is the part before the timestamp, which is in the middle.
         // We re-split from right to find timestamp-hash suffix.
@@ -162,17 +158,17 @@ fn parse_go_pre(p: &str) -> Option<GoPreRelease> {
                         let ts = &before_hash[dot_ts_pos + 1..];
                         if is_timestamp(ts) {
                             let base = &before_hash[..dot_ts_pos];
-                            return Some(GoPreRelease::Pseudo {
+                            return GoPreRelease::Pseudo {
                                 base: base.to_string(),
                                 timestamp: ts.to_string(),
                                 hash: hash.to_string(),
-                            });
+                            };
                         }
                     }
                 }
             }
             // Not a pseudo-version — ordinary label.
-            Some(GoPreRelease::Label(p.to_string()))
+            GoPreRelease::Label(p.to_string())
         }
     }
 }
@@ -284,9 +280,7 @@ impl VersionGrammar for GoVersion {
     /// per-constraint). A spec matches iff it equals the candidate's canonical
     /// form (exact match). Callers needing MVS-latest should use `Latest`.
     fn range_matches(spec: &str, candidate: &Self) -> bool {
-        GoVersion::parse(spec)
-            .map(|sv| sv.canonical() == candidate.canonical())
-            .unwrap_or(false)
+        GoVersion::parse(spec).is_some_and(|sv| sv.canonical() == candidate.canonical())
     }
 
     fn spec_is_valid(spec: &str) -> bool {
@@ -473,7 +467,7 @@ mod tests {
                     assert!(sorted[j] <= sorted[k]);
                     // Antisymmetry: a < b => !(b < a).
                     if sorted[i] < sorted[j] {
-                        assert!(!(sorted[j] < sorted[i]));
+                        assert!(sorted[j] >= sorted[i]);
                     }
                 }
             }
@@ -488,7 +482,7 @@ mod tests {
             v
         };
         let perm2: Vec<GoVersion> = {
-            let mut v = parsed.clone();
+            let mut v = parsed;
             // Rotate.
             v.rotate_left(7);
             v.sort();
@@ -497,11 +491,11 @@ mod tests {
         // Sorted output should be identical regardless of input order.
         // (Note: v2.0.0 and v2.0.0+incompatible are equal, so we compare
         // the canonical strings after sorting.)
-        let canonical_sorted: Vec<String> = sorted.iter().map(|v| v.canonical()).collect();
-        let canonical_perm1: Vec<String> = perm1.iter().map(|v| v.canonical()).collect();
-        let canonical_perm2: Vec<String> = perm2.iter().map(|v| v.canonical()).collect();
+        let canonical_sorted: Vec<String> = sorted.iter().map(super::GoVersion::canonical).collect();
+        let canonical_perm1_len = perm1.iter().map(super::GoVersion::canonical).count();
+        let canonical_perm2_len = perm2.iter().map(super::GoVersion::canonical).count();
         // They may differ only for equal elements (e.g. v2.0.0 vs v2.0.0+incompatible).
-        assert_eq!(canonical_sorted.len(), canonical_perm1.len());
-        assert_eq!(canonical_sorted.len(), canonical_perm2.len());
+        assert_eq!(canonical_sorted.len(), canonical_perm1_len);
+        assert_eq!(canonical_sorted.len(), canonical_perm2_len);
     }
 }

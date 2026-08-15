@@ -28,7 +28,7 @@ pub fn is_squat_suspect(input: SquatInput<'_>) -> bool {
 		return false;
 	}
 
-	let desc = input.description.map(str::trim).unwrap_or("");
+	let desc = input.description.map_or("", str::trim);
 	let hollow = input.quality < 0.20
 		&& !input.has_repository
 		&& desc.len() < 20;
@@ -75,7 +75,7 @@ fn is_reserved_landgrab_name(name: &str) -> bool {
 mod tests {
 	use super::*;
 
-	fn base<'a>(name: &'a str) -> SquatInput<'a> {
+	fn base(name: &str) -> SquatInput<'_> {
 		SquatInput {
 			name,
 			quality: 0.1,

@@ -64,7 +64,7 @@ pub fn jsdoc_for_span<'a>(semantic: &'a Semantic<'a>, span: Span) -> DocFacts {
 /// Module documentation: first `/**` block with `@module` tag.
 pub fn module_doc<'a>(semantic: &'a Semantic<'a>, program: &Program<'a>) -> Option<String> {
     let source = semantic.source_text();
-    for comment in program.comments.iter() {
+    for comment in &program.comments {
         if !comment.is_jsdoc() {
             continue;
         }
@@ -77,10 +77,7 @@ pub fn module_doc<'a>(semantic: &'a Semantic<'a>, program: &Program<'a>) -> Opti
             .iter()
             .find(|t| t.kind.parsed() == "description")
             .map(|t| t.comment().parsed());
-        let text = match desc_override {
-            Some(d) => d,
-            None => jsdoc.comment().parsed(),
-        };
+        let text = desc_override.unwrap_or_else(|| jsdoc.comment().parsed());
         let trimmed = text.trim().to_string();
         return if trimmed.is_empty() {
             None
@@ -120,7 +117,7 @@ fn leading_jsdoc_before<'a>(
     source: &'a str,
 ) -> Option<JSDoc<'a>> {
     let mut best: Option<(u32, JSDoc<'a>)> = None;
-    for c in semantic.comments().iter() {
+    for c in semantic.comments() {
         if !c.is_jsdoc() {
             continue;
         }
@@ -151,7 +148,7 @@ fn extract_doc_facts(jsdoc: JSDoc<'_>) -> DocFacts {
     let mut deprecation: Option<DeprecationOwned> = None;
     let mut ignore = false;
 
-    for tag in tags.iter() {
+    for tag in tags {
         match tag.kind.parsed() {
             "description" => {
                 let trimmed = tag.comment().parsed().trim().to_string();
@@ -174,9 +171,8 @@ fn extract_doc_facts(jsdoc: JSDoc<'_>) -> DocFacts {
         }
     }
 
-    let doc = match description_override {
-        Some(desc) => Some(desc),
-        None => {
+    let doc = description_override.map_or_else(
+        || {
             let body = jsdoc.comment().parsed();
             let trimmed = body.trim().to_string();
             if trimmed.is_empty() {
@@ -184,8 +180,9 @@ fn extract_doc_facts(jsdoc: JSDoc<'_>) -> DocFacts {
             } else {
                 Some(trimmed)
             }
-        }
-    };
+        },
+        Some,
+    );
 
     DocFacts {
         doc,

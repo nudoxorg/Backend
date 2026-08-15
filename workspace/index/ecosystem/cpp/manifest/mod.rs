@@ -150,7 +150,11 @@ pub fn parse_manifest(candidate: &ManifestCandidate, bytes: &[u8]) -> Option<Cpp
         modulebazel::parse(text)
     } else if suffix.ends_with(".gitmodules") {
         gitmodules::parse(text)
-    } else if suffix.ends_with(".pc") || suffix.ends_with(".pc.in") {
+    } else if std::path::Path::new(suffix)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pc"))
+        || suffix.ends_with(".pc.in")
+    {
         pkgconfig::parse(text)
     } else {
         CppManifest::default()

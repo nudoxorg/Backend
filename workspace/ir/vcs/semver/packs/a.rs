@@ -174,9 +174,7 @@ pub(crate) fn run_pack_a(old: &ApiSurface, new: &ApiSurface, out: &mut Vec<Findi
         let moniker = old
             .monikers
             .iter()
-            .find(|(_, v)| *v == id)
-            .map(|(k, _)| k.clone())
-            .unwrap_or_else(|| MonikerPath::new(vec![SmolStr::new("<unknown>")]));
+            .find(|(_, v)| *v == id).map_or_else(|| MonikerPath::new(vec![SmolStr::new("<unknown>")]), |(k, _)| k.clone());
 
         lint_a4_to_a19(id, old_item, new_item, &moniker, old, new, out);
     }
@@ -208,9 +206,7 @@ fn lint_a4_to_a19(
             if old_surface.items.contains_key(removed) {
                 let field_name = old_surface
                     .items
-                    .get(removed)
-                    .map(|fi| SmolStr::new(fi.kind.field_name_hint()))
-                    .unwrap_or_else(|| SmolStr::new("<field>"));
+                    .get(removed).map_or_else(|| SmolStr::new("<field>"), |fi| SmolStr::new(fi.kind.field_name_hint()));
                 out.push(Finding {
                     lint: A4,
                     item: Some(*removed),
@@ -233,9 +229,7 @@ fn lint_a4_to_a19(
             if old_surface.items.contains_key(removed) {
                 let variant_name = old_surface
                     .items
-                    .get(removed)
-                    .map(variant_name_hint)
-                    .unwrap_or_else(|| SmolStr::new("<variant>"));
+                    .get(removed).map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
                 out.push(Finding {
                     lint: A5,
                     item: Some(*removed),
@@ -265,9 +259,7 @@ fn lint_a4_to_a19(
             if new_surface.items.contains_key(added) {
                 let variant_name = new_surface
                     .items
-                    .get(added)
-                    .map(variant_name_hint)
-                    .unwrap_or_else(|| SmolStr::new("<variant>"));
+                    .get(added).map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
                 let (lint, class) = if enum_non_exhaustive {
                     (A7, BreakClass::Minor) // A-7
                 } else {
@@ -299,8 +291,7 @@ fn lint_a4_to_a19(
         let new_children = child_ids_on_surface(id, new_surface);
 
         let sealed = match new_trait.flags.sealed {
-            Sealed::Full => true,
-            Sealed::PubApi => true, // default policy: treat pubapi as sealed
+            Sealed::Full | Sealed::PubApi => true, // default policy: treat pubapi as sealed
             Sealed::None => false,
         };
 
@@ -309,23 +300,17 @@ fn lint_a4_to_a19(
                 let child_name = new_surface
                     .monikers
                     .iter()
-                    .find(|(_, v)| *v == added_child)
-                    .map(|(k, _)| {
+                    .find(|(_, v)| *v == added_child).map_or_else(|| SmolStr::new("<item>"), |(k, _)| {
                         k.0.last()
                             .cloned()
                             .unwrap_or_else(|| SmolStr::new("<item>"))
-                    })
-                    .unwrap_or_else(|| SmolStr::new("<item>"));
+                    });
 
                 let defaulted = is_defaulted_fn(child_item);
 
-                // Sealed fact check: if seal is Unknown and not defaulted, Uncertain.
-                let certainty = if matches!(new_trait.flags.sealed, Sealed::None) {
-                    // We know it's not sealed — Certain.
-                    Certainty::Certain
-                } else {
-                    Certainty::Certain // Full or PubApi: also certain.
-                };
+                // The sealed fact is known in every case: `None` is
+                // known-not-sealed and `Full`/`PubApi` are known-sealed.
+                let certainty = Certainty::Certain;
 
                 let (lint, class) = if defaulted || sealed {
                     (A9, BreakClass::Minor) // A-9
@@ -362,13 +347,11 @@ fn lint_a4_to_a19(
                 let child_name = old_surface
                     .monikers
                     .iter()
-                    .find(|(_, v)| *v == removed_child)
-                    .map(|(k, _)| {
+                    .find(|(_, v)| *v == removed_child).map_or_else(|| SmolStr::new("<item>"), |(k, _)| {
                         k.0.last()
                             .cloned()
                             .unwrap_or_else(|| SmolStr::new("<item>"))
-                    })
-                    .unwrap_or_else(|| SmolStr::new("<item>"));
+                    });
 
                 out.push(Finding {
                     lint: A10,
@@ -519,30 +502,22 @@ fn lint_a4_to_a19(
     // ── A-16: static-mut-toggle / const-static-swap ─────────────────────────
     // Cargo SemVer: "static-mut-now-not", "const-to-static", "static-to-const"
     {
-        match (&old_item.kind, &new_item.kind) {
-            (KindWire::Static(old_s), KindWire::Static(new_s)) => {
-                if old_s.mutable != new_s.mutable {
-                    out.push(Finding {
-                        lint: A16,
-                        item: Some(*id),
-                        moniker: moniker.clone(),
-                        class: BreakClass::Major,
-                        certainty: Certainty::Certain,
-                        when: Option::None,
-                        detail: FindingDetail::StaticMutToggle {
-                            now_mutable: new_s.mutable,
-                        },
-                    });
-                }
-            }
-            (KindWire::Const(_), KindWire::Static(_))
-            | (KindWire::Static(_), KindWire::Const(_)) => {
-                // Kind swap is already caught by A-2 above; A-16 records the
-                // specific semantics for the const/static case when this pair
-                // appears without a kind-change (which cannot happen, but we
-                // defend against it here for completeness).
-            }
-            _ => {}
+        // A const↔static kind swap is already caught by A-2 above; A-16 only
+        // records the static-mut-toggle semantics when both sides stay `Static`.
+        if let (KindWire::Static(old_s), KindWire::Static(new_s)) = (&old_item.kind, &new_item.kind)
+            && old_s.mutable != new_s.mutable
+        {
+            out.push(Finding {
+                lint: A16,
+                item: Some(*id),
+                moniker: moniker.clone(),
+                class: BreakClass::Major,
+                certainty: Certainty::Certain,
+                when: Option::None,
+                detail: FindingDetail::StaticMutToggle {
+                    now_mutable: new_s.mutable,
+                },
+            });
         }
     }
 
@@ -620,9 +595,7 @@ fn lint_a4_to_a19(
                     for gained_id in &gained {
                         let field_name = new_surface
                             .items
-                            .get(gained_id)
-                            .map(|_| field_name_from_surface(new_surface, gained_id))
-                            .unwrap_or_else(|| SmolStr::new("<field>"));
+                            .get(gained_id).map_or_else(|| SmolStr::new("<field>"), |_| field_name_from_surface(new_surface, gained_id));
                         out.push(Finding {
                             lint: A18,
                             item: Some(*gained_id),
@@ -800,7 +773,7 @@ fn is_defaulted_fn(item: &ApiItem) -> bool {
 }
 
 fn self_kind_differs(a: &SelfKind, b: &SelfKind) -> bool {
-    use SelfKind::*;
+    use SelfKind::{None, Value, Ref, RefMut, Arbitrary};
     match (a, b) {
         (None, None) | (Value, Value) | (Ref, Ref) | (RefMut, RefMut) => false,
         (Arbitrary(ta), Arbitrary(tb)) => ta != tb,
@@ -829,7 +802,7 @@ trait KindWireExt {
 }
 
 impl KindWireExt for KindWire {
-    fn field_name_hint(&self) -> &str {
+    fn field_name_hint(&self) -> &'static str {
         "<field>"
     }
 }

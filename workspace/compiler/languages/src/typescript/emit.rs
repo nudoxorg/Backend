@@ -48,9 +48,9 @@ use oxc_resolver::Resolver;
 use crate::typescript::{
     entry::{is_ts_module_path, make_resolver},
     extract::{
-        Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, EnumBody, FunctionBody,
-        GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers, ModuleFacts,
-        NamespaceBody, ReceiverKind, StaticBody, TypeAliasBody, TypeOwned,
+        Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, DeprecationOwned, EnumBody,
+        FunctionBody, GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
+        ModuleFacts, NamespaceBody, ReceiverKind, StaticBody, TypeAliasBody, TypeOwned,
     },
     id::TsId,
 };
@@ -206,7 +206,7 @@ fn emit_decl(
         DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
-            emit_namespace(id, parent, sym, body, out, module_index, export_index, resolver)
+            emit_namespace(id, parent, sym, body, out, module_index, export_index, resolver);
         }
         DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
         DeclBody::Const(body) => emit_const(id, parent, sym, body, out),
@@ -275,7 +275,7 @@ fn emit_interface(
             source: id.module.clone(),
             span: (method.sig.span_start as usize)..(method.sig.span_end as usize),
             aliases: Box::new([]),
-            deprecation: method.doc.deprecation.clone().map(|d| d.into_ir()),
+            deprecation: method.doc.deprecation.clone().map(DeprecationOwned::into_ir),
             doc_links: Box::new([]),
             attrs: Box::new([]),
             cfg: None,
@@ -293,7 +293,7 @@ fn emit_interface(
             source: id.module.clone(),
             span: (prop.span_start as usize)..(prop.span_end as usize),
             aliases: Box::new([]),
-            deprecation: prop.doc.deprecation.clone().map(|d| d.into_ir()),
+            deprecation: prop.doc.deprecation.clone().map(DeprecationOwned::into_ir),
             doc_links: Box::new([]),
             attrs: Box::new([]),
             cfg: None,
@@ -323,7 +323,7 @@ fn emit_interface(
             name: if idx_num == 0 {
                 "__index".to_string()
             } else {
-                format!("__index_{}", idx_num)
+                format!("__index_{idx_num}")
             },
             visibility: Visibility::Public,
             documentation: String::new(),
@@ -377,7 +377,7 @@ fn emit_interface(
             name: if cs_num == 0 {
                 "new".to_string()
             } else {
-                format!("new_{}", cs_num)
+                format!("new_{cs_num}")
             },
             visibility: Visibility::Public,
             documentation: String::new(),
@@ -430,7 +430,7 @@ fn emit_class(
                     source: id.module.clone(),
                     span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
-                    deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                    deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
                     doc_links: Box::new([]),
                     attrs: Box::new([]),
                     cfg: None,
@@ -495,7 +495,7 @@ fn emit_class(
                         // (the `Function` value node) omits the name.
                         span: (member.span_start as usize)..(member.span_end as usize),
                         aliases: Box::new([]),
-                        deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                        deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
                         doc_links: Box::new([]),
                         attrs: Box::new([]),
                         cfg: None,
@@ -516,7 +516,7 @@ fn emit_class(
                     source: id.module.clone(),
                     span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
-                    deprecation: member.doc.deprecation.clone().map(|d| d.into_ir()),
+                    deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
                     doc_links: Box::new([]),
                     attrs: Box::new([]),
                     cfg: None,
@@ -556,7 +556,7 @@ fn emit_class(
                 emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out);
             }
             // Fields / Accessors were already emitted above.
-            MemberKind::Property { .. } | MemberKind::Accessor { .. } => continue,
+            MemberKind::Property { .. } | MemberKind::Accessor { .. } => {}
         }
     }
 }
@@ -807,7 +807,7 @@ fn emit_const(
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED);
+    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
     let _: Ref<Const> = out.declare(
         id,
         parent,
@@ -828,7 +828,7 @@ fn emit_static(
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED);
+    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
     let _: Ref<Static> = out.declare(
         id,
         parent,
@@ -946,9 +946,11 @@ fn emit_reexports(
         // comment) — every overload gets its own reexport entry below.
         let target_ids: Vec<TsId> = target_path
             .as_ref()
-            .map(|p| match export_index.get(p.as_path()) {
-                Some(target_table) => resolve_export_target(resolver, p, target_table, target_name),
-                None => vec![TsId::new(p.clone(), target_name, 0)],
+            .map(|p| {
+                export_index.get(p.as_path()).map_or_else(
+                    || vec![TsId::new(p.clone(), target_name, 0)],
+                    |target_table| resolve_export_target(resolver, p, target_table, target_name),
+                )
             })
             .unwrap_or_default();
 
@@ -1127,7 +1129,9 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         TypeOwned::Symbol => Type::Primitive(Primitive::Builtin("symbol".to_string())),
         TypeOwned::Object => Type::Primitive(Primitive::Builtin("object".to_string())),
         TypeOwned::This => Type::SelfType,
-        TypeOwned::Primitive(s) => Type::Primitive(Primitive::Builtin(s.clone())),
+        TypeOwned::Primitive(s) | TypeOwned::Unsupported(s) => {
+            Type::Primitive(Primitive::Builtin(s.clone()))
+        }
         TypeOwned::Nominal(name) => {
             // UNCERTAINTY: We emit a RawRef::Name here, but the actual IR Type::Nominal
             // takes a RawRef. RawRef has no public name-only constructor in the
@@ -1210,7 +1214,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 // treats it as implicit-any, but the source did not write
                 // `any` — under `--noImplicitAny` this is an error, and the
                 // IR must be able to tell the two apart.
-                .map(|p| p.ty.as_ref().map(lower_type).unwrap_or(Type::UNANNOTATED))
+                .map(|p| p.ty.as_ref().map_or(Type::UNANNOTATED, lower_type))
                 .collect();
             let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r)));
             // TypeScript functions are always managed; no ABI.
@@ -1221,7 +1225,6 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             }
         }
         TypeOwned::Literal(lit) => lower_literal(lit),
-        TypeOwned::Unsupported(s) => Type::Primitive(Primitive::Builtin(s.clone())),
         TypeOwned::Conditional {
             check,
             extends_ty,
@@ -1323,7 +1326,7 @@ fn make_sym(decl: &DeclFact) -> Symbol {
         span: (decl.span_start as usize)..(decl.span_end as usize),
         aliases: Box::new([]),
         // DeprecationOwned is Clone; convert to IR's Deprecation which is not.
-        deprecation: decl.doc.deprecation.clone().map(|d| d.into_ir()),
+        deprecation: decl.doc.deprecation.clone().map(DeprecationOwned::into_ir),
         doc_links: Box::new([]),
         attrs: Box::new([]),
         cfg: None,
