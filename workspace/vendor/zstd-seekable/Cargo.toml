@@ -1,0 +1,66 @@
+# Vendored fork of `zstd-seekable` 0.1.23 (see workspace/vendor/README.md for
+# the general vendoring conventions this follows).
+#
+# THE PROBLEM. `libpijul` (workspace/vendor/libpijul) optionally depends on
+# upstream `zstd-seekable` for change-file compression. Upstream's build.rs
+# tries `pkg-config` for a system libzstd and, on ANY failure (no pkg-config
+# installed -- the default outside this repo's nix devshell -- or no system
+# libzstd), falls back to compiling the ENTIRE bundled zstd C library
+# (zstd/lib/{common,compress,decompress}) from source. `index::pack` already
+# depends on `zstd` -> `zstd-safe` -> `zstd-sys`, which compiles its OWN
+# complete copy of libzstd. Both copies define the same `ZSTD_*` symbols.
+# macOS `ld` only *warns* on duplicate symbols instead of failing the build,
+# so a plain `cargo build -p index --features server` looked clean while
+# silently linking two conflicting definitions of every compression symbol
+# into one binary -- corrupting memory at runtime (34 `index::pack` SIGSEGVs
+# under `cargo nextest`, all of them in code that never touches
+# `zstd-seekable` directly).
+#
+# THE FIX. This fork's build.rs (see build.rs's own comment) never compiles
+# the bundled zstd library. It depends on `zstd-sys` directly so cargo
+# resolves it to the exact same crate instance `index::pack` already uses --
+# one compiled libzstd, shared, not two -- and compiles ONLY the small
+# seekable-format wrapper (zstd/contrib/seekable_format/*) against that
+# instance's exported headers (`DEP_ZSTD_INCLUDE`). This requires no
+# environment variables (no PKG_CONFIG_PATH, no devshell) and changes no
+# on-disk format: `zstd-seekable`'s public API, ABI, and the bytes it
+# produces are untouched -- only how its C symbols get linked changed.
+#
+# Divergence from upstream 0.1.23, all in build.rs: the `pkg-config` probe
+# and the "compile a whole second libzstd" fallback are both deleted;
+# `zstd-sys` is added as a real dependency; the now-unused `pkg-config`,
+# `serde`, `serde_derive`, and `bincode` build-dependencies (upstream's
+# build.rs never actually calls into any of the latter three) are dropped.
+# `src/lib.rs` and `src/bindings.rs` (hand-written FFI declarations, not
+# bindgen output) are verbatim upstream and need no changes: they declare
+# the same `ZSTD_*` C entry points regardless of which libzstd satisfies
+# them at link time.
+[package]
+name = "zstd-seekable"
+version = "0.1.23+nudox.1"
+edition = "2018"
+authors = ["Pierre-Étienne Meunier <pe@pijul.org>"]
+license = "BSD-3-Clause"
+description = "Bindings to the seekable version of ZStandard (vendored fork: links zstd-sys's libzstd instead of bundling a second copy)"
+homepage = "https://nest.pijul.com/pmeunier/zstd-seekable"
+repository = "https://nest.pijul.com/pmeunier/zstd-seekable"
+build = "build.rs"
+
+[dependencies]
+libc = "0.2"
+thiserror = "1.0"
+threadpool = "1.8"
+# Not used from Rust (this crate's FFI bindings are hand-written in
+# src/bindings.rs, not generated from zstd-sys's types). Depended on so cargo
+# unifies this crate's libzstd requirement with `index::pack`'s
+# (zstd -> zstd-safe -> zstd-sys) into a single compiled unit, and so this
+# crate's own build.rs can read that unit's `DEP_ZSTD_INCLUDE` (see build.rs).
+# `default-features = false` matches how `zstd-safe` (index::pack's own path
+# to zstd-sys) already depends on it: zstd-sys's default features include
+# "bindgen" (regenerates its pregenerated bindings via `bindgen`/`clang-sys`
+# at build time), which neither path needs and which requesting here would
+# pull into the shared unit for both, unnecessarily, via feature unification.
+zstd-sys = { version = "2.0", default-features = false }
+
+[build-dependencies]
+cc = "1.0"
