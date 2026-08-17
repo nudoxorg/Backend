@@ -108,6 +108,25 @@
               runHook postUnpack
             '';
             doCheck = false;
+
+            # `cargo-bundle` depends on `openssl-sys`, which finds OpenSSL by
+            # asking `pkg-config`. Neither is in a `buildRustPackage` sandbox
+            # unless it is put there, so on Linux this derivation failed with
+            #
+            #     Could not find directory of OpenSSL installation … it looks
+            #     like you're compiling on Linux and also targeting Linux.
+            #     Currently this requires the `pkg-config` utility …
+            #
+            # and, because this package is in the devshell's `packages`, the
+            # failure was not "cargo bundle is unavailable" but **`nix develop`
+            # itself refusing to start**: no shell, no build, nothing, for every
+            # Linux contributor.
+            #
+            # macOS does not see it — `openssl-sys` resolves against
+            # Security.framework there — which is exactly the shape of bug that
+            # reaches a Linux tree unnoticed.
+            nativeBuildInputs = [ nixPackages.pkg-config ];
+            buildInputs = [ nixPackages.openssl ];
           };
 
           reindeerVersion = "v2026.07.13.00";
@@ -539,6 +558,22 @@
                 vulkan-loader
               ];
 
+              # The account keyring's C dependency. The trunk's `KeyringStore`
+              # uses `keyring` with `sync-secret-service`, which chains
+              # `dbus-secret-service` -> `dbus` -> `libdbus-sys` — a *linked* C
+              # library, not a dlopened one — so without it `cargo check` dies
+              # in a build script before compiling anything:
+              #
+              #   HINT: you may need to install a package such as dbus-1,
+              #         dbus-1-dev or dbus-1-devel.
+              #
+              # Linked rather than dlopened means it is needed at run time too,
+              # so it joins the LD_LIBRARY_PATH list below rather than being
+              # build-only like fontconfig.
+              guiCredentialLibraries = with nixPackages; [
+                dbus
+              ];
+
               # Needed to *build* (font-kit's `yeslogic-fontconfig-sys` and
               # `freetype-sys` are pkg-config crates), but deliberately kept off
               # LD_LIBRARY_PATH: font *configuration* is a property of the
@@ -652,7 +687,7 @@
                 # hook builds PKG_CONFIG_PATH from this list, which is the whole
                 # point — `xcb.pc` and `xkbcommon.pc` must resolve to the store.
                 buildInputs = nixPackages.lib.optionals nixPackages.stdenv.isLinux (
-                  guiGraphicsLibraries ++ guiFontLibraries
+                  guiGraphicsLibraries ++ guiCredentialLibraries ++ guiFontLibraries
                 );
 
                 shellHook = ''
@@ -666,7 +701,7 @@
                     # soname — libwayland-client by `wayland-client`, libvulkan
                     # by wgpu — so they are invisible to the linker and must be
                     # findable at run time or the window never opens.
-                    export LD_LIBRARY_PATH="${nixPackages.lib.makeLibraryPath guiGraphicsLibraries}:$LD_LIBRARY_PATH"
+                    export LD_LIBRARY_PATH="${nixPackages.lib.makeLibraryPath (guiGraphicsLibraries ++ guiCredentialLibraries)}:$LD_LIBRARY_PATH"
 
                     # The Vulkan *driver* cannot come from the store on a
                     # non-NixOS host: its ICD manifest names the vendor library

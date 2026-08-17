@@ -57,8 +57,8 @@ gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f477
 # gpui pin); gpui-ce `d435891` is the newest rev compatible with it (pre the
 # `palette` migration, PR #105, which would break hundreds of theme-code call
 # sites). See workspace/vendor/README.md for the fork-patch convention.
-gpui-component = { path = "../../vendor/gpui-component/crates/ui", package = "gpui-component" }
-gpui-component-assets = { path = "../../vendor/gpui-component/crates/assets", package = "gpui-component-assets" }
+gpui-component = { path = "../vendor/gpui-component/crates/ui", package = "gpui-component" }
+gpui-component-assets = { path = "../vendor/gpui-component/crates/assets", package = "gpui-component-assets" }
 
 # ── The engine (GUI-LOCAL-PLAN §L0) ──────────────────────────────────────────
 # The ONLY backend crate lindsey may name. The dependency law is one-directional

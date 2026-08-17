@@ -147,6 +147,26 @@
 !/workspace/gui/packaging/*.svg
 !/workspace/gui/packaging/*.py
 
+# The vendored gpui-component fork, in full.
+#
+# `workspace/vendor/README.md` lists this package as "Sources Committed: Yes".
+# It was not. The deny-all above keeps `.rs` (allowed globally) and drops
+# everything else, so the fork reached the tree missing 121 files: 99 icon SVGs,
+# 17 tree-sitter `.scm` query files, the default theme and colour JSON, the
+# locale catalogue, and its LICENSE-APACHE. The GUI could not build from a clean
+# clone on any platform —
+#
+#   expected default icons at …/crates/assets/assets/icons, but the directory
+#   is missing
+#   couldn't read …/src/theme/./default-theme.json
+#
+# Allowed as a directory rather than by extension, because "which extensions
+# does a vendored third-party crate need?" is not a question this file can keep
+# answering correctly — it already got it wrong for four of them. Build output
+# is re-denied below, since a later rule wins.
+!/workspace/vendor/gpui-component/crates/**
+/workspace/vendor/gpui-component/**/target/
+
 # lindsey's Linux packaging: the desktop entry, the AppStream metainfo, the
 # installer and the run wrapper. Allowed as a *directory* rather than by
 # extension, which the rules above do and this one deliberately does not.
