@@ -626,23 +626,26 @@ pub struct OutboxEntry {
 
 /// Errors returned by [`Outbox`] operations.
 #[derive(Debug)]
-pub enum OutboxError {
+pub enum Error {
     /// The outbox's internal lock was poisoned (a previous holder panicked).
     LockPoisoned,
     /// A downstream storage error (for persistent outbox implementations).
     Storage(String),
 }
 
-impl core::fmt::Display for OutboxError {
+impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            OutboxError::LockPoisoned => f.write_str("outbox lock poisoned"),
-            OutboxError::Storage(msg) => write!(f, "outbox storage error: {msg}"),
+            Error::LockPoisoned => f.write_str("outbox lock poisoned"),
+            Error::Storage(msg) => write!(f, "outbox storage error: {msg}"),
         }
     }
 }
 
-impl std::error::Error for OutboxError {}
+impl std::error::Error for Error {}
+
+/// Backwards-compatible alias for cross-crate consumers.
+pub use self::Error as OutboxError;
 
 /// A staging area for sealed generation stamps awaiting downstream processing.
 ///
@@ -663,14 +666,14 @@ pub trait Outbox: Send + Sync {
     /// `generation` stamp when possible (de-duplicate on
     /// `OutboxEntry::generation`), though the in-memory implementation does
     /// not enforce this.
-    fn append(&self, entry: OutboxEntry) -> Result<(), OutboxError>;
+    fn append(&self, entry: OutboxEntry) -> Result<(), Error>;
 
     /// Return all pending entries in insertion order.
     ///
     /// This does **not** drain the outbox. Callers that want drain-on-ack
     /// semantics should use [`InMemoryOutbox::drain`] or implement a
     /// separate acknowledgement call.
-    fn pending(&self) -> Result<Vec<OutboxEntry>, OutboxError>;
+    fn pending(&self) -> Result<Vec<OutboxEntry>, Error>;
 }
 
 /// An in-process, in-memory outbox implementation.
@@ -697,32 +700,32 @@ impl InMemoryOutbox {
     ///
     /// This is the drain operation — it atomically empties the outbox and
     /// returns what was in it. Use this for consume-once semantics.
-    pub fn drain(&self) -> Result<Vec<OutboxEntry>, OutboxError> {
-        let mut guard = self.entries.lock().map_err(|_| OutboxError::LockPoisoned)?;
+    pub fn drain(&self) -> Result<Vec<OutboxEntry>, Error> {
+        let mut guard = self.entries.lock().map_err(|_| Error::LockPoisoned)?;
         Ok(std::mem::take(&mut *guard))
     }
 
     /// Return the number of pending entries without cloning them.
-    pub fn len(&self) -> Result<usize, OutboxError> {
-        let guard = self.entries.lock().map_err(|_| OutboxError::LockPoisoned)?;
+    pub fn len(&self) -> Result<usize, Error> {
+        let guard = self.entries.lock().map_err(|_| Error::LockPoisoned)?;
         Ok(guard.len())
     }
 
     /// Return `true` if there are no pending entries.
-    pub fn is_empty(&self) -> Result<bool, OutboxError> {
+    pub fn is_empty(&self) -> Result<bool, Error> {
         Ok(self.len()? == 0)
     }
 }
 
 impl Outbox for InMemoryOutbox {
-    fn append(&self, entry: OutboxEntry) -> Result<(), OutboxError> {
-        let mut guard = self.entries.lock().map_err(|_| OutboxError::LockPoisoned)?;
+    fn append(&self, entry: OutboxEntry) -> Result<(), Error> {
+        let mut guard = self.entries.lock().map_err(|_| Error::LockPoisoned)?;
         guard.push(entry);
         Ok(())
     }
 
-    fn pending(&self) -> Result<Vec<OutboxEntry>, OutboxError> {
-        let guard = self.entries.lock().map_err(|_| OutboxError::LockPoisoned)?;
+    fn pending(&self) -> Result<Vec<OutboxEntry>, Error> {
+        let guard = self.entries.lock().map_err(|_| Error::LockPoisoned)?;
         Ok(guard.clone())
     }
 }

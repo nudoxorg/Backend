@@ -35,7 +35,7 @@
 //! | [`ir_op`] | `IrOp` enum, `SigKey`, `GenericsDelta`, `WherePred`, `op_sort_key` |
 //! | [`delta`] | `PackageDelta`, `PartialDelta`, `delta_digest` |
 //! | [`diff`] | `diff_tables`, `diff_tables_partial` |
-//! | [`apply`] | `apply_delta`, `apply_delta_with_t1`, `ApplyError` |
+//! | [`apply`] | `apply_delta`, `apply_delta_with_t1`, `Error` |
 
 pub mod apply;
 pub mod delta;
@@ -46,7 +46,7 @@ pub mod ir_op;
 // Re-exports (the crate's public API surface)
 // ---------------------------------------------------------------------------
 
-pub use apply::{ApplyError, apply_delta, apply_delta_with_t1};
+pub use apply::{Error, apply_delta, apply_delta_with_t1};
 pub use delta::{PackageDelta, PartialDelta, delta_digest};
 pub use diff::{diff_tables, diff_tables_partial};
 pub use ir_op::{GenericsDelta, IrOp, SigKey, WherePred};

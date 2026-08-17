@@ -9,7 +9,8 @@ use heart::{ContentHash, SymbolId};
 use registry::vector::JinaCodeV2;
 use registry::vector::key::{ChangedSymbol, SymbolDelta, SymbolPartHashes};
 use registry::vector::recipe::{EmbedFacetsBuf, TokenCounter};
-use registry::vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, StoreError, VectorPoint, VectorStore};
+use registry::vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, VectorPoint, VectorStore};
+use registry::vector::StoreError;
 use registry::vector::embed::stage::{TraceStore, VectorCas};
 
 // ── L1: in-memory stage traces ───────────────────────────────────────────────

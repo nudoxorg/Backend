@@ -1,3 +1,4 @@
+//! Auto-trait facts, `TriState`, and `Sealed` shared vocabulary.
 use crate::visitor::Visitor;
 
 // ---------------------------------------------------------------------------

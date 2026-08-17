@@ -34,7 +34,7 @@ use crate::metadata::SearchFacets;
 
 /// Why a catalog row could not be mapped back into runtime vocabulary.
 #[derive(Debug, thiserror::Error)]
-pub enum CatalogMapError {
+pub enum Error {
     #[error("failure column held malformed JSON: {0}")]
     FailureJson(#[source] serde_json::Error),
     #[error("facets extras column held malformed JSON: {0}")]
@@ -48,6 +48,10 @@ pub enum CatalogMapError {
     #[error("state `{0:?}` is unreachable from catalog columns")]
     UnreachableState(ParseState),
 }
+
+/// Compatibility alias for callers that named the mapping error by its old
+/// `CatalogMapError` spelling (e.g. `crate::error::IndexError`).
+pub use self::Error as CatalogMapError;
 
 /// The `parse_phase` marker that carries `Unindexed {{ needed: true }}`.
 const PHASE_NEEDED: &str = "needed";
@@ -66,7 +70,7 @@ pub struct StateColumns {
 }
 
 /// Lower a [`ResolutionState`] onto lifecycle columns (the state law above).
-pub fn state_to_columns(state: &ResolutionState) -> Result<StateColumns, CatalogMapError> {
+pub fn state_to_columns(state: &ResolutionState) -> Result<StateColumns, Error> {
     let (parse_state, parse_phase, failure_json, stored_hash) = match state {
         ResolutionState::Unindexed { needed } => (
             ParseState::Pending,
@@ -84,13 +88,13 @@ pub fn state_to_columns(state: &ResolutionState) -> Result<StateColumns, Catalog
         ResolutionState::Failed(failure) => (
             ParseState::Failed,
             None,
-            Some(serde_json::to_string(failure).map_err(CatalogMapError::FailureJson)?),
+            Some(serde_json::to_string(failure).map_err(Error::FailureJson)?),
             None,
         ),
         ResolutionState::DeadLettered(failure) => (
             ParseState::Failed,
             Some(PHASE_DEAD_LETTERED.to_owned()),
-            Some(serde_json::to_string(failure).map_err(CatalogMapError::FailureJson)?),
+            Some(serde_json::to_string(failure).map_err(Error::FailureJson)?),
             None,
         ),
     };
@@ -107,7 +111,7 @@ pub fn state_to_columns(state: &ResolutionState) -> Result<StateColumns, Catalog
 pub fn state_from_columns(
     lifecycle: &VersionLifecycle,
     stored_hash: Option<ContentHash>,
-) -> Result<ResolutionState, CatalogMapError> {
+) -> Result<ResolutionState, Error> {
     match lifecycle.parse_state {
         ParseState::Pending => Ok(ResolutionState::Unindexed {
             needed: lifecycle.parse_phase.as_deref() == Some(PHASE_NEEDED),
@@ -115,7 +119,7 @@ pub fn state_from_columns(
         ParseState::InProgress => {
             let token = lifecycle.parse_phase.as_deref().unwrap_or_default();
             let phase =
-                phase_from_token(token).ok_or_else(|| CatalogMapError::UnknownPhase {
+                phase_from_token(token).ok_or_else(|| Error::UnknownPhase {
                     state: ParseState::InProgress,
                     token: token.to_owned(),
                 })?;
@@ -123,22 +127,22 @@ pub fn state_from_columns(
         }
         ParseState::Parsed => stored_hash
             .map(|hash| ResolutionState::Stored { hash })
-            .ok_or(CatalogMapError::ParsedWithoutGeneration),
+            .ok_or(Error::ParsedWithoutGeneration),
         ParseState::Failed => {
             let failure = lifecycle
                 .failure
                 .as_deref()
                 .map(serde_json::from_str)
                 .transpose()
-                .map_err(CatalogMapError::FailureJson)?
-                .ok_or(CatalogMapError::FailureMissing)?;
+                .map_err(Error::FailureJson)?
+                .ok_or(Error::FailureMissing)?;
             if lifecycle.parse_phase.as_deref() == Some(PHASE_DEAD_LETTERED) {
                 Ok(ResolutionState::DeadLettered(failure))
             } else {
                 Ok(ResolutionState::Failed(failure))
             }
         }
-        ParseState::Skipped => Err(CatalogMapError::UnreachableState(ParseState::Skipped)),
+        ParseState::Skipped => Err(Error::UnreachableState(ParseState::Skipped)),
     }
 }
 
@@ -165,7 +169,7 @@ fn phase_from_token(token: &str) -> Option<Phase> {
 /// Lower [`SearchFacets`] onto the facet row triple (the facet law above).
 pub fn facets_to_row(
     facets: &SearchFacets,
-) -> Result<(Option<String>, Option<i64>, Option<String>), CatalogMapError> {
+) -> Result<(Option<String>, Option<i64>, Option<String>), Error> {
     let keywords = (!facets.keywords.is_empty()).then(|| {
         facets
             .keywords
@@ -174,7 +178,7 @@ pub fn facets_to_row(
             .collect::<Vec<_>>()
             .join(" ")
     });
-    let extras = serde_json::to_string(facets).map_err(CatalogMapError::FacetsJson)?;
+    let extras = serde_json::to_string(facets).map_err(Error::FacetsJson)?;
     Ok((keywords, Some(i64::from(facets.quality_ppm)), Some(extras)))
 }
 
@@ -182,11 +186,11 @@ pub fn facets_to_row(
 /// `extras` JSON. `None` extras ⇒ no facets recorded.
 pub fn facets_from_extras(
     extras_json: Option<&str>,
-) -> Result<Option<SearchFacets>, CatalogMapError> {
+) -> Result<Option<SearchFacets>, Error> {
     extras_json
         .map(serde_json::from_str)
         .transpose()
-        .map_err(CatalogMapError::FacetsJson)
+        .map_err(Error::FacetsJson)
 }
 
 #[cfg(test)]
@@ -227,7 +231,7 @@ mod tests {
         };
         assert!(matches!(
             state_from_columns(&lifecycle, None),
-            Err(CatalogMapError::ParsedWithoutGeneration)
+            Err(Error::ParsedWithoutGeneration)
         ));
     }
 }

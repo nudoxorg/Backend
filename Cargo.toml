@@ -12,10 +12,10 @@
 resolver = "3"
 members = [
     # The per-ecosystem spec (ECOSYSTEM-PLAN) is now folded into the catalog
-    # crate as `index::ecosystem` — it is used only by `index` (+ `driver`,
-    # which composes `index`). `Language` itself lives in `heart` (the light
-    # shared vocabulary), keeping the index-free planes (`ir`, `registry`) off
-    # the catalog link path.
+    # crate as `index::ecosystem` — it is used only by `index` (whose
+    # `index::server` module composes `index` into the serving binary).
+    # `Language` itself lives in `heart` (the light shared vocabulary), keeping
+    # the index-free planes (`ir`, `registry`) off the catalog link path.
     "workspace/heart",
     # ── INDEX catalog plane (INDEX-PLAN) ─────────────────────────────────────
     # rusqdoltlite (now under vendor/) binds the vendored DoltLite engine
@@ -28,10 +28,11 @@ members = [
     # the storage layer as `index::pack` (§8: object-pack is part of index).
     # Legacy `ir` crate (old JSON schema) deleted — dead (superseded by nudox-ir).
     "workspace/registry",
-    # `driver` is the composition/serving crate (§8): the ONLY place `index` +
-    # `registry` + `heart::client` are composed into an axum binary. It is the
-    # dissolved `server` crate, rewired onto the re-layered planes.
-    "workspace/driver",
+    # The composition/serving layer (§8) — the ONLY place `index` + `registry`
+    # + `heart::client` are composed into an axum binary — now lives inside
+    # `index` itself as `index::server` (the `nudox-serve` binary is built
+    # from `workspace/index/server/main.rs`). The formerly standalone
+    # `driver` crate was folded in and retired.
     # ── Sealed-compute plane (SMOLVM-PLAN) ───────────────────────────────────
     # sandbox rejoins the cargo workspace: it is the home of SmolvmCage and the
     # budget/typestate layer; ir-stream is the guest→host IR streaming protocol.
@@ -45,37 +46,33 @@ members = [
     # links libpijul.
     "workspace/ir/vcs",
     # ── Shared content-transfer plane (CONSOLIDATION-NOTES §8b/§8c) ───────────
-    # The transport crate has been folded into `index::transport`. Heart stays
+    # `transport` is the ONE shared iroh/bao content-transfer crate, extracted
+    # back OUT of `index::transport` into its own crate so `ir-vcs` depends on it
+    # (not on all of `index`) — breaking the `index ↔ ir-vcs` cycle that folding
+    # the server composition into `index` (server-dissolve) would create. Both
+    # `index` (pack + server) and `ir-vcs` (nudox_ir::sync) dep it; `index`
+    # re-exports it as `index::transport` so existing paths are unchanged.
+    "workspace/transport",
+    # (historical) The transport crate had been folded into `index::transport`. Heart stays
     # iroh-free (only the `heart::sync` seam); the concrete iroh/iroh-blobs/
     # bao plumbing lives once as a module of the index package, removed from
     # the workspace member list. No per-plane bespoke bao/iroh.
     # ── nudox-ir crate (PR #2: ir-refactor) ──────────────────────────────────
     "workspace/ir/model",
-    # ── Producer plane: shared contract + one crate per language ─────────────
-    "workspace/compiler/producer",
-    "workspace/compiler/languages/go",
-    "workspace/compiler/languages/csharp",
-    "workspace/compiler/languages/rust",
-    "workspace/compiler/languages/typescript",
-    "workspace/compiler/languages/clang",
-    "workspace/compiler/languages/java",
-    "workspace/compiler/languages/python",
-    # ── Local-first GUI planes (GUI-LOCAL-PLAN §L0) ──────────────────────────
-    # store → graph → engine → mcp. `lindsey` (workspace/gui) is deliberately
-    # NOT a member: it keeps its own lockfile so gpui stays out of the backend
-    # graph, and reaches these four by path. Dependency law, one direction only:
-    # lindsey → engine → {graph, store} → ir; mcp → {engine, graph}; and none of
-    # the four may link gpui.
-    "crates/nudox-store",
-    "crates/nudox-graph",
-    "crates/nudox-engine",
-    "crates/nudox-test-support",
-    "crates/nudox-mcp",
-    # The production embedder adapter (AGENTS-DOCTRINE.md §1, "Capability
-    # ports"): bridges `registry`'s ONNX runtime to `nudox-engine`'s `Embedder`
-    # port, beside the engine rather than beneath it. Its `onnx` feature is
-    # off by default, so a `--workspace` build never pulls the ort runtime.
-    "crates/nudox-embed",
+    # ── Producer plane: one crate holding the contract + all seven languages ──
+    # The former `nudox-producer` + `nudox-producer-{rust,go,java,csharp,clang,
+    # typescript,python}` crates were merged into a single `nudox-languages`
+    # crate at `workspace/compiler/languages/`; each language is a module.
+    "workspace/compiler/languages",
+    # ── Local-first GUI plane (GUI-LOCAL-PLAN §L0) ───────────────────────────
+    # `nudox-engine` is the whole local-first backend: the corpus (`store`),
+    # the Trustfall query adapter (`graph`), the engine facade, the MCP server
+    # (`mcp`), and the ONNX embedder adapter (`embed`, behind the `onnx`
+    # feature) are all modules of this one crate. `lindsey` (workspace/gui) is
+    # deliberately NOT a member: it keeps its own lockfile so gpui stays out of
+    # the backend graph, and reaches this one crate by path. Dependency law is
+    # now trivial — lindsey → nudox-engine → ir.
+    "workspace/nudox-engine",
 ]
 
 # `rusqdoltlite` is a *path dependency* of `index` (behind the off-by-default
@@ -126,8 +123,8 @@ rustc-hash = "2.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-# `corpus/manifest.toml` and `corpus/entry-baseline.toml` are read by tests in
-# more than one crate (`workspace/index`, `nudox-store`). Declared once here so
+# `nix/corpus.nix` and `nix/entry-baseline.toml` are read by tests in
+# more than one crate (`workspace/index`, `nudox-engine`). Declared once here so
 # two readers of the same corpus files cannot end up on different toml majors
 # and disagree about what the corpus contains.
 toml = "0.8"
@@ -153,7 +150,7 @@ flume = "0.11"
 schemars = "1"
 tracing = "0.1"
 # Untrusted-archive ingest. `index::ingest::archive` sanitizes tar and zip
-# uploads; `driver` re-extracts the same shapes on the serving side. Declared
+# uploads; `index::server` re-extracts the same shapes on the serving side. Declared
 # once here so the two cannot drift onto different zip majors and disagree about
 # what a given archive contains — a divergence that would land as a security
 # difference, not a build error. `default-features = false` keeps bzip2/zstd/aes

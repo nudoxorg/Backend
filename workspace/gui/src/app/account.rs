@@ -11,7 +11,7 @@
 //!
 //! # Why there is a presentation type at all
 //!
-//! [`nudox_mcp::Posture`] is nine variants carrying `SystemTime`s, `Duration`s
+//! [`nudox_engine::mcp::Posture`] is nine variants carrying `SystemTime`s, `Duration`s
 //! and a `QuotaSnapshot`. Rendering it directly would mean formatting in
 //! `render` — which GUI-PLAN §1.1.4 rules out, because this is chrome that
 //! repaints at 120 Hz and `format!` allocates every time — and would put the
@@ -34,9 +34,9 @@
 
 use gpui::{App, Global, SharedString};
 use nudox_engine::EngineHandle;
-use nudox_mcp::account::host::{AccountHost, UsageReport};
-use nudox_mcp::account::state::GRACE_WARNING_AT;
-use nudox_mcp::{AccountGate, ApiKey, Posture, SignInFailure};
+use nudox_engine::mcp::account::host::{AccountHost, UsageReport};
+use nudox_engine::mcp::account::state::GRACE_WARNING_AT;
+use nudox_engine::mcp::{AccountGate, ApiKey, Posture, SignInFailure};
 
 /// What the process-wide account gate is doing, in the vocabulary views paint.
 #[derive(Clone, Debug, PartialEq)]
@@ -152,11 +152,11 @@ impl AccountPresentation {
     /// wording is testable without a window.
     pub fn derive(
         posture: &Posture,
-        summary: Option<nudox_mcp::AccountSummary>,
-        hint: Option<(String, nudox_mcp::KeySource)>,
+        summary: Option<nudox_engine::mcp::AccountSummary>,
+        hint: Option<(String, nudox_engine::mcp::KeySource)>,
         usage: &UsageReport,
     ) -> Self {
-        use nudox_mcp::account::state::QuotaKnowledge;
+        use nudox_engine::mcp::account::state::QuotaKnowledge;
 
         let (key_hint, source) = match (&summary, &hint) {
             (Some(s), _) => (Some(s.key_hint.clone()), Some(s.source)),
@@ -284,7 +284,7 @@ impl AccountPresentation {
                 SharedString::from(format!("{} unreported", usage.dropped.calls))
             }),
             can_work,
-            can_sign_out: matches!(source, Some(nudox_mcp::KeySource::Keychain))
+            can_sign_out: matches!(source, Some(nudox_engine::mcp::KeySource::Keychain))
                 && !matches!(posture, Posture::SignedOut),
             urgent,
         }

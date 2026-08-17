@@ -51,11 +51,14 @@ pub struct GitWatermark {
 
 /// Why a watermark read or write failed.
 #[derive(Debug, thiserror::Error)]
-pub enum WatermarkError {
+pub enum Error {
     /// The backing store failed (IO, decode, engine).
     #[error("watermark store backend failed: {0}")]
     Backend(String),
 }
+
+/// Backwards-compatible alias: the watermark error (now [`Error`]).
+pub use self::Error as WatermarkError;
 
 /// The persistence seam for feed and git watermarks.
 ///
@@ -66,19 +69,19 @@ pub enum WatermarkError {
 /// write within one process).
 pub trait WatermarkStore: Send + Sync {
     /// Read a feed's watermark, or `None` if the feed has never been crawled.
-    fn feed_watermark(&self, feed: &str) -> Result<Option<FeedWatermark>, WatermarkError>;
+    fn feed_watermark(&self, feed: &str) -> Result<Option<FeedWatermark>, Error>;
 
     /// Persist a feed's watermark (upsert on `feed`).
-    fn put_feed_watermark(&self, watermark: &FeedWatermark) -> Result<(), WatermarkError>;
+    fn put_feed_watermark(&self, watermark: &FeedWatermark) -> Result<(), Error>;
 
     /// Read a stem's git watermark, or `None` if never polled.
     fn git_watermark(
         &self,
         stem_id: PackageStemId,
-    ) -> Result<Option<GitWatermark>, WatermarkError>;
+    ) -> Result<Option<GitWatermark>, Error>;
 
     /// Persist a stem's git watermark (upsert on `stem_id`).
-    fn put_git_watermark(&self, watermark: &GitWatermark) -> Result<(), WatermarkError>;
+    fn put_git_watermark(&self, watermark: &GitWatermark) -> Result<(), Error>;
 }
 
 /// An in-memory [`WatermarkStore`] — tests and single-process embedded runs.
@@ -100,19 +103,19 @@ impl MemoryWatermarkStore {
 }
 
 impl WatermarkStore for MemoryWatermarkStore {
-    fn feed_watermark(&self, feed: &str) -> Result<Option<FeedWatermark>, WatermarkError> {
+    fn feed_watermark(&self, feed: &str) -> Result<Option<FeedWatermark>, Error> {
         let map = self
             .feeds
             .lock()
-            .map_err(|_| WatermarkError::Backend("feed lock poisoned".to_owned()))?;
+            .map_err(|_| Error::Backend("feed lock poisoned".to_owned()))?;
         Ok(map.get(feed).cloned())
     }
 
-    fn put_feed_watermark(&self, watermark: &FeedWatermark) -> Result<(), WatermarkError> {
+    fn put_feed_watermark(&self, watermark: &FeedWatermark) -> Result<(), Error> {
         let mut map = self
             .feeds
             .lock()
-            .map_err(|_| WatermarkError::Backend("feed lock poisoned".to_owned()))?;
+            .map_err(|_| Error::Backend("feed lock poisoned".to_owned()))?;
         map.insert(watermark.feed.clone(), watermark.clone());
         Ok(())
     }
@@ -120,19 +123,19 @@ impl WatermarkStore for MemoryWatermarkStore {
     fn git_watermark(
         &self,
         stem_id: PackageStemId,
-    ) -> Result<Option<GitWatermark>, WatermarkError> {
+    ) -> Result<Option<GitWatermark>, Error> {
         let map = self
             .gits
             .lock()
-            .map_err(|_| WatermarkError::Backend("git lock poisoned".to_owned()))?;
+            .map_err(|_| Error::Backend("git lock poisoned".to_owned()))?;
         Ok(map.get(&stem_id.to_blob()).cloned())
     }
 
-    fn put_git_watermark(&self, watermark: &GitWatermark) -> Result<(), WatermarkError> {
+    fn put_git_watermark(&self, watermark: &GitWatermark) -> Result<(), Error> {
         let mut map = self
             .gits
             .lock()
-            .map_err(|_| WatermarkError::Backend("git lock poisoned".to_owned()))?;
+            .map_err(|_| Error::Backend("git lock poisoned".to_owned()))?;
         map.insert(watermark.stem_id.to_blob(), watermark.clone());
         Ok(())
     }

@@ -1,3 +1,4 @@
+//! `Kind` enum and frozen `KindDiscriminant` wire tags for every kind.
 use std::any::Any;
 
 use crate::{kinds::*, visitor::Visitor};

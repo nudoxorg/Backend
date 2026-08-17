@@ -1,3 +1,4 @@
+//! Tests for incremental materialize and partial checkout by `IntroId`.
 use std::sync::Arc;
 
 use crate::wire::PayloadTable;

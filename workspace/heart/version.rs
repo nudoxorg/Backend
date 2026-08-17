@@ -1,3 +1,5 @@
+//! Versioned payloads and shared stable-before-prerelease version selection.
+
 use serde::{Deserialize, Serialize};
 
 use crate::identity::PackageVersion;

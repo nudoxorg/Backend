@@ -1,5 +1,16 @@
 //! Background residency: the window is a *view of* the process, not the process
-//! (GUI-LOCAL-PLAN §L6, LIMITATIONS.md **L35**).
+//! (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md **L35**).
+//!
+//! # Scope: this is a macOS lifecycle
+//!
+//! The residency model this module implements — dismiss the window, keep the
+//! process hosting the MCP endpoint, return via a dock click or menu item —
+//! rests on macOS `QuitMode::Explicit`. On Linux and Windows the default is
+//! `QuitMode::LastWindowClosed`, so closing the window ends the process and
+//! there is no windowless state to return from. The platform facts live in
+//! [`crate::platform`] (`supports_background_residency`, `has_global_menu`);
+//! `refresh_menus` below installs the bar only where one exists. The rest of
+//! this module documents the macOS state table it was written for.
 //!
 //! # The defect this closes
 //!
@@ -197,6 +208,15 @@ pub fn wire_reopen(app: &Application) {
 /// whole bar and every later transition has to call this rather than build a
 /// second, competing menu somewhere else.
 pub fn refresh_menus(cx: &mut App) {
+    // The macOS global menu bar is the only place a dismissed window still has
+    // UI. On every other platform the window closing ends the process (see
+    // `platform::supports_background_residency`), so there is no windowless
+    // state to route through a menu — and no global menu to install it into.
+    // `cx.set_menus` is a no-op off macOS in any case; the guard makes the
+    // intent explicit rather than relying on that.
+    if !crate::platform::has_global_menu() {
+        return;
+    }
     let mcp = McpStatus::from_app(cx);
     let account = AccountStatus::from_app(cx);
     cx.set_menus(menus::main_menu(&mcp, &account));

@@ -26,7 +26,6 @@ use crate::wire::{
 use ir::change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
 use ir::entry::Visibility;
 use ir::kind::KindDiscriminant;
-use thiserror::Error;
 
 use crate::ascii::{
     decode_typeexpr, decode_typeref, encode_typeexpr, encode_typeref, escape, hex_to_32, unescape,
@@ -47,11 +46,11 @@ pub use libpijul::nudox_f1::registry::{
 };
 
 // ---------------------------------------------------------------------------
-// F1Error
+// Error
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Error)]
-pub enum F1Error {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     #[error("bad magic: expected NdIrF1")]
     BadMagic,
     #[error("unsupported format version: {0}")]
@@ -71,7 +70,7 @@ pub enum F1Error {
     #[error("invalid UTF-8: {0}")]
     Utf8(#[from] std::str::Utf8Error),
     #[error("ascii encoding error: {0}")]
-    Ascii(#[from] crate::ascii::AsciiError),
+    Ascii(#[from] crate::ascii::Error),
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +133,7 @@ fn encode_vis(v: Visibility) -> &'static str {
     }
 }
 
-fn decode_vis(s: &str) -> Result<Visibility, F1Error> {
+fn decode_vis(s: &str) -> Result<Visibility, Error> {
     match s {
         "public" => Ok(Visibility::Public),
         "private" => Ok(Visibility::Private),
@@ -142,7 +141,7 @@ fn decode_vis(s: &str) -> Result<Visibility, F1Error> {
         "internal" => Ok(Visibility::Internal),
         "package" => Ok(Visibility::Package),
         "crate" => Ok(Visibility::Crate),
-        _ => Err(F1Error::Malformed(format!("unknown visibility: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown visibility: {}", s))),
     }
 }
 
@@ -168,7 +167,7 @@ fn encode_kind_token(k: KindDiscriminant) -> &'static str {
     }
 }
 
-fn decode_kind_token(s: &str) -> Result<KindDiscriminant, F1Error> {
+fn decode_kind_token(s: &str) -> Result<KindDiscriminant, Error> {
     match s {
         "module" => Ok(KindDiscriminant::Module),
         "record" => Ok(KindDiscriminant::Record),
@@ -183,7 +182,7 @@ fn decode_kind_token(s: &str) -> Result<KindDiscriminant, F1Error> {
         "static" => Ok(KindDiscriminant::Static),
         "reexport" => Ok(KindDiscriminant::Reexport),
         "param" => Ok(KindDiscriminant::Param),
-        _ => Err(F1Error::Malformed(format!("unknown kind token: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown kind token: {}", s))),
     }
 }
 
@@ -223,9 +222,9 @@ fn encode_fnsig(sig: &FnSigFlags) -> String {
     parts.join("\t")
 }
 
-fn decode_fnsig(tokens: &[&str]) -> Result<FnSigFlags, F1Error> {
+fn decode_fnsig(tokens: &[&str]) -> Result<FnSigFlags, Error> {
     if tokens.is_empty() {
-        return Err(F1Error::Malformed("empty fnsig".into()));
+        return Err(Error::Malformed("empty fnsig".into()));
     }
     // First token is always self:<...>
     let self_kind = if let Some(rest) = tokens[0].strip_prefix("self:") {
@@ -238,12 +237,12 @@ fn decode_fnsig(tokens: &[&str]) -> Result<FnSigFlags, F1Error> {
                 if let Some(tr_str) = rest.strip_prefix("arb:") {
                     SelfKind::Arbitrary(decode_typeref(tr_str)?)
                 } else {
-                    return Err(F1Error::Malformed(format!("bad fnsig self: {}", tokens[0])));
+                    return Err(Error::Malformed(format!("bad fnsig self: {}", tokens[0])));
                 }
             }
         }
     } else {
-        return Err(F1Error::Malformed(format!(
+        return Err(Error::Malformed(format!(
             "fnsig must start with self:, got: {}",
             tokens[0]
         )));
@@ -267,7 +266,7 @@ fn decode_fnsig(tokens: &[&str]) -> Result<FnSigFlags, F1Error> {
                 if let Some(rest) = tok.strip_prefix("abi:") {
                     abi = Some(unescape(rest)?);
                 } else {
-                    return Err(F1Error::Malformed(format!("unknown fnsig token: {}", tok)));
+                    return Err(Error::Malformed(format!("unknown fnsig token: {}", tok)));
                 }
             }
         }
@@ -321,7 +320,7 @@ fn encode_gparam(gp: &GenericParamWire) -> String {
     }
 }
 
-fn decode_gparam(s: &str) -> Result<GenericParamWire, F1Error> {
+fn decode_gparam(s: &str) -> Result<GenericParamWire, Error> {
     if let Some(rest) = s.strip_prefix("life:") {
         return Ok(GenericParamWire::Lifetime {
             name: unescape(rest)?,
@@ -349,20 +348,20 @@ fn decode_gparam(s: &str) -> Result<GenericParamWire, F1Error> {
     if let Some(rest) = s.strip_prefix("const:") {
         let parts: Vec<&str> = rest.splitn(3, '\t').collect();
         if parts.len() < 2 {
-            return Err(F1Error::Malformed(format!("bad const gparam: {}", s)));
+            return Err(Error::Malformed(format!("bad const gparam: {}", s)));
         }
         let name = unescape(parts[0])?;
         let ty = decode_typeref(parts[1])?;
         let default = if let Some(p) = parts.get(2) {
             p.strip_prefix("default:")
-                .map(|d| -> Result<_, F1Error> { Ok(unescape(d)?) })
+                .map(|d| -> Result<_, Error> { Ok(unescape(d)?) })
                 .transpose()?
         } else {
             None
         };
         return Ok(GenericParamWire::Const { name, ty, default });
     }
-    Err(F1Error::Malformed(format!("unknown gparam prefix: {}", s)))
+    Err(Error::Malformed(format!("unknown gparam prefix: {}", s)))
 }
 
 // ---------------------------------------------------------------------------
@@ -378,10 +377,10 @@ fn encode_where(wp: &WherePredWire) -> String {
     )
 }
 
-fn decode_where(s: &str) -> Result<WherePredWire, F1Error> {
+fn decode_where(s: &str) -> Result<WherePredWire, Error> {
     let tab = s
         .find('\t')
-        .ok_or_else(|| F1Error::Malformed(format!("where missing TAB: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("where missing TAB: {}", s)))?;
     let target = decode_typeexpr(&s[..tab])?;
     let bounds = decode_bound_list(&s[tab + 1..])?;
     Ok(WherePredWire { target, bounds })
@@ -394,7 +393,7 @@ fn encode_bound_list(bounds: &[TypeRefWire]) -> String {
     parts.join("+")
 }
 
-fn decode_bound_list(s: &str) -> Result<Box<[TypeRefWire]>, F1Error> {
+fn decode_bound_list(s: &str) -> Result<Box<[TypeRefWire]>, Error> {
     if s.is_empty() {
         return Ok(Box::new([]));
     }
@@ -430,7 +429,7 @@ fn encode_tflags(f: &TraitFlags) -> String {
     parts.join("\t")
 }
 
-fn decode_tflags(tokens: &[&str]) -> Result<TraitFlags, F1Error> {
+fn decode_tflags(tokens: &[&str]) -> Result<TraitFlags, Error> {
     let mut flags = TraitFlags::default();
     for tok in tokens {
         match *tok {
@@ -442,7 +441,7 @@ fn decode_tflags(tokens: &[&str]) -> Result<TraitFlags, F1Error> {
             "sealed:none" => flags.sealed = Sealed::None,
             "sealed:pubapi" => flags.sealed = Sealed::PubApi,
             "sealed:full" => flags.sealed = Sealed::Full,
-            _ => return Err(F1Error::Malformed(format!("unknown tflags token: {}", tok))),
+            _ => return Err(Error::Malformed(format!("unknown tflags token: {}", tok))),
         }
     }
     Ok(flags)
@@ -463,14 +462,14 @@ fn encode_iflags(f: &ImplFlags) -> String {
     parts.join("\t")
 }
 
-fn decode_iflags(tokens: &[&str]) -> Result<ImplFlags, F1Error> {
+fn decode_iflags(tokens: &[&str]) -> Result<ImplFlags, Error> {
     let mut flags = ImplFlags::default();
     for tok in tokens {
         match *tok {
             "negative" => flags.negative = true,
             "blanket" => flags.blanket = true,
             "" => {}
-            _ => return Err(F1Error::Malformed(format!("unknown iflags token: {}", tok))),
+            _ => return Err(Error::Malformed(format!("unknown iflags token: {}", tok))),
         }
     }
     Ok(flags)
@@ -489,13 +488,13 @@ fn encode_recform(f: &RecordForm) -> &'static str {
     }
 }
 
-fn decode_recform(s: &str) -> Result<RecordForm, F1Error> {
+fn decode_recform(s: &str) -> Result<RecordForm, Error> {
     match s {
         "struct" => Ok(RecordForm::Struct),
         "tuple" => Ok(RecordForm::Tuple),
         "unit" => Ok(RecordForm::Unit),
         "union" => Ok(RecordForm::Union),
-        _ => Err(F1Error::Malformed(format!("unknown recform: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown recform: {}", s))),
     }
 }
 
@@ -511,12 +510,12 @@ fn encode_vform(f: &VariantForm) -> &'static str {
     }
 }
 
-fn decode_vform(s: &str) -> Result<VariantForm, F1Error> {
+fn decode_vform(s: &str) -> Result<VariantForm, Error> {
     match s {
         "unit" => Ok(VariantForm::Unit),
         "tuple" => Ok(VariantForm::Tuple),
         "struct" => Ok(VariantForm::Struct),
-        _ => Err(F1Error::Malformed(format!("unknown vform: {}", s))),
+        _ => Err(Error::Malformed(format!("unknown vform: {}", s))),
     }
 }
 
@@ -545,23 +544,23 @@ fn encode_auto(facts: &[AutoFact]) -> Vec<String> {
         .collect()
 }
 
-fn decode_auto_line(s: &str) -> Result<AutoFact, F1Error> {
+fn decode_auto_line(s: &str) -> Result<AutoFact, Error> {
     let colon = s
         .find(':')
-        .ok_or_else(|| F1Error::Malformed(format!("bad auto line: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("bad auto line: {}", s)))?;
     let trait_ = match &s[..colon] {
         "send" => AutoTrait::Send,
         "sync" => AutoTrait::Sync,
         "unpin" => AutoTrait::Unpin,
         "unwindsafe" => AutoTrait::UnwindSafe,
         "refunwindsafe" => AutoTrait::RefUnwindSafe,
-        other => return Err(F1Error::Malformed(format!("unknown auto trait: {}", other))),
+        other => return Err(Error::Malformed(format!("unknown auto trait: {}", other))),
     };
     let state = match &s[colon + 1..] {
         "yes" => AutoState::Yes,
         "no" => AutoState::No,
         "cond" => AutoState::Cond,
-        other => return Err(F1Error::Malformed(format!("unknown auto state: {}", other))),
+        other => return Err(Error::Malformed(format!("unknown auto state: {}", other))),
     };
     Ok(AutoFact { trait_, state })
 }
@@ -588,7 +587,7 @@ fn encode_cfg(e: &CfgExpr) -> String {
     }
 }
 
-fn decode_cfg(s: &str) -> Result<CfgExpr, F1Error> {
+fn decode_cfg(s: &str) -> Result<CfgExpr, Error> {
     if let Some(inner) = s.strip_prefix("all(").and_then(|s| s.strip_suffix(')')) {
         let children = split_cfg_args(inner)?;
         return Ok(CfgExpr::All(children.into_boxed_slice()));
@@ -612,10 +611,10 @@ fn decode_cfg(s: &str) -> Result<CfgExpr, F1Error> {
     if let Some(rest) = s.strip_prefix("other:") {
         return Ok(CfgExpr::Other(unescape(rest)?));
     }
-    Err(F1Error::Malformed(format!("unknown cfg expr: {}", s)))
+    Err(Error::Malformed(format!("unknown cfg expr: {}", s)))
 }
 
-fn split_cfg_args(s: &str) -> Result<Vec<CfgExpr>, F1Error> {
+fn split_cfg_args(s: &str) -> Result<Vec<CfgExpr>, Error> {
     // Naive split on ',' that respects balanced parens
     if s.is_empty() {
         return Ok(Vec::new());
@@ -650,7 +649,7 @@ fn encode_attr(a: &AttrTok) -> String {
     }
 }
 
-fn decode_attr(s: &str) -> Result<AttrTok, F1Error> {
+fn decode_attr(s: &str) -> Result<AttrTok, Error> {
     if let Some(tab) = s.find('\t') {
         let token = s[..tab].to_owned();
         let arg = Some(unescape(&s[tab + 1..])?);
@@ -667,22 +666,22 @@ fn decode_attr(s: &str) -> Result<AttrTok, F1Error> {
 // StableRef encoding (for retgt and dlink)
 // ---------------------------------------------------------------------------
 
-fn decode_stable_ref(s: &str) -> Result<StableRef, F1Error> {
+fn decode_stable_ref(s: &str) -> Result<StableRef, Error> {
     // format: <eco><pkg>#<64hex>  (note: no '/' between eco and pkg, use '#' as anchor)
     // Actually it's F:<eco>/<pkg>#<hex> in typeref; for stable-ref in retgt/dlink
     // the wire contract reuses encode_typeref format for the Foreign variant.
     // Per §6.2: `stable-ref` = `F:<eco>/<pkg>#<64hex>` (same as typeref foreign).
     let rest = s
         .strip_prefix("F:")
-        .ok_or_else(|| F1Error::Malformed(format!("stable-ref must start with F:: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("stable-ref must start with F:: {}", s)))?;
     let hash_pos = rest
         .rfind('#')
-        .ok_or_else(|| F1Error::Malformed(format!("no '#' in stable-ref: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("no '#' in stable-ref: {}", s)))?;
     let intro_hex = &rest[hash_pos + 1..];
     let eco_pkg = &rest[..hash_pos];
     let slash = eco_pkg
         .find('/')
-        .ok_or_else(|| F1Error::Malformed(format!("no '/' in stable-ref: {}", s)))?;
+        .ok_or_else(|| Error::Malformed(format!("no '/' in stable-ref: {}", s)))?;
     let eco = &eco_pkg[..slash];
     let pkg = &eco_pkg[slash + 1..];
     Ok(StableRef::new(
@@ -1261,23 +1260,23 @@ fn key_order_index(key: &str) -> Option<u8> {
 impl<'a> F1View<'a> {
     /// Parse F1 bytes strictly.  Unknown key → error.  Wrong order → error.
     /// Unsorted set → error.
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<F1View<'a>, F1Error> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<F1View<'a>, Error> {
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.split('\n');
 
         // Magic line
-        let first = lines.next().ok_or(F1Error::BadMagic)?;
+        let first = lines.next().ok_or(Error::BadMagic)?;
         {
             let mut parts = first.splitn(2, '\t');
             if parts.next() != Some("NdIrF1") {
-                return Err(F1Error::BadMagic);
+                return Err(Error::BadMagic);
             }
             let ver_str = parts.next().unwrap_or("");
             let ver: u16 = ver_str
                 .parse()
-                .map_err(|_| F1Error::Malformed(format!("bad version: {}", ver_str)))?;
+                .map_err(|_| Error::Malformed(format!("bad version: {}", ver_str)))?;
             if ver != 1 {
-                return Err(F1Error::UnsupportedVersion(ver));
+                return Err(Error::UnsupportedVersion(ver));
             }
         }
 
@@ -1335,7 +1334,7 @@ impl<'a> F1View<'a> {
                 continue; // trailing newline
             }
             let tab = raw_line.find('\t').ok_or_else(|| {
-                F1Error::Malformed(format!(
+                Error::Malformed(format!(
                     "line has no TAB: {}",
                     &raw_line[..raw_line.len().min(40)]
                 ))
@@ -1343,11 +1342,11 @@ impl<'a> F1View<'a> {
             let key = &raw_line[..tab];
             let val = &raw_line[tab + 1..];
 
-            let order = key_order_index(key).ok_or_else(|| F1Error::UnknownKey(key.to_owned()))?;
+            let order = key_order_index(key).ok_or_else(|| Error::UnknownKey(key.to_owned()))?;
 
             // Section order: key order index must be ≥ last (same key repeated is fine for sets/seqs)
             if order < last_key_order {
-                return Err(F1Error::OutOfOrder(key.to_owned()));
+                return Err(Error::OutOfOrder(key.to_owned()));
             }
             last_key_order = order;
 
@@ -1356,7 +1355,7 @@ impl<'a> F1View<'a> {
                 ($last:expr, $val:expr, $key:expr) => {
                     if let Some(prev) = $last {
                         if $val < prev {
-                            return Err(F1Error::UnsortedSet(
+                            return Err(Error::UnsortedSet(
                                 $key.to_owned(),
                                 prev.to_owned(),
                                 $val.to_owned(),
@@ -1375,19 +1374,19 @@ impl<'a> F1View<'a> {
                     let mut parts = val.splitn(2, '\t');
                     let s_str = parts
                         .next()
-                        .ok_or_else(|| F1Error::Malformed("span missing start".into()))?;
+                        .ok_or_else(|| Error::Malformed("span missing start".into()))?;
                     let e_str = parts
                         .next()
-                        .ok_or_else(|| F1Error::Malformed("span missing end".into()))?;
+                        .ok_or_else(|| Error::Malformed("span missing end".into()))?;
                     span_start = Some(
                         s_str
                             .parse()
-                            .map_err(|_| F1Error::Malformed(format!("bad span: {}", val)))?,
+                            .map_err(|_| Error::Malformed(format!("bad span: {}", val)))?,
                     );
                     span_end = Some(
                         e_str
                             .parse()
-                            .map_err(|_| F1Error::Malformed(format!("bad span: {}", val)))?,
+                            .map_err(|_| Error::Malformed(format!("bad span: {}", val)))?,
                     );
                 }
                 KEY_SRC => src = Some(val),
@@ -1444,20 +1443,20 @@ impl<'a> F1View<'a> {
                     check_sorted!(last_lfact, val, KEY_LFACT);
                     lfact_lines.push(val);
                 }
-                _ => return Err(F1Error::UnknownKey(key.to_owned())),
+                _ => return Err(Error::UnknownKey(key.to_owned())),
             }
         }
 
         // Required fields
-        let name = name.ok_or_else(|| F1Error::MissingField("name".into()))?;
-        let vis = vis.ok_or_else(|| F1Error::MissingField("vis".into()))?;
-        let kind_disc = kind_disc.ok_or_else(|| F1Error::MissingField("kind".into()))?;
-        let span_start = span_start.ok_or_else(|| F1Error::MissingField("span".into()))?;
-        let span_end = span_end.ok_or_else(|| F1Error::MissingField("span".into()))?;
+        let name = name.ok_or_else(|| Error::MissingField("name".into()))?;
+        let vis = vis.ok_or_else(|| Error::MissingField("vis".into()))?;
+        let kind_disc = kind_disc.ok_or_else(|| Error::MissingField("kind".into()))?;
+        let span_start = span_start.ok_or_else(|| Error::MissingField("span".into()))?;
+        let span_end = span_end.ok_or_else(|| Error::MissingField("span".into()))?;
 
         // Parse parent
         let parent_id = parent_hex
-            .map(|h| Ok::<_, F1Error>(IntroId::from_raw(hex_to_32(h)?)))
+            .map(|h| Ok::<_, Error>(IntroId::from_raw(hex_to_32(h)?)))
             .transpose()?;
 
         // Parse links
@@ -1530,7 +1529,7 @@ impl<'a> F1View<'a> {
     }
 
     /// Reconstruct a full [`OwnedEntryPayload`] from the view.
-    pub fn to_owned_payload(&self) -> Result<OwnedEntryPayload, F1Error> {
+    pub fn to_owned_payload(&self) -> Result<OwnedEntryPayload, Error> {
         let name = unescape(self.name)?;
         let source_path = self.src.map(unescape).transpose()?.unwrap_or_default();
 
@@ -1572,7 +1571,7 @@ impl<'a> F1View<'a> {
                 let target = decode_stable_ref(&s[..tab])?;
                 let label_raw = if tab < s.len() { &s[tab + 1..] } else { "" };
                 let label = unescape(label_raw)?;
-                Ok::<_, F1Error>(DocLinkWire {
+                Ok::<_, Error>(DocLinkWire {
                     target,
                     label: if label.is_empty() { None } else { Some(label) },
                 })
@@ -1606,7 +1605,7 @@ impl<'a> F1View<'a> {
         Ok(payload)
     }
 
-    fn reconstruct_kind(&self) -> Result<KindWire, F1Error> {
+    fn reconstruct_kind(&self) -> Result<KindWire, Error> {
         match self.kind_disc {
             KindDiscriminant::Module => Ok(KindWire::Module(ModuleWire {})),
 
@@ -1619,7 +1618,7 @@ impl<'a> F1View<'a> {
                 let fields: Result<Vec<_>, _> = self
                     .recfield_lines
                     .iter()
-                    .map(|h| Ok::<_, F1Error>(IntroId::from_raw(hex_to_32(h)?)))
+                    .map(|h| Ok::<_, Error>(IntroId::from_raw(hex_to_32(h)?)))
                     .collect();
                 let generics = self.parse_gparams()?;
                 let wheres = self.parse_wheres()?;
@@ -1732,7 +1731,7 @@ impl<'a> F1View<'a> {
                     .lfact_lines
                     .iter()
                     .filter_map(|s| s.strip_prefix("variant:"))
-                    .map(|h| Ok::<_, F1Error>(IntroId::from_raw(hex_to_32(h)?)))
+                    .map(|h| Ok::<_, Error>(IntroId::from_raw(hex_to_32(h)?)))
                     .collect();
                 let generics = self.parse_gparams()?;
                 let wheres = self.parse_wheres()?;
@@ -1756,7 +1755,7 @@ impl<'a> F1View<'a> {
                 let fields: Result<Vec<_>, _> = self
                     .recfield_lines
                     .iter()
-                    .map(|h| Ok::<_, F1Error>(IntroId::from_raw(hex_to_32(h)?)))
+                    .map(|h| Ok::<_, Error>(IntroId::from_raw(hex_to_32(h)?)))
                     .collect();
                 Ok(KindWire::Variant(VariantWire {
                     form,
@@ -1770,7 +1769,7 @@ impl<'a> F1View<'a> {
                     .cty_raw
                     .map(decode_typeref)
                     .transpose()?
-                    .ok_or_else(|| F1Error::MissingField("cty".into()))?;
+                    .ok_or_else(|| Error::MissingField("cty".into()))?;
                 let value = self.cval_raw.map(unescape).transpose()?;
                 Ok(KindWire::Const(ConstWire { ty, value }))
             }
@@ -1780,7 +1779,7 @@ impl<'a> F1View<'a> {
                     .cty_raw
                     .map(decode_typeref)
                     .transpose()?
-                    .ok_or_else(|| F1Error::MissingField("cty (static)".into()))?;
+                    .ok_or_else(|| Error::MissingField("cty (static)".into()))?;
                 let mutable = self.lfact_lines.contains(&"mutable");
                 Ok(KindWire::Static(StaticWire { ty, mutable }))
             }
@@ -1790,7 +1789,7 @@ impl<'a> F1View<'a> {
                     .retgt_raw
                     .map(decode_stable_ref)
                     .transpose()?
-                    .ok_or_else(|| F1Error::MissingField("retgt".into()))?;
+                    .ok_or_else(|| Error::MissingField("retgt".into()))?;
                 Ok(KindWire::Reexport(ReexportWire { target }))
             }
 
@@ -1800,14 +1799,14 @@ impl<'a> F1View<'a> {
                 let pw = self
                     .in_lines
                     .first()
-                    .ok_or_else(|| F1Error::MissingField("in (param)".into()))
+                    .ok_or_else(|| Error::MissingField("in (param)".into()))
                     .and_then(|s| parse_param_line(s))?;
                 Ok(KindWire::Param(pw))
             }
         }
     }
 
-    fn parse_gparams(&self) -> Result<Box<[GenericParamWire]>, F1Error> {
+    fn parse_gparams(&self) -> Result<Box<[GenericParamWire]>, Error> {
         self.gparam_lines
             .iter()
             .map(|s| decode_gparam(s))
@@ -1815,7 +1814,7 @@ impl<'a> F1View<'a> {
             .map(|v| v.into_boxed_slice())
     }
 
-    fn parse_wheres(&self) -> Result<Box<[WherePredWire]>, F1Error> {
+    fn parse_wheres(&self) -> Result<Box<[WherePredWire]>, Error> {
         self.where_lines
             .iter()
             .map(|s| decode_where(s))
@@ -1823,7 +1822,7 @@ impl<'a> F1View<'a> {
             .map(|v| v.into_boxed_slice())
     }
 
-    fn parse_auto(&self) -> Result<Box<[AutoFact]>, F1Error> {
+    fn parse_auto(&self) -> Result<Box<[AutoFact]>, Error> {
         self.auto_lines
             .iter()
             .map(|s| decode_auto_line(s))
@@ -1836,24 +1835,24 @@ impl<'a> F1View<'a> {
 // Link line parser
 // ---------------------------------------------------------------------------
 
-fn parse_link_line(rest: &str) -> Result<LinkWire, F1Error> {
+fn parse_link_line(rest: &str) -> Result<LinkWire, Error> {
     // format: <eco>TAB<pkg>TAB<64hex>TAB<kind_self>TAB<kind_other>
     let mut parts = rest.splitn(6, '\t');
     let eco = parts
         .next()
-        .ok_or_else(|| F1Error::Malformed(format!("link missing eco: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing eco: {}", rest)))?;
     let pkg = parts
         .next()
-        .ok_or_else(|| F1Error::Malformed(format!("link missing pkg: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing pkg: {}", rest)))?;
     let intro_hex = parts
         .next()
-        .ok_or_else(|| F1Error::Malformed(format!("link missing intro: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing intro: {}", rest)))?;
     let ks_str = parts
         .next()
-        .ok_or_else(|| F1Error::Malformed(format!("link missing kind_self: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing kind_self: {}", rest)))?;
     let ko_str = parts
         .next()
-        .ok_or_else(|| F1Error::Malformed(format!("link missing kind_other: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("link missing kind_other: {}", rest)))?;
     Ok(LinkWire {
         other: StableRef::new(
             PackageLineageId::new(EcosystemId::new(eco), PackageName::new(pkg)),
@@ -1868,11 +1867,11 @@ fn parse_link_line(rest: &str) -> Result<LinkWire, F1Error> {
 // Param line parser
 // ---------------------------------------------------------------------------
 
-fn parse_param_line(rest: &str) -> Result<ParamWire, F1Error> {
+fn parse_param_line(rest: &str) -> Result<ParamWire, Error> {
     // format: <escaped_name>TAB<typeref>
     let tab = rest
         .find('\t')
-        .ok_or_else(|| F1Error::Malformed(format!("param line missing TAB: {}", rest)))?;
+        .ok_or_else(|| Error::Malformed(format!("param line missing TAB: {}", rest)))?;
     let name_raw = &rest[..tab];
     let tr_str = &rest[tab + 1..];
     let name = unescape(name_raw)?;

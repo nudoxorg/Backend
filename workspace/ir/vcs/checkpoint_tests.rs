@@ -1,3 +1,4 @@
+//! Tests for demand-based checkpoint serving.
 use super::*;
 
 use crate::wire::PayloadTable;

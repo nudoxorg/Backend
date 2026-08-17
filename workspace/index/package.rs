@@ -1,5 +1,4 @@
-// Types moved into heart::package. Re-export everything so existing
-// `registry::package::*` references continue to compile unchanged.
+//! Package vocabulary re-exports (heart::package).
 pub use heart::package::*;
 
 /// Re-export of `heart::package::coordinates` under the legacy path.

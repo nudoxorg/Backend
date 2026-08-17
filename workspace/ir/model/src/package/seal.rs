@@ -42,7 +42,11 @@
 //! refs. Phase 2 reads only the phase-1 output (the `path_ids` map). There
 //! is no backward edge; the computation terminates by construction.
 
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    hash::Hash,
+};
 
 use triomphe::Arc;
 
@@ -55,6 +59,7 @@ use crate::{
     intro::{Disambiguator, bootstrap_intro_id},
     kind::{Kind, KindDiscriminant},
     kinds::{Param, Type},
+    lower::PendingOccurrenceTarget,
     skeleton::Skeleton,
     visitor::Visitor,
 };
@@ -76,6 +81,11 @@ pub struct SealOutcome {
     pub table: PristineIntroTable,
     /// What sealing observed. See [`SealReport`].
     pub report: SealReport,
+    /// References resolved by this same seal operation, never by a
+    /// language-specific post-processing path.
+    pub occurrences: Vec<(IntroId, crate::vocab::Occurrence)>,
+    /// Merged syntax and semantic body facts resolved in the same ID space.
+    pub bodies: Vec<(IntroId, crate::body::BodyEmbed)>,
 }
 
 /// Facts a caller must be able to see after sealing.
@@ -87,6 +97,11 @@ pub struct SealOutcome {
 /// strictly better for a documentation product than degrading to a blank page.
 #[derive(Debug, Default)]
 pub struct SealReport {
+    /// Facts rejected at the producer boundary, grouped by exact cause.
+    /// Non-zero counts are never silent even when filtering the referenced
+    /// declaration was intentional.
+    pub rejected_facts: crate::lower::RejectedFactCounts,
+
     /// Distinct cross-package keys no resolver could place, with the reason.
     ///
     /// Split by [`Resolution`] rather than collapsed to a count so that
@@ -154,7 +169,10 @@ impl SealReport {
     /// Deliberately excludes `unlinked`: a package sealed without its
     /// dependencies is the normal local-first case, not a problem.
     pub fn is_clean(&self) -> bool {
-        self.forced.is_empty() && self.unmapped_local.is_empty() && self.collisions.is_empty()
+        self.rejected_facts.is_empty()
+            && self.forced.is_empty()
+            && self.unmapped_local.is_empty()
+            && self.collisions.is_empty()
     }
 }
 
@@ -345,6 +363,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let resolver = |idx: UntypedEntryIndex| path_ids.get(&idx).copied();
 
         let mut report = SealReport::default();
+        report.rejected_facts = self.rejected_facts;
         let mut intros: Vec<IntroId> = Vec::with_capacity(n);
         for i in 0..n {
             let (_, e) = &self.entries[i];
@@ -532,6 +551,112 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let intro_of: HashMap<UntypedEntryIndex, IntroId> =
             pos_of.iter().map(|(idx, &i)| (*idx, intros[i])).collect();
 
+        // One resolver cache serves both declaration/type refs and body
+        // occurrences. Cross-package edges must not pay twice or diverge by
+        // projection: a key has exactly one resolution for this seal.
+        let cache: RefCell<HashMap<Arc<ForeignKey>, Resolution>> = RefCell::new(HashMap::new());
+
+        let mut occurrences = Vec::with_capacity(self.occurrences.len());
+        for pending in &self.occurrences {
+            let Some(&owner) = intro_of.get(&pending.owner) else {
+                continue;
+            };
+            let target = match &pending.target {
+                PendingOccurrenceTarget::Local(target) => {
+                    let Some(&target) = intro_of.get(target) else {
+                        continue;
+                    };
+                    StableRef::new(lineage.clone(), target)
+                }
+                PendingOccurrenceTarget::Foreign(key) => {
+                    let resolution = cache
+                        .borrow_mut()
+                        .entry(key.clone())
+                        .or_insert_with(|| imports.resolve(key))
+                        .clone();
+                    let Resolution::Resolved(target) = resolution else {
+                        continue;
+                    };
+                    target
+                }
+            };
+            occurrences.push((
+                owner,
+                crate::vocab::Occurrence::new(
+                    target,
+                    pending.kind,
+                    pending.confidence,
+                    pending.span,
+                ),
+            ));
+        }
+        let mut bodies_by_owner: HashMap<IntroId, crate::body::BodyEmbed> = self
+            .bodies
+            .iter()
+            .filter_map(|pending| {
+                intro_of
+                    .get(&pending.owner)
+                    .copied()
+                    .map(|owner| (owner, pending.body.clone()))
+            })
+            .collect();
+
+        // Semantic occurrences and semantic body calls are two projections of
+        // one resolved fact, not independently populated sidecars. This is the
+        // point where producer IDs become StableRefs, so it is the only layer
+        // that can materialize both without a language-specific post-pass.
+        if let Some(language) = self.language {
+            for (owner, occurrence) in &occurrences {
+                let body = bodies_by_owner
+                    .entry(*owner)
+                    .or_insert(crate::body::BodyEmbed::Absent);
+                if matches!(body, crate::body::BodyEmbed::Absent) {
+                    *body = crate::body::BodyEmbed::Present(crate::body::BodyFacts {
+                        language,
+                        tree: crate::body::TreesitterBody::default(),
+                        oracle: crate::body::OracleBody::default(),
+                        merge: crate::body::BodyMergeNote::oracle_only(),
+                    });
+                }
+                let crate::body::BodyEmbed::Present(facts) = body else {
+                    unreachable!("absent body replaced immediately above")
+                };
+                if occurrence.kind == crate::vocab::ReferenceKind::TypeReference {
+                    let mention = crate::body::OracleTypeMention {
+                        ty: occurrence.target.clone(),
+                        rel_span: occurrence.span,
+                    };
+                    facts.oracle.type_mentions.push(mention);
+                } else {
+                    let call = crate::body::OracleCall {
+                        target: Some(occurrence.target.clone()),
+                        kind: occurrence.kind,
+                        confidence: occurrence.confidence,
+                        rel_span: occurrence.span,
+                    };
+                    facts.oracle.calls.push(call);
+                }
+                facts.merge.oracle_ran = true;
+            }
+        }
+        for body in bodies_by_owner.values_mut() {
+            let crate::body::BodyEmbed::Present(facts) = body else {
+                continue;
+            };
+            let mut seen_calls = HashSet::with_capacity(facts.oracle.calls.len());
+            facts
+                .oracle
+                .calls
+                .retain(|call| seen_calls.insert(call.clone()));
+            let mut seen_mentions = HashSet::with_capacity(facts.oracle.type_mentions.len());
+            facts
+                .oracle
+                .type_mentions
+                .retain(|mention| seen_mentions.insert(mention.clone()));
+        }
+        let mut bodies: Vec<_> = bodies_by_owner.into_iter().collect();
+        bodies.sort_unstable_by_key(|(owner, _)| *owner);
+
         // `by_idx` is the only binding that borrows `self.entries`; end it here
         // so pass 3 can consume them. (`path_ids`/`resolver` own their data and
         // simply fall out of scope.)
@@ -551,7 +676,6 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         // interior mutability. A `FnMut` visitor would make this a compile-time
         // invariant instead of a runtime one; widening it touches the derive
         // macro and is deliberately left as separate work.
-        let cache: RefCell<HashMap<Arc<ForeignKey>, Resolution>> = RefCell::new(HashMap::new());
         let unmapped: RefCell<Vec<UntypedEntryIndex>> = RefCell::new(Vec::new());
 
         let mut table = PristineIntroTable::new();
@@ -607,7 +731,12 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             }
         }
 
-        SealOutcome { table, report }
+        SealOutcome {
+            table,
+            report,
+            occurrences,
+            bodies,
+        }
     }
 }
 

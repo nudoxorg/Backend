@@ -143,7 +143,7 @@ mod tests {
     use crate::{
         entry::{Symbol, Visibility},
         kinds::Module,
-        test_helpers::{entry, n},
+        test_helpers::{entry, node},
     };
 
     fn intro(byte: u8) -> IntroId {
@@ -191,7 +191,7 @@ mod tests {
             root_id,
             entry(
                 sym_with_vis("root", Visibility::Public),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             None,
@@ -200,7 +200,7 @@ mod tests {
             hidden_id,
             entry(
                 sym_with_vis("hidden", Visibility::Private),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             Some(root_id),
@@ -209,7 +209,7 @@ mod tests {
             child_id,
             entry(
                 sym_with_vis("child", Visibility::Public),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             Some(hidden_id),
@@ -218,7 +218,7 @@ mod tests {
             visible_id,
             entry(
                 sym_with_vis("visible", Visibility::Public),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             Some(root_id),
@@ -227,7 +227,7 @@ mod tests {
             leaf_id,
             entry(
                 sym_with_vis("leaf", Visibility::Private),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             Some(visible_id),
@@ -280,7 +280,7 @@ mod tests {
             id,
             entry(
                 sym_with_vis("secret", Visibility::Private),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             None,
@@ -297,7 +297,7 @@ mod tests {
             id,
             entry(
                 sym_with_vis("internal_mod", Visibility::Crate),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             None,
@@ -390,14 +390,14 @@ mod tests {
         let crate_mod_id = intro(21);
         t.insert_live(
             root_id,
-            entry(sym_with_vis("pkg", Visibility::Public), n::root([]), Module),
+            entry(sym_with_vis("pkg", Visibility::Public), node::root([]), Module),
             None,
         );
         t.insert_live(
             crate_mod_id,
             entry(
                 sym_with_vis("internals", Visibility::Crate),
-                n::root([]),
+                node::root([]),
                 Module,
             ),
             Some(root_id),

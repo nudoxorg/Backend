@@ -11,7 +11,7 @@
 //! `cx.theme().is_dark()` and picked one of two hard-coded themes from it — so
 //! gpui-component was upstream and our palette was a reaction to it.
 //!
-//! The visible consequence is in `.shots/fixtures/04-search-hits.png`: the
+//! The visible consequence is in `tests/shots/fixtures/04-search-hits.png`: the
 //! `⏎`, `⌘⏎`, `Tab` caps along the overlay's footer are `Kbd` elements filled
 //! with gpui-component's `muted` on gpui-component's `muted_foreground`, which
 //! no nudox theme has ever had a say in. They are the right *kind* of grey by

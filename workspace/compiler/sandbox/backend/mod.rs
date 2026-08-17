@@ -1,7 +1,8 @@
-//! Shared backend utilities.
+//! Backend run loop and the real smolvm runtime.
 //!
 //! [`supervisor`] is the shared run loop (spawn, cgroup attach, wall timer,
-//! capped pipe reads). The old `Backend` trait and per-backend structs have
-//! been collapsed into the [`crate::cage`] module.
+//! capped pipe reads) used by dev passthrough. [`smolvm`] is the real
+//! [`crate::vm::VmRuntime`] over the vendored smolvm crate.
 
+pub mod smolvm;
 pub(crate) mod supervisor;

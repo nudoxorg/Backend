@@ -1,0 +1,371 @@
+//! The server's error taxonomy and its mapping onto HTTP responses.
+//!
+//! Internal subsystem errors (registry, runtime) are carried as their **concrete**
+//! typed sources via `#[from]` — never boxed/erased — so the whole chain survives
+//! to structured logs and retry classification can delegate straight to the
+//! subsystem's own [`Retryable`]. Only the outward [`ServerError::status`]
+//! projection decides what the client sees.
+
+#[allow(unused_imports)]
+use crate::server::registry;
+use heart::{ConnectError, NameError, PackageId, Retryable};
+
+/// The single error type every handler and coordination flow returns.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerError {
+    /// A backing store failed to connect during assembly/health.
+    #[error(transparent)]
+    Connect(#[from] ConnectError),
+
+    /// The registry tier failed.
+    #[error(transparent)]
+    Registry(#[from] crate::server::registry::RegistryError),
+
+    /// The runtime serving tier failed.
+    #[error(transparent)]
+    Runtime(#[from] registry::runtime::RuntimeError),
+
+    /// The vector plane's store (qdrant remote) failed. Post-relayering the
+    /// vector plane lives in `registry::vector`, so its store error is carried
+    /// as its own concrete variant rather than folded through `RuntimeError`
+    /// (which now belongs to `crate::runtime`, a different crate).
+    #[error(transparent)]
+    Vector(#[from] crate::server::vector::store::StoreError),
+
+    /// The query/document embedder failed (network, cache, or model error).
+    #[error(transparent)]
+    Embed(#[from] crate::server::vector::embedding::EmbedError),
+
+    /// The request was malformed or violated an invariant (→ 4xx).
+    #[error(transparent)]
+    BadRequest(#[from] BadRequestReason),
+
+    /// The caller is not permitted to perform the action (→ 403).
+    #[error(transparent)]
+    Forbidden(#[from] ForbiddenReason),
+
+    /// The requested resource does not exist (→ 404).
+    #[error("not found")]
+    NotFound,
+
+    /// Configuration failed to resolve.
+    #[error(transparent)]
+    Config(#[from] crate::server::config::ConfigError),
+
+    /// An internal invariant broke (→ 500).
+    #[error(transparent)]
+    Internal(#[from] InternalError),
+
+    /// A well-formed request targeted a surface that is typed and routed but not
+    /// yet backed by its projection (e.g. `Target::Usages` before WS5's reverse
+    /// `occ` index lands) (→ 501).
+    #[error(transparent)]
+    Unsupported(#[from] crate::server::registry::search::usages::UsageQueryError),
+}
+
+/// Re-export the shared query-error vocabulary so `driver/error` callers
+/// keep importing from one place. The errors themselves are now owned by
+/// `heart::client::query` (the transport-free vocabulary).
+pub use heart::client::query::QueryError;
+
+/// Rich, typed reasons a request was rejected as bad (client error, 4xx).
+/// Never uses dynamic format strings in the variant data; all information is
+/// carried as typed fields with #[source] chains preserved for programmatic
+/// inspection and structured logging.
+#[derive(Debug, thiserror::Error)]
+pub enum BadRequestReason {
+    /// A required field was absent from the request DTO.
+    #[error("missing field: {field}")]
+    MissingField { field: &'static str },
+
+    /// The request body was not valid JSON (or failed to deserialize into the
+    /// expected shape).
+    #[error("invalid json body")]
+    InvalidJson(#[source] serde_json::Error),
+
+    /// A literal or abstract search query was syntactically or semantically
+    /// invalid. Carries the full `QueryError` (which itself carries the original
+    /// snippet + position where possible).
+    #[error(transparent)]
+    MalformedQuery(#[from] QueryError),
+
+    /// The supplied `origin` name does not correspond to any registered custom
+    /// registry.
+    #[error("unknown custom registry {name:?}")]
+    UnknownCustomRegistry { name: String },
+
+    /// A package name failed validation for its ecosystem.
+    #[error(transparent)]
+    InvalidPackageName(#[from] NameError),
+
+    /// A package version string failed to parse for its ecosystem.
+    #[error(transparent)]
+    InvalidPackageVersion(#[from] heart::identity::VersionError),
+
+    /// No package selector in the filter resolved to a valid name for any of
+    /// the requested (or default) ecosystems.
+    #[error("no requested package name is valid for the requested ecosystems")]
+    NoValidPackageSelectors,
+
+    /// A UUID (symbol id or session id) in a path or expand body was malformed.
+    #[error("invalid symbol id {raw:?}")]
+    InvalidSymbolId {
+        raw: String,
+        #[source]
+        source: uuid::Error,
+    },
+
+    /// A pagination cursor (base64url + postcard keyset) could not be decoded.
+    #[error("invalid cursor token")]
+    InvalidCursor {
+        token: String,
+        #[source]
+        source: heart::cursor::CursorError,
+    },
+
+    /// The downloaded archive for an indexing job exceeded a safety limit.
+    /// (During a request-driven path this is a client error; during background
+    /// it is still classified as Malformed.)
+    #[error("archive too large: {actual} bytes (limit {limit})")]
+    ArchiveTooLarge { actual: u64, limit: u64 },
+
+    /// The archive body after download exceeded the configured extraction ceiling.
+    #[error("archive exceeded the download ceiling")]
+    ArchiveExceedsLimit,
+
+    /// `POST /v1/compiled/lookup` received more than the allowed number of
+    /// [`heart::JobKey`]s in a single request (SMOLVM-PLAN §5.1, ≤ 1024).
+    #[error("too many job_keys in lookup request: {count} (maximum {max})")]
+    TooManyJobKeys { count: usize, max: usize },
+
+    /// A save/verify/rebuild operation named a snapshot that does not match the
+    /// one currently held by the blob store for the package.
+    #[error("snapshot mismatch for package {package}: blob store holds a different generation")]
+    SnapshotMismatch { package: PackageId },
+
+    /// A save/verify operation was attempted against a package that has never
+    /// reached `Stored` state (no snapshot recorded).
+    #[error("package {package} has no recorded snapshot")]
+    NoRecordedSnapshot { package: PackageId },
+
+    /// A source-file download contained an empty or traversal path component.
+    #[error("invalid source path {path:?}")]
+    InvalidSourcePath { path: String },
+}
+
+/// Reasons a request was denied by the access policy (403).
+#[derive(Debug, thiserror::Error)]
+pub enum ForbiddenReason {
+    #[error("action not permitted: {action}")]
+    ActionDenied { action: &'static str },
+}
+
+/// Typed internal (server-side) failures. All data is structured; no bare
+/// format strings in the error payload. These always project to 5xx.
+#[derive(Debug, thiserror::Error)]
+pub enum InternalError {
+    /// The HTTP listener could not bind to the configured address.
+    #[error("could not bind to {address}")]
+    BindFailed {
+        address: std::net::SocketAddr,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The axum server task itself failed.
+    #[error("http server failed")]
+    ServeFailed {
+        #[source]
+        source: std::io::Error, // axum::serve error is hyper-ish but surfaced as io in practice
+    },
+
+    /// An indexing job exceeded its hard deadline.
+    #[error("indexing job exceeded deadline")]
+    IndexingDeadlineExceeded,
+
+    /// The search planner emitted a semantic plan for a literal query (invariant).
+    #[error("planner produced a semantic plan for a literal query")]
+    PlannerInvariantSemanticForLiteral,
+
+    /// A constructed archive URL (for known origins) was unparseable.
+    #[error("malformed archive url for {raw}")]
+    MalformedArchiveUrl { raw: String },
+
+    /// A git-native (`RegistryOrigin::Git`) package was routed through the
+    /// archive-download path. The registry-less `cpp` plane acquires source by
+    /// checking out a rev (RL-14, §7.4), never by downloading a tarball, so this
+    /// code path is not applicable to it.
+    #[error("git-origin packages are acquired by checkout, not archive download")]
+    GitOriginHasNoArchiveUrl,
+
+    /// An upstream registry fetch failed (non-404).
+    #[error("upstream fetch failed: {reason}")]
+    UpstreamFetch { reason: String },
+
+    /// PyPI metadata JSON for a release was structurally wrong.
+    #[error("malformed pypi metadata for {name} {version}")]
+    MalformedPypiMetadata { name: String, version: String },
+
+    /// The sdist URL extracted from PyPI metadata could not be parsed.
+    #[error("malformed sdist url")]
+    MalformedSdistUrl,
+
+    /// Serializing the compiler's surface IR to the blob section failed.
+    #[error("could not serialize surface IR")]
+    IrSerializationFailed {
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// Materializing the extracted package onto a temporary tree for the
+    /// compiler failed.
+    #[error("could not materialize package sources for compilation")]
+    MaterializeForCompile {
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Producing IR inside the ephemeral SmolvmCage failed: the golden could
+    /// not be prepared/forked, the sealed producer command errored, or the VM
+    /// boundary refused to boot (libkrun unavailable, rootfs missing, …). The
+    /// long-lived compiler daemon this replaced is gone (SMOLVM-PLAN); a forge
+    /// node that cannot run the cage fails the job loudly (idempotent retry)
+    /// rather than emitting an IR-less blob.
+    #[error("cage compile failed for {package}: {reason}")]
+    CageCompile { package: String, reason: String },
+
+    /// The producer ran in the cage but exited non-zero (the guest producer
+    /// itself failed on this package's sources).
+    #[error("producer exited non-zero in cage for {package}: {reason}")]
+    ProducerFailed { package: String, reason: String },
+
+    /// Running a language producer in-process (the non-Linux compile
+    /// strategy — see `coordination::compile_inprocess`) failed: no producer
+    /// is registered for the package's language, the producer's own
+    /// toolchain is unavailable on this host, or the producer task itself
+    /// panicked.
+    #[error("in-process compile failed for {package}: {reason}")]
+    InProcessCompile { package: String, reason: String },
+
+    /// The producer's NdIrF1 IR stream broke before a clean `Finish` frame:
+    /// the handshake `Hello` was missing/malformed, the producer sent an
+    /// `Abort`, the stream was truncated (EOF without `Finish`), or the host
+    /// could not serialize the recovered IR/reference sections. Any of these
+    /// is a genuine producer/host breakage, never a legitimate "this package
+    /// has zero symbols" signal (a well-behaved producer always closes with
+    /// `Finish`, even for an empty package) — so the job must fail rather
+    /// than complete as an empty-but-"Stored" snapshot. See
+    /// `coordination::indexing::ingest_ir_bytes`.
+    #[error("IR stream degraded for {package}: {reason}")]
+    IrStreamDegraded { package: String, reason: String },
+
+    /// The upstream source-archive GET (`Indexer::fetch_archive`) exhausted
+    /// its bounded, polite retry budget against a retryable condition (429,
+    /// 5xx, or a transport hiccup). Unlike [`InternalError::UpstreamFetch`]
+    /// (a permanent/unclassified upstream failure), this is deliberately
+    /// classified [`heart::FailureKind::Transient`] by
+    /// `coordination::indexing::classify_failure` so the queue retries the
+    /// *job* later instead of dead-lettering a package whose source registry
+    /// was just being rate-limiting or briefly unavailable.
+    #[error("upstream archive fetch exhausted retries: {reason}")]
+    UpstreamTransient { reason: String },
+
+    /// Catch-all for other truly internal breakages where a more specific
+    /// variant has not yet been introduced. Prefer adding a new variant.
+    #[error("internal error: {message}")]
+    Other { message: String },
+}
+
+impl ServerError {
+    /// The HTTP status this error projects to. The single place the internal →
+    /// external mapping is decided.
+    ///
+    /// Most BadRequestReasons are 400. Some (e.g. future validation) could be
+    /// 422; oversized archives could be 413. Internal variants and Config are
+    /// always 5xx. Subsystem errors decide their own (mostly 503 for unavailable).
+    pub fn status(&self) -> http::StatusCode {
+        use http::StatusCode;
+        match self {
+            ServerError::BadRequest(reason) => match reason {
+                BadRequestReason::InvalidJson(_) => StatusCode::BAD_REQUEST,
+                BadRequestReason::ArchiveTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE, // 413 when it surfaces on a request path
+                BadRequestReason::ArchiveExceedsLimit => StatusCode::PAYLOAD_TOO_LARGE,
+                // Everything else client-malformed is 400 (could be 422 for
+                // some semantic validation cases in the future).
+                _ => StatusCode::BAD_REQUEST,
+            },
+            ServerError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ServerError::NotFound => StatusCode::NOT_FOUND,
+            ServerError::Connect(_)
+            | ServerError::Runtime(_)
+            | ServerError::Registry(_)
+            | ServerError::Vector(_)
+            | ServerError::Embed(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ServerError::Config(_) | ServerError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            // Usage-query outcomes map to distinct honest statuses:
+            // - `UnsupportedTarget`: the projection type is not implemented → 501.
+            // - `IndexUnavailable`: the surface is wired but no reverse index is
+            //   loaded for the scope yet → 503 (come back later), never a 200
+            //   with a fake empty body.
+            // - `UnresolvableTarget`: the requested symbol is malformed → 400.
+            ServerError::Unsupported(reason) => {
+                use crate::server::registry::search::usages::UsageQueryError;
+                match reason {
+                    UsageQueryError::UnsupportedTarget => StatusCode::NOT_IMPLEMENTED,
+                    UsageQueryError::IndexUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                    UsageQueryError::UnresolvableTarget { .. } => StatusCode::BAD_REQUEST,
+                }
+            }
+        }
+    }
+}
+
+impl axum::response::IntoResponse for ServerError {
+    /// Project onto the wire: the [`ServerError::status`] code plus a small JSON
+    /// body. The full typed chain is logged here (the last point it exists);
+    /// clients only ever see the projection.
+    ///
+    /// Chain rendering uses `to_string` on sources (fine for logs). The original
+    /// typed `ServerError` (and therefore all `BadRequestReason`, `InternalError`,
+    /// `QueryError`, `NameError` etc. as `#[source]` fields) remain in the value
+    /// for any programmatic consumer that inspects before `.into_response()`.
+    fn into_response(self) -> axum::response::Response {
+        let status = self.status();
+        let chain = {
+            let mut rendered = self.to_string();
+            let mut source = std::error::Error::source(&self);
+            while let Some(cause) = source {
+                rendered.push_str(": ");
+                rendered.push_str(&cause.to_string());
+                source = cause.source();
+            }
+            rendered
+        };
+        if status.is_server_error() {
+            tracing::error!(%status, error = %chain, "request failed");
+        } else {
+            tracing::warn!(%status, error = %chain, "request rejected");
+        }
+        let body = axum::Json(serde_json::json!({
+            "status": status.as_u16(),
+            "error": self.to_string(),
+        }));
+        (status, body).into_response()
+    }
+}
+
+impl Retryable for ServerError {
+    fn is_retryable(&self) -> bool {
+        match self {
+            ServerError::Connect(_)
+            | ServerError::Runtime(_)
+            | ServerError::Registry(_)
+            | ServerError::Vector(_)
+            | ServerError::Embed(_) => true,
+            _ => false,
+        }
+    }
+}
+
+/// A convenient result alias for handlers and flows.
+pub type ServerResult<T> = Result<T, ServerError>;

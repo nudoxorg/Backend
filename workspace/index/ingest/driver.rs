@@ -45,7 +45,7 @@ pub enum DriveOutcome {
 
 /// Why a drive step failed.
 #[derive(Debug, thiserror::Error)]
-pub enum DriveError {
+pub enum Error {
     /// The follower's poll failed (transport / parse / mapping).
     #[error(transparent)]
     Follower(#[from] FollowerError),
@@ -62,6 +62,9 @@ pub enum DriveError {
     #[error(transparent)]
     Watermark(#[from] WatermarkError),
 }
+
+/// Backwards-compatible alias: the drive error (now [`Error`]).
+pub use self::Error as DriveError;
 
 /// Drives followers against a catalog writer with per-batch commits (ID-4).
 pub struct FollowerDriver<'writer, Engine, Watermarks>
@@ -92,7 +95,7 @@ where
         &self,
         follower: &dyn Follower,
         now_unix_ms: i64,
-    ) -> Result<DriveOutcome, DriveError> {
+    ) -> Result<DriveOutcome, Error> {
         let feed = follower.feed_id().to_owned();
         let previous = self.watermarks.feed_watermark(&feed)?;
 
@@ -112,11 +115,11 @@ where
         let report = self
             .writer
             .apply_ops(&batch.ops)
-            .map_err(|error| DriveError::Commit { feed: feed.clone(), message: error.to_string() })?;
+            .map_err(|error| Error::Commit { feed: feed.clone(), message: error.to_string() })?;
 
         self.writer
             .commit_batch(&format!("ingestor: {feed} batch ({} ops)", report.applied))
-            .map_err(|error| DriveError::Commit { feed: feed.clone(), message: error.to_string() })?;
+            .map_err(|error| Error::Commit { feed: feed.clone(), message: error.to_string() })?;
 
         // Only now that the batch is durable do we advance the watermark.
         self.watermarks.put_feed_watermark(&batch.next_watermark)?;

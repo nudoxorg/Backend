@@ -39,7 +39,7 @@ use crate::protocol::{
 use heart::content::{ContentHash, JobKey};
 use libpijul::changestore::ChangeStore;
 
-use crate::error::VcsError;
+use crate::error::Error;
 use crate::repo::IrRepository;
 use crate::serialize::LinkWire;
 use crate::session::{FinishReport, StagedEntry};
@@ -98,7 +98,7 @@ pub struct ProgressSnapshot {
 /// An aborted producer is a normal, expected outcome (the guest crashed, hit a
 /// resource limit, etc.) — it is **not** returned as `Err`. Only *protocol*
 /// errors (framing, count mismatch, truncation, decode) are `Err`, surfaced as
-/// [`VcsError::Stream`].
+/// [`Error::Stream`].
 #[derive(Debug)]
 pub enum StreamedRecording {
     /// The stream completed normally; `finish()` was called on the session.
@@ -166,17 +166,17 @@ pub enum StreamedRecording {
 ///
 /// # Errors
 ///
-/// Any [`crate::protocol::StreamError`] (framing violation, count mismatch,
+/// Any [`crate::protocol::Error`] (framing violation, count mismatch,
 /// truncation, decode failure, version mismatch) causes `session.abandon()` to
-/// be called best-effort before returning [`VcsError::Stream`].
+/// be called best-effort before returning [`Error::Stream`].
 ///
-/// A [`VcsError::ForeignPackage`] from `session.stage()` propagates as-is
+/// A [`Error::ForeignPackage`] from `session.stage()` propagates as-is
 /// after abandoning the session.
 pub fn record_stream<R, C>(
     repo: &mut IrRepository<C>,
     transport: R,
     policy: StreamPolicy,
-) -> Result<StreamedRecording, VcsError>
+) -> Result<StreamedRecording, Error>
 where
     R: Read,
     C: ChangeStore + Clone + Send + 'static,
@@ -207,13 +207,13 @@ where
             Ok(None) => {
                 // Clean EOF without Finish/Abort — treated as truncation.
                 let _ = session.abandon();
-                return Err(VcsError::Stream(crate::protocol::StreamError::Protocol(
+                return Err(Error::Stream(crate::protocol::Error::Protocol(
                     "stream ended without Finish or Abort".into(),
                 )));
             }
             Err(stream_err) => {
                 let _ = session.abandon();
-                return Err(VcsError::Stream(stream_err));
+                return Err(Error::Stream(stream_err));
             }
         };
 

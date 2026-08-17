@@ -3,7 +3,7 @@
 //! The canonical durable artifact is the sha-pinned fp32 ONNX file
 //! (`model.onnx`, 641,517,466 bytes) placed on disk by the artifact fetcher —
 //! this module never touches the network. Callers that hit
-//! [`WeightsError::MissingWeights`] must disable semantic search gracefully
+//! [`Error::MissingWeights`] must disable semantic search gracefully
 //! (offline fail-soft), not block corpus readiness on a download.
 //!
 //! It was the int8 file (`model_quantized.onnx`, 161,895,621 bytes) until
@@ -80,11 +80,11 @@ impl WeightsSpec {
     /// just to hash). On success returns the *actual* digest so callers can
     /// report it in `EmbedRuntimeInfo.weights_sha256` and fold it into
     /// `tool_digest` honestly, even when the config didn't pin one.
-    pub fn verify(&self) -> Result<VerifiedWeights, WeightsError> {
+    pub fn verify(&self) -> Result<VerifiedWeights, Error> {
         let path = self.onnx_path();
         let file = File::open(&path).map_err(|source| match source.kind() {
-            std::io::ErrorKind::NotFound => WeightsError::MissingWeights { path: path.clone() },
-            _ => WeightsError::Io {
+            std::io::ErrorKind::NotFound => Error::MissingWeights { path: path.clone() },
+            _ => Error::Io {
                 path: path.clone(),
                 source,
             },
@@ -95,7 +95,7 @@ impl WeightsSpec {
         if let Some(expected) = self.expected_sha256
             && expected != sha256
         {
-            return Err(WeightsError::Sha256Mismatch {
+            return Err(Error::Sha256Mismatch {
                 path,
                 expected,
                 actual: sha256,
@@ -123,10 +123,10 @@ pub struct VerifiedWeights {
 
 /// Why the weights artifact is unusable.
 ///
-/// [`WeightsError::MissingWeights`] is the graceful-degradation signal:
+/// [`Error::MissingWeights`] is the graceful-degradation signal:
 /// semantic search off, everything else keeps working (09-vector §13.5).
 #[derive(Debug, thiserror::Error)]
-pub enum WeightsError {
+pub enum Error {
     /// The pinned artifact is not on disk. Disable semantic search; do not
     /// mark the corpus Ready (09b §16.9).
     #[error("model weights missing at {path} — semantic search disabled")]
@@ -153,12 +153,12 @@ pub enum WeightsError {
     },
 }
 
-fn stream_sha256(mut file: File, path: &Path) -> Result<([u8; 32], u64), WeightsError> {
+fn stream_sha256(mut file: File, path: &Path) -> Result<([u8; 32], u64), Error> {
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 1 << 20];
     let mut total = 0u64;
     loop {
-        let n = file.read(&mut buf).map_err(|source| WeightsError::Io {
+        let n = file.read(&mut buf).map_err(|source| Error::Io {
             path: path.to_owned(),
             source,
         })?;

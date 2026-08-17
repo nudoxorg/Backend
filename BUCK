@@ -4,6 +4,15 @@ alias(name = "registry", actual = "//workspace/registry:registry", visibility = 
 alias(name = "compiler", actual = "//workspace/compiler:compiler", visibility = ["PUBLIC"])
 alias(name = "sandbox",  actual = "//workspace/compiler/sandbox:sandbox", visibility = ["PUBLIC"])
 
+# Root flake consumed by Buck's hermetic Nix toolchains. Keeping this as one
+# source target removes the duplicate toolchain sub-flake that used to live
+# under the Nix-owned toolchain bridge in nix/build/toolchains/.
+filegroup(
+    name = "flake",
+    srcs = ["flake.lock", "flake.nix"],
+    visibility = ["PUBLIC"],
+)
+
 # ── Smoke test suite ─────────────────────────────────────────────────────────
 # Aggregates every rust_tests()-generated integration test target across the
 # workspace so `buck2 test //:smoke` is a single entry point (and `buck2 test

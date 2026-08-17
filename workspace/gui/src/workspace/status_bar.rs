@@ -59,12 +59,12 @@ pub struct StatusBar {
     /// distinguish "not started", "failed to bind", "stopped" and "this
     /// process hosts no server" — all four were `None`, so a server that had
     /// crashed on start-up rendered identically to one that was never asked
-    /// for. That is LIMITATIONS.md L35's second half; see `app::mcp`.
+    /// for. That is docs/LIMITATIONS.md L35's second half; see `app::mcp`.
     mcp: McpStatus,
     /// Pre-rendered MCP segment, refreshed on transition rather than per frame
     /// (§1.1.4). `None` hides the segment.
     mcp_label: Option<SharedString>,
-    /// What the account gate is doing (`auth.md`).
+    /// What the account gate is doing (`docs/auth.md`).
     ///
     /// An [`AccountStatus`], for the same reason `mcp` is an `McpStatus` and
     /// not an `Option<SharedString>`: "no account service in this process",
@@ -158,7 +158,7 @@ impl StatusBar {
         self.mcp_label.as_ref()
     }
 
-    /// Publish what the account gate is doing (`auth.md`).
+    /// Publish what the account gate is doing (`docs/auth.md`).
     ///
     /// The label is derived from the status here, once, so the painted text is
     /// a pure function of the state — the same rule [`Self::set_mcp`] follows,
@@ -270,7 +270,7 @@ impl Render for StatusBar {
 
         // A failed server is painted in the warning colour, not hidden: §L6's
         // whole promise is that an agent can reach this window, and silently
-        // dropping the segment is what made LIMITATIONS.md L35 invisible for
+        // dropping the segment is what made docs/LIMITATIONS.md L35 invisible for
         // as long as it was.
         if let Some(label) = &self.mcp_label {
             let mcp_colour = if self.mcp.is_failure() {
@@ -354,7 +354,7 @@ impl Render for StatusBar {
         // It used to render unconditionally, and `set_frame_p95(None)`
         // formats as `"—"`, so a build with no frame sampler wired showed a
         // bare em-dash pinned to the right edge of the window for the whole
-        // session. That is visible in every frame in `.shots/fixtures/` and
+        // session. That is visible in every frame in `tests/shots/fixtures/` and
         // reads as a broken widget rather than as an absent measurement. A
         // readout with nothing to read out should not be a readout.
         #[cfg(debug_assertions)]

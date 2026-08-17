@@ -1,0 +1,346 @@
+[package]
+name = "nudox-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# L3 of GUI-LOCAL-PLAN §L0: the streaming facade. Owns the runtimes (LR-9),
+# the wire protocol (§L2) and the chunker (LR-3/LR-4). This is the ONLY crate
+# `lindsey` talks to, and it is deliberately gpui-free so the whole protocol
+# is testable without a window.
+#
+# The store, graph, embedder and MCP planes — formerly four sibling crates
+# — were merged into this crate as the `store`, `graph`,
+# `embed` and `mcp` modules (see `src/lib.rs`). Their dependencies, features
+# and integration tests are merged below.
+
+[features]
+default = []
+# `store::source::fixtures` — deterministic synthetic corpora for tests and dev
+# (LR-5). Same feature NAME as the store plane used, so consumers like
+# `lindsey` keep working unchanged.
+fixtures = []
+# Forwards to `nudox-languages`'s own `pyrefly` feature (off by default there).
+# Without it `PythonProducer::invoke` always returns `Ok(PythonOracle::default())`.
+pyrefly = ["nudox-languages/pyrefly"]
+# The production ONNX embedder adapter (`embed::onnx`) behind `semantic::Embedder`.
+# OFF by default on purpose: `registry` + `onnx` resolves to a ~483-crate graph
+# whose `ort-sys` build fetches a prebuilt runtime at build time. With it off,
+# `embed::load_from_env()` is a compile-time `None`. (`tokio` and `tracing` are
+# non-optional here — the engine core always needs them — so unlike the old
+# embedder plane they need no `dep:` entry in this feature.)
+onnx = ["dep:registry"]
+
+[dependencies]
+nudox-ir = { path = "../ir/model" }
+nudox-languages = { path = "../compiler/languages" }
+# The ONNX runtime behind the `onnx` feature (`embed::onnx`). `features = ["onnx"]`
+# is what turns on `FastembedOrt`.
+registry = { path = "../registry", features = ["onnx"], optional = true }
+
+flume = { workspace = true }
+futures = { workspace = true }
+indexmap = { workspace = true }
+pulldown-cmark = { workspace = true }
+rustc-hash = { workspace = true }
+# `schemars` + `serde` are what let the wire types *be* the MCP schema (LR-2):
+# the MCP tools derive their schemas from these types rather than mirroring them
+# by hand, so the protocol has exactly one definition.
+schemars = { workspace = true }
+serde = { workspace = true }
+# Used only by `query.rs`'s `find_line_column` to walk a serialized `ParseError`.
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
+# No `sync` feature: `tokio_util::sync::CancellationToken` is unconditional in 0.7.
+tokio-util = { version = "0.7", default-features = false }
+tracing = { workspace = true }
+triomphe = { workspace = true }
+trustfall = { workspace = true }
+# For downcasting `execute_query_async`'s `anyhow::Error` back to `FrontendError`.
+trustfall_core = { workspace = true }
+
+# ── On-demand package acquisition (`crate::acquire`) ─────────────────────────
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "charset",
+    "http2",
+    "stream",
+    "json",
+] }
+sha2 = "0.10"
+sha1 = "0.10"
+base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
+zip = { workspace = true }
+
+# ── MCP server (`crate::mcp`, GUI-LOCAL-PLAN §L6) ────────────────────────────
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+rand = "0.10"
+rmcp = { version = "2.2", features = ["server", "transport-streamable-http-server", "macros"] }
+
+# ── Platform credential store for the account key at rest
+#    (`crate::mcp::account::store`) ────────────────────────────────────────────
+# macOS reaches the Keychain directly via `security-framework`. Linux and
+# Windows go through `keyring`, a thin facade over each OS's own vault:
+# the freedesktop Secret Service (GNOME Keyring / KWallet) on Linux, and
+# `CredReadW`/`CredWriteW` (Credential Manager) on Windows. Neither pulls a
+# native build toolchain — both are FFI to system libraries.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+# Integration tests wrap their measured regions in `heart::cost::measured`
+# (doctrine §4, formerly the `nudox-test-support` crate).
+heart = { path = "../heart" }
+# `tests/engine/purl_url_parity.rs` and `tests/store/corpus_contract.rs` read
+# `nix/corpus.nix` and `nix/entry-baseline.toml`.
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }
+trustfall = { workspace = true }
+tempfile = "3"
+
+[[test]]
+name = "engine_error_enrichment"
+path = "tests/engine/error_enrichment.rs"
+
+[[test]]
+name = "engine_generic_signature_shapes"
+path = "tests/engine/generic_signature_shapes.rs"
+
+[[test]]
+name = "engine_hyperlink_flows"
+path = "tests/engine/hyperlink_flows.rs"
+
+[[test]]
+name = "engine_impls_refs_flows"
+path = "tests/engine/impls_refs_flows.rs"
+
+[[test]]
+name = "engine_link_repair_audit"
+path = "tests/engine/link_repair_audit.rs"
+
+[[test]]
+name = "engine_multi_package_flows"
+path = "tests/engine/multi_package_flows.rs"
+
+[[test]]
+name = "engine_packages_subscription"
+path = "tests/engine/packages_subscription.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_protocol_adversarial"
+path = "tests/engine/protocol_adversarial.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_purl_index"
+path = "tests/engine/purl_index.rs"
+
+[[test]]
+name = "engine_purl_url_parity"
+path = "tests/engine/purl_url_parity.rs"
+
+[[test]]
+name = "engine_real_lineage"
+path = "tests/engine/real_lineage.rs"
+
+[[test]]
+name = "engine_real_memchr_generic_return"
+path = "tests/engine/real_memchr_generic_return.rs"
+
+[[test]]
+name = "engine_real_memchr_impl_labels"
+path = "tests/engine/real_memchr_impl_labels.rs"
+
+[[test]]
+name = "engine_real_memchr_signature_index"
+path = "tests/engine/real_memchr_signature_index.rs"
+
+[[test]]
+name = "engine_real_producer_links"
+path = "tests/engine/real_producer_links.rs"
+
+[[test]]
+name = "engine_real_search_benchmarks"
+path = "tests/engine/real_search_benchmarks.rs"
+
+[[test]]
+name = "engine_real_source_locations"
+path = "tests/engine/real_source_locations.rs"
+
+[[test]]
+name = "mcp_universal_producer_pipeline"
+path = "tests/mcp/universal_producer_pipeline.rs"
+
+[[test]]
+name = "engine_search_adversarial"
+path = "tests/engine/search_adversarial.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_search_determinism"
+path = "tests/engine/search_determinism.rs"
+
+[[test]]
+name = "engine_semantic_failure_modes"
+path = "tests/engine/semantic_failure_modes.rs"
+
+[[test]]
+name = "engine_semantic_local_mode"
+path = "tests/engine/semantic_local_mode.rs"
+
+[[test]]
+name = "engine_semantic_section_contract"
+path = "tests/engine/semantic_section_contract.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_signature_search"
+path = "tests/engine/signature_search.rs"
+
+[[test]]
+name = "engine_symbol_head_cfg"
+path = "tests/engine/symbol_head_cfg.rs"
+
+[[test]]
+name = "engine_versions_adversarial"
+path = "tests/engine/versions_adversarial.rs"
+
+[[test]]
+name = "engine_zero_jump"
+path = "tests/engine/zero_jump.rs"
+required-features = ["fixtures"]
+
+# ── store plane ───────────────────────────────────────────
+[[test]]
+name = "store_bytes_bench_name_collision_regression"
+path = "tests/store/bytes_bench_name_collision_regression.rs"
+
+[[test]]
+name = "store_corpus_contract"
+path = "tests/store/corpus_contract.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "store_feature_gated_api"
+path = "tests/store/feature_gated_api.rs"
+
+[[test]]
+name = "store_real_crate"
+path = "tests/store/real_crate.rs"
+
+[[test]]
+name = "store_real_package"
+path = "tests/store/real_package.rs"
+
+# ── graph plane ───────────────────────────────────────────
+[[test]]
+name = "graph_error_channel"
+path = "tests/graph/error_channel.rs"
+
+[[test]]
+name = "graph_fixture_queries"
+path = "tests/graph/fixture_queries.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_plan"
+path = "tests/graph/plan.rs"
+
+[[test]]
+name = "graph_pushdown"
+path = "tests/graph/pushdown.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_queries_parse"
+path = "tests/graph/queries_parse.rs"
+
+[[test]]
+name = "graph_schema_parses"
+path = "tests/graph/schema_parses.rs"
+
+[[test]]
+name = "graph_schema_projection"
+path = "tests/graph/schema_projection.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "graph_typename_invariant"
+path = "tests/graph/typename_invariant.rs"
+required-features = ["fixtures"]
+
+# ── mcp plane ───────────────────────────────────────────────
+[[test]]
+name = "mcp_account_platform_store"
+path = "tests/mcp/account_platform_store.rs"
+
+[[test]]
+name = "mcp_account_against_a_fake_service"
+path = "tests/mcp/account_against_a_fake_service.rs"
+
+[[test]]
+name = "mcp_account_against_the_real_service"
+path = "tests/mcp/account_against_the_real_service.rs"
+
+[[test]]
+name = "mcp_account_secret_hygiene"
+path = "tests/mcp/account_secret_hygiene.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_endpoint"
+path = "tests/mcp/endpoint.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_host_lifecycle"
+path = "tests/mcp/host_lifecycle.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "mcp_purl_index_end_to_end"
+path = "tests/mcp/purl_index_end_to_end.rs"
+
+[[test]]
+name = "mcp_real_crate_dogfood_workflows"
+path = "tests/mcp/real_crate_dogfood_workflows.rs"
+
+[[test]]
+name = "mcp_real_crate_memchr"
+path = "tests/mcp/real_crate_memchr.rs"
+
+[[test]]
+name = "mcp_real_crate_memchr_versions"
+path = "tests/mcp/real_crate_memchr_versions.rs"
+
+[[test]]
+name = "mcp_real_crate_tokio"
+path = "tests/mcp/real_crate_tokio.rs"
+
+[[test]]
+name = "mcp_schema_source"
+path = "tests/mcp/schema_source.rs"
+
+[[test]]
+name = "mcp_schemas"
+path = "tests/mcp/schemas.rs"
+
+[[test]]
+name = "mcp_tool_integration"
+path = "tests/mcp/tool_integration.rs"
+required-features = ["fixtures"]
+
+[lints]
+workspace = true

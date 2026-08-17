@@ -1,3 +1,4 @@
+//! `Static`, static variable declaration kind.
 use crate::{kinds::Type, visitor::Visitor};
 
 // FIXME: the initializer expression (a `ConstExpr`) and linkage attributes are

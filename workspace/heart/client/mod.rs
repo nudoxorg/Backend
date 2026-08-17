@@ -19,7 +19,15 @@
 
 pub mod authz;
 pub mod dto;
+/// The connecting HTTP client (`reqwest`) — behind the off-by-default `client`
+/// feature so only callers that actually reach the server (GUI/CLI) pull the
+/// transport. See [`http::NudoxClient`].
+#[cfg(feature = "client")]
+pub mod http;
 pub mod query;
+
+#[cfg(feature = "client")]
+pub use http::{ClientError, NudoxClient};
 
 pub use authz::{AdminCap, Principal, ReadCap, TenantId, WriteCap};
 pub use dto::{

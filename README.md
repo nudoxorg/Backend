@@ -83,7 +83,7 @@ Buck2 aliases at the repo root map short names to full targets:
 `//:server`, `//:heart`, `//:ir`, `//:registry`, `//:runtime`,
 `//:compiler`, `//:sandbox`, `//:cas`, `//:caching`.
 
-Dependency management uses the custom tooling under `build/third-party/`:
+Dependency management uses the custom tooling under `nix/build/third-party/`:
 
 ```bash
 buck2 run //:add    -- <crate>    # add a third-party crate

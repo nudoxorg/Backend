@@ -25,7 +25,7 @@
 //!
 //! `server::main` previously carried a comment that the vendored
 //! `tracing-subscriber` build "carries no env-filter feature". Checked while
-//! building this crate: `build/third-party/registry.bzl`'s `tracing-subscriber`
+//! building this crate: `nix/build/third-party/registry.bzl`'s `tracing-subscriber`
 //! entry (0.3.23, label `tracing_subscriber-0_3`) already lists `env-filter`
 //! among its vendored features. So `logging::env_filter` uses
 //! [`tracing_subscriber::EnvFilter`] directly (parsing full directive strings,

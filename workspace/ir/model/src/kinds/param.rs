@@ -1,3 +1,4 @@
+//! `Param` kind plus the `ParamAttribute` modifier enum.
 use crate::{List, kinds::Type, visitor::Visitor};
 
 // FIXME: `default_value` (a `ConstExpr`) is not yet ported — it depends on

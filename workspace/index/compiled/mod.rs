@@ -40,10 +40,10 @@ pub mod client;
 pub struct ChannelName(String);
 
 impl ChannelName {
-    pub fn new(s: impl Into<String>) -> Result<Self, CompiledError> {
+    pub fn new(s: impl Into<String>) -> Result<Self, Error> {
         let s = s.into();
         if s.is_empty() {
-            return Err(CompiledError::InvalidChannelName);
+            return Err(Error::InvalidChannelName);
         }
         Ok(Self(s))
     }
@@ -67,10 +67,10 @@ impl std::fmt::Display for ChannelName {
 pub struct ChangeId(String);
 
 impl ChangeId {
-    pub fn new(s: impl Into<String>) -> Result<Self, CompiledError> {
+    pub fn new(s: impl Into<String>) -> Result<Self, Error> {
         let s = s.into();
         if s.len() != 64 || !s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')) {
-            return Err(CompiledError::InvalidChangeId);
+            return Err(Error::InvalidChangeId);
         }
         Ok(Self(s))
     }
@@ -141,7 +141,7 @@ pub enum LookupResult {
 
 /// Errors from the compiled-output store.
 #[derive(Debug, thiserror::Error)]
-pub enum CompiledError {
+pub enum Error {
     /// A backing-store I/O failure.
     #[error("compiled store backend error")]
     Backend(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -159,18 +159,20 @@ pub enum CompiledError {
     InvalidChangeId,
 }
 
-// Keep the old alias so call sites in registry error.rs don't break.
-pub type CompiledStoreError = CompiledError;
+// Compatibility aliases for callers that named this store's error by its old
+// spellings (`CompiledError` / `CompiledStoreError`).
+pub use self::Error as CompiledError;
+pub type CompiledStoreError = Error;
 
-impl From<object_store::Error> for CompiledError {
+impl From<object_store::Error> for Error {
     fn from(e: object_store::Error) -> Self {
-        CompiledError::Backend(Box::new(e))
+        Error::Backend(Box::new(e))
     }
 }
 
-impl heart::Retryable for CompiledError {
+impl heart::Retryable for Error {
     fn is_retryable(&self) -> bool {
-        matches!(self, CompiledError::Backend(_))
+        matches!(self, Error::Backend(_))
     }
 }
 
@@ -213,9 +215,9 @@ impl ObjectCompiledStore {
         &self,
         job_key: JobKey,
         record: CompiledRecord,
-    ) -> Result<(), CompiledError> {
+    ) -> Result<(), Error> {
         let path = compiled_path(job_key.as_bytes());
-        let bytes = postcard::to_allocvec(&record).map_err(CompiledError::Codec)?;
+        let bytes = postcard::to_allocvec(&record).map_err(Error::Codec)?;
         self.backend
             .put(&path, PutPayload::from(bytes::Bytes::from(bytes)))
             .await?;
@@ -245,11 +247,11 @@ pub trait CompiledStore: Send + Sync {
     fn lookup(
         &self,
         job_key: &[u8; 32],
-    ) -> impl std::future::Future<Output = Result<LookupResult, CompiledError>> + Send;
+    ) -> impl std::future::Future<Output = Result<LookupResult, Error>> + Send;
 }
 
 impl CompiledStore for ObjectCompiledStore {
-    async fn lookup(&self, job_key: &[u8; 32]) -> Result<LookupResult, CompiledError> {
+    async fn lookup(&self, job_key: &[u8; 32]) -> Result<LookupResult, Error> {
         let path = compiled_path(job_key);
         let result = match self.backend.get(&path).await {
             Ok(r) => r,
@@ -257,9 +259,9 @@ impl CompiledStore for ObjectCompiledStore {
             Err(e) => return Err(e.into()),
         };
 
-        let record_bytes = result.bytes().await.map_err(CompiledError::from)?;
+        let record_bytes = result.bytes().await.map_err(Error::from)?;
         let record: CompiledRecord =
-            postcard::from_bytes(&record_bytes).map_err(CompiledError::Codec)?;
+            postcard::from_bytes(&record_bytes).map_err(Error::Codec)?;
 
         Ok(LookupResult::Hit(Box::new(CompiledHit {
             package: record.package,

@@ -1,3 +1,4 @@
+//! `EntryBuilder`, scoped, closure-based entry tree construction.
 use std::hash::Hash;
 
 use triomphe::Arc;

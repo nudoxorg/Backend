@@ -1,15 +1,15 @@
 # Cache configuration lives in its own file; pull it in explicitly (Buck2 does
-# not auto-load buckconfig.d/). See build/buckconfig.d/cache.buckconfig.
-<file:build/buckconfig.d/cache.buckconfig>
+# not auto-load buckconfig.d/). See nix/build/buckconfig.d/cache.buckconfig.
+<file:nix/build/buckconfig.d/cache.buckconfig>
 
 [cells]
 root = .
-prelude = build/prelude-local
-toolchains = build/toolchains
+prelude = nix/build/prelude-local
+toolchains = nix/build/toolchains
 none = none
-nix = build/nix-stub
-# snowydeer packaging (vendored under build/nix/snowydeer; labels are //snowydeer:…)
-snowydeer = build/nix/snowydeer
+nix = nix/build/stubs/nix
+# snowydeer packaging (vendored under nix/snowydeer; labels are //snowydeer:…)
+snowydeer = nix/snowydeer
 
 [cell_aliases]
 config = prelude
@@ -26,76 +26,15 @@ target_platform_detector_spec = target:root//...->prelude//platforms:default \
 # The vendored javacd_toolchain (needed by java_library, e.g. the Java oracle
 # doclet) transitively depends on a `dex` toolchain, which in turn wants an
 # Android SDK. We have no actual Android code — this points at empty
-# placeholder files (build/toolchains/android-sdk-stub) purely to satisfy the
+# placeholder files (nix/build/toolchains/android-sdk-stub) purely to satisfy the
 # toolchain's analysis-time symlink actions; nothing here is ever read.
 [android]
-  sdk_path = build/toolchains/android-sdk-stub
+  sdk_path = nix/build/toolchains/android-sdk-stub
   build_tools_version = stub
   compile_sdk_version = android-stub
 
-# Default: system toolchains, no Nix required.
-# The devshell startup hook (flake.nix) appends [nix] toolchain = 1 in the
-# NIX-GENERATED block below, which overrides this value when Nix is active.
+# Default: system toolchains, no Nix required. `nix develop` writes its
+# machine-local overrides to the ignored `.buckconfig.local` instead of
+# modifying this tracked file.
 [nix]
   toolchain = 0
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# BEGIN NIX-GENERATED — managed by flake.nix devshell, do not edit
-[build]
-  devshell_bin = /nix/store/ssm0sjf2rdsiyijcz03q564ap5a7wkmn-rust-nightly-complete-with-components-2026-07-11/bin:/nix/store/mc6l4fv1rjlgzp9cd46v8aqq7nrb4jag-nix-2.34.8/bin:/usr/bin:/bin:/usr/sbin:/sbin
-
-[cells]
-  nix = build/nix-cell
-
-[csharp]
-  dotnet = /nix/store/wrxc8cd103657zxklsgj5iy725x9iacy-dotnet-sdk-wrapped-10.0.301/bin/dotnet
-  nuget_packages = 
-
-[go]
-  go_binary = /nix/store/38idfbqyw3p8xaslv6bnrig62pj7qy6i-go-1.26.4/bin/go
-
-[java]
-  java_home = /nix/store/adgxs4i9zn1v0wx3dxg1frqzdccdmdvj-zulu-ca-jdk-21.0.11
-
-[nix]
-  toolchain = 1
-# END NIX-GENERATED

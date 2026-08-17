@@ -1,7 +1,4 @@
-//! Our typestate markers. We of course want to avoid connections or attempted
-//! sends to a database that isn't actually alive.
-//!
-//! This is our attempt to mark this.
+//! Cold/Live typestate markers and the `Connect` transition trait.
 
 use crate::error::ConnectError;
 

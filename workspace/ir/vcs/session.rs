@@ -30,7 +30,7 @@ use ir::codec::{Plane, decode_body, encode_body, ir_path};
 use ir::continuity::Policy as ContinuityPolicy;
 use ir::view::IrView;
 
-use crate::error::{VcsError, pijul_err};
+use crate::error::{Error, pijul_err};
 use crate::f1::ContinuitySummary;
 use crate::f1::{F1View, serialize_f1};
 use crate::protocol::BodyWire;
@@ -207,13 +207,13 @@ where
     ///
     /// All entries must belong to this repository's package
     /// ([`StableRef::package`] == `repo.package_id()`).  An entry whose package
-    /// differs is rejected with [`VcsError::ForeignPackage`] **before** any
+    /// differs is rejected with [`Error::ForeignPackage`] **before** any
     /// working-copy mutation for that entry.
     ///
     /// Files are written with [`serialize_f1`] (NdIrF1 canonical format).
     /// Wire-ids are used at this point; durable-id substitution happens in
     /// [`finish`](Self::finish) (Phase B).
-    pub fn stage(&mut self, batch: Vec<StagedEntry>) -> Result<StageReport, VcsError> {
+    pub fn stage(&mut self, batch: Vec<StagedEntry>) -> Result<StageReport, Error> {
         let mut report = StageReport::default();
         let package_id = self.repo.package_id();
 
@@ -240,7 +240,7 @@ where
             let intro = entry.stable.intro;
 
             if &entry.stable.package != package_id {
-                return Err(VcsError::ForeignPackage {
+                return Err(Error::ForeignPackage {
                     expected: format!("{package_id:?}"),
                     got: format!("{:?}", entry.stable.package),
                 });
@@ -335,11 +335,11 @@ where
     ///
     /// Reads the existing F1 file, merges new links under the canonical-owner
     /// rule, and rewrites only if content differs.
-    pub fn stage_links(&mut self, from: StableRef, links: Vec<LinkWire>) -> Result<(), VcsError> {
+    pub fn stage_links(&mut self, from: StableRef, links: Vec<LinkWire>) -> Result<(), Error> {
         let package_id = self.repo.package_id();
 
         if &from.package != package_id {
-            return Err(VcsError::ForeignPackage {
+            return Err(Error::ForeignPackage {
                 expected: format!("{package_id:?}"),
                 got: format!("{:?}", from.package),
             });
@@ -369,13 +369,13 @@ where
             .read_file(&path, &mut existing)
             .map_err(|e| pijul_err(e))?;
 
-        let view = F1View::from_bytes(&existing).map_err(|e| VcsError::CorruptSymbolFile {
+        let view = F1View::from_bytes(&existing).map_err(|e| Error::CorruptSymbolFile {
             path: path.clone(),
             reason: e.to_string(),
         })?;
         let payload = view
             .to_owned_payload()
-            .map_err(|e| VcsError::CorruptSymbolFile {
+            .map_err(|e| Error::CorruptSymbolFile {
                 path: path.clone(),
                 reason: e.to_string(),
             })?;
@@ -441,7 +441,7 @@ where
     ///
     /// Returns the change hash, or `None` if nothing has changed since the
     /// last checkpoint (or since session start).
-    pub fn checkpoint(&mut self, msg: &str) -> Result<Option<ChangeHashHex>, VcsError> {
+    pub fn checkpoint(&mut self, msg: &str) -> Result<Option<ChangeHashHex>, Error> {
         self.record_and_apply(msg, Vec::new())
     }
 
@@ -472,7 +472,7 @@ where
     /// 4. Deletes WC files for intros absent from all `stage` calls.
     /// 5. Records a change with [`GenerationMeta`] metadata.
     /// 6. Returns [`FinishReport`].
-    pub fn finish(self) -> Result<FinishReport, VcsError> {
+    pub fn finish(self) -> Result<FinishReport, Error> {
         // --- Collect all staged entries for the continuity matcher ---
         // Sorted by wire-id: iteration order feeds `delta_hasher` below, and a
         // HashMap's order is nondeterministic — sorting makes `delta_digest`
@@ -711,7 +711,7 @@ where
     }
 
     /// Abandon the session without recording a change.
-    pub fn abandon(self) -> Result<(), VcsError> {
+    pub fn abandon(self) -> Result<(), Error> {
         self.repo.reset_working_copy_tip();
         Ok(())
     }
@@ -724,7 +724,7 @@ where
         &self,
         msg: &str,
         metadata: Vec<u8>,
-    ) -> Result<Option<ChangeHashHex>, VcsError> {
+    ) -> Result<Option<ChangeHashHex>, Error> {
         self.record_and_apply_with_meta(msg, metadata)
     }
 
@@ -732,7 +732,7 @@ where
         &self,
         msg: &str,
         metadata: Vec<u8>,
-    ) -> Result<Option<ChangeHashHex>, VcsError> {
+    ) -> Result<Option<ChangeHashHex>, Error> {
         let txn = self.repo.arc_txn_pub()?;
         let channel =
             IrRepository::<C>::open_or_create_channel_pub(&txn, self.repo.channel_name_ref())?;
@@ -788,10 +788,10 @@ where
             .map_err(|e| {
                 // anyhow::Error wraps the actual error; try to downcast common types.
                 if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                    VcsError::Io(std::io::Error::new(io_err.kind(), e.to_string()))
+                    Error::Io(std::io::Error::new(io_err.kind(), e.to_string()))
                 } else {
                     // Preserve the error chain as a string message in a generic Pijul error.
-                    VcsError::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                    Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
                 }
             })?;
 
@@ -814,6 +814,6 @@ where
 
         self.repo.set_working_copy_tip(new_tip);
 
-        Ok(Some(ChangeHashHex(crate::repo::hash_to_hex_pub(&hash))))
+        Ok(Some(ChangeHashHex(crate::repo::hash_to_hex(&hash))))
     }
 }

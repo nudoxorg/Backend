@@ -25,7 +25,6 @@ use ir::kind::KindDiscriminant;
 use ir::manifest::CasKey;
 use zerocopy::IntoBytes;
 
-use crate::archive::error::ArchiveError;
 use crate::archive::header::{
     ArchiveHeader, EntryHead, FORMAT_VERSION, MAGIC, SectionId, TocEntry,
 };
@@ -38,12 +37,12 @@ use crate::archive::section::{CsrBuilder, StringTableBuilder, crc32_of};
 use crate::archive::view::YokedArchive;
 
 // ---------------------------------------------------------------------------
-// SealError
+// Error
 // ---------------------------------------------------------------------------
 
 /// Errors produced by [`seal_package_archive`].
 #[derive(Debug, thiserror::Error)]
-pub enum SealError {
+pub enum Error {
     #[error("too many entries: {0} > MAX_ENTRIES")]
     TooManyEntries(usize),
 
@@ -75,7 +74,7 @@ pub struct SealedArchive {
 
 impl SealedArchive {
     /// Open and validate the archive, returning a [`YokedArchive`] for queries.
-    pub fn open(&self) -> Result<YokedArchive, ArchiveError> {
+    pub fn open(&self) -> Result<YokedArchive, crate::archive::error::Error> {
         open_archive(self.bytes.clone())
     }
 }
@@ -246,7 +245,7 @@ pub struct SealEntry<'a> {
 /// identical inputs in any order produce the same `cas_key`.
 pub fn seal_from_entries<'a>(
     entries: impl IntoIterator<Item = SealEntry<'a>>,
-) -> Result<SealedArchive, SealError> {
+) -> Result<SealedArchive, Error> {
     let mut collected: Vec<SealEntry<'a>> = entries.into_iter().collect();
     // Sort by IntroId bytes for deterministic ArenaIdx assignment.
     collected.sort_unstable_by_key(|e| *e.intro.as_bytes());
@@ -263,10 +262,10 @@ pub fn seal_from_entries<'a>(
 /// This is the single code path that assembles every section.  Both
 /// [`seal_from_entries`] and (if ever desired) a future refactored
 /// [`seal_package_archive`] funnel through here.
-fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
+fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, Error> {
     let entry_count = sorted.len();
     if entry_count > crate::archive::header::MAX_ENTRIES as usize {
-        return Err(SealError::TooManyEntries(entry_count));
+        return Err(Error::TooManyEntries(entry_count));
     }
 
     // ------------------------------------------------------------------
@@ -337,7 +336,7 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
         let payload_off = payload_body_bytes.len() as u32;
         let payload_len = entry.payload_bytes.len() as u32;
         if payload_off.checked_add(payload_len).is_none() {
-            return Err(SealError::PayloadAddressOverflow);
+            return Err(Error::PayloadAddressOverflow);
         }
         payload_body_bytes.extend_from_slice(entry.payload_bytes);
 
@@ -450,7 +449,7 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
         string_count,
         link_count,
     };
-    let meta_bytes = postcard::to_allocvec(&meta).map_err(SealError::MetaSerialize)?;
+    let meta_bytes = postcard::to_allocvec(&meta).map_err(Error::MetaSerialize)?;
 
     let sections: Vec<Section> = vec![
         Section {
@@ -531,7 +530,7 @@ fn seal_sorted(sorted: &[SealEntry<'_>]) -> Result<SealedArchive, SealError> {
 /// wire-format artifact — it stores `OwnedEntryPayload` bytes verbatim and
 /// indices over wire fields. The semantic [`ir::apply::PristineIntroTable`]
 /// holds `Entry` objects and belongs to the continuity / IR layer.
-pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedArchive, SealError> {
+pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedArchive, Error> {
     // ------------------------------------------------------------------
     // Step 1 — collect & sort live entries by IntroId bytes
     // ------------------------------------------------------------------
@@ -541,7 +540,7 @@ pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedA
 
     let entry_count = sorted_entries.len();
     if entry_count > crate::archive::header::MAX_ENTRIES as usize {
-        return Err(SealError::TooManyEntries(entry_count));
+        return Err(Error::TooManyEntries(entry_count));
     }
 
     // Build intro → ArenaIdx map for parent resolution.
@@ -608,7 +607,7 @@ pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedA
 
         // Payload body (postcard).
         let payload_off = payload_body_bytes.len() as u32;
-        let body = postcard::to_allocvec(payload).map_err(SealError::PayloadSerialize)?;
+        let body = postcard::to_allocvec(payload).map_err(Error::PayloadSerialize)?;
         let payload_len = body.len() as u32;
         payload_body_bytes.extend_from_slice(&body);
 
@@ -697,7 +696,7 @@ pub fn seal_package_archive(table: &crate::wire::PayloadTable) -> Result<SealedA
         string_count,
         link_count,
     };
-    let meta_bytes = postcard::to_allocvec(&meta).map_err(SealError::MetaSerialize)?;
+    let meta_bytes = postcard::to_allocvec(&meta).map_err(Error::MetaSerialize)?;
 
     let sections: Vec<Section> = vec![
         Section {
@@ -1268,7 +1267,7 @@ mod tests {
         assert!(
             matches!(
                 open_archive(bad.into()),
-                Err(crate::archive::error::ArchiveError::BadMagic)
+                Err(crate::archive::error::Error::BadMagic)
             ),
             "flipped magic must be BadMagic"
         );
@@ -1307,7 +1306,7 @@ mod tests {
         assert!(
             matches!(
                 open_archive(bad.into()),
-                Err(crate::archive::error::ArchiveError::Truncated)
+                Err(crate::archive::error::Error::Truncated)
             ),
             "wrapping toc_offset/toc_len must be Truncated, not a panic"
         );

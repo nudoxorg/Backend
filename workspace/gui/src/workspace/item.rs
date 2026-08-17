@@ -35,7 +35,7 @@
 //! `.on_action` handlers on its own root div can only receive them while its
 //! own `FocusHandle` is the focused one.
 //!
-//! `SymbolPage` learned this the hard way (LIMITATIONS.md L16): it declared
+//! `SymbolPage` learned this the hard way (docs/LIMITATIONS.md L16): it declared
 //! `.on_action` handlers for `GoToSourceTab`, `GoToRefsTab`,
 //! `OpenVersionPicker` and never called `window.focus` on itself, so none of
 //! them could ever fire — not in tests, not from a real keystroke.

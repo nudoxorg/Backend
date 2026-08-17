@@ -41,43 +41,39 @@
 pub mod backend;
 pub mod budget;
 pub mod cage;
-pub mod cancel;
 pub mod cgroup;
 pub mod error;
-pub mod golden_sync;
+pub mod golden;
 pub mod job;
-pub mod limits;
 pub mod node;
 pub mod observer;
-pub mod overrides;
 pub mod probe;
-pub mod profiles;
 pub mod seal;
-pub mod smolvm;
-pub mod smolvm_backend;
 pub mod spec;
 pub mod toolchains;
 pub mod vm;
-pub mod worker;
 
-pub use budget::{CapabilityBudget, EgressAllowlist, FsGrant, NetGrant, ThreatTier};
+pub use backend::smolvm::{RootfsStore, SmolvmRuntime};
+pub use budget::{
+    CapabilityBudget, EgressAllowlist, FsGrant, NetGrant, ThreatTier,
+};
+pub use budget::limits::{LimitOverride, Limits, Network};
+pub use budget::overrides::{OverrideTable, SandboxKey};
+pub use budget::profiles::ProducerProfile;
 pub use cage::{Cage, CageCaps, CageId, DevPassthrough, Policy, run_sealed};
-pub use cancel::CancelToken;
-pub use error::{CageError, KillReason, SandboxError, to_io_error};
-pub use golden_sync::{GoldenContentIo, MAX_GOLDEN_BYTES};
-pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
-pub use limits::{LimitOverride, Limits, Network};
-pub use node::NodeId;
-pub use observer::{CountingObserver, ForgeObserver, NullObserver};
-pub use overrides::{OverrideTable, SandboxKey};
-pub use probe::{HostIsolation, IsolationPolicy, VirtSupport, require as require_isolation};
-pub use profiles::ProducerProfile;
-pub use seal::{SealedCommand, SealedInput, Sealer};
-pub use smolvm::{
+pub use cage::smolvm::{
     GoldenPool, SmolvmCage, project_network, project_run_spec, project_vm_config,
     project_vm_config_with_stream,
 };
-pub use smolvm_backend::{RootfsStore, SmolvmRuntime};
+pub use error::{CageError, KillReason, SandboxError, to_io_error};
+pub use golden::{GoldenContentIo, MAX_GOLDEN_BYTES};
+pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
+pub use job::cancel::CancelToken;
+pub use job::worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
+pub use node::NodeId;
+pub use observer::{CountingObserver, ForgeObserver, NullObserver};
+pub use probe::{HostIsolation, IsolationPolicy, VirtSupport, require as require_isolation};
+pub use seal::{SealedCommand, SealedInput, Sealer};
 pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
 pub use toolchains::ToolchainSet;
 pub use toolchains::images::{
@@ -91,7 +87,6 @@ pub use vm::{
 };
 /// Type alias kept for external crates; new code should use [`Output`] directly.
 pub type Captured = Output;
-pub use worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
 
 /// Probe host isolation and enforce policy from the environment.
 pub fn boot_check() -> Result<HostIsolation, SandboxError> {

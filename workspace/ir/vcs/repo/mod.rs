@@ -27,7 +27,7 @@ use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::kind::KindDiscriminant;
 
 use crate::checkout::MaterializedIndex;
-use crate::error::{VcsError, pijul_err};
+use crate::error::{Error, pijul_err};
 use crate::serialize::{LinkWire, intro_hex_of, is_symbol_path, symbol_path};
 
 /// Derive the type-skeleton fingerprint for a type-alias payload. F1 no longer
@@ -69,12 +69,8 @@ impl IrTip {
 // Helper: hash ↔ hex
 // ---------------------------------------------------------------------------
 
-/// `pub(crate)` helper for session.rs to convert a libpijul `Hash` to its hex string.
-pub(crate) fn hash_to_hex_pub(h: &Hash) -> String {
-    hash_to_hex(h)
-}
-
-fn hash_to_hex(h: &Hash) -> String {
+/// Convert a libpijul `Hash` to its hex string.
+pub(crate) fn hash_to_hex(h: &Hash) -> String {
     match h {
         Hash::Blake3(b) => {
             let mut s = String::with_capacity(64);
@@ -88,18 +84,18 @@ fn hash_to_hex(h: &Hash) -> String {
     }
 }
 
-fn hex_to_hash(hex: &str) -> Result<Hash, VcsError> {
+fn hex_to_hash(hex: &str) -> Result<Hash, Error> {
     if hex.len() != 64 {
-        return Err(VcsError::InvalidHexDigit);
+        return Err(Error::InvalidHexDigit);
     }
     let mut bytes = [0u8; 32];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         let hi = (chunk[0] as char)
             .to_digit(16)
-            .ok_or(VcsError::InvalidHexDigit)? as u8;
+            .ok_or(Error::InvalidHexDigit)? as u8;
         let lo = (chunk[1] as char)
             .to_digit(16)
-            .ok_or(VcsError::InvalidHexDigit)? as u8;
+            .ok_or(Error::InvalidHexDigit)? as u8;
         bytes[i] = (hi << 4) | lo;
     }
     Ok(Hash::Blake3(bytes))
@@ -160,7 +156,7 @@ pub struct IrRepository<C = MemChanges> {
 impl IrRepository<MemChanges> {
     /// In-memory pristine (anon sanakirja) + memory changestore — fast,
     /// ephemeral, for tests.
-    pub fn in_memory(package: PackageLineageId, channel: &str) -> Result<Self, VcsError> {
+    pub fn in_memory(package: PackageLineageId, channel: &str) -> Result<Self, Error> {
         // The working channel is a branch; validate it so `current_branch` is
         // always well-formed and the working branch can't sit in a reserved
         // (tag/ or version/) namespace.
@@ -186,9 +182,9 @@ impl IrRepository<FsChanges> {
     /// changestore** (under `root/changes`) — for production use. Both the
     /// pristine and every recorded change persist across process restarts; the
     /// working copy is ephemeral scratch, re-derived by `materialize`.
-    pub fn open(root: &Path, package: PackageLineageId, channel: &str) -> Result<Self, VcsError> {
+    pub fn open(root: &Path, package: PackageLineageId, channel: &str) -> Result<Self, Error> {
         let branch = BranchName::new(channel)?;
-        std::fs::create_dir_all(root.join("changes")).map_err(VcsError::Io)?;
+        std::fs::create_dir_all(root.join("changes")).map_err(Error::Io)?;
         let env = Pristine::new(root.join("pristine")).map_err(|e: SanakirjaError| pijul_err(e))?;
         let changes = FsChanges::from_root(root.join("changes"), CHANGESTORE_CACHE);
         Ok(Self {
@@ -217,7 +213,7 @@ impl IrRepository<FsChanges> {
     /// - Parses the hex to a `libpijul::Hash`.
     /// - Skips if the change is already on the channel (idempotent).
     /// - Verifies the file is present in the changestore; returns
-    ///   [`VcsError::ChangeMissingFromStore`] if not.
+    ///   [`Error::ChangeMissingFromStore`] if not.
     /// - Applies via `libpijul::apply::apply_change_arc` (plain sequential
     ///   apply; `_rec` is not needed because the caller passes changes in
     ///   announcement order, which is already dependency-respecting — pijul
@@ -229,7 +225,7 @@ impl IrRepository<FsChanges> {
     /// working copy from the new channel tip via the existing stale-WC path.
     ///
     /// Returns the new channel tip as an [`IrTip`].
-    pub fn apply_external_changes(&self, hashes: &[ChangeHashHex]) -> Result<IrTip, VcsError> {
+    pub fn apply_external_changes(&self, hashes: &[ChangeHashHex]) -> Result<IrTip, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -248,7 +244,7 @@ impl IrRepository<FsChanges> {
 
             // Verify the change file is present in the on-disk changestore.
             if !self.changes.has_change(&hash) {
-                return Err(VcsError::ChangeMissingFromStore {
+                return Err(Error::ChangeMissingFromStore {
                     hash: hex.0.clone(),
                 });
             }
@@ -260,7 +256,7 @@ impl IrRepository<FsChanges> {
             // later ones) and all files are already in the store.
             libpijul::apply::apply_change_arc(&self.changes, &txn, &channel, &hash).map_err(
                 |e| {
-                    VcsError::Pijul(Box::new(std::io::Error::other(format!(
+                    Error::Pijul(Box::new(std::io::Error::other(format!(
                         "apply_change_arc {}: {e}",
                         hex.0
                     ))))
@@ -303,11 +299,11 @@ where
         std::time::SystemTime::now()
     }
 
-    fn arc_txn(&self) -> Result<ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+    fn arc_txn(&self) -> Result<ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, Error> {
         self.env.arc_txn_begin().map_err(|e| pijul_err(e))
     }
 
-    fn open_or_create_channel<T>(txn: &ArcTxn<T>, name: &str) -> Result<ChannelRef<T>, VcsError>
+    fn open_or_create_channel<T>(txn: &ArcTxn<T>, name: &str) -> Result<ChannelRef<T>, Error>
     where
         T: libpijul::pristine::MutTxnT + Send + Sync + 'static,
     {
@@ -323,7 +319,7 @@ where
     /// called once per fresh process open (stale WC path). Subsequent calls to
     /// `record_generation` skip it when `working_copy_tip` already matches the
     /// channel tip.
-    fn sync_output<T>(&self, txn: &ArcTxn<T>, channel: &ChannelRef<T>) -> Result<(), VcsError>
+    fn sync_output<T>(&self, txn: &ArcTxn<T>, channel: &ChannelRef<T>) -> Result<(), Error>
     where
         T: libpijul::pristine::MutTxnT
             + libpijul::pristine::ChannelMutTxnT
@@ -370,7 +366,7 @@ where
     ///
     /// Returns `Some(hex)` if any files changed (i.e. a change was recorded),
     /// or `None` if the IR is identical to the current channel tip (no-op).
-    pub fn record_generation(&self, ir: &PayloadTable) -> Result<Option<ChangeHashHex>, VcsError> {
+    pub fn record_generation(&self, ir: &PayloadTable) -> Result<Option<ChangeHashHex>, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -605,10 +601,10 @@ where
             .map_err(|e| {
                 // anyhow::Error wraps the actual error; try to downcast common types.
                 if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-                    VcsError::Io(std::io::Error::new(io_err.kind(), e.to_string()))
+                    Error::Io(std::io::Error::new(io_err.kind(), e.to_string()))
                 } else {
                     // Preserve the error chain as a string message in a generic Pijul error.
-                    VcsError::Pijul(Box::new(std::io::Error::other(e.to_string())))
+                    Error::Pijul(Box::new(std::io::Error::other(e.to_string())))
                 }
             })?;
 
@@ -652,7 +648,7 @@ where
     /// result reflects the channel *exactly* — never a stale file left behind by
     /// a prior generation or an `unrecord` (libpijul's `output` writes and
     /// updates files but does not delete ones absent from the channel).
-    pub fn materialize(&self) -> Result<PayloadTable, VcsError> {
+    pub fn materialize(&self) -> Result<PayloadTable, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -673,7 +669,7 @@ where
 
         if !conflicts.is_empty() {
             let paths: Vec<String> = conflicts.iter().map(|c| format!("{:?}", c)).collect();
-            return Err(VcsError::ConflictedState { paths });
+            return Err(Error::ConflictedState { paths });
         }
 
         txn.commit().map_err(|e| pijul_err(e))?;
@@ -691,13 +687,13 @@ where
 
             // Parse F1 canonical format.
             let view =
-                crate::f1::F1View::from_bytes(&buf).map_err(|e| VcsError::CorruptSymbolFile {
+                crate::f1::F1View::from_bytes(&buf).map_err(|e| Error::CorruptSymbolFile {
                     path: path.clone(),
                     reason: e.to_string(),
                 })?;
             let payload = view
                 .to_owned_payload()
-                .map_err(|e| VcsError::CorruptSymbolFile {
+                .map_err(|e| Error::CorruptSymbolFile {
                     path: path.clone(),
                     reason: e.to_string(),
                 })?;
@@ -723,7 +719,7 @@ where
     // -----------------------------------------------------------------------
 
     /// Return the current channel tip as an [`IrTip`].
-    pub fn tip(&self) -> Result<IrTip, VcsError> {
+    pub fn tip(&self) -> Result<IrTip, Error> {
         let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let merkle = txn
@@ -741,7 +737,7 @@ where
     // -----------------------------------------------------------------------
 
     /// Returns `true` if the given change hash is in the channel.
-    pub fn has_change(&self, hex: &ChangeHashHex) -> Result<bool, VcsError> {
+    pub fn has_change(&self, hex: &ChangeHashHex) -> Result<bool, Error> {
         let hash = hex_to_hash(&hex.0)?;
         let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
@@ -759,7 +755,7 @@ where
     // -----------------------------------------------------------------------
 
     /// Return all change hashes in the channel, in recorded order (oldest first).
-    pub fn log(&self) -> Result<Vec<ChangeHashHex>, VcsError> {
+    pub fn log(&self) -> Result<Vec<ChangeHashHex>, Error> {
         let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -789,7 +785,7 @@ where
     /// reflects the post-unrecord channel tip.  We record that new tip in
     /// `working_copy_tip` so that the next call to `record_generation` can skip
     /// the expensive whole-tree resync.
-    pub fn unrecord(&self, hex: &ChangeHashHex) -> Result<(), VcsError> {
+    pub fn unrecord(&self, hex: &ChangeHashHex) -> Result<(), Error> {
         let hash = hex_to_hash(&hex.0)?;
         let txn = self.env.arc_txn_begin().map_err(|e| pijul_err(e))?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
@@ -823,7 +819,7 @@ where
     // -----------------------------------------------------------------------
 
     /// Materialize the current channel tip and seal it as a [`SealedArchive`].
-    pub fn seal(&self) -> Result<SealedArchive, VcsError> {
+    pub fn seal(&self) -> Result<SealedArchive, Error> {
         let index = self.materialize_index()?;
         self.seal_from_index(&index)
     }
@@ -835,7 +831,7 @@ where
     /// metadata. The expensive libpijul reconstruction was already paid
     /// (incrementally) to build the index; this is a borrow + cheap memcpy
     /// assembly.
-    pub fn seal_from_index(&self, index: &MaterializedIndex) -> Result<SealedArchive, VcsError> {
+    pub fn seal_from_index(&self, index: &MaterializedIndex) -> Result<SealedArchive, Error> {
         // Stable intro order so the parallel owned side-tables line up.
         let mut intros: Vec<IntroId> = index.intros().collect();
         intros.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
@@ -846,7 +842,7 @@ where
             let view = index
                 .view(intro)
                 .expect("intro came from index.intros()")
-                .map_err(|e| VcsError::CorruptSymbolFile {
+                .map_err(|e| Error::CorruptSymbolFile {
                     path: symbol_path(intro),
                     reason: e.to_string(),
                 })?;
@@ -862,7 +858,7 @@ where
             .enumerate()
             .map(|(i, v)| {
                 v.to_owned_payload()
-                    .map_err(|e| VcsError::CorruptSymbolFile {
+                    .map_err(|e| Error::CorruptSymbolFile {
                         path: symbol_path(intros[i]),
                         reason: e.to_string(),
                     })
@@ -909,7 +905,7 @@ where
             })
             .collect();
 
-        seal_from_entries(entries).map_err(VcsError::Seal)
+        seal_from_entries(entries).map_err(Error::Seal)
     }
 
     // -----------------------------------------------------------------------
@@ -922,7 +918,7 @@ where
     ///
     /// `tip` is set to `current_state().to_bytes()` so callers can detect
     /// unchanged channels with a single 32-byte comparison.
-    pub fn materialize_index(&self) -> Result<MaterializedIndex, VcsError> {
+    pub fn materialize_index(&self) -> Result<MaterializedIndex, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let index = self.index_from_channel(&txn, &channel)?;
@@ -943,7 +939,7 @@ where
         &self,
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
-    ) -> Result<MaterializedIndex, VcsError> {
+    ) -> Result<MaterializedIndex, Error> {
         // Snapshot the tip BEFORE output so it's in the same transaction.
         let tip = txn
             .read()
@@ -967,7 +963,7 @@ where
 
         let mut symbols = std::collections::HashMap::new();
         for path in wc.list_files().into_iter().filter(|p| is_symbol_path(p)) {
-            let intro = match crate::checkout::_try_intro_from_path(&path) {
+            let intro = match crate::checkout::try_intro_from_path(&path) {
                 Some(i) => i,
                 None => continue,
             };
@@ -1001,7 +997,7 @@ where
     pub fn materialize_index_incremental(
         &self,
         prev: &MaterializedIndex,
-    ) -> Result<MaterializedIndex, VcsError> {
+    ) -> Result<MaterializedIndex, Error> {
         Ok(self.incremental_inner(prev)?.0)
     }
 
@@ -1012,7 +1008,7 @@ where
     pub(crate) fn materialize_index_incremental_counted(
         &self,
         prev: &MaterializedIndex,
-    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
+    ) -> Result<(MaterializedIndex, Option<usize>), Error> {
         self.incremental_inner(prev)
     }
 
@@ -1027,7 +1023,7 @@ where
         &self,
         reference: &Ref,
         prev: &MaterializedIndex,
-    ) -> Result<MaterializedIndex, VcsError> {
+    ) -> Result<MaterializedIndex, Error> {
         Ok(self.materialize_ref_incremental_counted(reference, prev)?.0)
     }
 
@@ -1038,7 +1034,7 @@ where
         &self,
         reference: &Ref,
         prev: &MaterializedIndex,
-    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
+    ) -> Result<(MaterializedIndex, Option<usize>), Error> {
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let result = self.incremental_core(&txn, &channel, prev)?;
@@ -1049,7 +1045,7 @@ where
     fn incremental_inner(
         &self,
         prev: &MaterializedIndex,
-    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
+    ) -> Result<(MaterializedIndex, Option<usize>), Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let result = self.incremental_core(&txn, &channel, prev)?;
@@ -1065,7 +1061,7 @@ where
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
         prev: &MaterializedIndex,
-    ) -> Result<(MaterializedIndex, Option<usize>), VcsError> {
+    ) -> Result<(MaterializedIndex, Option<usize>), Error> {
         let tip = txn
             .read()
             .current_state(&channel.read())
@@ -1132,7 +1128,7 @@ where
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
         prev: &MaterializedIndex,
-    ) -> Result<Option<DeltaPlan>, VcsError> {
+    ) -> Result<Option<DeltaPlan>, Error> {
         use std::collections::HashSet;
 
         // 1. Cheap current-file listing from the channel graph (names only).
@@ -1152,7 +1148,7 @@ where
                 if meta.is_dir() {
                     continue;
                 }
-                if let Some(intro) = crate::checkout::_try_intro_from_path(name.as_ref()) {
+                if let Some(intro) = crate::checkout::try_intro_from_path(name.as_ref()) {
                     current_intros.insert(intro);
                 }
             }
@@ -1197,10 +1193,10 @@ where
                     match txn_read.find_youngest_path(&self.changes, channel, pos) {
                         // The resolved path is authoritative; libpijul reports
                         // flat root files with `is_dir = true`, so we must NOT
-                        // filter on it. `_try_intro_from_path` already rejects
+                        // filter on it. `try_intro_from_path` already rejects
                         // the empty (root) path and any non-`.nir` name.
                         Ok(Some((path, _is_dir))) => {
-                            if let Some(intro) = crate::checkout::_try_intro_from_path(&path)
+                            if let Some(intro) = crate::checkout::try_intro_from_path(&path)
                                 && current_intros.contains(&intro)
                             {
                                 changed.insert(intro);
@@ -1233,7 +1229,7 @@ where
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
         prev: &MaterializedIndex,
         tip: [u8; 32],
-    ) -> Result<MaterializedIndex, VcsError> {
+    ) -> Result<MaterializedIndex, Error> {
         let wc = MemWc::new();
         libpijul::output::output_repository_no_pending(
             &wc,
@@ -1251,7 +1247,7 @@ where
         let mut symbols = prev.symbols.clone();
         let mut new_intros: std::collections::HashSet<IntroId> = std::collections::HashSet::new();
         for path in wc.list_files().into_iter().filter(|p| is_symbol_path(p)) {
-            let intro = match crate::checkout::_try_intro_from_path(&path) {
+            let intro = match crate::checkout::try_intro_from_path(&path) {
                 Some(i) => i,
                 None => continue,
             };
@@ -1282,7 +1278,7 @@ where
     pub fn checkout_symbol(
         &self,
         intro: IntroId,
-    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+    ) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
@@ -1300,7 +1296,7 @@ where
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
         intro: IntroId,
-    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+    ) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
         let path = symbol_path(intro);
         let wc = MemWc::new();
         libpijul::output::output_repository_no_pending(
@@ -1337,7 +1333,7 @@ where
     pub fn checkout_symbols(
         &self,
         intros: &[IntroId],
-    ) -> Result<std::collections::HashMap<IntroId, std::sync::Arc<[u8]>>, VcsError> {
+    ) -> Result<std::collections::HashMap<IntroId, std::sync::Arc<[u8]>>, Error> {
         let mut result = std::collections::HashMap::new();
         for &intro in intros {
             if let Some(bytes) = self.checkout_symbol(intro)? {
@@ -1365,26 +1361,26 @@ where
         &self,
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         name: &str,
-    ) -> Result<Option<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>>, VcsError> {
+    ) -> Result<Option<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>>, Error> {
         let reader = txn.read();
         reader.load_channel(name).map_err(|e| pijul_err(e))
     }
 
     /// Require the channel backing a reference. A bare [`Ref::Change`] is not a
-    /// channel → [`VcsError::RefNotServable`]; an absent branch/tag/version →
-    /// [`VcsError::RefNotFound`].
+    /// channel → [`Error::RefNotServable`]; an absent branch/tag/version →
+    /// [`Error::RefNotFound`].
     fn require_ref_channel(
         &self,
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         reference: &Ref,
-    ) -> Result<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+    ) -> Result<ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, Error> {
         let name = reference
             .channel_name()
-            .ok_or_else(|| VcsError::RefNotServable {
+            .ok_or_else(|| Error::RefNotServable {
                 reference: reference.to_string(),
             })?;
         self.load_channel_ref(txn, &name)?
-            .ok_or_else(|| VcsError::RefNotFound {
+            .ok_or_else(|| Error::RefNotFound {
                 reference: reference.to_string(),
             })
     }
@@ -1399,7 +1395,7 @@ where
 
     /// Resolve a channel-backed reference (branch/tag/version) to its channel
     /// name + current tip [`VersionState`]. Cheap — reads the tip, no output.
-    pub fn resolve_ref(&self, reference: &Ref) -> Result<ResolvedRef, VcsError> {
+    pub fn resolve_ref(&self, reference: &Ref) -> Result<ResolvedRef, Error> {
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let channel_name = reference.channel_name().expect("channel-backed above");
@@ -1421,7 +1417,7 @@ where
     // ----- lifecycle: fork + channel helpers -----
 
     /// Fork the channel backing `from` into a new channel, strictly (errors
-    /// [`VcsError::RefAlreadyExists`] if it exists). The fork is a copy-on-write
+    /// [`Error::RefAlreadyExists`] if it exists). The fork is a copy-on-write
     /// of the channel B-tree roots — content stays shared in the pristine graph.
     /// Returns the frozen tip state. Shared by branch-fork / tag / version.
     fn fork_into(
@@ -1429,10 +1425,10 @@ where
         from: &Ref,
         new_channel: &str,
         new_label: String,
-    ) -> Result<VersionState, VcsError> {
+    ) -> Result<VersionState, Error> {
         let txn = self.arc_txn()?;
         if self.load_channel_ref(&txn, new_channel)?.is_some() {
-            return Err(VcsError::RefAlreadyExists {
+            return Err(Error::RefAlreadyExists {
                 reference: new_label,
             });
         }
@@ -1453,7 +1449,7 @@ where
 
     /// Enumerate channels, mapping each name through `pick` (which returns `Some`
     /// for the channels it wants). Results are sorted by channel name.
-    fn list_channels<T, F>(&self, pick: F) -> Result<Vec<T>, VcsError>
+    fn list_channels<T, F>(&self, pick: F) -> Result<Vec<T>, Error>
     where
         F: Fn(&str) -> Option<T>,
     {
@@ -1472,9 +1468,9 @@ where
         Ok(names.iter().filter_map(|n| pick(n)).collect())
     }
 
-    /// Drop a channel by name; errors [`VcsError::RefNotFound`] if it did not
+    /// Drop a channel by name; errors [`Error::RefNotFound`] if it did not
     /// exist.
-    fn drop_channel_strict(&self, channel_name: &str, label: &str) -> Result<(), VcsError> {
+    fn drop_channel_strict(&self, channel_name: &str, label: &str) -> Result<(), Error> {
         let txn = self.arc_txn()?;
         let existed = txn
             .write()
@@ -1484,7 +1480,7 @@ where
         if existed {
             Ok(())
         } else {
-            Err(VcsError::RefNotFound {
+            Err(Error::RefNotFound {
                 reference: label.to_owned(),
             })
         }
@@ -1496,16 +1492,16 @@ where
         old_channel: &str,
         new_channel: &str,
         old_label: &str,
-    ) -> Result<(), VcsError> {
+    ) -> Result<(), Error> {
         let txn = self.arc_txn()?;
         if self.load_channel_ref(&txn, new_channel)?.is_some() {
-            return Err(VcsError::RefAlreadyExists {
+            return Err(Error::RefAlreadyExists {
                 reference: new_channel.to_owned(),
             });
         }
         let mut channel =
             self.load_channel_ref(&txn, old_channel)?
-                .ok_or_else(|| VcsError::RefNotFound {
+                .ok_or_else(|| Error::RefNotFound {
                     reference: old_label.to_owned(),
                 })?;
         txn.write()
@@ -1518,11 +1514,11 @@ where
     // ----- branches (channels) -----
 
     /// Create a new, **empty** branch (channel). Strict: errors if it exists.
-    pub fn create_branch(&self, branch: &BranchName) -> Result<(), VcsError> {
+    pub fn create_branch(&self, branch: &BranchName) -> Result<(), Error> {
         let txn = self.arc_txn()?;
         let name = branch.channel_name();
         if self.load_channel_ref(&txn, &name)?.is_some() {
-            return Err(VcsError::RefAlreadyExists {
+            return Err(Error::RefAlreadyExists {
                 reference: format!("branch:{branch}"),
             });
         }
@@ -1532,12 +1528,12 @@ where
     }
 
     /// Fork `from` into a new branch. Returns the new branch's tip state.
-    pub fn fork_branch(&self, from: &Ref, new: &BranchName) -> Result<VersionState, VcsError> {
+    pub fn fork_branch(&self, from: &Ref, new: &BranchName) -> Result<VersionState, Error> {
         self.fork_into(from, &new.channel_name(), format!("branch:{new}"))
     }
 
     /// Whether a branch exists.
-    pub fn branch_exists(&self, branch: &BranchName) -> Result<bool, VcsError> {
+    pub fn branch_exists(&self, branch: &BranchName) -> Result<bool, Error> {
         let txn = self.arc_txn()?;
         let exists = self
             .load_channel_ref(&txn, &branch.channel_name())?
@@ -1547,7 +1543,7 @@ where
     }
 
     /// List every branch (channels outside the reserved tag/version namespaces).
-    pub fn list_branches(&self) -> Result<Vec<BranchName>, VcsError> {
+    pub fn list_branches(&self) -> Result<Vec<BranchName>, Error> {
         self.list_channels(|name| {
             if name.starts_with(crate::refs::TAG_PREFIX)
                 || name.starts_with(crate::refs::VERSION_PREFIX)
@@ -1560,9 +1556,9 @@ where
     }
 
     /// Delete a branch. Refuses to delete the current working branch.
-    pub fn delete_branch(&self, branch: &BranchName) -> Result<(), VcsError> {
+    pub fn delete_branch(&self, branch: &BranchName) -> Result<(), Error> {
         if branch == &self.current_branch() {
-            return Err(VcsError::CurrentBranchProtected {
+            return Err(Error::CurrentBranchProtected {
                 branch: branch.to_string(),
             });
         }
@@ -1570,9 +1566,9 @@ where
     }
 
     /// Rename a branch. Refuses to rename the current working branch.
-    pub fn rename_branch(&self, old: &BranchName, new: &BranchName) -> Result<(), VcsError> {
+    pub fn rename_branch(&self, old: &BranchName, new: &BranchName) -> Result<(), Error> {
         if old == &self.current_branch() {
-            return Err(VcsError::CurrentBranchProtected {
+            return Err(Error::CurrentBranchProtected {
                 branch: old.to_string(),
             });
         }
@@ -1586,9 +1582,9 @@ where
     /// **Switch the working branch.** The branch must exist. Resets the scratch
     /// working copy so the next `record_generation` re-syncs from the target
     /// branch's tip — a fresh working copy carries no cross-branch stale files.
-    pub fn switch_branch(&mut self, branch: &BranchName) -> Result<(), VcsError> {
+    pub fn switch_branch(&mut self, branch: &BranchName) -> Result<(), Error> {
         if !self.branch_exists(branch)? {
-            return Err(VcsError::RefNotFound {
+            return Err(Error::RefNotFound {
                 reference: format!("branch:{branch}"),
             });
         }
@@ -1601,12 +1597,12 @@ where
     // ----- tags (frozen channels) -----
 
     /// Create an immutable tag at the state of `from`. Strict.
-    pub fn create_tag(&self, tag: &TagName, from: &Ref) -> Result<VersionState, VcsError> {
+    pub fn create_tag(&self, tag: &TagName, from: &Ref) -> Result<VersionState, Error> {
         self.fork_into(from, &tag.channel_name(), format!("tag:{tag}"))
     }
 
     /// Whether a tag exists.
-    pub fn tag_exists(&self, tag: &TagName) -> Result<bool, VcsError> {
+    pub fn tag_exists(&self, tag: &TagName) -> Result<bool, Error> {
         let txn = self.arc_txn()?;
         let exists = self.load_channel_ref(&txn, &tag.channel_name())?.is_some();
         txn.commit().map_err(|e| pijul_err(e))?;
@@ -1614,7 +1610,7 @@ where
     }
 
     /// List every tag.
-    pub fn list_tags(&self) -> Result<Vec<TagName>, VcsError> {
+    pub fn list_tags(&self) -> Result<Vec<TagName>, Error> {
         self.list_channels(|name| {
             name.strip_prefix(crate::refs::TAG_PREFIX)
                 .and_then(|n| TagName::new(n).ok())
@@ -1622,12 +1618,12 @@ where
     }
 
     /// Delete a tag.
-    pub fn delete_tag(&self, tag: &TagName) -> Result<(), VcsError> {
+    pub fn delete_tag(&self, tag: &TagName) -> Result<(), Error> {
         self.drop_channel_strict(&tag.channel_name(), &format!("tag:{tag}"))
     }
 
     /// The state a tag points at.
-    pub fn tag_state(&self, tag: &TagName) -> Result<VersionState, VcsError> {
+    pub fn tag_state(&self, tag: &TagName) -> Result<VersionState, Error> {
         self.resolve_ref(&Ref::Tag(tag.clone())).map(|r| r.state)
     }
 
@@ -1638,7 +1634,7 @@ where
         &self,
         label: &VersionLabel,
         from: &Ref,
-    ) -> Result<VersionState, VcsError> {
+    ) -> Result<VersionState, Error> {
         self.fork_into(
             from,
             &label.channel_name(),
@@ -1647,7 +1643,7 @@ where
     }
 
     /// List every version.
-    pub fn list_versions(&self) -> Result<Vec<VersionLabel>, VcsError> {
+    pub fn list_versions(&self) -> Result<Vec<VersionLabel>, Error> {
         self.list_channels(|name| {
             name.strip_prefix(crate::refs::VERSION_PREFIX)
                 .and_then(|n| VersionLabel::new(n).ok())
@@ -1655,7 +1651,7 @@ where
     }
 
     /// Delete a version.
-    pub fn delete_version(&self, label: &VersionLabel) -> Result<(), VcsError> {
+    pub fn delete_version(&self, label: &VersionLabel) -> Result<(), Error> {
         self.drop_channel_strict(
             &label.channel_name(),
             &format!("version:{}", label.as_str()),
@@ -1667,7 +1663,7 @@ where
     /// **Reconstruct a reference's full IR** (branch/tag/version) as a
     /// [`MaterializedIndex`] of borrowed [`F1View`](crate::f1::F1View)s — a graph walk of that
     /// ref's channel, O(state). Age-independent.
-    pub fn materialize_ref(&self, reference: &Ref) -> Result<MaterializedIndex, VcsError> {
+    pub fn materialize_ref(&self, reference: &Ref) -> Result<MaterializedIndex, Error> {
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let index = self.index_from_channel(&txn, &channel)?;
@@ -1681,7 +1677,7 @@ where
         &self,
         reference: &Ref,
         intro: IntroId,
-    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+    ) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
@@ -1695,7 +1691,7 @@ where
         &self,
         reference: &Ref,
         intro: IntroId,
-    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+    ) -> Result<Vec<ChangeHashHex>, Error> {
         let txn = self.arc_txn()?;
         let channel = self.require_ref_channel(&txn, reference)?;
         let hashes = self.symbol_history_in_channel(&txn, &channel, intro)?;
@@ -1711,7 +1707,7 @@ where
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
         intro: IntroId,
-    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+    ) -> Result<Vec<ChangeHashHex>, Error> {
         let target = symbol_path(intro);
         let mut hashes = Vec::new();
         let reader = txn.read();
@@ -1751,7 +1747,7 @@ where
     /// and compares by intro identity + payload bytes. (The change objects
     /// between the two states — [`changes_between_refs`](Self::changes_between_refs)
     /// — give the native pijul view of the same delta.)
-    pub fn diff_refs(&self, from: &Ref, to: &Ref) -> Result<VersionDiff, VcsError> {
+    pub fn diff_refs(&self, from: &Ref, to: &Ref) -> Result<VersionDiff, Error> {
         let a = self.materialize_ref(from)?;
         let b = self.materialize_ref(to)?;
         Ok(Self::diff_indices(&a, &b))
@@ -1797,7 +1793,7 @@ where
         &self,
         from: &Ref,
         to: &Ref,
-    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+    ) -> Result<Vec<ChangeHashHex>, Error> {
         let txn = self.arc_txn()?;
         let from_channel = self.require_ref_channel(&txn, from)?;
         let to_channel = self.require_ref_channel(&txn, to)?;
@@ -1832,7 +1828,7 @@ where
         &self,
         reference: &Ref,
         cache: &ServeCache,
-    ) -> Result<ServedArchive, VcsError> {
+    ) -> Result<ServedArchive, Error> {
         let state = self.resolve_ref(reference)?.state;
 
         if let Some(archive) = cache.get(state) {
@@ -1860,20 +1856,20 @@ where
     /// A version is a frozen `version/{label}` channel forked from the working
     /// branch — sharing the content graph, never recorded onto again, so it
     /// forever reconstructs exactly this IR. Strict: errors
-    /// [`VcsError::RefAlreadyExists`] rather than overwriting.
-    pub fn tag_version(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+    /// [`Error::RefAlreadyExists`] rather than overwriting.
+    pub fn tag_version(&self, label: &VersionLabel) -> Result<VersionState, Error> {
         self.create_version_from(label, &Ref::Branch(self.current_branch()))
     }
 
     /// The [`VersionState`] of a tagged version — its channel tip Merkle.
-    pub fn version_state(&self, label: &VersionLabel) -> Result<VersionState, VcsError> {
+    pub fn version_state(&self, label: &VersionLabel) -> Result<VersionState, Error> {
         self.resolve_ref(&Ref::Version(label.clone()))
             .map(|r| r.state)
     }
 
     /// **Reconstruct a version's full IR** — see
     /// [`materialize_ref`](Self::materialize_ref).
-    pub fn materialize_version(&self, label: &VersionLabel) -> Result<MaterializedIndex, VcsError> {
+    pub fn materialize_version(&self, label: &VersionLabel) -> Result<MaterializedIndex, Error> {
         self.materialize_ref(&Ref::Version(label.clone()))
     }
 
@@ -1883,7 +1879,7 @@ where
         &self,
         label: &VersionLabel,
         intro: IntroId,
-    ) -> Result<Option<std::sync::Arc<[u8]>>, VcsError> {
+    ) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
         self.checkout_symbol_at_ref(&Ref::Version(label.clone()), intro)
     }
 
@@ -1891,7 +1887,7 @@ where
     /// if the working branch has no channel yet, or the symbol is absent, returns
     /// an empty vector. (For an explicit reference, use
     /// [`symbol_history_on`](Self::symbol_history_on).)
-    pub fn symbol_history(&self, intro: IntroId) -> Result<Vec<ChangeHashHex>, VcsError> {
+    pub fn symbol_history(&self, intro: IntroId) -> Result<Vec<ChangeHashHex>, Error> {
         let txn = self.arc_txn()?;
         // open_or_create (not require) so a fresh working branch yields empty
         // history rather than an error.
@@ -1907,7 +1903,7 @@ where
         &self,
         from: &VersionLabel,
         to: &VersionLabel,
-    ) -> Result<VersionDiff, VcsError> {
+    ) -> Result<VersionDiff, Error> {
         self.diff_refs(&Ref::Version(from.clone()), &Ref::Version(to.clone()))
     }
 
@@ -1917,7 +1913,7 @@ where
         &self,
         from: &VersionLabel,
         to: &VersionLabel,
-    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+    ) -> Result<Vec<ChangeHashHex>, Error> {
         self.changes_between_refs(&Ref::Version(from.clone()), &Ref::Version(to.clone()))
     }
 
@@ -1931,7 +1927,7 @@ where
     /// Ensures the working copy is synced to the current channel tip (same
     /// logic as `record_generation`'s step 1) and captures the set of intros
     /// currently in the working copy as the deletion baseline.
-    pub fn begin_recording(&mut self) -> Result<crate::session::RecordingSession<'_, C>, VcsError> {
+    pub fn begin_recording(&mut self) -> Result<crate::session::RecordingSession<'_, C>, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
 
@@ -1963,7 +1959,7 @@ where
             .iter()
             .filter_map(|p| {
                 let hex = intro_hex_of(p)?;
-                crate::checkout::_try_intro_from_path(p).or_else(|| {
+                crate::checkout::try_intro_from_path(p).or_else(|| {
                     if hex.len() != 64 {
                         return None;
                     }
@@ -1984,7 +1980,7 @@ where
         // PristineIntroTable so that ir::continuity::resolve can operate on it.
         let mut tip_table = ir::apply::PristineIntroTable::new();
         for path in &symbol_paths {
-            let intro = match crate::checkout::_try_intro_from_path(path) {
+            let intro = match crate::checkout::try_intro_from_path(path) {
                 Some(i) => i,
                 None => continue,
             };
@@ -2008,7 +2004,7 @@ where
     /// `pub(crate)` arc_txn for session.rs.
     pub(crate) fn arc_txn_pub(
         &self,
-    ) -> Result<libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, VcsError> {
+    ) -> Result<libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>, Error> {
         self.arc_txn()
     }
 
@@ -2016,7 +2012,7 @@ where
     pub(crate) fn open_or_create_channel_pub(
         txn: &libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         name: &str,
-    ) -> Result<libpijul::pristine::ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, VcsError>
+    ) -> Result<libpijul::pristine::ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, Error>
     {
         Self::open_or_create_channel(txn, name)
     }
@@ -2064,7 +2060,7 @@ where
         &self,
         txn: &ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         channel: &ChannelRef<libpijul::pristine::sanakirja::MutTxn0>,
-    ) -> Result<Vec<ChangeHashHex>, VcsError> {
+    ) -> Result<Vec<ChangeHashHex>, Error> {
         let reader = txn.read();
         let mut out = Vec::new();
         for item in reader.log(&channel.read(), 0).map_err(|e| pijul_err(e))? {
@@ -2081,7 +2077,7 @@ where
         &self,
         label: &VersionLabel,
         cache: &ServeCache,
-    ) -> Result<ServedArchive, VcsError> {
+    ) -> Result<ServedArchive, Error> {
         self.serve_ref_cached(&Ref::Version(label.clone()), cache)
     }
 }
@@ -2113,9 +2109,9 @@ impl VersionDiff {
 // Parse IntroId from hex filename
 // ---------------------------------------------------------------------------
 
-fn parse_intro_hex(hex: &str, path: &str) -> Result<IntroId, VcsError> {
+fn parse_intro_hex(hex: &str, path: &str) -> Result<IntroId, Error> {
     if hex.len() != 64 {
-        return Err(VcsError::CorruptSymbolFile {
+        return Err(Error::CorruptSymbolFile {
             path: path.to_owned(),
             reason: format!("filename hex length {} != 64", hex.len()),
         });
@@ -2124,13 +2120,13 @@ fn parse_intro_hex(hex: &str, path: &str) -> Result<IntroId, VcsError> {
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         let hi = (chunk[0] as char)
             .to_digit(16)
-            .ok_or_else(|| VcsError::CorruptSymbolFile {
+            .ok_or_else(|| Error::CorruptSymbolFile {
                 path: path.to_owned(),
                 reason: format!("invalid hex at byte {i}"),
             })? as u8;
         let lo = (chunk[1] as char)
             .to_digit(16)
-            .ok_or_else(|| VcsError::CorruptSymbolFile {
+            .ok_or_else(|| Error::CorruptSymbolFile {
                 path: path.to_owned(),
                 reason: format!("invalid hex at byte {i}"),
             })? as u8;

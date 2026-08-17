@@ -26,7 +26,7 @@
 //! everyone else. The only observer that can see the difference is one that asks
 //! git what it would hand a stranger, which is what this test does.
 //!
-//! ISSUES.md had already recorded the symptom ("~27 untracked test .rs files …
+//! docs/ISSUES.md had already recorded the symptom ("~27 untracked test .rs files …
 //! a clean checkout of HEAD could not reproduce most of this document's green
 //! rows") and it was filed under housekeeping. It was not housekeeping: it was
 //! a total build failure for every reader of the repository, and it survived
@@ -44,7 +44,7 @@
 //!    runs here and does not exist anywhere else.
 //!
 //! The third is the subtlest and has the longest history in this repository.
-//! LIMITATIONS.md L48 records the mirror-image bug: cargo's autodiscovery globs
+//! docs/LIMITATIONS.md L48 records the mirror-image bug: cargo's autodiscovery globs
 //! only `tests/*.rs` and `tests/*/main.rs`, so 18 files sitting at
 //! `tests/<dir>/<name>.rs` had no target, never compiled, and cargo said
 //! nothing. This is the same silence from the other side — the file is
@@ -225,7 +225,7 @@ fn every_declared_module_is_a_tracked_file() {
 /// Scoped to the two shapes cargo actually globs — `tests/*.rs` and
 /// `tests/*/main.rs` — because those are the paths that become targets without
 /// a `[[test]]` stanza. A file at `tests/<dir>/<name>.rs` is *not* discovered
-/// (LIMITATIONS.md L48), so its absence from git changes nothing about what
+/// (docs/LIMITATIONS.md L48), so its absence from git changes nothing about what
 /// runs, and reporting it here would be noise.
 /// Every `include_str!`/`include_bytes!` target is tracked.
 ///
@@ -237,7 +237,7 @@ fn every_declared_module_is_a_tracked_file() {
 /// explaining that without it "the whole `index` crate fails to compile" — the
 /// allow-list rule was written and the file was still never added.
 ///
-/// LIMITATIONS.md L7 is the same story with a worse ending: `japanese.rs`
+/// docs/LIMITATIONS.md L7 is the same story with a worse ending: `japanese.rs`
 /// `include_bytes!`s a Vaporetto model, and what was on disk was a 4-byte file
 /// containing the ASCII text `STUB`. That compiled cleanly and panicked on first
 /// use. This test cannot judge *contents* — a stub of the right name still
@@ -361,7 +361,7 @@ fn every_autodiscovered_integration_test_is_tracked() {
          these compiles and runs on this machine and does not exist for anyone \
          who clones. The suite's size then depends on who is looking at it, and \
          a green run here proves nothing about a green run there — which is how \
-         most of ISSUES.md's evidence came to rest on files that were never \
+         most of docs/ISSUES.md's evidence came to rest on files that were never \
          committed. `git add` each path, or move the file out of `tests/` if it \
          is genuinely scratch work.",
         missing.join("\n")
@@ -399,7 +399,7 @@ fn every_build_script_is_tracked() {
          that step. `workspace/compiler/languages/java/build.rs` compiles the \
          javadoc doclet; without it the Java oracle does not exist and the \
          producer degrades with no diagnostic. That is the same failure shape as \
-         LIMITATIONS.md L50, arrived at through packaging instead of code.",
+         docs/LIMITATIONS.md L50, arrived at through packaging instead of code.",
         missing.join("\n")
     );
 }

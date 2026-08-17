@@ -1,0 +1,236 @@
+[package]
+name = "nudox-languages"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["pyrefly"]
+
+# The pyrefly semantic tier (`src/python/context.rs`). ON by default as of
+# 2026-08-09 — see `src/python/mod.rs` and the pyrefly decision record for the
+# full argument. Builds fully offline (typeshed is committed inside the pyrefly
+# git checkout). Costs 77 extra lock entries and ~1m40s of cold compile.
+pyrefly = [
+    "dep:pyrefly",
+    "dep:pyrefly_build",
+    "dep:pyrefly_config",
+    "dep:pyrefly_python",
+    "dep:pyrefly_types",
+    "dep:pyrefly_util",
+]
+
+# The tsz in-process TypeScript checker oracle (tier 2). Off by default so the
+# common build stays lean (tsz pulls in wasm-bindgen stubs and a large rayon
+# pool init). `rustc-hash` is deliberately NOT gated here: it is an
+# unconditional dependency (the Rust producer uses it), so it cannot be an
+# optional `dep:` entry.
+tsz = [
+    "dep:tsz-core",
+    "dep:tsz-binder",
+    "dep:tsz-solver",
+    "dep:tsz-checker",
+]
+
+[dependencies]
+nudox-ir = { path = "../../ir/model" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+# ── rust-analyzer in-process oracle ──────────────────────────────────────────
+# All ra_ap_* crates MUST be pinned lockstep at exactly 0.0.341 — salsa keys
+# are incompatible across versions and mismatches produce runtime failures, not
+# compile errors.
+ra_ap_base_db      = "=0.0.341"
+ra_ap_cfg          = "=0.0.341"
+ra_ap_hir          = "=0.0.341"
+ra_ap_hir_def      = "=0.0.341"
+ra_ap_ide_db       = "=0.0.341"
+ra_ap_load-cargo   = "=0.0.341"
+ra_ap_paths        = "=0.0.341"
+ra_ap_proc_macro_api = "=0.0.341"
+ra_ap_project_model = "=0.0.341"
+ra_ap_span         = "=0.0.341"
+# Needed only to resolve the `cargo` binary the same way `Sysroot::tool` does,
+# for the narrowed build-script command in `ra::loaded` (docs/LIMITATIONS.md L50).
+ra_ap_toolchain    = "=0.0.341"
+ra_ap_syntax       = "=0.0.341"
+ra_ap_vfs          = "=0.0.341"
+
+rustc-hash = { workspace = true }
+smol_str   = "0.3"
+tracing    = "0.1"
+
+# ── C# / Roslyn ──────────────────────────────────────────────────────────────
+bon = { workspace = true }
+quick-xml = "0.37"
+
+# ── C/C++ / libclang ─────────────────────────────────────────────────────────
+clang = { workspace = true, features = ["clang_10_0", "runtime"] }
+
+# ── TypeScript / OXC ────────────────────────────────────────────────────────
+# OXC 0.139.0 — lockstep-pinned with `=` (git tags track applications not lib
+# versions). Feature choices mirror `git-fragment.bzl`.
+oxc_allocator = "=0.139.0"
+oxc_ast = "=0.139.0"
+oxc_parser = "=0.139.0"
+oxc_jsdoc = "=0.139.0"
+oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }
+oxc_span = "=0.139.0"
+oxc_syntax = "=0.139.0"
+oxc_resolver = "=11.23.0"
+
+# ── Python / ruff syntactic front end ───────────────────────────────────────
+ruff_python_parser = "=0.0.8"
+ruff_python_ast     = "=0.0.8"
+ruff_text_size       = "=0.0.8"
+
+# ── pyrefly semantic tier (optional) ────────────────────────────────────────
+# One rev for all six, pinned exactly: these are one workspace upstream and
+# only ever version-lock together. The transitive crates are not named here
+# because `context.rs` does not `use` them.
+pyrefly = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+pyrefly_build = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+pyrefly_config = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+pyrefly_python = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+pyrefly_types = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+pyrefly_util = { git = "https://github.com/facebook/pyrefly", rev = "dd4d9f30d6511649af2bb77385c534e4a41cfaf0", optional = true }
+
+# ── tsz oracle tier (optional, feature-gated) ────────────────────────────────
+# tsz 0.1.x is NOT on crates.io at the needed commit; pin to the exact git SHA
+# documented in nix/build/third-party/git-fragment.bzl (TSZ_REV).
+tsz-core    = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-core",    optional = true }
+tsz-binder  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-binder",  optional = true }
+tsz-solver  = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-solver",  optional = true }
+tsz-checker = { git = "https://github.com/tsz-org/tsz.git", rev = "dff7690987e3183847545feebe9c45ab6b83a006", package = "tsz-checker", optional = true }
+
+[dev-dependencies]
+insta = "1.43.2"
+tempfile = "3"
+# Integration tests wrap their measured regions in `heart::cost::measured`
+# (doctrine §4, formerly the `nudox-test-support` crate).
+heart = { path = "../../heart" }
+
+# ── Integration tests ─────────────────────────────────────────────────────────
+# Cargo's autodiscovery globs `tests/*.rs` and `tests/*/main.rs` only. The
+# per-language tests live at `tests/<lang>/<file>.rs`, which matches neither,
+# so they are declared explicitly (the same treatment `registry` gives
+# `tests/vector/*.rs` and `index` gives `tests/object_pack/*.rs`). Several
+# languages share filenames (`corpus_sweep.rs`, `lowering.rs`, `real_package.rs`,
+# `producer_tests.rs`), so each target is prefixed with its language.
+
+[[test]]
+name = "rust_build_script_cfgs"
+path = "tests/rust/build_script_cfgs.rs"
+
+[[test]]
+name = "rust_corpus_manifest"
+path = "tests/rust/corpus_manifest.rs"
+
+[[test]]
+name = "rust_corpus_sweep"
+path = "tests/rust/corpus_sweep.rs"
+
+[[test]]
+name = "rust_dependency_resolution"
+path = "tests/rust/dependency_resolution.rs"
+
+[[test]]
+name = "rust_module_census"
+path = "tests/rust/module_census.rs"
+
+[[test]]
+name = "rust_no_top_type"
+path = "tests/rust/no_top_type.rs"
+
+[[test]]
+name = "rust_param_identity"
+path = "tests/rust/param_identity.rs"
+
+[[test]]
+name = "rust_source_locations"
+path = "tests/rust/source_locations.rs"
+
+[[test]]
+name = "rust_universal_pipeline"
+path = "tests/rust/universal_pipeline.rs"
+
+[[test]]
+name = "go_corpus_sweep"
+path = "tests/go/corpus_sweep.rs"
+
+[[test]]
+name = "go_real_package"
+path = "tests/go/real_package.rs"
+
+[[test]]
+name = "go_snapshot"
+path = "tests/go/snapshot.rs"
+
+[[test]]
+name = "go_test_packages"
+path = "tests/go/test_packages.rs"
+
+[[test]]
+name = "java_corpus_sweep"
+path = "tests/java/corpus_sweep.rs"
+
+[[test]]
+name = "java_overload_survival"
+path = "tests/java/overload_survival.rs"
+
+[[test]]
+name = "java_producer_tests"
+path = "tests/java/producer_tests.rs"
+
+[[test]]
+name = "csharp_lowering"
+path = "tests/csharp/lowering.rs"
+
+[[test]]
+name = "csharp_nuget_corpus"
+path = "tests/csharp/nuget_corpus.rs"
+
+[[test]]
+name = "csharp_oracle_end_to_end"
+path = "tests/csharp/oracle_end_to_end.rs"
+
+[[test]]
+name = "csharp_real_library"
+path = "tests/csharp/real_library.rs"
+
+[[test]]
+name = "clang_corpus_sweep"
+path = "tests/clang/corpus_sweep.rs"
+
+[[test]]
+name = "clang_lineage_nlohmann_v3_10_5"
+path = "tests/clang/lineage_nlohmann_v3_10_5.rs"
+
+[[test]]
+name = "clang_real_package"
+path = "tests/clang/real_package.rs"
+
+[[test]]
+name = "typescript_producer_tests"
+path = "tests/typescript/producer_tests.rs"
+
+[[test]]
+name = "typescript_real_npm_packages"
+path = "tests/typescript/real_npm_packages.rs"
+
+[[test]]
+name = "python_corpus_sweep"
+path = "tests/python/corpus_sweep.rs"
+
+[[test]]
+name = "python_pyrefly_inference_spot_check"
+path = "tests/python/pyrefly_inference_spot_check.rs"
+
+[[test]]
+name = "python_type_lattice_census"
+path = "tests/python/type_lattice_census.rs"

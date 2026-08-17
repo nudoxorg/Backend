@@ -4,7 +4,7 @@
 //! # Why this is the first thing the Jobs dock has ever had to render
 //!
 //! `JobsPanel` was a placeholder, and its comment said why: "`EngineHandle::jobs()`
-//! hands back an already-closed receiver (LIMITATIONS.md L37), so the engine's
+//! hands back an already-closed receiver (docs/LIMITATIONS.md L37), so the engine's
 //! job stream is a documented stub and there is nothing here for `lindsey` to
 //! subscribe to. That is a backend gap."
 //!

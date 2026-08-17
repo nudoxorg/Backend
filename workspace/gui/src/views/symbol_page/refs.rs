@@ -846,7 +846,7 @@ enum ImplFlatRow {
 /// type, however long. This is deliberately total — any string splits, and a
 /// malformed one simply lands in the left half. Row *styling* must not depend
 /// on the label being well-formed, because it currently is not: the
-/// `impl ? for …` placeholder in `.shots/memchr/` is a live backend defect
+/// `impl ? for …` placeholder in `tests/shots/memchr/` is a live backend defect
 /// (L39) and the row has to look right both before and after it is fixed.
 fn split_impl_label(label: &str) -> (&str, Option<&str>) {
     const SEP: &str = " for ";

@@ -12,7 +12,7 @@
 //! [`ir::change::CasKey`]. Forbidden in the archive: source bytes, tar, CST,
 //! Terminus documents, unbounded embeddings.
 //!
-//! Normative spec: `.research/ir-vcs/design/IR-NATIVE-VCS-DESIGN.md` Rev 3.2,
+//! Normative spec: `docs/research/ir-vcs/design/IR-NATIVE-VCS-DESIGN.md` Rev 3.2,
 //! "PackageArchive Layout" + decisions K2, K3, K11, K16.
 
 pub mod error;
@@ -26,10 +26,12 @@ pub mod view;
 #[cfg(test)]
 mod tests;
 
-pub use error::ArchiveError;
+pub use error::Error;
 pub use header::{
     ArchiveHeader, EntryHead, MAX_ENTRIES, MAX_SECTION_UNCOMPRESSED, MAX_STRING_BLOB, SectionId,
     TocEntry,
 };
-pub use seal::{SealEntry, SealError, SealedArchive, seal_from_entries, seal_package_archive};
+pub use seal::{
+    Error as SealError, SealEntry, SealedArchive, seal_from_entries, seal_package_archive,
+};
 pub use view::{LinkEnd, PackageArchiveView, YokedArchive};

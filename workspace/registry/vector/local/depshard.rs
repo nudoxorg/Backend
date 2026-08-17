@@ -28,7 +28,7 @@ use heart::{ContentHash, PackageId};
 use smol_str::SmolStr;
 
 use super::fanout::SharedWorkingSet;
-use super::pack::{self, PackError};
+use super::pack;
 use super::store::LocalShardStore;
 
 /// Fetches shard artifacts from the trusted INDEX origin / CAS by content
@@ -91,12 +91,12 @@ pub enum RemoteRouteReason {
 /// Hard failures of the install machinery itself (as opposed to the
 /// expected fallbacks, which are [`InstallOutcome::RemoteRoute`]).
 #[derive(Debug, thiserror::Error)]
-pub enum InstallError {
+pub enum Error {
     #[error("artifact fetch failed: {0}")]
     Fetch(#[from] FetchError),
 
     #[error(transparent)]
-    Pack(#[from] PackError),
+    Pack(#[from] pack::Error),
 
     #[error("dep shard store failure: {0}")]
     Store(#[from] StoreError),
@@ -167,7 +167,7 @@ pub async fn install(
     dep_root: &Path,
     schema: &ShardSchema,
     working_set: &SharedWorkingSet,
-) -> Result<InstallOutcome, InstallError> {
+) -> Result<InstallOutcome, Error> {
     install_with_io(
         fetcher,
         entry,
@@ -195,7 +195,7 @@ pub async fn install_with_io(
     schema: &ShardSchema,
     working_set: &SharedWorkingSet,
     content_io: &dyn ContentIo<Id = ContentHash>,
-) -> Result<InstallOutcome, InstallError> {
+) -> Result<InstallOutcome, Error> {
     // Fetch + verify through the ContentIo seam, with exactly one refetch on
     // hash mismatch (§20.3). A passing verify is the sole write licence.
     let bytes = match fetch_and_verify_via_io(fetcher, entry, content_io).await? {
@@ -269,7 +269,7 @@ pub async fn evict(
     package: PackageId,
     dep_root: &Path,
     working_set: &SharedWorkingSet,
-) -> Result<(), InstallError> {
+) -> Result<(), Error> {
     let removed = working_set.write().await.remove_dep(&package);
     if let Some(store) = removed {
         // Sole holder (idle, as documented) → flush-and-close through the
@@ -305,7 +305,7 @@ async fn fetch_and_verify_via_io(
     fetcher: &dyn ArtifactFetcher,
     entry: &DepManifestEntry,
     content_io: &dyn ContentIo<Id = ContentHash>,
-) -> Result<FetchVerified, InstallError> {
+) -> Result<FetchVerified, Error> {
     for attempt in 0..2 {
         match fetcher.fetch(&entry.artifact_id).await {
             Ok(bytes) => {
@@ -345,7 +345,7 @@ async fn unpack_and_load(
     entry: &DepManifestEntry,
     shard_dir: &Path,
     schema: &ShardSchema,
-) -> Result<LocalShardStore, InstallError> {
+) -> Result<LocalShardStore, Error> {
     remove_dir_if_present(shard_dir)?;
     pack::unpack_shard(bytes, &entry.artifact_id, shard_dir)?;
     let store = LocalShardStore::open_read_only(shard_dir, schema.clone()).await?;
@@ -361,7 +361,7 @@ async fn register(
     shard_dir: &Path,
     store: LocalShardStore,
     working_set: &SharedWorkingSet,
-) -> Result<(), InstallError> {
+) -> Result<(), Error> {
     let replaced = working_set
         .write()
         .await

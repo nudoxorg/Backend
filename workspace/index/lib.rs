@@ -1,3 +1,4 @@
+#![feature(return_type_notation)]
 //! `index` — the versioned catalog crate (INDEX-PLAN phase IP-1).
 //!
 //! Two stores back the catalog:
@@ -22,84 +23,80 @@
 //! `pre-migrate-vN` snapshot branch, with rollback = checkout ([`migrations`],
 //! §13).
 
+/// Deterministic TEXT/JSON codec for catalog enums and ids.
 pub mod codec;
-/// The ONE shared iroh/bao content-transfer plane (CONSOLIDATION-NOTES §8b/§8c),
-/// moved from the former standalone `transport` crate into `index::transport`.
-/// Heart stays iroh-free; this module holds the concrete iroh/iroh-blobs/bao
-/// plumbing once, shared by all `ContentIo` implementors (ir-vcs::sync,
-/// index::pack, etc.).
-pub mod transport;
-/// The per-ecosystem spec (ECOSYSTEM-PLAN): name/version/upstream/manifest/search
-/// grammar per `heart::Language`. Folded in from the former standalone
-/// `ecosystem` crate; used only by `index` and `driver` (which composes index),
-/// so the index-free planes (`ir`, `registry`) never link it. `PackageNameExt`
-/// bridges `heart::PackageName` to this grammar.
+/// The shared iroh/bao content-transfer plane (re-exported `transport` crate).
+pub use ::transport as transport;
+/// Per-ecosystem name/version/upstream/manifest grammar.
 pub mod ecosystem;
+/// The catalog engine facade (DoltLite / test-engine) behind all access.
 pub mod engine;
+/// SeaORM entities for the catalog tables (schema v4).
 pub mod entity;
+/// Codec TEXT enums plus the `TextEnum` decode trait.
 pub mod enums;
+/// Catalog id newtypes (blob ids) plus heart `PackageId`.
 pub mod ids;
+/// Upstream feed and git ingestion (followers, drivers, watermarks).
 pub mod ingest;
+/// Schema DDL rendering plus `pre-migrate-vN` snapshot branches.
 pub mod migrations;
+/// Tabular overlay records and merge policies.
 pub mod overlays;
-/// The NDPK v1 object-pack container engine (folded in from the former
-/// standalone `object-pack` crate; §8: object-pack is part of the storage layer).
+/// The NDPK v1 object-pack container engine.
 pub mod pack;
+/// The catalog op/edge protocol vocabulary.
 pub mod protocol;
+/// The registryless edge-resolution pass.
 pub mod resolution;
+/// Ephemeral scratch.sqlite store (jobs/wanted/sessions/claims).
 pub mod scratch;
+/// Seed system-model packages and aliases.
 pub mod seed_models;
+/// The `Catalog` read trait and `CatalogWriter` write facade.
 pub mod store;
-
-// ── Server-dissolve + registry-salvage (§8/§9a) ───────────────────────────────
-// The data/storage/coordination layer folded out of the retired `server` crate
-// and recovered from the user-deleted `registry::{blob,index,queue,runtime,…}`
-// modules. Landed in dependency order; see CONSOLIDATION-NOTES §8/§9a.
-/// The crate-root salvage error union (blob/store/ingest/queue/index/outbox/
-/// search/resolve), each area `heart::Retryable`.
+/// Crate-root salvage error union (blob/store/ingest/queue/index/...).
 pub mod error;
 /// Deterministic identity re-exports (heart-backed).
 pub mod identity;
 /// Package vocabulary re-exports (heart::package).
 pub mod package;
-/// Package metadata + facet extraction (heuristics/rich/hash).
+/// Package metadata and facet extraction heuristics.
 pub mod metadata;
-/// The registry↔catalog data-mapping codecs (schema::{codec,catalog_map}).
+/// Registry↔catalog data-mapping codecs.
 pub mod schema;
-/// Read-plane runtime salvage (error surfaces; text index added later).
+/// Read-plane runtime salvage (error surfaces).
 pub mod runtime;
-/// Content-addressed package blobs: [`blob::BlobManifest`] + builder + emit.
+/// Content-addressed package blob manifest + builder + emit.
 pub mod blob;
-/// The content-addressed object store (`Store<Connect-state>`) over
-/// `object_store` — renamed from the deleted `registry::store` to `cas` so it
-/// does not collide with this crate's catalog [`store`] module.
+/// Content-addressed object store (`Store`).
 pub mod cas;
-/// The durable scratch-backed indexing job queue (poison-pill-safe leases).
+/// Durable scratch-backed indexing job queue.
 pub mod queue;
-/// The object-store-backed compiled-IR lookup store (`ObjectCompiledStore`).
+/// Object-store-backed compiled-IR lookup store.
 pub mod compiled;
-/// Version resolution: name + version-request → concrete `PackageVersion`.
+/// Version resolution (name + request → `PackageVersion`).
 pub mod resolve;
-/// Health/readiness probe re-exports (heart-backed).
+/// Health/readiness probe re-exports.
 pub mod health;
-/// The shard-bakery ledger (`edgepack_artifacts` claim store); the vector-bake
-/// compute is staged to `registry::vector` / the client composition (§8).
+/// Shard-bakery ledger (`edgepack_artifacts` claim store).
 pub mod bakery;
-/// `heart::sync::ContentIo` implementation for vector edge-shard artifacts:
-/// [`shard_sync::ShardContentIo`] wraps the CAS store and is the seam through
-/// which baked shard bytes are persisted and dep-shard installs are verified.
+/// `ContentIo` implementation for vector edge-shard artifacts.
 pub mod shard_sync;
-/// Shared upstream HTTP client + catalog followers (crates/nuget pollers, §8).
+/// Shared upstream HTTP client + catalog followers.
 pub mod upstream;
-/// The global catalog store glue (`GlobalStore<Engine>` + `InstanceToken`);
-/// renamed from the deleted `registry::index` to avoid the crate-name clash.
+/// Global catalog store glue (`GlobalStore` + `InstanceToken`).
 pub mod catalog;
-/// Registry (package) search salvage (tantivy replica + ranking cascade).
+/// Registry package search (tantivy replica + ranking cascade).
 pub mod search;
-/// The transactional outbox + server-folded coordination flows.
+/// Transactional outbox + server-folded coordination flows.
 pub mod coordination;
 
-/// Catalog table entities (SeaORM). Alias kept so `index::tables::…` paths work.
+/// Serving composition (`Driver`) behind the `server` feature.
+#[cfg(feature = "server")]
+pub mod server;
+
+/// SeaORM catalog entities, aliased as `tables` for `crate::tables::…` paths.
 pub use entity as tables;
 
 /// Schema version this crate authors and reads (INDEX-PLAN ID-5).
@@ -117,11 +114,6 @@ pub use ids::{
 };
 pub use protocol::CatalogOp;
 pub use store::{Catalog, MetaStore};
-
-// ── Salvaged package vocabulary (former `registry::{Package,GlobalPackage}`) ──
-// The syndication pair the queue/outbox/catalog key on. Uses `heart`'s
-// deterministic `PackageId` (distinct from this crate's local `ids::PackageId`
-// blob-id newtype), so the type is spelled out explicitly here.
 
 /// A package as it lives in a single registry/source, before global syndication.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

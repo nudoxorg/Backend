@@ -1,11 +1,13 @@
+//! Shared error vocabulary: backend kinds, retry classification, failures.
+
 pub mod connect;
 pub mod failure;
 
-pub use connect::{ConnectError, ConnectFailure};
+pub use connect::{ConnectFailure, Error as ConnectError};
 pub use failure::{ErrorDetails, Failure, FailureKind, Phase, ResolutionState};
 
-pub trait StoreError: std::error::Error + Send + Sync + 'static {}
-impl<T: std::error::Error + Send + Sync + 'static> StoreError for T {}
+pub trait Error: std::error::Error + Send + Sync + 'static {}
+impl<T: std::error::Error + Send + Sync + 'static> Error for T {}
 
 /// Uniform retry classification. The queue and sink machinery
 /// consult this instead of pattern-matching each backend's error enum, so the

@@ -24,8 +24,8 @@ use ir::entry::Visibility;
 use ir::kind::KindDiscriminant;
 
 use crate::protocol::{
-    BodyWire, FailureKindWire, FrameReader, FrameWriter, IR_STREAM_VERSION, MAX_FRAME_BYTES,
-    PhaseWire, ProducerId, Received, StreamError, StreamFrame, StreamReceiver, SymbolSink,
+    BodyWire, Error, FailureKindWire, FrameReader, FrameWriter, IR_STREAM_VERSION, MAX_FRAME_BYTES,
+    PhaseWire, ProducerId, Received, StreamFrame, StreamReceiver, SymbolSink,
     WireEntry, WireLink,
 };
 
@@ -336,7 +336,7 @@ fn test_oversize_frame_rejected() {
     let mut fw = FrameWriter::new(Vec::<u8>::new());
     let err = fw.write_frame(&frame).unwrap_err();
     match err {
-        StreamError::FrameTooLarge {
+        Error::FrameTooLarge {
             limit,
             actual,
             variant,
@@ -364,7 +364,7 @@ fn test_oversize_single_entry_rejected_at_emit() {
     let buf = SharedBuf::new();
     let mut sink = SymbolSink::hello(buf, make_job(), make_producer()).unwrap();
     match sink.emit(entry) {
-        Err(StreamError::FrameTooLarge {
+        Err(Error::FrameTooLarge {
             limit,
             actual,
             variant,
@@ -409,7 +409,7 @@ fn test_truncated_stream() {
 
     let err = rx.recv().unwrap_err();
     match err {
-        StreamError::Io(io_err) => {
+        Error::Io(io_err) => {
             assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);
         }
         other => panic!("expected Io(UnexpectedEof), got {:?}", other),
@@ -435,7 +435,7 @@ fn test_version_mismatch() {
     let mut rx = StreamReceiver::new(cursor);
     let err = rx.accept().unwrap_err();
     match err {
-        StreamError::VersionMismatch { ours, theirs } => {
+        Error::VersionMismatch { ours, theirs } => {
             assert_eq!(ours, IR_STREAM_VERSION);
             assert_eq!(theirs, IR_STREAM_VERSION + 99);
         }
@@ -453,7 +453,7 @@ fn test_next_before_accept() {
     let mut rx = StreamReceiver::new(cursor);
     let err = rx.recv().unwrap_err();
     match err {
-        StreamError::Protocol(msg) => {
+        Error::Protocol(msg) => {
             assert!(msg.contains("accept"), "message: {msg}");
         }
         other => panic!("expected Protocol, got {:?}", other),
@@ -475,7 +475,7 @@ fn test_non_hello_first_frame() {
     let mut rx = StreamReceiver::new(cursor);
     let err = rx.accept().unwrap_err();
     match err {
-        StreamError::Protocol(msg) => {
+        Error::Protocol(msg) => {
             assert!(msg.contains("Hello"), "message: {msg}");
         }
         other => panic!("expected Protocol, got {:?}", other),
@@ -508,7 +508,7 @@ fn test_double_hello() {
     rx.accept().unwrap();
     let err = rx.recv().unwrap_err();
     match err {
-        StreamError::Protocol(msg) => {
+        Error::Protocol(msg) => {
             assert!(msg.contains("Hello"), "message: {msg}");
         }
         other => panic!("expected Protocol, got {:?}", other),
@@ -548,7 +548,7 @@ fn test_emitted_count_mismatch() {
     // Finish should fail.
     let err = rx.recv().unwrap_err();
     match err {
-        StreamError::EmittedCountMismatch { declared, observed } => {
+        Error::EmittedCountMismatch { declared, observed } => {
             assert_eq!(declared, 5);
             assert_eq!(observed, 2);
         }
@@ -623,7 +623,7 @@ fn test_reader_rejects_oversized_declared_length() {
     let mut fr = FrameReader::new(cursor);
     let err = fr.read_frame().unwrap_err();
     match err {
-        StreamError::FrameTooLarge {
+        Error::FrameTooLarge {
             limit,
             actual,
             variant,
@@ -824,7 +824,7 @@ fn test_frame_after_terminal_is_protocol_error() {
 
     // The rogue frame after the terminal must surface as a protocol error.
     match rx.recv() {
-        Err(StreamError::Protocol(msg)) => {
+        Err(Error::Protocol(msg)) => {
             assert!(msg.contains("after terminal"), "unexpected message: {msg}");
         }
         other => panic!("expected Protocol error, got {other:?}"),

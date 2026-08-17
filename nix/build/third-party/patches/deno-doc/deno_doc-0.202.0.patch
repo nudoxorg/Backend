@@ -1,0 +1,37 @@
+# Local modifications to deno_doc 0.202.0, applied when building it from
+# source via nix/build/third-party/git.bzl (the crates.io registry path cannot
+# carry patches). Base: github.com/denoland/deno_doc tag 0.202.0.
+# Apply: /usr/bin/patch -p1 (paths are a/src.. b/src..), from the crate root.
+#
+# Changes (the 0.198.0 HTML-rendering enhancements were upstreamed into
+# 0.202, so only these genuinely-local deltas remain):
+#   * src/lib.rs    — expose the params module (mod -> pub mod) for library use
+#   * src/parser.rs — drop a debug_assert!(false) unreachable-trap on the
+#                     Npm/Node/External module path
+#
+diff --git a/src/lib.rs b/src/lib.rs
+index 23c7c49..030f84d 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -25,7 +25,7 @@ pub mod html;
+ pub mod interface;
+ pub mod js_doc;
+ pub mod node;
+-mod params;
++pub mod params;
+ mod parser;
+ pub mod ts_type;
+ pub mod ts_type_param;
+diff --git a/src/parser.rs b/src/parser.rs
+index ca8cfa0..00d5984 100644
+--- a/src/parser.rs
++++ b/src/parser.rs
+@@ -415,8 +415,6 @@ impl<'a> DocParser<'a> {
+           }
+         }
+ 
+-        debug_assert!(false, "should not reach here");
+-
+         Ok(Some(None))
+       }
+       Module::Npm(_) | Module::Node(_) | Module::External(_) => Ok(None),

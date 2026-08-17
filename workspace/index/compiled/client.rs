@@ -87,7 +87,7 @@ pub enum VerificationFailure {
 
 /// Errors from [`CompiledClient::lookup`].
 #[derive(Debug, thiserror::Error)]
-pub enum ClientError {
+pub enum Error {
     /// The HTTP round-trip itself failed (connect, timeout, body read, JSON).
     #[error("compiled lookup transport error")]
     Http(#[from] reqwest::Error),
@@ -108,6 +108,10 @@ pub enum ClientError {
         reason: VerificationFailure,
     },
 }
+
+/// Compatibility alias for callers that named the client error by its old
+/// `ClientError` spelling.
+pub use self::Error as ClientError;
 
 // ── Result type ───────────────────────────────────────────────────────────────
 
@@ -141,7 +145,7 @@ impl CompiledClient {
     /// Look up `keys` against the fleet. Batches of more than
     /// [`MAX_KEYS_PER_REQUEST`] keys are split into multiple sequential POSTs;
     /// results come back in input order, one [`Looked`] per key.
-    pub async fn lookup(&self, keys: &[JobKey]) -> Result<Vec<Looked>, ClientError> {
+    pub async fn lookup(&self, keys: &[JobKey]) -> Result<Vec<Looked>, Error> {
         let endpoint = self.endpoint();
         let mut looked = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(MAX_KEYS_PER_REQUEST.max(1)) {
@@ -154,18 +158,18 @@ impl CompiledClient {
                 .await?;
             let status = response.status();
             if !status.is_success() {
-                return Err(ClientError::UnexpectedStatus { status });
+                return Err(Error::UnexpectedStatus { status });
             }
             let body: WireResponse = response.json().await?;
             if body.results.len() != chunk.len() {
-                return Err(ClientError::ResponseShape {
+                return Err(Error::ResponseShape {
                     expected: chunk.len(),
                     got: body.results.len(),
                 });
             }
             for (&job_key, entry) in chunk.iter().zip(&body.results) {
                 let result = verify_entry(job_key, entry)
-                    .map_err(|reason| ClientError::VerificationFailed { job_key, reason })?;
+                    .map_err(|reason| Error::VerificationFailed { job_key, reason })?;
                 looked.push(Looked { job_key, result });
             }
         }

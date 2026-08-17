@@ -30,7 +30,6 @@ set -eu
 
 here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 gui_root="$(CDPATH= cd -- "$here/../.." && pwd)"
-repo_root="$(CDPATH= cd -- "$gui_root/../.." && pwd)"
 
 app_id="org.nudox.lindsey"
 
@@ -68,13 +67,13 @@ if [ ! -x "$bin" ]; then
     exit 1
 fi
 
-# The icon is the brand mark itself, not a copy of it. `/logo.svg` is the one
-# file every visual artefact in this repo is generated from (see
+# The icon is the brand mark itself, not a copy of it. `assets/logo.svg` is the
+# one file every visual artefact in this repo is generated from (see
 # packaging/generate_dmg_background.py), and its root <svg> carries a square
 # viewBox and no fixed width, which is exactly what a scalable icon needs.
 # Copying it into this directory would create a second brand mark to keep in
 # step with the first.
-icon_source="$repo_root/logo.svg"
+icon_source="$gui_root/assets/logo.svg"
 if [ ! -f "$icon_source" ]; then
     echo "install.sh: no brand mark at $icon_source" >&2
     exit 1
@@ -85,9 +84,10 @@ fi
 # This repository's own devshell used to put a Nushell script named `install`
 # ahead of coreutils on PATH, so `install -D` here failed with
 # "The install.nu command doesn't have flag -D" — the same shadowing that broke
-# `tikv-jemalloc-sys`'s autotools build (see flake.nix, `shadowingCommands`).
-# The flake no longer does that, but an installer is the last place that should
-# depend on which shell it is run from.
+# `tikv-jemalloc-sys`'s autotools build (see flake.nix, `binNameOverrides`,
+# which now exposes those commands as `nx-install` and friends). The flake no
+# longer does that, but an installer is the last place that should depend on
+# which shell it is run from.
 mkdir -p "$bin_dir" "$libexec_dir" "$applications_dir" "$icon_dir" "$metainfo_dir"
 
 cp -f "$bin"                        "$libexec_dir/lindsey"

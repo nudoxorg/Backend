@@ -1,12 +1,8 @@
-//! Error type for `nudox-ir-vcs`.
+//! Unified error type for all VCS operations.
 
 use std::io;
 
-use thiserror::Error;
-
-use crate::protocol::StreamError;
-
-/// Wrap a libpijul/sanakirja error into a [`VcsError::Pijul`].
+/// Wrap a libpijul/sanakirja error into a [`Error::Pijul`].
 ///
 /// libpijul's error types vary per operation (the sanakirja backend uses
 /// [`SanakirjaError`], [`TxnErr<SanakirjaError>`], [`TreeErr<SanakirjaError>`],
@@ -16,13 +12,13 @@ use crate::protocol::StreamError;
 /// `Box<dyn Error>`. This is a documented, unavoidable erasure boundary —
 /// libpijul's type system makes enumerating every concrete error type
 /// impractical and version-fragile.
-pub fn pijul_err(source: impl std::error::Error + Send + Sync + 'static) -> VcsError {
-    VcsError::Pijul(Box::new(source))
+pub fn pijul_err(source: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::Pijul(Box::new(source))
 }
 
 /// Unified error type for all VCS operations.
-#[derive(Debug, Error)]
-pub enum VcsError {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     /// A libpijul/sanakirja error (pristine, txn, record, apply, output, …).
     ///
     /// The source is boxed because libpijul resolves its error types through
@@ -37,7 +33,7 @@ pub enum VcsError {
 
     /// Archive sealing failure.
     #[error("seal error")]
-    Seal(#[from] crate::archive::SealError),
+    Seal(#[from] crate::archive::seal::Error),
 
     /// A `symbols/*` file contained unexpected or empty content.
     #[error("corrupt symbol file")]
@@ -88,7 +84,7 @@ pub enum VcsError {
     /// version mismatch, truncation, or decode failure. The recording session
     /// is abandoned before this error is returned.
     #[error("stream protocol error")]
-    Stream(#[from] StreamError),
+    Stream(#[from] crate::protocol::Error),
 
     /// A change hash that must be present in the changestore (written by the
     /// iroh-sync import path via `nudox-sync`'s `FsChangeIo`) is absent.
@@ -109,5 +105,5 @@ pub enum VcsError {
 
     /// F1 canonical format parse/serialize error.
     #[error("F1 format error")]
-    F1(#[from] crate::f1::F1Error),
+    F1(#[from] crate::f1::Error),
 }

@@ -219,7 +219,7 @@ pub struct StoreCapabilities {
 
 /// Store failures.
 #[derive(Debug, thiserror::Error)]
-pub enum StoreError {
+pub enum Error {
     #[error("store I/O failure: {0}")]
     Io(#[from] std::io::Error),
 
@@ -252,23 +252,23 @@ pub enum StoreError {
 #[async_trait::async_trait]
 pub trait VectorStore<M: EmbeddingModel>: Send + Sync {
     /// Idempotently insert-or-replace points (ids are deterministic — I3).
-    async fn upsert(&self, points: Vec<VectorPoint<M>>) -> Result<(), StoreError>;
+    async fn upsert(&self, points: Vec<VectorPoint<M>>) -> Result<(), Error>;
 
     /// Delete by id (missing ids are not an error; deletes are idempotent).
-    async fn delete(&self, ids: &[PointId]) -> Result<(), StoreError>;
+    async fn delete(&self, ids: &[PointId]) -> Result<(), Error>;
 
     /// Dense search, best-first.
-    async fn search(&self, request: SearchRequest<M>) -> Result<Vec<SearchHit>, StoreError>;
+    async fn search(&self, request: SearchRequest<M>) -> Result<Vec<SearchHit>, Error>;
 
     /// Point count, optionally filtered (exactness per
     /// [`StoreCapabilities::exact_count`]).
-    async fn count(&self, filter: Option<&SearchFilter>) -> Result<u64, StoreError>;
+    async fn count(&self, filter: Option<&SearchFilter>) -> Result<u64, Error>;
 
     /// Make all prior writes durable.
-    async fn flush(&self) -> Result<(), StoreError>;
+    async fn flush(&self) -> Result<(), Error>;
 
     /// Reclaim space / rebuild indexes after heavy delete churn.
-    async fn compact(&self) -> Result<(), StoreError>;
+    async fn compact(&self) -> Result<(), Error>;
 
     /// What this store can do.
     fn capabilities(&self) -> StoreCapabilities;

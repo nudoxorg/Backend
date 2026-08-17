@@ -24,7 +24,7 @@
 //!    [`StreamFrame::Abort`].
 //!
 //! The host validates ordering and the emitted-count invariant; all violations
-//! surface as typed [`StreamError`] variants.
+//! surface as typed [`Error`] variants.
 //!
 //! # Framing
 //!
@@ -32,7 +32,7 @@
 //! `[length: u32 LE][postcard bytes]`
 //!
 //! Frames larger than [`MAX_FRAME_BYTES`] are rejected at both ends — the writer
-//! returns [`StreamError::FrameTooLarge`] before writing; the reader returns the
+//! returns [`Error::FrameTooLarge`] before writing; the reader returns the
 //! same error if the declared length exceeds the cap, without allocating.
 
 pub mod error;
@@ -41,7 +41,7 @@ pub mod io;
 pub mod receiver;
 pub mod sink;
 
-pub use error::StreamError;
+pub use error::Error;
 pub use frame::{
     BodyWire, FailureKindWire, IR_STREAM_VERSION, IR_STREAM_VSOCK_PORT, MAX_FRAME_BYTES, PhaseWire,
     ProducerId, StreamFrame, WireEntry, WireLink,

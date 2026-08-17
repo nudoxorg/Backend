@@ -11,14 +11,14 @@
 //! ```
 //!
 //! Both endpoints refuse frames larger than [`MAX_FRAME_BYTES`]:
-//! - The writer returns [`StreamError::FrameTooLarge`] before writing anything.
-//! - The reader returns [`StreamError::FrameTooLarge`] after reading the length
+//! - The writer returns [`Error::FrameTooLarge`] before writing anything.
+//! - The reader returns [`Error::FrameTooLarge`] after reading the length
 //!   header but *before* allocating the body — so an adversarial peer cannot
 //!   cause an out-of-memory condition.
 
 use std::io::{Read, Write};
 
-use crate::protocol::error::StreamError;
+use crate::protocol::error::Error;
 use crate::protocol::frame::{MAX_FRAME_BYTES, StreamFrame};
 
 // ---------------------------------------------------------------------------
@@ -41,16 +41,16 @@ impl<W: Write> FrameWriter<W> {
 
     /// Encode `frame` with postcard and write the length-prefixed bytes.
     ///
-    /// Returns [`StreamError::FrameTooLarge`] if the encoded frame exceeds
+    /// Returns [`Error::FrameTooLarge`] if the encoded frame exceeds
     /// [`MAX_FRAME_BYTES`] — the transport is not written to in that case.
-    /// Returns [`StreamError::Encode`] if postcard serialization fails.
-    pub fn write_frame(&mut self, frame: &StreamFrame) -> Result<(), StreamError> {
+    /// Returns [`Error::Encode`] if postcard serialization fails.
+    pub fn write_frame(&mut self, frame: &StreamFrame) -> Result<(), Error> {
         let variant = frame.variant_name();
-        let bytes = postcard::to_allocvec(frame).map_err(StreamError::Encode)?;
+        let bytes = postcard::to_allocvec(frame).map_err(Error::Encode)?;
 
         let len = bytes.len();
         if len > MAX_FRAME_BYTES {
-            return Err(StreamError::FrameTooLarge {
+            return Err(Error::FrameTooLarge {
                 limit: MAX_FRAME_BYTES,
                 actual: len,
                 variant: Some(variant),
@@ -59,15 +59,15 @@ impl<W: Write> FrameWriter<W> {
 
         // Write the 4-byte LE length prefix.
         let len_bytes = (len as u32).to_le_bytes();
-        self.inner.write_all(&len_bytes).map_err(StreamError::Io)?;
+        self.inner.write_all(&len_bytes).map_err(Error::Io)?;
         // Write the postcard body.
-        self.inner.write_all(&bytes).map_err(StreamError::Io)?;
+        self.inner.write_all(&bytes).map_err(Error::Io)?;
         Ok(())
     }
 
     /// Flush the underlying writer.
-    pub fn flush(&mut self) -> Result<(), StreamError> {
-        self.inner.flush().map_err(StreamError::Io)
+    pub fn flush(&mut self) -> Result<(), Error> {
+        self.inner.flush().map_err(Error::Io)
     }
 
     /// Consume the writer, returning the underlying transport.
@@ -86,7 +86,7 @@ impl<W: Write> FrameWriter<W> {
 /// *before* allocating the body buffer, so a malicious peer cannot force an
 /// allocation of arbitrary size.
 ///
-/// Truncated streams (EOF mid-frame) surface as [`StreamError::Io`] wrapping
+/// Truncated streams (EOF mid-frame) surface as [`Error::Io`] wrapping
 /// [`std::io::ErrorKind::UnexpectedEof`] — never as a panic.
 pub struct FrameReader<R: Read> {
     inner: R,
@@ -104,12 +104,12 @@ impl<R: Read> FrameReader<R> {
     /// - `Ok(Some(frame))` — a complete frame was read.
     /// - `Ok(None)` — clean EOF before any byte of a frame was read (the peer
     ///   closed the transport after writing all frames normally).
-    /// - `Err(StreamError::FrameTooLarge)` — the declared length header exceeded
+    /// - `Err(Error::FrameTooLarge)` — the declared length header exceeded
     ///   [`MAX_FRAME_BYTES`]; no body bytes were read.
-    /// - `Err(StreamError::Io(_))` — including `UnexpectedEof` for truncated
+    /// - `Err(Error::Io(_))` — including `UnexpectedEof` for truncated
     ///   streams.
-    /// - `Err(StreamError::Decode(_))` — postcard decoding failed.
-    pub fn read_frame(&mut self) -> Result<Option<StreamFrame>, StreamError> {
+    /// - `Err(Error::Decode(_))` — postcard decoding failed.
+    pub fn read_frame(&mut self) -> Result<Option<StreamFrame>, Error> {
         // Read the 4-byte length prefix.
         let mut len_buf = [0u8; 4];
         match read_exact_or_eof(&mut self.inner, &mut len_buf)? {
@@ -120,7 +120,7 @@ impl<R: Read> FrameReader<R> {
 
         // Validate declared length *before* allocating.
         if len > MAX_FRAME_BYTES {
-            return Err(StreamError::FrameTooLarge {
+            return Err(Error::FrameTooLarge {
                 limit: MAX_FRAME_BYTES,
                 actual: len,
                 variant: None,
@@ -129,9 +129,9 @@ impl<R: Read> FrameReader<R> {
 
         // Allocate and fill the body.
         let mut body = vec![0u8; len];
-        self.inner.read_exact(&mut body).map_err(StreamError::Io)?;
+        self.inner.read_exact(&mut body).map_err(Error::Io)?;
 
-        let frame: StreamFrame = postcard::from_bytes(&body).map_err(StreamError::Decode)?;
+        let frame: StreamFrame = postcard::from_bytes(&body).map_err(Error::Decode)?;
         Ok(Some(frame))
     }
 
@@ -152,7 +152,7 @@ enum ReadResult {
 
 /// Like `read_exact` but returns `Eof` on a clean EOF before any bytes, instead
 /// of treating it as `UnexpectedEof`.
-fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, StreamError> {
+fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, Error> {
     let mut filled = 0;
     while filled < buf.len() {
         match r.read(&mut buf[filled..]) {
@@ -161,14 +161,14 @@ fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<ReadResult, S
                     return Ok(ReadResult::Eof);
                 }
                 // Mid-frame EOF — that is unexpected.
-                return Err(StreamError::Io(std::io::Error::new(
+                return Err(Error::Io(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "stream ended mid-frame length header",
                 )));
             }
             Ok(n) => filled += n,
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(e) => return Err(StreamError::Io(e)),
+            Err(e) => return Err(Error::Io(e)),
         }
     }
     Ok(ReadResult::Ok)

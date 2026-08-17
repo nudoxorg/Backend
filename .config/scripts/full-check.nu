@@ -48,7 +48,7 @@ def main [
     }
 
     run-required "test measurement support" {
-        ^env RUSTC_BOOTSTRAP=1 cargo test -p nudox-test-support --locked
+        ^env RUSTC_BOOTSTRAP=1 cargo test -p heart --lib cost --locked
     }
 
     if (has-command "cargo") and ("workspace/gui/Cargo.toml" | path exists) {
@@ -86,12 +86,12 @@ def main [
             exit 1
         }
         run-required "live backend socket tests" {
-            ^env RUSTC_BOOTSTRAP=1 cargo test -p driver --test live_socket --locked -- --ignored --nocapture
+            ^env RUSTC_BOOTSTRAP=1 cargo test -p index --test live_socket --locked -- --ignored --nocapture
         }
         run-required "live backend download tests" {
-            ^env RUSTC_BOOTSTRAP=1 cargo test -p driver --test live_download --locked -- --ignored --nocapture
+            ^env RUSTC_BOOTSTRAP=1 cargo test -p index --test live_download --locked -- --ignored --nocapture
         }
-        print "    live pipeline uses bin/driver (workspace/driver package)"
+        print "    live pipeline uses bin/nudox-serve (workspace/index package)"
     } else {
         print "NOT RUN: live backend tests (pass --live with SERVER_TEST_BACKENDS=1)"
     }
@@ -116,7 +116,7 @@ def main [
         }
     } else {
         print "NOT RUN: mutation/fuzz tooling (pass --nightly to request it)"
-        print "    note: no fuzz/ tree, no fuzz targets, no screenshot or mutation coverage in default gate"
+        print "    note: no tests/fuzz/ tree, no fuzz targets, no screenshot or mutation coverage in default gate"
     }
 
     let total_elapsed = ((date now) - $total_started | into int) / 1_000_000_000

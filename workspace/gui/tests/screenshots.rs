@@ -2,7 +2,7 @@
 //!
 //! # What this is
 //!
-//! Every image under `.shots/` is produced by this file, by booting the *same*
+//! Every image under `tests/shots/` is produced by this file, by booting the *same*
 //! stack `main.rs` boots — `gpui_component::init` → `NudoxThemeExt::init` →
 //! `MotionTokens` → keymap → stores → window — dispatching the *same* actions
 //! the keybindings dispatch, and rasterising the *same* scene the GPU would
@@ -161,7 +161,7 @@ fn differing_pixels(a: &RgbaImage, b: &RgbaImage) -> Option<u64> {
 /// the previous one.
 ///
 /// Set above what a blinking text-input caret can produce — roughly 12 000 of
-/// 5 184 000 pixels on a 2 880×1 800 frame, ~0.24% (see AGENTS-DOCTRINE.md's
+/// 5 184 000 pixels on a 2 880×1 800 frame, ~0.24% (see docs/AGENTS-DOCTRINE.md's
 /// GPUI testing notes) — so an idle animation can never be mistaken for the
 /// state change the claim is actually about.
 const MAJOR_MIN_FRACTION: f64 = 0.01;
@@ -176,8 +176,8 @@ const MAJOR_MIN_FRACTION: f64 = 0.01;
 /// file's history exploited the other side of the same weakness: they used
 /// `expect_change: false`, which made no claim at all, so an action that
 /// silently failed to reach its handler produced a frame indistinguishable
-/// from one where nothing was ever supposed to happen. See SHOT-REVIEW.md R1
-/// and LIMITATIONS.md L16.
+/// from one where nothing was ever supposed to happen. See docs/SHOT-REVIEW.md R1
+/// and docs/LIMITATIONS.md L16.
 ///
 /// An enum instead of a raw fraction at each call site, because a bare `f64`
 /// threshold is exactly the kind of "magic number" that erodes silently over
@@ -221,11 +221,11 @@ enum Change {
 /// `workspace/gui` is a standalone package with its own lockfile (doctrine
 /// §1), so cargo runs this binary with its cwd set to `workspace/gui` — not to
 /// the repository root the documented command is written from. A bare
-/// `.real-crates/memchr-2.8.3` therefore resolved to
-/// `workspace/gui/.real-crates/memchr-2.8.3`, which does not exist, and the
+/// `result/memchr-2.8.3` therefore resolved to
+/// `workspace/gui/result/memchr-2.8.3`, which does not exist, and the
 /// suite aborted before booting with `has no Cargo.toml` — a message that
 /// reads like a *destroyed fixture* rather than a path that was never going to
-/// resolve. `.real-crates/` is gitignored and irrecoverable (doctrine §8), so
+/// resolve. `result/` is gitignored and irrecoverable (doctrine §8), so
 /// "your fixture is gone" is precisely the wrong place to send the next
 /// reader first.
 ///
@@ -458,7 +458,7 @@ impl FakeApi {
                              Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         ),
-                        // 204, exactly as `auth.md` specifies for a recorded
+                        // 204, exactly as `docs/auth.md` specifies for a recorded
                         // batch: no body, and therefore no `Content-Length`.
                         None => {
                             "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_owned()
@@ -624,7 +624,7 @@ impl Stage {
         // `McpStatus`, and `Absent` renders nothing. Starting it here is a
         // fidelity fix as well as the precondition for photographing
         // requirement 4: the reader has to be able to see the endpoint is up.
-        // The account gate (`auth.md`). Installed before `McpService` because
+        // The account gate (`docs/auth.md`). Installed before `McpService` because
         // the MCP server takes one as a mandatory argument — a server with no
         // gate would serve a paid product for free, and `nudox-mcp` makes that
         // unrepresentable rather than discouraged.
@@ -644,10 +644,10 @@ impl Stage {
         std::fs::create_dir_all(&account_dir).expect("account scratch dir");
 
         cx.update(|cx| {
-            let gate = nudox_mcp::AccountGate::new(
-                Box::new(nudox_mcp::account::store::MemoryStore::empty()),
+            let gate = nudox_engine::mcp::AccountGate::new(
+                Box::new(nudox_engine::mcp::account::store::MemoryStore::empty()),
                 Arc::new(
-                    nudox_mcp::account::service::HttpAccountService::with_base_url(
+                    nudox_engine::mcp::account::service::HttpAccountService::with_base_url(
                         fake_api.base_url(),
                     )
                     .expect("a loopback client builds"),
@@ -689,7 +689,7 @@ impl Stage {
         }
     }
 
-    // ── Account (`auth.md`) ──────────────────────────────────────────────────
+    // ── Account (`docs/auth.md`) ──────────────────────────────────────────────────
 
     /// Whichever `SignInView` is currently on screen: the launch gate, or the
     /// dismissable `cmd-shift-A` overlay.
@@ -1075,9 +1075,9 @@ impl Stage {
     /// Assert that no two rows the results list can draw are textually
     /// identical, and print what they are.
     ///
-    /// # The finding this exists for (GUI-WORKORDER-2 F1 / LIMITATIONS.md L20)
+    /// # The finding this exists for (GUI-WORKORDER-2 F1 / docs/LIMITATIONS.md L20)
     ///
-    /// `.shots/memchr/04-search-hits.png` showed seven consecutive rows reading
+    /// `tests/shots/memchr/04-search-hits.png` showed seven consecutive rows reading
     /// exactly `memchr` over `mod memchr`, with the same kind chip and the same
     /// trust chip, and every assertion in this file passed. The suite checked
     /// that hits *arrived* and that the frame *changed*; nothing checked that a
@@ -1261,7 +1261,7 @@ impl Stage {
     /// This used to be `true` for the whole of scenes 09-14 and was the causal
     /// evidence behind their `KnownNoOp` claims: `SymbolPage` held no
     /// `FocusHandle` at all, so its own `.on_action` handlers were structurally
-    /// unreachable (LIMITATIONS.md L16). Both halves of that are now fixed —
+    /// unreachable (docs/LIMITATIONS.md L16). Both halves of that are now fixed —
     /// `SymbolPage` implements `Focusable` and calls `.track_focus` on the one
     /// root `page_root` builds, and `Pane::activate_ix` focuses the active
     /// item's handle on every activation — so this now reads `false` while a
@@ -1437,7 +1437,7 @@ impl Stage {
                         "{slug}: {changed_px} of {total_pixels} pixels changed \
                          ({pct:.3}%) — more than the {:.3}% tolerated for a \
                          documented no-op ({reason}). Either the gap this cites has \
-                         been fixed (update this call site and LIMITATIONS.md) or an \
+                         been fixed (update this call site and docs/LIMITATIONS.md) or an \
                          unrelated regression appeared.",
                         max_fraction * 100.0,
                     );
@@ -1504,7 +1504,7 @@ impl Stage {
 fn main() {
     let corpus = Corpus::from_env();
     let out_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.shots")
+        .join("../../tests/shots")
         .join(match &corpus {
             Corpus::Fixtures => "fixtures".to_owned(),
             Corpus::Package { name, .. } => name.clone(),
@@ -1528,7 +1528,7 @@ fn main() {
     let mut stage = Stage::boot(&corpus, out_dir);
 
     // `Stage::boot` installs a real, SignedOut account gate, so the shell it
-    // just built is rendering nothing but the sign-in surface (`auth.md`).
+    // just built is rendering nothing but the sign-in surface (`docs/auth.md`).
     // Sign in once, for real, before scene 01 — see `Stage::sign_in_for_boot`
     // for why every scene below this line depends on it.
     stage.sign_in_for_boot();
@@ -2422,7 +2422,7 @@ fn main() {
         "the cycle must wrap to the first theme",
     );
 
-    // ── Account: the launch gate (`auth.md`) ─────────────────────────────────
+    // ── Account: the launch gate (`docs/auth.md`) ─────────────────────────────────
     //
     // Every scene up to this point ran signed in — `sign_in_for_boot` put the
     // process in that state before scene 01. These three exercise the other

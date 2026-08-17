@@ -1,3 +1,4 @@
+//! `Record` and `Field` kinds with forms, keys, and attributes.
 use crate::{
     List,
     index::Ref,

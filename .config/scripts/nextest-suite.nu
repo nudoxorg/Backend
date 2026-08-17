@@ -19,7 +19,7 @@
 #                                  plus --run-ignored all on the root step
 #   --report <path>               where perf-report.nu writes its markdown (default: perf-report.md)
 #
-# WHY EVERYTHING RUNS SEQUENTIALLY, NEVER BACKGROUNDED: AGENTS-DOCTRINE.md §8 —
+# WHY EVERYTHING RUNS SEQUENTIALLY, NEVER BACKGROUNDED: docs/AGENTS-DOCTRINE.md §8 —
 # concurrent cargo invocations against the shared `target/` corrupt the
 # build-script cache (observed: `dyld: Library not loaded:
 # @rpath/libclang.dylib`), and a real-crate lowering has been measured at
@@ -61,13 +61,13 @@ def run-required [label: string, command: closure] {
 }
 
 # Locate a `libclang.dylib` directory under /nix/store. Required at *run*
-# time (not just build time) because `nudox-producer-clang` — and anything
+# time (not just build time) because `nudox-languages` — and anything
 # that links it, e.g. `nudox-engine`'s test binaries — dynamically links
-# libclang without an embedded rpath (TESTING.md; the doc comment on
-# `nudox-store`'s `ProducerRegistry::with_all_available`). Without
+# libclang without an embedded rpath (docs/TESTING.md; the doc comment on
+# `nudox-engine`'s store plane `ProducerRegistry::with_all_available`). Without
 # `DYLD_LIBRARY_PATH` set to this directory, `cargo nextest list`/`run`
 # aborts with `Library not loaded: @rpath/libclang.dylib` while enumerating
-# `nudox-producer-clang`'s own test binary, before any test runs.
+# `nudox-languages`'s own test binary, before any test runs.
 def find-libclang-dir [] {
     if (sys host | get name) != "Darwin" {
         return null
@@ -113,8 +113,8 @@ def main [
         let libclang_dir = (find-libclang-dir)
         if $libclang_dir == null {
             print --stderr "FAIL: could not locate libclang.dylib under /nix/store"
-            print --stderr "      nudox-producer-clang (and anything linking it) aborts at dyld load"
-            print --stderr "      time without DYLD_LIBRARY_PATH pointed at it. See TESTING.md."
+            print --stderr "      nudox-languages (and anything linking it) aborts at dyld load"
+            print --stderr "      time without DYLD_LIBRARY_PATH pointed at it. See docs/TESTING.md."
             exit 1
         }
         $env.LIBCLANG_PATH = $libclang_dir
@@ -137,13 +137,13 @@ def main [
     #
     # This used to read `--exclude index --exclude driver --exclude ir-vcs`
     # and cite L6 ("index has never compiled"). L6 has been RESOLVED since
-    # 2026-08-05 (LIMITATIONS.md:736) — `index` and `ir-vcs` both compile and
+    # 2026-08-05 (docs/LIMITATIONS.md:736) — `index` and `ir-vcs` both compile and
     # both have tests. Re-measured 2026-08-07: dropping the two stale
     # exclusions takes `cargo nextest list -P default` from 1227 to 2267
     # enumerated tests, i.e. the stale tourniquet was hiding ~1040 tests that
     # build today, 731 of them in `index` and 216 in `ir-vcs`. Of those,
     # 1020 of 1023 also PASS on a real run; the 3 that do not are recorded in
-    # TESTING.md's "Newly-visible red tests" section rather than re-hidden.
+    # docs/TESTING.md's "Newly-visible red tests" section rather than re-hidden.
     # Doctrine §7: "a crate outside the gate stops being measured".
     #
     # `driver` is NO LONGER EXCLUDED as of 2026-08-08, and its 202 tests are
@@ -163,6 +163,13 @@ def main [
     # stricter than the "settled tree" recheck this comment used to ask for — a
     # build on this machine cannot tell "committed" from "present in someone's
     # working tree", and that is exactly how the bug survived.
+    #
+    # UPDATE 2026-08-12: the standalone `driver` package named throughout this
+    # history has since been dissolved — its composition/serving code folded
+    # into `index::server`, and the `driver` integration tests referenced
+    # above now live under `workspace/index/tests/` and are measured as part
+    # of `index`, not a separately-excludable package. No exclusion list
+    # changes are needed here as a result; `index` was already unexcluded.
     #
     # `--no-fail-fast` on ci/perf (never on `default`): those two profiles
     # exist to produce a complete picture (a JUnit report, a perf table) —
@@ -237,7 +244,7 @@ def main [
     }
 
     # Doctrine §4 / this track's constraint 4: every integration test is also
-    # a benchmark via `nudox_test_support::measured()`'s `cost case=` line.
+    # a benchmark via `heart::cost::measured()`'s `cost case=` line.
     # perf-report.nu itself prints "no cost lines found" harmlessly if a run
     # (e.g. the plain `default` profile, which sets `success-output =
     # "never"` on purpose for a quiet fast loop) produced none.

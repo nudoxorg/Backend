@@ -87,8 +87,8 @@ fn main() {
     // at the pinned model in a build made with `--features onnx`. Handing the
     // engine an embedder is *all* it takes: the incremental indexer, the
     // `SectionState::{Building,Complete}` progress, and the ranked rows are
-    // already built behind the port. See LIMITATIONS.md L41.
-    let embedder = nudox_embed::load_from_env();
+    // already built behind the port. See docs/LIMITATIONS.md L41.
+    let embedder = nudox_engine::embed::load_from_env();
     tracing::info!(
         semantic = embedder.is_some(),
         "engine config: semantic embedder {}",
@@ -174,7 +174,7 @@ fn main() {
             // "Started by lindsey after the engine, stopped on window close."
             // Until 2026-08-07 that sentence described an integration that did
             // not exist: the server was complete and tested and nothing ever
-            // called it (LIMITATIONS.md L35).
+            // called it (docs/LIMITATIONS.md L35).
             //
             // Started *here*, before the window, for the same reason the engine
             // is: the bind is a loopback `listen(2)` and completes in
@@ -192,7 +192,7 @@ fn main() {
             // `NudoxMcpServer` with no gate would serve a paid product for
             // free, and `nudox-mcp` makes that unrepresentable rather than
             // discouraged. One gate, two readers — the server admits tool calls
-            // through it and the status bar renders it. See `auth.md`.
+            // through it and the status bar renders it. See `docs/auth.md`.
             cx.set_global(AccountService::start(&engine));
             let gate = cx.global::<AccountService>().gate();
 

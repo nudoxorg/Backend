@@ -8,7 +8,7 @@
 //! * Plain-Rust **neighbour methods** on the adapter — these are the load-bearing
 //!   deliverable for this wave.
 //! * [`execute_graph_query`] — a stub with the correct [`trustfall::FieldValue`]
-//!   signature; returns [`GraphQueryError::Unsupported`] until the Trustfall schema
+//!   signature; returns [`Error::Unsupported`] until the Trustfall schema
 //!   is wired in a later wave.
 
 use std::collections::BTreeMap;
@@ -63,12 +63,12 @@ impl<'a> GraphVertex<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// GraphQueryError
+// Error
 // ---------------------------------------------------------------------------
 
 /// Errors that can arise from [`execute_graph_query`].
 #[derive(Debug, Error)]
-pub enum GraphQueryError {
+pub enum Error {
     /// The Trustfall schema is not yet wired; any query string is unsupported
     /// in this wave. The string carries the query for diagnostic purposes.
     #[error("trustfall query is not yet supported: {0}")]
@@ -194,7 +194,7 @@ impl<'a> IrTrustfallAdapter<'a> {
 
 /// Execute a Trustfall query against the IR graph.
 ///
-/// **This wave:** always returns [`GraphQueryError::Unsupported`].  The full
+/// **This wave:** always returns [`Error::Unsupported`].  The full
 /// Trustfall `Adapter` trait implementation, schema `.toml`, and query execution
 /// loop are deferred to a later wave.  The hand-rolled neighbour methods on
 /// [`IrTrustfallAdapter`] are the load-bearing deliverable for INDEX-PLAN §5.5
@@ -207,10 +207,10 @@ pub fn execute_graph_query(
     adapter: &IrTrustfallAdapter<'_>,
     query: &str,
     _args: BTreeMap<Arc<str>, trustfall::FieldValue>,
-) -> Result<Vec<BTreeMap<Arc<str>, trustfall::FieldValue>>, GraphQueryError> {
+) -> Result<Vec<BTreeMap<Arc<str>, trustfall::FieldValue>>, Error> {
     // Suppress unused-variable lint while the body is a stub.
     let _ = adapter.ir;
-    Err(GraphQueryError::Unsupported(query.to_owned()))
+    Err(Error::Unsupported(query.to_owned()))
 }
 
 // ---------------------------------------------------------------------------
@@ -423,7 +423,7 @@ mod tests {
         let adapter = IrTrustfallAdapter::new(&ir);
         let result = execute_graph_query(&adapter, "{ Package { name } }", BTreeMap::new());
         assert!(
-            matches!(result, Err(GraphQueryError::Unsupported(_))),
+            matches!(result, Err(Error::Unsupported(_))),
             "execute_graph_query must be a stub returning Unsupported this wave"
         );
     }

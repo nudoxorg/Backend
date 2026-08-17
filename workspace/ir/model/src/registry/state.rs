@@ -1,3 +1,4 @@
+//! Internal registry state: index allocation and lazy entry loading.
 use elsa::sync::FrozenVec;
 use papaya::HashMap;
 use rustc_hash::FxBuildHasher;

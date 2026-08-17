@@ -1,11 +1,11 @@
 //! Storage-characteristics tests for the NDPK object-pack layer
-//! (`index::pack`): real source trees from `.real-crates/` packed through the
+//! (`index::pack`): real source trees from `result/` packed through the
 //! real `TreeIngest` + `FilesystemObjectPackStore`, with pack bytes on disk
 //! measured against raw source bytes on disk (doctrine §4).
 //!
 //! Scope: only each fixture's own `src/` is packed, not the whole checkout.
-//! `.real-crates/<pkg>/vendor/` (offline-vendored dependency copies) and
-//! `.real-crates/<pkg>/target/` (build output some prior tool run left
+//! `result/<pkg>/vendor/` (offline-vendored dependency copies) and
+//! `result/<pkg>/target/` (build output some prior tool run left
 //! behind) are not source the package itself owns — packing them would
 //! measure someone else's bytes under this package's name. `src/` is exactly
 //! what `pack::tree`'s own docs describe packing ("source trees").
@@ -49,15 +49,15 @@ fn pack_real_source_tree(
         .join("src");
     assert!(
         src_root.is_dir(),
-        "expected a real fixture at {}; run corpus/fetch.nu",
+        "expected a real fixture at {}; run nix build .#checks.corpus",
         src_root.display()
     );
-    let raw_bytes = nudox_test_support::disk_bytes(&src_root);
+    let raw_bytes = heart::cost::disk_bytes(&src_root);
     assert!(raw_bytes > 0, "real source tree must have non-zero bytes");
 
     let store = FilesystemObjectPackStore::open(store_dir).expect("open pack store");
 
-    let ((pack_id, member_count), cost) = nudox_test_support::measured(case, store_dir, || {
+    let ((pack_id, member_count), cost) = heart::cost::measured(case, store_dir, || {
         let builder =
             TreeIngest::ingest_directory(&src_root).expect("ingest a real, symlink-free source tree");
         let member_count = builder.member_count();

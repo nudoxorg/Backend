@@ -37,7 +37,7 @@ fn hex_nibble(n: u8) -> u8 {
     }
 }
 
-pub fn unescape(s: &str) -> Result<String, AsciiError> {
+pub fn unescape(s: &str) -> Result<String, Error> {
     let mut out: Vec<u8> = Vec::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -45,7 +45,7 @@ pub fn unescape(s: &str) -> Result<String, AsciiError> {
         if bytes[i] == b'\\' {
             i += 1;
             if i >= bytes.len() {
-                return Err(AsciiError::TrailingBackslash);
+                return Err(Error::TrailingBackslash);
             }
             match bytes[i] {
                 b'\\' => out.push(b'\\'),
@@ -54,16 +54,16 @@ pub fn unescape(s: &str) -> Result<String, AsciiError> {
                 b'r' => out.push(b'\r'),
                 b'x' => {
                     if i + 2 >= bytes.len() {
-                        return Err(AsciiError::BadEscape("\\x at end of string".to_owned()));
+                        return Err(Error::BadEscape("\\x at end of string".to_owned()));
                     }
                     let hi = hex_val(bytes[i + 1]).ok_or_else(|| {
-                        AsciiError::BadEscape(format!(
+                        Error::BadEscape(format!(
                             "bad \\x hex digit: {}",
                             bytes[i + 1] as char
                         ))
                     })?;
                     let lo = hex_val(bytes[i + 2]).ok_or_else(|| {
-                        AsciiError::BadEscape(format!(
+                        Error::BadEscape(format!(
                             "bad \\x hex digit: {}",
                             bytes[i + 2] as char
                         ))
@@ -72,7 +72,7 @@ pub fn unescape(s: &str) -> Result<String, AsciiError> {
                     i += 2;
                 }
                 other => {
-                    return Err(AsciiError::BadEscape(format!(
+                    return Err(Error::BadEscape(format!(
                         "unknown escape \\{}",
                         other as char
                     )));
@@ -83,7 +83,7 @@ pub fn unescape(s: &str) -> Result<String, AsciiError> {
         }
         i += 1;
     }
-    String::from_utf8(out).map_err(|e| AsciiError::BadEscape(format!("invalid UTF-8: {e}")))
+    String::from_utf8(out).map_err(|e| Error::BadEscape(format!("invalid UTF-8: {e}")))
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -98,15 +98,15 @@ fn hex_val(b: u8) -> Option<u8> {
 // Hex helpers
 // ---------------------------------------------------------------------------
 
-pub fn hex_to_32(s: &str) -> Result<[u8; 32], AsciiError> {
+pub fn hex_to_32(s: &str) -> Result<[u8; 32], Error> {
     if s.len() != 64 {
-        return Err(AsciiError::HexLen(s.len()));
+        return Err(Error::HexLen(s.len()));
     }
     let b = s.as_bytes();
     let mut out = [0u8; 32];
     for (i, slot) in out.iter_mut().enumerate() {
-        let hi = hex_val(b[i * 2]).ok_or(AsciiError::HexDigit(b[i * 2]))?;
-        let lo = hex_val(b[i * 2 + 1]).ok_or(AsciiError::HexDigit(b[i * 2 + 1]))?;
+        let hi = hex_val(b[i * 2]).ok_or(Error::HexDigit(b[i * 2]))?;
+        let lo = hex_val(b[i * 2 + 1]).ok_or(Error::HexDigit(b[i * 2 + 1]))?;
         *slot = (hi << 4) | lo;
     }
     Ok(out)
@@ -128,18 +128,18 @@ pub fn encode_typeref(tr: &TypeRefWire) -> String {
     }
 }
 
-pub fn decode_typeref(s: &str) -> Result<TypeRefWire, AsciiError> {
+pub fn decode_typeref(s: &str) -> Result<TypeRefWire, Error> {
     if let Some(rest) = s.strip_prefix("S:") {
         Ok(TypeRefWire::Same(IntroId::from_raw(hex_to_32(rest)?)))
     } else if let Some(rest) = s.strip_prefix("F:") {
         let hash_pos = rest
             .rfind('#')
-            .ok_or_else(|| AsciiError::Malformed(format!("no '#' in typeref: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("no '#' in typeref: {}", s)))?;
         let intro_hex = &rest[hash_pos + 1..];
         let eco_pkg = &rest[..hash_pos];
         let slash_pos = eco_pkg
             .find('/')
-            .ok_or_else(|| AsciiError::Malformed(format!("no '/' in typeref: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("no '/' in typeref: {}", s)))?;
         let eco = &eco_pkg[..slash_pos];
         let pkg = &eco_pkg[slash_pos + 1..];
         Ok(TypeRefWire::Foreign(StableRef::new(
@@ -147,7 +147,7 @@ pub fn decode_typeref(s: &str) -> Result<TypeRefWire, AsciiError> {
             IntroId::from_raw(hex_to_32(intro_hex)?),
         )))
     } else {
-        Err(AsciiError::Malformed(format!(
+        Err(Error::Malformed(format!(
             "unknown typeref prefix: {}",
             s
         )))
@@ -165,13 +165,13 @@ pub fn encode_width(w: &WidthWire) -> String {
     }
 }
 
-pub fn decode_width(s: &str) -> Result<WidthWire, AsciiError> {
+pub fn decode_width(s: &str) -> Result<WidthWire, Error> {
     if s == "arch" {
         Ok(WidthWire::Arch)
     } else {
         let n: u32 = s
             .parse()
-            .map_err(|_| AsciiError::Malformed(format!("invalid width: {}", s)))?;
+            .map_err(|_| Error::Malformed(format!("invalid width: {}", s)))?;
         Ok(WidthWire::Fixed(n))
     }
 }
@@ -217,7 +217,7 @@ pub fn encode_typeexpr(tw: &TypeWire) -> String {
     }
 }
 
-pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
+pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
     match s {
         "self" => return Ok(TypeWire::SelfType),
         "never" => return Ok(TypeWire::Never),
@@ -237,12 +237,12 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
         if let Some(r) = rest.strip_prefix("int:") {
             let colon = r
                 .find(':')
-                .ok_or_else(|| AsciiError::Malformed(format!("bad prim:int: {}", s)))?;
+                .ok_or_else(|| Error::Malformed(format!("bad prim:int: {}", s)))?;
             let signed = match &r[..colon] {
                 "s" => true,
                 "u" => false,
                 other => {
-                    return Err(AsciiError::Malformed(format!(
+                    return Err(Error::Malformed(format!(
                         "bad int sign '{}': {}",
                         other, s
                     )));
@@ -269,12 +269,12 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
         if let Some(r) = rest.strip_prefix("ref:") {
             let colon = r
                 .find(':')
-                .ok_or_else(|| AsciiError::Malformed(format!("bad prim:ref: {}", s)))?;
+                .ok_or_else(|| Error::Malformed(format!("bad prim:ref: {}", s)))?;
             let mutable = match &r[..colon] {
                 "mut" => true,
                 "shared" => false,
                 other => {
-                    return Err(AsciiError::Malformed(format!(
+                    return Err(Error::Malformed(format!(
                         "bad ref mutability '{}': {}",
                         other, s
                     )));
@@ -289,7 +289,7 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
         if let Some(r) = rest.strip_prefix("builtin:") {
             return Ok(TypeWire::Primitive(PrimitiveWire::Builtin(unescape(r)?)));
         }
-        return Err(AsciiError::Malformed(format!("unknown prim: {}", s)));
+        return Err(Error::Malformed(format!("unknown prim: {}", s)));
     }
     if let Some(r) = s.strip_prefix("tuple:") {
         let parts = split_comma(r);
@@ -302,10 +302,10 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
     if let Some(r) = s.strip_prefix("array:") {
         let colon = r
             .rfind(':')
-            .ok_or_else(|| AsciiError::Malformed(format!("bad array: {}", s)))?;
+            .ok_or_else(|| Error::Malformed(format!("bad array: {}", s)))?;
         let length: u64 = r[colon + 1..]
             .parse()
-            .map_err(|_| AsciiError::Malformed(format!("bad array length in: {}", s)))?;
+            .map_err(|_| Error::Malformed(format!("bad array length in: {}", s)))?;
         return Ok(TypeWire::Array {
             ty: Box::new(decode_typeref(&r[..colon])?),
             length,
@@ -321,7 +321,7 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, AsciiError> {
         let refs: Result<Vec<_>, _> = parts.iter().map(|p| decode_typeref(p)).collect();
         return Ok(TypeWire::Intersection(refs?.into_boxed_slice()));
     }
-    Err(AsciiError::Malformed(format!("unknown typeexpr: {}", s)))
+    Err(Error::Malformed(format!("unknown typeexpr: {}", s)))
 }
 
 pub fn split_comma(s: &str) -> Vec<&str> {
@@ -337,7 +337,7 @@ pub fn split_comma(s: &str) -> Vec<&str> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum AsciiError {
+pub enum Error {
     #[error("trailing backslash in escape sequence")]
     TrailingBackslash,
     #[error("bad escape: {0}")]

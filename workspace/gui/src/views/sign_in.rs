@@ -68,7 +68,7 @@ use gpui::{
     Subscription, Window, div, px,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
-use nudox_mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
+use nudox_engine::mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
 
 use crate::app::account::AccountPresentation;
 use crate::app::actions::{ConfirmOverlay, DismissOverlay};
@@ -441,7 +441,7 @@ impl Render for SignInView {
     /// `id`, `key_context`, `track_focus` and every `.on_action` once, and
     /// `body` returns children only. No phase branch is in a position to build
     /// a second root, so no phase branch can delete the ancestor context stack
-    /// (LIMITATIONS.md L22).
+    /// (docs/LIMITATIONS.md L22).
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = std::time::Instant::now();
         let mut animating = false;

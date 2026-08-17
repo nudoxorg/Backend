@@ -27,13 +27,62 @@ use triomphe::Arc;
 
 use crate::{
     List,
+    body::BodyEmbed,
     entry::{Entry, Node, SourceLocation, Symbol},
     foreign::ForeignKey,
     index::{RawRef, Ref, UntypedEntryIndex},
     kind::{EntryKind, Kind},
     kinds::{Module, Type},
     package::{IrPackage, PackageId, PackageInfo},
+    vocab::{Confidence, ReferenceKind, RelSpan},
 };
+
+/// Reference fact held in the same producer-local arena as declarations.
+pub(crate) struct PendingOccurrence {
+    pub(crate) owner: UntypedEntryIndex,
+    pub(crate) target: PendingOccurrenceTarget,
+    pub(crate) kind: ReferenceKind,
+    pub(crate) confidence: Confidence,
+    pub(crate) span: RelSpan,
+}
+
+/// A reference target retained in the same canonical fact stream regardless
+/// of whether it belongs to this package or another one.
+pub(crate) enum PendingOccurrenceTarget {
+    Local(UntypedEntryIndex),
+    Foreign(Arc<ForeignKey>),
+}
+
+pub(crate) struct PendingBody {
+    pub(crate) owner: UntypedEntryIndex,
+    pub(crate) body: BodyEmbed,
+}
+
+/// Fact submissions the lowering sink could not retain.
+///
+/// Counts cross the generic producer-ID boundary into the seal report, making
+/// filtered endpoints and producer mistakes observable without retaining an
+/// unbounded list of frontend-specific IDs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RejectedFactCounts {
+    /// Occurrences whose containing declaration was not indexed.
+    pub undeclared_occurrence_owners: usize,
+    /// Local occurrence targets intentionally or accidentally not indexed.
+    pub undeclared_occurrence_targets: usize,
+    /// Body facts submitted for a declaration not present in the sink.
+    pub undeclared_body_owners: usize,
+    /// Additional body submissions for an owner that already had one.
+    pub duplicate_bodies: usize,
+    /// Body facts whose language disagreed with the lowering session.
+    pub mismatched_body_languages: usize,
+}
+
+impl RejectedFactCounts {
+    /// Whether every fact submission crossed the boundary successfully.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+}
 
 // ── Internal representation of one declared item ─────────────────────────────
 
@@ -85,7 +134,7 @@ enum Mark {
 /// `finish` collects **all** errors in one pass and reports them together so a
 /// producer can fix everything at once rather than in a whack-a-mole loop.
 #[derive(Debug)]
-pub enum LoweringError<Id: fmt::Debug> {
+pub enum Error<Id: fmt::Debug> {
     /// One or more IDs were referred (or named as a parent) but never declared.
     Undeclared(Vec<Id>),
 
@@ -105,23 +154,26 @@ pub enum LoweringError<Id: fmt::Debug> {
     Cycle(Vec<Id>),
 }
 
-impl<Id: fmt::Debug> fmt::Display for LoweringError<Id> {
+impl<Id: fmt::Debug> fmt::Display for Error<Id> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoweringError::Undeclared(ids) => {
+            Error::Undeclared(ids) => {
                 write!(f, "referred but never declared: {:?}", ids)
             }
-            LoweringError::Duplicate(ids) => {
+            Error::Duplicate(ids) => {
                 write!(f, "declared more than once: {:?}", ids)
             }
-            LoweringError::Cycle(ids) => {
+            Error::Cycle(ids) => {
                 write!(f, "parent-pointer cycle detected among: {:?}", ids)
             }
         }
     }
 }
 
-impl<Id: fmt::Debug> std::error::Error for LoweringError<Id> {}
+impl<Id: fmt::Debug> std::error::Error for Error<Id> {}
+
+/// Backwards-compatible alias for cross-crate consumers.
+pub use self::Error as LoweringError;
 
 // ── Lowering ────────────────────────────────────────────────────────────────
 
@@ -155,6 +207,15 @@ pub struct Lowering<Id: Eq + Hash> {
     /// `core::clone::Clone` in one crate share one allocation and one later
     /// resolver lookup.
     foreign: HashSet<Arc<ForeignKey>>,
+
+    /// Reference facts emitted by the frontend and resolved during sealing.
+    occurrences: Vec<PendingOccurrence>,
+    /// Language-neutral merged body facts emitted by the frontend.
+    bodies: Vec<PendingBody>,
+    /// Language used when sealing occurrences into semantic body facts.
+    language: Option<crate::body::Language>,
+    /// Rejected submissions, surfaced through the canonical seal report.
+    rejected_facts: RejectedFactCounts,
 }
 
 impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
@@ -167,6 +228,10 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             duplicates: Vec::new(),
             root_sym: root,
             foreign: HashSet::new(),
+            occurrences: Vec::new(),
+            bodies: Vec::new(),
+            language: None,
+            rejected_facts: RejectedFactCounts::default(),
         }
     }
 
@@ -183,6 +248,108 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
 
     // ── Public API ────────────────────────────────────────────────────────────
 
+    /// Set the frontend language for body-fact materialization at seal time.
+    pub fn set_language(&mut self, language: crate::body::Language) {
+        self.language = Some(language);
+    }
+
+    /// Record one frontend-resolved reference in producer identity space.
+    ///
+    /// A missing endpoint (for example a private target deliberately filtered
+    /// from the documentation set) is counted in the eventual seal report.
+    /// Syntax-only candidates use `Confidence::Syntactic`; only index-grade
+    /// facts reach precise usage results.
+    pub fn record_occurrence(
+        &mut self,
+        owner: Id,
+        target: Id,
+        kind: ReferenceKind,
+        confidence: Confidence,
+        span: RelSpan,
+    ) {
+        if !matches!(self.slots.get(&owner), Some(Some(_))) {
+            self.rejected_facts.undeclared_occurrence_owners += 1;
+            return;
+        }
+        if !matches!(self.slots.get(&target), Some(Some(_))) {
+            self.rejected_facts.undeclared_occurrence_targets += 1;
+            return;
+        }
+        let Some(owner) = self.info.export_id_to_idx(&owner) else {
+            self.rejected_facts.undeclared_occurrence_owners += 1;
+            return;
+        };
+        let Some(target) = self.info.export_id_to_idx(&target) else {
+            self.rejected_facts.undeclared_occurrence_targets += 1;
+            return;
+        };
+        self.occurrences.push(PendingOccurrence {
+            owner,
+            target: PendingOccurrenceTarget::Local(target),
+            kind,
+            confidence,
+            span,
+        });
+    }
+
+    /// Record one frontend-resolved reference to another package.
+    ///
+    /// Foreign occurrences use the same pending-fact stream as local ones;
+    /// sealing resolves their [`ForeignKey`] through the package resolver and
+    /// reports an unavailable target through [`SealReport`](crate::package::SealReport).
+    /// This prevents language frontends from growing a second post-seal
+    /// reference pipeline merely because an edge crosses a package boundary.
+    pub fn record_foreign_occurrence(
+        &mut self,
+        owner: Id,
+        target: ForeignKey,
+        kind: ReferenceKind,
+        confidence: Confidence,
+        span: RelSpan,
+    ) {
+        if !matches!(self.slots.get(&owner), Some(Some(_))) {
+            self.rejected_facts.undeclared_occurrence_owners += 1;
+            return;
+        }
+        let Some(owner) = self.info.export_id_to_idx(&owner) else {
+            self.rejected_facts.undeclared_occurrence_owners += 1;
+            return;
+        };
+        let target = self.intern_foreign(target);
+        self.occurrences.push(PendingOccurrence {
+            owner,
+            target: PendingOccurrenceTarget::Foreign(target),
+            kind,
+            confidence,
+            span,
+        });
+    }
+
+    /// Attach merged syntax/semantic body facts to a declared symbol.
+    /// An undeclared owner or duplicate emission is counted in the eventual
+    /// seal report; frontends must merge their tiers before this boundary.
+    pub fn record_body(&mut self, owner: Id, body: BodyEmbed) {
+        if !matches!(self.slots.get(&owner), Some(Some(_))) {
+            self.rejected_facts.undeclared_body_owners += 1;
+            return;
+        }
+        let Some(owner) = self.info.export_id_to_idx(&owner) else {
+            self.rejected_facts.undeclared_body_owners += 1;
+            return;
+        };
+        if self.bodies.iter().any(|pending| pending.owner == owner) {
+            self.rejected_facts.duplicate_bodies += 1;
+            return;
+        }
+        if let (Some(expected), BodyEmbed::Present(facts)) = (self.language, &body) {
+            if facts.language != expected {
+                self.rejected_facts.mismatched_body_languages += 1;
+                return;
+            }
+        }
+        self.bodies.push(PendingBody { owner, body });
+    }
+
     /// Declare an entry with an owned kind body.
     ///
     /// `parent: None` means "direct child of the root module".
@@ -196,7 +363,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// nothing declared through this method can ever be a jump target. A
     /// producer that knows where its declaration is calls
     /// [`declare_at`](Self::declare_at) instead. Every remaining caller of this
-    /// method is an open item on `LIMITATIONS.md` L31, and is countable by
+    /// method is an open item on `docs/LIMITATIONS.md` L31, and is countable by
     /// grep.
     pub fn declare<T: EntryKind>(
         &mut self,
@@ -320,7 +487,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     ///
     /// Unlike [`refer`](Self::refer) this creates **no declaration slot**, so
     /// [`finish`](Self::finish) will not demand a declaration for it. That is
-    /// why every producer that hit `LoweringError::Undeclared` on stdlib types
+    /// why every producer that hit `Error::Undeclared` on stdlib types
     /// belongs here — the Go producer's `refer()`-everything crash (doctrine §4's
     /// worked example) was fixed by routing to this method.
     ///
@@ -431,7 +598,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
     /// - one pass to collect children per parent (insertion-ordered),
     /// - one DFS pass for cycle detection (linear in the parent-forest),
     /// - one pass to build and assemble `Entry` values.
-    pub fn finish(self) -> Result<IrPackage<Id>, LoweringError<Id>> {
+    pub fn finish(self) -> Result<IrPackage<Id>, Error<Id>> {
         let Lowering {
             mut info,
             slots,
@@ -441,11 +608,15 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             // `Ref::Foreign` already owns an `Arc` to its key, so the set has
             // no readers after this point.
             foreign: _,
+            occurrences,
+            bodies,
+            language,
+            rejected_facts,
         } = self;
 
         // ── Validate: duplicates ──────────────────────────────────────────────
         if !duplicates.is_empty() {
-            return Err(LoweringError::Duplicate(duplicates));
+            return Err(Error::Duplicate(duplicates));
         }
 
         // ── Validate: undeclared ──────────────────────────────────────────────
@@ -461,7 +632,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             })
             .collect();
         if !undeclared.is_empty() {
-            return Err(LoweringError::Undeclared(undeclared));
+            return Err(Error::Undeclared(undeclared));
         }
 
         let n = slots.len();
@@ -505,7 +676,7 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
                         // path suffix from where we re-entered.
                         Mark::OnPath => {
                             let from = path.iter().position(|&p| p == pos).expect("marked OnPath");
-                            return Err(LoweringError::Cycle(
+                            return Err(Error::Cycle(
                                 path[from..]
                                     .iter()
                                     .map(|&p| slots.get_index(p).expect("in range").0.clone())
@@ -584,7 +755,14 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             entries.push((idx_of[pos], entry));
         }
 
-        Ok(IrPackage::from_parts(info, entries))
+        Ok(IrPackage::from_parts(
+            info,
+            entries,
+            occurrences,
+            bodies,
+            language,
+            rejected_facts,
+        ))
     }
 }
 
@@ -600,7 +778,7 @@ mod tests {
         test_helpers::sym,
     };
 
-    use super::{Lowering, LoweringError};
+    use super::{Lowering, Error};
     use crate::foreign::Unlinked;
 
     fn lineage() -> PackageLineageId {
@@ -827,7 +1005,7 @@ mod tests {
         );
     }
 
-    // ── 4a. LoweringError::Undeclared ─────────────────────────────────────────
+    // ── 4a. Error::Undeclared ─────────────────────────────────────────
 
     #[test]
     fn error_undeclared() {
@@ -840,12 +1018,12 @@ mod tests {
             panic!("must fail with Undeclared");
         };
         assert!(
-            matches!(err, LoweringError::Undeclared(_)),
+            matches!(err, Error::Undeclared(_)),
             "expected Undeclared, got {err:?}"
         );
     }
 
-    // ── 4b. LoweringError::Duplicate ─────────────────────────────────────────
+    // ── 4b. Error::Duplicate ─────────────────────────────────────────
 
     #[test]
     fn error_duplicate() {
@@ -858,12 +1036,12 @@ mod tests {
             panic!("must fail with Duplicate");
         };
         assert!(
-            matches!(err, LoweringError::Duplicate(_)),
+            matches!(err, Error::Duplicate(_)),
             "expected Duplicate, got {err:?}"
         );
     }
 
-    // ── 4c. LoweringError::Cycle ─────────────────────────────────────────────
+    // ── 4c. Error::Cycle ─────────────────────────────────────────────
 
     /// Two entries that list each other as parent form an unreachable cycle.
     #[test]
@@ -878,7 +1056,7 @@ mod tests {
             panic!("must fail with Cycle");
         };
         assert!(
-            matches!(err, LoweringError::Cycle(_)),
+            matches!(err, Error::Cycle(_)),
             "expected Cycle, got {err:?}"
         );
     }
@@ -894,7 +1072,7 @@ mod tests {
             panic!("a self-parenting entry must be rejected");
         };
         match err {
-            LoweringError::Cycle(ids) => assert_eq!(ids, vec![1usize]),
+            Error::Cycle(ids) => assert_eq!(ids, vec![1usize]),
             other => panic!("expected Cycle, got {other:?}"),
         }
     }

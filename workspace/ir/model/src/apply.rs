@@ -343,7 +343,7 @@ mod tests {
     use super::*;
     use crate::{
         kinds::Module,
-        test_helpers::{entry, n, sym},
+        test_helpers::{entry, node, sym},
     };
 
     fn intro(byte: u8) -> IntroId {
@@ -358,8 +358,8 @@ mod tests {
         let parent_id = intro(1);
         let child_id = intro(2);
 
-        let parent_entry = entry(sym("root"), n::root([]), Module);
-        let child_entry = entry(sym("child"), n::root([]), Module);
+        let parent_entry = entry(sym("root"), node::root([]), Module);
+        let child_entry = entry(sym("child"), node::root([]), Module);
 
         t.insert_live(parent_id, parent_entry, None);
         t.insert_live(child_id, child_entry, Some(parent_id));
@@ -411,7 +411,7 @@ mod tests {
             order(&mut seq);
             let mut t = PristineIntroTable::new();
             for id in seq {
-                t.insert_live(id, entry(sym("same"), n::root([]), Module), None);
+                t.insert_live(id, entry(sym("same"), node::root([]), Module), None);
             }
             t
         };

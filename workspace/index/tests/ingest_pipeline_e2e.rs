@@ -2,7 +2,7 @@
 //! repositories (doctrine §4: prefer real inputs over hand-authored
 //! fixtures) — enumerate → apply → commit → advance a watermark → read the
 //! committed catalog state back. Every measured region is wrapped in
-//! `nudox_test_support::measured` (a `cost case=…` line is emitted for each);
+//! `heart::cost::measured` (a `cost case=…` line is emitted for each);
 //! every assertion is on real content (real 40-hex commit SHA-1s, real row
 //! counts read straight off the tables, real postcard byte sizes) — never on
 //! `is_ok()` or a bare non-zero count.
@@ -198,7 +198,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     writer.commit_batch("register package").expect("commit registration");
 
     // ── Poll 1: first observation of a real repo with N real tagged releases.
-    let (outcome1, _cost1) = nudox_test_support::measured(&format!("{case_prefix}.poll1_first_observation"), dir.path(), || {
+    let (outcome1, _cost1) = heart::cost::measured(&format!("{case_prefix}.poll1_first_observation"), dir.path(), || {
         drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 1_000, 20250101000000)
     });
     let rev1 = match outcome1 {
@@ -246,7 +246,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // catalog rows, zero outbox re-notifications — not merely an empty
     // `ops` Vec that happens not to be asserted on.
     let before_cursor = writer.changed_since(CatalogCursor::default()).expect("page before poll 2").next;
-    let (outcome2, _cost2) = nudox_test_support::measured(&format!("{case_prefix}.poll2_true_noop"), dir.path(), || {
+    let (outcome2, _cost2) = heart::cost::measured(&format!("{case_prefix}.poll2_true_noop"), dir.path(), || {
         drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 2_000, 20250101000000)
     });
     assert!(
@@ -279,7 +279,7 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // ── Poll 3: a genuine new upstream release lands — one more real,
     // committed, tagged changelog entry pushed to the SAME repo.
     let new_tag = push_one_more_tagged_commit(dir.path(), N);
-    let (outcome3, _cost3) = nudox_test_support::measured(&format!("{case_prefix}.poll3_new_release"), dir.path(), || {
+    let (outcome3, _cost3) = heart::cost::measured(&format!("{case_prefix}.poll3_new_release"), dir.path(), || {
         drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 3_000, 20250101000000)
     });
     let version_ops_in_poll3 = match outcome3 {
@@ -353,14 +353,14 @@ fn ingest_throughput_and_storage_scale_with_real_tag_count() {
         // (real git objects/refs/tags), not a diff against a pre-populated
         // fixture.
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_, build_cost) = nudox_test_support::measured(&format!("{case}.build_repo"), dir.path(), || {
+        let (_, build_cost) = heart::cost::measured(&format!("{case}.build_repo"), dir.path(), || {
             init_repo_with_tags(dir.path(), n)
         });
         let url = format!("file://{}", dir.path().display());
 
         // Phase B: enumerate — the real cost of one `ls-remote` + parse
         // against a repo with n tags.
-        let (ops, enumerate_cost) = nudox_test_support::measured(&format!("{case}.enumerate"), dir.path(), || {
+        let (ops, enumerate_cost) = heart::cost::measured(&format!("{case}.enumerate"), dir.path(), || {
             enumerate_git_versions(&adapter, &slug, &url, 20250101000000).expect("enumerate real repo")
         });
         let version_ops = ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count();
@@ -433,7 +433,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     writer.apply_ops(&[upsert_cpp_package(slug, &url)]).expect("register");
     writer.commit_batch("register").expect("commit register");
 
-    let (ops, enumerate_cost) = nudox_test_support::measured("ingest/breakdown.enumerate", dir.path(), || {
+    let (ops, enumerate_cost) = heart::cost::measured("ingest/breakdown.enumerate", dir.path(), || {
         enumerate_git_versions(&adapter, slug, &url, 20250101000000).expect("enumerate")
     });
     assert_eq!(
@@ -449,7 +449,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     // for this path is measured in `tests/storage_catalog_scaling.rs`, which
     // opens the same engine at a path.
     let scratch = tempfile::tempdir().expect("scratch for catalog-phase measurement");
-    let (report, apply_cost) = nudox_test_support::measured("ingest/breakdown.apply_and_commit", scratch.path(), || {
+    let (report, apply_cost) = heart::cost::measured("ingest/breakdown.apply_and_commit", scratch.path(), || {
         let report = writer.apply_ops(&ops).expect("apply real ops");
         writer.commit_batch("breakdown batch").expect("commit");
         report
@@ -458,7 +458,7 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     assert_eq!(report.outbox_rows, N, "every UpsertVersion fans out exactly one outbox row");
 
     let watermarks = MemoryWatermarkStore::new();
-    let (_, watermark_cost) = nudox_test_support::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
+    let (_, watermark_cost) = heart::cost::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
         watermarks
             .put_git_watermark(&GitWatermark {
                 stem_id: stem,

@@ -109,7 +109,7 @@ async fn whole_pack_provide_fetch_installs_byte_identical() {
     // back to the runtime, so the spawned provider-accept task still progresses.
     // Plain `block_on` inside a runtime worker would stall it.
     let (fetched, _cost) = tokio::task::block_in_place(|| {
-        nudox_test_support::measured(
+        heart::cost::measured(
             "object_pack/whole_pack_fetch_install",
             fetcher_dir.path(),
             || {

@@ -1,8 +1,9 @@
+//! Generation-stamp and manifest tests: content sensitivity and determinism.
 use super::*;
 use crate::{
     change::IntroId,
     kinds::Module,
-    test_helpers::{entry, n, sym},
+    test_helpers::{entry, node, sym},
 };
 
 // ── helpers ────────────────────────────────────────────────────────────
@@ -25,7 +26,7 @@ fn make_table(pairs: &[(u8, Option<u8>)]) -> PristineIntroTable {
     for &(id_byte, parent_byte) in pairs {
         let id = intro(id_byte);
         let parent = parent_byte.map(intro);
-        t.insert_live(id, entry(sym("x"), n::root([]), Module), parent);
+        t.insert_live(id, entry(sym("x"), node::root([]), Module), parent);
     }
     t
 }
@@ -116,17 +117,17 @@ fn stamp_order_independent() {
 fn stamp_sensitive_to_entry_content() {
     // Table A: intro 1 → sym("x"), intro 2 → sym("x").
     let mut t_a = PristineIntroTable::new();
-    t_a.insert_live(intro(1), entry(sym("x"), n::root([]), Module), None);
-    t_a.insert_live(intro(2), entry(sym("x"), n::root([]), Module), None);
+    t_a.insert_live(intro(1), entry(sym("x"), node::root([]), Module), None);
+    t_a.insert_live(intro(2), entry(sym("x"), node::root([]), Module), None);
 
     // Table B: same IntroIds, but intro 1 has sym("different_body").
     let mut t_b = PristineIntroTable::new();
     t_b.insert_live(
         intro(1),
-        entry(sym("different_body"), n::root([]), Module),
+        entry(sym("different_body"), node::root([]), Module),
         None,
     );
-    t_b.insert_live(intro(2), entry(sym("x"), n::root([]), Module), None);
+    t_b.insert_live(intro(2), entry(sym("x"), node::root([]), Module), None);
 
     assert_ne!(
         generation_stamp(&t_a),
@@ -146,12 +147,12 @@ fn stamp_golden_pin() {
     let mut t = PristineIntroTable::new();
     t.insert_live(
         IntroId::from_raw([1u8; 32]),
-        entry(sym("a"), n::root([]), Module),
+        entry(sym("a"), node::root([]), Module),
         None,
     );
     t.insert_live(
         IntroId::from_raw([2u8; 32]),
-        entry(sym("b"), n::root([]), Module),
+        entry(sym("b"), node::root([]), Module),
         None,
     );
     let hex = generation_stamp(&t).to_hex();

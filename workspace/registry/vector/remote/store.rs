@@ -39,6 +39,12 @@ pub enum CollectionConfig {
     JinaParity,
     /// Premium: voyage-code-3, 1024-dim.
     VoyagePremium,
+    /// Dev-only: `nomic-embed-text` via a local Ollama instance, 768-dim.
+    /// Not a product schema — see `registry::vector::core::model::NomicEmbedText`.
+    /// Named `__dev_` (rather than reusing the parity name) precisely so it
+    /// can never collide with a real `JinaParity` deployment's collection on
+    /// a shared qdrant instance.
+    NomicDev,
 }
 
 impl CollectionConfig {
@@ -47,6 +53,7 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => "symbols__jina_v2_code_768",
             CollectionConfig::VoyagePremium => "symbols__voyage_code3_1024",
+            CollectionConfig::NomicDev => "symbols__dev_nomic_embed_text_768",
         }
     }
 
@@ -60,6 +67,11 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => SourceTag::IndexJina,
             CollectionConfig::VoyagePremium => SourceTag::IndexVoyage,
+            // Dev-only stand-in for the parity tier; there is no dedicated
+            // `SourceTag` for it and adding one would ripple into every
+            // exhaustive match over `SourceTag` for a brand that exists only
+            // to unblock local dev without provisioned ONNX weights.
+            CollectionConfig::NomicDev => SourceTag::IndexJina,
         }
     }
 
@@ -68,6 +80,7 @@ impl CollectionConfig {
         match self {
             CollectionConfig::JinaParity => 768,
             CollectionConfig::VoyagePremium => 1024,
+            CollectionConfig::NomicDev => 768,
         }
     }
 
@@ -76,6 +89,7 @@ impl CollectionConfig {
         match M::id().as_str() {
             "jinaai/jina-embeddings-v2-base-code" => CollectionConfig::JinaParity,
             "voyage/voyage-code-3" => CollectionConfig::VoyagePremium,
+            "nomic-embed-text" => CollectionConfig::NomicDev,
             other => panic!("no qdrant collection schema is defined for model brand {other:?}"),
         }
     }
@@ -83,7 +97,7 @@ impl CollectionConfig {
 
 /// Errors specific to the remote store that are not already covered by [`StoreError`].
 #[derive(Debug, Error)]
-pub enum RemoteStoreError {
+pub enum Error {
     #[error("qdrant error: {0}")]
     Qdrant(#[from] qdrant_client::QdrantError),
 
@@ -91,8 +105,8 @@ pub enum RemoteStoreError {
     Payload(String),
 }
 
-impl From<RemoteStoreError> for StoreError {
-    fn from(error: RemoteStoreError) -> Self {
+impl From<Error> for StoreError {
+    fn from(error: Error) -> Self {
         StoreError::Backend(error.to_string())
     }
 }
@@ -428,7 +442,7 @@ fn payload_value_to_match(value: &PayloadValue) -> qdrant::r#match::MatchValue {
 pub async fn ensure_collection(
     client: &Qdrant,
     config: CollectionConfig,
-) -> Result<(), RemoteStoreError> {
+) -> Result<(), Error> {
     let collection_name = config.collection_name();
 
     if is_collection_present(client, collection_name).await? {
@@ -463,7 +477,7 @@ pub async fn ensure_collection(
 async fn is_collection_present(
     client: &Qdrant,
     collection_name: &str,
-) -> Result<bool, RemoteStoreError> {
+) -> Result<bool, Error> {
     if let Ok(info) = client.collection_info(collection_name).await {
         if info.result.is_some() {
             return Ok(true);
@@ -503,7 +517,7 @@ fn build_vectors_config(dimensions: u64, vector_name: &str) -> VectorsConfig {
 async fn create_payload_indexes(
     client: &Qdrant,
     collection_name: &str,
-) -> Result<(), RemoteStoreError> {
+) -> Result<(), Error> {
     for field_name in ["language", "kind"] {
         client
             .create_field_index(CreateFieldIndexCollectionBuilder::new(

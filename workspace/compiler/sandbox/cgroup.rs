@@ -15,8 +15,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::budget::limits::Limits;
 use crate::error::{CageError, SandboxError};
-use crate::limits::Limits;
 
 static SEQ: AtomicU64 = AtomicU64::new(1);
 

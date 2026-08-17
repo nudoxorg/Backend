@@ -1,3 +1,4 @@
+//! `GenericParam`, `WherePred`, and the `lifetime_label` helper.
 use std::borrow::Cow;
 
 use crate::{List, kinds::Type, kinds::ty::Variance, visitor::Visitor};

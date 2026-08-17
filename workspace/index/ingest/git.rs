@@ -32,7 +32,7 @@
 //!   hostile feed URL can never reach a code-execution transport regardless of
 //!   host config or git version (see [`HARDENING_CONFIG`]).
 //! - **Typed errors.** Nonexistent repo, malformed output, spawn failure, and
-//!   non-zero exit each map to a distinct [`GitRepositoryError`] variant; the
+//!   non-zero exit each map to a distinct [`Error`] variant; the
 //!   caller never sees a panic.
 //!
 //! The trait is intentionally minimal ([`GitRepository::list_remote_refs`] plus
@@ -70,7 +70,7 @@ pub struct LsRemoteRef {
 
 /// Why a git adapter operation failed.
 #[derive(Debug, thiserror::Error)]
-pub enum GitRepositoryError {
+pub enum Error {
     /// The `git` binary could not be spawned at all.
     #[error("failed to spawn git for {url}: {message}")]
     Spawn {
@@ -122,20 +122,23 @@ pub enum GitRepositoryError {
     },
 }
 
+/// Backwards-compatible alias: the git adapter error (now [`Error`]).
+pub use self::Error as GitRepositoryError;
+
 /// A thin, swappable git remote adapter (REGISTRYLESS-PLAN §7.4 / §15).
 pub trait GitRepository: Send + Sync {
     /// The raw `git ls-remote --tags --heads <url>` bytes, for the ecosystem
     /// listing parser (REGISTRYLESS-PLAN §7.4 step 2 / RL-14). Kept as bytes so
     /// the pure parser owns all UTF-8 / tab / peel handling.
-    fn ls_remote_bytes(&self, url: &str) -> Result<Vec<u8>, GitRepositoryError>;
+    fn ls_remote_bytes(&self, url: &str) -> Result<Vec<u8>, Error>;
 
     /// The parsed ref list from `git ls-remote --tags --heads <url>`, for the
     /// git monitor's ref diff.
-    fn list_remote_refs(&self, url: &str) -> Result<Vec<LsRemoteRef>, GitRepositoryError>;
+    fn list_remote_refs(&self, url: &str) -> Result<Vec<LsRemoteRef>, Error>;
 
     /// The object id `HEAD` currently points at, used for the untagged
     /// pseudo-version path (REGISTRYLESS-PLAN §7.4 step 2, §3.3).
-    fn head_object_id(&self, url: &str) -> Result<Option<String>, GitRepositoryError>;
+    fn head_object_id(&self, url: &str) -> Result<Option<String>, Error>;
 }
 
 /// The `git` CLI subprocess adapter (the shipped implementation).
@@ -170,7 +173,7 @@ impl GitCommandAdapter {
         url: &str,
         flags: &[&str],
         patterns: &[&str],
-    ) -> Result<Vec<u8>, GitRepositoryError> {
+    ) -> Result<Vec<u8>, Error> {
         let mut command = Command::new(&self.git_binary);
         // Hardening `-c` overrides must precede the subcommand — git only honors
         // top-level `-c` there. They pin the shell-executing helper transports to
@@ -202,14 +205,14 @@ impl GitCommandAdapter {
         command.env("GIT_CONFIG_GLOBAL", "/dev/null");
         command.env("GIT_CONFIG_SYSTEM", "/dev/null");
 
-        let output = command.output().map_err(|error| GitRepositoryError::Spawn {
+        let output = command.output().map_err(|error| Error::Spawn {
             url: url.to_owned(),
             message: error.to_string(),
         })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(GitRepositoryError::CommandFailed {
+            return Err(Error::CommandFailed {
                 url: url.to_owned(),
                 status: output.status.code().unwrap_or(-1),
                 stderr,
@@ -221,8 +224,8 @@ impl GitCommandAdapter {
 
 /// Parse raw `ls-remote` bytes into `<oid, ref>` pairs, rejecting malformed
 /// lines with a typed error (the monitor needs a clean ref set to diff).
-fn parse_ref_lines(url: &str, bytes: &[u8]) -> Result<Vec<LsRemoteRef>, GitRepositoryError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| GitRepositoryError::MalformedOutput {
+fn parse_ref_lines(url: &str, bytes: &[u8]) -> Result<Vec<LsRemoteRef>, Error> {
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::MalformedOutput {
         url: url.to_owned(),
         detail: "output was not valid UTF-8".to_owned(),
     })?;
@@ -234,7 +237,7 @@ fn parse_ref_lines(url: &str, bytes: &[u8]) -> Result<Vec<LsRemoteRef>, GitRepos
             continue;
         }
         let Some((object_id, reference)) = line.split_once('\t') else {
-            return Err(GitRepositoryError::MalformedOutput {
+            return Err(Error::MalformedOutput {
                 url: url.to_owned(),
                 detail: format!("line without a tab separator: {line:?}"),
             });
@@ -242,7 +245,7 @@ fn parse_ref_lines(url: &str, bytes: &[u8]) -> Result<Vec<LsRemoteRef>, GitRepos
         let object_id = object_id.trim();
         let reference = reference.trim();
         if object_id.is_empty() || reference.is_empty() {
-            return Err(GitRepositoryError::MalformedOutput {
+            return Err(Error::MalformedOutput {
                 url: url.to_owned(),
                 detail: format!("line with an empty field: {line:?}"),
             });
@@ -256,16 +259,16 @@ fn parse_ref_lines(url: &str, bytes: &[u8]) -> Result<Vec<LsRemoteRef>, GitRepos
 }
 
 impl GitRepository for GitCommandAdapter {
-    fn ls_remote_bytes(&self, url: &str) -> Result<Vec<u8>, GitRepositoryError> {
+    fn ls_remote_bytes(&self, url: &str) -> Result<Vec<u8>, Error> {
         self.run_ls_remote(url, &["--tags", "--heads"], &[])
     }
 
-    fn list_remote_refs(&self, url: &str) -> Result<Vec<LsRemoteRef>, GitRepositoryError> {
+    fn list_remote_refs(&self, url: &str) -> Result<Vec<LsRemoteRef>, Error> {
         let bytes = self.run_ls_remote(url, &["--tags", "--heads"], &[])?;
         parse_ref_lines(url, &bytes)
     }
 
-    fn head_object_id(&self, url: &str) -> Result<Option<String>, GitRepositoryError> {
+    fn head_object_id(&self, url: &str) -> Result<Option<String>, Error> {
         // `ls-remote <url> HEAD` prints the oid the remote's HEAD points at.
         let bytes = self.run_ls_remote(url, &[], &["HEAD"])?;
         let refs = parse_ref_lines(url, &bytes)?;
@@ -291,13 +294,13 @@ mod tests {
     #[test]
     fn rejects_line_without_tab() {
         let error = parse_ref_lines("u", b"deadbeef refs/tags/v1.0.0\n").unwrap_err();
-        assert!(matches!(error, GitRepositoryError::MalformedOutput { .. }));
+        assert!(matches!(error, Error::MalformedOutput { .. }));
     }
 
     #[test]
     fn rejects_non_utf8() {
         let error = parse_ref_lines("u", &[0xff, 0xfe]).unwrap_err();
-        assert!(matches!(error, GitRepositoryError::MalformedOutput { .. }));
+        assert!(matches!(error, Error::MalformedOutput { .. }));
     }
 
     #[test]

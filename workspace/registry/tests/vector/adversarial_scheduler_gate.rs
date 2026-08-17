@@ -12,7 +12,7 @@ use registry::vector::EmbedRole;
 use registry::vector::embed::gate::{EmbedGate, GateConfig, GatedEmbedder, LoadState};
 use registry::vector::embed::mock::MockEmbedder;
 use registry::vector::embed::scheduler::{
-	CancelGroup, EmbedHandle, EmbedScheduler, Priority, SchedulerConfig, SchedulerError,
+	CancelGroup, EmbedHandle, EmbedScheduler, Error, Priority, SchedulerConfig,
 };
 
 fn key(label: &str) -> ContentHash { ContentHash::of_bytes(label.as_bytes()) }
@@ -103,7 +103,7 @@ async fn interactive_overtakes_100_background_jobs() {
 // ── item 10b: cancelled group → all queued jobs reply Cancelled, mock call = 0 ──
 
 /// When a cancel group is cancelled before any job is dequeued, all jobs in
-/// that group must observe SchedulerError::Cancelled and the mock embedder
+/// that group must observe Error::Cancelled and the mock embedder
 /// must never be called.
 #[tokio::test(start_paused = true)]
 async fn cancelled_group_all_reply_cancelled_never_hits_embedder() {
@@ -137,7 +137,7 @@ async fn cancelled_group_all_reply_cancelled_never_hits_embedder() {
 	for job in jobs {
 		let result = job.await.expect("join");
 		assert!(
-			matches!(result, Err(SchedulerError::Cancelled)),
+			matches!(result, Err(Error::Cancelled)),
 			"every cancelled-group job must return Cancelled, got {:?}", result
 		);
 	}

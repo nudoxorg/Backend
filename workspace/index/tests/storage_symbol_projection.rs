@@ -1,14 +1,14 @@
 //! Storage-characteristics tests for `symbols_proj` — the catalog's
 //! per-symbol serving projection (`store::lifecycle::upsert_symbol_projection`)
-//! — measured against real source from `.real-crates/`, on a real on-disk
+//! — measured against real source from `result/`, on a real on-disk
 //! engine (doctrine §4).
 //!
 //! # What "symbol" means here, precisely
 //!
 //! `index` has no language producer of its own (that plane is
-//! `nudox-ir`/`nudox-store`/`nudox-producer-*`, out of this crate's
-//! dependency graph entirely — see AGENTS-DOCTRINE.md §1). It cannot lower a
-//! real crate into the ~1,300–1,900 real IR entries LIMITATIONS.md L1 reports
+//! `nudox-ir`/`nudox-store`/`nudox-languages`, out of this crate's
+//! dependency graph entirely — see docs/AGENTS-DOCTRINE.md §1). It cannot lower a
+//! real crate into the ~1,300–1,900 real IR entries docs/LIMITATIONS.md L1 reports
 //! for memchr 2.8.3 without reaching into a plane this task's scope excludes.
 //!
 //! What this test *can* do, and does: scan every real `.rs` file under a real
@@ -48,7 +48,7 @@
 //! per write rather than amortised across a page. The old numbers were never the
 //! product's storage cost — they described a storage engine this product does
 //! not ship — so these are not a 40× regression against them, they are the first
-//! measurement of the thing itself. `INDEX-CAPABILITY.md` §2.3 still quotes the
+//! measurement of the thing itself. `docs/INDEX-CAPABILITY.md` §2.3 still quotes the
 //! old figures and needs updating.
 
 mod common;
@@ -199,7 +199,7 @@ fn ingest_real_symbols(
         .join("src");
     assert!(
         src_root.is_dir(),
-        "expected a real fixture at {}; run corpus/fetch.nu",
+        "expected a real fixture at {}; run nix build .#checks.corpus",
         src_root.display()
     );
 
@@ -243,7 +243,7 @@ fn ingest_real_symbols(
     let scanned_count = symbols.len();
 
     let engine = writer.engine();
-    let (_, cost) = nudox_test_support::measured(case, scratch_dir, || {
+    let (_, cost) = heart::cost::measured(case, scratch_dir, || {
         for symbol in &symbols {
             upsert_symbol_projection(
                 engine,
@@ -285,7 +285,7 @@ fn memchr_2_8_3_real_pub_items_project_into_symbols_proj_with_real_bytes() {
     );
 
     // A grep of the real checkout (`grep -rE '^\s*pub (fn|struct|enum|trait|
-    // const|static|type) ' .real-crates/memchr-2.8.3/src`) independently
+    // const|static|type) ' result/memchr-2.8.3/src`) independently
     // finds 273 matches at the time this test was written. Assert a floor,
     // not the exact figure, so a future corpus refresh (a newer memchr point
     // release) does not spuriously fail this test over an unrelated one-line
@@ -294,7 +294,7 @@ fn memchr_2_8_3_real_pub_items_project_into_symbols_proj_with_real_bytes() {
     assert!(
         scanned >= 200,
         "expected >=200 real top-level pub items in memchr 2.8.3's real \
-         src/; scanned {scanned}. This is far below LIMITATIONS.md L1's \
+         src/; scanned {scanned}. This is far below docs/LIMITATIONS.md L1's \
          quoted 1,300-1,900 IR-entry range for the same crate — expected, \
          per this file's module doc: a producer-grade IR lowering counts \
          impl methods, trait items, and re-exports that a top-level-only \
@@ -330,7 +330,7 @@ fn memchr_2_8_3_real_pub_items_project_into_symbols_proj_with_real_bytes() {
     );
 
     // Real-content assertion: `pub fn memchr` genuinely exists at
-    // `.real-crates/memchr-2.8.3/src/memchr.rs`, independently grep-verifiable.
+    // `result/memchr-2.8.3/src/memchr.rs`, independently grep-verifiable.
     // `symbols_for_version` returns `(intro_id, moniker, kind)` sorted by
     // moniker.
     let rows = symbols_for_version(writer.engine(), version_id).expect("read back");

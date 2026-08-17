@@ -1,3 +1,4 @@
+//! Content-hash tests: sensitivity, determinism, and ref lowering.
 use std::path::PathBuf;
 
 use super::entry_content_hash;

@@ -6,7 +6,7 @@
 //! RRF fusion, the §20.5 routing table, §20.4 hot-set admission, the §17.3
 //! quantization ladder, and edgepack shard identity.
 //!
-//! Authoritative specs: `.research/librarification/09-vector/PLAN.md`,
+//! Authoritative specs: `docs/research/librarification/09-vector/PLAN.md`,
 //! `09b-retrieval-pipeline-plan.md`, `09c-embeddings-runtime-adversarial.md`.
 //! Invariants are cited on items as `I1`–`I16` (09b §23).
 
@@ -15,6 +15,7 @@ pub mod embed;
 pub mod embedding;
 pub mod fusion;
 pub mod key;
+pub mod license;
 pub mod model;
 pub mod quant;
 pub mod recipe;
@@ -27,13 +28,15 @@ pub use admission::{
     ram_estimate_bytes,
 };
 pub use embed::{AccelKind, EmbedRole, EmbedRuntimeInfo, Embedder, EmbeddingPurpose};
-pub use embedding::{EmbedError, Embedding, l2_normalize};
+pub use embedding::{Embedding, l2_normalize};
+pub use embedding::Error as EmbedError;
 pub use fusion::{FusedHit, RRF_K, RankedList, rrf_fuse};
 pub use key::{ChangedSymbol, SymbolDelta, SymbolPartHashes, embed_key, tool_digest};
+pub use license::{FORBIDDEN_MODEL_IDS, assert_licensed};
+pub use license::Error as LicenseError;
 pub use model::{
-    CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, Quantization,
-    VoyageCode3, WeightsArtifact,
-    license::{FORBIDDEN_MODEL_IDS, LicenseError, assert_licensed},
+    CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, NomicEmbedText,
+    Quantization, VoyageCode3, WeightsArtifact,
 };
 pub use quant::{HnswParams, QP1, QuantProfile, RescorePolicy, project_ladder, search_ef};
 pub use recipe::{
@@ -47,5 +50,6 @@ pub use routing::{
 pub use shard::{EDGE_FORMAT_VERSION, EdgepackKey, ShardSchema};
 pub use store::{
     FilterClause, NAMESPACE_NUDOX, Payload, PayloadValue, PointId, SearchFilter, SearchHit,
-    SearchRequest, SourceTag, StoreCapabilities, StoreError, VectorPoint, VectorStore,
+    SearchRequest, SourceTag, StoreCapabilities, VectorPoint, VectorStore,
 };
+pub use store::Error as StoreError;

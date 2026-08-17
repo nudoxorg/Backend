@@ -59,7 +59,7 @@ fn apply_ops_persists_package_and_fans_out_outbox() {
     // walks the directory recursively, and pointing it at `.` would stat the
     // whole `target/` tree and report build output as this test's cost.
     let scratch = tempfile::tempdir().expect("tempdir");
-    let (report, _cost) = nudox_test_support::measured(
+    let (report, _cost) = heart::cost::measured(
         "store/apply_ops_batch",
         scratch.path(),
         || writer.apply_ops(&[upsert_package(1), upsert_version(1, 1)]),

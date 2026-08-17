@@ -19,3 +19,7 @@ pub mod graph;
 /// The vector-search plane (`core` + feature-gated `local`/`remote`/`embed`,
 /// plus the serving-side `gate` + `cache`).
 pub mod vector;
+
+/// Cross-crate alias: the shared vector-store error, exposed at the crate root
+/// as `registry::StoreError` (consumers such as `index` name it there).
+pub use vector::StoreError;

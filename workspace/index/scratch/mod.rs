@@ -40,7 +40,7 @@ pub use wanted::WantedRow;
 
 /// Errors that can arise from scratch-store operations.
 #[derive(Debug, thiserror::Error)]
-pub enum ScratchError {
+pub enum Error {
     /// A rusqlite operation failed.
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
@@ -56,7 +56,7 @@ pub enum ScratchError {
     },
 }
 
-impl ScratchError {
+impl Error {
     /// Whether this error is a SQLite `UNIQUE`/primary-key constraint violation.
     ///
     /// Consumers that treat "row already exists" as success (e.g. an idempotent
@@ -65,11 +65,15 @@ impl ScratchError {
     pub fn is_unique_violation(&self) -> bool {
         matches!(
             self,
-            ScratchError::Sqlite(rusqlite::Error::SqliteFailure(err, _))
+            Error::Sqlite(rusqlite::Error::SqliteFailure(err, _))
                 if err.code == rusqlite::ErrorCode::ConstraintViolation
         )
     }
 }
+
+/// Compatibility alias for callers that named the scratch error by its old
+/// `ScratchError` spelling.
+pub use self::Error as ScratchError;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ScratchStore
@@ -97,7 +101,7 @@ impl ScratchStore {
     ///
     /// WAL journal mode and foreign-key enforcement are both activated before
     /// the schema is initialized. The file is created if it does not exist.
-    pub fn open(path: &std::path::Path) -> Result<Self, ScratchError> {
+    pub fn open(path: &std::path::Path) -> Result<Self, Error> {
         let connection = rusqlite::Connection::open(path)?;
         connection.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         initialize_schema(&connection)?;
@@ -110,7 +114,7 @@ impl ScratchStore {
     /// because in-memory databases do not support it.
     ///
     /// Primarily used in tests and short-lived single-process contexts.
-    pub fn open_in_memory() -> Result<Self, ScratchError> {
+    pub fn open_in_memory() -> Result<Self, Error> {
         let connection = rusqlite::Connection::open_in_memory()?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         initialize_schema(&connection)?;
@@ -122,13 +126,13 @@ impl ScratchStore {
     /// Insert a new job into the queue.
     ///
     /// Fails with a constraint error if `row.job_key` already exists.
-    pub fn enqueue_job(&self, row: &JobRow) -> Result<(), ScratchError> {
+    pub fn enqueue_job(&self, row: &JobRow) -> Result<(), Error> {
         jobs::enqueue(&self.connection, row)?;
         Ok(())
     }
 
     /// Fetch a single job by its key, returning `None` if absent.
-    pub fn get_job(&self, job_key: &str) -> Result<Option<JobRow>, ScratchError> {
+    pub fn get_job(&self, job_key: &str) -> Result<Option<JobRow>, Error> {
         Ok(jobs::get(&self.connection, job_key)?)
     }
 
@@ -138,13 +142,13 @@ impl ScratchStore {
         job_key: &str,
         state: JobState,
         updated_at: i64,
-    ) -> Result<(), ScratchError> {
+    ) -> Result<(), Error> {
         jobs::set_state(&self.connection, job_key, state, updated_at)?;
         Ok(())
     }
 
     /// Return up to `limit` queued jobs ordered by `enqueued_at` ascending.
-    pub fn next_queued_jobs(&self, limit: i64) -> Result<Vec<JobRow>, ScratchError> {
+    pub fn next_queued_jobs(&self, limit: i64) -> Result<Vec<JobRow>, Error> {
         Ok(jobs::next_queued(&self.connection, limit)?)
     }
 
@@ -153,7 +157,7 @@ impl ScratchStore {
         &self,
         job_key: &str,
         updated_at: i64,
-    ) -> Result<(), ScratchError> {
+    ) -> Result<(), Error> {
         jobs::increment_attempts(&self.connection, job_key, updated_at)?;
         Ok(())
     }
@@ -165,17 +169,17 @@ impl ScratchStore {
         &self,
         coordinate: &str,
         requested_at: i64,
-    ) -> Result<i64, ScratchError> {
+    ) -> Result<i64, Error> {
         Ok(wanted::add(&self.connection, coordinate, requested_at)?)
     }
 
     /// Return all unfulfilled wanted rows, oldest first.
-    pub fn list_unfulfilled_wanted(&self) -> Result<Vec<WantedRow>, ScratchError> {
+    pub fn list_unfulfilled_wanted(&self) -> Result<Vec<WantedRow>, Error> {
         Ok(wanted::list_unfulfilled(&self.connection)?)
     }
 
     /// Mark a wanted row as fulfilled.
-    pub fn mark_wanted_fulfilled(&self, id: i64) -> Result<(), ScratchError> {
+    pub fn mark_wanted_fulfilled(&self, id: i64) -> Result<(), Error> {
         wanted::mark_fulfilled(&self.connection, id)?;
         Ok(())
     }
@@ -188,19 +192,19 @@ impl ScratchStore {
         session_id: &str,
         writer_host: &str,
         now: i64,
-    ) -> Result<(), ScratchError> {
+    ) -> Result<(), Error> {
         sessions::create_session(&self.connection, session_id, writer_host, now)?;
         Ok(())
     }
 
     /// Update `last_seen_at` for an existing session.
-    pub fn touch_session(&self, session_id: &str, now: i64) -> Result<(), ScratchError> {
+    pub fn touch_session(&self, session_id: &str, now: i64) -> Result<(), Error> {
         sessions::touch(&self.connection, session_id, now)?;
         Ok(())
     }
 
     /// Fetch a full session row, returning `None` if absent.
-    pub fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>, ScratchError> {
+    pub fn get_session(&self, session_id: &str) -> Result<Option<SessionRow>, Error> {
         Ok(sessions::get(&self.connection, session_id)?)
     }
 
@@ -212,7 +216,7 @@ impl ScratchStore {
     pub fn writer_for_session(
         &self,
         session_id: &str,
-    ) -> Result<Option<String>, ScratchError> {
+    ) -> Result<Option<String>, Error> {
         Ok(sessions::writer_for(&self.connection, session_id)?)
     }
 
@@ -226,7 +230,7 @@ impl ScratchStore {
     pub fn session_graph_state(
         &self,
         session_id: &str,
-    ) -> Result<Option<String>, ScratchError> {
+    ) -> Result<Option<String>, Error> {
         Ok(sessions::get(&self.connection, session_id)?.and_then(|row| row.graph_state))
     }
 
@@ -238,13 +242,13 @@ impl ScratchStore {
         session_id: &str,
         graph_state: Option<&str>,
         now: i64,
-    ) -> Result<(), ScratchError> {
+    ) -> Result<(), Error> {
         sessions::set_graph_state(&self.connection, session_id, graph_state, now)?;
         Ok(())
     }
 
     /// Delete a session.
-    pub fn delete_session(&self, session_id: &str) -> Result<(), ScratchError> {
+    pub fn delete_session(&self, session_id: &str) -> Result<(), Error> {
         sessions::delete(&self.connection, session_id)?;
         Ok(())
     }
@@ -260,7 +264,7 @@ impl ScratchStore {
         claimed_by: &str,
         claimed_at: i64,
         lease_expires_at: i64,
-    ) -> Result<bool, ScratchError> {
+    ) -> Result<bool, Error> {
         Ok(claims::claim(
             &self.connection,
             job_key,
@@ -275,12 +279,12 @@ impl ScratchStore {
     /// The read half of the lease protocol: a settling worker calls this to
     /// re-check it still owns a live claim before committing a terminal
     /// transition (the scratch analog of the postgres `lease_still_held` guard).
-    pub fn get_job_claim(&self, job_key: &str) -> Result<Option<ClaimRow>, ScratchError> {
+    pub fn get_job_claim(&self, job_key: &str) -> Result<Option<ClaimRow>, Error> {
         Ok(claims::get(&self.connection, job_key)?)
     }
 
     /// Release a job claim.
-    pub fn release_job_claim(&self, job_key: &str) -> Result<(), ScratchError> {
+    pub fn release_job_claim(&self, job_key: &str) -> Result<(), Error> {
         claims::release(&self.connection, job_key)?;
         Ok(())
     }
@@ -290,22 +294,22 @@ impl ScratchStore {
         &self,
         job_key: &str,
         new_lease_expires_at: i64,
-    ) -> Result<(), ScratchError> {
+    ) -> Result<(), Error> {
         claims::renew(&self.connection, job_key, new_lease_expires_at)?;
         Ok(())
     }
 
     /// Drop every job claim — restart recovery: a fresh process holds no
     /// leases, so any surviving claim row is a stale artifact of the crash.
-    pub fn clear_all_job_claims(&self) -> Result<usize, ScratchError> {
+    pub fn clear_all_job_claims(&self) -> Result<usize, Error> {
         self.connection
             .execute("DELETE FROM claims", [])
-            .map_err(ScratchError::from)
+            .map_err(Error::from)
     }
 
     /// Return all claims whose lease has expired as of `now`.
 
-    pub fn expired_claims(&self, now: i64) -> Result<Vec<ClaimRow>, ScratchError> {
+    pub fn expired_claims(&self, now: i64) -> Result<Vec<ClaimRow>, Error> {
         Ok(claims::expired(&self.connection, now)?)
     }
 }
@@ -318,7 +322,7 @@ impl ScratchStore {
 ///
 /// Called once during [`ScratchStore::open`] / [`ScratchStore::open_in_memory`].
 /// All DDL statements use `CREATE TABLE IF NOT EXISTS` so this is idempotent.
-fn initialize_schema(connection: &rusqlite::Connection) -> Result<(), ScratchError> {
+fn initialize_schema(connection: &rusqlite::Connection) -> Result<(), Error> {
     jobs::create_table(connection)?;
     wanted::create_table(connection)?;
     sessions::create_table(connection)?;

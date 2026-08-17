@@ -28,7 +28,7 @@ use std::collections::HashMap;
 
 use crate::vcs_types::StrId;
 
-use crate::archive::error::ArchiveError;
+use crate::archive::error::Error;
 
 // ---------------------------------------------------------------------------
 // CRC32 helper (Castagnoli — standard for file integrity)
@@ -161,14 +161,14 @@ pub struct StringTableView<'a> {
 
 impl<'a> StringTableView<'a> {
     /// Parse a StringTable from raw section bytes.
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         let offsets_end = 4 + n * 4;
         if bytes.len() < offsets_end {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         // Reinterpret the offsets as `[[u8; 4]]` slices.
         let offsets_bytes = &bytes[4..offsets_end];
@@ -183,10 +183,10 @@ impl<'a> StringTableView<'a> {
     }
 
     /// Resolve a [`StrId`] to a `&str`, borrowing from the section bytes.
-    pub fn resolve(&self, id: StrId) -> Result<&'a str, ArchiveError> {
+    pub fn resolve(&self, id: StrId) -> Result<&'a str, Error> {
         let idx = id.0 as usize;
         if idx >= self.n as usize {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let start = u32::from_le_bytes(self.offsets[idx]) as usize;
         let end = if idx + 1 < self.n as usize {
@@ -195,9 +195,9 @@ impl<'a> StringTableView<'a> {
             self.blob.len()
         };
         if end > self.blob.len() || start > end {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
-        std::str::from_utf8(&self.blob[start..end]).map_err(|_| ArchiveError::Truncated)
+        std::str::from_utf8(&self.blob[start..end]).map_err(|_| Error::Truncated)
     }
 
     /// Total number of interned strings.
@@ -300,19 +300,19 @@ pub struct CsrView<'a> {
 
 impl<'a> CsrView<'a> {
     /// Parse a CSR section from raw bytes.
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let nrows = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
         let offsets_end = 4 + (nrows + 1) * 4;
         if bytes.len() < offsets_end {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let offsets = bytemuck_cast_slice(&bytes[4..offsets_end]);
         let values_bytes = &bytes[offsets_end..];
         if !values_bytes.len().is_multiple_of(4) {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let values = bytemuck_cast_slice(values_bytes);
         Ok(Self {
@@ -328,14 +328,14 @@ impl<'a> CsrView<'a> {
     /// the archive is a `[u8]`-backed buffer with no 4-byte alignment guarantee,
     /// so reinterpreting a sub-slice as `&[u32]` would be undefined behavior.
     /// Callers decode each word with `u32::from_le_bytes`.
-    pub fn row(&self, row: u32) -> Result<&'a [[u8; 4]], ArchiveError> {
+    pub fn row(&self, row: u32) -> Result<&'a [[u8; 4]], Error> {
         if row >= self.nrows {
-            return Err(ArchiveError::IndexOutOfRange(row, self.nrows));
+            return Err(Error::IndexOutOfRange(row, self.nrows));
         }
         let start = u32::from_le_bytes(self.offsets[row as usize]) as usize;
         let end = u32::from_le_bytes(self.offsets[row as usize + 1]) as usize;
         if end > self.values.len() || start > end {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(&self.values[start..end])
     }

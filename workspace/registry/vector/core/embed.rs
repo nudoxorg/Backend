@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use super::{
-    embedding::{EmbedError, Embedding},
+    embedding::{Embedding, Error as EmbedError},
     model::{EmbeddingModel, ModelId},
 };
 

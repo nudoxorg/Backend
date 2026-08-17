@@ -1,18 +1,16 @@
-//! Error types for `nudox-ir-archive`.
+//! Error type for `nudox-ir-archive`.
 //!
-//! [`ArchiveError`] covers all open/read failures. [`SealError`] covers
-//! failures during [`crate::archive::seal::seal_package_archive`].
-
-use thiserror::Error;
+//! [`Error`] covers all open/read failures. [`crate::archive::seal::Error`]
+//! covers failures during [`crate::archive::seal::seal_package_archive`].
 
 // ---------------------------------------------------------------------------
-// ArchiveError
+// Error
 // ---------------------------------------------------------------------------
 
 /// Errors produced by [`crate::archive::open::open_archive`] and
 /// [`crate::archive::view::PackageArchiveView`] accessors.
-#[derive(Debug, Error)]
-pub enum ArchiveError {
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     /// The first 4 bytes are not `b"NdIr"`.
     #[error("bad magic bytes")]
     BadMagic,
@@ -56,8 +54,8 @@ pub enum ArchiveError {
     Io(#[from] std::io::Error),
 }
 
-impl From<postcard::Error> for ArchiveError {
+impl From<postcard::Error> for Error {
     fn from(e: postcard::Error) -> Self {
-        ArchiveError::Postcard(e)
+        Error::Postcard(e)
     }
 }

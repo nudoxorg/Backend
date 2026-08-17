@@ -50,7 +50,7 @@ impl Priority {
 
 /// Cooperative cancellation for a group of jobs (e.g. one EmbedStage run).
 /// Cancelled jobs are dropped before inference; their callers observe
-/// [`SchedulerError::Cancelled`].
+/// [`Error::Cancelled`].
 #[derive(Debug, Clone, Default)]
 pub struct CancelGroup(Arc<AtomicBool>);
 
@@ -91,7 +91,7 @@ impl Default for SchedulerConfig {
 
 /// Why an embed request did not produce a vector.
 #[derive(Debug, thiserror::Error)]
-pub enum SchedulerError {
+pub enum Error {
     #[error("embed job cancelled")]
     Cancelled,
     #[error("embed scheduler shut down")]
@@ -133,7 +133,7 @@ impl<M: EmbeddingModel + Send + 'static> EmbedHandle<M> {
         role: EmbedRole,
         priority: Priority,
         cancel: CancelGroup,
-    ) -> Result<Embedding<M>, SchedulerError> {
+    ) -> Result<Embedding<M>, Error> {
         let (reply, rx) = oneshot::channel();
         let job = Job {
             key,
@@ -146,14 +146,14 @@ impl<M: EmbeddingModel + Send + 'static> EmbedHandle<M> {
         self.tx
             .send(job)
             .await
-            .map_err(|_| SchedulerError::Closed)?;
+            .map_err(|_| Error::Closed)?;
         match rx.await {
             Ok(Ok(embedding)) => Ok(embedding),
-            Ok(Err(error)) => Err(SchedulerError::Embed(error)),
+            Ok(Err(error)) => Err(Error::Embed(error)),
             // The worker dropped the reply: either the job group was
             // cancelled, or the scheduler shut down mid-flight.
-            Err(_) if cancel.is_cancelled() => Err(SchedulerError::Cancelled),
-            Err(_) => Err(SchedulerError::Closed),
+            Err(_) if cancel.is_cancelled() => Err(Error::Cancelled),
+            Err(_) => Err(Error::Closed),
         }
     }
 }

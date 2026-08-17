@@ -1,3 +1,4 @@
+//! Tests for Pack A CSC-parity semver lints.
 use super::*;
 use crate::semver::report::BreakClass;
 use crate::semver::surface::{ApiSurface, ExportPolicy, surface};

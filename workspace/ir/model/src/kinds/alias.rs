@@ -1,3 +1,4 @@
+//! `Alias`, type-alias and associated-type declaration kind.
 use crate::{
     List,
     kinds::{AutoFact, GenericParam, Type, WherePred},

@@ -31,7 +31,10 @@ heart        = { path = "../../heart" }
 # (folded from the former standalone `transport` crate; CONSOLIDATION-NOTES §8b).
 # `sync::transport` is the IR control protocol over `index::transport::{blob,
 # endpoint, frame}`.
-index = { path = "../../index" }
+# The shared iroh/bao transport plane (was `index::transport`, now its own crate
+# so ir-vcs no longer depends on the whole `index` crate — breaks the cycle that
+# folding the server into `index` would otherwise create).
+transport = { path = "../../transport" }
 # iroh is still used directly by the sync tests + repo_glue (SecretKey /
 # EndpointId / MemoryLookup vocabulary); the blob store (iroh-blobs) is gone.
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }

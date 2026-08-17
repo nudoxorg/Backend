@@ -1,3 +1,4 @@
+//! `Trait` kind with its `TraitFlags` modifiers.
 use crate::{
     List,
     kinds::{GenericParam, Sealed, TriState, Type, WherePred},

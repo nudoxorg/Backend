@@ -1,4 +1,4 @@
-//! CAS errors.
+//! Content-addressed store (CAS) error types.
 
 use std::path::PathBuf;
 

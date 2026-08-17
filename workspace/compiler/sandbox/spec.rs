@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::time::Duration;
 
+use crate::budget::limits::{Limits, Network};
 use crate::error::KillReason;
-use crate::limits::{Limits, Network};
 
 /// Explicit environment — never inherits ambient host secrets.
 ///

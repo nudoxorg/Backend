@@ -39,7 +39,7 @@ pub const MAX_STRING_BLOB: u64 = 256 * 1024 * 1024;
 
 /// Bit in a [`TocEntry`]'s `flags` field that marks the section as OPTIONAL.
 /// Readers that do not recognise the `section_id` may skip the section rather
-/// than returning [`crate::archive::error::ArchiveError::UnknownSection`].
+/// than returning [`crate::archive::error::Error::UnknownSection`].
 pub const TOC_ENTRY_FLAG_OPTIONAL: u32 = 1 << 0;
 
 // ---------------------------------------------------------------------------

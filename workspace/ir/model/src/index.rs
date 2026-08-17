@@ -1,3 +1,4 @@
+//! `EntryIndex`/`Ref`, the one reference type across the IR lifecycle.
 use std::{fmt, hash, marker::PhantomData, num::NonZeroUsize};
 
 use triomphe::Arc;

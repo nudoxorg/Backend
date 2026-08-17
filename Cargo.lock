@@ -2204,6 +2204,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbus"
+version = "0.9.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ab69f03cc8c4340c9c8e315114e1658e6775a9b16a04357973aa21cec22b32e"
+dependencies = [
+ "libc",
+ "libdbus-sys",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "dbus-secret-service"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "708b509edf7889e53d7efb0ffadd994cc6c2345ccb62f55cfd6b0682165e4fa6"
+dependencies = [
+ "dbus",
+ "zeroize",
+]
+
+[[package]]
 name = "debugid"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2552,73 +2573,6 @@ name = "dragonbox_ecma"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fd8e701084c37e7ef62d3f9e453b618130cbc0ef3573847785952a3ac3f746bf"
-
-[[package]]
-name = "driver"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arborium-tree-sitter",
- "arc-swap",
- "async-compression",
- "async-stream",
- "async-trait",
- "axum 0.7.9",
- "blake3",
- "bytes",
- "chrono",
- "data-encoding",
- "embedrs",
- "figment",
- "flate2",
- "futures 0.3.33",
- "futures-util",
- "generativity",
- "heart",
- "http 1.4.2",
- "http-body-util",
- "hyper 0.14.32",
- "index",
- "ir-vcs",
- "metrics",
- "mimalloc",
- "moka",
- "nonempty",
- "nudox-ir",
- "object_store",
- "opentelemetry",
- "par-core",
- "postcard",
- "qdrant-client",
- "registry",
- "reqwest 0.12.28",
- "rustix 0.38.44",
- "sandbox",
- "secrecy",
- "semver",
- "serde",
- "serde_json",
- "smol_str 0.2.2",
- "strum 0.26.3",
- "tar",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-util 0.6.10",
- "toml 0.6.0",
- "tower 0.4.13",
- "tower-http",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "uuid",
- "uv-pep440",
- "which",
- "zip 2.4.2",
- "zstd",
-]
 
 [[package]]
 name = "drop_bomb"
@@ -3973,6 +3927,7 @@ dependencies = [
  "pyroscope",
  "pyroscope_pprofrs",
  "rand 0.10.2",
+ "reqwest 0.12.28",
  "semver",
  "serde",
  "serde_json",
@@ -4670,26 +4625,38 @@ dependencies = [
  "async-compression",
  "async-stream",
  "async-trait",
+ "axum 0.7.9",
  "bao-tree",
  "blake3",
  "bytes",
  "chrono",
  "csv",
  "data-encoding",
+ "embedrs",
+ "figment",
  "flate2",
  "futures 0.3.33",
  "futures-util",
+ "generativity",
  "grit-lib",
  "heart",
  "heck 0.5.0",
+ "http 1.4.2",
+ "http-body-util",
+ "hyper 0.14.32",
+ "ir-vcs",
  "iroh",
  "iroh-blobs",
  "memmap2",
+ "metrics",
+ "mimalloc",
  "moka",
  "nonempty",
  "nudox-ir",
- "nudox-test-support",
+ "nudox-languages",
  "object_store",
+ "opentelemetry",
+ "par-core",
  "postcard",
  "proptest",
  "qdrant-client",
@@ -4699,6 +4666,8 @@ dependencies = [
  "ron",
  "rusqdoltlite",
  "rusqlite",
+ "rustix 0.38.44",
+ "sandbox",
  "sea-orm",
  "sea-query",
  "secrecy",
@@ -4714,11 +4683,18 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
+ "tokio-util 0.6.10",
  "toml 0.8.23",
+ "tower 0.4.13",
+ "tower-http",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "transport",
  "url",
  "uuid",
  "uv-pep440",
+ "which",
  "zip 2.4.2",
  "zstd",
 ]
@@ -4936,7 +4912,6 @@ dependencies = [
  "blake3",
  "governor",
  "heart",
- "index",
  "iroh",
  "jiff",
  "libpijul",
@@ -4952,6 +4927,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "transport",
  "triomphe",
  "uuid",
  "yoke",
@@ -5514,6 +5490,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "byteorder",
+ "dbus-secret-service",
+ "log",
+ "windows-sys 0.60.2",
+ "zeroize",
+]
+
+[[package]]
 name = "kinded"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5597,6 +5586,15 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libdbus-sys"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
+dependencies = [
+ "pkg-config",
+]
 
 [[package]]
 name = "libflate"
@@ -6633,15 +6631,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nom8"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ae01545c9c7fc4486ab7debaf2aad7003ac19431791868fb2e8066df97fad2f8"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "nonempty"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6795,38 +6784,33 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-embed"
-version = "0.1.0"
-dependencies = [
- "nudox-engine",
- "registry",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "nudox-engine"
 version = "0.1.0"
 dependencies = [
+ "axum 0.8.9",
  "base64 0.22.1",
  "flate2",
  "flume",
  "futures 0.3.33",
- "nudox-graph",
+ "heart",
+ "indexmap 2.14.0",
+ "keyring",
  "nudox-ir",
- "nudox-producer",
- "nudox-producer-rust",
- "nudox-store",
- "nudox-test-support",
+ "nudox-languages",
  "pulldown-cmark",
+ "rand 0.10.2",
+ "registry",
  "reqwest 0.12.28",
+ "rmcp",
  "rustc-hash 2.1.3",
  "schemars 1.2.2",
+ "security-framework",
  "serde",
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "tar",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-util 0.7.19",
@@ -6836,20 +6820,6 @@ dependencies = [
  "trustfall 0.8.1 (git+https://github.com/philocalyst/trustfall?rev=7e71e35715dfac561e3453c834b469a200330997)",
  "trustfall_core 0.8.1 (git+https://github.com/philocalyst/trustfall?rev=7e71e35715dfac561e3453c834b469a200330997)",
  "zip 2.4.2",
-]
-
-[[package]]
-name = "nudox-graph"
-version = "0.1.0"
-dependencies = [
- "futures 0.3.33",
- "nudox-ir",
- "nudox-store",
- "serde",
- "thiserror 2.0.19",
- "tokio",
- "tracing",
- "trustfall 0.8.1 (git+https://github.com/philocalyst/trustfall?rev=7e71e35715dfac561e3453c834b469a200330997)",
 ]
 
 [[package]]
@@ -6874,118 +6844,29 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-mcp"
-version = "0.1.0"
-dependencies = [
- "axum 0.8.9",
- "nudox-engine",
- "nudox-graph",
- "nudox-store",
- "nudox-test-support",
- "rand 0.10.2",
- "reqwest 0.12.28",
- "rmcp",
- "schemars 1.2.2",
- "security-framework",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.19",
- "tokio",
- "tokio-util 0.7.19",
- "tracing",
- "trustfall 0.8.1 (git+https://github.com/philocalyst/trustfall?rev=7e71e35715dfac561e3453c834b469a200330997)",
-]
-
-[[package]]
-name = "nudox-producer"
-version = "0.1.0"
-dependencies = [
- "nudox-ir",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nudox-producer-clang"
-version = "0.1.0"
-dependencies = [
- "clang",
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "nudox-producer-csharp"
+name = "nudox-languages"
 version = "0.1.0"
 dependencies = [
  "bon",
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
- "quick-xml 0.37.5",
- "rustc-hash 2.1.3",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nudox-producer-go"
-version = "0.1.0"
-dependencies = [
+ "clang",
+ "heart",
  "insta",
  "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
-]
-
-[[package]]
-name = "nudox-producer-java"
-version = "0.1.0"
-dependencies = [
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "nudox-producer-python"
-version = "0.1.0"
-dependencies = [
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
+ "oxc_allocator",
+ "oxc_ast",
+ "oxc_jsdoc",
+ "oxc_parser",
+ "oxc_resolver",
+ "oxc_semantic",
+ "oxc_span",
+ "oxc_syntax",
  "pyrefly",
  "pyrefly_build",
  "pyrefly_config",
  "pyrefly_python",
  "pyrefly_types",
  "pyrefly_util",
- "ruff_python_ast 0.0.8",
- "ruff_python_parser 0.0.8",
- "ruff_text_size 0.0.8",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "nudox-producer-rust"
-version = "0.1.0"
-dependencies = [
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
+ "quick-xml 0.37.5",
  "ra_ap_base_db",
  "ra_ap_cfg",
  "ra_ap_hir",
@@ -6999,30 +6880,13 @@ dependencies = [
  "ra_ap_syntax",
  "ra_ap_toolchain",
  "ra_ap_vfs",
+ "ruff_python_ast 0.0.8",
+ "ruff_python_parser 0.0.8",
+ "ruff_text_size 0.0.8",
  "rustc-hash 2.1.3",
+ "serde",
  "serde_json",
  "smol_str 0.3.6",
- "thiserror 2.0.19",
- "tracing",
-]
-
-[[package]]
-name = "nudox-producer-typescript"
-version = "0.1.0"
-dependencies = [
- "nudox-ir",
- "nudox-producer",
- "nudox-test-support",
- "oxc_allocator",
- "oxc_ast",
- "oxc_jsdoc",
- "oxc_parser",
- "oxc_resolver",
- "oxc_semantic",
- "oxc_span",
- "oxc_syntax",
- "rustc-hash 2.1.3",
- "serde_json",
  "tempfile",
  "thiserror 2.0.19",
  "tracing",
@@ -7031,35 +6895,6 @@ dependencies = [
  "tsz-core",
  "tsz-solver",
 ]
-
-[[package]]
-name = "nudox-store"
-version = "0.1.0"
-dependencies = [
- "futures 0.3.33",
- "indexmap 2.14.0",
- "nudox-ir",
- "nudox-producer",
- "nudox-producer-clang",
- "nudox-producer-csharp",
- "nudox-producer-go",
- "nudox-producer-java",
- "nudox-producer-python",
- "nudox-producer-rust",
- "nudox-producer-typescript",
- "nudox-test-support",
- "rustc-hash 2.1.3",
- "serde",
- "thiserror 2.0.19",
- "tokio",
- "toml 0.8.23",
- "tracing",
- "triomphe",
-]
-
-[[package]]
-name = "nudox-test-support"
-version = "0.1.0"
 
 [[package]]
 name = "num-bigint"
@@ -13498,18 +13333,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb9d890e4dc9298b70f740f615f2e05b9db37dce531f6b24fb77ac993f9f217"
-dependencies = [
- "serde",
- "serde_spanned 0.6.9",
- "toml_datetime 0.5.1",
- "toml_edit 0.18.1",
-]
-
-[[package]]
-name = "toml"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362"
@@ -13538,15 +13361,6 @@ dependencies = [
 
 [[package]]
 name = "toml_datetime"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4553f467ac8e3d374bc9a177a26801e5d0f9b211aa1673fb137a403afd1c9cf5"
-dependencies = [
- "serde",
-]
-
-[[package]]
-name = "toml_datetime"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c"
@@ -13561,19 +13375,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "toml_edit"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56c59d8dd7d0dcbc6428bf7aa2f0e823e26e43b3c9aca15bbc9475d23e5fa12b"
-dependencies = [
- "indexmap 1.9.3",
- "nom8",
- "serde",
- "serde_spanned 0.6.9",
- "toml_datetime 0.5.1",
 ]
 
 [[package]]
@@ -13866,6 +13667,23 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "transport"
+version = "0.1.0"
+dependencies = [
+ "bao-tree",
+ "blake3",
+ "bytes",
+ "heart",
+ "iroh",
+ "iroh-blobs",
+ "postcard",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

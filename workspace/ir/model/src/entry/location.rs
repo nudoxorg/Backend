@@ -5,7 +5,7 @@
 //! Until this module, an entry's origin was two independent fields on
 //! [`Symbol`](super::Symbol): `source: PathBuf` and `span: Range<usize>`. That
 //! pair cannot express the question a reader actually asks. Three separate
-//! defects followed from it, all recorded in `LIMITATIONS.md` L31/L42:
+//! defects followed from it, all recorded in `docs/LIMITATIONS.md` L31/L42:
 //!
 //! 1. **`0..0` type-checks as "present at offset zero".** It is emitted at 50
 //!    sites across six producers to mean *absent*, and nothing distinguishes it

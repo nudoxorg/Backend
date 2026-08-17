@@ -173,8 +173,8 @@ pub struct Crumb {
 ///
 /// # Why the engine is not wrong to send them
 ///
-/// The trail `memchr › memchr › memchr` (`.shots/memchr/08-symbol-opened.png`,
-/// GUI-WORKORDER-2 F4 / LIMITATIONS.md L18) is three genuinely different
+/// The trail `memchr › memchr › memchr` (`tests/shots/memchr/08-symbol-opened.png`,
+/// GUI-WORKORDER-2 F4 / docs/LIMITATIONS.md L18) is three genuinely different
 /// entries: the *package* `memchr`, its root module `memchr`, and the module
 /// `src/memchr.rs` — a naming convention Rust encourages and that most crates
 /// follow. The ancestor chain is correct; what is wrong is drawing three
@@ -771,6 +771,7 @@ mod tests {
                 PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg")),
                 IntroId::from_raw([1u8; 32]),
             ),
+            name: SharedStr::from("Widget"),
             breadcrumb: Vec::new(),
             signature: Vec::new(),
             kind: KindTag::Unknown(0),
@@ -785,6 +786,7 @@ mod tests {
             source: nudox_engine::wire::SourceLocation::Unlocated {
                 reason: nudox_engine::wire::UnlocatedReason::Synthesized,
             },
+            source_excerpt: None,
         }
     }
 

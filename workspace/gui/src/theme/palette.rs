@@ -471,7 +471,7 @@ pub struct SurfaceSpec {
     /// opaque or a properly translucent one: at α 0.98 the pane behind bleeds
     /// through at 2 %, which is not a material, it is illegible grey text in
     /// the middle of an empty panel. That was a real, shipped defect —
-    /// visible in `.shots/fixtures/04-search-hits.png`, where the pane's
+    /// visible in `tests/shots/fixtures/04-search-hits.png`, where the pane's
     /// "Open a symbol to get started" empty state prints faintly through the
     /// search overlay. `Palette::surface` forces α = 1.0 for exactly this
     /// reason and [`crate::theme::palette::tests`] pins it.

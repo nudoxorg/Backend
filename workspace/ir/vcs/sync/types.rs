@@ -124,15 +124,15 @@ pub struct TipAnnouncement {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IrohHash(pub [u8; 32]);
 
-impl From<index::transport::blob::TransportHash> for IrohHash {
-    fn from(h: index::transport::blob::TransportHash) -> Self {
+impl From<transport::blob::TransportHash> for IrohHash {
+    fn from(h: transport::blob::TransportHash) -> Self {
         IrohHash(h.0)
     }
 }
 
-impl From<IrohHash> for index::transport::blob::TransportHash {
+impl From<IrohHash> for transport::blob::TransportHash {
     fn from(h: IrohHash) -> Self {
-        index::transport::blob::TransportHash(h.0)
+        transport::blob::TransportHash(h.0)
     }
 }
 

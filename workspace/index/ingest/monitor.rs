@@ -16,7 +16,7 @@
 //! 3. Changed digest ⇒ emit `SourceMoved { rev: <digest> }` and re-enumerate
 //!    versions (`enumerate::enumerate_git_versions`), returning both as one op
 //!    batch the driver applies atomically.
-//! 4. On a git failure the tick returns a [`MonitorError`] carrying the message
+//! 4. On a git failure the tick returns a [`Error`] carrying the message
 //!    the caller writes to `git_watermarks.last_error`; the watermark's
 //!    `last_rev` is **not** advanced on failure.
 //!
@@ -27,8 +27,8 @@
 use crate::ids::PackageStemId;
 use crate::protocol::{CatalogOp, GitRev};
 
-use crate::ingest::enumerate::{enumerate_git_versions, EnumerateError};
-use crate::ingest::git::{GitRepository, GitRepositoryError};
+use crate::ingest::enumerate::{enumerate_git_versions, Error as EnumerateError};
+use crate::ingest::git::{GitRepository, Error as GitRepositoryError};
 
 /// What one [`GitMonitor::tick`] observed — the driver turns this into a
 /// watermark write and (when changed) an atomic op batch.
@@ -53,7 +53,7 @@ pub enum TickOutcome {
 /// Why a tick failed. The caller records `to_string()` in
 /// `git_watermarks.last_error` and leaves `last_rev` untouched (INDEX-PLAN §6.4).
 #[derive(Debug, thiserror::Error)]
-pub enum MonitorError {
+pub enum Error {
     /// The git adapter failed to list refs.
     #[error(transparent)]
     Git(#[from] GitRepositoryError),
@@ -61,6 +61,9 @@ pub enum MonitorError {
     #[error(transparent)]
     Enumerate(#[from] EnumerateError),
 }
+
+/// Backwards-compatible alias: the monitor error (now [`Error`]).
+pub use self::Error as MonitorError;
 
 /// Polls cpp direct-git stems for ref movement (INDEX-PLAN §6.4).
 pub struct GitMonitor<Repository: GitRepository> {
@@ -88,7 +91,7 @@ impl<Repository: GitRepository> GitMonitor<Repository> {
         last_rev: Option<&str>,
         checked_at: i64,
         commit_time: u64,
-    ) -> Result<TickOutcome, MonitorError> {
+    ) -> Result<TickOutcome, Error> {
         let refs = self.git.list_remote_refs(repo_url)?;
         let digest = combined_ref_digest(&refs);
 

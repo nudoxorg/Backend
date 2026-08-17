@@ -55,7 +55,7 @@ pub struct BodyWire {
 /// Protocol version announced in the `Hello` frame.
 ///
 /// The host rejects connections with a different version via
-/// [`crate::protocol::StreamError::VersionMismatch`].
+/// [`crate::protocol::Error::VersionMismatch`].
 pub const IR_STREAM_VERSION: u32 = 1;
 
 /// Maximum allowed size for a single postcard-encoded frame (4 MiB).

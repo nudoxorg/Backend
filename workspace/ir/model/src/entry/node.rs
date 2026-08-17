@@ -1,3 +1,4 @@
+//! `Node`, structural parent/children edges for one entry.
 use crate::{List, index::RawRef, visitor::Visitor};
 
 /// Structural parent/children edges for one entry.

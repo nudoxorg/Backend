@@ -1,3 +1,4 @@
+//! Continuity resolver tests: rename, move, and signature-edit matching.
 use super::*;
 use crate::{
     apply::PristineIntroTable,

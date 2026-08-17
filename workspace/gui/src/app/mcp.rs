@@ -1,9 +1,9 @@
-//! Hosting the MCP server (GUI-LOCAL-PLAN §L6, LIMITATIONS.md **L35**).
+//! Hosting the MCP server (GUI-LOCAL-PLAN §L6, docs/LIMITATIONS.md **L35**).
 //!
 //! # What L35 was
 //!
 //! The server was written, tested end-to-end, and *never started*. `grep -rn
-//! 'nudox_mcp|McpEndpoint|NudoxMcpServer' workspace/gui` returned zero hits,
+//! 'nudox_engine::mcp|McpEndpoint|NudoxMcpServer' workspace/gui` returned zero hits,
 //! and `StatusBar::set_mcp_endpoint` had exactly one occurrence repo-wide — its
 //! own definition. Every individual piece was real; the integration was not.
 //! A dead setter is the tell.
@@ -39,7 +39,7 @@
 
 use gpui::{App, Global, SharedString};
 use nudox_engine::EngineHandle;
-use nudox_mcp::{McpError, McpHost, ShutdownOutcome};
+use nudox_engine::mcp::{McpError, McpHost, ShutdownOutcome};
 
 /// What the process's MCP server is doing, in the vocabulary the status bar
 /// renders.
@@ -203,10 +203,10 @@ impl McpService {
     /// server that rendered like an absent one is exactly what L35 was.
     ///
     /// `gate` is the account gate every tool call is admitted through
-    /// (`auth.md`). It is a parameter because `NudoxMcpServer` requires one and
+    /// (`docs/auth.md`). It is a parameter because `NudoxMcpServer` requires one and
     /// because the same gate is what `app::account` renders — a second gate
     /// would be a second answer to "is this user signed in?".
-    pub fn start(engine: &EngineHandle, gate: nudox_mcp::AccountGate) -> Self {
+    pub fn start(engine: &EngineHandle, gate: nudox_engine::mcp::AccountGate) -> Self {
         match McpHost::start(engine, gate) {
             Ok(host) => {
                 let status = Self::status_of(&host);

@@ -1,3 +1,4 @@
+//! `PackageInfo`, package id plus export/import index tables.
 use std::hash::Hash;
 
 use indexmap::IndexSet;
@@ -75,7 +76,8 @@ impl<Id: Eq + Hash> PackageInfo<Id> {
     // that plane is the correct follow-up and is deliberately not folded into this
     // change; see the note on `Ref::Foreign`.
 
-    #[cfg(test)]
+    // Widened to pub(crate) — `lower::Lowering` maps a producer `Id` back to
+    // its export index when recording occurrences and body facts.
     pub(crate) fn export_id_to_idx(&self, id: &Id) -> Option<UntypedEntryIndex> {
         self.exports
             .get_index_of(id)

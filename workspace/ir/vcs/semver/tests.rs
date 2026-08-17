@@ -1,3 +1,4 @@
+//! End-to-end tests for API surface projection and classification.
 use super::*;
 use crate::wire::PayloadTable;
 use crate::wire::{

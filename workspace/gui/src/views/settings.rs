@@ -6,7 +6,7 @@
 //! threat model: the listener is loopback-only, so the token defends against
 //! *other local processes*, not a network attacker). The token is generated
 //! fresh each launch and deliberately never logged
-//! (`nudox_mcp::session::SessionToken`'s `Debug` impl redacts it). Until this
+//! (`nudox_engine::mcp::session::SessionToken`'s `Debug` impl redacts it). Until this
 //! view existed, there was **no way to retrieve it** — `Copy MCP Endpoint`
 //! only ever copied the bare URL, and nothing in this crate rendered
 //! `McpStatus::Listening`'s `client_config`. An agent could see the app
@@ -16,7 +16,7 @@
 //! the status bar already reads, so the URL and the ready-to-paste
 //! `mcpServers` config displayed here can never drift from what the server
 //! actually accepts — both come from the live endpoint (see
-//! `nudox_mcp::endpoint::ClientConfig::for_endpoint`).
+//! `nudox_engine::mcp::endpoint::ClientConfig::for_endpoint`).
 
 use std::time::{Duration, Instant};
 

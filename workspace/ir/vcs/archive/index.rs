@@ -27,7 +27,7 @@
 use crate::vcs_types::{ArenaIdx, TypeFingerprintId};
 use ir::change::{ContentBlake3, IntroId};
 
-use crate::archive::error::ArchiveError;
+use crate::archive::error::Error;
 
 // ---------------------------------------------------------------------------
 // IntroIndex builder
@@ -81,14 +81,14 @@ pub struct IntroIndexView<'a> {
 }
 
 impl<'a> IntroIndexView<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let expected = 4 + n as usize * 36;
         if bytes.len() < expected {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(Self { bytes, n })
     }
@@ -175,14 +175,14 @@ pub struct PostingIndexView<'a> {
 }
 
 impl<'a> PostingIndexView<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let expected = 4 + n as usize * 8;
         if bytes.len() < expected {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(Self { bytes, n })
     }
@@ -301,9 +301,9 @@ pub struct DensePostingIndexView<'a> {
 }
 
 impl<'a> DensePostingIndexView<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let n_groups = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         Ok(Self { bytes, n_groups })
@@ -389,9 +389,9 @@ pub struct PayloadHashColumnView<'a> {
 }
 
 impl<'a> PayloadHashColumnView<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if !bytes.len().is_multiple_of(32) {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(Self { bytes })
     }
@@ -497,14 +497,14 @@ pub struct LinkCsrView<'a> {
 }
 
 impl<'a> LinkCsrView<'a> {
-    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, ArchiveError> {
+    pub fn from_bytes(bytes: &'a [u8]) -> Result<Self, Error> {
         if bytes.len() < 4 {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         let n = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
         let expected = 4 + n as usize * 12;
         if bytes.len() < expected {
-            return Err(ArchiveError::Truncated);
+            return Err(Error::Truncated);
         }
         Ok(Self { bytes, n })
     }

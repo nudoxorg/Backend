@@ -67,15 +67,15 @@ use crate::diff::ir_op::IrOp;
 
 /// Error returned when a delta references an intro absent from the base table.
 #[derive(Debug)]
-pub struct ApplyError(pub String);
+pub struct Error(pub String);
 
-impl core::fmt::Display for ApplyError {
+impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl core::error::Error for ApplyError {}
+impl core::error::Error for Error {}
 
 // ---------------------------------------------------------------------------
 // apply_delta
@@ -87,7 +87,7 @@ impl core::error::Error for ApplyError {}
 /// payload). Callers that need those entries in T1 should supply them via
 /// `apply_delta_with_t1`. The round-trip test fixture inserts T1 entries
 /// separately for introduced symbols.
-pub fn apply_delta(base: &PayloadTable, delta: &PackageDelta) -> Result<PayloadTable, ApplyError> {
+pub fn apply_delta(base: &PayloadTable, delta: &PackageDelta) -> Result<PayloadTable, Error> {
     apply_delta_with_t1(base, delta, None)
 }
 
@@ -101,7 +101,7 @@ pub fn apply_delta_with_t1(
     base: &PayloadTable,
     delta: &PackageDelta,
     t1: Option<&PayloadTable>,
-) -> Result<PayloadTable, ApplyError> {
+) -> Result<PayloadTable, Error> {
     // Snapshot all base entries into a BTreeMap so we can mutate them.
     let mut entries: std::collections::BTreeMap<IntroId, (OwnedEntryPayload, Option<IntroId>)> =
         base.live_entries()
@@ -133,7 +133,7 @@ pub fn apply_delta_with_t1(
         }
 
         let (payload, parent) = entries.get_mut(&id).ok_or_else(|| {
-            ApplyError(format!("apply_delta: id {} not found in base", id.to_hex()))
+            Error(format!("apply_delta: id {} not found in base", id.to_hex()))
         })?;
 
         let mut new_parent = *parent;
@@ -171,7 +171,7 @@ pub fn apply_delta_with_t1(
 // Per-op mutation logic
 // ---------------------------------------------------------------------------
 
-fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(), ApplyError> {
+fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) -> Result<(), Error> {
     match op {
         // Already handled at caller.
         IrOp::Introduced | IrOp::Resurrected | IrOp::Deleted | IrOp::Moved { .. } => {}

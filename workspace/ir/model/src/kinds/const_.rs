@@ -1,3 +1,4 @@
+//! `Const`, compile-time constant declaration kind.
 use crate::{kinds::Type, visitor::Visitor};
 
 // NOTE: the full initializer *expression* (a `ConstExpr` AST node) is

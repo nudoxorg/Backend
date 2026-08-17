@@ -31,7 +31,7 @@ use libpijul::changestore::ChangeStore;
 use moka::sync::Cache;
 
 use crate::checkout::MaterializedIndex;
-use crate::error::VcsError;
+use crate::error::Error;
 use crate::refs::Ref;
 use crate::repo::IrRepository;
 use crate::version::VersionState;
@@ -171,7 +171,7 @@ impl CheckpointCache {
     ///
     /// Correctness never depends on any cache decision — every call returns the
     /// reference's exact IR.
-    pub fn serve<C>(&self, repo: &IrRepository<C>, reference: &Ref) -> Result<Served, VcsError>
+    pub fn serve<C>(&self, repo: &IrRepository<C>, reference: &Ref) -> Result<Served, Error>
     where
         C: ChangeStore + Clone + Send + 'static,
         C::Error: std::fmt::Display + Send + Sync + 'static,

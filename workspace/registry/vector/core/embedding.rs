@@ -13,7 +13,7 @@ use super::model::EmbeddingModel;
 
 /// Embedding failures — construction validation plus backend transport.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum EmbedError {
+pub enum Error {
     /// The vector's length does not match `M::DIMENSIONS` (I11).
     #[error("embedding dimension mismatch: expected {expected}, got {got}")]
     DimensionMismatch { expected: usize, got: usize },
@@ -41,15 +41,15 @@ pub struct Embedding<M: EmbeddingModel> {
 impl<M: EmbeddingModel> Embedding<M> {
     /// Build from an owned vector, validating exact length *and* finiteness —
     /// the single boundary where a model's raw output becomes typed (I11).
-    pub fn from_vec(values: Vec<f32>) -> Result<Self, EmbedError> {
+    pub fn from_vec(values: Vec<f32>) -> Result<Self, Error> {
         if values.len() != M::DIMENSIONS {
-            return Err(EmbedError::DimensionMismatch {
+            return Err(Error::DimensionMismatch {
                 expected: M::DIMENSIONS,
                 got: values.len(),
             });
         }
         if !values.iter().all(|v| v.is_finite()) {
-            return Err(EmbedError::NonFinite);
+            return Err(Error::NonFinite);
         }
         Ok(Self {
             values: Arc::from(values),
@@ -185,7 +185,7 @@ mod tests {
         let err = Embedding::<JinaCodeV2>::from_vec(vec![0.0; 767]).unwrap_err();
         assert_eq!(
             err,
-            EmbedError::DimensionMismatch {
+            Error::DimensionMismatch {
                 expected: 768,
                 got: 767
             }
@@ -198,13 +198,13 @@ mod tests {
         v[3] = f32::NAN;
         assert_eq!(
             Embedding::<JinaCodeV2>::from_vec(v).unwrap_err(),
-            EmbedError::NonFinite
+            Error::NonFinite
         );
         let mut v = vec![0.0f32; 768];
         v[0] = f32::INFINITY;
         assert_eq!(
             Embedding::<JinaCodeV2>::from_vec(v).unwrap_err(),
-            EmbedError::NonFinite
+            Error::NonFinite
         );
     }
 
@@ -261,7 +261,7 @@ mod tests {
         v[0] = f32::INFINITY;
         let result = Embedding::<JinaCodeV2>::from_vec(v);
         assert!(
-            matches!(result, Err(EmbedError::NonFinite)),
+            matches!(result, Err(Error::NonFinite)),
             "infinity in from_vec must give NonFinite"
         );
     }

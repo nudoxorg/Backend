@@ -521,7 +521,7 @@ impl Pane {
     /// including this pane's own `CloseTab` / `ActivateTabN`, stops resolving.
     /// That failure is invisible in a screenshot and silent at the keystroke;
     /// asserting on the handle is the only way to catch it. See
-    /// `views::symbol_page::SymbolPage::page_root` (LIMITATIONS.md L22).
+    /// `views::symbol_page::SymbolPage::page_root` (docs/LIMITATIONS.md L22).
     pub fn active_item_focus_handle(&self, cx: &App) -> Option<FocusHandle> {
         self.slots
             .get(self.active_ix)

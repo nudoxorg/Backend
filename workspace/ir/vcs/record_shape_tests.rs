@@ -459,7 +459,7 @@ fn t1_ab_misalignment() {
 fn write_t1_report(f1_count: usize, f1_ins: usize, f1_rep: usize, myers_count: usize) {
     let report_path = std::path::PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../.research/ir-vcs/T1-T12-report.md"
+        "/../../../docs/research/ir-vcs/T1-T12-report.md"
     ));
     let report_path = report_path.as_path();
     // Ensure parent directory exists.
@@ -1397,7 +1397,7 @@ fn t12_hunk_quality_metric() {
     // Append T-12 metric to the report if it exists.
     let report_path = std::path::PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../.research/ir-vcs/T1-T12-report.md"
+        "/../../../docs/research/ir-vcs/T1-T12-report.md"
     ));
     let report_path = report_path.as_path();
     if report_path.exists() {

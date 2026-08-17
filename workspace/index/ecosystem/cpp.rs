@@ -8,11 +8,11 @@
 //! signal (RL-12), so `download_source` stays `None`.
 
 pub mod alias;
-pub mod interop;
-pub mod listing;
-pub mod manifest;
 pub mod name;
+pub mod manifest;
 pub mod version;
+pub mod listing;
+pub mod interop;
 
 use crate::ecosystem::{
     EcosystemSpec, Language,

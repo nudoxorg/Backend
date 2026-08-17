@@ -1,7 +1,7 @@
 //! The `fmt` layer (journal / OTLP-fallback path) plus the level filter.
 //!
 //! `main.rs` previously noted the vendored `tracing-subscriber` build might
-//! lack the `env-filter` feature. Checked against `build/third-party/registry.bzl`
+//! lack the `env-filter` feature. Checked against `nix/build/third-party/registry.bzl`
 //! while building this crate: the vendored `tracing-subscriber` (0.3.23,
 //! label `tracing_subscriber-0_3`) *does* list `env-filter` among its
 //! enabled features. So this module uses `tracing_subscriber::EnvFilter`

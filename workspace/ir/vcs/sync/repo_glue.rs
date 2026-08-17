@@ -10,7 +10,6 @@ use libpijul::pristine::Base32;
 
 use heart::sync::{ApplyHook as HeartApplyHook, ContentIo, SyncError, VerifyError};
 
-use crate::error::VcsError;
 use crate::repo::{ChangeHashHex, IrRepository};
 
 use super::types::{ChangeId, ChannelRef, MergeEvent, SyncAck};
@@ -20,7 +19,7 @@ use super::types::{ChangeId, ChannelRef, MergeEvent, SyncAck};
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
-pub enum SyncGlueError {
+pub enum Error {
     #[error(
         "channel mismatch: sync is for channel '{sync_channel}' but repo is on '{repo_channel}'"
     )]
@@ -30,7 +29,7 @@ pub enum SyncGlueError {
     },
 
     #[error("vcs error: {0}")]
-    Vcs(#[from] VcsError),
+    Vcs(#[from] crate::error::Error),
 
     #[error("sync error: {0}")]
     Sync(#[from] SyncError),
@@ -52,10 +51,10 @@ pub enum TrustGateError {
 // hex↔Hash helpers
 // ---------------------------------------------------------------------------
 
-fn change_id_to_pijul_hash(id: &ChangeId) -> Result<libpijul::pristine::Hash, SyncGlueError> {
+fn change_id_to_pijul_hash(id: &ChangeId) -> Result<libpijul::pristine::Hash, Error> {
     let hex = id.as_str();
     if hex.len() != 64 {
-        return Err(SyncGlueError::InvalidChangeId(VerifyError::InvalidLength {
+        return Err(Error::InvalidChangeId(VerifyError::InvalidLength {
             expected: 64,
             got: hex.len(),
         }));
@@ -63,10 +62,10 @@ fn change_id_to_pijul_hash(id: &ChangeId) -> Result<libpijul::pristine::Hash, Sy
     let mut bytes = [0u8; 32];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
         let hi = (chunk[0] as char).to_digit(16).ok_or_else(|| {
-            SyncGlueError::InvalidChangeId(VerifyError::InvalidChar(chunk[0] as char))
+            Error::InvalidChangeId(VerifyError::InvalidChar(chunk[0] as char))
         })? as u8;
         let lo = (chunk[1] as char).to_digit(16).ok_or_else(|| {
-            SyncGlueError::InvalidChangeId(VerifyError::InvalidChar(chunk[1] as char))
+            Error::InvalidChangeId(VerifyError::InvalidChar(chunk[1] as char))
         })? as u8;
         bytes[i] = (hi << 4) | lo;
     }
@@ -95,7 +94,7 @@ impl FsChangeIo {
         Self { changes_root }
     }
 
-    fn path_for(&self, id: &ChangeId) -> Result<PathBuf, SyncGlueError> {
+    fn path_for(&self, id: &ChangeId) -> Result<PathBuf, Error> {
         let hash = change_id_to_pijul_hash(id)?;
         let b32 = hash.to_base32();
         let (prefix, rest) = b32.split_at(2);
@@ -222,7 +221,7 @@ pub fn merge_event(
     repo: &IrRepository<FsChanges>,
     channel: ChannelRef,
     prev_tip: Option<&ChangeHashHex>,
-) -> Result<MergeEvent, SyncGlueError> {
+) -> Result<MergeEvent, Error> {
     let log = repo.log()?;
 
     let new_changes: Vec<ChangeId> = if let Some(prev) = prev_tip {
@@ -233,18 +232,18 @@ pub fn merge_event(
         }
         .map(|h| h.0.parse::<ChangeId>())
         .collect::<Result<Vec<_>, _>>()
-        .map_err(SyncGlueError::InvalidChangeId)?
+        .map_err(Error::InvalidChangeId)?
     } else {
         log.iter()
             .map(|h| h.0.parse::<ChangeId>())
             .collect::<Result<Vec<_>, _>>()
-            .map_err(SyncGlueError::InvalidChangeId)?
+            .map_err(Error::InvalidChangeId)?
     };
 
     let tip = new_changes
         .last()
         .cloned()
-        .ok_or(SyncGlueError::NothingToSync)?;
+        .ok_or(Error::NothingToSync)?;
 
     Ok(MergeEvent {
         channel,
@@ -260,8 +259,8 @@ pub fn merge_event(
 pub async fn sync_merged<C: ContentIo<Id = ChangeId> + 'static>(
     syncer: &super::transport::Syncer<C>,
     event: MergeEvent,
-) -> Result<SyncAck, SyncGlueError> {
-    syncer.on_merge(event).await.map_err(SyncGlueError::Sync)
+) -> Result<SyncAck, Error> {
+    syncer.on_merge(event).await.map_err(Error::Sync)
 }
 
 // ---------------------------------------------------------------------------

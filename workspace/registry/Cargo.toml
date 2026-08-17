@@ -77,7 +77,7 @@ required-features = ["onnx"]
 # dev-dependency is only worth resolving when the ONNX plane is on.
 #
 # This is a DEV dependency in one direction only (registry[dev] → nudox-engine),
-# so no shipping edge exists between the two crates and `AGENTS-DOCTRINE.md` §1
+# so no shipping edge exists between the two crates and `docs/AGENTS-DOCTRINE.md` §1
 # is unchanged. See the test file's module docs for the full argument.
 [[test]]
 name = "vector_engine_relevance"
@@ -190,7 +190,7 @@ tokenizers  = { version = "0.22.2", optional = true }
 # `ir` (`ir = { package = "nudox-ir", … }` above), and naming the same package
 # twice under two names is a hard cargo error, not a style question. The test
 # uses `ir::change::…`.
-nudox-engine = { path = "../../crates/nudox-engine" }
+nudox-engine = { path = "../nudox-engine" }
 # `test-util` is NOT part of `full`, and without it `#[tokio::test(start_paused =
 # true)]` expands to a `Builder::start_paused` call that does not exist — 17
 # errors across the gate/scheduler/stage suites, all reported against unrelated

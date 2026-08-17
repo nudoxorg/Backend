@@ -1,3 +1,4 @@
+//! `PackageId`, a cheap-clone, path-based package identifier.
 use std::{
     fmt,
     path::{Path, PathBuf},

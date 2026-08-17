@@ -17,7 +17,7 @@ pub const MAX_CHANGE_BYTES: usize = 64 * 1024 * 1024;
 
 pub use mem_io::{MemChangeIo, change_id_for_bytes};
 pub use repo_glue::{
-    FsChangeIo, RepoApplyHook, SyncGlueError, TrustGateError, merge_event, sync_merged,
+    Error, FsChangeIo, RepoApplyHook, TrustGateError, merge_event, sync_merged,
     trusted_provide_endpoint,
 };
 pub use transport::{RemoteConfig, SyncService, Syncer};

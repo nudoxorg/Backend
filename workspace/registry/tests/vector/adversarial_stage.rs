@@ -12,10 +12,11 @@ use async_trait::async_trait;
 use heart::{ContentHash, SymbolId};
 use support::*;
 use registry::vector::JinaCodeV2;
-use registry::vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, StoreError, VectorPoint, VectorStore};
+use registry::vector::store::{PointId, SearchFilter, SearchHit, StoreCapabilities, VectorPoint, VectorStore};
+use registry::vector::StoreError;
 use registry::vector::embed::mock::MockEmbedder;
 use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
-use registry::vector::embed::stage::{EmbedStage, StageConfig, StageError, TraceStore, VectorCas};
+use registry::vector::embed::stage::{EmbedStage, Error, StageConfig, TraceStore, VectorCas};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -206,11 +207,11 @@ async fn cas_wrong_dim_gives_dimension_mismatch_no_trace() {
 	// Must fail with an embed (dimension mismatch) error.
 	assert!(result.is_err(), "wrong-dim CAS blob must cause stage failure");
 	match result.unwrap_err() {
-		StageError::Embed(registry::vector::EmbedError::DimensionMismatch { expected, got }) => {
+		Error::Embed(registry::vector::EmbedError::DimensionMismatch { expected, got }) => {
 			assert_eq!(expected, JinaCodeV2::DIMENSIONS);
 			assert_eq!(got, 3);
 		}
-		other => panic!("expected StageError::Embed(DimensionMismatch), got {other:?}"),
+		other => panic!("expected Error::Embed(DimensionMismatch), got {other:?}"),
 	}
 
 	// No trace written for the failed symbol.
@@ -316,7 +317,7 @@ async fn cancellation_mid_run_no_traces_for_tail() {
 	let result = stage.run(&delta_added(&corpus), &facet_lookup(&corpus), cancel).await;
 
 	// Must report Cancelled.
-	assert!(matches!(result, Err(StageError::Cancelled)),
+	assert!(matches!(result, Err(Error::Cancelled)),
 		"stage must return Cancelled when CancelGroup is set: {:?}", result);
 
 	// Traces must be <= MAX_BATCH (first chunk only; second chunk cancelled).

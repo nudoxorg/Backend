@@ -1,3 +1,5 @@
+//! Ecosystem vocabulary: the language enum plus editions and toolchains.
+
 use semver::Version;
 use serde::{Deserialize, Serialize};
 

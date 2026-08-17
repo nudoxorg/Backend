@@ -14,6 +14,13 @@ path = "lib.rs"
 name = "ingest"
 path = "ingest/main.rs"
 
+# The serving composition binary (the dissolved `driver`/`server`): assembles the
+# federation and serves the axum surface. Built from `index::server::main`.
+[[bin]]
+name = "nudox-serve"
+path = "server/main.rs"
+required-features = ["server"]
+
 # Cargo's integration-test autodiscovery globs `tests/*.rs` and `tests/*/main.rs`
 # ONLY. `tests/object_pack/{adversarial,transport}.rs` matches neither, so both
 # files were silently invisible: no target, no build, no run, and — the reason
@@ -54,9 +61,74 @@ dolt-engine = ["dep:rusqdoltlite"]
 # gated on the non-default feature, had never once been compiled.
 test-engine = []
 default = ["dolt-engine"]
+# The serving composition (`index::server` + the `nudox-serve` bin). OFF by
+# default so a plain `cargo build/test -p index` stays the lean catalog library:
+# no axum/ir-vcs/sandbox/embedrs, and — load-bearing — no `ir-vcs → libpijul →
+# zstd-seekable`, which statically bundles a second copy of the zstd C library
+# and collides with `index::pack`'s `zstd-sys` symbols (a duplicate-symbol clash
+# that corrupts memory at runtime; it segfaulted the pack unit tests when the
+# server was linked unconditionally). Confining the server behind this feature
+# keeps that clash out of every default `index` build and, when it is enabled,
+# scopes it to exactly the serving binary (as the retired `driver` crate did).
+server = [
+    "dep:sandbox", "dep:ir-vcs", "dep:axum", "dep:tower", "dep:tower-http",
+    "dep:http", "dep:http-body-util", "dep:hyper", "dep:tokio-util",
+    "dep:embedrs", "dep:figment", "dep:opentelemetry", "dep:tracing-opentelemetry",
+    "dep:metrics", "dep:tracing-subscriber", "dep:par-core", "dep:generativity",
+    "dep:rustix", "dep:which", "dep:mimalloc", "dep:tempfile",
+    "dep:nudox-languages",
+    "heart/telemetry",
+]
 
 [dependencies]
 heart = { path = "../heart" }
+
+# The shared iroh/bao transport plane (extracted from `index::transport` into its
+# own crate to break the `index ↔ ir-vcs` cycle); re-exported as `index::transport`.
+# NON-optional: `index::pack` uses it independently of the server.
+transport = { path = "../transport" }
+
+# ── Serving composition deps (folded from the dissolved `driver` crate, §9c) ──
+# All optional + gated behind the `server` feature (see [features] above).
+# The compile cage + guest→host IR stream decoder the coordination/sync flows use.
+sandbox = { path = "../compiler/sandbox", optional = true }
+ir-vcs  = { path = "../ir/vcs", optional = true }
+# In-process compile strategy for non-Linux hosts (`coordination::compile_inprocess`
+# — `// reconcile: in-process (macOS) vs cage (linux)`): the same producer plane
+# `crates/nudox-store/Cargo.toml` depends on for the GUI-local engine, owned
+# directly here rather than via that crate (which is a different layer —
+# `index` must not depend on the GUI-local `nudox-store`). The former producer
+# plane — one shared contract crate plus seven per-language producer crates —
+# is now consolidated into a single `nudox-languages` crate. Python now
+# travels inside that crate, but `index` still does NOT forward its `pyrefly`
+# feature (not wired here), so its Python producer contributes nothing (see
+# that crate's `YieldContract::RootOnly`) — there is nothing for `index` to
+# gain by enabling it. There is no nix producer in the workspace.
+nudox-languages = { path = "../compiler/languages", optional = true }
+# axum HTTP server + tower middleware + low-level http.
+axum       = { version = "0.7", features = ["macros"], optional = true }
+tower      = { version = "0.4", features = ["util", "retry", "timeout"], optional = true }
+tower-http = { version = "0.6", features = ["trace"], optional = true }
+http       = { version = "1", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper      = { version = "0.14", optional = true }
+tokio-util = { version = "0.6", optional = true }
+# Unified embeddings client (query embedder behind the gated semantic path).
+embedrs = { version = "0.4", features = ["tracing"], optional = true }
+# Layered configuration (defaults ← file ← env).
+figment = { version = "0.10", optional = true }
+# Observability used directly by the server composition + bin.
+opentelemetry = { version = "0.28", optional = true }
+tracing-opentelemetry = { version = "0.29", optional = true }
+metrics  = { version = "0.24", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json", "registry"], optional = true }
+# Parallel compute + branded-lifetime + syscalls used by the coordination plane.
+par-core     = { version = "2.0", features = ["rayon"], optional = true }
+generativity = { version = "1.2", optional = true }
+rustix   = { version = "0.38", features = ["use-libc"], optional = true }
+which    = { version = "4.4", optional = true }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+tempfile = { version = "3.27", optional = true }
 # ── ecosystem spec (folded in as `index::ecosystem`) ─────────────────────────
 # The per-language name/version/upstream/manifest grammar (ECOSYSTEM-PLAN). Used
 # only by `index` (+ `driver`, which composes `index`); `Language` itself lives
@@ -107,7 +179,7 @@ bao-tree = { version = "0.16.0", default-features = false }
 # iroh is used directly by `index::pack::transport` + `index::transport` + the object-pack
 # tests (Endpoint / SecretKey / MemoryLookup vocabulary).
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
-tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+tokio = { version = "1.53.0", features = ["full"] }
 
 # ── Server-fold + registry-salvage (§8/§9a): the data/storage/coordination plane ─
 # The graph + vector survivor registry; index MAY dep registry (registry is
@@ -162,8 +234,8 @@ csv  = "1.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 proptest = "1"
-# Doctrine §4: every integration test is also a benchmark. `measured` emits the
-# `cost case=` line the perf report parses. For this crate the load-bearing
-# figure is `disk_delta_bytes` — the pack/catalog bytes a case actually wrote —
-# because wall time on a shared build host is not a usable signal.
-nudox-test-support = { path = "../../crates/nudox-test-support" }
+# Doctrine §4: every integration test is also a benchmark. `heart::cost::measured`
+# emits the `cost case=` line the perf report parses. For this crate the
+# load-bearing figure is `disk_delta_bytes` — the pack/catalog bytes a case
+# actually wrote — because wall time on a shared build host is not a usable
+# signal. `heart` is already a regular dependency above.

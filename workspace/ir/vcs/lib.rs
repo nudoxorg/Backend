@@ -8,7 +8,7 @@
 //! machinery. It reads the IR types (entry/symbol/kind/wire/change/view/vocab/…)
 //! from the [`ir`] crate — libpijul and iroh live here, not there.
 //!
-//! Spec context: `.research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md`.
+//! Spec context: `docs/research/ir-vcs/design/SEMANTIC-IR-VCS-PLAN.md`.
 
 // ── Sync plane (formerly the `ir-sync` crate) ───────────────────────────────
 /// iroh-based distribution of libpijul change files to a trusted remote.
@@ -64,10 +64,10 @@ pub use checkout::MaterializedIndex;
 pub use checkpoint::{
     Checkpoint, CheckpointCache, CheckpointConfig, Retention, ServeStrategy, Served,
 };
-pub use error::VcsError;
+pub use error::Error as VcsError;
 pub use f1::{
-    ContinuityOp, ContinuitySummary, F1Error, F1View, RenameEdge, compute_api_surface_hash,
-    serialize_f1,
+    ContinuityOp, ContinuitySummary, Error as F1Error, F1View, RenameEdge,
+    compute_api_surface_hash, serialize_f1,
 };
 pub use refs::{BranchName, Ref, RefKind, ResolvedRef, TagName};
 pub use repo::{ChangeHashHex, IrRepository, IrTip, VersionDiff};
