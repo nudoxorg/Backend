@@ -253,26 +253,11 @@ impl DocLinkTable {
         self.inner.is_empty()
     }
 
-    /// `true` when the symbol declared intra-doc links, whether or not any of
-    /// them resolved locally.
-    ///
-    /// This gates shortcut-link scanning in `prose.rs`, and that is the whole
-    /// reason it exists. Brackets are only read as link syntax for a symbol
-    /// that declared at least one link; for a symbol that declared none,
-    /// `[NOTE]`, `arr[0]`, and a citation marker are all far likelier than a
-    /// link attempt, so its prose passes through verbatim. That mirrors
-    /// rustdoc, which renders an unresolved shortcut as literal text.
-    ///
-    /// The signal is per *symbol*, not per *link attempt* — see L27. A symbol
-    /// that declares any link has brackets stripped from unrelated literal
-    /// prose too. Narrowing that needs the producer to record byte spans of
-    /// the link attempts it saw, which it does not currently do.
-    pub(crate) fn has_declared_links(&self) -> bool {
-        self.declared
-    }
-
     /// Return whether a producer-recorded link occupies this source range.
     /// Missing spans remain supported for older producers and fixtures.
+    ///
+    /// This also gates shortcut-link scanning in `prose.rs`: brackets are only
+    /// read as link syntax when a declared link occupies the source span.
     pub(crate) fn has_declared_link_at(&self, span: std::ops::Range<usize>) -> bool {
         if self.inner_spans.is_empty() {
             return self.declared;

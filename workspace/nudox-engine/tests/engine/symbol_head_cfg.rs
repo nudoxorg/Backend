@@ -47,6 +47,7 @@
 //! already carries the host's real target facts, which is why the assertion
 //! below uses `memchr::arch::<host-arch>` instead.
 
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use nudox_engine::store::package::{PackageView, Provenance};
@@ -224,7 +225,7 @@ fn real_memchr_arch_module_cfg_reaches_symbol_head() {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("memchr must lower without error:\n{chain}");

@@ -81,9 +81,7 @@ fn corpus_available() -> bool {
 #[test]
 #[ignore = "drives the real Rust producer over a real cargo workspace"]
 fn format_source_silently_degrades_to_signature_for_macro_generated_impls() {
-    if !corpus_available() {
-        panic!("corpus missing; run `nix build .#checks.corpus`");
-    }
+    assert!(corpus_available(), "corpus missing; run `nix build .#checks.corpus`");
     let runtime = Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
         let scratch = tempfile::tempdir().expect("create writable corpus scratch");
@@ -104,7 +102,7 @@ fn format_source_silently_degrades_to_signature_for_macro_generated_impls() {
         let tools = NudoxTools::new(engine);
 
         let rx = tools.engine().packages();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+        let deadline = tokio::time::Instant::now() + Duration::from_mins(5);
         let mut seen = 0usize;
         while seen < PACKAGES.len() {
             match tokio::time::timeout_at(deadline, rx.recv_async()).await {
@@ -116,9 +114,9 @@ fn format_source_silently_degrades_to_signature_for_macro_generated_impls() {
                 Ok(Ok(PackageLoadEvent::LoadFailed { name, error, .. })) => {
                     panic!("{name} failed to load: {error}");
                 }
-                Ok(Ok(_)) => continue,
+                Ok(Ok(_)) => {},
                 Ok(Err(_)) => break,
-                Err(_) => panic!("packages did not load within 300s"),
+                Err(elapsed) => panic!("packages did not load within 300s: {elapsed:?}"),
             }
         }
 

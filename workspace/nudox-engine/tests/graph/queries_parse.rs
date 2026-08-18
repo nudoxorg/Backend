@@ -100,7 +100,7 @@ fn all_trustfall_queries_parse() {
         let query = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
-        execute_query_async(&schema, Arc::clone(&adapter), &query, vars_for(&query))
+        let _stream = execute_query_async(&schema, Arc::clone(&adapter), &query, vars_for(&query))
             .unwrap_or_else(|e| {
                 panic!(
                     "query {} failed to parse:\n{e}\n\nQuery text:\n{query}",

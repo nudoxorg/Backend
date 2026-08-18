@@ -6,6 +6,7 @@
 //! and lets a later process reopen them without contacting the registry.
 
 use std::fs;
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -309,7 +310,10 @@ fn io(context: impl Into<String>, source: std::io::Error) -> ArchiveCacheError {
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bytes.iter().fold(String::new(), |mut acc, b| {
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
 }
 
 #[cfg(test)]

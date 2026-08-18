@@ -90,9 +90,6 @@ pub(crate) fn parse_markdown(
                     current_events.push((event, range));
                 }
             }
-            Event::Text(_) | Event::Code(_) => {
-                current_events.push((event, range));
-            }
             _ => {
                 current_events.push((event, range));
             }

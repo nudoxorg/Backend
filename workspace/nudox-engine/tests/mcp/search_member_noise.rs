@@ -111,14 +111,14 @@ fn start(dir: &tempfile::TempDir) -> NudoxTools {
 
 async fn wait_until_loaded(tools: &NudoxTools) {
     let events = tools.engine().packages();
-    match tokio::time::timeout(Duration::from_secs(60), events.recv_async()).await {
+    match tokio::time::timeout(Duration::from_mins(1), events.recv_async()).await {
         Ok(Ok(PackageLoadEvent::Loaded { .. })) => {}
         Ok(Ok(PackageLoadEvent::LoadFailed { error, .. })) => {
             panic!("the fixture package must load: {error}")
         }
         Ok(Ok(other)) => panic!("unexpected package event: {other:?}"),
         Ok(Err(error)) => panic!("package channel closed: {error}"),
-        Err(_) => panic!("engine did not load the fixture within 60 seconds"),
+        Err(elapsed) => panic!("engine did not load the fixture within 60 seconds: {elapsed:?}"),
     }
 }
 
@@ -186,7 +186,7 @@ async fn the_declarations_survive_the_default() {
 
     for expected in ["Connection", "connection_open", "connection_close"] {
         assert!(
-            names.iter().any(|n| *n == expected),
+            names.contains(&expected),
             "{expected} is top-level API and must be on the default page: \
              {names:?}",
         );

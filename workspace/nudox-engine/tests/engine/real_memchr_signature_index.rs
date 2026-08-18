@@ -42,6 +42,7 @@
 //!   --test real_memchr_signature_index -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,7 +97,7 @@ fn lower_memchr(case: &str) -> PackageView {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("memchr must lower without error:\n{chain}");
@@ -135,10 +136,10 @@ async fn column(
     vars: impl IntoIterator<Item = (String, FieldValue)>,
     column: &str,
 ) -> Vec<String> {
-    let adapter = Arc::new(match probe {
-        Some(p) => CorpusAdapter::new_with_probe(corpus.clone(), p),
-        None => CorpusAdapter::new(corpus.clone()),
-    });
+    let adapter = Arc::new(probe.map_or_else(
+        || CorpusAdapter::new(corpus.clone()),
+        |p| CorpusAdapter::new_with_probe(corpus.clone(), p),
+    ));
     execute_query_async(
         &schema(),
         adapter,

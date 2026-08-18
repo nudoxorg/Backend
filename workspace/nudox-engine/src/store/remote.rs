@@ -175,9 +175,9 @@ impl RemoteStore {
     }
 
     pub async fn publish_ir(&self, snapshot: &IrSnapshot) -> Result<ContentHash, RemoteStoreError> {
-        Ok(self
+        self
             .publish(ObjectKind::Ir, serde_json::to_vec(snapshot)?)
-            .await?)
+            .await
     }
 
     fn url(&self, kind: ObjectKind, hash: ContentHash) -> String {

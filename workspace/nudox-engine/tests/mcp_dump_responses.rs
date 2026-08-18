@@ -131,7 +131,7 @@ fn tools() -> (NudoxTools, tempfile::TempDir) {
 /// rather than hanging to the deadline.
 async fn wait_for_packages(tools: &NudoxTools) {
     let rx = tools.engine().packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(5);
     let mut seen = 0usize;
     while seen < PACKAGES.len() {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
@@ -143,9 +143,9 @@ async fn wait_for_packages(tools: &NudoxTools) {
             Ok(Ok(PackageLoadEvent::LoadFailed { name, error, .. })) => {
                 panic!("{name} failed to load: {error}");
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {}
             Ok(Err(_)) => break,
-            Err(_) => panic!("packages did not load within 300s"),
+            Err(elapsed) => panic!("packages did not load within 300s: {elapsed:?}"),
         }
     }
 }
@@ -153,9 +153,7 @@ async fn wait_for_packages(tools: &NudoxTools) {
 #[test]
 #[ignore = "drives the real Rust producer over two real cargo workspaces"]
 fn dump_every_tool_response() {
-    if !corpus_available() {
-        panic!("corpus missing; run `nix build .#checks.corpus`");
-    }
+    assert!(corpus_available(), "corpus missing; run `nix build .#checks.corpus`");
     let runtime = Runtime::new().expect("tokio runtime");
     runtime.block_on(async {
         let (tools, _scratch) = tools();

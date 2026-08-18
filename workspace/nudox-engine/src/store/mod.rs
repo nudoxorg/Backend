@@ -43,6 +43,12 @@
 pub mod corpus;
 pub mod index;
 pub mod package;
+/// The local libpijul-backed IR store (`ir_repo_root`, IR-STORAGE-PLAN §1a/P5).
+/// Behind the `local-persistence` feature (on by default) because it pulls
+/// `ir-vcs`'s full libpijul/iroh/sanakirja dependency graph — see that
+/// module's docs.
+#[cfg(feature = "local-persistence")]
+pub(crate) mod persistence;
 pub mod remote;
 pub mod source;
 

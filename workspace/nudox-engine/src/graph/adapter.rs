@@ -569,7 +569,7 @@ fn type_to_stable_ref_str(ty: &Type, package: &PackageLineageId) -> Option<Strin
             Ref::Foreign { key, target } => Some(
                 target
                     .as_ref()
-                    .map_or_else(|| key.path.to_string(), |sr| sr.to_string()),
+                    .map_or_else(|| key.path.to_string(), std::string::ToString::to_string),
             ),
             Ref::Local(_) => None,
         },

@@ -432,7 +432,7 @@ fn parse_address(input: &str) -> Result<Address, AddressParseError> {
             }
             '#' if depth_stack.is_empty()
                 && hash_pos.is_none()
-                && sep_pos.map_or(true, |s| i > s) =>
+                && sep_pos.is_none_or(|s| i > s) =>
             {
                 hash_pos = Some(i);
             }
@@ -563,14 +563,13 @@ fn split_top_level(
             i += 1;
             continue;
         }
-        if depth_stack.is_empty() {
-            if let Some(len) = is_sep(&s[i..]) {
+        if depth_stack.is_empty()
+            && let Some(len) = is_sep(&s[i..]) {
                 ranges.push((seg_start, i));
                 i += len;
                 seg_start = i;
                 continue;
             }
-        }
         match ch {
             '[' => depth_stack.push((']', i)),
             '(' => depth_stack.push((')', i)),
@@ -866,12 +865,11 @@ pub fn render_address(
         })
         .unwrap_or_default();
 
-    if let Some(disc) = entry.kind().discriminant() {
-        if let Some(last) = full_path.last_mut() {
+    if let Some(disc) = entry.kind().discriminant()
+        && let Some(last) = full_path.last_mut() {
             last.qualifiers
                 .push(Qualifier::Kind(kind_to_text(disc).to_owned()));
         }
-    }
 
     // Elide leading path segments that merely repeat the package name
     // (§9.2's "still repeats the crate root" unclaimed saving). memchr's
@@ -1175,7 +1173,7 @@ fn stage2_alias_exact(pkg: &PackageView, path: &[AddressSegment]) -> Vec<RawCand
         .get_exact(&joined)
         .iter()
         .filter(|&&intro| {
-            kind_filter.map_or(true, |k| {
+            kind_filter.is_none_or(|k| {
                 pkg.view()
                     .entry(intro)
                     .and_then(|e| e.kind().discriminant())
@@ -1204,11 +1202,10 @@ fn stage3_name_suffix(pkg: &PackageView, path: &[AddressSegment]) -> Vec<RawCand
         .filter_map(|name_entry| {
             let intro = name_entry.intro;
             let entry = pkg.view().entry(intro)?;
-            if let Some(k) = kind_filter {
-                if entry.kind().discriminant() != Some(k) {
+            if let Some(k) = kind_filter
+                && entry.kind().discriminant() != Some(k) {
                     return None;
                 }
-            }
             let physical = moniker_segments(pkg.view().table(), intro);
             let public =
                 crate::chunk::head::public_path(intro, entry, pkg.view(), PathStyle::DoubleColon)

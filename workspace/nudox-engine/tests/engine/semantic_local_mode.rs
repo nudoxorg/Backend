@@ -226,9 +226,9 @@ async fn wait_for_n_loaded(engine: &nudox_engine::EngineHandle, n: usize) {
     while seen < n {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { .. })) => seen += 1,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => break,
-            Err(_) => panic!("only {seen}/{n} packages loaded within 5s"),
+            Err(elapsed) => panic!("only {seen}/{n} packages loaded within 5s: {elapsed:?}"),
         }
     }
     assert_eq!(seen, n, "expected exactly {n} Loaded events");

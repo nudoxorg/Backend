@@ -107,14 +107,14 @@ fn start(fixture: &tempfile::TempDir) -> NudoxTools {
 
 async fn wait_until_loaded(tools: &NudoxTools) {
     let events = tools.engine().packages();
-    match tokio::time::timeout(Duration::from_secs(60), events.recv_async()).await {
+    match tokio::time::timeout(Duration::from_mins(1), events.recv_async()).await {
         Ok(Ok(PackageLoadEvent::Loaded { .. })) => {}
         Ok(Ok(PackageLoadEvent::LoadFailed { error, .. })) => {
             panic!("the self-contained TypeScript package must load: {error}")
         }
         Ok(Ok(other)) => panic!("unexpected package event while loading fixture: {other:?}"),
         Ok(Err(error)) => panic!("package event channel closed before fixture loaded: {error}"),
-        Err(_) => panic!("engine did not load the TypeScript fixture within 60 seconds"),
+        Err(elapsed) => panic!("engine did not load the TypeScript fixture within 60 seconds: {elapsed:?}"),
     }
 }
 

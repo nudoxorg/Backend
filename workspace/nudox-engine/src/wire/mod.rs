@@ -871,7 +871,7 @@ pub struct RefRow {
 }
 
 /// A paged list of cross-references to this symbol.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct RefsPage {
     /// The references in this page.
     pub refs: Arc<[RefRow]>,
@@ -924,7 +924,7 @@ pub struct ImplRow {
 }
 
 /// A paged list of trait implementations for this symbol.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ImplsPage {
     /// The impls in this page.
     pub impls: Arc<[ImplRow]>,

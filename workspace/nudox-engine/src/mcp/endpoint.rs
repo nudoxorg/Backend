@@ -65,7 +65,7 @@ use crate::mcp::error::McpError;
 use crate::mcp::server::NudoxMcpServer;
 use crate::mcp::session::{SessionToken, Unauthenticated};
 
-/// Loopback, kernel-assigned port — [`preferred_bind`]`(`[`PortPreference::Any`]`)`.
+/// Loopback, kernel-assigned port — [`preferred_bind`] with [`PortPreference::Any`].
 ///
 /// Kept as a named constant because it is what every caller wanted before
 /// [`PortPreference`] existed, and is still what [`McpEndpoint::start`] uses.
@@ -107,13 +107,12 @@ pub enum PortPreference {
 /// true now that a state file feeds this function a port.
 pub const fn preferred_bind(preference: PortPreference) -> SocketAddr {
     let port = match preference {
-        PortPreference::Any => 0,
         // Zero is what an empty or corrupt state file decodes to, not a real
         // preference. Binding it *would* happen to work (port 0 is ephemeral
         // either way), but treating that as intentional would hide a corrupt
         // state file behind a coincidence — so it is normalised to `Any`
         // explicitly instead.
-        PortPreference::Remembered(0) => 0,
+        PortPreference::Any | PortPreference::Remembered(0) => 0,
         PortPreference::Remembered(port) => port,
     };
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))

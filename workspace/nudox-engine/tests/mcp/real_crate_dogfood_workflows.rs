@@ -99,7 +99,7 @@ fn make_memchr_history_tools() -> NudoxTools {
 
 async fn wait_for_all_memchr_generations(tools: &NudoxTools) {
     let rx = tools.engine().packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(4);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { name, .. })) if name == SharedStr::from("memchr") => {
@@ -110,9 +110,9 @@ async fn wait_for_all_memchr_generations(tools: &NudoxTools) {
             {
                 panic!("memchr failed to load: {error}");
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => break,
-            Err(_) => panic!("no memchr Loaded/LoadFailed event within 240s"),
+            Err(elapsed) => panic!("no memchr Loaded/LoadFailed event within 240s: {elapsed:?}"),
         }
     }
     for _ in 0..2400 {
@@ -145,7 +145,7 @@ fn make_single_package_tools(root: PathBuf, name: &str, version: &str) -> NudoxT
 
 async fn wait_for_package(tools: &NudoxTools, name: &str) {
     let rx = tools.engine().packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(3);
     let expected = SharedStr::from(name);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
@@ -153,9 +153,9 @@ async fn wait_for_package(tools: &NudoxTools, name: &str) {
             Ok(Ok(PackageLoadEvent::LoadFailed { name, error, .. })) if name == expected => {
                 panic!("{name} failed to load: {error}");
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => return,
-            Err(_) => panic!("no {expected} Loaded/LoadFailed event within 180s"),
+            Err(elapsed) => panic!("no {expected} Loaded/LoadFailed event within 180s: {elapsed:?}"),
         }
     }
 }
@@ -622,13 +622,13 @@ fn memchr_agent_workflow_chain() {
                 .await;
             match result {
                 Ok(doc) => log_step!(
-                    "get_symbol({stale_key}) after switching away from 2.8.3",
+                    format!("get_symbol({stale_key}) after switching away from 2.8.3"),
                     "STILL RESOLVES as {} — a {tier}-tiered key survived this particular switch \
                      (expected: most do; only escalated keys are AT RISK, not guaranteed to move)",
                     head_name(&doc.head)
                 ),
                 Err(e) => log_step!(
-                    "get_symbol({stale_key}) after switching away from 2.8.3",
+                    format!("get_symbol({stale_key}) after switching away from 2.8.3"),
                     "FAILED: {e}\n  (this key was minted at tier {tier} in 2.8.3 — the error \
                      should say so, see the McpError data.engine.possibly_stale field)"
                 ),

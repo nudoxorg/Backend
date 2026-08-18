@@ -460,7 +460,9 @@ impl Error {
                  digest it publishes for them, which is either corruption in transit or a registry \
                  problem; nothing was extracted and no documentation was produced from them.",
             ),
-            Self::Unpack { .. } => None,
+            Self::Unpack { .. }
+            | Self::Cancelled { .. }
+            | Self::TruncatedLoad { .. } => None,
             Self::NoProducer { .. } => Some(
                 "The package is on disk and the fetch succeeded; only IR production is missing. \
                  This is a property of the build, not of the package — see data.blocker for what \
@@ -471,8 +473,6 @@ impl Error {
                  attempt runs the same producer over the same sources. data.detail is the \
                  producer's own error chain and names the actual defect.",
             ),
-            Self::Cancelled { .. } => None,
-            Self::TruncatedLoad { .. } => None,
         }
     }
 
@@ -686,7 +686,7 @@ pub(crate) mod http {
             detail: std::iter::successors(Some(&e as &dyn std::error::Error), |e| {
                 std::error::Error::source(*e)
             })
-            .map(|e| e.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(": "),
         }
@@ -770,8 +770,8 @@ pub(crate) mod http {
 
         let response = get(client, url, purl).await?;
         let total = response.content_length();
-        if let Some(total) = total {
-            if total > MAX_ARTIFACT_BYTES {
+        if let Some(total) = total
+            && total > MAX_ARTIFACT_BYTES {
                 return Err(Error::Network {
                     url: url.to_owned(),
                     detail: format!(
@@ -780,7 +780,6 @@ pub(crate) mod http {
                     ),
                 });
             }
-        }
 
         let mut body = Vec::with_capacity(total.unwrap_or(64 * 1024) as usize);
         let mut stream = response.bytes_stream();
@@ -895,37 +894,34 @@ pub(crate) async fn acquire(
     .await?;
 
     report(IndexStage::Verifying, bytes.len() as u64, None);
-    let integrity = match &artifact.expected {
-        Some(expected) => {
-            let actual = expected.compute_over(&bytes);
-            if !actual.eq_ignore_ascii_case(expected.value()) {
-                return Err(Error::IntegrityMismatch {
-                    purl: purl.render(),
-                    registry: purl.ty().registry(),
-                    url: artifact.url.clone(),
-                    algorithm: expected.algorithm().to_owned(),
-                    expected: expected.value().to_owned(),
-                    actual,
-                });
-            }
-            Integrity::RegistryDigest {
+    let integrity = if let Some(expected) = &artifact.expected {
+        let actual = expected.compute_over(&bytes);
+        if !actual.eq_ignore_ascii_case(expected.value()) {
+            return Err(Error::IntegrityMismatch {
+                purl: purl.render(),
+                registry: purl.ty().registry(),
+                url: artifact.url.clone(),
                 algorithm: expected.algorithm().to_owned(),
-                digest: expected.value().to_owned(),
-                published_by: digest_endpoint(purl.ty()).to_owned(),
-            }
+                expected: expected.value().to_owned(),
+                actual,
+            });
         }
-        None => {
-            use sha2::Digest as _;
-            Integrity::TransportOnly {
-                sha256: registry::hex(&sha2::Sha256::digest(&bytes)),
-                why: registry::no_digest_reason(purl.ty())
-                    .expect(
-                        "an ecosystem with no published digest must declare why; \
-                         `registry::tests::exactly_the_two_registries_without_a_reachable_digest_say_why` \
-                         pins that the two lists agree",
-                    )
-                    .to_owned(),
-            }
+        Integrity::RegistryDigest {
+            algorithm: expected.algorithm().to_owned(),
+            digest: expected.value().to_owned(),
+            published_by: digest_endpoint(purl.ty()).to_owned(),
+        }
+    } else {
+        use sha2::Digest as _;
+        Integrity::TransportOnly {
+            sha256: registry::hex(&sha2::Sha256::digest(&bytes)),
+            why: registry::no_digest_reason(purl.ty())
+                .expect(
+                    "an ecosystem with no published digest must declare why; \
+                     `registry::tests::exactly_the_two_registries_without_a_reachable_digest_say_why` \
+                     pins that the two lists agree",
+                )
+                .to_owned(),
         }
     };
 
@@ -1001,11 +997,10 @@ fn append_cargo_workspace(root: &Path) {
     if !manifest.is_file() {
         return;
     }
-    if let Ok(existing) = std::fs::read_to_string(&manifest) {
-        if existing.contains("[workspace]") {
+    if let Ok(existing) = std::fs::read_to_string(&manifest)
+        && existing.contains("[workspace]") {
             return;
         }
-    }
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(&manifest) {
         // Best-effort: a package whose manifest we could not append to still
         // loads, it just risks being read as a workspace member. Logged rather

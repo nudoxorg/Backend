@@ -29,6 +29,7 @@
 //! `#[ignore]`d for the same reason as `real_crate.rs`: it drives in-process
 //! rust-analyzer over a real cargo workspace, which takes tens of seconds.
 
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use nudox_engine::store::package::{PackageView, Provenance};
@@ -142,7 +143,7 @@ fn a_real_crate_lowers_to_a_populated_table() {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("{} must lower without error:\n{chain}", target.name);

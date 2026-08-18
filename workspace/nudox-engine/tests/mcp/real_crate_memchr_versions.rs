@@ -104,7 +104,7 @@ async fn wait_for_all_generations(tools: &NudoxTools) {
     // three did". Wait for that first signal (or a hard failure) here, then
     // poll `list_versions` directly below for the real all-three signal.
     let rx = tools.engine().packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(4);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { name, .. })) if name == SharedStr::from("memchr") => {
@@ -115,10 +115,10 @@ async fn wait_for_all_generations(tools: &NudoxTools) {
             {
                 panic!("memchr failed to load: {error}");
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {}
             Ok(Err(_)) => break, // channel closed — corpus may already be seeded
-            Err(_) => panic!(
-                "no memchr Loaded/LoadFailed event within 240s; the producer may have \
+            Err(elapsed) => panic!(
+                "no memchr Loaded/LoadFailed event within 240s: {elapsed:?}; the producer may have \
                  failed — run with --nocapture to see tracing output"
             ),
         }
@@ -279,7 +279,9 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
                 "real memchr 2.7.6 must have a real symbol count"
             );
         }
-        other => panic!("expected Switched for a loaded version, got {other:?}"),
+        nudox_engine::mcp::tools::SelectVersionResult::NotLoaded { .. } => {
+            panic!("expected Switched for a loaded version, got NotLoaded")
+        }
     }
 
     assert!(
@@ -678,8 +680,7 @@ fn key_provenance_reaches_a_really_produced_package() {
                         }"#
                         .to_owned(),
                         args: Some(
-                            [("name".to_owned(), "memchr_iter".to_owned())]
-                                .into_iter()
+                            std::iter::once(("name".to_owned(), "memchr_iter".to_owned()))
                                 .collect(),
                         ),
                         limit: Some(50),

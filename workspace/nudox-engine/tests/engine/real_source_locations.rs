@@ -52,9 +52,10 @@ const PKG_NAME: &str = "memchr";
 const PKG_VERSION: &str = "2.8.3";
 
 fn root() -> PathBuf {
-    let corpus = std::env::var_os("NUDOX_CORPUS_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result"));
+    let corpus = std::env::var_os("NUDOX_CORPUS_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result"),
+        PathBuf::from,
+    );
     corpus.join("memchr-2.8.3")
 }
 

@@ -11,7 +11,7 @@
 //! The test prints one machine-readable TSV line per (package, kind) cell:
 //!
 //! ```text
-//! link-repair	memchr	2.8.3	transposed_open_delimiter	3
+//! link-repair    memchr    2.8.3    transposed_open_delimiter    3
 //! ```
 //!
 //! which is `awk`-able and aggregatable across `result/`.

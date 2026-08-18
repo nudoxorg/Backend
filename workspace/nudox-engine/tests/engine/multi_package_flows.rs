@@ -190,7 +190,7 @@ async fn wait_for_n_packages(
     n: usize,
 ) -> Vec<PackageLoadEvent> {
     let rx = engine.packages();
-    let deadline = Duration::from_millis(2000);
+    let deadline = Duration::from_secs(2);
     let mut out = Vec::new();
     let _ = tokio::time::timeout(deadline, async {
         while out.len() < n {
@@ -210,7 +210,7 @@ async fn drain_search(
 ) -> Vec<nudox_engine::wire::SearchEvent> {
     use nudox_engine::wire::SearchEvent;
     let mut events = Vec::new();
-    let _ = tokio::time::timeout(Duration::from_millis(1000), async {
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
         while let Ok(ev) = rx.recv_async().await {
             let done = matches!(ev, SearchEvent::Done { .. } | SearchEvent::Failed { .. });
             events.push(ev);

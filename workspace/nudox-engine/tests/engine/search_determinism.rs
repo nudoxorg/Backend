@@ -401,9 +401,9 @@ async fn wait_for_packages(engine: &nudox_engine::EngineHandle, n: usize) {
     while seen < n {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(nudox_engine::PackageLoadEvent::Loaded { .. })) => seen += 1,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => break,
-            Err(_) => panic!("corpus of {n} package(s) never fully seeded within 10 s"),
+            Err(elapsed) => panic!("corpus of {n} package(s) never fully seeded within 10 s: {elapsed:?}"),
         }
     }
 }

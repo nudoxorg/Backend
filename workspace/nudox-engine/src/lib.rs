@@ -92,6 +92,9 @@ pub mod runtime;
 pub mod search;
 pub mod semantic;
 pub mod store;
+/// `impl heart::surface::Serve<heart::surface::Symbols> for EngineHandle` —
+/// see the module docs for the design.
+pub mod surface;
 pub mod typequery;
 pub mod versions;
 pub mod wire;
@@ -395,6 +398,22 @@ pub struct PackageMetadata {
     pub release_date: Option<String>,
     pub homepage: Option<String>,
     pub coverage: Option<PackageCoverage>,
+    /// The concrete version string this generation was loaded at, when known.
+    ///
+    /// `PackageLineageId` is deliberately version-free (`versions/mod.rs`),
+    /// and `PackageView` used to have no back-reference to the
+    /// `VersionRegistry` that knows which generation it is — a materialized
+    /// view that cannot say which version it is has a hole in it independent
+    /// of any one caller. `heart::package::Coordinates::id` folds the
+    /// concrete version into its `PackageId` hash seed, so anything deriving
+    /// a cross-plane identity from a loaded package (`crate::surface`'s
+    /// `Serve<Symbols>` adapter) needs this to be resident on the view
+    /// itself rather than threaded through three call layers from the
+    /// registry. Set from `IrSource`'s own `LoadEvent::Discovered { hint:
+    /// PackageHint { version } }` at load time — see
+    /// `store::source::producer::PackageDescriptor::metadata` and
+    /// `store::package::PackageView::with_version`.
+    pub version: Option<String>,
 }
 
 /// An event emitted by [`EngineHandle::packages`] describing the outcome of
@@ -443,7 +462,7 @@ pub enum PackageLoadEvent {
         /// a root module.
         root: Option<SymbolKey>,
         /// Manifest metadata associated with this package.
-        metadata: PackageMetadata,
+        metadata: Box<PackageMetadata>,
     },
 
     /// A package failed to load; the remaining packages are unaffected.
@@ -742,12 +761,12 @@ impl EngineHandle {
         self.spawn(async move {
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => return,
+                    () = cancel.cancelled() => return,
                     event = live.recv() => match event {
                         Ok(event) => {
                             if tx.send_async(event).await.is_err() { return; }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     }
                 }
@@ -773,12 +792,12 @@ impl EngineHandle {
             if !active && tx.send_async(JobEvent::Idle).await.is_err() { return; }
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => return,
+                    () = cancel.cancelled() => return,
                     event = live.recv() => match event {
                         Ok(event) => {
                             if tx.send_async(event).await.is_err() { return; }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                     }
                 }
@@ -842,7 +861,7 @@ impl EngineHandle {
             let _ = self.inner.job_tx.send(JobEvent::Progress { job_id, completed, total });
         }
         self.inner.jobs.lock().expect("job registry").insert(job_id,
-            runtime::JobStatus::Succeeded(SharedStr::from(format!("{loaded} package(s) loaded"))));
+            runtime::JobStatus::Succeeded);
         let _ = self.inner.sync_tx.send(SyncEvent::Succeeded { job_id, loaded });
         let _ = self.inner.job_tx.send(JobEvent::Succeeded {
             job_id, result: SharedStr::from(format!("{loaded} package(s) loaded")),
@@ -852,7 +871,7 @@ impl EngineHandle {
     fn finish_sync_failed(&self, job_id: JobId, message: String) {
         let error = SharedStr::from(message);
         self.inner.jobs.lock().expect("job registry").insert(job_id,
-            runtime::JobStatus::Failed(error.clone()));
+            runtime::JobStatus::Failed);
         let _ = self.inner.sync_tx.send(SyncEvent::Failed { job_id, error: error.clone() });
         let _ = self.inner.job_tx.send(JobEvent::Failed { job_id, error });
     }

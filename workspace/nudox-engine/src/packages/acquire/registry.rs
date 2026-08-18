@@ -336,7 +336,7 @@ pub(crate) async fn artifact_with_endpoints(
             let index_url = endpoint_url(
                 endpoints,
                 "https://index.crates.io",
-                &format!("{}", crates_index_path(purl.name())),
+                &crates_index_path(purl.name()),
                 "index",
             );
             let body = http::get_text(client, &index_url, purl).await?;
@@ -499,14 +499,13 @@ fn endpoint_url(
     path: &str,
     fixture_prefix: &str,
 ) -> String {
-    match &endpoints.upstream {
-        Some(base) => format!(
-            "{}/{}",
+    endpoints.upstream.as_ref().map_or_else(
+        || format!("{canonical}/{path}"),
+        |base| format!(
+            "{}/{fixture_prefix}/{path}",
             base.trim_end_matches('/'),
-            format!("{fixture_prefix}/{path}")
         ),
-        None => format!("{canonical}/{path}"),
-    }
+    )
 }
 
 /// Fetch the `go.mod` the module proxy serves *beside* the zip.

@@ -95,6 +95,7 @@
 //! caveat above warns about from *other* agents — no reason to add more of
 //! it ourselves.
 
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -157,7 +158,7 @@ fn try_lower(name: &str, version: &str) -> Option<Arc<PackageView>> {
                 let mut chain = format!("{err}");
                 let mut cursor: &dyn std::error::Error = &err;
                 while let Some(source) = std::error::Error::source(cursor) {
-                    chain.push_str(&format!("\n  caused by: {source}"));
+                    let _ = write!(chain, "\n  caused by: {source}");
                     cursor = source;
                 }
                 panic!("{name}-{version} must lower without error:\n{chain}");
@@ -251,9 +252,9 @@ async fn wait_for_n_packages(engine: &nudox_engine::EngineHandle, n: usize) {
     while seen < n {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { .. })) => seen += 1,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => break,
-            Err(_) => panic!("corpus of {n} package(s) never fully seeded within 10s"),
+            Err(elapsed) => panic!("corpus of {n} package(s) never fully seeded within 10s: {elapsed:?}"),
         }
     }
 }

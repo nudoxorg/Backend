@@ -205,15 +205,6 @@ fn report_integrity(integrity: &crate::Integrity) -> IntegrityReport {
                  release, so there is no digest to verify against"
             ),
         },
-        // `Integrity` is `#[non_exhaustive]`: a further tier must not be
-        // silently reported as verified.
-        _ => IntegrityReport {
-            verified_against_published_digest: false,
-            algorithm: "unknown".to_owned(),
-            digest: String::new(),
-            detail: "this build does not recognise the integrity tier this fetch reported"
-                .to_owned(),
-        },
     }
 }
 
@@ -335,7 +326,6 @@ impl NudoxTools {
                         break;
                     }
                 }
-                SearchEvent::Latency { .. } => {}
                 SearchEvent::Done { .. } => {
                     terminated = true;
                     break;
@@ -449,7 +439,6 @@ impl NudoxTools {
                     }
                     rows.extend(batch.iter().cloned());
                 }
-                SearchEvent::Latency { .. } => {}
                 SearchEvent::Done { .. } => {
                     terminated = true;
                     break;
@@ -545,13 +534,10 @@ impl NudoxTools {
         cache: &mut PackageCache,
         lineage: &crate::wire::PackageLineageId,
     ) -> Option<std::sync::Arc<crate::store::package::PackageView>> {
-        match cache.get(lineage) {
-            Some(cached) => cached.clone(),
-            None => {
-                let fetched = corpus.package(lineage).await;
-                cache.insert(lineage.clone(), fetched.clone());
-                fetched
-            }
+        if let Some(cached) = cache.get(lineage) { cached.clone() } else {
+            let fetched = corpus.package(lineage).await;
+            cache.insert(lineage.clone(), fetched.clone());
+            fetched
         }
     }
 
@@ -631,7 +617,6 @@ impl NudoxTools {
                     break;
                 }
                 DocEvent::Failed(error) => return Err(McpError::Engine(error)),
-                _ => {}
             }
         }
         if !terminated {
@@ -726,14 +711,11 @@ impl NudoxTools {
         let mut order = Vec::with_capacity(args.keys.len());
         for raw in &args.keys {
             let key = self.resolve_key_or_address(raw).await?;
-            let index = match unique_by_key.get(&key) {
-                Some(&index) => index,
-                None => {
-                    let index = unique.len();
-                    unique_by_key.insert(key.clone(), index);
-                    unique.push(key);
-                    index
-                }
+            let index = if let Some(&index) = unique_by_key.get(&key) { index } else {
+                let index = unique.len();
+                unique_by_key.insert(key.clone(), index);
+                unique.push(key);
+                index
             };
             order.push(index);
         }
@@ -994,39 +976,36 @@ impl NudoxTools {
     /// `packages` (docs/MCP-SURFACE-PLAN.md §5.1): merges `list_packages` +
     /// `list_versions` — one question, "what is loaded, at what versions".
     pub async fn do_packages(&self, args: PackagesArgs) -> Result<LoadedPackagesResult, McpError> {
-        match args.package {
-            Some(requested) => {
+        if let Some(requested) = args.package {
+            let versions = self
+                .do_list_versions(ListVersionsArgs { package: requested })
+                .await?;
+            let lineage = versions.package.to_wire()?;
+            Ok(LoadedPackagesResult {
+                packages: vec![PackageWithVersions {
+                    lineage: versions.package.0,
+                    name: lineage.name.as_str().to_owned(),
+                    ecosystem: lineage.ecosystem.as_str().to_owned(),
+                    versions: versions.versions,
+                }],
+            })
+        } else {
+            let all = self.do_list_packages().await?;
+            let mut packages = Vec::with_capacity(all.packages.len());
+            for summary in all.packages {
                 let versions = self
-                    .do_list_versions(ListVersionsArgs { package: requested })
+                    .do_list_versions(ListVersionsArgs {
+                        package: PackageLineageDto(summary.lineage.clone()),
+                    })
                     .await?;
-                let lineage = versions.package.to_wire()?;
-                Ok(LoadedPackagesResult {
-                    packages: vec![PackageWithVersions {
-                        lineage: versions.package.0,
-                        name: lineage.name.as_str().to_owned(),
-                        ecosystem: lineage.ecosystem.as_str().to_owned(),
-                        versions: versions.versions,
-                    }],
-                })
+                packages.push(PackageWithVersions {
+                    lineage: summary.lineage,
+                    name: summary.name,
+                    ecosystem: summary.ecosystem,
+                    versions: versions.versions,
+                });
             }
-            None => {
-                let all = self.do_list_packages().await?;
-                let mut packages = Vec::with_capacity(all.packages.len());
-                for summary in all.packages {
-                    let versions = self
-                        .do_list_versions(ListVersionsArgs {
-                            package: PackageLineageDto(summary.lineage.clone()),
-                        })
-                        .await?;
-                    packages.push(PackageWithVersions {
-                        lineage: summary.lineage,
-                        name: summary.name,
-                        ecosystem: summary.ecosystem,
-                        versions: versions.versions,
-                    });
-                }
-                Ok(LoadedPackagesResult { packages })
-            }
+            Ok(LoadedPackagesResult { packages })
         }
     }
 
@@ -1621,8 +1600,7 @@ impl NudoxTools {
                     .versions
                     .iter()
                     .find(|v| v.version == version)
-                    .map(|v| v.symbol_count)
-                    .unwrap_or(0);
+                    .map_or(0, |v| v.symbol_count);
                 Ok(SelectVersionResult::Switched {
                     package: PackageLineageDto::from_wire(&package),
                     version: version.to_string(),
@@ -1635,19 +1613,6 @@ impl NudoxTools {
                 package: PackageLineageDto::from_wire(&package),
                 version: version.to_string(),
             }),
-            // `VersionEvent` is `#[non_exhaustive]` precisely so a future
-            // variant does not fail to compile here; only `Switched` and
-            // `NotLoaded` exist today. A third variant needs a real
-            // translation added above — until then this is reported rather
-            // than silently mapped into either existing outcome.
-            Ok(other) => {
-                tracing::warn!(
-                    ?other,
-                    "select_version: engine emitted a VersionEvent variant this tool set does not \
-                     yet translate"
-                );
-                Err(McpError::TruncatedStream)
-            }
             // Capacity-1 channel, exactly one event ever sent (§the engine's
             // own docs on `select_version`); an empty receiver here means the
             // spawned task never got to send, which is the same broken-stream
@@ -1782,7 +1747,7 @@ impl NudoxTools {
         while let Ok(event) = rx.recv_async().await {
             match event {
                 QueryEvent::Columns { columns: cols, .. } => {
-                    columns = cols.iter().map(|c| c.to_string()).collect();
+                    columns = cols.iter().map(std::string::ToString::to_string).collect();
                 }
                 QueryEvent::Rows { rows: batch, .. } => {
                     for row in batch.iter() {
@@ -1791,7 +1756,7 @@ impl NudoxTools {
                             break;
                         }
                         rows.push(QueryResultRow {
-                            cells: row.cells.iter().map(|c| c.to_string()).collect(),
+                            cells: row.cells.iter().map(std::string::ToString::to_string).collect(),
                         });
                     }
                 }
@@ -1800,7 +1765,6 @@ impl NudoxTools {
                     break;
                 }
                 QueryEvent::Failed { error, .. } => return Err(McpError::Engine(error)),
-                _ => {}
             }
         }
         if !terminated {
@@ -1953,9 +1917,8 @@ pub(crate) fn signature_text(token: &SigToken) -> &str {
         SigToken::Ident(text)
         | SigToken::Ty { text, .. }
         | SigToken::Generic(text)
-        | SigToken::Lifetime(text) => text.as_ref(),
+        |         SigToken::Lifetime(text) => text.as_ref(),
         SigToken::Ws => " ",
-        _ => "",
     }
 }
 

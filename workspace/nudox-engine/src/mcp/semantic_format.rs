@@ -21,6 +21,7 @@
 //! status, identity, and formatting metadata.
 
 use std::collections::HashSet;
+use std::fmt::Write;
 
 /// Why semantic search was unavailable.
 ///
@@ -186,27 +187,6 @@ impl SemanticResult {
         }
     }
 
-    pub(crate) fn ready(query: impl Into<String>, hits: Vec<SemanticHit>) -> Self {
-        Self::new(query, SemanticStatus::Ready, hits)
-    }
-
-    pub(crate) fn building(
-        query: impl Into<String>,
-        covered: u32,
-        total: u32,
-        hits: Vec<SemanticHit>,
-    ) -> Self {
-        Self::new(query, SemanticStatus::Building { covered, total }, hits)
-    }
-
-    pub(crate) fn unavailable(query: impl Into<String>, reason: SemanticUnavailable) -> Self {
-        Self::new(query, SemanticStatus::Unavailable(reason), Vec::new())
-    }
-
-    pub(crate) fn no_match(query: impl Into<String>) -> Self {
-        Self::new(query, SemanticStatus::NoMatch, Vec::new())
-    }
-
     pub(crate) fn with_facets(mut self, facets: impl IntoIterator<Item = SemanticFacet>) -> Self {
         self.facets = facets.into_iter().collect();
         self
@@ -243,14 +223,15 @@ pub(crate) fn render_semantic_markdown_with(
             output.push('\n');
         }
         SemanticStatus::Building { covered, total } => {
-            output.push_str(&format!(
-                "status: building · {covered}/{total} packages indexed · {}\n",
+            let _ = writeln!(
+                output,
+                "status: building · {covered}/{total} packages indexed · {}",
                 if visible_hits.is_empty() {
                     "no matches in indexed coverage".to_owned()
                 } else {
                     match_count(visible_hits.len())
                 }
-            ));
+            );
         }
         SemanticStatus::Unavailable(reason) => {
             output.push_str("status: unavailable · ");
@@ -306,7 +287,7 @@ pub(crate) fn render_semantic_markdown_with(
 
     for (rank, hit) in visible_hits.iter().enumerate() {
         output.push('|');
-        output.push_str(&format!(" {} |", rank + 1));
+        let _ = write!(output, " {} |", rank + 1);
         output.push(' ');
         output.push_str(&table_cell(&hit.declaration()));
         output.push_str(" | ");
@@ -332,7 +313,8 @@ pub(crate) fn render_semantic_markdown_with(
     if !evidence.is_empty() {
         output.push_str("\n### Documentation\n\n");
         for (rank, evidence) in evidence {
-            output.push_str(&format!(
+            let _ = write!(
+                output,
                 "{}. {}\n\n",
                 rank,
                 if evidence.is_clipped() {
@@ -340,7 +322,7 @@ pub(crate) fn render_semantic_markdown_with(
                 } else {
                     "exact"
                 }
-            ));
+            );
             output.push_str(&text_fence(evidence.text()));
             output.push_str("\n\n");
         }
@@ -506,21 +488,26 @@ mod tests {
 
     #[test]
     fn statuses_never_collapse_into_empty_results() {
-        let ready = render_semantic_markdown(&SemanticResult::ready(
+        let ready = render_semantic_markdown(&SemanticResult::new(
             "retry requests",
+            SemanticStatus::Ready,
             vec![hit("cargo:req#1", "retry")],
         ));
-        let building = render_semantic_markdown(&SemanticResult::building(
+        let building = render_semantic_markdown(&SemanticResult::new(
             "retry requests",
-            2,
-            5,
+            SemanticStatus::Building { covered: 2, total: 5 },
             vec![hit("cargo:req#1", "retry")],
         ));
-        let unavailable = render_semantic_markdown(&SemanticResult::unavailable(
+        let unavailable = render_semantic_markdown(&SemanticResult::new(
             "retry requests",
-            SemanticUnavailable::NoModelConfigured,
+            SemanticStatus::Unavailable(SemanticUnavailable::NoModelConfigured),
+            Vec::new(),
         ));
-        let no_match = render_semantic_markdown(&SemanticResult::no_match("retry requests"));
+        let no_match = render_semantic_markdown(&SemanticResult::new(
+            "retry requests",
+            SemanticStatus::NoMatch,
+            Vec::new(),
+        ));
 
         assert!(ready.contains("status: ready · 1 match"), "{ready}");
         assert!(building.contains("status: building · 2/5 packages indexed · 1 match"));
@@ -541,9 +528,10 @@ mod tests {
     /// build should not go looking for a rebuild step that no longer exists.
     #[test]
     fn the_remedy_reaches_the_rendered_markdown() {
-        let no_model = render_semantic_markdown(&SemanticResult::unavailable(
+        let no_model = render_semantic_markdown(&SemanticResult::new(
             "retry",
-            SemanticUnavailable::NoModelConfigured,
+            SemanticStatus::Unavailable(SemanticUnavailable::NoModelConfigured),
+            Vec::new(),
         ));
 
         assert!(
@@ -558,17 +546,20 @@ mod tests {
 
     #[test]
     fn unavailable_reasons_remain_distinguishable() {
-        let no_model = render_semantic_markdown(&SemanticResult::unavailable(
+        let no_model = render_semantic_markdown(&SemanticResult::new(
             "retry",
-            SemanticUnavailable::NoModelConfigured,
+            SemanticStatus::Unavailable(SemanticUnavailable::NoModelConfigured),
+            Vec::new(),
         ));
-        let empty_corpus = render_semantic_markdown(&SemanticResult::unavailable(
+        let empty_corpus = render_semantic_markdown(&SemanticResult::new(
             "retry",
-            SemanticUnavailable::EmptyCorpus,
+            SemanticStatus::Unavailable(SemanticUnavailable::EmptyCorpus),
+            Vec::new(),
         ));
-        let model_failed = render_semantic_markdown(&SemanticResult::unavailable(
+        let model_failed = render_semantic_markdown(&SemanticResult::new(
             "retry",
-            SemanticUnavailable::ModelFailed,
+            SemanticStatus::Unavailable(SemanticUnavailable::ModelFailed),
+            Vec::new(),
         ));
 
         assert!(no_model.contains("status: unavailable · no model directory configured"));
@@ -583,8 +574,9 @@ mod tests {
     fn documentation_preserves_markdown_metacharacters_newlines_and_backticks() {
         let documentation =
             "# Heading\n\nUse | pipes, *stars*, [links](url), and ```rust\nfn x() {}\n```\n終";
-        let result = SemanticResult::ready(
+        let result = SemanticResult::new(
             "find parser docs",
+            SemanticStatus::Ready,
             vec![hit("cargo:docs#1", "parser").with_evidence(
                 DocumentationEvidence::from_documentation(documentation, 10_000),
             )],
@@ -610,8 +602,9 @@ mod tests {
         assert_eq!(evidence.text(), "écl");
         assert!(evidence.is_clipped());
 
-        let rendered = render_semantic_markdown(&SemanticResult::ready(
+        let rendered = render_semantic_markdown(&SemanticResult::new(
             "retry",
+            SemanticStatus::Ready,
             vec![hit("cargo:docs#1", "retry").with_evidence(evidence)],
         ));
         assert!(rendered.contains("| clipped |"));
@@ -621,8 +614,9 @@ mod tests {
 
     #[test]
     fn duplicate_rows_are_deduplicated_by_stable_key_and_keep_rank_order() {
-        let result = SemanticResult::ready(
+        let result = SemanticResult::new(
             "retry",
+            SemanticStatus::Ready,
             vec![
                 hit("cargo:req#1", "first"),
                 hit("cargo:req#1", "duplicate"),
@@ -639,7 +633,11 @@ mod tests {
 
     #[test]
     fn empty_complete_results_have_no_empty_table() {
-        let rendered = render_semantic_markdown(&SemanticResult::ready("unknown concept", vec![]));
+        let rendered = render_semantic_markdown(&SemanticResult::new(
+            "unknown concept",
+            SemanticStatus::Ready,
+            vec![],
+        ));
 
         assert!(rendered.contains("status: no matches"));
         assert!(!rendered.contains("| # | symbol | kind | key | doc |"));
@@ -647,8 +645,11 @@ mod tests {
 
     #[test]
     fn partial_coverage_is_not_reported_as_no_match() {
-        let rendered =
-            render_semantic_markdown(&SemanticResult::building("backoff", 1, 4, Vec::new()));
+        let rendered = render_semantic_markdown(&SemanticResult::new(
+            "backoff",
+            SemanticStatus::Building { covered: 1, total: 4 },
+            Vec::new(),
+        ));
 
         assert!(rendered.contains("status: building · 1/4 packages indexed"));
         assert!(rendered.contains("no matches in indexed coverage"));
@@ -657,8 +658,9 @@ mod tests {
 
     #[test]
     fn facets_are_optional_and_scores_are_opt_in() {
-        let result = SemanticResult::ready(
+        let result = SemanticResult::new(
             "retry",
+            SemanticStatus::Ready,
             vec![hit("cargo:req#1", "retry").with_score(0.98765)],
         )
         .with_facets([
@@ -683,8 +685,9 @@ mod tests {
 
     #[test]
     fn malformed_scores_are_not_rendered_as_numbers() {
-        let result = SemanticResult::ready(
+        let result = SemanticResult::new(
             "retry",
+            SemanticStatus::Ready,
             vec![hit("cargo:req#1", "retry").with_score(f32::NAN)],
         );
         let rendered = render_semantic_markdown_with(

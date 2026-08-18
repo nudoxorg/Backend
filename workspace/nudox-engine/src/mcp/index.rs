@@ -327,7 +327,7 @@ fn prune(jobs: &mut HashMap<String, Arc<Job>>) {
             .finished
             .lock()
             .expect("job clock lock is never held across a panic");
-        finished.map_or(true, |at| at.elapsed() < TERMINAL_RETENTION)
+        finished.is_none_or(|at| at.elapsed() < TERMINAL_RETENTION)
     });
 }
 

@@ -2,14 +2,6 @@
 
 use std::sync::Arc;
 
-/// Maximum number of resident packages waiting for semantic indexing.
-///
-/// Semantic indexing is deliberately best-effort: name/type search becomes
-/// available at package arrival, while embedding may lag. A bounded queue
-/// keeps a slow or failed embedder from retaining the entire multi-package
-/// corpus indefinitely.
-pub(crate) const SEMANTIC_QUEUE_CAPACITY: usize = 4;
-
 // ---------------------------------------------------------------------------
 // Semantic indexing — incremental, off the load path
 // ---------------------------------------------------------------------------
@@ -202,7 +194,9 @@ fn documents_of(
 
 #[cfg(test)]
 mod tests {
-    use super::SEMANTIC_QUEUE_CAPACITY;
+    /// Maximum number of resident packages waiting for semantic indexing.
+    const SEMANTIC_QUEUE_CAPACITY: usize = 4;
+
     use std::sync::Arc;
 
     #[test]

@@ -109,6 +109,7 @@
 //!   cargo test -p nudox-engine --test real_memchr_generic_return -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -192,7 +193,7 @@ fn real_memchr_return_type_keeps_option_wrapper() {
                 let mut chain = format!("{err}");
                 let mut cursor: &dyn std::error::Error = &err;
                 while let Some(source) = std::error::Error::source(cursor) {
-                    chain.push_str(&format!("\n  caused by: {source}"));
+                    let _ = write!(chain, "\n  caused by: {source}");
                     cursor = source;
                 }
                 panic!("{} must lower without error:\n{chain}", name());

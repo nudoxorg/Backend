@@ -121,10 +121,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// `Content-Length` up front.
 fn dechunk(mut raw: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    loop {
-        let Some(size_end) = find_subslice(raw, b"\r\n") else {
-            break;
-        };
+    while let Some(size_end) = find_subslice(raw, b"\r\n") {
         let size_line = std::str::from_utf8(&raw[..size_end]).unwrap_or("").trim();
         let size_str = size_line.split(';').next().unwrap_or("").trim();
         let Ok(size) = usize::from_str_radix(size_str, 16) else {
@@ -211,10 +208,7 @@ async fn post_json_rpc(
     session_id: Option<&str>,
     body: &str,
 ) -> RawResponse {
-    let session_header = match session_id {
-        Some(id) => format!("Mcp-Session-Id: {id}\r\n"),
-        None => String::new(),
-    };
+    let session_header = session_id.map_or_else(String::new, |id| format!("Mcp-Session-Id: {id}\r\n"));
     let request = format!(
         "POST {path} HTTP/1.1\r\n\
          Host: {addr}\r\n\
@@ -257,7 +251,7 @@ async fn post_json_rpc(
 /// present as a silent hang until the deadline instead of a clear cause.
 async fn wait_for_memchr(engine: &EngineHandle) {
     let rx = engine.packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(3);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { name, .. })) if name == SharedStr::from("memchr") => {
@@ -268,10 +262,10 @@ async fn wait_for_memchr(engine: &EngineHandle) {
             {
                 panic!("memchr failed to load: {error}");
             }
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => return, // channel closed → already loaded
-            Err(_) => panic!(
-                "memchr corpus never seeded within 180s — the producer may have failed; \
+            Err(elapsed) => panic!(
+                "memchr corpus never seeded within 180s: {elapsed:?} — the producer may have failed; \
                  run with --nocapture to see tracing output"
             ),
         }

@@ -169,7 +169,7 @@ fn acquire_only(cache: &Path, purl: &str) -> (Integrity, PathBuf) {
             }
             Ok(IndexEvent::Failed { error, .. }) => panic!("{purl}: acquisition failed: {error}"),
             Ok(_) => {}
-            Err(_) => panic!("{purl}: the index stream closed before the package was acquired"),
+            Err(recv_err) => panic!("{purl}: the index stream closed before the package was acquired: {recv_err:?}"),
         }
     }
     drop(handle);
@@ -611,9 +611,11 @@ fn dropping_the_stream_handle_cancels_the_job_rather_than_orphaning_it() {
 
         let terminal = loop {
             match rx.recv() {
-                Ok(IndexEvent::Stage { .. }) => continue,
+                Ok(IndexEvent::Stage { .. }) => {}
                 Ok(other) => break other,
-                Err(_) => panic!("a cancelled job must report cancellation, not close silently"),
+                Err(recv_err) => panic!(
+                    "a cancelled job must report cancellation, not close silently: {recv_err:?}"
+                ),
             }
         };
         match terminal {

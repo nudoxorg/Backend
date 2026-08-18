@@ -112,9 +112,9 @@ async fn pinned_local_model_returns_semantic_results() {
     loop {
         match tokio::time::timeout_at(deadline, packages.recv_async()).await {
             Ok(Ok(nudox_engine::PackageLoadEvent::Loaded { .. })) => break,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(error)) => panic!("fixture loading failed: {error}"),
-            Err(_) => panic!("fixture corpus did not load within 30 seconds"),
+            Err(elapsed) => panic!("fixture corpus did not load within 30 seconds"),
         }
     }
 

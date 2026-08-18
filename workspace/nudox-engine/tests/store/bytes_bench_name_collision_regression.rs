@@ -40,6 +40,7 @@
 //! therefore asserts on content, not just success: `Bytes` must be present
 //! exactly once, and no bench-only symbol may be present at all.
 
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use nudox_engine::store::package::{PackageView, Provenance};
@@ -93,7 +94,7 @@ fn bytes_lowers_despite_its_bench_target_matching_the_crate_name() {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!(

@@ -860,7 +860,7 @@ fn expired_grace_denies_with_an_error_that_cannot_be_read_as_a_revocation() {
         UserId(GOOD_USER),
         good_key().fingerprint(),
         KeySource::Keychain,
-        SystemTime::now() - (GRACE_WINDOW + Duration::from_secs(3600)),
+        SystemTime::now() - (GRACE_WINDOW + Duration::from_hours(1)),
         SystemTime::now(),
         QuotaKnowledge::Unknown,
     ));

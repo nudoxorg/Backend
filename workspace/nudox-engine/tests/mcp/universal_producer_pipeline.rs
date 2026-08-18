@@ -78,7 +78,7 @@ fn key_of(hit: &nudox_engine::mcp::tools::SearchHitDoc) -> SymbolKeyDto {
 /// approaches this budget, that is a performance defect worth its own
 /// investigation — see `elapsed` in the panic below, which reports what it
 /// actually took so a future slowdown is visible instead of mysterious.
-const LOAD_BUDGET: Duration = Duration::from_secs(180);
+const LOAD_BUDGET: Duration = Duration::from_mins(3);
 
 async fn wait_until_loaded(tools: &NudoxTools) {
     let events = tools.engine().packages();
@@ -90,8 +90,8 @@ async fn wait_until_loaded(tools: &NudoxTools) {
         }
         Ok(Ok(other)) => panic!("unexpected package event while loading fixture: {other:?}"),
         Ok(Err(error)) => panic!("package event channel closed before fixture loaded: {error}"),
-        Err(_) => panic!(
-            "production engine did not load real fixture within {:?} (waited {:?})",
+        Err(elapsed) => panic!(
+            "production engine did not load real fixture within {:?} (waited {:?}, elapsed {elapsed:?})",
             LOAD_BUDGET,
             started.elapsed(),
         ),

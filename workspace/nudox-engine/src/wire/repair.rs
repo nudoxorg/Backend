@@ -114,7 +114,7 @@ pub struct LinkRepair {
 ///
 /// Not `#[non_exhaustive]`: it has exactly two states by construction and will
 /// never grow. `Authored` vs `Repaired` is the whole question.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum LinkOrigin {
     /// The source spelled this link the way rustdoc specifies. What we render

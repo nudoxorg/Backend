@@ -48,7 +48,7 @@ async fn loaded(tools: &NudoxTools, label: &str) {
         Ok(Ok(PackageLoadEvent::Loaded { .. })) => {}
         Ok(Ok(event)) => panic!("{label} did not load: {event:?}"),
         Ok(Err(error)) => panic!("{label} load stream closed: {error}"),
-        Err(_) => panic!("{label} did not load within five minutes"),
+        Err(elapsed) => panic!("{label} did not load within five minutes"),
     }
 }
 

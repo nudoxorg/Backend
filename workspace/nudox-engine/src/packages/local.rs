@@ -247,13 +247,10 @@ fn unsupported(language: ProducerLanguage, manifest: &'static str) -> Dependency
 /// cost the most and answer the fewest questions.
 fn cargo_dependencies(root: &Path) -> DependencyScan {
     let manifest_path = root.join("Cargo.toml");
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(_) => {
-            return DependencyScan::NoManifest {
-                root: root.to_path_buf(),
-            };
-        }
+    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+        return DependencyScan::NoManifest {
+            root: root.to_path_buf(),
+        };
     };
     let manifest: toml::Value = match text.parse() {
         Ok(value) => value,
@@ -327,13 +324,10 @@ fn cargo_one(root: &Path, name: &str, value: &toml::Value) -> Dependency {
 ///   that name, which is what the package manager itself does.
 fn npm_dependencies(root: &Path) -> DependencyScan {
     let manifest_path = root.join("package.json");
-    let text = match std::fs::read_to_string(&manifest_path) {
-        Ok(text) => text,
-        Err(_) => {
-            return DependencyScan::NoManifest {
-                root: root.to_path_buf(),
-            };
-        }
+    let Ok(text) = std::fs::read_to_string(&manifest_path) else {
+        return DependencyScan::NoManifest {
+            root: root.to_path_buf(),
+        };
     };
     let manifest: serde_json::Value = match serde_json::from_str(&text) {
         Ok(value) => value,
@@ -367,14 +361,13 @@ fn npm_one(root: &Path, name: &str, requirement: &str) -> Dependency {
         };
     }
 
-    if requirement.starts_with("workspace:") {
-        if let Some(sibling) = find_workspace_sibling(root, name) {
+    if requirement.starts_with("workspace:")
+        && let Some(sibling) = find_workspace_sibling(root, name) {
             return Dependency::Local {
                 name: name.to_owned(),
                 root: sibling,
             };
         }
-    }
 
     Dependency::Registry {
         name: name.to_owned(),

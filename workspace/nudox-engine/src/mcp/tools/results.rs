@@ -51,7 +51,7 @@ pub struct IntegrityReport {
 /// So every target lands in exactly one of these lists, and each row names the
 /// target it came from. Partial success is the normal case here, not an
 /// exceptional one, which is why it has a shape rather than an error code.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct IndexResult {
     /// Packages now in the corpus and visible to every other tool.
     pub indexed: Vec<IndexedPackage>,
@@ -78,7 +78,7 @@ pub struct IndexResult {
 }
 
 /// One package that reached the corpus.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct IndexedPackage {
     /// The target string this came from — the PURL or the path as the caller
     /// wrote it, or, for a dependency, the manifest declaration it was
@@ -162,7 +162,7 @@ pub struct UnscannedDependencies {
 /// hand-maintained list of types, so this enum, added hours later by another
 /// track, was not in it. The guard passed while the server panicked. See
 /// `tests/schemas.rs`, where the list is now derived rather than written out.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "snake_case")]
 #[schemars(extend("type" = "object"))]
 pub enum IndexPackageResult {
@@ -343,7 +343,7 @@ pub struct CompactSymbolReference {
 }
 
 /// Batched compact symbol result, preserving input order.
-#[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct SymbolsResult {
     /// Compact symbol records in the same order as the requested keys.
     pub symbols: Vec<CompactSymbolDoc>,
@@ -369,7 +369,7 @@ pub struct UsageRow {
 }
 
 /// The result of `find_usages`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct UsagesResult {
     /// The referencing symbols.
     pub usages: Vec<UsageRow>,
@@ -418,7 +418,7 @@ pub struct OccurrenceSymbol {
 }
 
 /// Exact occurrences owned by one symbol.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct GetOccurrencesResult {
     /// The symbol whose body owns these occurrences.
     pub owner: SymbolKeyDto,
@@ -439,7 +439,7 @@ pub struct GetOccurrencesResult {
 /// `key`'s own body. The two are structurally different relations (one row
 /// per referencing symbol vs. one row per exact reference with span offsets),
 /// so they stay distinct variants rather than being forced into one shape.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "direction", rename_all = "snake_case")]
 #[schemars(extend("type" = "object"))]
 pub enum RefsResult {
@@ -598,7 +598,7 @@ pub struct PackageSummary {
 }
 
 /// The result of `list_packages`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackagesResult {
     /// Every package currently loaded into the local corpus.
     pub packages: Vec<PackageSummary>,
@@ -644,7 +644,7 @@ pub struct VersionSummary {
 /// * `diff_versions` re-pairs churned declarations across two generations and
 ///   reports them as one `rekeyed` row carrying both keys, so you can find out
 ///   what a stale key *became* rather than only that it is stale.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ListVersionsResult {
     /// The package lineage these versions belong to.
     pub package: PackageLineageDto,
@@ -684,7 +684,7 @@ pub struct PackageWithVersions {
 /// *before* caching a key across a switch) and `diff_versions` (re-pairs a
 /// churned declaration's old and new key) both tell you which declarations
 /// are affected.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LoadedPackagesResult {
     /// Every loaded package matching the request, each with its loaded
     /// versions. Requesting one `package` that is not loaded still returns
@@ -822,7 +822,7 @@ pub struct QueryResultRow {
 }
 
 /// The result of `graph_query`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QueryResult {
     /// Column names, in the order the query's `@output` directives declared
     /// them. `rows[i].cells[j]` is the value of `columns[j]`.

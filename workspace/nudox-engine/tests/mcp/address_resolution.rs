@@ -20,6 +20,7 @@
 //! cargo test -p nudox-engine --test mcp_address_resolution -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -121,7 +122,7 @@ fn try_lower(name: &str, version: &str) -> Option<Arc<PackageView>> {
                 let mut chain = format!("{err}");
                 let mut cursor: &dyn std::error::Error = &err;
                 while let Some(source) = std::error::Error::source(cursor) {
-                    chain.push_str(&format!("\n  caused by: {source}"));
+                    let _ = write!(chain, "\n  caused by: {source}");
                     cursor = source;
                 }
                 panic!("{name}-{version} must lower without error:\n{chain}");
@@ -713,11 +714,11 @@ fn reexport_convergence_and_chain_depth_census() {
                     break;
                 };
                 match e.kind() {
-                    nudox_ir::entry::EntryInner::Owned(_) => break,
                     nudox_ir::entry::EntryInner::Reference(nudox_ir::index::Ref::Intro(next)) => {
                         current = *next;
                     }
-                    nudox_ir::entry::EntryInner::Reference(_) => break, // Local/Foreign: chain ends here
+                    nudox_ir::entry::EntryInner::Owned(_)
+                    | nudox_ir::entry::EntryInner::Reference(_) => break, // Local/Foreign: chain ends here
                 }
                 if depth > 16 {
                     eprintln!(

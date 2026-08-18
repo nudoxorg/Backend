@@ -124,9 +124,8 @@ fn a_key_the_service_never_issued(real: &ApiKey) -> ApiKey {
     let rotated: String = body
         .chars()
         .map(|c| match c {
-            '0'..='8' => ((c as u8) + 1) as char,
             '9' => '0',
-            'a'..='e' => ((c as u8) + 1) as char,
+            '0'..='8' | 'a'..='e' => ((c as u8) + 1) as char,
             'f' => 'a',
             other => other,
         })

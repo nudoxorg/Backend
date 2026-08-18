@@ -54,9 +54,9 @@ async fn wait_for_corpus(tools: &NudoxTools) {
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(PackageLoadEvent::Loaded { .. })) => return,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             Ok(Err(_)) => return, // channel closed → already loaded
-            Err(_) => panic!("corpus never seeded within 5 s"),
+            Err(elapsed) => panic!("corpus never seeded within 5 s"),
         }
     }
 }

@@ -157,6 +157,33 @@ pub(crate) async fn drive_load(
                         .record(&lineage, version.clone(), Arc::clone(&package))
                 {
                     inner.corpus.insert(Arc::clone(&resident)).await;
+
+                    // Record a freshly produced generation into the local IR
+                    // store, if one is configured. Gated on `TrustedLocal`
+                    // provenance deliberately: a package that arrived via
+                    // `store::persistence::PersistedSource`'s own replay
+                    // carries `Provenance::SnapshotLocal` and came FROM this
+                    // same store, so writing it straight back would be a
+                    // pointless (if harmless — `record_generation` no-ops on
+                    // unchanged content) round trip on every single restart.
+                    // Only a package this process actually produced this run
+                    // is new information worth persisting.
+                    #[cfg(feature = "local-persistence")]
+                    if resident.provenance() == crate::store::package::Provenance::TrustedLocal
+                        && let Some(store) = &inner.persistence
+                    {
+                        // `record` performs blocking filesystem + `sanakirja`
+                        // I/O. `block_in_place` runs it inline on this same
+                        // worker thread (marking it non-blocking-eligible for
+                        // the duration) rather than moving `resident`'s
+                        // borrowed `IrView` — which is not `Clone` — onto a
+                        // detached `spawn_blocking` task. Requires the
+                        // multi-thread runtime `Engine::start` always builds.
+                        tokio::task::block_in_place(|| {
+                            store.record(&lineage, version.as_deref(), resident.view());
+                        });
+                    }
+
                     // Hand the *resident* generation — not `package` — to the
                     // embedder. They differ whenever an older generation
                     // arrives after a newer one, and indexing the arriving one
@@ -167,14 +194,13 @@ pub(crate) async fn drive_load(
                     // wait for the model on the package-load path: dropping
                     // an over-capacity item preserves name/type liveness and
                     // makes the residency bound explicit.
-                    if let Some(tx) = &inner.semantic_tx {
-                        if tx.try_send(resident).is_err() {
+                    if let Some(tx) = &inner.semantic_tx
+                        && tx.try_send(resident).is_err() {
                             tracing::warn!(
                                 package = %lineage,
                                 "semantic queue full or closed; package remains searchable without embeddings"
                             );
                         }
-                    }
                 }
 
                 let event = PackageLoadEvent::Loaded {
@@ -183,7 +209,7 @@ pub(crate) async fn drive_load(
                     version,
                     symbol_count,
                     root: package_root_key(&package),
-                    metadata: crate::PackageMetadata::default(),
+                    metadata: Box::new(crate::PackageMetadata::default()),
                 };
                 // Ignore `Err`: no subscribers yet is fine.
                 let _ = inner.pkg_tx.send(event.clone());

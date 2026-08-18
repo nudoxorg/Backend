@@ -22,7 +22,7 @@ use crate::store::{
 };
 
 use crate::{
-    ClientCommand, JobEvent, JobId, PackageHistorySpec, PackageLoadEvent, PackageSpec,
+    JobEvent, JobId, PackageHistorySpec, PackageLoadEvent, PackageSpec,
     ProducerLanguage, ProjectEvent, SyncEvent, versions::VersionRegistry,
     wire::SharedStr,
 };
@@ -62,7 +62,7 @@ pub(crate) async fn watch_project(
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        tokio::select! { _ = cancel.cancelled() => return, _ = ticker.tick() => {} }
+        tokio::select! { () = cancel.cancelled() => return, _ = ticker.tick() => {} }
         let current = match scan_manifests(&root) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -113,7 +113,7 @@ pub(crate) fn sync_specs(root: &Path) -> std::io::Result<Vec<crate::PackageSpec>
     for (path, stamp) in manifests {
         if stamp.language != ProducerLanguage::Rust { continue; }
         let text = std::fs::read_to_string(&path)?;
-        let value: toml::Value = text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{path:?}: {e}")))?;
+        let value: toml::Value = text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{}: {e}", path.display())))?;
         let package = value.get("package").and_then(toml::Value::as_table)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Cargo.toml has no [package]"))?;
         let name = package.get("name").and_then(toml::Value::as_str)
@@ -174,6 +174,40 @@ pub struct EngineConfig {
     /// the full argument, and for why `None` is the *ordinary* configuration
     /// rather than a degraded one.
     pub embedder: crate::semantic::SharedEmbedder,
+    /// Root of this host's local, libpijul-backed IR store — one
+    /// `ir_vcs::IrRepository` per resident package lineage under this
+    /// directory. See `crate::store::persistence` and
+    /// `docs/IR-STORAGE-PLAN.md` §1a/P5.
+    ///
+    /// `None` is the *default* and means **no local persistence**: every
+    /// launch re-runs the producer over every package, exactly the behaviour
+    /// before this field existed. That is deliberate, not an oversight —
+    /// unlike `package_cache` (which only ever holds ephemeral, re-fetchable
+    /// unpacked archives), this directory accumulates a libpijul pristine +
+    /// changestore per resident package, indefinitely, and a library must
+    /// never start writing files of its own accord that a caller did not ask
+    /// for. A host that wants IR to survive a restart opts in explicitly —
+    /// exactly the way `heart::deployment::DeploymentProfile::embedded()`
+    /// already provisions `ir_repo_root: PathBuf` for the embedded GUI shape
+    /// (*"Root of the local libpijul `IrRepository`"*): pass that path (or any
+    /// directory this process owns) here to turn persistence on.
+    ///
+    /// On a successful produce the engine records the generation here
+    /// (`runtime::load::drive_load`); on start, everything already recorded
+    /// here is materialized into the corpus **before** the configured
+    /// sources are driven, so a lineage this store already holds is served
+    /// from disk rather than re-produced (`store::persistence::PersistedSource`).
+    /// Re-indexing unchanged sources does not grow the store: recording
+    /// defers to `IrRepository::record_generation`'s own per-symbol content
+    /// diff, which is a true no-op (no libpijul change recorded at all) when
+    /// nothing differs.
+    ///
+    /// Ignored unless this crate is built with the `local-persistence`
+    /// feature (in this crate's `default` feature set — see `Cargo.toml`).
+    /// With that feature off, this field is still present — so `EngineConfig`
+    /// has the same shape regardless of which features a caller built this
+    /// crate with — but every value is treated as `None`.
+    pub ir_repo_root: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -186,6 +220,7 @@ impl std::fmt::Debug for EngineConfig {
             .field("highlighter", &self.highlighter.is_some())
             .field("embedder", &self.embedder.is_some())
             .field("package_cache", &self.package_cache)
+            .field("ir_repo_root", &self.ir_repo_root)
             .finish()
     }
 }
@@ -268,13 +303,20 @@ pub(crate) struct EngineInner {
     pub(crate) sync_tx: broadcast::Sender<SyncEvent>,
     pub(crate) next_job: std::sync::atomic::AtomicU64,
     pub(crate) cancellations: Mutex<HashMap<JobId, tokio_util::sync::CancellationToken>>,
+    /// The local, libpijul-backed IR store, if `EngineConfig::ir_repo_root`
+    /// was set. Consulted by `runtime::load::drive_load` on every
+    /// successful, freshly-produced package (see that function's Ready arm)
+    /// so a generation persists across the *next* restart the moment it is
+    /// produced, not only at some later checkpoint.
+    #[cfg(feature = "local-persistence")]
+    pub(crate) persistence: Option<crate::store::persistence::PersistenceStore>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum JobStatus {
     Running,
-    Succeeded(SharedStr),
-    Failed(SharedStr),
+    Succeeded,
+    Failed,
     Cancelled,
 }
 
@@ -357,7 +399,22 @@ impl Engine {
             sync_tx,
             next_job: std::sync::atomic::AtomicU64::new(1),
             cancellations: Mutex::new(HashMap::new()),
+            #[cfg(feature = "local-persistence")]
+            persistence: config
+                .ir_repo_root
+                .clone()
+                .map(crate::store::persistence::PersistenceStore::new),
         });
+
+        // Materialize anything the local store already holds before driving
+        // `source` — `PersistedSource` (a no-op wrapper when `ir_repo_root`
+        // is `None`) is what makes a restart with no explicit specs at all
+        // still repopulate the corpus, and what stops a spec whose source
+        // tree has since been deleted from ever reaching a real producer for
+        // a lineage the local store already answers for. See
+        // `store::persistence`'s module docs.
+        #[cfg(feature = "local-persistence")]
+        let source = crate::store::persistence::PersistedSource::new(config.ir_repo_root, source);
 
         // Seed the corpus from the source on the runtime's thread pool.
         // We do this eagerly on start so that searches issued immediately
@@ -542,7 +599,7 @@ impl std::fmt::Debug for StreamHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamHandle")
             .field("generation", &self.generation)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -848,7 +905,7 @@ impl EngineHandle {
                     version,
                     symbol_count,
                     root: package_root_key(&pkg),
-                    metadata: pkg.metadata().clone(),
+                    metadata: Box::new(pkg.metadata().clone()),
                 };
                 // Backpressure: if the GUI is slow, we block here rather than
                 // dropping events.  This is the correct trade-off: the status

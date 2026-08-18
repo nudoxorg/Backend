@@ -21,9 +21,10 @@ const NEWER: &str = "0.4.33";
 const SYMBOL: &str = "STATIC_MAX_LEVEL";
 
 fn corpus_root(package: &str, version: &str) -> PathBuf {
-    let root = std::env::var_os("NUDOX_CORPUS_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result"));
+    let root = std::env::var_os("NUDOX_CORPUS_ROOT").map_or_else(
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result"),
+        PathBuf::from,
+    );
     root.join(format!("{package}-{version}"))
 }
 
@@ -49,7 +50,7 @@ fn history_spec() -> PackageHistorySpec {
 }
 
 fn settle(engine: &EngineHandle, lid: &PackageLineageId) {
-    let deadline = Instant::now() + Duration::from_secs(180);
+    let deadline = Instant::now() + Duration::from_mins(3);
     loop {
         let versions = engine.versions(lid);
         if versions.len() == 2 && versions.current().is_some() {
@@ -57,8 +58,7 @@ fn settle(engine: &EngineHandle, lid: &PackageLineageId) {
         }
         assert!(
             Instant::now() < deadline,
-            "real log lineage did not settle: {:?}",
-            versions
+            "real log lineage did not settle: {versions:?}"
         );
         std::thread::sleep(Duration::from_millis(250));
     }

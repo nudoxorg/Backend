@@ -58,8 +58,6 @@ pub enum SourcePolicy {
 /// The explicit source-vs-binary contract for the two JVM/.NET boundaries.
 pub fn source_policy(ty: PurlType) -> SourcePolicy {
     match ty {
-        // Maven resolution deliberately targets `-sources.jar`.
-        PurlType::Maven => SourcePolicy::SourceInput,
         // NuGet's `.nupkg` is a package container; compiled assemblies are
         // dependency inputs and source is only accepted when separately
         // provisioned by a source-link/source archive policy.
@@ -142,7 +140,7 @@ pub(crate) fn unpack(bytes: &[u8], ty: PurlType, scratch: &Path, dest: &Path) ->
     let source = if is_wrapped(ty) {
         deepest_sole_dir(&staging)?
     } else {
-        staging.clone()
+        staging
     };
 
     if let Some(parent) = dest.parent() {

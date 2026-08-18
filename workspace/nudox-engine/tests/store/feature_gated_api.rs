@@ -33,6 +33,7 @@
 //! cargo test -p nudox-store --test feature_gated_api -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use nudox_engine::store::{
@@ -83,7 +84,7 @@ fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("{name} must lower without error:\n{chain}");

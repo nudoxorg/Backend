@@ -100,6 +100,7 @@
 //! (tens of seconds), so the fixture is built once and every case is checked
 //! against that single lowering.
 
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -248,7 +249,7 @@ fn lower_fixture(case: &str, root: &Path) -> Arc<PackageView> {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("fixture must lower without error:\n{chain}");

@@ -692,7 +692,7 @@ impl PackageDescriptor {
     }
 }
 
-fn metadata_from_toml(text: &str, language: Language) -> crate::PackageMetadata {
+fn metadata_from_toml(text: &str, _language: Language) -> crate::PackageMetadata {
     let Ok(value) = text.parse::<toml::Value>() else {
         return crate::PackageMetadata::default();
     };
@@ -708,11 +708,7 @@ fn metadata_from_toml(text: &str, language: Language) -> crate::PackageMetadata 
     };
     let owner = metadata.and_then(|table| {
         table
-            .get(if language == Language::Rust {
-                "authors"
-            } else {
-                "authors"
-            })
+            .get("authors")
             .and_then(toml::Value::as_array)
             .and_then(|authors| authors.first())
             .and_then(toml::Value::as_str)
@@ -761,6 +757,10 @@ fn metadata_from_toml(text: &str, language: Language) -> crate::PackageMetadata 
         release_date: None,
         homepage,
         coverage: None,
+        // Set by the caller (`ProducerSource::load`) from the descriptor's
+        // own `PackageSource::version`, which is always known — unlike the
+        // rest of this struct, it is not manifest-derived.
+        version: None,
     }
 }
 
@@ -806,6 +806,8 @@ fn metadata_from_json(text: &str) -> crate::PackageMetadata {
         release_date: None,
         homepage: string("homepage"),
         coverage: None,
+        // See `metadata_from_toml`'s matching comment.
+        version: None,
     }
 }
 
@@ -928,7 +930,16 @@ impl IrSource for ProducerSource {
                 let language = desc.language;
                 let display_name = desc.source.name.as_str().to_owned();
                 let ecosystem = lineage.ecosystem.as_str().to_owned();
-                let metadata = desc.metadata();
+                // `desc.metadata()` reads only what a manifest states
+                // (description, license, …) and knows nothing about the
+                // version this particular generation was resolved at — that
+                // lives on `desc.source.version` instead, so it is stamped on
+                // here rather than inside `metadata()` itself, uniformly
+                // across every language branch (including the ones that
+                // return `PackageMetadata::default()` for lack of a parsed
+                // manifest).
+                let mut metadata = desc.metadata();
+                metadata.version = Some(desc.source.version.clone());
 
                 // Emit Discovered synchronously (no blocking work yet).
                 let discovered = Ok(LoadEvent::Discovered {

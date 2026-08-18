@@ -804,9 +804,7 @@ fn tool_arguments_round_trip() {
         &GraphQueryArgs {
             query: "query { Packages { lineage @output } }".into(),
             args: Some(
-                [("key".to_owned(), sample_key_dto().0)]
-                    .into_iter()
-                    .collect(),
+                std::iter::once(("key".to_owned(), sample_key_dto().0)).collect(),
             ),
             limit: Some(10),
             cursor: None,

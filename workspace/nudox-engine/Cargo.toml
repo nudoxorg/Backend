@@ -20,7 +20,10 @@ readme = "README.md"
 # and integration tests are merged below.
 
 [features]
-default = []
+# `local-persistence` is on by default — see that feature's own comment for
+# why a build that wants to shed libpijul/iroh/sanakirja should build with
+# `--no-default-features --features <whatever else it needs>` instead.
+default = ["local-persistence"]
 # `store::source::fixtures` — deterministic synthetic corpora for tests and dev
 # (LR-5). Same feature NAME as the store plane used, so consumers like
 # `lindsey` keep working unchanged.
@@ -33,11 +36,40 @@ pyrefly = ["nudox-languages/pyrefly"]
 # used by the `store_disambiguator_census` corpus measurement (`tests/store/
 # disambiguator_census.rs`). Off by default; changes no production behaviour.
 seal-census = ["nudox-languages/seal-census"]
+# Wires `EngineConfig::ir_repo_root` to a real on-disk `ir-vcs::IrRepository`
+# per resident package lineage (`store::persistence`), so produced IR survives
+# a process restart — IR-STORAGE-PLAN §1a/P5.
+#
+# `ir-vcs` is a heavy, libpijul-linked dependency (GPL, pinned exactly; also
+# pulls iroh and sanakirja — see `ir-vcs/Cargo.toml`'s own header). `index`
+# gates the same crate behind its `server` feature and leaves it OFF by
+# default for exactly this dependency-weight reason (see
+# `workspace/index/Cargo.toml`'s `server` feature comment, which also records
+# that the historical `ir-vcs → libpijul → zstd-seekable` / `index::pack`
+# `zstd-sys` duplicate-symbol clash is fixed at the source in
+# `workspace/vendor/zstd-seekable`, not merely avoided by feature gating — so
+# enabling this feature alongside anything that links `zstd-sys` is safe, just
+# heavier to build).
+#
+# This crate defaults it ON regardless, because `tests/local_persistence.rs`
+# — the hook-free, non-vacuous proof that produced IR survives a restart —
+# must pass under a plain `cargo test -p nudox-engine`, and because a host
+# that never sets `EngineConfig::ir_repo_root` (the common case today) pays
+# only the link-time cost, not a behavioural one: with `ir_repo_root: None`
+# nothing under this feature ever touches disk. A build that must shed the
+# dependency graph entirely (embedding this crate somewhere link size is
+# fixed) should build with `--no-default-features`; `ir_repo_root` is still
+# present on `EngineConfig` in that build (so the type is stable across
+# feature combinations) but is silently inert — see that field's doc comment.
+local-persistence = ["dep:ir-vcs"]
 
 [dependencies]
 nudox-ir = { path = "../ir/model" }
 nudox-languages = { path = "../compiler/languages" }
 heart = { path = "../heart" }
+# Local, libpijul-backed IR persistence (`store::persistence`). Optional —
+# see the `local-persistence` feature above.
+ir-vcs = { path = "../ir/vcs", optional = true }
 bytes = "1"
 # The ONNX embedder runtime (`embed::onnx`), compiled in unconditionally —
 # there is no `onnx` cargo feature. `features = ["onnx"]` is what turns on
@@ -52,6 +84,10 @@ futures = { workspace = true }
 indexmap = { workspace = true }
 pulldown-cmark = { workspace = true }
 rustc-hash = { workspace = true }
+# `heart::surface::{SigToken, SymbolHit}` fields are `smol_str::SmolStr`
+# (`crate::surface`, the `Serve<Symbols>` adapter) — same version `heart`
+# itself pins, so this adds no new dependency to the graph.
+smol_str = { version = "0.2", features = ["serde"] }
 # `schemars` + `serde` are what let the wire types *be* the MCP schema (LR-2):
 # the MCP tools derive their schemas from these types rather than mirroring them
 # by hand, so the protocol has exactly one definition.
@@ -169,6 +205,14 @@ path = "tests/archive_cache.rs"
 name = "remote_store"
 path = "tests/remote_store.rs"
 
+# Red-first spec for local IR persistence (IR-STORAGE-PLAN §1a/P5): produce a
+# package, delete its source tree, restart, and confirm it still resolves —
+# possible only if `EngineConfig::ir_repo_root` actually persisted the IR.
+[[test]]
+name = "local_persistence"
+path = "tests/local_persistence.rs"
+required-features = ["local-persistence"]
+
 [[test]]
 name = "engine_real_lineage"
 path = "tests/engine/real_lineage.rs"
@@ -217,6 +261,10 @@ required-features = ["fixtures"]
 [[test]]
 name = "engine_search_determinism"
 path = "tests/engine/search_determinism.rs"
+
+[[test]]
+name = "engine_serve_symbols"
+path = "tests/engine/serve_symbols.rs"
 
 [[test]]
 name = "engine_semantic_failure_modes"

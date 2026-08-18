@@ -76,10 +76,10 @@ async fn wait_for_corpus(engine: &nudox_engine::EngineHandle) {
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(nudox_engine::PackageLoadEvent::Loaded { .. })) => return,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(_)) => {},
             // Closed channel means every package landed before we subscribed.
             Ok(Err(_)) => return,
-            Err(_) => panic!("corpus never seeded within 5 s"),
+            Err(elapsed) => panic!("corpus never seeded within 5 s"),
         }
     }
 }

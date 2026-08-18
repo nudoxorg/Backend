@@ -762,14 +762,11 @@ fn router_doc_links_are_populated() {
 
     let view = package.view();
 
-    let router_with_links: Vec<_> = view
-        .entries()
-        .filter(|(_, e)| e.sym().name == "Router")
-        .filter(|(_, e)| !e.sym().doc_links.is_empty())
-        .collect();
-
     assert!(
-        !router_with_links.is_empty(),
+        view
+            .entries()
+            .filter(|(_, e)| e.sym().name == "Router")
+            .any(|(_, e)| !e.sym().doc_links.is_empty()),
         "axum::Router has intra-doc links in its documentation (e.g. \
          `Router::with_state`, `Router::route`) but none of the Router entries \
          in the lowered IR carry any doc_links. The engine cannot hyperlink \
@@ -1046,9 +1043,8 @@ fn impl_names_are_readable() {
     let mut bad: Vec<String> = Vec::new();
 
     for (id, entry) in view.entries() {
-        let k = match entry.kind().as_owned_kind() {
-            Some(k) => k,
-            None => continue,
+        let Some(k) = entry.kind().as_owned_kind() else {
+            continue;
         };
         if k.discriminant() != KindDiscriminant::Impl {
             continue;
@@ -1220,9 +1216,8 @@ fn non_impl_names_contain_no_angle_brackets_or_brackets() {
     let mut bad: Vec<String> = Vec::new();
 
     for (id, entry) in view.entries() {
-        let k = match entry.kind().as_owned_kind() {
-            Some(k) => k,
-            None => continue,
+        let Some(k) = entry.kind().as_owned_kind() else {
+            continue;
         };
         // Impl names legitimately contain `<`/`>` for generics; skip them here.
         if k.discriminant() == KindDiscriminant::Impl {
@@ -1282,11 +1277,9 @@ fn pin_project_macro_impls_are_present_and_correctly_parented() {
     let route_future_impls: Vec<(IntroId, String)> = view
         .entries()
         .filter(|(_, e)| {
-            if let Some(k) = e.kind().as_owned_kind() {
+            e.kind().as_owned_kind().is_some_and(|k| {
                 k.discriminant() == KindDiscriminant::Impl && e.sym().name.contains("RouteFuture")
-            } else {
-                false
-            }
+            })
         })
         .map(|(id, e)| (id, e.sym().name.clone()))
         .collect();

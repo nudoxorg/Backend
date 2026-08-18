@@ -20,7 +20,7 @@ use crate::mcp::key::SymbolKeyDto;
 use crate::mcp::tools::{
     CompactSymbolDoc, DiffVersionsResult, EdgeCoverageNote, GetOccurrencesResult,
     IndexPackageResult, IndexResult, ListVersionsResult, LoadedPackagesResult, PackagesResult,
-    QueryResult, QueryResultRow, ReferenceCoverage, RefsResult, SchemaResult, SearchHitDoc,
+    QueryResult, QueryResultRow, ReferenceCoverage, RefsResult, SchemaResult,
     SearchResult, SelectVersionResult, SemanticSearchResult, SemanticStatus, SymbolsResult,
     UsageRow, UsagesResult,
 };
@@ -289,9 +289,9 @@ impl MarkdownResult for SelectVersionResult {
                 symbol_count,
             } => {
                 out.push_str("## Version selected\n\n");
-                write!(
+                writeln!(
                     out,
-                    "package: {} · version: {} · symbols: {}\n",
+                    "package: {} · version: {} · symbols: {}",
                     inline(&package.0),
                     inline(version),
                     symbol_count
@@ -300,9 +300,9 @@ impl MarkdownResult for SelectVersionResult {
             }
             SelectVersionResult::NotLoaded { package, version } => {
                 out.push_str("## Version not loaded\n\n");
-                write!(
+                writeln!(
                     out,
-                    "package: {} · version: {}\n",
+                    "package: {} · version: {}",
                     inline(&package.0),
                     inline(version)
                 )
@@ -329,9 +329,9 @@ impl MarkdownResult for DiffVersionsResult {
                 loaded,
             } => {
                 out.push_str("## Diff unavailable\n\n");
-                write!(
+                writeln!(
                     out,
-                    "package: {} · from: {} · to: {}\n",
+                    "package: {} · from: {} · to: {}",
                     inline(&package.0),
                     inline(from_version),
                     inline(to_version)
@@ -403,9 +403,9 @@ impl MarkdownResult for IndexPackageResult {
                 joined_existing_job,
             } => {
                 out.push_str("## Index running\n\n");
-                write!(
+                writeln!(
                     out,
-                    "purl: {} · stage: {} · elapsed: {}s\n",
+                    "purl: {} · stage: {} · elapsed: {}s",
                     inline(purl),
                     inline(stage),
                     elapsed_seconds
@@ -549,7 +549,7 @@ impl MarkdownResult for QueryResult {
             } else {
                 let headers = (0..width)
                     .map(|index| {
-                        let name = self.columns.get(index).map(String::as_str).unwrap_or("");
+                        let name = self.columns.get(index).map_or("", String::as_str);
                         if name.is_empty() {
                             format!("#{index_plus_one}", index_plus_one = index + 1)
                         } else {
@@ -754,7 +754,6 @@ impl MarkdownResult for SemanticSearchResult {
                         crate::mcp::semantic_format::SemanticUnavailable::NoModelConfigured
                     }
                     "EmptyCorpus" => crate::mcp::semantic_format::SemanticUnavailable::EmptyCorpus,
-                    "ModelFailed" => crate::mcp::semantic_format::SemanticUnavailable::ModelFailed,
                     _ => crate::mcp::semantic_format::SemanticUnavailable::ModelFailed,
                 };
                 crate::mcp::semantic_format::SemanticStatus::Unavailable(reason)
@@ -902,7 +901,6 @@ fn diff_verdict(verdict: &DiffVerdict) -> (String, String) {
             "indeterminate".to_owned(),
             format!("tier: {}", key_tier_label(*tier)),
         ),
-        _ => ("unknown".to_owned(), String::new()),
     }
 }
 
@@ -918,7 +916,6 @@ fn timeline_change(change: &TimelineChange) -> String {
         TimelineChange::DocsChanged => "docs".to_owned(),
         TimelineChange::Unchanged => "unchanged".to_owned(),
         TimelineChange::Removed => "removed".to_owned(),
-        _ => "unknown".to_owned(),
     }
 }
 
@@ -945,12 +942,11 @@ fn render_signature_query(
     let mut comment_indices = (0..width)
         .filter(|index| Some(*index) != signature_index)
         .collect::<Vec<_>>();
-    if let Some(key_index) = columns.iter().position(|column| column == "key") {
-        if let Some(position) = comment_indices.iter().position(|index| *index == key_index) {
+    if let Some(key_index) = columns.iter().position(|column| column == "key")
+        && let Some(position) = comment_indices.iter().position(|index| *index == key_index) {
             comment_indices.remove(position);
             comment_indices.insert(0, key_index);
         }
-    }
 
     for row in rows {
         let mut body = String::new();
@@ -960,14 +956,13 @@ fn render_signature_query(
                 .filter(|name| !name.is_empty())
                 .cloned()
                 .unwrap_or_else(|| format!("#{index_plus_one}", index_plus_one = *index + 1));
-            let value = row.cells.get(*index).map(String::as_str).unwrap_or("");
+            let value = row.cells.get(*index).map_or("", String::as_str);
             push_query_comment(&mut body, &name, value);
         }
 
         let signature = signature_index
             .and_then(|index| row.cells.get(index))
-            .map(String::as_str)
-            .unwrap_or("");
+            .map_or("", String::as_str);
         if signature.is_empty() {
             body.push_str("// declaration: unavailable\n");
         } else {
@@ -1006,7 +1001,7 @@ fn table_owned(out: &mut String, headers: &[String], rows: &[Vec<String>]) {
     for row in rows {
         out.push('|');
         for index in 0..headers.len() {
-            let value = row.get(index).map(String::as_str).unwrap_or("");
+            let value = row.get(index).map_or("", String::as_str);
             write!(out, " {} |", escape_table_cell(value)).expect("String write");
         }
         out.push('\n');
@@ -1100,7 +1095,6 @@ fn signature_token(token: &SigToken) -> &str {
         | SigToken::Generic(text)
         | SigToken::Lifetime(text) => text,
         SigToken::Ws => " ",
-        _ => "",
     }
 }
 
@@ -1117,7 +1111,6 @@ fn key_tier_label(tier: KeyTierLabel) -> &'static str {
         KeyTierLabel::Span => "span",
         KeyTierLabel::Ordinal => "ordinal",
         KeyTierLabel::Unrecorded => "unrecorded",
-        _ => "unknown",
     }
 }
 
@@ -1134,7 +1127,7 @@ fn byte_progress(received: Option<u64>, total: Option<u64>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::mcp::key::PackageLineageDto;
-    use crate::mcp::tools::QueryResultRow;
+    use crate::mcp::tools::{QueryResultRow, SearchHitDoc};
     use crate::wire::{
         DiffRow, EcosystemId, GenerationId, IntroId, PackageLineageId, PackageName, Provenance,
         SharedStr, SymbolKey, Visibility,

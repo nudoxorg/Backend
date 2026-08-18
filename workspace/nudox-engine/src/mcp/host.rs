@@ -130,13 +130,13 @@ impl McpHost {
         let state_dir = crate::mcp::account::state_dir();
         let remembered = state_dir.as_deref().and_then(EndpointIdentity::load);
 
-        let (token, preference) = match &remembered {
-            Some(identity) => (
+        let (token, preference) = remembered.as_ref().map_or_else(
+            || (SessionToken::generate(), PortPreference::Any),
+            |identity| (
                 SessionToken::from_secret(identity.token.clone()),
                 PortPreference::Remembered(identity.port),
             ),
-            None => (SessionToken::generate(), PortPreference::Any),
-        };
+        );
         // Captured before `token` moves into `start_inner`: it is the secret
         // this launch is actually using regardless of what the bind below
         // does with the port, so there is no need to read it back out of the

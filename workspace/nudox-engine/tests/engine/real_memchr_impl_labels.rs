@@ -45,6 +45,7 @@
 //! cargo test -p nudox-engine --test real_memchr_impl_labels -- --ignored --nocapture
 //! ```
 
+use std::fmt::Write;
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
 use nudox_engine::store::{
@@ -112,7 +113,7 @@ fn memchr_impl_labels_name_their_real_traits() {
             let mut chain = format!("{err}");
             let mut cursor: &dyn std::error::Error = &err;
             while let Some(source) = std::error::Error::source(cursor) {
-                chain.push_str(&format!("\n  caused by: {source}"));
+                let _ = write!(chain, "\n  caused by: {source}");
                 cursor = source;
             }
             panic!("memchr must lower without error:\n{chain}");

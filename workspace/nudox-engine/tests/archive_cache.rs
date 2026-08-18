@@ -5,7 +5,8 @@ use std::thread;
 
 use futures::StreamExt;
 use nudox_engine::{
-    ArchiveCache, Purl,
+    acquire::ArchiveCache,
+    Purl,
     store::source::{
         IrSource, LoadEvent, LoadRequest,
         producer::{ProducerRegistry, ProducerSource},
@@ -145,8 +146,9 @@ fn cargo_archive() -> Vec<u8> {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    use std::fmt::Write;
+    sha2::Sha256::digest(bytes).iter().fold(String::new(), |mut acc, byte| {
+        let _ = write!(acc, "{byte:02x}");
+        acc
+    })
 }

@@ -98,15 +98,33 @@ fn start_and_collect(config: EngineConfig, specs: Vec<PackageSpec>) -> Vec<Strin
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
     while std::time::Instant::now() < deadline {
         match rx.recv_timeout(std::time::Duration::from_secs(30)) {
-            Ok(PackageLoadEvent::Loaded { package, .. }) => {
-                loaded.push(format!("{package:?}"));
+            Ok(PackageLoadEvent::Loaded {
+                name, symbol_count, ..
+            }) => {
+                assert!(
+                    symbol_count > 0,
+                    "a loaded package with zero symbols would make every \
+                     assertion below pass vacuously"
+                );
+                loaded.push(name.to_string());
                 break;
             }
             Ok(PackageLoadEvent::LoadFailed { error, .. }) => {
                 panic!("package load failed: {error}");
             }
             Ok(_) => continue,
-            Err(_) => break,
+            // A single quiet 30s window is not the same thing as a hung
+            // load: this environment's real `rust-analyzer` producer can
+            // spend 20-40s in workspace load + lowering before it emits
+            // anything at all (see the `ra_load`/`ra_lower` phase timings
+            // this binary logs), which is well inside the outer 180s budget
+            // but can exceed a single `recv_timeout` window. Only a genuinely
+            // closed channel (the sender dropped without ever producing a
+            // `Loaded`/`Failed`) ends the loop early; a mere timeout keeps
+            // polling until the outer `deadline` — the actual bound this
+            // function promises — is reached.
+            Err(flume::RecvTimeoutError::Timeout) => continue,
+            Err(flume::RecvTimeoutError::Disconnected) => break,
         }
     }
     drop(engine);

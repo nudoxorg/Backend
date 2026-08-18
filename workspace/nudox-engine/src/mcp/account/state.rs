@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn a_fresh_verification_is_active_and_allows_tool_calls() {
         let state = authorized_at(t0(), QuotaKnowledge::Unknown);
-        let posture = state.posture(t0() + Duration::from_secs(60));
+        let posture = state.posture(t0() + Duration::from_mins(1));
         assert_eq!(posture.tag(), "active");
         assert_eq!(posture.verdict(), Verdict::Allow);
         assert!(!posture.needs_urgent_attention());

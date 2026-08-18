@@ -724,18 +724,17 @@ impl PackageIndexes {
             // and already read by `chunk::head::shortest_alias_module_path`
             // one entry at a time; inverting it here at load time is the
             // "escape hatch that is already paid for" (§4.4).
-            for alias in entry.sym().aliases.iter() {
+            for alias in &entry.sym().aliases {
                 by_alias.insert(alias.clone(), intro);
                 // Name search is intentionally leaf-oriented. Keep the full
                 // public path in the exact alias index above, while also
                 // making its final binding visible to ordinary prefix search:
                 // `serde::de::Deserializer` must be discoverable by
                 // searching for `Deserializer`.
-                if let Some(leaf) = alias.rsplit("::").next() {
-                    if !leaf.is_empty() {
+                if let Some(leaf) = alias.rsplit("::").next()
+                    && !leaf.is_empty() {
                         by_name.insert(leaf, intro);
                     }
-                }
             }
 
             // -- type_refs ---------------------------------------------------
@@ -984,6 +983,32 @@ impl PackageView {
     /// Optional metadata extracted from the package source.
     pub fn metadata(&self) -> &crate::PackageMetadata {
         &self.metadata
+    }
+
+    /// The concrete version this generation was loaded at, when known.
+    ///
+    /// Forwarded from [`crate::PackageMetadata::version`] — see that field's
+    /// own doc comment for why a materialized view needs to be able to answer
+    /// this at all.
+    pub fn version(&self) -> Option<&str> {
+        self.metadata.version.as_deref()
+    }
+
+    /// Attach a resident version before sharing this view.
+    ///
+    /// A builder-style method rather than a constructor parameter: most
+    /// callers of [`PackageView::build`] have no version to give (tests that
+    /// predate the version-carrying `PackageMetadata` field, or genuinely
+    /// version-less fixtures), and threading an extra parameter through
+    /// `build`/`build_sealed`/`build_sealed_with_metadata` would touch every
+    /// existing call site for a field only some of them have. A caller that
+    /// already holds a `SealReport`-backed `PackageMetadata` (the production
+    /// load path, `store::source::producer::PackageDescriptor::metadata`)
+    /// sets `version` on it directly instead and passes it to
+    /// `build_sealed_with_metadata`.
+    pub fn with_version(mut self, version: Option<String>) -> Self {
+        self.metadata.version = version;
+        self
     }
 
     /// What sealing recorded about how this package's keys were minted.

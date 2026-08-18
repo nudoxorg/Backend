@@ -133,28 +133,58 @@ fn config_at(data_root: &Path) -> EngineConfig {
     }
 }
 
-/// What one run of the engine observed about the package: the symbol count and
-/// the root, both taken straight off the load event the GUI itself consumes.
+/// What one run of the engine observed about the package.
+///
+/// **Rendered signatures, not counts.** An earlier version of this spec compared
+/// `symbol_count` alone — which structurally *cannot* see the losses
+/// `ir_vcs::raise` documents, because `Record.super_types`, `Function.throws`,
+/// `Alias.bounds`, `Symbol.doc_links` and generic `variance` are **fields on
+/// existing entries**, not separate entries. Dropping every one of them leaves
+/// the count identical. That test passed while the defect it was written to
+/// catch sailed straight through it.
+///
+/// `HitRow::sig_preview` is the actual rendered declaration the GUI paints, so
+/// comparing it is comparing what a user sees.
 #[derive(Debug, Clone, PartialEq)]
 struct Observed {
     symbol_count: u64,
     has_root: bool,
+    /// `display_name -> rendered signature`, sorted by construction (BTreeMap).
+    signatures: std::collections::BTreeMap<String, String>,
+}
+
+/// Render a signature token list to a comparable string.
+fn render(tokens: &[nudox_engine::wire::SigToken]) -> String {
+    use nudox_engine::wire::SigToken as T;
+    tokens
+        .iter()
+        .map(|token| match token {
+            T::Kw(text) => format!("kw({text})"),
+            T::Ident(text) => format!("id({text})"),
+            T::Ty { text, target } => {
+                format!("ty({text},{})", if target.is_some() { "linked" } else { "-" })
+            }
+            T::Punct(text) => format!("p({text})"),
+            T::Ws => "_".to_owned(),
+            T::Generic(text) => format!("g({text})"),
+            T::Lifetime(text) => format!("lt({text})"),
+            _ => "?".to_owned(),
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn run_once(config: EngineConfig, specs: Vec<PackageSpec>) -> Option<Observed> {
     let engine = Engine::start_with_producer(config, specs);
     let rx = engine.packages();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    let mut observed = None;
+    let mut loaded: Option<(u64, bool)> = None;
     while std::time::Instant::now() < deadline {
         match rx.recv_timeout(std::time::Duration::from_secs(30)) {
             Ok(PackageLoadEvent::Loaded {
                 symbol_count, root, ..
             }) => {
-                observed = Some(Observed {
-                    symbol_count,
-                    has_root: root.is_some(),
-                });
+                loaded = Some((symbol_count, root.is_some()));
                 break;
             }
             Ok(PackageLoadEvent::LoadFailed { error, .. }) => {
@@ -165,8 +195,47 @@ fn run_once(config: EngineConfig, specs: Vec<PackageSpec>) -> Option<Observed> {
             Err(flume::RecvTimeoutError::Disconnected) => break,
         }
     }
+    let (symbol_count, has_root) = loaded?;
+
+    // Now ask the engine what it will actually *render* for every declaration
+    // the fixture defines. This is the half that can see field-level loss.
+    let mut signatures = std::collections::BTreeMap::new();
+    for term in ["Alpha", "Beta", "Base", "Derived", "generic_fn", "BoundedAlias"] {
+        let (_handle, events) = engine.search(
+            nudox_engine::search::SearchQuery {
+                text: term.to_owned(),
+                limit: 50,
+                ..Default::default()
+            },
+            nudox_engine::wire::Gen(1),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline {
+            match events.recv_timeout(std::time::Duration::from_secs(10)) {
+                Ok(nudox_engine::wire::SearchEvent::Section { rows, .. })
+                | Ok(nudox_engine::wire::SearchEvent::Merge { rows, .. }) => {
+                    for row in rows.iter() {
+                        signatures
+                            .insert(row.display_name.to_string(), render(&row.sig_preview));
+                    }
+                }
+                Ok(nudox_engine::wire::SearchEvent::Done { .. }) => break,
+                Ok(nudox_engine::wire::SearchEvent::Failed { error, .. }) => {
+                    panic!("search failed: {error:?}")
+                }
+                Ok(_) => continue,
+                Err(flume::RecvTimeoutError::Timeout) => continue,
+                Err(flume::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    }
+
     drop(engine);
-    observed
+    Some(Observed {
+        symbol_count,
+        has_root,
+        signatures,
+    })
 }
 
 fn scratch(case: &str) -> PathBuf {
@@ -251,5 +320,11 @@ fn distinct_impls_do_not_collide_in_the_store() {
         "the fixture declares two impls for two different nominal self-types; a \
          restored count below the produced count means they collided into one \
          entry in the store"
+    );
+    assert_eq!(
+        restored.signatures, produced.signatures,
+        "and their rendered signatures must still differ from each other exactly \
+         as they did when produced — collapsing to identical wire bytes would \
+         show up here even when the count survives"
     );
 }

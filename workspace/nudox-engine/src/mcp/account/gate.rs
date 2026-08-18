@@ -558,9 +558,7 @@ impl AccountGate {
     fn read_state(&self) -> GateState {
         self.inner
             .state
-            .read()
-            .map(|g| g.clone())
-            .unwrap_or_else(|e| e.into_inner().clone())
+            .read().map_or_else(|e| e.into_inner().clone(), |g| g.clone())
     }
 
     fn set_state(&self, state: GateState) {
@@ -971,7 +969,7 @@ mod tests {
             ),
             (
                 authorized(
-                    t_ago(crate::mcp::account::state::GRACE_WINDOW + Duration::from_secs(60)),
+                    t_ago(crate::mcp::account::state::GRACE_WINDOW + Duration::from_mins(1)),
                     QuotaKnowledge::Unknown,
                 ),
                 "offline_grace_expired",

@@ -42,7 +42,7 @@ async fn wait_for_corpus(engine: &nudox_engine::EngineHandle) {
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             Ok(Ok(nudox_engine::PackageLoadEvent::Loaded { .. })) => return,
-            Ok(Ok(_)) => continue, // LoadFailed or unknown variant
+            Ok(Ok(_)) => {}, // LoadFailed or unknown variant
             Ok(Err(_)) => {
                 // Channel closed — all packages were loaded before we subscribed.
                 // If the fixture source was fast, the Loaded event landed in the
@@ -50,7 +50,7 @@ async fn wait_for_corpus(engine: &nudox_engine::EngineHandle) {
                 // (the corpus is ready).
                 return;
             }
-            Err(_elapsed) => panic!("corpus never seeded within 5 s"),
+            Err(elapsed) => panic!("corpus never seeded within 5 s"),
         }
     }
 }

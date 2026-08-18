@@ -394,48 +394,6 @@ impl SemanticIndex {
         }
     }
 
-    pub(crate) fn open(path: std::path::PathBuf, info: &EmbedderInfo) -> Self {
-        let persistence = (info.durable_canonical).then(|| {
-            Arc::new(IndexPersistence {
-                path,
-                model_id: info.model_id.to_string(),
-                dimensions: info.dimensions,
-            })
-        });
-        let inner = persistence
-            .as_deref()
-            .and_then(|p| load_persisted(p).ok())
-            .filter(|saved| {
-                saved.model_id == info.model_id.to_string() && saved.dimensions == info.dimensions
-            })
-            .map(|saved| SemanticIndexInner {
-                vectors: saved
-                    .inner
-                    .vectors
-                    .into_iter()
-                    .map(|package| {
-                        (
-                            package.lineage,
-                            package
-                                .vectors
-                                .into_iter()
-                                .map(|vector| Vector {
-                                    intro: vector.intro,
-                                    values: Arc::from(vector.values),
-                                })
-                                .collect(),
-                        )
-                    })
-                    .collect(),
-                indexed: saved.inner.indexed,
-            })
-            .unwrap_or_default();
-        Self {
-            inner: Arc::new(RwLock::new(inner)),
-            persistence,
-        }
-    }
-
     /// Record that `lineage` has been embedded, with `vectors` as its content.
     ///
     /// Rejects any vector that is not `dimensions` wide or contains a
@@ -476,11 +434,10 @@ impl SemanticIndex {
         guard.indexed.insert(lineage);
         let persisted = self.persistence.as_deref().map(|p| snapshot(p, &guard));
         drop(guard);
-        if let Some(persisted) = persisted {
-            if let Err(error) = persist(persisted.0, persisted.1) {
+        if let Some(persisted) = persisted
+            && let Err(error) = persist(persisted.0, persisted.1) {
                 tracing::warn!(%error, "semantic index persistence failed");
             }
-        }
         Ok(())
     }
 
@@ -594,11 +551,6 @@ fn snapshot(
         persistence.path.clone(),
         serde_json::to_string(&persisted).expect("semantic index state is serializable"),
     )
-}
-
-fn load_persisted(persistence: &IndexPersistence) -> Result<PersistedIndex, String> {
-    let bytes = std::fs::read(&persistence.path).map_err(|e| e.to_string())?;
-    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 fn persist(path: std::path::PathBuf, contents: String) -> Result<(), String> {

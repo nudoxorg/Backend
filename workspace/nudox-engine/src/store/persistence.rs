@@ -71,13 +71,97 @@
 //! `PackageLoadEvent` variant for it because a persistence failure is not a
 //! *package* failure — the package still loads, just from source instead of
 //! from the local store.
+//!
+//! # Fidelity — why this module writes two stores (P5, part 2)
+//!
+//! An earlier version of this module raised every entry through
+//! [`ir_vcs::raise`] and stored *only* the resulting [`ir_vcs::wire::PayloadTable`]
+//! in the [`ir_vcs::IrRepository`]. That format is a **lossy** compression of
+//! the semantic IR — `raise.rs`'s own module docs document it — and every
+//! symbol restored through it silently lost its type information. Measured on
+//! `tests/persistence_fidelity.rs`'s fixture (real, not hypothetical):
+//!
+//! | declaration | produced | after restart via the wire round trip |
+//! |---|---|---|
+//! | `fn base_method(&self) -> u32` | `-> ty(u32,-)` | `-> id(?)` |
+//! | `fn generic_fn<T: Derived>(input: T) -> impl Base` | `(input: T) -> impl Base` | `(_) -> ?` |
+//! | `type BoundedAlias<T: Base> = Option<T>` | `= Option<T>` | `= any` |
+//!
+//! Every function lost its return type; every parameter lost its name and
+//! type. `symbol_count` stayed identical (22/22) — the loss is in *fields on
+//! existing entries*, invisible to an entry-count check, which is exactly why
+//! `tests/local_persistence.rs` (asserting only `symbol_count > 0`) passed
+//! while this shipped.
+//!
+//! ## Why the fix is not "make the wire format richer"
+//!
+//! The obvious-looking fix — extend [`ir_vcs::wire::TypeWire`]/`TypeRefWire`
+//! to cover the `Type` variants it currently folds into `TypeWire::Any` — was
+//! considered and rejected. Two structural facts, verified before writing any
+//! code:
+//!
+//! 1. [`ir_vcs::wire::PayloadTable`] is **concretely typed**, not generic:
+//!    `entries: BTreeMap<IntroId, (OwnedEntryPayload, Option<IntroId>)>`. There
+//!    is no type parameter to substitute a lossless payload into —
+//!    [`ir_vcs::repo::IrRepository::record_generation`] and `::materialize`
+//!    are hard-typed to this one wire shape, with no other entry point
+//!    (`raise.rs`'s own docs say so explicitly).
+//! 2. The wire payload is not serialized by this crate at all — it goes
+//!    through `ir_vcs::f1`, the NdIrF1 text format, whose key registry is
+//!    **vendored into the libpijul fork itself**
+//!    (`ir_vcs::f1::{KEY_*}` are re-exports of
+//!    `libpijul::nudox_f1::registry::{KEY_*}`). Widening what a symbol file
+//!    can encode means redesigning a format two layers below this crate, in a
+//!    vendored dependency — the opposite of a local, low-risk fix, and exactly
+//!    what `docs/IR-STORAGE-PLAN.md` §4-§5 already flags as out of scope for
+//!    wiring up local persistence.
+//!
+//! So the coupling is structural, not incidental, and forcing losslessness
+//! through `ir_vcs::wire` was ruled out rather than attempted.
+//!
+//! ## The fix actually taken: a lossless sidecar, the repo kept for versioning
+//!
+//! [`ir_vcs::IrRepository`] stays wired exactly as before — [`PersistenceStore::record`]
+//! still raises and records a generation into it, so the versioning machinery
+//! `docs/IR-STORAGE-PLAN.md` §1a/P5 wants (per-symbol diffing, generation
+//! history, a real base for future offline-branch work) keeps accumulating
+//! real history. What changes is that **nothing reads from it any more**.
+//!
+//! Instead, [`PersistenceStore::record`] additionally writes every live entry's
+//! *semantic* [`Entry`] — the exact value `IrView` already holds, no raise, no
+//! wire, no loss — into a small content-addressed sidecar
+//! ([`EntrySidecarManifest`] + [`heart::cache::DiskCas`]), and
+//! [`PersistenceStore::materialize_all`] reads **only** the sidecar. This is
+//! not a new idea invented for this fix: it is `store::remote::IrSnapshot`
+//! (`Vec<(IntroId, Entry, Option<IntroId>)>`), which already round-trips
+//! semantic entries losslessly for the remote plane, moved onto local disk and
+//! made content-addressed per entry so an unchanged symbol is not rewritten —
+//! `docs/IR-STORAGE-PLAN.md` §5 names this shape directly as the fix for the
+//! sibling "empty IR on macOS" problem, and §1's `GenerationRoot` is the same
+//! `Vec<(IntroId, ContentHash)>` shape the sidecar's manifest uses, scoped
+//! locally instead of the (still-unbuilt) remote plane.
+//!
+//! The cost, stated in the open: **two stores that can disagree.** If the
+//! sidecar manifest is missing, or names a hash the CAS does not have (a
+//! crash mid-write, disk corruption, a store written before this change), that
+//! is treated as "nothing usable here" — [`PersistenceStore::materialize_all`]
+//! skips the lineage entirely rather than serving whatever the *other* store
+//! happens to hold. Reproducing from source is strictly better than serving a
+//! degraded or partially-reconstructed copy; see the module-level "Failure
+//! posture" section above and `tests/persistence_fidelity.rs`'s own framing of
+//! the bar this has to clear.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use bytes::Bytes;
 use futures::stream::{self, BoxStream, StreamExt as _};
-use nudox_ir::change::PackageLineageId;
+use heart::ContentHash;
+use heart::cache::{CasError, DiskCas};
+use nudox_ir::apply::PristineIntroTable;
+use nudox_ir::change::{IntroId, PackageLineageId};
+use nudox_ir::entry::Entry;
 use nudox_ir::view::IrView;
 use serde::{Deserialize, Serialize};
 
@@ -123,45 +207,98 @@ impl PersistenceStore {
             .join(sanitize(lineage.name.as_str()))
     }
 
+    /// Root of the entry sidecar's [`DiskCas`], shared across every lineage
+    /// this store holds.
+    ///
+    /// One CAS rather than one per lineage: entries are content-addressed by
+    /// `(Entry, parent)` bytes alone (never by package identity), so an
+    /// identical declaration recurring across packages — a common shape
+    /// re-exported, a trivial accessor duplicated by a codegen macro — is
+    /// stored once. Dot-prefixed so it can never collide with
+    /// [`sanitize`]'s output for a real ecosystem name (which never begins
+    /// with `.`, since ecosystem identifiers are a fixed in-tree set, not
+    /// attacker- or user-controlled input).
+    fn entries_cas_root(&self) -> PathBuf {
+        self.root.join(".nudox-entries-cas")
+    }
+
     /// Record a **freshly produced** generation.
     ///
-    /// Never panics and never blocks a load on failure: an error opening or
-    /// writing the local repository is logged at `warn` and swallowed. The
-    /// package the caller just produced is still resident in memory for this
-    /// session — it simply will not survive the next restart, which is
-    /// exactly the pre-existing behaviour for a host that never sets
-    /// `ir_repo_root` at all.
+    /// Never panics and never blocks a load on failure. Three independent
+    /// steps run — metadata, the fidelity-critical entry sidecar, and the
+    /// `ir_vcs` versioning repo — each logged and swallowed on its own
+    /// failure rather than short-circuiting the others: a repo write failure
+    /// (versioning history only, never read back — see the module docs)
+    /// must not also cost the sidecar write that fidelity actually depends
+    /// on, and vice versa. The package the caller just produced is still
+    /// resident in memory for this session regardless of which steps
+    /// succeeded — it simply will not survive the next restart if the
+    /// sidecar step failed, which is exactly the pre-existing behaviour for
+    /// a host that never sets `ir_repo_root` at all.
     ///
-    /// Blocking: performs synchronous filesystem and `sanakirja` I/O. Callers
-    /// on an async runtime must run this via `spawn_blocking` (see
-    /// `runtime::load::drive_load`'s call site).
+    /// Blocking: performs synchronous filesystem I/O (and, for the repo
+    /// step, `sanakirja`). Callers on an async runtime must run this via
+    /// `spawn_blocking` (see `runtime::load::drive_load`'s call site).
     pub(crate) fn record(&self, lineage: &PackageLineageId, version: Option<&str>, view: &IrView) {
-        if let Err(error) = self.try_record(lineage, version, view) {
+        let dir = self.package_root(lineage);
+        if let Err(error) = std::fs::create_dir_all(&dir).map_err(|source| PersistenceError::Io {
+            path: dir.clone(),
+            source,
+        }) {
             tracing::warn!(
                 package = %lineage,
                 %error,
-                "local IR persistence: failed to record this generation; it will not survive a restart"
+                "local IR persistence: could not create the package directory; this generation will not survive a restart"
+            );
+            return;
+        }
+
+        if let Err(error) = write_metadata(&dir, lineage, version) {
+            tracing::warn!(
+                package = %lineage,
+                %error,
+                "local IR persistence: failed to write the lineage sidecar; this generation will not be discoverable at the next restart"
+            );
+        }
+
+        // Fidelity-critical: see the module docs' "The fix actually taken".
+        // This is what `materialize_all` reads back.
+        if let Err(error) = self.try_record_entries(&dir, view) {
+            tracing::warn!(
+                package = %lineage,
+                %error,
+                "local IR persistence: failed to record the lossless entry sidecar; this generation will not survive a restart"
+            );
+        }
+
+        // Versioning-only: accumulates `ir_vcs` history for future
+        // diff/offline-branch work. Not consulted by any read path today, so
+        // its failure never affects what a restart serves.
+        if let Err(error) = self.try_record_repo(&dir, lineage, view) {
+            tracing::warn!(
+                package = %lineage,
+                %error,
+                "local IR persistence: failed to record this generation into the ir_vcs repository (versioning history only; restart fidelity is unaffected)"
             );
         }
     }
 
-    fn try_record(
+    /// Raise `view` into `ir_vcs`'s wire `PayloadTable` and record it as one
+    /// generation of the per-lineage [`ir_vcs::IrRepository`].
+    ///
+    /// This is deliberately the *only* place `ir_vcs::raise` is still called
+    /// from this module — see the module docs for why its output is no
+    /// longer part of any read path.
+    fn try_record_repo(
         &self,
+        dir: &Path,
         lineage: &PackageLineageId,
-        version: Option<&str>,
         view: &IrView,
     ) -> Result<(), PersistenceError> {
-        let dir = self.package_root(lineage);
-        std::fs::create_dir_all(&dir).map_err(|source| PersistenceError::Io {
-            path: dir.clone(),
-            source,
-        })?;
-        write_metadata(&dir, lineage, version)?;
-
-        let repo = ir_vcs::IrRepository::open(&dir, lineage.clone(), CHANNEL).map_err(|source| {
+        let repo = ir_vcs::IrRepository::open(dir, lineage.clone(), CHANNEL).map_err(|source| {
             PersistenceError::Repository {
                 lineage: lineage.clone(),
-                path: dir.clone(),
+                path: dir.to_path_buf(),
                 source,
             }
         })?;
@@ -169,10 +306,44 @@ impl PersistenceStore {
         repo.record_generation(&table)
             .map_err(|source| PersistenceError::Repository {
                 lineage: lineage.clone(),
-                path: dir.clone(),
+                path: dir.to_path_buf(),
                 source,
             })?;
         Ok(())
+    }
+
+    /// Write every live entry's semantic [`Entry`] into the shared
+    /// content-addressed sidecar, then overwrite this lineage's
+    /// [`EntrySidecarManifest`] with the current live set.
+    ///
+    /// Content-addressing gives the same write-amplification property
+    /// `docs/IR-STORAGE-PLAN.md` §2.1 describes for `GenerationRoot`: an
+    /// entry whose `(Entry, parent)` bytes are unchanged from a prior
+    /// generation hashes to the same key, and [`DiskCas::put_keyed_sync`] is a
+    /// no-op (existence check, no write) when that key is already present —
+    /// so a one-symbol edit costs one blob write, not a whole-package
+    /// rewrite. The manifest itself (which entries are *currently* live) is
+    /// always rewritten in full; it is tens of bytes per entry, not the
+    /// entry payload.
+    fn try_record_entries(&self, dir: &Path, view: &IrView) -> Result<(), PersistenceError> {
+        let cas = DiskCas::open(self.entries_cas_root())?;
+        let mut entries = Vec::new();
+        for (intro, entry) in view.entries_sorted() {
+            let parent = view.parent_of(intro);
+            let record = EntryRecord {
+                entry: entry.clone(),
+                parent,
+            };
+            let bytes = serde_json::to_vec(&record).map_err(|source| PersistenceError::EntryCodec {
+                lineage: view.package().clone(),
+                intro,
+                source,
+            })?;
+            let hash = ContentHash::of_bytes(&bytes);
+            cas.put_keyed_sync(hash, Bytes::from(bytes))?;
+            entries.push((intro, hash));
+        }
+        write_entries_manifest(dir, &EntrySidecarManifest { entries })
     }
 
     /// Materialize every lineage this store currently holds, as
@@ -221,45 +392,58 @@ impl PersistenceStore {
         out
     }
 
+    /// Rebuild one lineage's [`PackageView`] **from the entry sidecar only**.
+    ///
+    /// Deliberately does not consult `ir_vcs::IrRepository::materialize` —
+    /// see the module docs' "The fix actually taken". Every early return here
+    /// (missing lineage sidecar, missing entries manifest, an empty live set)
+    /// is the same judgement call: treat "the lossless store is incomplete"
+    /// exactly like "the lossless store is absent", because a partial
+    /// reconstruction is a degraded copy the caller cannot distinguish from a
+    /// complete one — the one thing `tests/persistence_fidelity.rs` forbids.
     fn try_materialize_one(
         &self,
         dir: &Path,
     ) -> Result<Option<(Arc<PackageView>, Option<String>)>, PersistenceError> {
         let Some(metadata) = read_metadata(dir)? else {
-            // No sidecar — not a lineage directory this store wrote (or a
-            // write that crashed before the sidecar landed). Skip quietly:
-            // this is the same "nothing here yet" case as a missing root,
-            // just one level down.
+            // No lineage sidecar — not a lineage directory this store wrote
+            // (or a write that crashed before the sidecar landed). Skip
+            // quietly: this is the same "nothing here yet" case as a missing
+            // root, just one level down.
             return Ok(None);
         };
 
-        let repo =
-            ir_vcs::IrRepository::open(dir, metadata.lineage.clone(), CHANNEL).map_err(|source| {
-                PersistenceError::Repository {
-                    lineage: metadata.lineage.clone(),
-                    path: dir.to_path_buf(),
-                    source,
-                }
-            })?;
-        let table = repo
-            .materialize()
-            .map_err(|source| PersistenceError::Repository {
-                lineage: metadata.lineage.clone(),
-                path: dir.to_path_buf(),
-                source,
-            })?;
-        if table.is_empty() {
-            // A repository was opened here (e.g. `open_or_create_channel`
-            // ran) but nothing was ever successfully recorded into it — an
-            // interrupted first write, most likely. Nothing to serve.
+        let Some(manifest) = read_entries_manifest(dir)? else {
+            // The lineage sidecar exists but the entries manifest does not:
+            // either this generation predates the sidecar (an `ir_vcs`-only
+            // store from before this fix) or `try_record_entries` failed
+            // partway through a prior run. Either way there is no lossless
+            // copy to serve — recompute from source rather than falling back
+            // to the lossy `ir_vcs` repo.
+            return Ok(None);
+        };
+        if manifest.entries.is_empty() {
             return Ok(None);
         }
 
-        let entries = table
-            .live_entries_with_parent()
-            .map(|(id, payload, parent)| (id, payload.clone(), parent));
-        let bodies = std::collections::BTreeMap::default();
-        let view = ir_vcs::lower::build_ir_view(metadata.lineage.clone(), entries, &bodies);
+        let cas = DiskCas::open(self.entries_cas_root())?;
+        let mut table = PristineIntroTable::new();
+        for (intro, hash) in manifest.entries {
+            let bytes = cas.get_sync(hash)?.ok_or_else(|| PersistenceError::MissingEntry {
+                lineage: metadata.lineage.clone(),
+                intro,
+                hash,
+            })?;
+            let record: EntryRecord =
+                serde_json::from_slice(&bytes).map_err(|source| PersistenceError::EntryCodec {
+                    lineage: metadata.lineage.clone(),
+                    intro,
+                    source,
+                })?;
+            table.insert_live(intro, record.entry, record.parent);
+        }
+
+        let view = IrView::with_package(metadata.lineage.clone(), table);
         let package = Arc::new(PackageView::build(view, Provenance::SnapshotLocal));
         Ok(Some((package, metadata.version)))
     }
@@ -294,6 +478,43 @@ enum PersistenceError {
     #[error("lineage sidecar at {path}: {source}")]
     Metadata {
         path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("entries manifest at {path}: {source}")]
+    EntriesManifest {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// The entry sidecar's shared [`DiskCas`] failed to open, read, or write.
+    /// `#[from]` lets `?` convert directly at every `DiskCas` call site in
+    /// this module (see `try_record_entries`/`try_materialize_one`).
+    #[error("entry sidecar CAS: {0}")]
+    Cas(#[from] CasError),
+    /// A manifest named a hash the CAS does not have. Not necessarily
+    /// corruption — it is also what a torn write between `put_keyed_sync`
+    /// (per entry) and `write_entries_manifest` (whole-manifest) would look
+    /// like if the process died mid-`try_record_entries`. Either way this
+    /// lineage's sidecar is incomplete and must not be served partially —
+    /// see `try_materialize_one`'s doc comment.
+    #[error(
+        "entry {intro} for {lineage}: entries manifest names hash {hash}, \
+         which is not present in the sidecar CAS (corrupt or partially-written store)"
+    )]
+    MissingEntry {
+        lineage: PackageLineageId,
+        intro: IntroId,
+        hash: ContentHash,
+    },
+    /// One entry's sidecar payload failed to encode (on write) or decode (on
+    /// read). `Entry` is the semantic IR type this module now stores
+    /// verbatim, via plain `serde_json` — the same codec `IrSnapshot`
+    /// (`store::remote`) already proved works for it.
+    #[error("entry {intro} sidecar payload for {lineage}: {source}")]
+    EntryCodec {
+        lineage: PackageLineageId,
+        intro: IntroId,
         #[source]
         source: serde_json::Error,
     },
@@ -381,6 +602,75 @@ fn read_metadata(dir: &Path) -> Result<Option<Metadata>, PersistenceError> {
         ),
         version: sidecar.version,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// The entry sidecar — a lossless, content-addressed store for `Entry`
+// ---------------------------------------------------------------------------
+//
+// See the module docs' "Fidelity" section for why this exists and what it
+// replaces. Two on-disk pieces:
+//
+// - A shared `DiskCas` (root: `entries_cas_root()`) holding one blob per
+//   distinct `(Entry, parent)` value, keyed by its content hash.
+// - Per lineage, an `EntrySidecarManifest` (`.nudox-entries.json`, beside the
+//   lineage sidecar) naming which hashes are *currently* live for that
+//   package — `docs/IR-STORAGE-PLAN.md` §1's `GenerationRoot` shape
+//   (`Vec<(IntroId, ContentHash)>`), scoped to the local store.
+
+/// One CAS entry: a live declaration's semantic value plus its parent edge.
+///
+/// `parent` travels with the entry rather than living only in the manifest
+/// so that a single CAS blob is a complete, independently-verifiable record —
+/// `docs/IR-STORAGE-PLAN.md` §7's open question 3 ("where do parent edges
+/// live") is resolved here in favour of "inside the hashed payload": a
+/// symbol that is re-parented (moved between modules without changing
+/// otherwise) is, correctly, a *different* stored value rather than a
+/// mutation of the old one.
+#[derive(Serialize, Deserialize)]
+struct EntryRecord {
+    entry: Entry,
+    parent: Option<IntroId>,
+}
+
+/// One lineage's live generation: every currently-resident `IntroId`, paired
+/// with the [`ContentHash`] of its [`EntryRecord`] in the shared CAS.
+///
+/// Sorted by construction (built from [`IrView::entries_sorted`], which is
+/// itself deterministic — see that method's doc comment) so two writes of an
+/// unchanged generation produce byte-identical manifest files, not just
+/// byte-identical entries.
+#[derive(Serialize, Deserialize)]
+struct EntrySidecarManifest {
+    entries: Vec<(IntroId, ContentHash)>,
+}
+
+fn entries_manifest_path(dir: &Path) -> PathBuf {
+    dir.join(".nudox-entries.json")
+}
+
+fn write_entries_manifest(dir: &Path, manifest: &EntrySidecarManifest) -> Result<(), PersistenceError> {
+    let path = entries_manifest_path(dir);
+    let bytes =
+        serde_json::to_vec_pretty(manifest).map_err(|source| PersistenceError::EntriesManifest {
+            path: path.clone(),
+            source,
+        })?;
+    std::fs::write(&path, bytes).map_err(|source| PersistenceError::Io { path, source })
+}
+
+fn read_entries_manifest(dir: &Path) -> Result<Option<EntrySidecarManifest>, PersistenceError> {
+    let path = entries_manifest_path(dir);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(PersistenceError::Io { path, source }),
+    };
+    let manifest = serde_json::from_slice(&bytes).map_err(|source| PersistenceError::EntriesManifest {
+        path,
+        source,
+    })?;
+    Ok(Some(manifest))
 }
 
 // ---------------------------------------------------------------------------

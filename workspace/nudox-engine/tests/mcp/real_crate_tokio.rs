@@ -43,7 +43,7 @@
 //! a missing fixture is an environment problem, not a code defect.  The skip
 //! message is printed on `eprintln!` so it appears under `--nocapture`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nudox_engine::mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
@@ -126,7 +126,7 @@ fn make_tokio_tools() -> NudoxTools {
 /// Parse the `version` field out of `<root>/Cargo.toml` without pulling in
 /// a full TOML library. Returns `None` on parse failure; the caller provides a
 /// safe default.
-fn read_tokio_version(root: &PathBuf) -> Option<String> {
+fn read_tokio_version(root: &Path) -> Option<String> {
     let text = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
     for line in text.lines() {
         let line = line.trim();
@@ -147,7 +147,7 @@ fn read_tokio_version(root: &PathBuf) -> Option<String> {
 /// Times out after 120 s — generous for a local rust-analyzer run.
 async fn wait_for_tokio_corpus(tools: &NudoxTools) {
     let rx = tools.engine().packages();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + Duration::from_mins(2);
     loop {
         match tokio::time::timeout_at(deadline, rx.recv_async()).await {
             // `PackageLoadEvent::Loaded` deliberately does not carry
@@ -159,11 +159,10 @@ async fn wait_for_tokio_corpus(tools: &NudoxTools) {
             Ok(Ok(PackageLoadEvent::Loaded { name, .. })) if name == SharedStr::from("tokio") => {
                 return;
             }
-            Ok(Ok(PackageLoadEvent::Loaded { .. })) => continue,
-            Ok(Ok(_)) => continue,
+            Ok(Ok(PackageLoadEvent::Loaded { .. } | _)) => {}
             Ok(Err(_)) => return, // channel closed → already loaded
-            Err(_) => panic!(
-                "tokio corpus never seeded within 120 s — producer may have failed. \
+            Err(elapsed) => panic!(
+                "tokio corpus never seeded within 120 s: {elapsed:?} — producer may have failed. \
                  Run with --nocapture to see tracing output."
             ),
         }
@@ -833,7 +832,7 @@ async fn graph_query_trait_implementors_still_work() {
     let result = tools
         .do_graph_query(GraphQueryArgs {
             query: nudox_engine::graph::queries::FIND_IMPLEMENTORS.to_owned(),
-            args: Some([("key".to_owned(), key_str)].into_iter().collect()),
+            args: Some(std::iter::once(("key".to_owned(), key_str)).collect()),
             limit: Some(20),
             cursor: None,
         })
@@ -867,9 +866,7 @@ async fn graph_query_package_members_traversal_still_works() {
             }"#
             .to_owned(),
             args: Some(
-                [("lineage".to_owned(), "cargo:tokio".to_owned())]
-                    .into_iter()
-                    .collect(),
+                std::iter::once(("lineage".to_owned(), "cargo:tokio".to_owned())).collect(),
             ),
             limit: Some(50),
             cursor: None,
@@ -915,41 +912,44 @@ async fn graph_query_is_deterministic_over_tokio() {
     let tools = make_tokio_tools();
     wait_for_tokio_corpus(&tools).await;
 
-    let q = GraphQueryArgs {
+    let query_args = GraphQueryArgs {
         query: "{ Symbols { name @output kind @output } }".to_owned(),
         args: None,
         limit: Some(30),
         cursor: None,
     };
 
-    let a = tools.do_graph_query(q.clone()).await.expect("first call");
-    let b = tools.do_graph_query(q).await.expect("second call");
+    let first = tools
+        .do_graph_query(query_args.clone())
+        .await
+        .expect("first call");
+    let second = tools.do_graph_query(query_args).await.expect("second call");
 
     // Collect (name, kind) pairs from each run and sort so the comparison is
     // order-independent (hash-table iteration may vary across calls).
-    let mut pairs_a: Vec<(String, String)> = a
+    let mut pairs_a: Vec<(String, String)> = first
         .rows
         .iter()
-        .zip(std::iter::repeat(&a.columns))
+        .zip(std::iter::repeat(&first.columns))
         .map(|(row, cols)| {
-            let n = cols.iter().position(|c| c == "name").unwrap_or(0);
-            let k = cols.iter().position(|c| c == "kind").unwrap_or(1);
+            let name_col = cols.iter().position(|c| c == "name").unwrap_or(0);
+            let kind_col = cols.iter().position(|c| c == "kind").unwrap_or(1);
             (
-                row.cells.get(n).cloned().unwrap_or_default(),
-                row.cells.get(k).cloned().unwrap_or_default(),
+                row.cells.get(name_col).cloned().unwrap_or_default(),
+                row.cells.get(kind_col).cloned().unwrap_or_default(),
             )
         })
         .collect();
-    let mut pairs_b: Vec<(String, String)> = b
+    let mut pairs_b: Vec<(String, String)> = second
         .rows
         .iter()
-        .zip(std::iter::repeat(&b.columns))
+        .zip(std::iter::repeat(&second.columns))
         .map(|(row, cols)| {
-            let n = cols.iter().position(|c| c == "name").unwrap_or(0);
-            let k = cols.iter().position(|c| c == "kind").unwrap_or(1);
+            let name_col = cols.iter().position(|c| c == "name").unwrap_or(0);
+            let kind_col = cols.iter().position(|c| c == "kind").unwrap_or(1);
             (
-                row.cells.get(n).cloned().unwrap_or_default(),
-                row.cells.get(k).cloned().unwrap_or_default(),
+                row.cells.get(name_col).cloned().unwrap_or_default(),
+                row.cells.get(kind_col).cloned().unwrap_or_default(),
             )
         })
         .collect();

@@ -385,14 +385,10 @@ impl McpError {
                 Some("Call graph_schema for the queryable types and edges, then retry.")
             }
             // No next step beyond what `message` says: these need no `help`.
-            Self::InvalidArgument { .. }
-            | Self::Unauthenticated
-            | Self::Engine(EngineError::Chunk { .. })
-            | Self::Engine(EngineError::Cancelled)
-            | Self::TruncatedStream
-            | Self::UnknownResource(_)
-            | Self::Bind { .. }
-            | Self::Serve(_) => None,
+            Self::InvalidArgument { .. } | Self::Unauthenticated |
+Self::Engine(EngineError::Chunk { .. } | EngineError::Cancelled) |
+Self::TruncatedStream | Self::UnknownResource(_) | Self::Bind { .. } |
+Self::Serve(_) => None,
             Self::Engine(EngineError::PackageNotLoaded { attempted, .. }) => {
                 Some(if attempted.is_some() {
                     "The load for this package was attempted and failed — see data.engine.attempted \
@@ -595,13 +591,12 @@ impl McpError {
                         "requested": requested,
                         "resident": resident,
                     }),
-                    O::StaleKey => json!({}),
+                    O::StaleKey | O::Resolved { .. } => json!({}),
                     O::AddressConflict { message } => json!({ "conflict": message }),
                     O::ParseError { offset, message } => json!({
                         "offset": offset,
                         "reason": message,
                     }),
-                    O::Resolved { .. } => json!({}),
                 }
             }
 

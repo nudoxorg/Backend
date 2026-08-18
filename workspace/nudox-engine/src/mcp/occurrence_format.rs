@@ -70,11 +70,13 @@ pub enum OccurrenceStatus {
     /// The page is the complete result and has no unfinished backend state.
     Complete,
     /// Rows are usable, but the backend has more work or information to expose.
+    #[cfg_attr(not(test), expect(dead_code, reason = "reserved for partial occurrence pages"))]
     Partial {
         /// Optional human-readable reason, such as `indexing` or `more rows`.
         detail: Option<String>,
     },
     /// The occurrence projection is currently unavailable.
+    #[cfg_attr(not(test), expect(dead_code, reason = "reserved for unavailable occurrence pages"))]
     Unavailable {
         /// The reason an agent should act on or report.
         detail: String,
@@ -140,7 +142,7 @@ pub fn render_occurrences(
     output
 }
 
-fn group_by_target<'a>(rows: &'a [OccurrenceRow]) -> Vec<(&'a str, Vec<&'a OccurrenceRow>)> {
+fn group_by_target(rows: &[OccurrenceRow]) -> Vec<(&str, Vec<&OccurrenceRow>)> {
     let mut grouped: BTreeMap<&str, Vec<&OccurrenceRow>> = BTreeMap::new();
     for row in rows {
         grouped
