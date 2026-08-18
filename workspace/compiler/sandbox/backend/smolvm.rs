@@ -186,7 +186,8 @@ impl RootfsStore {
     ///
     /// Returns [`VmError::RootfsUnavailable`] when the directory does not exist.
     pub fn resolve(&self, digest: Option<&ImageDigest>) -> Result<PathBuf, VmError> {
-        let candidate = digest.map_or_else(|| self.root.join("base"), |d| self.root.join(d.to_string()));
+        let candidate =
+            digest.map_or_else(|| self.root.join("base"), |d| self.root.join(d.to_string()));
         if candidate.is_dir() {
             Ok(candidate)
         } else {
@@ -221,8 +222,12 @@ fn translate_network(net: &NetworkPolicy, resources: &mut VmResources) -> Result
                     if allowed_cidrs.is_empty() {
                         resources.allowed_cidrs = None;
                     } else {
-                        resources.allowed_cidrs =
-                            Some(allowed_cidrs.iter().map(std::string::ToString::to_string).collect());
+                        resources.allowed_cidrs = Some(
+                            allowed_cidrs
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
+                        );
                     }
                 }
                 DnsPolicy::AllowAll => {
@@ -230,8 +235,12 @@ fn translate_network(net: &NetworkPolicy, resources: &mut VmResources) -> Result
                     if allowed_cidrs.is_empty() {
                         resources.allowed_cidrs = None;
                     } else {
-                        resources.allowed_cidrs =
-                            Some(allowed_cidrs.iter().map(std::string::ToString::to_string).collect());
+                        resources.allowed_cidrs = Some(
+                            allowed_cidrs
+                                .iter()
+                                .map(std::string::ToString::to_string)
+                                .collect(),
+                        );
                     }
                 }
                 DnsPolicy::Allowlist(_names) => {
@@ -1014,7 +1023,7 @@ mod tests {
             args: vec!["--lower".into(), "my arg with spaces".into()],
             env: vec![],
             cwd: None,
-            timeout: std::time::Duration::from_secs(60),
+            timeout: std::time::Duration::from_mins(1),
             rlimits: GuestRlimits {
                 cpu_secs: NonZeroU64::new(900).unwrap(),
                 pids: NonZeroU32::new(64).unwrap(),
@@ -1139,51 +1148,42 @@ mod tests {
 
     // ── Smoke test (real VM boot, requires libkrun) ───────────────────────────
 
-    /// Attempt a real VM launch against a temp rootfs; asserts either success or a
-    /// typed libkrun-unavailable error. Requires the smolvm binary on PATH and a
-    /// pre-built guest rootfs pointed to by `NUDOX_GUEST_ROOTFS`.
+    /// Attempt a real VM launch against the configured rootfs.
+    ///
+    /// The strict runner checks the launcher and rootfs before invoking this
+    /// ignored test. A missing hypervisor, libkrun, or agent is therefore a
+    /// test failure here, never a successful skip.
     #[test]
     #[ignore = "requires libkrun binaries + NUDOX_GUEST_ROOTFS + smolvm binary on PATH"]
     fn smoke_real_launch_succeeds_or_typed_unavailable() {
-        let store = RootfsStore::from_env().expect("NUDOX_GUEST_ROOTFS must be set");
+        let store = RootfsStore::from_env().expect("strict runner must provide a guest rootfs");
         let rt = SmolvmRuntime::new(store);
         let cfg = VmConfig::builder()
             .cpus(NonZeroU32::new(1).unwrap())
             .memory_mib(NonZeroU64::new(512).unwrap())
             .build();
 
-        match rt.launch(&cfg) {
-            Ok(mut handle) => {
-                // VM booted: run a trivial command
-                let spec = RunSpec {
-                    command: PathBuf::from("/bin/true"),
-                    args: vec![],
-                    env: vec![],
-                    cwd: None,
-                    timeout: Duration::from_secs(10),
-                    rlimits: GuestRlimits {
-                        cpu_secs: NonZeroU64::new(10).unwrap(),
-                        pids: NonZeroU32::new(16).unwrap(),
-                        nofile: NonZeroU64::new(64).unwrap(),
-                        fsize_bytes: NonZeroU64::new(512 * 1024).unwrap(),
-                        mem_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
-                    },
-                };
-                let out = handle.exec(&spec).expect("exec should succeed");
-                handle.kill();
-                assert!(out.success(), "trivial /bin/true must exit 0");
-            }
-            Err(VmError::Launch { reason }) if reason.contains("libkrun") => {
-                // libkrun not installed — acceptable on CI without the binary deps
-                eprintln!("libkrun unavailable (expected on CI): {reason}");
-            }
-            Err(VmError::Launch { reason })
-                if reason.contains("smolvm") || reason.contains("not found") =>
-            {
-                eprintln!("smolvm binary not on PATH (expected on CI): {reason}");
-            }
-            Err(e) => panic!("unexpected launch error: {e:?}"),
-        }
+        let mut handle = rt
+            .launch(&cfg)
+            .expect("real VM launch must succeed; infrastructure blockers are failures");
+        // VM booted: run a trivial command.
+        let spec = RunSpec {
+            command: PathBuf::from("/bin/true"),
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            timeout: Duration::from_secs(10),
+            rlimits: GuestRlimits {
+                cpu_secs: NonZeroU64::new(10).unwrap(),
+                pids: NonZeroU32::new(16).unwrap(),
+                nofile: NonZeroU64::new(64).unwrap(),
+                fsize_bytes: NonZeroU64::new(512 * 1024).unwrap(),
+                mem_bytes: NonZeroU64::new(256 * 1024 * 1024).unwrap(),
+            },
+        };
+        let out = handle.exec(&spec).expect("exec should succeed");
+        handle.kill();
+        assert!(out.success(), "trivial /bin/true must exit 0");
     }
 
     // ── Golden fork (V-GOLD-1) ────────────────────────────────────────────────

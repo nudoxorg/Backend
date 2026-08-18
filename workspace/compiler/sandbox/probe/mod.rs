@@ -19,6 +19,48 @@ pub enum VirtSupport {
     Unavailable,
 }
 
+/// Whether this build can execute the real smolvm backend.
+///
+/// This is deliberately narrower than [`VirtSupport`]: Darwin may expose
+/// Hypervisor.framework while the repository's libkrun/smolvm test path is
+/// Linux-only. A VM test may only be considered runnable when this capability
+/// is [`Self::Available`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmExecutionCapability {
+    /// The supported host/backend combination can attempt a real VM.
+    Available,
+    /// Real VM execution cannot be attempted on this host.
+    Unavailable {
+        /// Stable reason for the unavailable capability.
+        reason: VmUnavailableReason,
+    },
+}
+
+impl VmExecutionCapability {
+    /// Whether real VM execution can be attempted.
+    pub const fn is_available(self) -> bool {
+        matches!(self, Self::Available)
+    }
+}
+
+/// Why the real smolvm execution capability is unavailable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VmUnavailableReason {
+    /// The repository's libkrun/smolvm integration is not supported on this OS.
+    UnsupportedPlatform,
+    /// The supported host lacks accessible hardware virtualization.
+    VirtualizationUnavailable,
+}
+
+impl std::fmt::Display for VmUnavailableReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::UnsupportedPlatform => "libkrun/smolvm real VM tests require Linux",
+            Self::VirtualizationUnavailable => "/dev/kvm is unavailable or inaccessible",
+        })
+    }
+}
+
 impl VirtSupport {
     /// Whether a microVM can be booted on this host.
     pub const fn available(self) -> bool {
@@ -49,6 +91,30 @@ pub fn probe_virtualization() -> VirtSupport {
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         VirtSupport::Unavailable
+    }
+}
+
+/// Probe the capability required by the real smolvm test/backend path.
+///
+/// Unlike [`probe_virtualization`], this does not treat macOS HVF as
+/// sufficient: the repository's pinned libkrun/smolvm integration is only
+/// runnable on Linux.
+pub fn probe_vm_execution() -> VmExecutionCapability {
+    #[cfg(target_os = "linux")]
+    {
+        if matches!(probe_virtualization(), VirtSupport::Kvm) {
+            VmExecutionCapability::Available
+        } else {
+            VmExecutionCapability::Unavailable {
+                reason: VmUnavailableReason::VirtualizationUnavailable,
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        VmExecutionCapability::Unavailable {
+            reason: VmUnavailableReason::UnsupportedPlatform,
+        }
     }
 }
 
@@ -253,5 +319,32 @@ mod tests {
         assert!(VirtSupport::Kvm.available());
         assert!(VirtSupport::Hvf.available());
         assert!(!VirtSupport::Unavailable.available());
+    }
+
+    #[test]
+    fn vm_execution_is_stricter_than_virtualization_probe() {
+        let capability = probe_vm_execution();
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            capability,
+            VmExecutionCapability::Unavailable {
+                reason: VmUnavailableReason::UnsupportedPlatform
+            }
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            capability.is_available(),
+            matches!(probe_virtualization(), VirtSupport::Kvm)
+        );
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        assert!(!capability.is_available());
+    }
+
+    #[test]
+    fn unavailable_vm_capability_cannot_be_available() {
+        let unavailable = VmExecutionCapability::Unavailable {
+            reason: VmUnavailableReason::UnsupportedPlatform,
+        };
+        assert!(!unavailable.is_available());
     }
 }

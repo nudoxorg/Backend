@@ -51,6 +51,14 @@ type ExternalTestMarker struct { Value int }
 func TestExternalMarker(t *testing.T) { _ = ExternalTestMarker{} }
 "#;
 
+const WINDOWS_ONLY_GO: &str = r#"//go:build windows
+
+package probe
+
+// WindowsOnly is intentionally unavailable on the current platform.
+type WindowsOnly struct{}
+"#;
+
 fn oracle_bin() -> &'static Path {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
@@ -81,6 +89,25 @@ fn fixture() -> tempfile::TempDir {
         .expect("write internal Go test source");
     std::fs::write(fixture.path().join("external_test.go"), EXTERNAL_TEST_GO)
         .expect("write external Go test source");
+    std::fs::write(fixture.path().join("windows_only.go"), WINDOWS_ONLY_GO)
+        .expect("write build-tagged Go source");
+    fixture
+}
+
+fn build_tag_fixture() -> tempfile::TempDir {
+    let fixture = tempfile::tempdir().expect("create temporary Go module");
+    std::fs::write(
+        fixture.path().join("go.mod"),
+        format!("module {MODULE}\n\ngo 1.22\n"),
+    )
+    .expect("write go.mod");
+    std::fs::write(
+        fixture.path().join("probe.go"),
+        "package probe\n\ntype Available struct{}\n",
+    )
+    .expect("write active Go source");
+    std::fs::write(fixture.path().join("windows_only.go"), WINDOWS_ONLY_GO)
+        .expect("write build-tagged Go source");
     fixture
 }
 
@@ -167,4 +194,69 @@ fn go_oracle_indexes_internal_and_external_test_packages_once_without_testmain()
             "{marker}'s exact source excerpt came from the wrong declaration: {excerpt:?}"
         );
     }
+}
+
+#[test]
+fn go_oracle_records_excluded_build_tagged_exported_declarations() {
+    let fixture = build_tag_fixture();
+    // SAFETY: this integration-test process owns the oracle invocation and
+    // writes one immutable binary path before the producer starts.
+    unsafe { std::env::set_var("NUDOX_GO_ORACLE_BIN", oracle_bin()) };
+
+    let source = PackageSource::new(fixture.path(), MODULE, "0.1.0");
+    let oracle_output = Command::new(oracle_bin())
+        .arg(source.root())
+        .output()
+        .expect("the self-contained Go module must invoke the oracle");
+    assert!(
+        oracle_output.status.success(),
+        "oracle failed: {}",
+        String::from_utf8_lossy(&oracle_output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&oracle_output.stdout).expect("oracle output must be JSON");
+    let package = json["packages"]
+        .as_array()
+        .and_then(|packages| {
+            packages
+                .iter()
+                .find(|p| p["importPath"] == format!("{MODULE}/probe"))
+        })
+        .expect("probe package must be present");
+
+    assert!(
+        !package["decls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|decl| decl["name"] == "WindowsOnly"),
+        "WindowsOnly should be excluded from the active declaration set"
+    );
+    let skipped = package["buildConstraints"]
+        .as_array()
+        .expect("excluded Go files must produce typed buildConstraints records");
+    let record = skipped
+        .iter()
+        .find(|record| {
+            record["file"]
+                .as_str()
+                .is_some_and(|file| file.ends_with("windows_only.go"))
+        })
+        .expect("windows_only.go constraint record must be present");
+    assert!(
+        record["constraints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|constraint| constraint == "windows"),
+        "constraint record must preserve the windows build tag: {record}"
+    );
+    assert!(
+        record["exportedDecls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|decl| decl["name"] == "WindowsOnly"),
+        "constraint record must preserve the skipped exported declaration: {record}"
+    );
 }

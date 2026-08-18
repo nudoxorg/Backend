@@ -64,8 +64,8 @@ use nudox_ir::{
     change::{EcosystemId, PackageLineageId, PackageName},
     kinds::{Const, Enum, Field, Function, Record, Trait, Variant, function::Receiver},
 };
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::go::producer::GoProducer;
+use nudox_languages::{PackageSource, produce};
 
 // ---------------------------------------------------------------------------
 // Fixture + oracle plumbing
@@ -129,11 +129,13 @@ fn lower_real_zap() -> PristineIntroTable {
     let lid = lineage();
 
     let (table, _cost) = heart::cost::measured("go-real-zap", &root, || {
-        produce(&GoProducer, &src, &lid, &nudox_ir::foreign::Unlinked).expect(
-            "go.uber.org/zap is a well-formed, dependency-light module; \
+        produce(&GoProducer, &src, &lid, &nudox_ir::foreign::Unlinked)
+            .expect(
+                "go.uber.org/zap is a well-formed, dependency-light module; \
              lowering must succeed end to end",
-        )
-    .table});
+            )
+            .table
+    });
     table
 }
 
@@ -182,9 +184,17 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         .iter()
         .find(|e| e.sym().name == "DebugLevel")
         .expect("DebugLevel must be a child of the Level enum");
-    assert!(debug_level.downcast::<Variant>().is_some(), "DebugLevel must be a Variant");
+    assert!(
+        debug_level.downcast::<Variant>().is_some(),
+        "DebugLevel must be a Variant"
+    );
     assert_eq!(
-        debug_level.downcast::<Variant>().unwrap().body().discr.as_deref(),
+        debug_level
+            .downcast::<Variant>()
+            .unwrap()
+            .body()
+            .discr
+            .as_deref(),
         Some("-1"),
         "DebugLevel = iota - 1 must lower with its exact go/types constant.Value, \"-1\""
     );
@@ -193,7 +203,12 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         .find(|e| e.sym().name == "FatalLevel")
         .expect("FatalLevel must be a child of the Level enum");
     assert_eq!(
-        fatal_level.downcast::<Variant>().unwrap().body().discr.as_deref(),
+        fatal_level
+            .downcast::<Variant>()
+            .unwrap()
+            .body()
+            .discr
+            .as_deref(),
         Some("5"),
         "FatalLevel is the 6th iota value (DebugLevel=-1..FatalLevel=5)"
     );
@@ -212,7 +227,12 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
     // heuristic-fidelity gap rather than a crash.
     let over_included: Vec<&str> = level_children
         .iter()
-        .filter(|e| matches!(e.sym().name.as_str(), "_minLevel" | "_maxLevel" | "InvalidLevel"))
+        .filter(|e| {
+            matches!(
+                e.sym().name.as_str(),
+                "_minLevel" | "_maxLevel" | "InvalidLevel"
+            )
+        })
         .map(|e| e.sym().name.as_str())
         .collect();
     assert_eq!(
@@ -238,7 +258,10 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         "func (l Level) String() has a value receiver, must lower to Receiver::Owned"
     );
     assert!(
-        level_string.sym().documentation.contains("lower-case ASCII"),
+        level_string
+            .sym()
+            .documentation
+            .contains("lower-case ASCII"),
         "Level.String's doc comment must survive lowering; got {:?}",
         level_string.sym().documentation
     );
@@ -264,7 +287,10 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         .iter()
         .find(|(_, e)| e.sym().name == "Sink")
         .expect("zap.Sink must be declared");
-    assert!(sink_entry.downcast::<Trait>().is_some(), "Sink (interface) must lower to Trait");
+    assert!(
+        sink_entry.downcast::<Trait>().is_some(),
+        "Sink (interface) must lower to Trait"
+    );
     let sink_method_names: Vec<String> = table
         .children_of(sink_id)
         .iter()
@@ -293,7 +319,11 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
         .find(|e| e.sym().name == "Entry" && e.downcast::<Field>().is_some())
         .expect("CheckedEntry must have an Entry field child");
     assert!(
-        embedded_field.sym().attrs.iter().any(|a| a.token == "embedded"),
+        embedded_field
+            .sym()
+            .attrs
+            .iter()
+            .any(|a| a.token == "embedded"),
         "CheckedEntry's embedded `Entry` field must carry the \"embedded\" AttrTok; got {:?}",
         embedded_field.sym().attrs
     );
@@ -323,10 +353,11 @@ fn lowers_the_real_zap_logging_package_end_to_end() {
     );
 
     // ---- package-level const, for completeness (not just types/funcs) ----
-    let has_a_const = table
-        .iter()
-        .any(|(_, e)| e.downcast::<Const>().is_some());
-    assert!(has_a_const, "at least one package-level Const must be declared somewhere in zap");
+    let has_a_const = table.iter().any(|(_, e)| e.downcast::<Const>().is_some());
+    assert!(
+        has_a_const,
+        "at least one package-level Const must be declared somewhere in zap"
+    );
 
     eprintln!(
         "lowered {} live entries from go.uber.org/zap@1.28.0 (15 packages) via the real oracle",

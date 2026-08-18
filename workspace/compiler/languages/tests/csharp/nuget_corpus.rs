@@ -35,13 +35,9 @@
 
 use std::path::{Path, PathBuf};
 
-use nudox_ir::{
-    entry::Symbol,
-    lower::Lowering,
-    package::PackageId,
-};
-use nudox_languages::{PackageSource, Producer, ProducerError};
+use nudox_ir::{entry::Symbol, lower::Lowering, package::PackageId};
 use nudox_languages::csharp::CSharpProducer;
+use nudox_languages::{PackageSource, Producer, ProducerError};
 
 fn root(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -334,10 +330,7 @@ fn lower(
             source: Box::new(e) as Box<dyn std::error::Error + Send + Sync>,
         })?;
 
-        let names: Vec<String> = package
-            .iter()
-            .map(|(_, e)| e.sym().name.clone())
-            .collect();
+        let names: Vec<String> = package.iter().map(|(_, e)| e.sym().name.clone()).collect();
 
         Ok::<_, ProducerError>((extraction.types.len(), names))
     });

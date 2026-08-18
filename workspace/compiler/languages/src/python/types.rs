@@ -482,10 +482,7 @@ fn lower_builtin(clean: &str) -> Option<Type> {
 
 /// Strip pyrefly's `@line:col-col` location suffix from a qualified name.
 pub fn strip_loc(name: &str) -> &str {
-    match name.find('@') {
-        Some(pos) => &name[..pos],
-        None => name,
-    }
+    name.find('@').map_or(name, |pos| &name[..pos])
 }
 
 /// Lower a list of [`GenericParamData`] into IR [`GenericParam`]s.
@@ -930,7 +927,7 @@ mod tests {
         // known_ids contains both "my_pkg.Holder" and "my_pkg.Payload".
         let known: KnownIds = ["my_pkg.Holder", "my_pkg.Payload"]
             .iter()
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
         // Lower a return type that names Payload — which is not yet declared.
@@ -1016,7 +1013,9 @@ mod tests {
         use nudox_ir::kinds::Record;
 
         let mut sink = make_sink();
-        let known: KnownIds = ["my_pkg.Container"].iter().map(|s| s.to_string()).collect();
+        let known: KnownIds = std::iter::once("my_pkg.Container")
+            .map(std::string::ToString::to_string)
+            .collect();
 
         // Container[int]
         let applied = lower_type(
@@ -1075,7 +1074,9 @@ mod tests {
         use nudox_ir::kinds::Record;
 
         let mut sink = make_sink();
-        let known: KnownIds = ["my_pkg.Base"].iter().map(|s| s.to_string()).collect();
+        let known: KnownIds = std::iter::once("my_pkg.Base")
+            .map(std::string::ToString::to_string)
+            .collect();
 
         let params = vec![GenericParamData {
             name: "T".to_string(),
@@ -1227,7 +1228,7 @@ mod tests {
         match lowered {
             Type::Tuple(ref elements) => {
                 assert_eq!(elements.len(), 2);
-                for e in elements.iter() {
+                for e in elements {
                     assert!(
                         matches!(e, TupleElement::Positional(_)),
                         "Python tuple elements must be Positional, not Named; got {e:?}"

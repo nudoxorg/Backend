@@ -118,6 +118,7 @@ fn python3_ok() -> bool {
 #[test]
 fn pool_runs_jobs_concurrently_not_serialized() {
     if !python3_ok() {
+        eprintln!("SKIP pool_runs_jobs_concurrently_not_serialized: python3 is unavailable");
         return;
     }
 
@@ -230,6 +231,7 @@ fn short_wall_config(bin: PathBuf) -> WorkerPoolConfig {
 #[test]
 fn hung_worker_hits_wall_and_pool_stays_usable() {
     if !python3_ok() {
+        eprintln!("SKIP hung_worker_hits_wall_and_pool_stays_usable: python3 is unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -271,6 +273,7 @@ fn hung_worker_hits_wall_and_pool_stays_usable() {
 #[test]
 fn submit_cancel_mid_job_returns_cancelled() {
     if !python3_ok() {
+        eprintln!("SKIP submit_cancel_mid_job_returns_cancelled: python3 is unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();

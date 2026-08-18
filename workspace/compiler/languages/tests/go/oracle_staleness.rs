@@ -151,7 +151,7 @@ fn schema_const(src: &str, name: &str) -> Option<u32> {
     let idx = src.find(&needle)?;
     src[idx + needle.len()..]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>()
         .parse()
         .ok()

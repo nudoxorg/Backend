@@ -46,6 +46,7 @@ mod tests;
 
 use std::{
     fmt,
+    fmt::Write,
     hash::Hash,
     path::{Path, PathBuf},
 };
@@ -715,29 +716,29 @@ fn render_identity_failure(
         out.push_str(&collision.to_string());
     }
     if lost.len() > SHOWN {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "\n  … and {} further dropped declaration(s)",
             lost.len() - SHOWN
-        ));
+        );
     }
     for forced in order_dependent.iter().take(SHOWN) {
-        out.push_str(&format!(
+        let segment_prefix = forced.segments.iter().fold(String::new(), |mut acc, s| {
+            let _ = write!(acc, "{s}::");
+            acc
+        });
+        let _ = write!(
+            out,
             "\n  order-dependent: {:?} `{}{}` — {} declarations shared one key",
-            forced.kind,
-            forced
-                .segments
-                .iter()
-                .map(|s| format!("{s}::"))
-                .collect::<String>(),
-            forced.name,
-            forced.group,
-        ));
+            forced.kind, segment_prefix, forced.name, forced.group,
+        );
     }
     if order_dependent.len() > SHOWN {
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "\n  … and {} further order-dependent group(s)",
             order_dependent.len() - SHOWN
-        ));
+        );
     }
     out
 }

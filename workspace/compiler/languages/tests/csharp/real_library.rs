@@ -36,8 +36,8 @@ use nudox_ir::{
     lower::Lowering,
     package::PackageId,
 };
-use nudox_languages::{PackageSource, Producer};
 use nudox_languages::csharp::CSharpProducer;
+use nudox_languages::{PackageSource, Producer};
 
 /// The library this test asserts against when nothing overrides it.
 const DEFAULT_NAME: &str = "Polly.Core";
@@ -151,7 +151,8 @@ fn lower_real_package(
     });
 
     assert_eq!(
-        extraction.diagnostics.error_type_count, 0,
+        extraction.diagnostics.error_type_count,
+        0,
         "every type in {} must bind; an error type means the extraction is degraded \
          and every count below would be measuring the damage instead of the library",
         source.name.as_str()
@@ -162,11 +163,8 @@ fn lower_real_package(
     // filters a container without filtering its children. `Lowering::finish`
     // would then reject the whole package, so the invariant is checked on real
     // code and not only on the fixture.
-    let declared: std::collections::HashSet<&str> = extraction
-        .types
-        .iter()
-        .map(|t| t.doc_id.as_str())
-        .collect();
+    let declared: std::collections::HashSet<&str> =
+        extraction.types.iter().map(|t| t.doc_id.as_str()).collect();
 
     for decl in &extraction.types {
         if let Some(enclosing) = &decl.enclosing {
@@ -318,8 +316,8 @@ fn real_library_events_indexers_and_explicit_implementations_survive() {
     let named = |name: &str| entries.iter().find(|e| e.sym().name == name);
 
     // Events. `PropertyChanged` is the whole point of ObservableObject.
-    let property_changed = named("PropertyChanged")
-        .expect("ObservableObject.PropertyChanged must be lowered");
+    let property_changed =
+        named("PropertyChanged").expect("ObservableObject.PropertyChanged must be lowered");
     assert!(
         property_changed
             .sym()

@@ -77,6 +77,12 @@ const DEFAULT_PACKAGE_API: &[(&str, &str)] = &[
     ("Module", "arch"),
 ];
 
+fn default_package_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../result")
+        .join(DEFAULT_PACKAGE.0)
+}
+
 #[test]
 #[ignore = "drives in-process rust-analyzer over a real cargo workspace"]
 fn module_census() {
@@ -84,28 +90,25 @@ fn module_census() {
     // would have to guess the cargo package from the directory, and
     // `documented_package_names` matches that string exactly, so a wrong guess
     // fails with "no documented packages found" rather than with the mistake.
-    let (root, name, version, censusing_default) =
-        std::env::var("NUDOX_PKG_ROOT").map_or_else(
-            |_| {
-                let (dir, name, version) = DEFAULT_PACKAGE;
-                let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../result")
-                    .join(dir);
-                (root, name.to_owned(), version.to_owned(), true)
-            },
-            |root| {
-                (
-                    PathBuf::from(root),
-                    std::env::var("NUDOX_PKG_NAME").expect(
-                        "NUDOX_PKG_ROOT was set without NUDOX_PKG_NAME; the cargo package name cannot \
+    let (root, name, version, censusing_default) = std::env::var("NUDOX_PKG_ROOT").map_or_else(
+        |_| {
+            let (_, name, version) = DEFAULT_PACKAGE;
+            let root = default_package_root();
+            (root, name.to_owned(), version.to_owned(), true)
+        },
+        |root| {
+            (
+                PathBuf::from(root),
+                std::env::var("NUDOX_PKG_NAME").expect(
+                    "NUDOX_PKG_ROOT was set without NUDOX_PKG_NAME; the cargo package name cannot \
                          be inferred from the directory (`unicode-width-0.1.11` holds package \
                          `unicode-width`, `memchr-2.8.3` holds `memchr`) and is matched exactly",
-                    ),
-                    std::env::var("NUDOX_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()),
-                    false,
-                )
-            },
-        );
+                ),
+                std::env::var("NUDOX_PKG_VERSION").unwrap_or_else(|_| "0.0.0".into()),
+                false,
+            )
+        },
+    );
 
     assert!(
         root.join("Cargo.toml").is_file(),
@@ -171,7 +174,8 @@ fn module_census() {
         parts.reverse();
         let kind = entry
             .kind()
-            .discriminant().map_or_else(|| "Reference".to_owned(), |d| format!("{d:?}"));
+            .discriminant()
+            .map_or_else(|| "Reference".to_owned(), |d| format!("{d:?}"));
         let path = parts.join("::");
         // Attribute the entry to its parent path (its enclosing module/type).
         let owner = if parts.len() > 1 {
@@ -235,4 +239,21 @@ fn module_census() {
     }
 
     eprintln!("census total={} out={}", table.len(), out_path);
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::{DEFAULT_PACKAGE, DEFAULT_PACKAGE_API, default_package_root};
+
+    #[test]
+    fn default_census_contract_has_a_real_package_and_content_canaries() {
+        assert!(!DEFAULT_PACKAGE.0.is_empty());
+        assert!(!DEFAULT_PACKAGE.1.is_empty());
+        assert!(!DEFAULT_PACKAGE.2.is_empty());
+        assert!(default_package_root().ends_with(DEFAULT_PACKAGE.0));
+        assert!(
+            DEFAULT_PACKAGE_API.len() >= 3,
+            "the default census must pin content canaries, not only table arithmetic"
+        );
+    }
 }

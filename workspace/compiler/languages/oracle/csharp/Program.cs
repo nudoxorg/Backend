@@ -9,9 +9,9 @@ namespace Nudox.Oracle;
 /// <remarks>
 /// <para>
 /// The oracle turns a directory of C# sources into the single JSON document
-/// described by <c>../src/schema.rs</c>. It is deliberately a *pure extractor*:
-/// it runs Roslyn's parser and binder and never executes user code, no
-/// source generators and no analyzers are loaded.
+/// described by <c>../src/schema.rs</c>. It runs Roslyn's parser and binder and
+/// executes only source generators explicitly configured by the selected
+/// project; ordinary analyzers are never invoked.
 /// </para>
 /// <para>
 /// <b>Output sink.</b> The document goes to <c>stdout</c> by default so the

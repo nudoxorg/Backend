@@ -347,8 +347,8 @@ fn collect_references(oracle: &mut ClangOracle, entity: Entity<'_>, owner: &str)
         if matches!(
             child.get_kind(),
             EntityKind::DeclRefExpr | EntityKind::MemberRefExpr | EntityKind::CallExpr
-        ) {
-            if let Some(target) = child.get_reference() {
+        )
+            && let Some(target) = child.get_reference() {
                 let target_kind = target.get_kind();
                 if matches!(
                     target_kind,
@@ -374,7 +374,6 @@ fn collect_references(oracle: &mut ClangOracle, entity: Entity<'_>, owner: &str)
                     }
                 }
             }
-        }
         collect_references(oracle, child, owner);
     }
 }
@@ -478,7 +477,7 @@ fn visit_enum(
 
     let this_usr = usr.clone();
     oracle.enums.push(OracleEnum {
-        usr: usr.clone(),
+        usr,
         name,
         source_file: entity_file(entity),
         byte_offset: entity_offset(entity),
@@ -581,7 +580,7 @@ fn visit_macro(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<
     // early-return cannot drop them.
     let usr = match entity_usr(entity) {
         usr if !usr.is_empty() => usr,
-        _ => format!("c:@macro@{}", name),
+        _ => format!("c:@macro@{name}"),
     };
 
     oracle.vars.push(OracleVar {

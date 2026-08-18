@@ -30,8 +30,8 @@ use nudox_ir::{
     foreign::Unlinked,
     kind::KindDiscriminant,
 };
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::rust::RustProducer;
+use nudox_languages::{PackageSource, produce};
 
 mod common;
 
@@ -71,7 +71,12 @@ fn lower() -> PristineIntroTable {
 
     let case = format!("locate/cargo/{FIXTURE_PKG}-{FIXTURE_VERSION}");
     let (produced, _cost) = heart::cost::measured(&case, &root, || {
-        produce(&RustProducer { direct_repo: false }, &src, &lineage, &Unlinked)
+        produce(
+            &RustProducer { direct_repo: false },
+            &src,
+            &lineage,
+            &Unlinked,
+        )
     });
     produced
         .unwrap_or_else(|e| panic!("memchr lowering failed: {}", common::chain(&e)))
@@ -97,8 +102,7 @@ fn the_memchr_function_reports_the_file_and_line_where_it_is_actually_written() 
     let (_, entry) = table
         .iter()
         .find(|(_, e)| {
-            e.sym().name == "memchr"
-                && e.kind().discriminant() == Some(KindDiscriminant::Function)
+            e.sym().name == "memchr" && e.kind().discriminant() == Some(KindDiscriminant::Function)
         })
         .expect("memchr 2.8.3 must lower a Function named `memchr`");
 
@@ -234,3 +238,4 @@ fn producer_synthesized_entries_report_absence_by_name_rather_than_a_location() 
         "memchr must produce real locations in bulk, not for one lucky item; got {declared}"
     );
 }
+

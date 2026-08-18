@@ -60,8 +60,8 @@
 use std::path::Path;
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
-use nudox_languages::{PackageSource, Produced, ProducerError, ProducerId, produce};
 use nudox_languages::clang::ClangProducer;
+use nudox_languages::{PackageSource, Produced, ProducerError, ProducerId, produce};
 
 /// `clang::Clang` (which `ClangProducer::invoke` constructs internally)
 /// allows only one instance in the whole process at a time — see

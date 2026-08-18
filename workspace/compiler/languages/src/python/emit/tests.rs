@@ -1,5 +1,7 @@
 //! Unit tests for the Python emit layer.
 
+use std::path::PathBuf;
+
 use super::*;
 use crate::python::oracle::{ConstData, FunctionData, ParamKind, ReceiverKind};
 use nudox_ir::kinds::Param;

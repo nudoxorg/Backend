@@ -166,14 +166,12 @@ impl GoldenContentIo {
         // STATUS and can be checkpointed again; a golden that is merely paused
         // by the OS reports paused, which is still forkable.
         let status = control_socket_cmd(&ctl, "STATUS").map_err(|e| {
-            io::Error::other(
-                format!("golden '{name}' control socket STATUS failed: {e}"),
-            )
+            io::Error::other(format!("golden '{name}' control socket STATUS failed: {e}"))
         })?;
         if !status.starts_with("OK") {
-            return Err(io::Error::other(
-                format!("golden '{name}' not ready for checkpoint: {status}"),
-            ));
+            return Err(io::Error::other(format!(
+                "golden '{name}' not ready for checkpoint: {status}"
+            )));
         }
 
         // Write the fresh checkpoint into fork-snapshots/CURRENT/ inside the
@@ -184,29 +182,21 @@ impl GoldenContentIo {
         // Remove a stale checkpoint from a prior read() call so the snapshot
         // is always fresh (not a replay of old RAM state).
         if checkpoint_dir.exists() {
-            std::fs::remove_dir_all(&checkpoint_dir).map_err(|e| {
-                io::Error::other(
-                    format!("remove stale checkpoint dir: {e}"),
-                )
-            })?;
+            std::fs::remove_dir_all(&checkpoint_dir)
+                .map_err(|e| io::Error::other(format!("remove stale checkpoint dir: {e}")))?;
         }
-        std::fs::create_dir_all(&checkpoint_dir).map_err(|e| {
-            io::Error::other(format!("create checkpoint dir: {e}"))
-        })?;
+        std::fs::create_dir_all(&checkpoint_dir)
+            .map_err(|e| io::Error::other(format!("create checkpoint dir: {e}")))?;
 
         // Drive the FORK command: freezes the golden, writes memfd RAM + device
         // snapshot to checkpoint_dir. On success the golden stays paused as
         // the shared CoW base; subsequent fork_golden calls still work.
         let reply = control_socket_cmd(&ctl, &format!("FORK {}", checkpoint_dir.display()))
-            .map_err(|e| {
-                io::Error::other(
-                    format!("golden '{name}' FORK command failed: {e}"),
-                )
-            })?;
+            .map_err(|e| io::Error::other(format!("golden '{name}' FORK command failed: {e}")))?;
         if !reply.starts_with("OK") {
-            return Err(io::Error::other(
-                format!("golden '{name}' FORK returned non-OK: {reply}"),
-            ));
+            return Err(io::Error::other(format!(
+                "golden '{name}' FORK returned non-OK: {reply}"
+            )));
         }
 
         tracing::debug!(

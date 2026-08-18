@@ -30,8 +30,63 @@ use std::{
 };
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::go::producer::GoProducer;
+use nudox_languages::{PackageSource, produce};
+
+/// Scratch space that outlives every entry lowered in this binary.
+///
+/// Same reasoning as `workspace/nudox-engine/tests/mcp/address_resolution.rs`'s
+/// `SCRATCH`: dropping it would delete sources a producer or the `go` tool is
+/// mid-read/mid-write of, so it is deliberately leaked for the process
+/// lifetime rather than scoped per entry.
+static SCRATCH: OnceLock<tempfile::TempDir> = OnceLock::new();
+
+/// A writable copy of one corpus entry.
+///
+/// `result/` is a symlink into `/nix/store`, which is read-only. Resolving a
+/// Go module wants to write `go.mod`/`go.sum` beside the package it loads
+/// (`go: updating go.mod: ... permission denied`), so every entry is copied
+/// into a scratch dir before `invoke_oracle`/`produce` ever touch it —
+/// wholesale, not just the entries expected to need it, so the sweep does not
+/// depend on which entries happen to already carry a `go.sum`. This mirrors
+/// `real_crate_root`/`copy_tree` in
+/// `workspace/nudox-engine/tests/mcp/address_resolution.rs`, whose doc
+/// comment states the same problem for Rust crates and the same fix, down to
+/// its final-paragraph rationale: skipping instead of copying "would let
+/// them run against a crate that does not exist, which is worse than
+/// skipping."
+///
+/// `src` must already be known to exist (a directory) — callers gate on that
+/// first so a corpus entry that is genuinely absent (this `result/` is
+/// regenerated concurrently by other in-flight work) fails the same clean
+/// "no go.mod" preflight it always has, rather than panicking inside
+/// `read_dir`.
+fn writable_entry_root(entry: &Entry, src: &Path) -> PathBuf {
+    let scratch = SCRATCH.get_or_init(|| tempfile::tempdir().expect("writable corpus scratch"));
+    let dst = scratch.path().join(entry.dir);
+    if !dst.is_dir() {
+        copy_tree(src, &dst);
+    }
+    dst
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create scratch dir");
+    for entry in std::fs::read_dir(src).expect("read corpus dir") {
+        let entry = entry.expect("corpus dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy corpus file");
+            let mut perms = std::fs::metadata(&to).expect("stat copy").permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&to, perms).expect("chmod copy");
+        }
+    }
+}
 
 /// One corpus entry: `result/<dir>`, the Go module path used both as
 /// the on-disk name-selector-equivalent and the `PackageLineageId`, and the
@@ -45,28 +100,116 @@ struct Entry {
 }
 
 const ENTRIES: &[Entry] = &[
-    Entry { dir: "github.com__pkg__errors-v0.8.1", module: "github.com/pkg/errors", version: "v0.8.1" },
-    Entry { dir: "github.com__pkg__errors-v0.9.1", module: "github.com/pkg/errors", version: "v0.9.1" },
-    Entry { dir: "github.com__google__uuid-v1.6.0", module: "github.com/google/uuid", version: "v1.6.0" },
-    Entry { dir: "github.com__spf13__cobra-v1.10.2", module: "github.com/spf13/cobra", version: "v1.10.2" },
-    Entry { dir: "github.com__spf13__viper-v1.21.0", module: "github.com/spf13/viper", version: "v1.21.0" },
-    Entry { dir: "github.com__stretchr__testify-v1.11.1", module: "github.com/stretchr/testify", version: "v1.11.1" },
-    Entry { dir: "github.com__stretchr__testify-v1.9.0", module: "github.com/stretchr/testify", version: "v1.9.0" },
-    Entry { dir: "gopkg.in__yaml.v3-v3.0.1", module: "gopkg.in/yaml.v3", version: "v3.0.1" },
-    Entry { dir: "github.com__gin-gonic__gin-v1.12.0", module: "github.com/gin-gonic/gin", version: "v1.12.0" },
-    Entry { dir: "golang.org__x__sync-v0.22.0", module: "golang.org/x/sync", version: "v0.22.0" },
-    Entry { dir: "golang.org__x__text-v0.40.0", module: "golang.org/x/text", version: "v0.40.0" },
-    Entry { dir: "github.com__prometheus__client_golang-v1.24.1", module: "github.com/prometheus/client_golang", version: "v1.24.1" },
-    Entry { dir: "github.com__redis__go-redis__v9-v9.22.0", module: "github.com/redis/go-redis/v9", version: "v9.22.0" },
-    Entry { dir: "github.com__hashicorp__go-multierror-v1.1.1", module: "github.com/hashicorp/go-multierror", version: "v1.1.1" },
-    Entry { dir: "github.com__BurntSushi__toml-v1.6.0", module: "github.com/BurntSushi/toml", version: "v1.6.0" },
-    Entry { dir: "github.com__mattn__go-sqlite3-v1.14.49", module: "github.com/mattn/go-sqlite3", version: "v1.14.49" },
-    Entry { dir: "github.com__golang-jwt__jwt__v5-v5.3.1", module: "github.com/golang-jwt/jwt/v5", version: "v5.3.1" },
-    Entry { dir: "github.com__google__go-cmp-v0.7.0", module: "github.com/google/go-cmp", version: "v0.7.0" },
-    Entry { dir: "github.com__robfig__cron__v3-v3.0.1", module: "github.com/robfig/cron/v3", version: "v3.0.1" },
-    Entry { dir: "github.com__fsnotify__fsnotify-v1.10.1", module: "github.com/fsnotify/fsnotify", version: "v1.10.1" },
-    Entry { dir: "github.com__samber__lo-v1.53.0", module: "github.com/samber/lo", version: "v1.53.0" },
-    Entry { dir: "go.uber.org__zap-v1.28.0", module: "go.uber.org/zap", version: "v1.28.0" },
+    Entry {
+        dir: "github.com__pkg__errors-v0.8.1",
+        module: "github.com/pkg/errors",
+        version: "v0.8.1",
+    },
+    Entry {
+        dir: "github.com__pkg__errors-v0.9.1",
+        module: "github.com/pkg/errors",
+        version: "v0.9.1",
+    },
+    Entry {
+        dir: "github.com__google__uuid-v1.6.0",
+        module: "github.com/google/uuid",
+        version: "v1.6.0",
+    },
+    Entry {
+        dir: "github.com__spf13__cobra-v1.10.2",
+        module: "github.com/spf13/cobra",
+        version: "v1.10.2",
+    },
+    Entry {
+        dir: "github.com__spf13__viper-v1.21.0",
+        module: "github.com/spf13/viper",
+        version: "v1.21.0",
+    },
+    Entry {
+        dir: "github.com__stretchr__testify-v1.11.1",
+        module: "github.com/stretchr/testify",
+        version: "v1.11.1",
+    },
+    Entry {
+        dir: "github.com__stretchr__testify-v1.9.0",
+        module: "github.com/stretchr/testify",
+        version: "v1.9.0",
+    },
+    Entry {
+        dir: "gopkg.in__yaml.v3-v3.0.1",
+        module: "gopkg.in/yaml.v3",
+        version: "v3.0.1",
+    },
+    Entry {
+        dir: "github.com__gin-gonic__gin-v1.12.0",
+        module: "github.com/gin-gonic/gin",
+        version: "v1.12.0",
+    },
+    Entry {
+        dir: "golang.org__x__sync-v0.22.0",
+        module: "golang.org/x/sync",
+        version: "v0.22.0",
+    },
+    Entry {
+        dir: "golang.org__x__text-v0.40.0",
+        module: "golang.org/x/text",
+        version: "v0.40.0",
+    },
+    Entry {
+        dir: "github.com__prometheus__client_golang-v1.24.1",
+        module: "github.com/prometheus/client_golang",
+        version: "v1.24.1",
+    },
+    Entry {
+        dir: "github.com__redis__go-redis__v9-v9.22.0",
+        module: "github.com/redis/go-redis/v9",
+        version: "v9.22.0",
+    },
+    Entry {
+        dir: "github.com__hashicorp__go-multierror-v1.1.1",
+        module: "github.com/hashicorp/go-multierror",
+        version: "v1.1.1",
+    },
+    Entry {
+        dir: "github.com__BurntSushi__toml-v1.6.0",
+        module: "github.com/BurntSushi/toml",
+        version: "v1.6.0",
+    },
+    Entry {
+        dir: "github.com__mattn__go-sqlite3-v1.14.49",
+        module: "github.com/mattn/go-sqlite3",
+        version: "v1.14.49",
+    },
+    Entry {
+        dir: "github.com__golang-jwt__jwt__v5-v5.3.1",
+        module: "github.com/golang-jwt/jwt/v5",
+        version: "v5.3.1",
+    },
+    Entry {
+        dir: "github.com__google__go-cmp-v0.7.0",
+        module: "github.com/google/go-cmp",
+        version: "v0.7.0",
+    },
+    Entry {
+        dir: "github.com__robfig__cron__v3-v3.0.1",
+        module: "github.com/robfig/cron/v3",
+        version: "v3.0.1",
+    },
+    Entry {
+        dir: "github.com__fsnotify__fsnotify-v1.10.1",
+        module: "github.com/fsnotify/fsnotify",
+        version: "v1.10.1",
+    },
+    Entry {
+        dir: "github.com__samber__lo-v1.53.0",
+        module: "github.com/samber/lo",
+        version: "v1.53.0",
+    },
+    Entry {
+        dir: "go.uber.org__zap-v1.28.0",
+        module: "go.uber.org/zap",
+        version: "v1.28.0",
+    },
 ];
 
 fn corpus_root() -> PathBuf {
@@ -124,11 +267,24 @@ enum Outcome {
 }
 
 fn run_entry(entry: &Entry) -> Outcome {
-    let root = corpus_root().join(entry.dir);
+    // Gate on the checkout's existence before ever copying: `result/` is
+    // regenerated concurrently elsewhere, so an entry can be legitimately
+    // absent right now (not yet materialized) rather than broken. Checking
+    // first, the same way `corpus_root()` gates on `result/` itself, keeps
+    // that a clean preflight failure instead of a `read_dir` panic inside
+    // `copy_tree`.
+    let src = corpus_root().join(entry.dir);
+    if !src.is_dir() {
+        return Outcome::Fail {
+            stage: "preflight",
+            chain: format!("no corpus checkout at {}", src.display()),
+        };
+    }
+    let root = writable_entry_root(entry, &src);
     if !root.join("go.mod").is_file() {
         return Outcome::Fail {
             stage: "preflight",
-            chain: format!("no go.mod at {}", root.display()),
+            chain: format!("no go.mod at {} (source: {})", root.display(), src.display()),
         };
     }
 
@@ -175,8 +331,9 @@ fn run_entry(entry: &Entry) -> Outcome {
     let lid = PackageLineageId::new(EcosystemId::new("go"), PackageName::new(entry.module));
 
     let case = format!("go-sweep-{}", entry.dir);
-    let (produced, _cost) =
-        heart::cost::measured(&case, &root, || produce(&GoProducer, &src, &lid, &nudox_ir::foreign::Unlinked));
+    let (produced, _cost) = heart::cost::measured(&case, &root, || {
+        produce(&GoProducer, &src, &lid, &nudox_ir::foreign::Unlinked)
+    });
 
     match produced {
         Ok(p) => Outcome::Ok {
@@ -198,9 +355,17 @@ fn every_provisioned_go_corpus_package_lowers_through_the_real_producer() {
     let mut successes = Vec::new();
 
     for entry in ENTRIES {
-        eprintln!("=== {} ({} @ {}) ===", entry.dir, entry.module, entry.version);
+        eprintln!(
+            "=== {} ({} @ {}) ===",
+            entry.dir, entry.module, entry.version
+        );
         match run_entry(entry) {
-            Outcome::Ok { table_len, oracle_packages, oracle_decls, unlinked } => {
+            Outcome::Ok {
+                table_len,
+                oracle_packages,
+                oracle_decls,
+                unlinked,
+            } => {
                 eprintln!(
                     "OK  {}: table_len={table_len} oracle_packages={oracle_packages} \
                      oracle_decls={oracle_decls} unlinked_refs={unlinked}",

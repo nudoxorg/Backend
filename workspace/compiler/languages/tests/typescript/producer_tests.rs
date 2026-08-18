@@ -49,7 +49,17 @@ fn parse_module(src: &str, name: &str) -> ModuleFacts {
 
     // Note: JSDoc is automatic with the `jsdoc` feature; no `with_jsdoc` method in 0.139.0.
     // Module record lives on the parse result in 0.139.0, not on Semantic.
+    // Must match `graph::build_and_extract`'s configuration exactly, including
+    // `with_build_nodes(true)`. This helper's whole value is that it exercises
+    // the same `extract_module` production runs; a builder configured
+    // differently here tests a `Semantic` that never exists in production.
+    //
+    // That is not hypothetical: without this flag OXC keeps only an ancestry
+    // stack and `semantic.nodes()` is empty, so `record_occurrences`' span
+    // lookup panics. A helper missing the flag while production had it (or the
+    // reverse) hides that failure from exactly the tests written to catch it.
     let semantic_result = SemanticBuilder::new()
+        .with_build_nodes(true)
         .with_check_syntax_error(false)
         .build(&parse.program);
 
@@ -1086,9 +1096,7 @@ fn test_object_type_literal_lowers_to_object_literal() {
                 .expect("must have field y");
             assert!(y.optional, "y must be optional");
         }
-        other => panic!(
-            "object type literal must lower to ObjectLiteral; got {other:?}"
-        ),
+        other => panic!("object type literal must lower to ObjectLiteral; got {other:?}"),
     }
 }
 

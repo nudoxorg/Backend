@@ -178,8 +178,8 @@
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
-use nudox_languages::{PackageSource, Producer, produce};
 use nudox_languages::java::JavaProducer;
+use nudox_languages::{PackageSource, Producer, produce};
 
 /// One corpus entry: `result/<dir>`, the `groupId:artifactId` name
 /// used both as the on-disk name-selector-equivalent and the
@@ -221,9 +221,30 @@ struct Entry {
 }
 
 const ENTRIES: &[Entry] = &[
-    Entry { dir: "com.google.code.gson__gson-2.10.1", name: "com.google.code.gson:gson", version: "2.10.1", release: None, add_exports: None, add_modules: None },
-    Entry { dir: "com.google.guava__guava-33.0.0-jre", name: "com.google.guava:guava", version: "33.0.0-jre", release: None, add_exports: None, add_modules: None },
-    Entry { dir: "com.google.guava__guava-32.1.3-jre", name: "com.google.guava:guava", version: "32.1.3-jre", release: None, add_exports: None, add_modules: None },
+    Entry {
+        dir: "com.google.code.gson__gson-2.10.1",
+        name: "com.google.code.gson:gson",
+        version: "2.10.1",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
+    Entry {
+        dir: "com.google.guava__guava-33.0.0-jre",
+        name: "com.google.guava:guava",
+        version: "33.0.0-jre",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
+    Entry {
+        dir: "com.google.guava__guava-32.1.3-jre",
+        name: "com.google.guava:guava",
+        version: "32.1.3-jre",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "org.apache.commons__commons-lang3-3.14.0",
         name: "org.apache.commons:commons-lang3",
@@ -232,7 +253,14 @@ const ENTRIES: &[Entry] = &[
         add_exports: None,
         add_modules: None,
     },
-    Entry { dir: "junit__junit-4.13.2", name: "junit:junit", version: "4.13.2", release: None, add_exports: None, add_modules: None },
+    Entry {
+        dir: "junit__junit-4.13.2",
+        name: "junit:junit",
+        version: "4.13.2",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "org.junit.jupiter__junit-jupiter-api-5.10.2",
         name: "org.junit.jupiter:junit-jupiter-api",
@@ -257,9 +285,30 @@ const ENTRIES: &[Entry] = &[
         add_exports: None,
         add_modules: None,
     },
-    Entry { dir: "org.projectlombok__lombok-1.18.30", name: "org.projectlombok:lombok", version: "1.18.30", release: None, add_exports: None, add_modules: None },
-    Entry { dir: "io.reactivex.rxjava3__rxjava-3.1.8", name: "io.reactivex.rxjava3:rxjava", version: "3.1.8", release: None, add_exports: None, add_modules: None },
-    Entry { dir: "org.slf4j__slf4j-api-2.0.12", name: "org.slf4j:slf4j-api", version: "2.0.12", release: None, add_exports: None, add_modules: None },
+    Entry {
+        dir: "org.projectlombok__lombok-1.18.30",
+        name: "org.projectlombok:lombok",
+        version: "1.18.30",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
+    Entry {
+        dir: "io.reactivex.rxjava3__rxjava-3.1.8",
+        name: "io.reactivex.rxjava3:rxjava",
+        version: "3.1.8",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
+    Entry {
+        dir: "org.slf4j__slf4j-api-2.0.12",
+        name: "org.slf4j:slf4j-api",
+        version: "2.0.12",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "ch.qos.logback__logback-classic-1.4.14",
         name: "ch.qos.logback:logback-classic",
@@ -287,7 +336,14 @@ const ENTRIES: &[Entry] = &[
         add_exports: Some("java.base/sun.security.x509"),
         add_modules: None,
     },
-    Entry { dir: "com.google.dagger__dagger-2.51", name: "com.google.dagger:dagger", version: "2.51", release: None, add_exports: None, add_modules: None },
+    Entry {
+        dir: "com.google.dagger__dagger-2.51",
+        name: "com.google.dagger:dagger",
+        version: "2.51",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "org.mapstruct__mapstruct-1.5.5.Final",
         name: "org.mapstruct:mapstruct",
@@ -296,7 +352,14 @@ const ENTRIES: &[Entry] = &[
         add_exports: None,
         add_modules: None,
     },
-    Entry { dir: "io.vavr__vavr-0.10.4", name: "io.vavr:vavr", version: "0.10.4", release: Some("8"), add_exports: None, add_modules: None },
+    Entry {
+        dir: "io.vavr__vavr-0.10.4",
+        name: "io.vavr:vavr",
+        version: "0.10.4",
+        release: Some("8"),
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "org.assertj__assertj-core-3.25.3",
         name: "org.assertj:assertj-core",
@@ -310,8 +373,22 @@ const ENTRIES: &[Entry] = &[
         // `assertj_core_reads_the_junit_chain_off_the_module_path`.
         add_modules: Some("ALL-MODULE-PATH"),
     },
-    Entry { dir: "com.h2database__h2-2.2.224", name: "com.h2database:h2", version: "2.2.224", release: None, add_exports: None, add_modules: None },
-    Entry { dir: "org.mockito__mockito-core-5.10.0", name: "org.mockito:mockito-core", version: "5.10.0", release: None, add_exports: None, add_modules: None },
+    Entry {
+        dir: "com.h2database__h2-2.2.224",
+        name: "com.h2database:h2",
+        version: "2.2.224",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
+    Entry {
+        dir: "org.mockito__mockito-core-5.10.0",
+        name: "org.mockito:mockito-core",
+        version: "5.10.0",
+        release: None,
+        add_exports: None,
+        add_modules: None,
+    },
     Entry {
         dir: "jakarta.validation__jakarta.validation-api-3.0.2",
         name: "jakarta.validation:jakarta.validation-api",
@@ -425,7 +502,7 @@ impl Drop for ScopedJavaEnv {
     }
 }
 
-/// All three per-entry knobs plus the [`ENV_LOCK`] that makes setting them
+/// All per-entry knobs plus the [`ENV_LOCK`] that makes setting them
 /// safe, as one value.
 ///
 /// Field order is drop order: `knobs` restores the previous environment
@@ -433,22 +510,96 @@ impl Drop for ScopedJavaEnv {
 /// observes a half-restored environment.
 struct ScopedEnv {
     #[allow(dead_code)]
-    knobs: [ScopedJavaEnv; 3],
+    knobs: [ScopedJavaEnv; 6],
     #[allow(dead_code)]
     lock: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Locks, then applies all three per-entry knobs in `Entry` field order.
+/// Locks, then applies every per-entry compiler knob.
 fn scoped_env(entry: &Entry) -> ScopedEnv {
     // Poison is ignored on purpose — see `ENV_LOCK`'s doc comment.
-    let lock = ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let lock = ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let classpath = exceptional_classpath(entry);
+    let legacy = (entry.dir == "org.projectlombok__lombok-1.18.30").then_some("8");
     ScopedEnv {
         knobs: [
             ScopedJavaEnv::set("NUDOX_JAVA_RELEASE", entry.release),
-            ScopedJavaEnv::set("NUDOX_JAVA_ADD_EXPORTS", entry.add_exports),
+            ScopedJavaEnv::set("NUDOX_JAVA_SOURCE", source_level(entry)),
+            ScopedJavaEnv::set("NUDOX_JAVA_ADD_EXPORTS", add_exports(entry)),
             ScopedJavaEnv::set("NUDOX_JAVA_ADD_MODULES", entry.add_modules),
+            ScopedJavaEnv::set("NUDOX_JAVA_CLASS_PATH", classpath.as_deref()),
+            ScopedJavaEnv::set("NUDOX_JAVA_LEGACY", legacy),
         ],
         lock,
+    }
+}
+
+/// The exceptional source artifacts below require binary declarations which
+/// are unavailable in usable Java source form. The Nix corpus places those
+/// jars in `.class-path`; they are never walked as lowering input. These lists
+/// are deliberately exact and package-scoped rather than adding every jar to
+/// every invocation.
+fn exceptional_classpath(entry: &Entry) -> Option<String> {
+    let jars: &[&str] = match entry.dir {
+        "org.projectlombok__lombok-1.18.30" => &[
+            "lombok-1.18.30.jar",
+            "lombok.patcher-0.48.jar",
+            "cmdreader-1.2.jar",
+            "ant-1.10.5.jar",
+            "asm-9.5.jar",
+            "asm-commons-9.5.jar",
+            "asm-tree-9.5.jar",
+            "org.eclipse.core.runtime-3.13.0.jar",
+            "org.eclipse.jdt.core-3.13.102.jar",
+            "org.eclipse.jdt.ui-3.13.100.jar",
+            "org.eclipse.equinox.common-3.9.0.jar",
+            "org.eclipse.equinox.registry-3.7.0.jar",
+            "org.eclipse.equinox.app-1.3.400.jar",
+            "org.eclipse.core.resources-3.12.0.jar",
+            "org.eclipse.core.contenttype-3.6.0.jar",
+            "org.eclipse.core.jobs-3.9.0.jar",
+            "org.eclipse.osgi-3.12.100.jar",
+            "org.eclipse.text-3.6.100.jar",
+        ],
+        "com.squareup.retrofit2__retrofit-2.9.0" => &[
+            "kotlin-stdlib-1.3.72.jar",
+            "okhttp-3.14.9.jar",
+            "okio-1.17.2.jar",
+            "animal-sniffer-annotations-1.18.jar",
+            "android-4.1.1.4.jar",
+        ],
+        "org.apache.kafka__kafka-clients-3.7.0" => &[
+            "jackson-databind-2.16.1.jar",
+            "jackson-core-2.16.1.jar",
+            "jackson-annotations-2.16.1.jar",
+        ],
+        _ => return None,
+    };
+    let dir = corpus_root().join(".class-path");
+    std::env::join_paths(jars.iter().map(|jar| dir.join(jar)))
+        .ok()
+        .map(|paths| paths.to_string_lossy().into_owned())
+}
+
+fn source_level(entry: &Entry) -> Option<&'static str> {
+    // `var` became restricted only in source 10. Source 9 therefore parses
+    // Lombok's deprecated annotation while still admitting JPMS exports.
+    (entry.dir == "org.projectlombok__lombok-1.18.30").then_some("9")
+}
+
+fn add_exports(entry: &Entry) -> Option<&'static str> {
+    if entry.dir == "org.projectlombok__lombok-1.18.30" {
+        Some(
+            "jdk.compiler/com.sun.tools.javac.code,jdk.compiler/com.sun.tools.javac.comp,\
+             jdk.compiler/com.sun.tools.javac.file,jdk.compiler/com.sun.tools.javac.main,\
+             jdk.compiler/com.sun.tools.javac.jvm,jdk.compiler/com.sun.tools.javac.model,\
+             jdk.compiler/com.sun.tools.javac.parser,jdk.compiler/com.sun.tools.javac.processing,\
+             jdk.compiler/com.sun.tools.javac.tree,jdk.compiler/com.sun.tools.javac.util",
+        )
+    } else {
+        entry.add_exports
     }
 }
 
@@ -503,15 +654,19 @@ fn run_entry(entry: &Entry) -> Outcome {
     let oracle_members: usize = extraction
         .types
         .iter()
-        .map(|t| {
-            t.fields.len() + t.methods.len() + t.constructors.len() + t.enum_constants.len()
-        })
+        .map(|t| t.fields.len() + t.methods.len() + t.constructors.len() + t.enum_constants.len())
         .sum();
 
     let lid = PackageLineageId::new(EcosystemId::new("maven"), PackageName::new(entry.name));
     let case = format!("java-sweep-{}", entry.dir);
-    let (produced, _cost) =
-        heart::cost::measured(&case, &root, || produce(&JavaProducer::new(), &src, &lid, &nudox_ir::foreign::Unlinked));
+    let (produced, _cost) = heart::cost::measured(&case, &root, || {
+        produce(
+            &JavaProducer::new(),
+            &src,
+            &lid,
+            &nudox_ir::foreign::Unlinked,
+        )
+    });
 
     match produced {
         Ok(p) => {
@@ -602,7 +757,12 @@ const KNOWN_CONTENT: &[(&str, &[&str])] = &[
     // `ValueGeometry` (org/h2/value/, the JTS one).
     (
         "com.h2database__h2-2.2.224",
-        &["Driver", "FullTextLucene", "OsgiDataSourceFactory", "ValueGeometry"],
+        &[
+            "Driver",
+            "FullTextLucene",
+            "OsgiDataSourceFactory",
+            "ValueGeometry",
+        ],
     ),
     // junit-jupiter-api: `Assertions`, `Assumptions` and `Test` are the
     // package's best-known public API, each its own file under
@@ -628,7 +788,11 @@ const KNOWN_CONTENT: &[(&str, &[&str])] = &[
     // cannot silently rot into "compiles because that file got skipped".
     (
         "org.apache.httpcomponents.client5__httpclient5-5.3.1",
-        &["HttpClients", "CloseableHttpClient", "ConscryptClientTlsStrategy"],
+        &[
+            "HttpClients",
+            "CloseableHttpClient",
+            "ConscryptClientTlsStrategy",
+        ],
     ),
     // assertj-core: `Assertions` and `AbstractAssert` are its core public API;
     // `SoftAssertions` and `JUnitJupiterSoftAssertions` are both real files
@@ -638,7 +802,25 @@ const KNOWN_CONTENT: &[(&str, &[&str])] = &[
     // name rather than passing on a slightly smaller count.
     (
         "org.assertj__assertj-core-3.25.3",
-        &["Assertions", "AbstractAssert", "SoftAssertions", "JUnitJupiterSoftAssertions"],
+        &[
+            "Assertions",
+            "AbstractAssert",
+            "SoftAssertions",
+            "JUnitJupiterSoftAssertions",
+        ],
+    ),
+    // Retrofit's Kotlin, OkHttp, Android and annotation references resolve
+    // through its explicit binary dependency classpath. The named public API
+    // remains Java source from retrofit itself.
+    (
+        "com.squareup.retrofit2__retrofit-2.9.0",
+        &["Retrofit", "Call", "Response"],
+    ),
+    // Kafka's own Java sources lower while Jackson is used only for type
+    // resolution through the explicit binary dependency classpath.
+    (
+        "org.apache.kafka__kafka-clients-3.7.0",
+        &["KafkaConsumer", "KafkaProducer", "Admin"],
     ),
 ];
 
@@ -650,7 +832,13 @@ fn every_provisioned_maven_corpus_package_lowers_through_the_real_producer() {
     for entry in ENTRIES {
         eprintln!("=== {} ({} @ {}) ===", entry.dir, entry.name, entry.version);
         match run_entry(entry) {
-            Outcome::Ok { table_len, oracle_types, oracle_members, unlinked, symbol_names } => {
+            Outcome::Ok {
+                table_len,
+                oracle_types,
+                oracle_members,
+                unlinked,
+                symbol_names,
+            } => {
                 eprintln!(
                     "OK  {}: table_len={table_len} oracle_types={oracle_types} \
                      oracle_members={oracle_members} unlinked_refs={unlinked}",
@@ -668,8 +856,13 @@ fn every_provisioned_maven_corpus_package_lowers_through_the_real_producer() {
                      independently-counted types ({oracle_types}) — lowering dropped symbols",
                     entry.dir
                 );
-                assert!(oracle_types > 0, "{}: oracle reported zero types — not real content", entry.dir);
-                if let Some((_, expected)) = KNOWN_CONTENT.iter().find(|(dir, _)| *dir == entry.dir) {
+                assert!(
+                    oracle_types > 0,
+                    "{}: oracle reported zero types — not real content",
+                    entry.dir
+                );
+                if let Some((_, expected)) = KNOWN_CONTENT.iter().find(|(dir, _)| *dir == entry.dir)
+                {
                     for name in *expected {
                         assert!(
                             symbol_names.iter().any(|n| n == name),
@@ -695,7 +888,9 @@ fn every_provisioned_maven_corpus_package_lowers_through_the_real_producer() {
         ENTRIES.len()
     );
     for (dir, table_len, oracle_members) in &successes {
-        eprintln!("  OK   {dir}: {table_len} live entries (oracle reported {oracle_members} members)");
+        eprintln!(
+            "  OK   {dir}: {table_len} live entries (oracle reported {oracle_members} members)"
+        );
     }
     for (dir, stage, chain) in &failures {
         eprintln!("  FAIL {dir} [{stage}]: {chain}");
@@ -768,7 +963,10 @@ fn every_provisioned_maven_corpus_package_lowers_through_the_real_producer() {
 /// below so each one exercises the exact same `Entry` (and `release`
 /// setting) the main sweep above does, not a hand-rolled duplicate.
 fn entry(dir: &str) -> &'static Entry {
-    ENTRIES.iter().find(|e| e.dir == dir).unwrap_or_else(|| panic!("no ENTRIES row for {dir}"))
+    ENTRIES
+        .iter()
+        .find(|e| e.dir == dir)
+        .unwrap_or_else(|| panic!("no ENTRIES row for {dir}"))
 }
 
 /// Asserts one entry lowered, and returns its lowered symbol names.
@@ -962,7 +1160,9 @@ fn junit_jupiter_api_lowers_with_two_source_modules_and_one_compiled_one() {
         );
     }
     assert!(
-        root.join(".module-path").join("opentest4j-1.3.0.jar").is_file(),
+        root.join(".module-path")
+            .join("opentest4j-1.3.0.jar")
+            .is_file(),
         "opentest4j's compiled descriptor is the one junit-jupiter-api cannot get from source"
     );
 }
@@ -1011,7 +1211,11 @@ fn assertj_core_reads_the_junit_chain_off_the_module_path() {
     );
 
     let names = expect_lowered(e.dir);
-    for name in ["Assertions", "JUnitJupiterSoftAssertions", "SoftAssertionsExtension"] {
+    for name in [
+        "Assertions",
+        "JUnitJupiterSoftAssertions",
+        "SoftAssertionsExtension",
+    ] {
         assert!(
             names.iter().any(|n| n == name),
             "assertj-core lowered without {name} — the JUnit-Jupiter-integration files are \
@@ -1061,53 +1265,45 @@ fn assertj_core_reads_the_junit_chain_off_the_module_path() {
 /// the bytes are genuinely published. It is the wrong call independently of
 /// whether it would work.
 ///
-/// Falsification trigger: retrofit dropping its Kotlin imports (retrofit 3.x
-/// went the other way and is now Kotlin-first), or this producer gaining a
-/// Kotlin front end.
+/// The binary Kotlin/OkHttp/Android dependency closure now resolves those
+/// imports through the explicit `--class-path` contract. The package's own
+/// Java sources are still the only lowering input.
 #[test]
-fn retrofit_blocked_on_kotlin_only_types_in_its_own_source() {
-    let root = corpus_root().join("com.squareup.retrofit2__retrofit-2.9.0");
-    for (file, import) in [
-        ("retrofit2/BuiltInConverters.java", "import kotlin.Unit;"),
-        ("retrofit2/HttpServiceMethod.java", "import kotlin.coroutines.Continuation;"),
-        ("retrofit2/RequestFactory.java", "import kotlin.coroutines.Continuation;"),
-    ] {
-        let text = std::fs::read_to_string(root.join(file))
-            .unwrap_or_else(|e| panic!("read {file}: {e}"));
-        assert!(
-            text.contains(import),
-            "{file} no longer has `{import}` — if retrofit dropped its Kotlin dependency, \
-             provision okhttp/okio/animal-sniffer and move it into known_good instead of \
-             leaving this test to rot"
-        );
-    }
-
+fn retrofit_lowers_its_java_api_against_an_explicit_binary_dependency_classpath() {
     match run_entry(entry("com.squareup.retrofit2__retrofit-2.9.0")) {
-        Outcome::Fail { chain, .. } => {
+        Outcome::Ok { symbol_names, .. } => {
             assert!(
-                chain.contains("okhttp3") || chain.contains("kotlin"),
-                "expected retrofit's known okhttp3/kotlin blocker, got: {chain}"
+                ["Retrofit", "Call", "Response"]
+                    .iter()
+                    .all(|name| symbol_names.iter().any(|actual| actual == name)),
+                "retrofit must retain named declarations from its own Java sources"
             );
         }
-        Outcome::Ok { .. } => panic!(
-            "retrofit now lowers — move it into known_good in this file instead of leaving \
-             this test to rot"
+        Outcome::Fail { stage, chain } => panic!(
+            "retrofit regressed despite its explicit binary dependency classpath at {stage}: {chain}"
         ),
     }
 }
 
-/// `org.projectlombok:lombok:1.18.30` — pinned on two independent structural
-/// facts, either of which alone is fatal. Neither is "the closure is large",
-/// which is how this was previously recorded.
+/// `org.projectlombok:lombok:1.18.30` — its published sources classifier is
+/// incomplete, so corpus overlays restore source declarations omitted from the
+/// matching upstream tag. The compiled Lombok jar remains classpath-only.
 ///
 /// **1. A `javac` option contradiction with no way out.** `lombok/var.java`
 /// and `lombok/experimental/var.java` both declare `public @interface var`,
 /// which is illegal from Java 10 on (`'var' not allowed here`), so lombok
-/// only parses at `--release 8` or `9`. But 503 of its errors at that level
-/// are `com.sun.tools.javac.*` — JDK-internal compiler API, part of the
-/// `jdk.compiler` module and not exported. The one flag that could make those
-/// visible is `--add-exports`, and `javac` refuses to accept it together with
-/// `--release`, in two different ways depending on the level:
+/// only parses at source level 8 or 9. But the source also reaches
+/// `com.sun.tools.javac.*` — JDK-internal compiler API, part of the
+/// `jdk.compiler` module and not exported. The needed exports are enabled
+/// for the source-level-9 attempt, but that still cannot restore APIs removed
+/// from the running JDK:
+///
+/// * `BaseFileObject` from `com.sun.tools.javac.file`/`.util`;
+/// * `EndPosParser`, `Parser.Factory`, `Scanner.Factory`, and `CommentStyle`
+///   from `com.sun.tools.javac.parser`.
+///
+/// The alternative `--release` form is impossible with exports, in two
+/// different ways depending on the level:
 ///
 /// ```text
 /// --release 8: error: option --add-exports not allowed with target 8
@@ -1115,37 +1311,55 @@ fn retrofit_blocked_on_kotlin_only_types_in_its_own_source() {
 ///                     is not allowed with --release
 /// ```
 ///
-/// Both messages were reproduced directly. The flag lombok needs to parse and
-/// the flag lombok needs to resolve are mutually exclusive, so no combination
-/// of corpus entries and compiler options can lower this package.
+/// Both messages were reproduced directly. A classpath artifact cannot supply
+/// classes removed from a package owned by the named `jdk.compiler` module, so
+/// no dependency closure can repair this source/JDK mismatch.
 ///
 /// **2. lombok's published sources jar is incomplete.** 92 of its 363 source
 /// files `import lombok.spi.Provides`, and `lombok/spi/` does not exist
 /// anywhere in `lombok-1.18.30-sources.jar` (checked with `unzip -l`: zero
-/// entries under `spi/`). It is generated by lombok's own bootstrap build. No
-/// Maven artifact can supply a package inside lombok's own namespace that
-/// lombok itself does not publish.
+/// entries under `spi/`). It is generated by lombok's own bootstrap build.
+/// `nix/corpus.nix` pins that exact source from the matching upstream tag and
+/// overlays it into the checkout; no compiled declaration is used as lowering
+/// input.
 ///
-/// The rest of the unmasked closure — `org.eclipse.jdt.internal.compiler.*`,
-/// `org.eclipse.core.*`, `com.zwitserloot.cmdreader`, `lombok.patcher`,
-/// `org.objectweb.asm`, `org.apache.tools.ant` — is real but beside the
-/// point: those are ordinary artifacts that could be provisioned if the two
-/// facts above did not already close the door.
+/// The ordinary closure is now provisioned in `.class-path`: ECJ, the
+/// Eclipse Oxygen bundles, cmdreader, lombok.patcher, ASM, and Ant. Those
+/// jars resolve declarations only and are never lowering input.
 ///
-/// Falsification trigger: lombok dropping its `@interface var` (it is
-/// deprecated in favour of the language feature), or publishing `lombok.spi`
-/// in its sources jar. Both would have to happen.
+/// The source classifier also omits five test-only declarations referenced by
+/// two published test harness files. They are restored from the matching
+/// upstream tag as source, not supplied by the compiled jar.
+///
+/// Falsification trigger: lombok dropping its `@interface var`, publishing
+/// `lombok.spi` in its sources jar, or the Java toolchain restoring the removed
+/// compiler APIs. The overlay should then be removed after verifying the
+/// remaining boundary independently.
 #[test]
-fn lombok_blocked_on_a_release_flag_contradiction_and_an_incomplete_sources_jar() {
+fn lombok_requires_a_source_overlay_and_a_release_flag_escape() {
     let root = corpus_root().join("org.projectlombok__lombok-1.18.30");
 
-    // Fact 2 first, because it is a property of the checkout rather than of a
-    // compile: `lombok.spi` is imported and absent.
+    // The source classifier is incomplete upstream, but corpus assembly must
+    // make the missing declaration explicit and source-backed.
     assert!(
-        !root.join("lombok").join("spi").exists(),
-        "lombok/spi/ now exists in the sources jar — one of the two pins is gone; re-check \
-         the other before assuming lombok is still blocked"
+        root.join("lombok")
+            .join("spi")
+            .join("Provides.java")
+            .is_file(),
+        "the pinned Lombok source overlay is missing; do not replace it with the compiled jar"
     );
+    for path in [
+        "lombok/bytecode/RunBytecodeTests.java",
+        "lombok/bytecode/TestClassFileMetaData.java",
+        "lombok/bytecode/TestPostCompiler.java",
+        "lombok/core/configuration/RunConfigurationTests.java",
+        "lombok/core/configuration/TestConfiguration.java",
+    ] {
+        assert!(
+            root.join(path).is_file(),
+            "the pinned Lombok source overlay is missing: {path}"
+        );
+    }
 
     let src = PackageSource::new(&root, "org.projectlombok:lombok", "1.18.30");
 
@@ -1181,6 +1395,25 @@ fn lombok_blocked_on_a_release_flag_contradiction_and_an_incomplete_sources_jar(
         "expected the known JDK-internal / lombok.spi / Eclipse closure once unmasked, got: \
          {unmasked_chain}"
     );
+}
+
+/// Product target for L45: published Lombok Java sources should lower with
+/// named API output. This begins red: the existing pin immediately below
+/// records the missing generated and build-only dependencies that still stop
+/// the source compilation.
+#[test]
+fn lombok_lowers_its_published_java_api() {
+    match run_entry(entry("org.projectlombok__lombok-1.18.30")) {
+        Outcome::Ok { symbol_names, .. } => assert!(
+            ["Getter", "Setter", "Data"]
+                .iter()
+                .all(|name| symbol_names.iter().any(|actual| actual == name)),
+            "Lombok must retain named declarations from its published Java sources"
+        ),
+        Outcome::Fail { stage, chain } => {
+            panic!("Lombok should lower its published Java API; failed at {stage}: {chain}")
+        }
+    }
 }
 
 /// `org.apache.kafka:kafka-clients:3.7.0` — pinned on a `javac` `-sourcepath`
@@ -1227,26 +1460,21 @@ fn lombok_blocked_on_a_release_flag_contradiction_and_an_incomplete_sources_jar(
 /// compiled jar for something that is not a JPMS descriptor gap, which is
 /// exactly the boundary `[[jpms_modules]]` draws.
 ///
-/// Falsification trigger: jackson-databind moving `Linked` into its own file,
-/// or this producer gaining a way to hand `javac` a dependency's full source
-/// set without those files becoming lowering input.
+/// The compiled Jackson closure now provides `Linked` for type resolution
+/// through an explicit classpath, while only Kafka's own sources are lowered.
 #[test]
-fn kafka_clients_blocked_on_a_secondary_type_javac_cannot_find_on_sourcepath() {
+fn kafka_clients_lower_against_the_explicit_jackson_binary_classpath() {
     match run_entry(entry("org.apache.kafka__kafka-clients-3.7.0")) {
-        Outcome::Fail { chain, .. } => {
+        Outcome::Ok { symbol_names, .. } => {
             assert!(
-                chain.contains("Linked") && chain.contains("PrivateMaxEntriesMap"),
-                "expected the known jackson-databind secondary-type lookup failure. Anything \
-                 else means kafka's closure regressed — the provisioned artifacts are \
-                 zstd-jni, lz4-java, snappy-java, jose4j, opentelemetry-proto and \
-                 protobuf-java, and a version bump must re-derive them from Kafka's Gradle \
-                 files, never its POM. Got: {chain}"
+                ["KafkaConsumer", "KafkaProducer", "Admin"]
+                    .iter()
+                    .all(|name| symbol_names.iter().any(|actual| actual == name)),
+                "Kafka must retain named declarations from its own Java sources"
             );
         }
-        Outcome::Ok { .. } => panic!(
-            "kafka-clients now lowers — if jackson-databind moved `Linked` into its own \
-             file, add a KNOWN_CONTENT row and move kafka into known_good instead of \
-             leaving this test to rot"
+        Outcome::Fail { stage, chain } => panic!(
+            "Kafka regressed despite its explicit Jackson binary classpath at {stage}: {chain}"
         ),
     }
 }

@@ -110,13 +110,15 @@ pub fn lower_oracle(oracle: &ClangOracle, out: &mut Lowering<Usr>) {
         let Some(target) = oracle.functions.iter().find(|f| f.usr == reference.target) else {
             continue;
         };
-        if owner.source_file != reference.source_file || reference.byte_start < owner.byte_offset {
+        let reference_start = reference.byte_start;
+        let owner_start = owner.byte_offset;
+        if owner.source_file != reference.source_file || reference_start < owner_start {
             continue;
         }
-        let Ok(start) = u32::try_from(reference.byte_start - owner.byte_offset) else {
+        let Ok(start) = u32::try_from(reference_start - owner_start) else {
             continue;
         };
-        let Ok(end) = u32::try_from(reference.byte_end.saturating_sub(owner.byte_offset)) else {
+        let Ok(end) = u32::try_from(reference.byte_end.saturating_sub(owner_start)) else {
             continue;
         };
         out.record_occurrence(

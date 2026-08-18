@@ -200,8 +200,7 @@ pub(crate) fn lower_ast_type(
         ast::Type::SliceType(s) => {
             let inner = s
                 .ty()
-                .map(|t| lower_ast_type(ctx, &t, ref_for))
-                .unwrap_or(Type::ORACLE_GAP);
+                .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
             Type::Slice(Box::new(inner))
         }
         ast::Type::ArrayType(a) => lower_array_type(ctx, a, ref_for),
@@ -222,18 +221,15 @@ pub(crate) fn lower_ast_type(
         ast::Type::InferType(_) => Type::Inferred,
         ast::Type::ParenType(p) => p
             .ty()
-            .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::ORACLE_GAP),
+            .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for)),
         ast::Type::ForType(f) => f
             .ty()
-            .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::ORACLE_GAP),
+            .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for)),
         ast::Type::MacroType(m) => lower_macro_type(ctx, m, ref_for),
         // Pattern types (`#is(...)`) are nightly-only; peel to the base type.
         ast::Type::PatternType(p) => p
             .ty()
-            .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::ORACLE_GAP),
+            .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for)),
     }
 }
 
@@ -379,8 +375,7 @@ fn lower_path_type(
     {
         // self_ty: the type inside the angle brackets (the `T` in `<T as Trait>::Assoc`)
         let self_ty = type_ref
-            .map(|t| lower_ast_type(ctx, &t, ref_for))
-            .unwrap_or(Type::ORACLE_GAP);
+            .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
 
         // trait_ref: the `as Trait` disambiguation (present for `<T as Trait>::Assoc`,
         // absent for `<T>::Assoc` — though the latter is rare in practice).
@@ -513,8 +508,7 @@ fn lower_ref_type(
     let mutable = r.mut_token().is_some();
     let inner = r
         .ty()
-        .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::ORACLE_GAP);
+        .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
     Type::Primitive(Primitive::Reference {
         lifetime,
         mutable,
@@ -530,8 +524,7 @@ fn lower_ptr_type(
     let is_mutable = p.mut_token().is_some();
     let inner = p
         .ty()
-        .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::ORACLE_GAP);
+        .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
     if is_mutable {
         Type::Primitive(Primitive::MutPointer(Box::new(inner)))
     } else {
@@ -546,16 +539,14 @@ fn lower_array_type(
 ) -> Type {
     let inner = a
         .ty()
-        .map(|t| lower_ast_type(ctx, &t, ref_for))
-        .unwrap_or(Type::ORACLE_GAP);
+        .map_or(Type::ORACLE_GAP, |t| lower_ast_type(ctx, &t, ref_for));
     let length = a
         .const_arg()
         .and_then(|c| c.expr())
-        .map(|e| {
+        .map_or(0, |e| {
             let text = e.syntax().text().to_string().replace('_', "");
             text.parse::<usize>().unwrap_or(0)
-        })
-        .unwrap_or(0);
+        });
     Type::Array {
         ty: Box::new(inner),
         length,
@@ -683,14 +674,11 @@ fn lower_macro_type(
     let Some(call) = m.macro_call() else {
         return Type::ORACLE_GAP;
     };
-    let expanded = match panic::catch_unwind(AssertUnwindSafe(|| ctx.sema.expand_macro_call(&call)))
-    {
-        Ok(v) => v,
-        Err(_) => {
+    let expanded = panic::catch_unwind(AssertUnwindSafe(|| ctx.sema.expand_macro_call(&call)))
+        .unwrap_or_else(|_| {
             debug!("sema.expand_macro_call panicked; treating macro type as Any");
             None
-        }
-    };
+        });
     if let Some(expanded) = expanded {
         if let Some(ty) = ast::Type::cast(expanded.value.clone()) {
             return lower_ast_type(ctx, &ty, ref_for);
@@ -787,13 +775,10 @@ fn path_type_to_type(
 // ── Semantics resolve (panic-safe) ────────────────────────────────────────────
 
 pub(crate) fn resolve_path_opt(ctx: &LowerCtx<'_>, path: &ast::Path) -> Option<PathResolution> {
-    match panic::catch_unwind(AssertUnwindSafe(|| ctx.sema.resolve_path(path))) {
-        Ok(res) => res,
-        Err(_) => {
-            debug!("sema.resolve_path panicked; using Any fallback");
-            None
-        }
-    }
+    panic::catch_unwind(AssertUnwindSafe(|| ctx.sema.resolve_path(path))).unwrap_or_else(|_| {
+        debug!("sema.resolve_path panicked; using Any fallback");
+        None
+    })
 }
 
 // ── Primitives ────────────────────────────────────────────────────────────────
@@ -1066,7 +1051,7 @@ mod tests {
             TupleElement::Positional(Type::Primitive(Primitive::Bool)),
         ]));
         if let Type::Tuple(elems) = &ty {
-            for elem in elems.iter() {
+            for elem in elems {
                 assert!(
                     matches!(elem, TupleElement::Positional(_)),
                     "Rust tuple elements must be Positional"

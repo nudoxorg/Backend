@@ -62,7 +62,7 @@ pub(crate) fn lower_function(
     ctx: &mut LowerCtx<'_>,
     f: HirFunction,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
-) -> Option<FunctionData> {
+) -> FunctionData {
     let receiver = receiver_kind(ctx, f);
     let (generics, wheres) = fn_generics(ctx, f, ref_for);
     let modifiers = fn_modifiers(ctx, f);
@@ -86,11 +86,11 @@ pub(crate) fn lower_function(
         .is_defaulted(is_defaulted)
         .build();
 
-    Some(FunctionData {
+    FunctionData {
         body,
         input_params,
         output_param,
-    })
+    }
 }
 
 // ── Receiver ─────────────────────────────────────────────────────────────────
@@ -151,9 +151,8 @@ fn fn_generics(
     f: HirFunction,
     ref_for: &mut impl FnMut(&PathKey) -> Option<RawRef>,
 ) -> (Vec<GenericParam>, Vec<WherePred>) {
-    let src = match ctx.sema.source(f).or_else(|| f.source(ctx.db)) {
-        Some(s) => s,
-        None => return (Vec::new(), Vec::new()),
+    let Some(src) = ctx.sema.source(f).or_else(|| f.source(ctx.db)) else {
+        return (Vec::new(), Vec::new());
     };
     generics::lower_generics(
         ctx,
@@ -178,9 +177,7 @@ fn lower_input_params(
         .enumerate()
         .map(|(i, p)| {
             let name = p
-                .name(ctx.db)
-                .map(|n| n.as_str().to_owned())
-                .unwrap_or_else(|| format!("_{i}"));
+                .name(ctx.db).map_or_else(|| format!("_{i}"), |n| n.as_str().to_owned());
             // The HIR reports more parameters than the AST produced types for,
             // which only happens on source that did not parse cleanly.
             let param_ty = ast_tys.get(i).cloned().unwrap_or(Type::ORACLE_GAP);
@@ -261,12 +258,10 @@ fn ast_param_types(
             }
             None => hir_params
                 .get(i)
-                .map(|hp| {
+                .map_or(Type::ORACLE_GAP, |hp| {
                     let hir_ty = hp.ty();
                     ty::lower_hir_type_fallback(ctx, hir_ty, ref_for)
-                })
-                // Neither AST nor HIR has a type for this parameter position.
-                .unwrap_or(Type::ORACLE_GAP),
+                }),
         })
         .collect()
 }

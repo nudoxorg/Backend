@@ -4,8 +4,8 @@
 //! output caps, wall kills). The former bwrap-internals assertions are now
 //! projection assertions: the security claims live in what the machine is
 //! *built* with (no NIC when sealed, only granted roots mounted, scratch an
-//! ephemeral overlay), verified against `FakeVmRuntime` until the real
-//! backend is vendored.
+//! ephemeral overlay). The ignored tests below exercise the real backend when
+//! the strict VM runner is invoked.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -93,23 +93,16 @@ fn env_is_scrubbed() {
         .mounts(Mounts::new());
     let out = run(spec);
     // printenv exits non-zero when var is missing — that's success for us.
-    match out {
-        Ok(o) => {
-            let combined = format!(
-                "{}{}",
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr)
-            );
-            assert!(
-                !combined.contains("should-not-leak"),
-                "secret leaked into guest env: {combined}"
-            );
-        }
-        Err(SandboxError::ToolchainMissing { .. }) => {
-            // printenv not on PATH in minimal environments — skip.
-        }
-        Err(e) => panic!("unexpected error: {e}"),
-    }
+    let o = out.expect("real VM env probe must execute in the guest");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        !combined.contains("should-not-leak"),
+        "secret leaked into guest env: {combined}"
+    );
     unsafe {
         std::env::remove_var("NUDOX_SECRET_TOKEN");
     }
@@ -131,12 +124,8 @@ fn output_cap_kills() {
     )
     .unwrap();
 
-    // `yes` may not exist; fall back to a python one-liner or skip.
-    let program = if which_exists("yes") {
-        "yes"
-    } else {
-        return; // soft skip
-    };
+    // The strict VM rootfs must provide the POSIX utility used by this test.
+    let program = "yes";
 
     let spec = Spec::new(program, limits)
         .env(Env::empty().set("PATH", "/usr/bin:/bin"))
@@ -166,10 +155,6 @@ fn wall_time_kills() {
         256,
     )
     .unwrap();
-
-    if !which_exists("sleep") {
-        return;
-    }
 
     let spec = Spec::new("sleep", limits)
         .arg("10")
@@ -256,15 +241,6 @@ fn vm_sealed_network_is_absent_from_the_machine() {
         NetworkPolicy::None,
         "sealed ⇒ the machine has no network device at all"
     );
-}
-
-fn which_exists(name: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 #[test]

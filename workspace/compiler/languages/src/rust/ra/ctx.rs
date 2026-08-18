@@ -225,19 +225,15 @@ pub(crate) fn foreign_key_from(
     let crate_seg = key.split("::").next().unwrap_or("_");
     // The last `::` segment: what renders when the reference is not linked.
     let display = key.rsplit("::").next().unwrap_or(key);
-    match lineages.get(crate_seg) {
-        Some(lineage) => ForeignKey::in_package(lineage.clone(), key, display),
-        // The crate is not in this graph (a `cfg`-disabled dependency, or a
-        // path rust-analyzer resolved without one). Naming a namespace is
-        // honest; fabricating `cargo:<rustc_name>` would produce a key that
-        // renders as a working hyperlink and never resolves.
-        None => ForeignKey::in_namespace(
+    lineages.get(crate_seg).map_or_else(
+        || ForeignKey::in_namespace(
             EcosystemId::new("rust-unresolved-crate"),
             crate_seg,
             key,
             display,
         ),
-    }
+        |lineage| ForeignKey::in_package(lineage.clone(), key, display),
+    )
 }
 
 /// The published name of a toolchain crate.
@@ -375,14 +371,6 @@ impl<'db> LowerCtx<'db> {
     }
 
     // ── Visibility ────────────────────────────────────────────────────────────
-
-    /// Gate: include `def` given the `document_private` setting.
-    pub(crate) fn include(&self, def: ModuleDef) -> bool {
-        if self.document_private {
-            return true;
-        }
-        matches!(def.visibility(self.db), Visibility::Public)
-    }
 
     /// Map HIR visibility → IR visibility.
     ///
@@ -524,9 +512,7 @@ impl<'db> LowerCtx<'db> {
 /// Rustc / display crate name (`odd-duck` package → `odd_duck`).
 pub(crate) fn crate_name(db: &RootDatabase, krate: Crate) -> String {
     krate
-        .display_name(db)
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "_".into())
+        .display_name(db).map_or_else(|| "_".into(), |n| n.to_string())
 }
 
 // ── SymbolParts — assembled metadata for one entry ────────────────────────────

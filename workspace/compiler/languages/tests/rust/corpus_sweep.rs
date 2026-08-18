@@ -56,8 +56,8 @@ use std::time::Duration;
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_ir::foreign::Unlinked;
+use nudox_languages::rust::{Error, RustProducer, error::NothingToDocument};
 use nudox_languages::{PackageSource, ProducerError, produce};
-use nudox_languages::rust::{RustProducer, Error, error::NothingToDocument};
 
 use common::{ENTRIES, Entry, chain, corpus_root, entry_root};
 
@@ -119,7 +119,12 @@ fn run_entry(entry: &Entry) -> Outcome {
 
     let case = format!("lower/cargo/{}-{}", entry.name, entry.version);
     let (produced, cost) = heart::cost::measured(&case, &root, || {
-        produce(&RustProducer { direct_repo: false }, &src, &lineage, &Unlinked)
+        produce(
+            &RustProducer { direct_repo: false },
+            &src,
+            &lineage,
+            &Unlinked,
+        )
     });
 
     let produced = match produced {
@@ -130,8 +135,7 @@ fn run_entry(entry: &Entry) -> Outcome {
         // slot — because only the inner one carries the `cargo metadata` failure
         // that says *which* dependency did not resolve.
         Err(ProducerError::DependenciesUnresolved { package, source }) => {
-            let Some(Error::DependenciesUnresolved { cause, .. }) =
-                source.downcast_ref::<Error>()
+            let Some(Error::DependenciesUnresolved { cause, .. }) = source.downcast_ref::<Error>()
             else {
                 return Outcome::Failed {
                     stage: "dependency resolution (cause chain broken)",
@@ -277,7 +281,10 @@ fn every_crates_io_corpus_package_lowers_to_the_public_api_its_source_declares()
         ENTRIES.len()
     );
     for (dir, entries, wall) in &lowered {
-        eprintln!("  OK        {dir}: {entries} entries in {:.1}s", wall.as_secs_f64());
+        eprintln!(
+            "  OK        {dir}: {entries} entries in {:.1}s",
+            wall.as_secs_f64()
+        );
     }
     for (dir, diagnostic) in &unresolved {
         eprintln!("  DEGRADED  {dir}: {diagnostic}");
@@ -358,10 +365,14 @@ fn a_package_absent_from_the_loaded_workspace_is_refused_rather_than_answered_wi
         PackageName::new(absent.to_owned()),
     );
 
-    let (result, _cost) =
-        heart::cost::measured("lower/cargo/absent-package", &root, || {
-            produce(&RustProducer { direct_repo: false }, &src, &lineage, &Unlinked)
-        });
+    let (result, _cost) = heart::cost::measured("lower/cargo/absent-package", &root, || {
+        produce(
+            &RustProducer { direct_repo: false },
+            &src,
+            &lineage,
+            &Unlinked,
+        )
+    });
 
     let err = match result {
         Ok(produced) => panic!(
@@ -372,10 +383,12 @@ fn a_package_absent_from_the_loaded_workspace_is_refused_rather_than_answered_wi
         Err(err) => err,
     };
 
-    let ProducerError::NoDeclarationsContributed { source: Some(source), .. } = &err else {
-        panic!(
-            "expected NoDeclarationsContributed carrying a cause; got {err:?}"
-        );
+    let ProducerError::NoDeclarationsContributed {
+        source: Some(source),
+        ..
+    } = &err
+    else {
+        panic!("expected NoDeclarationsContributed carrying a cause; got {err:?}");
     };
     let rust_err = source
         .downcast_ref::<Error>()

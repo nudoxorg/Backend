@@ -58,7 +58,6 @@
 //! step). TypeVar *uses* in type annotations lower to `Type::TypeVar(name)`.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use nudox_ir::{
     entry::{AttrTok, Deprecation, DocLink, Symbol, Visibility},
@@ -276,10 +275,7 @@ fn emit_class(
     }
 
     let record = Record::builder()
-        .form(match cls.form {
-            ClassForm::TypedDict | ClassForm::NamedTuple => RecordForm::Struct,
-            _ => RecordForm::Struct,
-        })
+        .form(RecordForm::Struct)
         .fields(field_refs)
         .super_types(super_types)
         .generics(generics)
@@ -410,10 +406,14 @@ fn emit_function(
         // represent that at all — `None` is also what a producer emits when it
         // has not looked. `Unannotated` says the source wrote nothing, which
         // is a different and checkable claim.
-        let ty = Some(match &param.ty {
-            Some(t) => types::lower_type(t, out, known_ids),
-            None => nudox_ir::kinds::Type::UNANNOTATED,
-        });
+        let ty = Some(
+            param
+                .ty
+                .as_ref()
+                .map_or(nudox_ir::kinds::Type::UNANNOTATED, |t| {
+                    types::lower_type(t, out, known_ids)
+                }),
+        );
         let mut attrs = Vec::new();
         match param.kind {
             // `nudox_ir::kinds::ParamAttribute` has no positional-only
@@ -426,7 +426,7 @@ fn emit_function(
             // honest than emitting a wrong one. See `lib.rs`'s "Constructs
             // not yet representable" for the upstream `nudox-ir` gap this
             // depends on (out of this crate's scope to add).
-            ParamKind::PositionalOnly => {}
+            ParamKind::PositionalOnly | ParamKind::Normal => {}
             // `ParamAttribute::KeywordOnly` exists precisely for this case
             // (its own doc comment cites Python's `def f(a, *, b)`) — it was
             // previously left unused here under a comment claiming no such
@@ -434,7 +434,6 @@ fn emit_function(
             ParamKind::KeywordOnly => attrs.push(ParamAttribute::KeywordOnly),
             ParamKind::Varargs => attrs.push(ParamAttribute::Variadic),
             ParamKind::Kwargs => attrs.push(ParamAttribute::Kwargs),
-            ParamKind::Normal => {}
         }
         if param.has_default {
             attrs.push(ParamAttribute::Optional);
@@ -501,9 +500,7 @@ fn build_function_kind(
 ) -> Function {
     let receiver = match func.receiver {
         ReceiverKind::SharedRef => Some(nudox_ir::kinds::Receiver::SharedRef),
-        ReceiverKind::ClassMethod => None, // modeled via attrs
-        ReceiverKind::Static => None,
-        ReceiverKind::None => None,
+        ReceiverKind::ClassMethod | ReceiverKind::Static | ReceiverKind::None => None, // modeled via attrs
     };
 
     let mut modifiers: Vec<FnModifier> = Vec::new();
@@ -538,8 +535,7 @@ fn emit_const(
     // written something it had not.
     let ty =
         c.ty.as_ref()
-            .map(|t| types::lower_type(t, out, known_ids))
-            .unwrap_or(nudox_ir::kinds::Type::UNANNOTATED);
+            .map_or(nudox_ir::kinds::Type::UNANNOTATED, |t| types::lower_type(t, out, known_ids));
 
     let const_kind = Const::builder()
         .ty(ty.clone())
@@ -665,10 +661,14 @@ fn build_field_kind(
     // `Field::ty = None` meant "the producer has nothing to say", which is
     // indistinguishable from "the producer never ran". A Python field with no
     // annotation is a *fact about the source*, so record it as one.
-    let ty = Some(match &field.ty {
-        Some(t) => types::lower_type(t, out, known_ids),
-        None => nudox_ir::kinds::Type::UNANNOTATED,
-    });
+    let ty = Some(
+        field
+            .ty
+            .as_ref()
+            .map_or(nudox_ir::kinds::Type::UNANNOTATED, |t| {
+                types::lower_type(t, out, known_ids)
+            }),
+    );
     let mut attrs = Vec::new();
     if !field.is_final && !field.is_class_var {
         attrs.push(FieldAttribute::Mutable);

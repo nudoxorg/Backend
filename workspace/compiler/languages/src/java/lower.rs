@@ -217,7 +217,6 @@ fn typevar_bounds_map<'a>(
 /// reports source names.
 fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
     match t {
-        TypeMirror::Primitive { name, .. } | TypeMirror::Declared { name, .. } => name.to_string(),
         TypeMirror::Void => "void".to_owned(),
         TypeMirror::Array { component, .. } => {
             format!("{}[]", type_erase(component, typevar_bounds))
@@ -239,7 +238,10 @@ fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
             .map(|a| type_erase(a, typevar_bounds))
             .collect::<Vec<_>>()
             .join("|"),
-        TypeMirror::Error { name } | TypeMirror::Other { repr: name } => name.to_string(),
+        TypeMirror::Primitive { name, .. }
+        | TypeMirror::Declared { name, .. }
+        | TypeMirror::Error { name }
+        | TypeMirror::Other { repr: name } => name.to_string(),
         TypeMirror::None => "<none>".to_owned(),
         TypeMirror::Null => "null".to_owned(),
     }
@@ -741,7 +743,7 @@ fn lower_type_params(
     let mut wheres = Vec::new();
 
     for tp in type_params {
-        let mut bounds: Vec<Type> = tp
+        let bounds: Vec<Type> = tp
             .bounds
             .iter()
             .filter(|b| b.declared_name() != Some("java.lang.Object"))
@@ -3113,7 +3115,7 @@ mod tests {
 
         assert_eq!(sym.source, path);
         assert_eq!(
-            &std::fs::read(&sym.source).expect("read fixture")[sym.span.clone()],
+            &std::fs::read(&sym.source).expect("read fixture")[sym.span],
             b"void run() {}"
         );
     }

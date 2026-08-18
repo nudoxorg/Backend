@@ -154,7 +154,10 @@ const CASES: &[Case] = &[
     },
 ];
 
-fn find_return(oracle: &nudox_languages::python::oracle::PythonOracle, id: &str) -> Option<TypeData> {
+fn find_return(
+    oracle: &nudox_languages::python::oracle::PythonOracle,
+    id: &str,
+) -> Option<TypeData> {
     fn walk(item: &nudox_languages::python::oracle::ItemData, id: &str) -> Option<TypeData> {
         if item.id.0 == id
             && let ItemBody::Function(f) = &item.body
@@ -225,5 +228,8 @@ fn inferred_return_types_match_what_the_source_actually_says() {
         "pyrefly inferred a WRONG type for one or more real functions (worse than Unknown):\n{}",
         failures.join("\n")
     );
-    assert!(checked >= 8, "expected at least 8 of 9 cases to run against a provisioned corpus; got {checked}");
+    assert!(
+        checked >= 8,
+        "expected at least 8 of 9 cases to run against a provisioned corpus; got {checked}"
+    );
 }

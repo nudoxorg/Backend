@@ -66,7 +66,6 @@ pub enum OracleKind {
 /// whether the bundle has to wrap a helper for it.
 pub fn oracle_kind(language: Language) -> OracleKind {
     match language {
-        Language::Rust | Language::TypeScript | Language::Python => OracleKind::InProcess,
         Language::Go => OracleKind::Subprocess {
             override_env: crate::go::producer::ORACLE_BIN_ENV,
         },
@@ -79,7 +78,11 @@ pub fn oracle_kind(language: Language) -> OracleKind {
         Language::C | Language::Cpp => OracleKind::NativeLibrary {
             override_env: "LIBCLANG_PATH",
         },
-        Language::Nix | Language::Other => OracleKind::InProcess,
+        Language::Rust
+        | Language::TypeScript
+        | Language::Python
+        | Language::Nix
+        | Language::Other => OracleKind::InProcess,
     }
 }
 
@@ -184,13 +187,12 @@ where
 /// carries in `stderr`; telling that reader how to point at a different binary
 /// would send them to fix the one thing that is not wrong.
 fn spawn_label(label: &str, override_env: Option<&str>) -> String {
-    match override_env {
-        Some(var) => format!(
+    override_env.map_or_else(|| label.to_owned(), |var| {
+        format!(
             "{label} (resolved against PATH; set {var} to its absolute path, \
              or add it to PATH)"
-        ),
-        None => label.to_owned(),
-    }
+        )
+    })
 }
 
 #[cfg(test)]

@@ -32,10 +32,8 @@
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
-use nudox_languages::{
-    PackageSource, Producer, ProducerError, ProducerId, YieldContract, produce,
-};
 use nudox_languages::python::{PythonProducer, oracle::PythonOracle};
+use nudox_languages::{PackageSource, Producer, ProducerError, ProducerId, YieldContract, produce};
 
 /// One corpus entry: `result/<dir>`, the PyPI project name, the
 /// ecosystem version string, and its canary set.
@@ -79,7 +77,16 @@ const ENTRIES: &[Entry] = &[
         dir: "requests-2.31.0",
         name: "requests",
         version: "2.31.0",
-        canaries: &["get", "post", "put", "delete", "Session", "Request", "Response", "PreparedRequest"],
+        canaries: &[
+            "get",
+            "post",
+            "put",
+            "delete",
+            "Session",
+            "Request",
+            "Response",
+            "PreparedRequest",
+        ],
         non_module_floor: 500,
     },
     // click/core.py: `Command`, `Group`, `Context`, `Option`, `Argument`.
@@ -88,14 +95,18 @@ const ENTRIES: &[Entry] = &[
         dir: "click-8.0.4",
         name: "click",
         version: "8.0.4",
-        canaries: &["Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm"],
+        canaries: &[
+            "Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm",
+        ],
         non_module_floor: 1400,
     },
     Entry {
         dir: "click-8.1.7",
         name: "click",
         version: "8.1.7",
-        canaries: &["Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm"],
+        canaries: &[
+            "Command", "Group", "Context", "Option", "Argument", "echo", "prompt", "confirm",
+        ],
         non_module_floor: 1400,
     },
     // pydantic 1.x: pydantic/main.py `BaseModel`; pydantic/fields.py
@@ -123,7 +134,13 @@ const ENTRIES: &[Entry] = &[
         dir: "flask-3.0.2",
         name: "flask",
         version: "3.0.2",
-        canaries: &["Flask", "Blueprint", "Request", "Response", "render_template"],
+        canaries: &[
+            "Flask",
+            "Blueprint",
+            "Request",
+            "Response",
+            "render_template",
+        ],
         non_module_floor: 1000,
     },
     // attr/_next_gen.py `define`/`field`; attr/_make.py `Factory`; attr/_funcs.py
@@ -145,7 +162,13 @@ const ENTRIES: &[Entry] = &[
         dir: "sqlalchemy-2.0.27",
         name: "sqlalchemy",
         version: "2.0.27",
-        canaries: &["Column", "Table", "create_engine", "relationship", "Session"],
+        canaries: &[
+            "Column",
+            "Table",
+            "create_engine",
+            "relationship",
+            "Session",
+        ],
         non_module_floor: 25000,
     },
     // yaml/__init__.py `safe_load`/`dump`; yaml/loader.py `Loader`;
@@ -178,7 +201,13 @@ const ENTRIES: &[Entry] = &[
         dir: "six-1.16.0",
         name: "six",
         version: "1.16.0",
-        canaries: &["PY2", "PY3", "with_metaclass", "add_metaclass", "ensure_str"],
+        canaries: &[
+            "PY2",
+            "PY3",
+            "with_metaclass",
+            "add_metaclass",
+            "ensure_str",
+        ],
         non_module_floor: 90,
     },
     // rich/console.py `Console`; rich/table.py `Table`; rich/panel.py `Panel`;
@@ -263,7 +292,12 @@ const ENTRIES: &[Entry] = &[
         dir: "jsonschema-4.21.1",
         name: "jsonschema",
         version: "4.21.1",
-        canaries: &["validate", "Draft7Validator", "ValidationError", "FormatChecker"],
+        canaries: &[
+            "validate",
+            "Draft7Validator",
+            "ValidationError",
+            "FormatChecker",
+        ],
         non_module_floor: 500,
     },
     // cattr/converters.py `Converter`/`GenConverter`;
@@ -354,12 +388,18 @@ fn run_entry(entry: &Entry) -> Outcome {
                     (!n.is_empty()).then_some(n)
                 })
                 .collect();
-            let missing_canaries: Vec<&'static str> =
-                entry.canaries.iter().copied().filter(|c| !names.contains(c)).collect();
+            let missing_canaries: Vec<&'static str> = entry
+                .canaries
+                .iter()
+                .copied()
+                .filter(|c| !names.contains(c))
+                .collect();
             let non_module = p
                 .table
                 .iter()
-                .filter(|(_, e)| e.kind().discriminant().map(|d| format!("{d:?}")) != Some("Module".to_owned()))
+                .filter(|(_, e)| {
+                    e.kind().discriminant().map(|d| format!("{d:?}")) != Some("Module".to_owned())
+                })
                 .count();
             Outcome::Produced {
                 table_len: p.table.len(),
@@ -387,7 +427,12 @@ fn every_provisioned_pypi_corpus_package_lowers_real_named_declarations() {
     for entry in ENTRIES {
         eprintln!("=== {} ({} @ {}) ===", entry.dir, entry.name, entry.version);
         match run_entry(entry) {
-            Outcome::Produced { table_len, non_module, missing_canaries, contract_is_declarations } => {
+            Outcome::Produced {
+                table_len,
+                non_module,
+                missing_canaries,
+                contract_is_declarations,
+            } => {
                 eprintln!(
                     "PRODUCED {}: table_len={table_len} non_module={non_module} \
                      contract_is_declarations={contract_is_declarations} missing_canaries={missing_canaries:?}",
@@ -415,7 +460,11 @@ fn every_provisioned_pypi_corpus_package_lowers_real_named_declarations() {
         }
     }
 
-    eprintln!("\n=== pypi corpus sweep summary: {} of {} entries produced ===", produced_summary.len(), ENTRIES.len());
+    eprintln!(
+        "\n=== pypi corpus sweep summary: {} of {} entries produced ===",
+        produced_summary.len(),
+        ENTRIES.len()
+    );
     for (dir, table_len, non_module) in &produced_summary {
         eprintln!("  {dir}: table_len={table_len} non_module={non_module}");
     }
@@ -502,8 +551,14 @@ fn a_producer_that_contributes_nothing_is_rejected_even_under_the_default_contra
     });
 
     match result {
-        Err(ProducerError::NoDeclarationsContributed { package, producer, source }) => {
-            eprintln!("mutant rejected as expected: package={package} producer={producer} source={source:?}");
+        Err(ProducerError::NoDeclarationsContributed {
+            package,
+            producer,
+            source,
+        }) => {
+            eprintln!(
+                "mutant rejected as expected: package={package} producer={producer} source={source:?}"
+            );
             assert_eq!(package, entry.name);
             assert_eq!(producer, EmptyPython::ID);
         }
@@ -526,5 +581,8 @@ fn a_producer_that_contributes_nothing_is_rejected_even_under_the_default_contra
         matches!(honest.contract, YieldContract::Declarations),
         "and it is accepted under the real (non-degraded) contract"
     );
-    assert!(honest.table.len() > 1, "and with real content beyond the synthesized root");
+    assert!(
+        honest.table.len() > 1,
+        "and with real content beyond the synthesized root"
+    );
 }

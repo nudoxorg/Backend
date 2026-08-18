@@ -56,8 +56,8 @@ use nudox_ir::{
     lower::Lowering,
     package::PackageId,
 };
-use nudox_languages::{PackageSource, Producer};
 use nudox_languages::rust::RustProducer;
+use nudox_languages::{PackageSource, Producer};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -191,8 +191,10 @@ fn lower(dir: &str, pkg_name: &str, body: &str) -> PristineIntroTable {
         .finish()
         .unwrap_or_else(|e| panic!("fixture {dir} lowering must be structurally sound: {e}"));
 
-    let lineage =
-        PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new(pkg_name.to_owned()));
+    let lineage = PackageLineageId::new(
+        EcosystemId::new("cargo"),
+        PackageName::new(pkg_name.to_owned()),
+    );
     package.seal(&lineage, &Unlinked).table
 }
 

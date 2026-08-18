@@ -39,8 +39,8 @@ use nudox_ir::{
     kind::Kind,
     kinds::ty::Type,
 };
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::java::JavaProducer;
+use nudox_languages::{PackageSource, produce};
 
 fn fixture_root(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -71,8 +71,13 @@ fn gson_fromjson_overloads_survive_seal_as_distinct_declarations() {
     let lineage = PackageLineageId::new(EcosystemId::new("maven"), PackageName::new("gson"));
 
     let (produced, cost) = heart::cost::measured("l39/gson-2.11.0/overloads", &root, || {
-        produce(&JavaProducer::new(), &src, &lineage, &nudox_ir::foreign::Unlinked)
-            .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e)))
+        produce(
+            &JavaProducer::new(),
+            &src,
+            &lineage,
+            &nudox_ir::foreign::Unlinked,
+        )
+        .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e)))
     });
 
     let table = &produced.table;
@@ -216,7 +221,8 @@ fn type_name(ty: Option<&Type>, table: &nudox_ir::apply::PristineIntroTable) -> 
         Some(Type::Nominal(Ref::Foreign { key, .. })) => key.display.to_string(),
         Some(Type::Nominal(Ref::Local(_))) => "<dangling>".to_owned(),
         Some(Type::Nominal(Ref::Intro(id))) => table
-            .get(*id).map_or_else(|| "<unresolved-intro>".to_owned(), |e| e.sym().name.clone()),
+            .get(*id)
+            .map_or_else(|| "<unresolved-intro>".to_owned(), |e| e.sym().name.clone()),
         Some(Type::TypeVar(n)) => n.clone(),
         Some(other) => format!("{other:?}"),
     }

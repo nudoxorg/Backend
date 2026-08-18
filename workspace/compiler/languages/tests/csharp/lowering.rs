@@ -42,6 +42,7 @@ const FIXTURE: &str = r#"{
       "docInherited": false,
       "docLinks": { "M:MyLib.IAnimal.Speak": "M:MyLib.IAnimal.Speak" },
       "extensionReceiver": null,
+      "location": { "file": "src/Animals.cs", "start": 17, "end": 23, "startLine": 1, "startColumn": 2, "endLine": 1, "endColumn": 8 },
       "members": {
         "fields": [],
         "properties": [
@@ -408,6 +409,35 @@ fn lower_fixture_succeeds() {
 }
 
 #[test]
+fn type_location_is_a_real_declared_source_location() {
+    let extraction = parse_extraction(FIXTURE.as_bytes()).expect("fixture should parse");
+    let pkg = lower(&extraction).expect("lowering should succeed");
+    let ianimal = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "IAnimal")
+        .expect("IAnimal entry not found")
+        .1;
+
+    let nudox_ir::entry::SourceLocation::Declared {
+        file,
+        bytes,
+        start,
+        end,
+        ..
+    } = ianimal.location()
+    else {
+        panic!(
+            "oracle location must reach the entry as Declared, got {:?}",
+            ianimal.location()
+        );
+    };
+    assert_eq!(file.as_str(), "src/Animals.cs");
+    assert_eq!(bytes.as_range(), 17..23);
+    assert_eq!((start.line(), start.column()), (2, 3));
+    assert_eq!((end.line(), end.column()), (2, 9));
+}
+
+#[test]
 fn interface_entry_is_present_and_named() {
     let extraction = parse_extraction(FIXTURE.as_bytes()).expect("fixture should parse");
     let pkg = lower(&extraction).expect("lowering should succeed");
@@ -457,10 +487,7 @@ fn enum_entry_has_variants() {
             )
         })
         .count();
-    assert_eq!(
-        variants, 2,
-        "AnimalKind must have 2 variants (Dog, Cat)"
-    );
+    assert_eq!(variants, 2, "AnimalKind must have 2 variants (Dog, Cat)");
 }
 
 #[test]
@@ -1223,7 +1250,7 @@ fn inpackage_exception_type_lowers_to_nominal() {
 }
 
 /// A parameter with `hasDefault: true` and `default: "1024"` must have
-/// `ParamAttribute::Optional` and its default text preserved in documentation.
+/// `ParamAttribute::Optional` and its typed default expression preserved.
 #[test]
 fn param_default_value_is_captured() {
     use nudox_ir::{build::ParamAttribute, entry::EntryInner, kind::Kind};
@@ -1246,9 +1273,12 @@ fn param_default_value_is_captured() {
         param_kind.attributes.contains(&ParamAttribute::Optional),
         "maxLen must carry ParamAttribute::Optional"
     );
-    assert!(
-        max_len.1.sym().documentation.contains("1024"),
-        "maxLen documentation must contain the default value text '1024'"
+    assert_eq!(
+        param_kind
+            .default_value
+            .as_ref()
+            .map(|value| value.source.as_str()),
+        Some("1024")
     );
 }
 
@@ -1659,4 +1689,257 @@ fn labelled_tuple_preserves_labels() {
         }
         other => panic!("return type of GetRange must be Type::Tuple, got {other:?}"),
     }
+}
+
+/// docs/ISSUES.md L40: the oracle emits namespaces, and `lower_extraction`
+/// must declare each as a `Module` so types hang off the namespace rather
+/// than the assembly root. The existing `FIXTURE` cannot witness this: its
+/// assembly name and its only namespace are both `MyLib`, so a root-module
+/// named `MyLib` would satisfy a naive name check.
+#[test]
+fn oracle_namespace_is_declared_as_a_module() {
+    use nudox_ir::{entry::EntryInner, kind::Kind};
+
+    const SRC: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "TestLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [
+    { "name": "Animals", "doc": "Types that describe animals." }
+  ],
+  "types": [
+    {
+      "docId": "T:Animals.IAnimal",
+      "qualifiedName": "Animals.IAnimal",
+      "simpleName": "IAnimal",
+      "kind": "INTERFACE",
+      "namespace": "Animals",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+    let extraction = parse_extraction(SRC.as_bytes()).expect("namespace fixture must parse");
+    assert_eq!(extraction.namespaces.len(), 1);
+    let pkg = lower(&extraction).expect("namespace fixture must lower");
+
+    let animals = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Animals")
+        .expect("namespace Animals must be an IR entry, not dropped");
+    assert!(
+        matches!(animals.1.kind(), EntryInner::Owned(Kind::Module(_))),
+        "Animals must be a Module, got {:?}",
+        animals.1.kind()
+    );
+}
+
+/// docs/ISSUES.md L40: only type-level symbols get `aliases_from_doc_id`, so a
+/// `<see cref="M:…"/>` / `<see cref="P:…"/>` cannot resolve. The method's
+/// Roslyn doc-id must be stored as an alias, the same way types already do.
+#[test]
+fn method_carries_its_roslyn_doc_id_as_an_alias() {
+    let extraction = parse_extraction(FIXTURE.as_bytes()).expect("fixture should parse");
+    let pkg = lower(&extraction).expect("lowering should succeed");
+
+    let speak = pkg
+        .iter()
+        .find(|(_, e)| e.sym().name == "Speak")
+        .expect("Speak method must be present");
+    assert!(
+        speak
+            .1
+            .sym()
+            .aliases
+            .iter()
+            .any(|a| a == "M:MyLib.IAnimal.Speak"),
+        "Speak must alias its Roslyn doc-id M:MyLib.IAnimal.Speak so cref resolution \
+         can find it; aliases were {:?}",
+        speak.1.sym().aliases
+    );
+}
+
+/// docs/ISSUES.md L49-cs: C# `ref` and `out` both collapse to
+/// `ParamAttribute::Inout`. They are distinct calling conventions (`out` need
+/// not be definitely assigned at the call site; `ref` must) and the IR must
+/// not treat them as the same flag.
+#[test]
+fn out_parameter_is_not_the_same_attribute_as_ref_parameter() {
+    use nudox_ir::{build::ParamAttribute, entry::EntryInner, kind::Kind};
+
+    const SRC: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "RefLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:RefLib.Box",
+      "qualifiedName": "RefLib.Box",
+      "simpleName": "Box",
+      "kind": "CLASS",
+      "namespace": "RefLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "TryGet",
+            "docId": "M:RefLib.Box.TryGet(System.Int32@)",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [
+              {
+                "name": "value",
+                "type": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" },
+                "refKind": "out",
+                "isParams": false,
+                "hasDefault": false,
+                "default": null,
+                "scoped": false,
+                "attributes": []
+              }
+            ],
+            "returnType": { "kind": "named", "name": "System.Boolean", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          },
+          {
+            "name": "Swap",
+            "docId": "M:RefLib.Box.Swap(System.Int32@)",
+            "methodKind": "Ordinary",
+            "accessibility": "public",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [
+              {
+                "name": "slot",
+                "type": { "kind": "named", "name": "System.Int32", "args": [], "owner": null, "nullable": "none", "typeKind": "Struct" },
+                "refKind": "ref",
+                "isParams": false,
+                "hasDefault": false,
+                "default": null,
+                "scoped": false,
+                "attributes": []
+              }
+            ],
+            "returnType": { "kind": "named", "name": "System.Void", "args": [], "owner": null, "nullable": "none", "typeKind": "Void" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+    let extraction = parse_extraction(SRC.as_bytes()).expect("ref/out fixture must parse");
+    let pkg = lower(&extraction).expect("ref/out fixture must lower");
+
+    let attrs_of = |name: &str| -> Vec<ParamAttribute> {
+        let entry = pkg
+            .iter()
+            .find(|(_, e)| e.sym().name == name)
+            .unwrap_or_else(|| panic!("{name} param must be present"));
+        match entry.1.kind() {
+            EntryInner::Owned(Kind::Param(p)) => p.attributes.to_vec(),
+            other => panic!("{name} must be a Param, got {other:?}"),
+        }
+    };
+
+    let out_attrs = attrs_of("value");
+    let ref_attrs = attrs_of("slot");
+    assert_ne!(
+        out_attrs, ref_attrs,
+        "C# `out` and `ref` must not collapse to the same ParamAttribute set; \
+         both were {out_attrs:?}"
+    );
 }

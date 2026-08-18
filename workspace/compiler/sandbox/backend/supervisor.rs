@@ -129,7 +129,9 @@ pub(crate) fn supervise(
                     }
                 }
 
-                let peak_mem = cgroup.as_ref().and_then(super::super::cgroup::Cgroup::peak_mem);
+                let peak_mem = cgroup
+                    .as_ref()
+                    .and_then(super::super::cgroup::Cgroup::peak_mem);
                 let wall = start.elapsed();
                 return Ok(Output {
                     stdout: stdout_buf,

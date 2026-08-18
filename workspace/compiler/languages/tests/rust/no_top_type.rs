@@ -42,8 +42,8 @@ use nudox_ir::{
     lower::Lowering,
     package::PackageId,
 };
-use nudox_languages::{PackageSource, Producer};
 use nudox_languages::rust::RustProducer;
+use nudox_languages::{PackageSource, Producer};
 
 /// A crate whose public surface deliberately reaches every former `Type::Any`
 /// site the producer has:
@@ -143,8 +143,10 @@ fn all_types(dir: &str, pkg_name: &str, body: &str) -> Vec<Type> {
         .finish()
         .unwrap_or_else(|e| panic!("fixture {dir} must be structurally sound: {e}"));
 
-    let lineage =
-        PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new(pkg_name.to_owned()));
+    let lineage = PackageLineageId::new(
+        EcosystemId::new("cargo"),
+        PackageName::new(pkg_name.to_owned()),
+    );
     let table = package.seal(&lineage, &Unlinked).table;
 
     let mut out = Vec::new();
@@ -264,7 +266,6 @@ fn rust_producer_emits_no_top_type() {
         offenders.len()
     );
 }
-
 
 /// A clean crate produces **no gaps at all** — and that is the point.
 ///

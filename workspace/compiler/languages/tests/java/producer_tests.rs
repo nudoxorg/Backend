@@ -50,10 +50,10 @@ use nudox_ir::kind::Kind;
 use nudox_ir::kinds::ty::Type;
 use nudox_ir::lower::Lowering;
 use nudox_ir::package::{IrPackage, PackageId};
-use nudox_languages::{PackageSource, Producer, ProducerError, oracle, produce};
-use nudox_languages::java::lower::{JavaId, LoweringCtx, lower_extraction};
 use nudox_languages::java::JavaProducer;
+use nudox_languages::java::lower::{JavaId, LoweringCtx, lower_extraction};
 use nudox_languages::java::schema::Extraction;
+use nudox_languages::{PackageSource, Producer, ProducerError, oracle, produce};
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -83,9 +83,12 @@ fn error_chain(err: &dyn std::error::Error) -> String {
 fn lower_fixture(fixture: &str, package_name: &str) -> IrPackage<JavaId> {
     let root = fixture_root(fixture);
     let src = PackageSource::new(&root, package_name, "test");
-    let extraction = JavaProducer::new()
-        .invoke(&src)
-        .unwrap_or_else(|e| panic!("{fixture} oracle invocation must succeed:\n{}", error_chain(&e)));
+    let extraction = JavaProducer::new().invoke(&src).unwrap_or_else(|e| {
+        panic!(
+            "{fixture} oracle invocation must succeed:\n{}",
+            error_chain(&e)
+        )
+    });
 
     let pkg_id = PackageId::path(&root);
     let root_sym = Symbol {
@@ -107,6 +110,24 @@ fn lower_fixture(fixture: &str, package_name: &str) -> IrPackage<JavaId> {
         .unwrap_or_else(|e| panic!("{fixture} must lower without structural errors: {e}"))
 }
 
+#[test]
+fn java_oracle_resolves_default_method_calls() {
+    let root = fixture_root("modern");
+    let source = PackageSource::new(&root, "modern", "test");
+    let extraction = JavaProducer::new()
+        .invoke(&source)
+        .expect("modern Java fixture must invoke");
+    assert!(
+        extraction.references.iter().any(|reference| {
+            reference.owner.contains("Shape#describe")
+                && reference.target.contains("Shape#area")
+                && reference.start < reference.end
+        }),
+        "javac Trees must emit a located describe -> area edge; got {:?}",
+        extraction.references
+    );
+}
+
 // ── 1. Gson 2.11.0 — full `produce()` pipeline ──────────────────────────────
 
 /// The literal acceptance shape: `Producer` wired end to end through
@@ -120,9 +141,15 @@ fn gson_2_11_0_lowers_end_to_end_via_produce() {
     let lineage = PackageLineageId::new(EcosystemId::new("maven"), PackageName::new("gson"));
 
     let (table, cost) = heart::cost::measured("lower/gson-2.11.0", &root, || {
-        produce(&JavaProducer::new(), &src, &lineage, &nudox_ir::foreign::Unlinked)
-            .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e)))
-    .table});
+        produce(
+            &JavaProducer::new(),
+            &src,
+            &lineage,
+            &nudox_ir::foreign::Unlinked,
+        )
+        .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e)))
+        .table
+    });
 
     assert!(!table.is_empty(), "gson lowered to zero entries");
 
@@ -186,8 +213,14 @@ fn gson_nested_class_keeps_its_parent_through_the_full_pipeline() {
     let root = fixture_root("gson");
     let src = PackageSource::new(&root, "gson", "2.11.0");
     let lineage = PackageLineageId::new(EcosystemId::new("maven"), PackageName::new("gson"));
-    let table = produce(&JavaProducer::new(), &src, &lineage, &nudox_ir::foreign::Unlinked)
-        .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e))).table;
+    let table = produce(
+        &JavaProducer::new(),
+        &src,
+        &lineage,
+        &nudox_ir::foreign::Unlinked,
+    )
+    .unwrap_or_else(|e| panic!("gson must lower without error:\n{}", error_chain(&e)))
+    .table;
 
     let (intro, _) = table
         .iter()
@@ -211,9 +244,10 @@ fn gson_nested_class_keeps_its_parent_through_the_full_pipeline() {
 /// hand-authored JSON `src/lower.rs`'s own unit tests use.
 #[test]
 fn gson_type_adapter_and_annotation_richness() {
-    let (pkg, cost) = heart::cost::measured("typed-lower/gson-2.11.0", &fixture_root("gson"), || {
-        lower_fixture("gson", "gson")
-    });
+    let (pkg, cost) =
+        heart::cost::measured("typed-lower/gson-2.11.0", &fixture_root("gson"), || {
+            lower_fixture("gson", "gson")
+        });
 
     // -- TypeAdapter<T>: a bounded-nothing but real generic type parameter. --
     let type_adapter = pkg
@@ -223,7 +257,10 @@ fn gson_type_adapter_and_annotation_richness() {
         .1;
     match type_adapter.kind().as_owned_kind() {
         Some(Kind::Record(r)) => {
-            assert!(!r.generics.is_empty(), "TypeAdapter must carry its <T> generic parameter");
+            assert!(
+                !r.generics.is_empty(),
+                "TypeAdapter must carry its <T> generic parameter"
+            );
         }
         other => panic!("TypeAdapter must lower as an owned Record kind, got {other:?}"),
     }
@@ -240,7 +277,11 @@ fn gson_type_adapter_and_annotation_richness() {
         "at least one `write` method (TypeAdapter.write) must carry a nonempty Function::throws",
     );
     if let Some(Kind::Function(f)) = write_entry.kind().as_owned_kind() {
-        assert_eq!(f.throws.len(), 1, "write's throws clause has exactly one declared type");
+        assert_eq!(
+            f.throws.len(),
+            1,
+            "write's throws clause has exactly one declared type"
+        );
         // `java.io.IOException` is outside this extraction. It used to degrade
         // to `Type::Any`, which is what this assertion pinned; erasing every
         // foreign type that way is what made distinct overloads encode to
@@ -282,7 +323,10 @@ fn gson_type_adapter_and_annotation_richness() {
     match serialized_name.kind().as_owned_kind() {
         Some(Kind::Trait(_)) => {
             assert!(
-                serialized_name.sym().documentation.contains("annotation_interface"),
+                serialized_name
+                    .sym()
+                    .documentation
+                    .contains("annotation_interface"),
                 "SerializedName's documentation must carry the annotation_interface marker"
             );
         }
@@ -347,7 +391,10 @@ fn modern_fixture_captures_records_sealed_and_module_directives() {
         .iter()
         .find(|(id, _)| id.is_some_and(|i| i.0 == "com.example.modern.Circle#radius"))
         .expect("Circle's `radius` record component must be lowered as a Field");
-    assert!(matches!(radius.1.kind().as_owned_kind(), Some(Kind::Field(_))));
+    assert!(matches!(
+        radius.1.kind().as_owned_kind(),
+        Some(Kind::Field(_))
+    ));
 
     // -- record Pair<A extends Comparable<A>, B>: a bounded generic on a record. --
     let pair = pkg
@@ -356,7 +403,11 @@ fn modern_fixture_captures_records_sealed_and_module_directives() {
         .expect("Pair must be lowered")
         .1;
     match pair.kind().as_owned_kind() {
-        Some(Kind::Record(r)) => assert_eq!(r.generics.len(), 2, "Pair<A, B> must carry two generic params"),
+        Some(Kind::Record(r)) => assert_eq!(
+            r.generics.len(),
+            2,
+            "Pair<A, B> must carry two generic params"
+        ),
         other => panic!("Pair must lower as Record, got {other:?}"),
     }
 
@@ -370,7 +421,10 @@ fn modern_fixture_captures_records_sealed_and_module_directives() {
         .1;
     assert!(matches!(shape.kind().as_owned_kind(), Some(Kind::Trait(_))));
     assert!(
-        shape.sym().documentation.contains("Sealed; permitted subtypes")
+        shape
+            .sym()
+            .documentation
+            .contains("Sealed; permitted subtypes")
             && shape.sym().documentation.contains("Circle")
             && shape.sym().documentation.contains("Square"),
         "Shape's documentation must record its permitted subtypes; got {:?}",
@@ -453,29 +507,36 @@ fn modern_fixture_captures_records_sealed_and_module_directives() {
 /// every other test that invokes the real oracle in the same process.
 #[test]
 fn release_8_genuinely_rejects_java_16_plus_record_syntax() {
-    let circle = fixture_root("modern")
-        .join("com/example/modern/Circle.java");
-    assert!(circle.is_file(), "fixture file must exist: {}", circle.display());
+    let circle = fixture_root("modern").join("com/example/modern/Circle.java");
+    assert!(
+        circle.is_file(),
+        "fixture file must exist: {}",
+        circle.display()
+    );
 
     let classes_dir = std::env::var("NUDOX_JAVA_ORACLE_CLASSES")
         .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/classes").to_owned());
 
-    let (result, _cost) = heart::cost::measured("release-gate/java8-vs-record", &fixture_root("modern"), || {
-        oracle::run_json::<Extraction, _, _, _>(
-            "java-javadoc-test/1",
-            "javadoc",
-            [
-                "-quiet".to_owned(),
-                "-doclet".to_owned(),
-                "nudox.oracle.Extractor".to_owned(),
-                "-docletpath".to_owned(),
-                classes_dir,
-                "--release".to_owned(),
-                "8".to_owned(),
-                circle.to_string_lossy().into_owned(),
-            ],
-        )
-    });
+    let (result, _cost) = heart::cost::measured(
+        "release-gate/java8-vs-record",
+        &fixture_root("modern"),
+        || {
+            oracle::run_json::<Extraction, _, _, _>(
+                "java-javadoc-test/1",
+                "javadoc",
+                [
+                    "-quiet".to_owned(),
+                    "-doclet".to_owned(),
+                    "nudox.oracle.Extractor".to_owned(),
+                    "-docletpath".to_owned(),
+                    classes_dir,
+                    "--release".to_owned(),
+                    "8".to_owned(),
+                    circle.to_string_lossy().into_owned(),
+                ],
+            )
+        },
+    );
 
     let err = result.expect_err("--release 8 must reject a `record` declaration");
     match err {
@@ -500,9 +561,12 @@ fn release_8_genuinely_rejects_java_16_plus_record_syntax() {
 fn markdown_doc_comment_support_matches_the_running_jdk() {
     let root = fixture_root("markdown-doc-probe");
     let src = PackageSource::new(&root, "markdown-doc-probe", "test");
-    let extraction = JavaProducer::new()
-        .invoke(&src)
-        .unwrap_or_else(|e| panic!("markdown-doc-probe oracle invocation must succeed:\n{}", error_chain(&e)));
+    let extraction = JavaProducer::new().invoke(&src).unwrap_or_else(|e| {
+        panic!(
+            "markdown-doc-probe oracle invocation must succeed:\n{}",
+            error_chain(&e)
+        )
+    });
 
     let major: u32 = extraction
         .java_version
@@ -510,7 +574,11 @@ fn markdown_doc_comment_support_matches_the_running_jdk() {
         .next()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    assert!(major > 0, "oracle must report a parseable java_version, got {:?}", extraction.java_version);
+    assert!(
+        major > 0,
+        "oracle must report a parseable java_version, got {:?}",
+        extraction.java_version
+    );
 
     let probe = extraction
         .types

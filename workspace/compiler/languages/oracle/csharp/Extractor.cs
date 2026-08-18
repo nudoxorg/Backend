@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Text.Json;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -171,11 +172,16 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         }
 
         var span = location.SourceSpan;
+        var lineSpan = location.GetLineSpan();
 
         json.WriteStartObject("location");
         json.WriteString("file", tree.FilePath);
         json.WriteNumber("start", ByteOffset(tree, span.Start));
         json.WriteNumber("end", ByteOffset(tree, span.End));
+        json.WriteNumber("startLine", lineSpan.StartLinePosition.Line);
+        json.WriteNumber("startColumn", lineSpan.StartLinePosition.Character);
+        json.WriteNumber("endLine", lineSpan.EndLinePosition.Line);
+        json.WriteNumber("endColumn", lineSpan.EndLinePosition.Character);
         json.WriteEndObject();
     }
 
@@ -223,6 +229,7 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         }
 
         json.WriteEndArray();
+        WriteReferences(json);
 
         // Written last because `errorTypeCount` is only known once every type
         // signature has been visited. JSON object member order is not
@@ -230,9 +237,54 @@ internal sealed class Extractor(LoadedCompilation loaded, OracleOptions options)
         json.WriteStartObject("diagnostics");
         json.WriteNumber("errorTypeCount", _types.ErrorTypeCount);
         json.WriteNumber("errorCount", loaded.ErrorCount);
+        // This is a typed availability fact, not an advisory note: consumers
+        // must distinguish generated API that was applied from a project whose
+        // configured generator could not be loaded.
+        json.WriteString("generatorSupport", loaded.GeneratorSupport);
         json.WriteEndObject();
 
         json.WriteEndObject();
+    }
+
+    private void WriteReferences(Utf8JsonWriter json)
+    {
+        json.WriteStartArray("references");
+        foreach (var tree in loaded.Compilation.SyntaxTrees)
+        {
+            var model = loaded.Compilation.GetSemanticModel(tree);
+            foreach (var invocation in tree.GetRoot().DescendantNodes()
+                .OfType<InvocationExpressionSyntax>())
+            {
+                var target = model.GetSymbolInfo(invocation).Symbol as IMethodSymbol;
+                var ownerNode = invocation.Ancestors()
+                    .OfType<BaseMethodDeclarationSyntax>()
+                    .FirstOrDefault();
+                var owner = ownerNode is null
+                    ? null
+                    : model.GetDeclaredSymbol(ownerNode) as IMethodSymbol;
+                var ownerId = owner is null
+                    ? null
+                    : DocumentationCommentId.CreateDeclarationId(owner);
+                var targetId = target is null
+                    ? null
+                    : DocumentationCommentId.CreateDeclarationId(target);
+                if (ownerId is null || targetId is null
+                    || !SymbolEqualityComparer.Default.Equals(
+                        owner!.ContainingAssembly, loaded.Compilation.Assembly)
+                    || !SymbolEqualityComparer.Default.Equals(
+                        target!.ContainingAssembly, loaded.Compilation.Assembly))
+                    continue;
+                var span = invocation.Expression.GetLocation().SourceSpan;
+                json.WriteStartObject();
+                json.WriteString("owner", ownerId);
+                json.WriteString("target", targetId);
+                json.WriteString("file", tree.FilePath);
+                json.WriteNumber("start", ByteOffset(tree, span.Start));
+                json.WriteNumber("end", ByteOffset(tree, span.End));
+                json.WriteEndObject();
+            }
+        }
+        json.WriteEndArray();
     }
 
     // ── Assembly and namespaces ──────────────────────────────────────────────

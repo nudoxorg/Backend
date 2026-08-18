@@ -34,15 +34,17 @@ use nudox_ir::{
     lower::Lowering,
     package::{IrPackage, PackageId},
 };
+use nudox_languages::csharp::{
+    CSharpProducer,
+    schema::{Extraction, GeneratorSupport, TypeSig},
+};
 use nudox_languages::{PackageSource, Producer};
-use nudox_languages::csharp::{CSharpProducer, schema::Extraction};
 
 // ── Harness ───────────────────────────────────────────────────────────────────
 
 /// The checked-in C# project the oracle extracts.
 fn fixture_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/csharp/fixture")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/csharp/fixture")
 }
 
 fn package_source() -> PackageSource {
@@ -106,6 +108,114 @@ fn error_chain(err: &dyn std::error::Error) -> String {
     parts.join(": ")
 }
 
+/// Source generators are not loaded by the source oracle.  That limitation must
+/// be explicit in the extraction contract; otherwise an API emitted into this
+/// partial type is indistinguishable from an API the package simply does not
+/// have.
+#[test]
+fn source_generator_support_is_visible_for_minimum_repro() {
+    let root = tempfile::tempdir().expect("create generator repro root");
+    std::fs::write(
+        root.path().join("GeneratorRepro.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Analyzer Include="configured-generator.dll" />
+  </ItemGroup>
+</Project>
+"#,
+    )
+    .expect("write generator configuration");
+    std::fs::write(
+        root.path().join("Api.cs"),
+        r#"
+namespace GeneratorRepro;
+
+public partial class Api
+{
+    // A configured source generator would add GeneratedMethod here.
+}
+"#,
+    )
+    .expect("write generator repro source");
+
+    let source = PackageSource::new(root.path(), "GeneratorRepro", "1.0.0");
+    let extraction = CSharpProducer::from_env()
+        .invoke(&source)
+        .expect("the minimum generator repro must extract");
+
+    assert_eq!(
+        extraction.diagnostics.generator_support,
+        GeneratorSupport::Unavailable,
+        "generator support must be visible instead of silently omitting generated API"
+    );
+    assert!(
+        extraction
+            .types
+            .iter()
+            .flat_map(|ty| ty.members.methods.iter())
+            .all(|method| method.name != "GeneratedMethod"),
+        "the repro must not claim an ungenerated member exists"
+    );
+}
+
+#[test]
+fn oracle_and_lowering_preserve_decimal_and_array_rank_availability() {
+    let root = tempfile::tempdir().expect("create typed-gap repro root");
+    std::fs::write(
+        root.path().join("TypedGaps.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+</Project>
+"#,
+    )
+    .expect("write typed-gap project");
+    std::fs::write(
+        root.path().join("Api.cs"),
+        "namespace TypedGaps; public class Api { public decimal Price; public int[,,] Cube; }",
+    )
+    .expect("write typed-gap source");
+
+    let source = PackageSource::new(root.path(), "TypedGaps", "1.0.0");
+    let extraction = CSharpProducer::from_env()
+        .invoke(&source)
+        .expect("typed-gap repro must extract");
+    let api = extraction
+        .types
+        .iter()
+        .find(|ty| ty.simple_name == "Api")
+        .expect("Api must be extracted");
+    let price = api
+        .members
+        .fields
+        .iter()
+        .find(|field| field.name == "Price")
+        .expect("Price must be extracted");
+    assert!(matches!(
+        &price.ty,
+        TypeSig::Named { name, .. } if name == "System.Decimal"
+    ));
+    let cube = api
+        .members
+        .fields
+        .iter()
+        .find(|field| field.name == "Cube")
+        .expect("Cube must be extracted");
+    assert!(matches!(&cube.ty, TypeSig::Array { rank: 3, .. }));
+    let package = nudox_languages::csharp::lower(&extraction).expect("typed-gap repro must lower");
+    let docs = package
+        .iter()
+        .filter(|(_, entry)| entry.sym().name == "TypedGaps")
+        .map(|(_, entry)| entry.sym().documentation.as_str())
+        .next()
+        .expect("assembly root must be present");
+    assert!(docs.contains("target framework `net10.0`"));
+    assert!(docs.contains("Diagnostics: 0 compilation error(s), 0 error type(s)"));
+    assert!(docs.contains("Generator support"));
+}
+
 /// Lower the cached extraction into a fresh package.
 fn lowered() -> IrPackage<String> {
     let producer = CSharpProducer::from_env();
@@ -128,23 +238,23 @@ fn lowered() -> IrPackage<String> {
         .lower(extraction(), &mut sink)
         .expect("lowering the fixture must succeed");
 
-    sink.finish().expect("the lowered fixture must be structurally sound")
+    sink.finish()
+        .expect("the lowered fixture must be structurally sound")
 }
 
 /// The single entry whose symbol name matches, panicking with the available
 /// names when it is absent — a bare `unwrap` here costs a re-run to diagnose.
 fn entry<'a>(pkg: &'a IrPackage<String>, name: &str) -> &'a nudox_ir::entry::Entry {
-    if let Some((_, e)) = pkg.iter().find(|(_, e)| e.sym().name == name) { e } else {
+    if let Some((_, e)) = pkg.iter().find(|(_, e)| e.sym().name == name) {
+        e
+    } else {
         let mut names: Vec<&str> = pkg.iter().map(|(_, e)| e.sym().name.as_str()).collect();
         names.sort_unstable();
         panic!("no entry named {name:?}; present: {names:?}");
     }
 }
 
-fn entries<'a>(
-    pkg: &'a IrPackage<String>,
-    name: &str,
-) -> Vec<&'a nudox_ir::entry::Entry> {
+fn entries<'a>(pkg: &'a IrPackage<String>, name: &str) -> Vec<&'a nudox_ir::entry::Entry> {
     pkg.iter()
         .filter(|(_, e)| e.sym().name == name)
         .map(|(_, e)| e)
@@ -223,11 +333,8 @@ fn every_declared_type_kind_reaches_the_extraction() {
 fn every_enclosing_pointer_names_a_declared_type() {
     let extraction = extraction();
 
-    let declared: std::collections::HashSet<&str> = extraction
-        .types
-        .iter()
-        .map(|t| t.doc_id.as_str())
-        .collect();
+    let declared: std::collections::HashSet<&str> =
+        extraction.types.iter().map(|t| t.doc_id.as_str()).collect();
 
     for decl in &extraction.types {
         if let Some(enclosing) = &decl.enclosing {
@@ -289,9 +396,11 @@ fn returns_and_param_docs_land_on_their_own_entries() {
         store.sym().documentation
     );
 
-    let returns_doc = pkg
-        .iter()
-        .any(|(_, e)| e.sym().documentation.contains("when an existing entry was replaced"));
+    let returns_doc = pkg.iter().any(|(_, e)| {
+        e.sym()
+            .documentation
+            .contains("when an existing entry was replaced")
+    });
     assert!(
         returns_doc,
         "the <returns> text must be lowered onto the return parameter"
@@ -527,7 +636,8 @@ fn named_tuple_element_labels_survive() {
 
     let ty = match describe_return.map(nudox_ir::entry::Entry::kind) {
         Some(EntryInner::Owned(Kind::Param(p))) => {
-            p.ty.as_ref().expect("the return parameter must have a type")
+            p.ty.as_ref()
+                .expect("the return parameter must have a type")
         }
         other => panic!("Describe's return parameter is missing, got {other:?}"),
     };
@@ -547,7 +657,9 @@ fn delegate_lowers_to_a_function_pointer_alias() {
 
     let projection = entry(&pkg, "Projection");
     let target = match projection.kind() {
-        EntryInner::Owned(Kind::Alias(a)) => a.target.as_ref().expect("delegate must have a target"),
+        EntryInner::Owned(Kind::Alias(a)) => {
+            a.target.as_ref().expect("delegate must have a target")
+        }
         other => panic!("Projection must be an Alias, got {other:?}"),
     };
 
@@ -636,7 +748,8 @@ fn parameter_modifiers_are_structural() {
     let attributes = |method: &str, param: &str| -> Vec<ParamAttribute> {
         let e = pkg
             .iter()
-            .find(|(id, e)| e.sym().name == param && id.is_some_and(|i| i.contains(method))).map_or_else(|| panic!("no parameter {param} on {method}"), |(_, e)| e);
+            .find(|(id, e)| e.sym().name == param && id.is_some_and(|i| i.contains(method)))
+            .map_or_else(|| panic!("no parameter {param} on {method}"), |(_, e)| e);
 
         match e.kind() {
             EntryInner::Owned(Kind::Param(p)) => p.attributes.to_vec(),
@@ -645,8 +758,8 @@ fn parameter_modifiers_are_structural() {
     };
 
     assert!(
-        attributes("TryTake", "entry").contains(&ParamAttribute::Inout),
-        "an `out` parameter must be marked Inout"
+        attributes("TryTake", "entry").contains(&ParamAttribute::Out),
+        "an `out` parameter must be marked Out"
     );
     assert!(
         attributes("StoreAll", "entries").contains(&ParamAttribute::Variadic),
@@ -697,7 +810,10 @@ fn enum_variants_carry_discriminants() {
     // The note renders the underlying type through `type_display`, which takes
     // the trailing segment — `Byte`, not `System.Byte`.
     assert!(
-        options.sym().documentation.contains("Underlying type: `Byte`"),
+        options
+            .sym()
+            .documentation
+            .contains("Underlying type: `Byte`"),
         "a non-default underlying type must be recorded, got {:?}",
         options.sym().documentation
     );
@@ -762,10 +878,7 @@ fn operators_and_conversions_record_their_kind() {
 
     let conversion = entry(&pkg, "op_Implicit");
     assert!(
-        conversion
-            .sym()
-            .documentation
-            .contains("implicit operator"),
+        conversion.sym().documentation.contains("implicit operator"),
         "a conversion must record its operator kind, got {:?}",
         conversion.sym().documentation
     );
@@ -827,10 +940,8 @@ fn produce_drives_the_csharp_producer_to_a_sealed_table() {
     );
 
     let source = package_source();
-    let lineage = PackageLineageId::new(
-        EcosystemId::new("nuget"),
-        PackageName::new("Nudox.Fixture"),
-    );
+    let lineage =
+        PackageLineageId::new(EcosystemId::new("nuget"), PackageName::new("Nudox.Fixture"));
 
     let (result, cost) =
         heart::cost::measured("lower/csharp-fixture-produce", &source.root, || {
@@ -873,5 +984,19 @@ fn produce_drives_the_csharp_producer_to_a_sealed_table() {
     eprintln!(
         "produce(): {count} sealed entries in {:.1} ms",
         cost.wall.as_secs_f64() * 1_000.0
+    );
+}
+
+#[test]
+fn roslyn_resolves_fixture_method_call_edges() {
+    let extraction = extraction();
+    assert!(
+        extraction.references.iter().any(|reference| {
+            reference.owner.contains("StoreAll")
+                && reference.target.contains("Store")
+                && reference.start < reference.end
+        }),
+        "Roslyn must emit a located StoreAll -> Store call edge; got {:?}",
+        extraction.references
     );
 }

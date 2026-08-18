@@ -25,8 +25,8 @@ use std::sync::Mutex;
 use crate::budget::{CapabilityBudget, NetGrant};
 use crate::cage::{Cage, CageCaps, CageId};
 use crate::error::CageError;
-use crate::job::cancel::CancelToken;
 use crate::job::NetOff;
+use crate::job::cancel::CancelToken;
 use crate::seal::SealedCommand;
 use crate::spec::Output;
 use crate::vm::{
@@ -70,7 +70,10 @@ impl GoldenPool {
 
     /// Number of parked goldens.
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Whether the pool is empty.
@@ -332,8 +335,8 @@ mod tests {
     use heart::JobKey;
 
     use super::*;
-    use crate::budget::{EgressAllowlist, FsGrant, ThreatTier};
     use crate::budget::profiles::ProducerProfile;
+    use crate::budget::{EgressAllowlist, FsGrant, ThreatTier};
     use crate::job::{Job, VmForge};
     use crate::spec::Env;
     use crate::vm::{Cidr, DnsName, FakeVmRuntime, VmError};

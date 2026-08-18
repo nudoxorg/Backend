@@ -188,7 +188,7 @@ fn normalize(raw: &str) -> Vec<String> {
 fn strip_quotes(text: &str) -> &str {
     let trimmed = text.trim();
     let after_prefix = trimmed
-        .trim_start_matches(|c: char| matches!(c, 'r' | 'R' | 'b' | 'B' | 'u' | 'U' | 'f' | 'F'));
+        .trim_start_matches(['r', 'R', 'b', 'B', 'u', 'U', 'f', 'F']);
     for q in ["\"\"\"", "'''", "\"", "'"] {
         if let Some(inner) = after_prefix.strip_prefix(q)
             && let Some(inner) = inner.strip_suffix(q)

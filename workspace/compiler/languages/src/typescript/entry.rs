@@ -59,7 +59,7 @@ pub(crate) fn make_resolver() -> Resolver {
 }
 
 /// Discover declaration roots for the package at `root`.
-pub(crate) fn discover_entry_points(root: &Path) -> Result<Vec<PathBuf>, PackageError> {
+pub(crate) fn discover_entry_points(root: &Path) -> Vec<PathBuf> {
     let resolver = make_resolver();
     discover_entry_points_with(&resolver, root, None)
 }
@@ -69,7 +69,7 @@ pub(crate) fn discover_entry_points_with(
     resolver: &Resolver,
     root: &Path,
     repo_hint: Option<&str>,
-) -> Result<Vec<PathBuf>, PackageError> {
+) -> Vec<PathBuf> {
     let mut found: BTreeSet<PathBuf> = BTreeSet::new();
 
     if let Some(hint) = repo_hint {
@@ -152,7 +152,7 @@ pub(crate) fn discover_entry_points_with(
     // gate in `produce` is the one that rejects the package — as
     // `NoDeclarationsContributed`, naming the real condition instead of a
     // fabricated spawn error.
-    Ok(found.into_iter().collect())
+    found.into_iter().collect()
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn deep_import_roots_recovers_sibling_files_when_package_has_no_exports_field() {
         let dir = write_fixture(None);
-        let found = discover_entry_points(dir.path()).expect("discovery should succeed");
+        let found = discover_entry_points(dir.path());
         assert!(
             found.iter().any(|p| p.ends_with("sibling.js")),
             "expected sibling.js among {found:?} — package.json has no `exports` field, so \
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn deep_import_roots_does_not_fire_when_package_has_exports_field() {
         let dir = write_fixture(Some(r#"{".":"./index.js"}"#));
-        let found = discover_entry_points(dir.path()).expect("discovery should succeed");
+        let found = discover_entry_points(dir.path());
         assert!(
             !found.iter().any(|p| p.ends_with("sibling.js")),
             "sibling.js must not be discovered — package.json declares an `exports` map, so \

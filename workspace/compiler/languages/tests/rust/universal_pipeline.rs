@@ -260,3 +260,151 @@ fn rust_producer_seals_real_source_and_body_references_through_produced() {
         facts.oracle.calls
     );
 }
+
+#[test]
+fn real_external_attrs_aliases_and_proc_macro_declaration_survive() {
+    let fixture = tempfile::tempdir().expect("create fixture");
+    fs::create_dir_all(fixture.path().join("src")).expect("create src");
+    let corpus_root = std::env::var_os("NUDOX_CORPUS_ROOT")
+        .map(std::path::PathBuf::from)
+        .and_then(|p| p.canonicalize().ok())
+        .expect("NUDOX_CORPUS_ROOT must point at the Nix corpus");
+    let serde_root = corpus_root.join("serde-1.0.229");
+    let serde_derive_source = corpus_root.join("serde_derive-1.0.229");
+    let serde_derive_root = fixture.path().join("serde_derive");
+    fs::create_dir_all(&serde_derive_root).expect("create external proc-macro fixture");
+    std::os::unix::fs::symlink(
+        serde_derive_source.join("src"),
+        serde_derive_root.join("src"),
+    )
+    .expect("link the Nix-provisioned serde_derive sources");
+    fs::write(
+        serde_derive_root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"serde_derive\"\nversion = \"1.0.229\"\nedition = \"2021\"\n\
+             [lib]\nproc-macro = true\n\n[dependencies]\n\
+             proc-macro2 = {{ path = \"{}\" }}\n\
+             quote = {{ path = \"{}\" }}\n\
+             syn = {{ path = \"{}\" }}\n",
+            corpus_root.join("proc-macro2-1.0.107").display(),
+            corpus_root.join("quote-1.0.47").display(),
+            corpus_root.join("syn-3.0.3").display(),
+        ),
+    )
+    .expect("write offline serde_derive fixture manifest");
+    fs::write(
+        fixture.path().join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"nudox_rust_attrs_aliases\"\nversion = \"0.1.0\"\n\
+             edition = \"2021\"\n\n[dependencies]\n\
+             serde = {{ path = \"{}\" }}\n\
+             serde_derive = {{ path = \"{}\" }}\n\n\
+             [workspace]\n\n\
+             [patch.crates-io]\n\
+             proc-macro2 = {{ path = \"{}\" }}\n\
+             quote = {{ path = \"{}\" }}\n\
+             syn = {{ path = \"{}\" }}\n\
+             unicode-ident = {{ path = \"{}\" }}\n",
+            serde_root.display(),
+            serde_derive_root.display(),
+            corpus_root.join("proc-macro2-1.0.107").display(),
+            corpus_root.join("quote-1.0.47").display(),
+            corpus_root.join("syn-3.0.3").display(),
+            corpus_root.join("unicode-ident-1.0.20").display(),
+        ),
+    )
+    .expect("write Cargo.toml");
+    fs::write(
+        fixture.path().join("src/lib.rs"),
+        r#"
+#[derive(serde_derive::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Widget {
+    #[serde(rename = "wire_value")]
+    pub value: u32,
+}
+
+pub use Widget as ExternalWidget;
+"#,
+    )
+    .expect("write lib.rs");
+
+    let source = PackageSource::new(fixture.path(), "nudox_rust_attrs_aliases", "0.1.0");
+    let lineage = PackageLineageId::new(
+        EcosystemId::new("cargo"),
+        PackageName::new("nudox_rust_attrs_aliases"),
+    );
+    let produced = produce(
+        &RustProducer { direct_repo: false },
+        &source,
+        &lineage,
+        &nudox_ir::foreign::Unlinked,
+    )
+    .expect("real serde derive fixture must lower");
+
+    let widget = produced
+        .table
+        .iter()
+        .find(|(_, entry)| entry.sym().name == "Widget")
+        .expect("Widget declaration must be present");
+    assert!(
+        widget.1.sym().attrs.iter().any(|attr| {
+            attr.token == "serde"
+                && attr
+                    .arg
+                    .as_deref()
+                    .is_some_and(|arg| arg.contains("camelCase"))
+        }),
+        "external serde attribute must survive on Widget; got {:?}",
+        widget.1.sym().attrs
+    );
+    assert!(
+        widget
+            .1
+            .sym()
+            .aliases
+            .iter()
+            .any(|alias| alias.ends_with("::ExternalWidget")),
+        "public alias must be attached to Widget; got {:?}",
+        widget.1.sym().aliases
+    );
+
+    let field = produced
+        .table
+        .iter()
+        .find(|(_, entry)| {
+            entry.sym().name == "value"
+                && entry.kind().discriminant() == Some(KindDiscriminant::Field)
+        })
+        .expect("Widget::value field must be present");
+    assert!(
+        field.1.sym().attrs.iter().any(|attr| {
+            attr.token == "serde"
+                && attr
+                    .arg
+                    .as_deref()
+                    .is_some_and(|arg| arg.contains("wire_value"))
+        }),
+        "external serde attribute must survive on Widget::value; got {:?}",
+        field.1.sym().attrs
+    );
+    let derive_source = PackageSource::new(&serde_derive_root, "serde_derive", "1.0.229");
+    let derive_lineage = PackageLineageId::new(
+        EcosystemId::new("cargo"),
+        PackageName::new("serde_derive"),
+    );
+    let derive_produced = produce(
+        &RustProducer { direct_repo: false },
+        &derive_source,
+        &derive_lineage,
+        &nudox_ir::foreign::Unlinked,
+    )
+    .expect("the Nix-provisioned serde_derive package must lower");
+    assert!(
+        derive_produced.table.iter().any(|(_, entry)| {
+            entry.sym().name == "derive_serialize"
+                && entry.kind().discriminant() == Some(KindDiscriminant::Function)
+        }),
+        "the real serde_derive proc-macro declaration must survive lowering"
+    );
+}

@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
@@ -37,6 +39,7 @@ import com.sun.source.tree.CompilationUnitTree;
 import com.sun.source.util.DocTrees;
 import com.sun.source.util.SourcePositions;
 import com.sun.source.util.TreePath;
+import com.sun.source.util.Trees;
 
 import jdk.javadoc.doclet.Doclet;
 import jdk.javadoc.doclet.DocletEnvironment;
@@ -59,6 +62,7 @@ public class Extractor implements Doclet {
 
 	private DocletEnvironment env;
 	private DocTrees trees;
+	private Trees semanticTrees;
 	private Elements elements;
 	private Json json;
 	/** {@code Elements.getDocCommentKind(Element)}, when the JDK has it. */
@@ -120,6 +124,10 @@ public class Extractor implements Doclet {
 	public boolean run(DocletEnvironment environment) {
 		this.env = environment;
 		this.trees = environment.getDocTrees();
+		// DocTrees is the javadoc-side Trees implementation.  There is no
+		// Trees.instance(DocletEnvironment) overload on JDK 21; reusing the
+		// environment's DocTrees preserves both source paths and semantic lookup.
+		this.semanticTrees = this.trees;
 		this.elements = environment.getElementUtils();
 		this.json = new Json();
 		try {
@@ -197,7 +205,102 @@ public class Extractor implements Doclet {
 		}
 		json.endArray();
 
+		writeReferences(types);
+
 		json.endObject();
+	}
+
+	private static String executableId(ExecutableElement e) {
+		Element owner = e.getEnclosingElement();
+		String ownerName = owner instanceof TypeElement t
+			? t.getQualifiedName().toString() : owner.toString();
+		StringBuilder id = new StringBuilder(ownerName).append('#')
+			.append(e.getSimpleName()).append('(');
+		for (int i = 0; i < e.getParameters().size(); i++) {
+			if (i > 0) id.append(',');
+			id.append(e.getParameters().get(i).asType().toString());
+		}
+		return id.append(')').toString();
+	}
+
+	private void writeReferences(List<TypeElement> includedTypes) {
+		json.name("references");
+		json.beginArray();
+		for (TypeElement type : includedTypes) {
+			TreePath root = semanticTrees.getPath(type);
+			if (root == null) continue;
+			CompilationUnitTree unit = root.getCompilationUnit();
+			String source;
+			try {
+				source = Files.readString(Path.of(unit.getSourceFile().toUri()));
+			} catch (Exception e) {
+				continue;
+			}
+			for (Element member : type.getEnclosedElements()) {
+				if (!(member instanceof ExecutableElement owner)) continue;
+				Pattern declaration = Pattern.compile(
+					"\\b" + Pattern.quote(owner.getSimpleName().toString())
+						+ "\\s*\\([^)]*\\)\\s*\\{"
+				);
+				Matcher match = declaration.matcher(source);
+				if (!match.find()) continue;
+				int bodyStart = source.indexOf('{', match.start());
+				int bodyEnd = matchingBrace(source, bodyStart);
+				if (bodyEnd > bodyStart) {
+					emitSourceResolvedCalls(type, owner, unit, source, bodyStart, bodyEnd);
+				}
+			}
+		}
+		json.endArray();
+	}
+
+	private static int matchingBrace(String source, int open) {
+		int depth = 0;
+		for (int i = open; i < source.length(); i++) {
+			char c = source.charAt(i);
+			if (c == '{') depth++;
+			else if (c == '}' && --depth == 0) return i;
+		}
+		return -1;
+	}
+
+	private void emitSourceResolvedCalls(
+		TypeElement ownerType,
+		ExecutableElement owner,
+		CompilationUnitTree unit,
+		String source,
+		int methodStart,
+		int methodEnd
+	) {
+		// Javadoc's public tree API omits method bodies. Keep occurrences lexical,
+		// but resolve every target through javac's member model before emitting.
+		String body = source.substring(methodStart, Math.min(methodEnd, source.length()));
+		Matcher calls = Pattern.compile("\\b([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(").matcher(body);
+		while (calls.find()) {
+			String name = calls.group(1);
+			if (Set.of("if", "for", "while", "switch", "catch", "return", "new").contains(name)
+				|| name.equals(owner.getSimpleName().toString())) continue;
+			ExecutableElement target = null;
+			for (Element member : elements.getAllMembers(ownerType)) {
+				if (member instanceof ExecutableElement candidate
+					&& candidate.getSimpleName().contentEquals(name)
+					&& candidate.getParameters().isEmpty()) {
+					if (target != null) {
+						target = null;
+						break;
+					}
+					target = candidate;
+				}
+			}
+			if (target == null) continue;
+			json.beginObject();
+			json.name("owner"); json.value(executableId(owner));
+			json.name("target"); json.value(executableId(target));
+			json.name("file"); json.value(unit.getSourceFile().getName());
+			json.name("start"); json.value(methodStart + calls.start(1));
+			json.name("end"); json.value(methodStart + calls.end(1));
+			json.endObject();
+		}
 	}
 
 	// ------------------------------------------------------------------

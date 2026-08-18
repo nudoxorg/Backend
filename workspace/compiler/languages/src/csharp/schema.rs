@@ -188,20 +188,17 @@ pub struct Diagnostics {
 /// that could not evaluate generators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum GeneratorSupport {
     /// A configured source generator could not be loaded or executed.
     Unavailable,
     /// Configured source generators were loaded and their output was applied.
     Applied,
     /// A legacy document omitted the field.
+    #[default]
     Unknown,
 }
 
-impl Default for GeneratorSupport {
-    fn default() -> Self {
-        Self::Unknown
-    }
-}
 
 /// A namespace, with a doc summary when present.
 #[derive(Debug, Clone, Deserialize)]

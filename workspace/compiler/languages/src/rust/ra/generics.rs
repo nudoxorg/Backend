@@ -83,9 +83,7 @@ pub(crate) fn lower_generics(
                     let name = cp.name().map(|n| n.text().to_string()).unwrap_or_default();
                     let param_ty = cp
                         .ty()
-                        .map(|t| ty::lower_ast_type(ctx, &t, ref_for))
-                        // `const N: <missing>` — the source did not parse.
-                        .unwrap_or(nudox_ir::kinds::Type::ORACLE_GAP);
+                        .map_or(nudox_ir::kinds::Type::ORACLE_GAP, |t| ty::lower_ast_type(ctx, &t, ref_for));
                     ir_params.push(GenericParam::Const { name, ty: param_ty });
                 }
                 ast::GenericParam::LifetimeParam(lp) => {

@@ -28,6 +28,16 @@ pyrefly = [
     "dep:pyrefly_util",
 ]
 
+# Forwards to `nudox-ir`'s own `seal-census` feature (test-only per-declaration
+# disambiguator-tier instrumentation). Restores the link `nudox-engine`'s own
+# `seal-census` feature already documents ("forwards to nudox-languages's own
+# seal-census feature, which forwards to nudox-ir's") but which this crate was
+# missing — an unrelated pre-existing break, not part of this change, fixed
+# here only because it otherwise made `cargo check -p nudox-engine` fail
+# outright during feature-graph validation regardless of which features are
+# actually activated.
+seal-census = ["nudox-ir/seal-census"]
+
 # The tsz in-process TypeScript checker oracle (tier 2). Off by default so the
 # common build stays lean (tsz pulls in wasm-bindgen stubs and a large rayon
 # pool init). `rustc-hash` is deliberately NOT gated here: it is an
@@ -82,6 +92,13 @@ clang = { workspace = true, features = ["clang_10_0", "runtime"] }
 # versions). Feature choices mirror `git-fragment.bzl`.
 oxc_allocator = "=0.139.0"
 oxc_ast = "=0.139.0"
+# `Visit` moved out of `oxc_ast` into its own crate in this oxc release line;
+# `src/typescript/extract/decl.rs` and `src/typescript/graph.rs` already
+# import it from here. Missing from this manifest — pre-existing breakage
+# unrelated to this change, fixed only because it otherwise makes
+# `cargo check -p nudox-engine` fail outright (nudox-engine depends on
+# nudox-languages unconditionally).
+oxc_ast_visit = "=0.139.0"
 oxc_parser = "=0.139.0"
 oxc_jsdoc = "=0.139.0"
 oxc_semantic = { version = "=0.139.0", features = ["jsdoc"] }

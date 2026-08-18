@@ -233,9 +233,7 @@ fn lower_all_packages_into(
     for krate in crates {
         let crate_started = Instant::now();
         let crate_name = krate
-            .display_name(db)
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "<anon>".into());
+            .display_name(db).map_or_else(|| "<anon>".into(), |n| n.to_string());
         debug!(%crate_name, "lowering crate");
 
         // Catch Cancelled so it propagates out of attach_db correctly.
@@ -259,22 +257,20 @@ fn lower_all_packages_into(
                 format!("crate={crate_name}"),
             );
             let modules_started = Instant::now();
-            let walk_result = walk::lower_crate(&mut ctx, out);
+            walk::lower_crate(&mut ctx, out);
             phase_complete(
                 "lower_crate",
                 modules_started.elapsed(),
                 format!("crate={crate_name}"),
             );
             // Drain occurrence_buf before ctx is dropped.
-            let occs = std::mem::take(&mut ctx.occurrence_buf);
-            (walk_result, occs)
+            std::mem::take(&mut ctx.occurrence_buf)
         }));
 
         match result {
-            Ok((Ok(()), occs)) => {
+            Ok(occs) => {
                 all_occs.extend(occs);
             }
-            Ok((Err(e), _)) => return Err(e),
             Err(payload) => {
                 if payload.downcast_ref::<Cancelled>().is_some() {
                     return Err(Error::Cancelled);

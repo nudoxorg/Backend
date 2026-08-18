@@ -110,6 +110,14 @@ pub fn run_sealed(cmd: SealedCommand, cancel: &CancelToken) -> Result<Output, Ca
         return Err(CageError::Cancelled);
     }
 
+    if let crate::probe::VmExecutionCapability::Unavailable { reason } =
+        crate::probe::probe_vm_execution()
+    {
+        return Err(CageError::Vm(crate::vm::VmError::Unsupported {
+            reason: reason.to_string(),
+        }));
+    }
+
     let store = RootfsStore::from_env().map_err(CageError::from)?;
     let runtime = SmolvmRuntime::new(store);
     let cage = SmolvmCage::with_runtime(runtime);

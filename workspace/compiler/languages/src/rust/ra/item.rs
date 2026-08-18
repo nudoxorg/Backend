@@ -76,7 +76,6 @@ use super::{
     docs, function, generics, source, ty,
 };
 use crate::rust::RaId;
-use crate::rust::error::Error;
 
 // ── Namespace tag helper ──────────────────────────────────────────────────────
 
@@ -242,10 +241,10 @@ pub(crate) fn lower_module(
     module: Module,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Module(module);
     let Some(mod_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
     let parts = ctx
         .symbol_parts(def)
@@ -356,14 +355,12 @@ pub(crate) fn lower_module(
 
         // scope path of this entry = module_segs + scope_name (untagged)
         // Used only for the "is this actually a re-export?" test.
-        let is_reexport = if let Some(ref segs) = module_segs {
+        let is_reexport = module_segs.as_ref().is_some_and(|segs| {
             let mut scope_segs = segs.clone();
             scope_segs.push(scope_name.to_string());
             let scope_path: smol_str::SmolStr = scope_segs.join("::").into();
             scope_path != canon_key
-        } else {
-            false
-        };
+        });
 
         if !is_reexport {
             continue;
@@ -451,8 +448,6 @@ pub(crate) fn lower_module(
             reexport_location,
         );
     }
-
-    Ok(())
 }
 
 /// A scope-only alias has no syntax node in the lowering input. Its target's
@@ -486,9 +481,9 @@ pub(crate) fn lower(
     def: ModuleDef,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     if matches!(def, ModuleDef::Module(_) | ModuleDef::EnumVariant(_)) {
-        return Ok(());
+        return;
     }
 
     match def {
@@ -504,22 +499,22 @@ pub(crate) fn lower(
             // arm below for the case where they do not.
             let fn_name = f.name(ctx.db).as_str().to_owned();
             let fn_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(fn_name.as_str()));
-            lower_free_function_with_id(ctx, f, fn_id, parent, out)?;
+            lower_free_function_with_id(ctx, f, fn_id, parent, out);
         }
         ModuleDef::Adt(Adt::Struct(s)) => {
-            lower_struct(ctx, s, parent, out)?;
+            lower_struct(ctx, s, parent, out);
         }
         ModuleDef::Adt(Adt::Enum(e)) => {
-            lower_enum(ctx, e, parent, out)?;
+            lower_enum(ctx, e, parent, out);
         }
         ModuleDef::Adt(Adt::Union(u)) => {
-            lower_union(ctx, u, parent, out)?;
+            lower_union(ctx, u, parent, out);
         }
         ModuleDef::Trait(t) => {
-            lower_trait(ctx, t, parent, out)?;
+            lower_trait(ctx, t, parent, out);
         }
         ModuleDef::TypeAlias(ta) => {
-            lower_type_alias(ctx, ModuleDef::TypeAlias(ta), parent, out)?;
+            lower_type_alias(ctx, ModuleDef::TypeAlias(ta), parent, out);
         }
         ModuleDef::Const(c) => {
             // `const _: () = …` has no name and therefore no identity.
@@ -537,20 +532,20 @@ pub(crate) fn lower(
             // avoid. Skipping is not a loss of fidelity: there is nothing here
             // for a consumer to refer to.
             let Some(name) = c.name(ctx.db) else {
-                return Ok(());
+                return;
             };
             // Value namespace: tag with `!v`.  Id via `id_of` — see the
             // `ModuleDef::Function` arm above for why.
             let const_name = name.as_str().to_owned();
             let const_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(const_name.as_str()));
-            lower_const_with_id(ctx, c, const_id, parent, out)?;
+            lower_const_with_id(ctx, c, const_id, parent, out);
         }
         ModuleDef::Static(s) => {
             // Value namespace: tag with `!v`.  Id via `id_of` — see the
             // `ModuleDef::Function` arm above for why.
             let static_name = s.name(ctx.db).as_str().to_owned();
             let static_id = id_of(ctx, def).unwrap_or_else(|| RaId::from(static_name.as_str()));
-            lower_static_with_id(ctx, s, static_id, parent, out)?;
+            lower_static_with_id(ctx, s, static_id, parent, out);
         }
         ModuleDef::Macro(m) => {
             // Macro namespace: tag with `!m`.  No Macro kind in new IR — emit as Module.
@@ -630,7 +625,6 @@ pub(crate) fn lower(
         }
         ModuleDef::Module(_) | ModuleDef::EnumVariant(_) => {}
     }
-    Ok(())
 }
 
 // ── Free function ─────────────────────────────────────────────────────────────
@@ -647,12 +641,10 @@ fn lower_free_function_with_id(
     fn_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Function(f);
     let mut ref_for = make_ref_for!(ctx, out);
-    let Some(fd) = function::lower_function(ctx, f, &mut ref_for) else {
-        return Ok(());
-    };
+    let fd = function::lower_function(ctx, f, &mut ref_for);
 
     // Declare Param entries under the *function's own* id, not its enclosing
     // module/impl — see `declare_params` and this closure's inline comment for
@@ -706,8 +698,6 @@ fn lower_free_function_with_id(
     // Individual sema calls inside are already panic-guarded; a body with no
     // AST source (e.g. `BuiltinDeriveImplMethod`) returns early itself.
     record_body_occurrences(ctx, f, &fn_id);
-
-    Ok(())
 }
 
 // ── Body occurrence recording ─────────────────────────────────────────────────
@@ -914,9 +904,8 @@ fn path_resolution_to_target(
     res: PathResolution,
     local_crate: &str,
 ) -> Option<PendingTarget> {
-    let def = match res {
-        PathResolution::Def(d) => d,
-        _ => return None,
+    let PathResolution::Def(def) = res else {
+        return None;
     };
     // Only function-like targets.
     if !matches!(def, ModuleDef::Function(_)) {
@@ -942,9 +931,8 @@ fn type_ref_target(
     res: PathResolution,
     local_crate: &str,
 ) -> Option<PendingTarget> {
-    let def = match res {
-        PathResolution::Def(d) => d,
-        _ => return None,
+    let PathResolution::Def(def) = res else {
+        return None;
     };
     // Type namespace: struct, enum, union, trait, type alias.
     match def {
@@ -975,10 +963,10 @@ fn lower_assoc_function(
     parent_id: &RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let fn_name = f.name(ctx.db).as_str().to_owned();
     let fn_id = ctx.child_id(parent_id, &fn_name);
-    lower_free_function_with_id(ctx, f, fn_id, parent, out)
+    lower_free_function_with_id(ctx, f, fn_id, parent, out);
 }
 
 // ── Struct ────────────────────────────────────────────────────────────────────
@@ -988,10 +976,10 @@ fn lower_struct(
     s: Struct,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Adt(Adt::Struct(s));
     let Some(struct_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
     let mut ref_for = make_ref_for!(ctx, out);
 
@@ -1044,7 +1032,6 @@ fn lower_struct(
 
     ctx.check_unique(&struct_id);
     out.declare_at(struct_id, parent, sym, record_body, location);
-    Ok(())
 }
 
 // ── Enum ──────────────────────────────────────────────────────────────────────
@@ -1054,10 +1041,10 @@ fn lower_enum(
     e: ra_ap_hir::Enum,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Adt(Adt::Enum(e));
     let Some(enum_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
     let mut ref_for = make_ref_for!(ctx, out);
 
@@ -1168,7 +1155,6 @@ fn lower_enum(
 
     ctx.check_unique(&enum_id);
     out.declare_at(enum_id, parent, sym, enum_body, location);
-    Ok(())
 }
 
 // ── Union ─────────────────────────────────────────────────────────────────────
@@ -1178,10 +1164,10 @@ fn lower_union(
     u: ra_ap_hir::Union,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Adt(Adt::Union(u));
     let Some(union_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
     // Declare fields (declare_hir_fields creates its own ref_for internally).
     // For union fields the key is `Named` — they share storage rather than
@@ -1213,7 +1199,6 @@ fn lower_union(
 
     ctx.check_unique(&union_id);
     out.declare_at(union_id, parent, sym, record_body, location);
-    Ok(())
 }
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
@@ -1223,10 +1208,10 @@ fn lower_trait(
     t: Trait,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Trait(t);
     let Some(trait_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
 
     // ── Guard: skip the whole trait if its id is already declared ────────────
@@ -1242,7 +1227,7 @@ fn lower_trait(
             "skipping duplicate trait: trait_id already declared; \
              members will not be emitted to avoid orphaned parent links"
         );
-        return Ok(());
+        return;
     }
 
     let mut ref_for = make_ref_for!(ctx, out);
@@ -1276,23 +1261,21 @@ fn lower_trait(
     //   • `trait Foo: Bar<u32>` → `Type::Apply { base: Nominal(Bar), args: [u32] }`
     //   • `trait Foo: Bar`      → `Type::Nominal(Bar)`
     let supers: Vec<nudox_ir::kinds::Type> = {
-        let ast_bounds = trait_ast.as_ref().and_then(|ast| ast.type_bound_list());
+        let ast_bounds = trait_ast.as_ref().and_then(ra_ap_syntax::ast::HasTypeBounds::type_bound_list);
 
         if let Some(bounds) = ast_bounds {
             bounds
                 .bounds()
                 .filter_map(|b| {
                     // Only PathType bounds (not lifetime bounds).
-                    let path_ty = match b.kind() {
-                        Some(ra_ap_syntax::ast::TypeBoundKind::PathType(_, path_ty)) => path_ty,
-                        _ => return None,
+                    let Some(ra_ap_syntax::ast::TypeBoundKind::PathType(_, path_ty)) = b.kind() else {
+                        return None;
                     };
                     let path = path_ty.path()?;
                     // Resolve the path to a Trait.
                     let res = ty::resolve_path_opt(ctx, &path)?;
-                    let def = match res {
-                        ra_ap_hir::PathResolution::Def(d) => d,
-                        _ => return None,
+                    let ra_ap_hir::PathResolution::Def(def) = res else {
+                        return None;
                     };
                     let key = id_of(ctx, def)?;
                     let raw_ref = ref_for(&key)?;
@@ -1362,9 +1345,7 @@ fn lower_trait(
     out.declare_at(trait_id.clone(), parent, sym, trait_body, location);
 
     // ── Declare assoc items as children ──────────────────────────────────────
-    lower_trait_assoc_items(ctx, t, &trait_id, out)?;
-
-    Ok(())
+    lower_trait_assoc_items(ctx, t, &trait_id, out);
 }
 
 fn lower_trait_assoc_items(
@@ -1372,26 +1353,25 @@ fn lower_trait_assoc_items(
     t: Trait,
     trait_id: &RaId,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     for item in t.items(ctx.db) {
         match item {
             AssocItem::Function(f) => {
                 // Use child_id(trait_id, name): the trait id already encodes
                 // the full path, so two traits with the same assoc fn name
                 // cannot collide.
-                lower_assoc_function(ctx, f, trait_id, Some(trait_id.clone()), out)?;
+                lower_assoc_function(ctx, f, trait_id, Some(trait_id.clone()), out);
             }
             AssocItem::TypeAlias(ta) => {
                 // Assoc type alias: id = child_id(trait_id, name).
-                lower_assoc_type_alias(ctx, ta, trait_id, Some(trait_id.clone()), out)?;
+                lower_assoc_type_alias(ctx, ta, trait_id, Some(trait_id.clone()), out);
             }
             AssocItem::Const(c) => {
                 // Assoc const: id = child_id(trait_id, name).
-                lower_assoc_const(ctx, c, trait_id, Some(trait_id.clone()), out)?;
+                lower_assoc_const(ctx, c, trait_id, Some(trait_id.clone()), out);
             }
         }
     }
-    Ok(())
 }
 
 fn detect_sealed(ctx: &LowerCtx<'_>, t: Trait) -> nudox_ir::kinds::Sealed {
@@ -1444,7 +1424,7 @@ pub(crate) fn lower_impl(
     imp: Impl,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     if imp.is_negative(ctx.db) {
         // Negative impls (`impl !Trait for T`) are emitted with `ImplFlags::negative`.
         // We still emit them so they are visible to analysis.
@@ -1470,7 +1450,7 @@ pub(crate) fn lower_impl(
             "skipping duplicate impl: impl_id already declared; \
              members will not be emitted to avoid orphaned parent links"
         );
-        return Ok(());
+        return;
     }
 
     let mut ref_for = make_ref_for!(ctx, out);
@@ -1562,18 +1542,16 @@ pub(crate) fn lower_impl(
     // Visibility is stored in `Symbol.visibility`; consumers filter on that.
     for item in imp.items(ctx.db) {
         if let AssocItem::Function(f) = item {
-            lower_assoc_function(ctx, f, &impl_id, Some(impl_id.clone()), out)?;
+            lower_assoc_function(ctx, f, &impl_id, Some(impl_id.clone()), out);
         }
         // TypeAlias and Const assoc items inside impl blocks.
         if let AssocItem::TypeAlias(ta) = item {
-            lower_assoc_type_alias(ctx, ta, &impl_id, Some(impl_id.clone()), out)?;
+            lower_assoc_type_alias(ctx, ta, &impl_id, Some(impl_id.clone()), out);
         }
         if let AssocItem::Const(c) = item {
-            lower_assoc_const(ctx, c, &impl_id, Some(impl_id.clone()), out)?;
+            lower_assoc_const(ctx, c, &impl_id, Some(impl_id.clone()), out);
         }
     }
-
-    Ok(())
 }
 
 /// Generate a unique, semantic `RaId` for an impl block.
@@ -1636,12 +1614,13 @@ pub(crate) fn lower_impl(
 ///
 /// Identity and presentation are different jobs. This renders the impl the way
 /// rustdoc writes it, and nothing else depends on its exact shape.
-fn impl_display_name(ctx: &mut LowerCtx<'_>, imp: Impl) -> String {
+fn impl_display_name(ctx: &LowerCtx<'_>, imp: Impl) -> String {
     let self_ty = attach_db(ctx.db, || {
         imp.self_ty(ctx.db).display(ctx.db, ctx.display).to_string()
     });
-    let name = match attach_db(ctx.db, || imp.trait_ref(ctx.db)) {
-        Some(trait_ref) => {
+    let name = attach_db(ctx.db, || imp.trait_ref(ctx.db)).map_or_else(
+        || format!("impl {self_ty}"),
+        |trait_ref| {
             // Use the bare trait name (e.g. "Debug") to avoid
             // fully-qualified paths like "core::fmt::Debug" in names.
             let short_name = attach_db(ctx.db, || {
@@ -1656,9 +1635,8 @@ fn impl_display_name(ctx: &mut LowerCtx<'_>, imp: Impl) -> String {
                 .map(|lt| full_display[lt..].to_owned())
                 .unwrap_or_default();
             format!("impl {short_name}{args} for {self_ty}")
-        }
-        None => format!("impl {self_ty}"),
-    };
+        },
+    );
     // `short_name` above only strips qualification from the *trait path*
     // itself. It does nothing about a qualified associated-type path
     // (`<T as IntoParallelIterator>::Item`) sitting inside a generic
@@ -1760,12 +1738,12 @@ fn impl_id(ctx: &mut LowerCtx<'_>, imp: Impl) -> RaId {
     let bounds_suffix: String = {
         let generic_params = impl_ast
             .as_ref()
-            .and_then(|ast| ast.generic_param_list())
+            .and_then(ra_ap_syntax::ast::HasGenericParams::generic_param_list)
             .map(|gp| gp.syntax().text().to_string())
             .unwrap_or_default();
         let where_clause = impl_ast
             .as_ref()
-            .and_then(|ast| ast.where_clause())
+            .and_then(ra_ap_syntax::ast::HasGenericParams::where_clause)
             .map(|wc| wc.syntax().text().to_string())
             .unwrap_or_default();
         let raw = format!("{generic_params}{where_clause}");
@@ -1829,17 +1807,13 @@ fn impl_id(ctx: &mut LowerCtx<'_>, imp: Impl) -> RaId {
         // than trait_ref.display() (which shortens to the local name and
         // causes collisions between same-named traits from different crates).
         let canonical_trait = ctx
-            .canonical(ModuleDef::Trait(trait_))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
+            .canonical(ModuleDef::Trait(trait_)).map_or_else(|| {
                 // Fallback: render via trait_ref.display() if canonical fails.
                 // This should be rare (e.g. traits from macro-generated code).
                 attach_db(ctx.db, || {
-                    imp.trait_ref(ctx.db)
-                        .map(|tr| tr.display(ctx.db, ctx.display).to_string())
-                        .unwrap_or_else(|| "<unknown>".to_owned())
+                    imp.trait_ref(ctx.db).map_or_else(|| "<unknown>".to_owned(), |tr| tr.display(ctx.db, ctx.display).to_string())
                 })
-            });
+            }, |s| s.to_string());
 
         // Extract generic args from trait_ref.display() — the `<…>` portion.
         // For `From<axum::extract::InvalidUtf8>` → `<axum::extract::InvalidUtf8>`.
@@ -1875,7 +1849,7 @@ fn lower_type_alias_with_id(
     ta_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::TypeAlias(ta);
     let mut ref_for = make_ref_for!(ctx, out);
 
@@ -1950,7 +1924,6 @@ fn lower_type_alias_with_id(
 
     ctx.check_unique(&ta_id);
     out.declare_at(ta_id, parent, sym, alias_body, location);
-    Ok(())
 }
 
 /// Lower a module-level type alias (type namespace, no `!v` / `!m` tag).
@@ -1959,14 +1932,14 @@ fn lower_type_alias(
     def: ModuleDef,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let ModuleDef::TypeAlias(ta) = def else {
-        return Ok(());
+        return;
     };
     let Some(ta_id) = ctx.ra_id(def) else {
-        return Ok(());
+        return;
     };
-    lower_type_alias_with_id(ctx, ta, ta_id, parent, out)
+    lower_type_alias_with_id(ctx, ta, ta_id, parent, out);
 }
 
 /// Lower an assoc type alias inside an impl/trait block.
@@ -1979,10 +1952,10 @@ fn lower_assoc_type_alias(
     parent_id: &RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let ta_name = ta.name(ctx.db).as_str().to_owned();
     let ta_id = ctx.child_id(parent_id, &ta_name);
-    lower_type_alias_with_id(ctx, ta, ta_id, parent, out)
+    lower_type_alias_with_id(ctx, ta, ta_id, parent, out);
 }
 
 // ── Const ─────────────────────────────────────────────────────────────────────
@@ -1994,7 +1967,7 @@ fn lower_const_with_id(
     const_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Const(c);
     let mut ref_for = make_ref_for!(ctx, out);
 
@@ -2064,7 +2037,6 @@ fn lower_const_with_id(
 
     ctx.check_unique(&const_id);
     out.declare_at(const_id, parent, sym, const_body, location);
-    Ok(())
 }
 
 /// Lower an assoc const inside an impl/trait block.
@@ -2076,14 +2048,12 @@ fn lower_assoc_const(
     parent_id: &RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     // Const::name returns Option<Name> (anonymous consts in patterns use `_`).
     let const_name = c
-        .name(ctx.db)
-        .map(|n| n.as_str().to_owned())
-        .unwrap_or_else(|| "_".to_owned());
+        .name(ctx.db).map_or_else(|| "_".to_owned(), |n| n.as_str().to_owned());
     let const_id = ctx.child_id(parent_id, &const_name);
-    lower_const_with_id(ctx, c, const_id, parent, out)
+    lower_const_with_id(ctx, c, const_id, parent, out);
 }
 
 // ── Static ────────────────────────────────────────────────────────────────────
@@ -2095,7 +2065,7 @@ fn lower_static_with_id(
     static_id: RaId,
     parent: Option<RaId>,
     out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+) {
     let def = ModuleDef::Static(s);
     let mut ref_for = make_ref_for!(ctx, out);
 
@@ -2119,7 +2089,6 @@ fn lower_static_with_id(
 
     ctx.check_unique(&static_id);
     out.declare_at(static_id, parent, sym, static_body, location);
-    Ok(())
 }
 
 // ── Field helpers ─────────────────────────────────────────────────────────────
@@ -2330,9 +2299,9 @@ pub(crate) fn declare_params(
 /// To query those three traits would require walking the `std::marker` module
 /// by name from a std/core `Crate` dependency, which is fragile and not
 /// attempted here.
-fn probe_auto_traits_partial<'db>(
+fn probe_auto_traits_partial(
     ctx: &LowerCtx<'_>,
-    hir_ty: &ra_ap_hir::Type<'db>,
+    hir_ty: &ra_ap_hir::Type<'_>,
 ) -> Vec<AutoFact> {
     use nudox_ir::kinds::facts::{AutoState, AutoTrait};
 
@@ -2508,10 +2477,10 @@ mod tests {
         // Re-export under a different name (mirrors what lower_module emits).
         let reexport_ref: nudox_ir::index::Ref<Reexport> = {
             let raw = orig.into_raw();
-            match raw.as_local() {
-                Some(idx) => nudox_ir::index::Ref::Local(idx.typed()),
-                None => panic!("must be Local during build"),
-            }
+            raw.as_local().map_or_else(
+                || panic!("must be Local during build"),
+                |idx| nudox_ir::index::Ref::Local(idx.typed()),
+            )
         };
         low.declare_ref::<Reexport>(2, None, sym("pub_alias"), reexport_ref);
 

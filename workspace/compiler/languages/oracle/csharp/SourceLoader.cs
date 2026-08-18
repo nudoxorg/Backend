@@ -1,8 +1,10 @@
 using System.Collections.Immutable;
 using System.Globalization;
+using System.Reflection;
 using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 
 namespace Nudox.Oracle;
 
@@ -25,14 +27,19 @@ internal sealed record LoadedCompilation
 
     /// <summary>A capped, human-readable sample of errors for stderr.</summary>
     public required IReadOnlyList<string> ReportableDiagnostics { get; init; }
+
+    /// <summary>Whether configured source generators ran successfully.</summary>
+    public required string GeneratorSupport { get; init; }
 }
 
 /// <summary>
 /// Turns <c>--root</c> directories into a bound <see cref="CSharpCompilation"/>.
 /// </summary>
 /// <remarks>
-/// This is the "source" tier: no MSBuild, no NuGet restore, no project system.
-/// Sources are parsed and bound against a fixed set of reference assemblies.
+/// This is the "source" tier: it does not evaluate MSBuild or restore NuGet
+/// packages. Sources are parsed and bound against a fixed set of reference
+/// assemblies; explicitly listed project analyzers are loaded only to execute
+/// their source generators.
 /// Types a package pulls from its own NuGet dependencies therefore bind to
 /// <see cref="IErrorTypeSymbol"/>; that is not silently swallowed — every such
 /// symbol is counted into the document's <c>diagnostics.errorTypeCount</c> so a
@@ -132,10 +139,16 @@ internal static class SourceLoader
                 $"oracle: {accepted.Count} global using(s): {string.Join(", ", accepted)}");
         }
 
+        var (generatedCompilation, generatorSupport, generatorDiagnostics) =
+            ApplyConfiguredGenerators(compilation, parseOptions, roots);
+        compilation = generatedCompilation;
+
         var errors = compilation
             .GetDiagnostics()
             .Where(d => d.Severity == DiagnosticSeverity.Error)
             .ToList();
+        errors.AddRange(
+            generatorDiagnostics.Where(d => d.Severity == DiagnosticSeverity.Error));
 
         var reported = errors
             .Take(MaxReportedDiagnostics)
@@ -155,7 +168,125 @@ internal static class SourceLoader
             ReferenceCount = references.Count,
             ErrorCount = errors.Count,
             ReportableDiagnostics = reported,
+            GeneratorSupport = generatorSupport,
         };
+    }
+
+    /// <summary>
+    /// Load and execute analyzers declared by the selected project(s).
+    /// </summary>
+    /// <remarks>
+    /// A source generator is part of the project's compilation inputs, not an
+    /// optional decoration. Missing analyzer paths therefore produce the
+    /// explicit <c>unavailable</c> state rather than an apparently complete
+    /// extraction with generated members absent.
+    /// </remarks>
+    private static (
+        CSharpCompilation Compilation,
+        string Support,
+        IReadOnlyList<Diagnostic> Diagnostics)
+        ApplyConfiguredGenerators(
+            CSharpCompilation compilation,
+            CSharpParseOptions parseOptions,
+            IReadOnlyList<string> roots)
+    {
+        var configured = ProjectAnalyzerPaths(roots).ToList();
+        if (configured.Count == 0)
+        {
+            return (compilation, "unknown", []);
+        }
+
+        var missing = configured.Where(path => !File.Exists(path)).ToList();
+        if (missing.Count > 0)
+        {
+            foreach (var path in missing)
+            {
+                Console.Error.WriteLine($"oracle: source generator unavailable: {path}");
+            }
+
+            return (compilation, "unavailable", []);
+        }
+
+        try
+        {
+            var loader = new AnalyzerAssemblyLoader();
+            var references = configured
+                .Select(path => new AnalyzerFileReference(path, loader))
+                .ToImmutableArray();
+            var generators = references
+                .SelectMany(reference => reference.GetGenerators(LanguageNames.CSharp))
+                .ToImmutableArray();
+
+            if (generators.Length == 0)
+            {
+                return (compilation, "unavailable", []);
+            }
+
+            GeneratorDriver driver = CSharpGeneratorDriver.Create(
+                generators, parseOptions: parseOptions);
+            driver = driver.RunGeneratorsAndUpdateCompilation(
+                compilation, out var updated, out var diagnostics);
+            _ = driver;
+            return ((CSharpCompilation)updated, "applied", diagnostics);
+        }
+        catch (Exception ex) when (
+            ex is IOException
+                or BadImageFormatException
+                or FileLoadException
+                or FileNotFoundException
+                or InvalidOperationException
+                or ArgumentException
+                or NotSupportedException
+                or TypeLoadException
+                or ReflectionTypeLoadException)
+        {
+            Console.Error.WriteLine($"oracle: source generator unavailable: {ex.Message}");
+            return (compilation, "unavailable", []);
+        }
+    }
+
+    private sealed class AnalyzerAssemblyLoader : IAnalyzerAssemblyLoader
+    {
+        public void AddDependencyLocation(string fullPath) { }
+
+        public Assembly LoadFromPath(string path) => Assembly.LoadFrom(path);
+    }
+
+    private static IEnumerable<string> ProjectAnalyzerPaths(IReadOnlyList<string> roots)
+    {
+        foreach (var root in roots)
+        {
+            if (!Directory.Exists(root))
+            {
+                continue;
+            }
+
+            foreach (var project in Directory.EnumerateFiles(
+                         root, "*.csproj", SearchOption.TopDirectoryOnly))
+            {
+                System.Xml.Linq.XDocument document;
+                try
+                {
+                    document = System.Xml.Linq.XDocument.Load(project);
+                }
+                catch (Exception ex) when (ex is System.Xml.XmlException or IOException)
+                {
+                    continue;
+                }
+
+                var directory = Path.GetDirectoryName(project) ?? root;
+                foreach (var analyzer in document.Descendants("Analyzer"))
+                {
+                    var include = analyzer.Attribute("Include")?.Value;
+                    if (string.IsNullOrWhiteSpace(include) || include.Contains('*'))
+                    {
+                        continue;
+                    }
+
+                    yield return Path.GetFullPath(Path.Combine(directory, include));
+                }
+            }
+        }
     }
 
     /// <summary>All <c>*.cs</c> under the roots, de-duplicated and path-sorted.</summary>

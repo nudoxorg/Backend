@@ -42,6 +42,7 @@
 
 use nudox_ir::{
     change::{EcosystemId, PackageLineageId, PackageName},
+    foreign::Unlinked,
     kinds::{Alias, Const, Enum, Field, Function, Module, Param, Record, Static, Trait, Variant},
     package::PackageId,
 };
@@ -149,12 +150,11 @@ fn project(oracle_json: &str, pkg_id: &str, lineage_name: &str) -> Vec<EntryRow>
                 .or_else(|| entry.downcast::<Trait>().map(|t| t.body().generics.len()))
                 .unwrap_or(0);
 
-            let receiver = entry
-                .downcast::<Function>()
-                .map(|f| f.body().receiver.map_or_else(
-                    || "None".to_string(),
-                    |r| format!("{r:?}"),
-                ));
+            let receiver = entry.downcast::<Function>().map(|f| {
+                f.body()
+                    .receiver
+                    .map_or_else(|| "None".to_string(), |r| format!("{r:?}"))
+            });
 
             Some(EntryRow {
                 kind: kind_name.to_string(),
@@ -428,6 +428,42 @@ const BASICS_JSON: &str = r#"
   ]
 }
 "#;
+
+#[test]
+fn resolved_go_calls_survive_lowering() {
+    let json = r#"
+    {
+      "module": {"path": "example.com/refs", "dir": "/tmp/refs", "goVersion": "1.22"},
+      "packages": [{
+        "importPath": "example.com/refs",
+        "name": "refs",
+        "decls": [
+          {"kind":"func","name":"callee","pos":{"file":"/tmp/refs.go","offset":0},
+           "span":{"start":0,"end":20},"signature":{"kind":"func"}},
+          {"kind":"func","name":"caller","pos":{"file":"/tmp/refs.go","offset":21},
+           "span":{"start":21,"end":60},"signature":{"kind":"func"}}
+        ],
+        "references": [{
+          "owner":"caller","target":"callee","file":"/tmp/refs.go","start":42,"end":48
+        }]
+      }]
+    }
+    "#;
+    let package = GoProducer
+        .lower_bytes(
+            json.as_bytes(),
+            PackageId::path("refs"),
+            &lineage("example.com/refs"),
+        )
+        .expect("reference fixture must lower");
+    let sealed = package.seal(&lineage("example.com/refs"), &Unlinked);
+    assert!(
+        sealed.occurrences.iter().any(|(_, occurrence)| {
+            occurrence.kind == nudox_ir::vocab::ReferenceKind::FunctionCall
+        }),
+        "go/types call facts must reach the sealed package"
+    );
+}
 
 // ---------------------------------------------------------------------------
 // Fixture JSON: "interfaces"

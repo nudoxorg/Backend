@@ -480,7 +480,8 @@ fn is_element_reference(s: &str) -> bool {
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
     });
-    type_ok && member_ok && (!type_part.is_empty() || member.is_some())
+    let has_type_or_member = member.is_some() || !type_part.is_empty();
+    type_ok && member_ok && has_type_or_member
 }
 
 // ---------------------------------------------------------------------------
@@ -511,13 +512,8 @@ fn html_to_text(text: &str) -> String {
         let closing = tag_body.starts_with('/');
         match (tag.as_str(), closing) {
             ("p", false) => out.push_str("\n\n"),
-            ("br", _)
-            | ("pre", false)
-            | ("tr", false)
-            | ("ul", true)
-            | ("ol", true)
-            | ("table", true)
-            | ("blockquote", true) => out.push('\n'),
+            ("br", _) | ("pre" | "tr", false) |
+("ul" | "ol" | "table" | "blockquote", true) => out.push('\n'),
             ("li", false) => out.push_str("\n- "),
             _ => {}
         }

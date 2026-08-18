@@ -47,8 +47,7 @@ pub(crate) fn deprecation(ctx: &LowerCtx<'_>, def: ModuleDef) -> Option<Deprecat
         return None;
     }
     let (since, note) = module_def_deprecated_attr(ctx, def)
-        .map(|attr| parse_deprecated_meta(&attr))
-        .unwrap_or((None, None));
+        .map_or((None, None), |attr| parse_deprecated_meta(&attr));
     Some(Deprecation { since, note })
 }
 
@@ -118,7 +117,7 @@ fn extract_kv_strings(tt: &ast::TokenTree, since: &mut Option<String>, note: &mu
             }
             SyntaxKind::STRING if expect_value => {
                 let value =
-                    ast::String::cast(tok).and_then(|s| s.value().ok().map(|v| v.into_owned()));
+                    ast::String::cast(tok).and_then(|s| s.value().ok().map(std::borrow::Cow::into_owned));
                 match key.take().as_deref() {
                     Some("since") => *since = value,
                     Some("note") => *note = value,
@@ -126,7 +125,6 @@ fn extract_kv_strings(tt: &ast::TokenTree, since: &mut Option<String>, note: &mu
                 }
                 expect_value = false;
             }
-            SyntaxKind::WHITESPACE | SyntaxKind::COMMENT => {}
             T![,] => {
                 key = None;
                 expect_value = false;
@@ -137,7 +135,7 @@ fn extract_kv_strings(tt: &ast::TokenTree, since: &mut Option<String>, note: &mu
 }
 
 fn string_value(s: &ast::String) -> Option<String> {
-    s.value().ok().map(|v| v.into_owned())
+    s.value().ok().map(std::borrow::Cow::into_owned)
 }
 
 // ── Cfg ───────────────────────────────────────────────────────────────────────
@@ -251,13 +249,14 @@ fn extract_doc_link_targets(docs: &str) -> Vec<(String, std::ops::Range<usize>)>
         let inner = docs[i + 1..close].trim().trim_matches('`').trim();
 
         let after = &docs[close + 1..];
-        let target = if let Some(rest) = after.strip_prefix('(') {
-            rest.split(')').next().map(|s| s.trim())
-        } else if let Some(rest) = after.strip_prefix(':') {
-            rest.split_whitespace().next()
-        } else {
-            None
-        };
+        let target = after
+            .strip_prefix('(')
+            .and_then(|rest| rest.split(')').next().map(str::trim))
+            .or_else(|| {
+                after
+                    .strip_prefix(':')
+                    .and_then(|rest| rest.split_whitespace().next())
+            });
 
         let candidate = target.unwrap_or(inner);
         let candidate = candidate.trim().trim_matches('`').trim();

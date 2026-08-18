@@ -56,8 +56,8 @@
 use std::path::{Path, PathBuf};
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::clang::ClangProducer;
+use nudox_languages::{PackageSource, produce};
 
 /// `clang::Clang` allows only one instance per process — see
 /// `src/tests/mod.rs`'s `require_clang` doc comment. `cargo test`'s default
@@ -196,7 +196,13 @@ const ENTRIES: &[Entry] = &[
         name: "glm",
         version: "1.0.3",
         // See module docs: representative subset, not the whole ~200-header tree.
-        header_roots: &["glm/vec2.hpp", "glm/vec3.hpp", "glm/vec4.hpp", "glm/mat4x4.hpp", "glm/glm.hpp"],
+        header_roots: &[
+            "glm/vec2.hpp",
+            "glm/vec3.hpp",
+            "glm/vec4.hpp",
+            "glm/mat4x4.hpp",
+            "glm/glm.hpp",
+        ],
         include_dirs: &["."],
         lang: Lang::Cpp,
         expect_symbol: "vec",
@@ -256,7 +262,11 @@ const ENTRIES: &[Entry] = &[
         dir: "cereal-v1.3.2",
         name: "cereal",
         version: "v1.3.2",
-        header_roots: &["include/cereal/archives", "include/cereal/types", "include/cereal/details"],
+        header_roots: &[
+            "include/cereal/archives",
+            "include/cereal/types",
+            "include/cereal/details",
+        ],
         include_dirs: &["include"],
         lang: Lang::Cpp,
         expect_symbol: "BinaryOutputArchive",
@@ -350,9 +360,10 @@ fn walk_and_shim(dir: &Path, lang: Lang, shims: &mut Vec<PathBuf>) {
         if path.is_dir() {
             walk_and_shim(&path, lang, shims);
         } else if is_header(&path, lang)
-            && let Some(twin) = shim_one(&path, lang) {
-                shims.push(twin);
-            }
+            && let Some(twin) = shim_one(&path, lang)
+        {
+            shims.push(twin);
+        }
     }
 }
 
@@ -426,7 +437,12 @@ const WHOLE_TREE_FILE_THRESHOLD: usize = 80;
 /// (see `WHOLE_TREE_FILE_THRESHOLD`) `-I<include_dirs>` plus a
 /// language-appropriate `-std=`. Overwritten on every call (cheap, and the
 /// file list can change as shims are added/removed between runs).
-fn write_compile_commands(root: &Path, include_dirs: &[&str], header_roots: &[&str], shims: &[PathBuf]) {
+fn write_compile_commands(
+    root: &Path,
+    include_dirs: &[&str],
+    header_roots: &[&str],
+    shims: &[PathBuf],
+) {
     let mut all_files = Vec::new();
     collect_translation_units(root, &mut all_files);
 
@@ -488,8 +504,15 @@ fn chain(e: &(dyn std::error::Error + 'static)) -> String {
 }
 
 enum Outcome {
-    Ok { table_len: usize, has_symbol: bool, shims_written: usize },
-    Fail { stage: &'static str, chain: String },
+    Ok {
+        table_len: usize,
+        has_symbol: bool,
+        shims_written: usize,
+    },
+    Fail {
+        stage: &'static str,
+        chain: String,
+    },
 }
 
 fn run_entry(entry: &Entry) -> Outcome {
@@ -513,7 +536,12 @@ fn run_entry(entry: &Entry) -> Outcome {
 
     let case = format!("cpp-sweep-{}", entry.dir);
     let (produced, _cost) = heart::cost::measured(&case, &root, || {
-        produce(&ClangProducer::new(), &src, &lid, &nudox_ir::foreign::Unlinked)
+        produce(
+            &ClangProducer::new(),
+            &src,
+            &lid,
+            &nudox_ir::foreign::Unlinked,
+        )
     });
 
     match produced {
@@ -523,7 +551,11 @@ fn run_entry(entry: &Entry) -> Outcome {
                 .table
                 .iter()
                 .any(|(_, e)| e.sym().name == entry.expect_symbol);
-            Outcome::Ok { table_len, has_symbol, shims_written }
+            Outcome::Ok {
+                table_len,
+                has_symbol,
+                shims_written,
+            }
         }
         Err(e) => Outcome::Fail {
             stage: "produce (invoke/lower/finish)",
@@ -544,7 +576,11 @@ fn every_provisioned_cpp_corpus_package_lowers_through_the_real_producer() {
     for entry in ENTRIES {
         eprintln!("=== {} ({} @ {}) ===", entry.dir, entry.name, entry.version);
         match run_entry(entry) {
-            Outcome::Ok { table_len, has_symbol, shims_written } => {
+            Outcome::Ok {
+                table_len,
+                has_symbol,
+                shims_written,
+            } => {
                 eprintln!(
                     "OK  {}: table_len={table_len} shims_written={shims_written} \
                      has_expected_symbol({})={has_symbol}",

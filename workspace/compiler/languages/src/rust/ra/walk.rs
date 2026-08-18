@@ -21,7 +21,7 @@ use ra_ap_hir::{Impl, Module, ModuleDef};
 use nudox_ir::lower::Lowering;
 
 use super::{ctx::LowerCtx, item};
-use crate::rust::{RaId, error::Error};
+use crate::rust::RaId;
 
 // ── Panic helpers ─────────────────────────────────────────────────────────────
 
@@ -52,7 +52,7 @@ where
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Lower every documented item in `ctx.krate` into `out`.
-pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> Result<(), Error> {
+pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) {
     // ── Same-display-name guard ───────────────────────────────────────────────
     //
     // Cargo lets a `[[bench]]`, `[[test]]`, or `[[example]]` target share its
@@ -89,7 +89,7 @@ pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> R
                 == Some(own_name.as_str())
         })
     {
-        return Ok(());
+        return;
     }
 
     // Collect all modules in BFS order.
@@ -106,18 +106,17 @@ pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> R
 
     let modules_started = Instant::now();
     for module in &modules {
-        let _mod_def = ModuleDef::Module(*module);
         let mod_parent: Option<RaId> = module
             .parent(ctx.db)
             .and_then(|p| ctx.ra_id(ModuleDef::Module(p)));
 
         // Declare the module itself.
-        let _ = catch_non_cancelled(
+        catch_non_cancelled(
             // SAFETY: all captures are 'static or live past this call.
             std::panic::AssertUnwindSafe(|| {
-                item::lower_module(ctx, *module, mod_parent.clone(), out)
+                item::lower_module(ctx, *module, mod_parent.clone(), out);
             }),
-            Ok(()),
+            (),
         );
 
         // Lower each item defined in this module.
@@ -139,11 +138,11 @@ pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> R
             // of items defined in this module is unconditional.
 
             let parent_id = ctx.ra_id(ModuleDef::Module(*module));
-            let _ = catch_non_cancelled(
+            catch_non_cancelled(
                 std::panic::AssertUnwindSafe(|| {
-                    item::lower(ctx, child_def, parent_id.clone(), out)
+                    item::lower(ctx, child_def, parent_id.clone(), out);
                 }),
-                Ok(()),
+                (),
             );
         }
     }
@@ -195,9 +194,11 @@ pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> R
     let impls_count = impls.len();
     let impls_started = Instant::now();
     for (imp, parent_id) in impls {
-        let _ = catch_non_cancelled(
-            std::panic::AssertUnwindSafe(|| item::lower_impl(ctx, imp, parent_id, out)),
-            Ok(()),
+        catch_non_cancelled(
+            std::panic::AssertUnwindSafe(|| {
+                item::lower_impl(ctx, imp, parent_id, out);
+            }),
+            (),
         );
     }
     super::phase_complete(
@@ -206,5 +207,4 @@ pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> R
         format!("impls={impls_count}"),
     );
 
-    Ok(())
 }

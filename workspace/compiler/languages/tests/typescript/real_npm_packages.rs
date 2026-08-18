@@ -43,8 +43,8 @@ use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_ir::entry::{EntryInner, Visibility};
 use nudox_ir::foreign::Unlinked;
 use nudox_ir::kind::Kind;
-use nudox_languages::{PackageSource, YieldContract, produce};
 use nudox_languages::typescript::TypescriptProducer;
+use nudox_languages::{PackageSource, YieldContract, produce};
 
 /// One npm corpus fixture: the manifest package name, the pinned version, the
 /// `result/` directory name `fetch.nu`'s `safe-dir-name` produces for it
@@ -114,32 +114,90 @@ const FIXTURES: &[Fixture] = &[
     // those 333 top-level `.js` files real, importable API
     // (`require('lodash/chunk')`) — verified by listing
     // `result/lodash-4.17.21/*.js` directly.
-    Fixture { name: "lodash", version: "4.17.21", dir: "lodash-4.17.21",
-              floor: 250,
-              must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"] },
-    Fixture { name: "lodash", version: "4.17.20", dir: "lodash-4.17.20",
-              floor: 250,
-              must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"] },
-    Fixture { name: "zod", version: "3.22.4", dir: "zod-3.22.4",
-              floor: 800, must_contain: &[] },
-    Fixture { name: "zod", version: "3.23.8", dir: "zod-3.23.8",
-              floor: 800, must_contain: &[] },
-    Fixture { name: "type-fest", version: "4.10.2", dir: "type-fest-4.10.2",
-              floor: 300, must_contain: &[] },
-    Fixture { name: "chalk", version: "5.3.0", dir: "chalk-5.3.0",
-              floor: 80, must_contain: &[] },
-    Fixture { name: "commander", version: "12.0.0", dir: "commander-12.0.0",
-              floor: 250, must_contain: &[] },
-    Fixture { name: "axios", version: "1.6.7", dir: "axios-1.6.7",
-              floor: 400, must_contain: &[] },
-    Fixture { name: "date-fns", version: "3.3.1", dir: "date-fns-3.3.1",
-              floor: 1500, must_contain: &[] },
-    Fixture { name: "rxjs", version: "7.8.1", dir: "rxjs-7.8.1",
-              floor: 1500, must_contain: &[] },
-    Fixture { name: "immer", version: "10.0.3", dir: "immer-10.0.3",
-              floor: 40, must_contain: &[] },
-    Fixture { name: "uuid", version: "9.0.1", dir: "uuid-9.0.1",
-              floor: 30, must_contain: &[] },
+    Fixture {
+        name: "lodash",
+        version: "4.17.21",
+        dir: "lodash-4.17.21",
+        floor: 250,
+        must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"],
+    },
+    Fixture {
+        name: "lodash",
+        version: "4.17.20",
+        dir: "lodash-4.17.20",
+        floor: 250,
+        must_contain: &["chunk", "debounce", "merge", "cloneDeep", "isEqual"],
+    },
+    Fixture {
+        name: "zod",
+        version: "3.22.4",
+        dir: "zod-3.22.4",
+        floor: 800,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "zod",
+        version: "3.23.8",
+        dir: "zod-3.23.8",
+        floor: 800,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "type-fest",
+        version: "4.10.2",
+        dir: "type-fest-4.10.2",
+        floor: 300,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "chalk",
+        version: "5.3.0",
+        dir: "chalk-5.3.0",
+        floor: 80,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "commander",
+        version: "12.0.0",
+        dir: "commander-12.0.0",
+        floor: 250,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "axios",
+        version: "1.6.7",
+        dir: "axios-1.6.7",
+        floor: 400,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "date-fns",
+        version: "3.3.1",
+        dir: "date-fns-3.3.1",
+        floor: 1500,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "rxjs",
+        version: "7.8.1",
+        dir: "rxjs-7.8.1",
+        floor: 1500,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "immer",
+        version: "10.0.3",
+        dir: "immer-10.0.3",
+        floor: 40,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "uuid",
+        version: "9.0.1",
+        dir: "uuid-9.0.1",
+        floor: 30,
+        must_contain: &[],
+    },
     // `main` is `./src/index.js`, which just re-dispatches to `browser.js`
     // or `node.js` at runtime (`if (...) { module.exports = require(...) }`
     // — a single `IfStatement`). `package.json` has no `exports` field, so
@@ -161,13 +219,37 @@ const FIXTURES: &[Fixture] = &[
     // binding. Recovering any of these needs interprocedural analysis of a
     // nested function's return value, which is out of scope here and belongs
     // to a documented gap, not a canary this sweep pins.
-    Fixture { name: "debug", version: "4.3.4", dir: "debug-4.3.4",
-              floor: 15,
-              must_contain: &["useColors", "formatArgs", "save", "load"] },
-    Fixture { name: "left-pad", version: "1.3.0", dir: "left-pad-1.3.0",
-              floor: 4, must_contain: &[] },
-    Fixture { name: "yup", version: "1.4.0", dir: "yup-1.4.0",
-              floor: 250, must_contain: &[] },
+    Fixture {
+        name: "debug",
+        version: "4.3.4",
+        dir: "debug-4.3.4",
+        floor: 15,
+        must_contain: &[
+            "useColors",
+            "formatArgs",
+            "save",
+            "load",
+            "enable",
+            "disable",
+            "enabled",
+            "coerce",
+            "destroy",
+        ],
+    },
+    Fixture {
+        name: "left-pad",
+        version: "1.3.0",
+        dir: "left-pad-1.3.0",
+        floor: 4,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "yup",
+        version: "1.4.0",
+        dir: "yup-1.4.0",
+        floor: 250,
+        must_contain: &[],
+    },
     // `exports["."]["import"]` points at `wrapper.mjs`, real ESM with five
     // named exports re-exported from CommonJS siblings under `lib/`:
     // `import WebSocket from './lib/websocket.js'; ... export {
@@ -177,29 +259,67 @@ const FIXTURES: &[Fixture] = &[
     // `module.exports = WebSocket;`) — verified in
     // `result/ws-8.16.0/wrapper.mjs` and `lib/{websocket,receiver,
     // sender,stream,websocket-server}.js`.
-    Fixture { name: "ws", version: "8.16.0", dir: "ws-8.16.0",
-              floor: 5,
-              must_contain: &["WebSocket", "WebSocketServer", "Receiver", "Sender",
-                               "createWebSocketStream"] },
-    Fixture { name: "@types/node", version: "20.11.0", dir: "@types__node-20.11.0",
-              floor: 9000, must_contain: &[] },
-    Fixture { name: "fp-ts", version: "2.16.5", dir: "fp-ts-2.16.5",
-              floor: 5000, must_contain: &[] },
-    Fixture { name: "class-validator", version: "0.14.1", dir: "class-validator-0.14.1",
-              floor: 800, must_contain: &[] },
-    Fixture { name: "reflect-metadata", version: "0.2.1", dir: "reflect-metadata-0.2.1",
-              floor: 40, must_contain: &[] },
-    Fixture { name: "p-limit", version: "5.0.0", dir: "p-limit-5.0.0",
-              floor: 3, must_contain: &[] },
-    Fixture { name: "dayjs", version: "1.11.10", dir: "dayjs-1.11.10",
-              floor: 80, must_contain: &[] },
+    Fixture {
+        name: "ws",
+        version: "8.16.0",
+        dir: "ws-8.16.0",
+        floor: 5,
+        must_contain: &[
+            "WebSocket",
+            "WebSocketServer",
+            "Receiver",
+            "Sender",
+            "createWebSocketStream",
+        ],
+    },
+    Fixture {
+        name: "@types/node",
+        version: "20.11.0",
+        dir: "@types__node-20.11.0",
+        floor: 9000,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "fp-ts",
+        version: "2.16.5",
+        dir: "fp-ts-2.16.5",
+        floor: 5000,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "class-validator",
+        version: "0.14.1",
+        dir: "class-validator-0.14.1",
+        floor: 800,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "reflect-metadata",
+        version: "0.2.1",
+        dir: "reflect-metadata-0.2.1",
+        floor: 40,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "p-limit",
+        version: "5.0.0",
+        dir: "p-limit-5.0.0",
+        floor: 3,
+        must_contain: &[],
+    },
+    Fixture {
+        name: "dayjs",
+        version: "1.11.10",
+        dir: "dayjs-1.11.10",
+        floor: 80,
+        must_contain: &[],
+    },
 ];
 
 /// Root of the corpus checkout directory, resolved relative to this crate's
 /// manifest so the test works regardless of the invoking shell's cwd.
 fn corpus_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../result")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../result")
 }
 
 fn fixture_root(dir: &str) -> PathBuf {
@@ -223,6 +343,38 @@ fn is_real_identifier(name: &str) -> bool {
             chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::is_real_identifier;
+
+    #[test]
+    fn identifier_contract_rejects_path_and_placeholder_names() {
+        for name in [
+            "",
+            "index.d.ts",
+            "src/index",
+            r"src\index",
+            "<anonymous>",
+            "0",
+        ] {
+            assert!(
+                !is_real_identifier(name),
+                "{name:?} must not satisfy the real-entry identifier contract"
+            );
+        }
+    }
+
+    #[test]
+    fn identifier_contract_accepts_export_shaped_names() {
+        for name in ["default", "Buffer", "_private", "$factory", "éclair"] {
+            assert!(
+                is_real_identifier(name),
+                "{name:?} should satisfy the real-entry identifier contract"
+            );
+        }
     }
 }
 
@@ -302,7 +454,11 @@ fn lower(root: &Path, name: &str, version: &str) -> Result<Lowered, String> {
                     .filter(|e| is_public_non_module(e))
                     .map(|e| e.sym().name.clone())
                     .collect(),
-                sample: declared.iter().take(6).map(|e| e.sym().name.clone()).collect(),
+                sample: declared
+                    .iter()
+                    .take(6)
+                    .map(|e| e.sym().name.clone())
+                    .collect(),
                 contract: produced.contract.clone(),
             }
         })
@@ -378,9 +534,8 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
         ran += 1;
 
         let case = format!("lower/npm/{}-{}", fixture.name, fixture.version);
-        let (result, cost) = heart::cost::measured(&case, &root, || {
-            lower(&root, fixture.name, fixture.version)
-        });
+        let (result, cost) =
+            heart::cost::measured(&case, &root, || lower(&root, fixture.name, fixture.version));
 
         let lowered = match result {
             Ok(lowered) => lowered,
@@ -475,5 +630,58 @@ fn every_real_npm_fixture_contributes_the_declarations_it_is_pinned_to() {
          pinned to:\n{}",
         failures.len(),
         failures.join("\n")
+    );
+}
+
+/// `debug`'s public API is partly assembled at runtime:
+/// `common.js::setup` assigns nested functions to `createDebug` and returns it.
+/// Those functions are real declarations, not synthetic constants; in
+/// particular, the nearby `createDebug.humanize = require('ms')` assignment
+/// must not be rendered as a fake constant value.
+#[test]
+fn debug_nested_runtime_exports_are_real_functions_not_require_constants() {
+    let root = fixture_root("debug-4.3.4");
+    if !root.join("package.json").is_file() {
+        eprintln!(
+            "SKIP: no checkout at {} (run `nix build .#checks.corpus` to materialize the corpus)",
+            root.display()
+        );
+        return;
+    }
+
+    let source = PackageSource::new(&root, "debug", "4.3.4");
+    let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("debug"));
+    let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+        .expect("debug must lower with nested runtime exports");
+
+    let nested = ["enable", "disable", "enabled", "coerce", "destroy"];
+    for name in nested {
+        let entries: Vec<_> = produced
+            .table
+            .iter()
+            .filter(|(_, entry)| {
+                entry.sym().name == name
+                    && entry.sym().visibility == Visibility::Public
+                    && !matches!(entry.kind(), EntryInner::Owned(Kind::Module(_)))
+            })
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "debug runtime export `{name}` must be one public non-module entry"
+        );
+        assert!(
+            matches!(entries[0].1.kind(), EntryInner::Owned(Kind::Function(_))),
+            "debug runtime export `{name}` must retain its real function kind, got {:?}",
+            entries[0].1.kind()
+        );
+    }
+
+    assert!(
+        produced.table.iter().all(|(_, entry)| {
+            !(entry.sym().name == "humanize"
+                && matches!(entry.kind(), EntryInner::Owned(Kind::Const(_))))
+        }),
+        "require('ms') must not become a synthetic Const named `humanize`"
     );
 }

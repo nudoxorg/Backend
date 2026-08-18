@@ -87,7 +87,7 @@ use nudox_ir::{
 
 use schema::Extraction;
 
-use std::path::PathBuf;
+use std::{fmt::Write, path::PathBuf};
 
 // ---------------------------------------------------------------------------
 // Public API: run and lower
@@ -137,28 +137,32 @@ pub fn lower(extraction: &Extraction) -> Result<nudox_ir::package::IrPackage<Str
             extraction.mode.as_str()
         },
     );
-    root_documentation.push_str(&format!(
+    let _ = write!(
+        root_documentation,
         "\nDiagnostics: {} compilation error(s), {} error type(s).",
         extraction.diagnostics.error_count, extraction.diagnostics.error_type_count
-    ));
-    root_documentation.push_str(&format!(
+    );
+    let _ = write!(
+        root_documentation,
         "\nGenerator support: {:?}.",
         extraction.diagnostics.generator_support
-    ));
+    );
     if let Some(version) = &extraction.assembly.version {
-        root_documentation.push_str(&format!("\nAssembly version: `{version}`."));
+        let _ = write!(root_documentation, "\nAssembly version: `{version}`.");
     }
     if !extraction.assembly.forwarded_types.is_empty() {
-        root_documentation.push_str(&format!(
+        let _ = write!(
+            root_documentation,
             "\nForwarded types: `{}`.",
             extraction.assembly.forwarded_types.join("`, `")
-        ));
+        );
     }
     if !extraction.assembly.ivt.is_empty() {
-        root_documentation.push_str(&format!(
+        let _ = write!(
+            root_documentation,
             "\nInternalsVisibleTo: `{}`.",
             extraction.assembly.ivt.join("`, `")
-        ));
+        );
     }
 
     let root_sym = Symbol {

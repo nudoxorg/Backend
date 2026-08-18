@@ -83,11 +83,33 @@ type Decl struct {
 	// GroupHasIota reports whether the const group uses iota.
 	GroupHasIota bool `json:"groupHasIota,omitempty"`
 
-	// Implements lists in-package interfaces this named type satisfies
-	// (method-set inclusion via types.Implements). Only populated for
-	// kind == "type" declarations that are not themselves interfaces.
-	// Each entry is a named/alias type reference.
+	// Implements lists non-empty interfaces — declared ANYWHERE in the
+	// loaded module, not only this type's own package — that this named
+	// type satisfies (method-set inclusion via types.Implements). Only
+	// populated for kind == "type" declarations that are not themselves
+	// interfaces. Each entry is a named/alias type reference.
+	//
+	// Go is structurally typed: a type never names the interface it
+	// satisfies, so this is the only way to answer "what satisfies this
+	// interface" for Go at all. Scoping the check to one package at a time
+	// silently missed the common case of an interface declared where it is
+	// consumed (e.g. `main.AuthDeps`) satisfied by a type declared where it
+	// is implemented (e.g. `auth.Client`) — see main.go's
+	// collectInterfaceCandidates for how the module-wide candidate list is
+	// built and bounded.
 	Implements []*Type `json:"implements,omitempty"`
+}
+
+// Reference is a compiler-resolved use of one package-level function from
+// another. Positions are byte offsets in the declaring source file. Keeping
+// this fact in the oracle (rather than rediscovering names in Rust) preserves
+// Go's lexical/type resolution and excludes strings and shadowed identifiers.
+type Reference struct {
+	Owner  string `json:"owner"`
+	Target string `json:"target"`
+	File   string `json:"file"`
+	Start  int    `json:"start"`
+	End    int    `json:"end"`
 }
 
 // Method is a method attached to a named type (declared or promoted).
@@ -211,6 +233,8 @@ type Param struct {
 	Name string `json:"name,omitempty"`
 	// Type is the param/result type.
 	Type *Type `json:"type"`
+	// Pos is the position of the parameter/result identifier when named.
+	Pos *Pos `json:"pos,omitempty"`
 }
 
 // StructField is one struct field.
@@ -416,12 +440,12 @@ func (s *serializer) signatureDepth(sig *types.Signature, depth int) *Type {
 	params := sig.Params()
 	for i := 0; i < params.Len(); i++ {
 		p := params.At(i)
-		out.Params = append(out.Params, &Param{Name: p.Name(), Type: s.typDepth(p.Type(), depth+1)})
+		out.Params = append(out.Params, &Param{Name: p.Name(), Type: s.typDepth(p.Type(), depth+1), Pos: s.position(p.Pos())})
 	}
 	results := sig.Results()
 	for i := 0; i < results.Len(); i++ {
 		r := results.At(i)
-		out.Results = append(out.Results, &Param{Name: r.Name(), Type: s.typDepth(r.Type(), depth+1)})
+		out.Results = append(out.Results, &Param{Name: r.Name(), Type: s.typDepth(r.Type(), depth+1), Pos: s.position(r.Pos())})
 	}
 	return out
 }
@@ -561,31 +585,41 @@ func (s *serializer) promotedMethods(named *types.Named, docs *docCatalog) []*Me
 	return out
 }
 
-// implementsInterfaces returns in-package non-empty interfaces that
-// named (or *named) satisfies, via types.Implements. Empty interfaces
-// (any / interface{}) are skipped — every type implements them.
-func (s *serializer) implementsInterfaces(named *types.Named, pkg *types.Package) []*Type {
-	if named == nil || pkg == nil {
+// implementsInterfaces returns every non-empty interface — from candidates,
+// which spans every package this oracle invocation loaded, not just named's
+// own — that named (or *named) satisfies, via types.Implements. Empty
+// interfaces (any / interface{}) never appear in candidates (see
+// collectInterfaceCandidates in main.go): every type implements them, so
+// recording that would be noise on every single result, not information.
+//
+// # Cost
+//
+// candidates is every non-empty interface in the module, so a full `extract`
+// run calls this once per concrete type, giving O(types × interfaces) pairs
+// overall. The bound applied here is a cheap pre-filter: an interface with
+// more methods than named's own complete method set can never be satisfied
+// (a method set can't grow by being compared), so that O(1) comparison
+// happens before the comparatively expensive types.Implements call, which
+// then only runs for candidates that could plausibly match. In ordinary Go
+// modules the overwhelming majority of (type, interface) pairs are eliminated
+// at that first comparison — most interfaces have more methods than most
+// unrelated concrete types implement in total.
+func (s *serializer) implementsInterfaces(named *types.Named, candidates []interfaceCandidate) []*Type {
+	if named == nil {
 		return nil
 	}
-	scope := pkg.Scope()
-	var out []*Type
 	ptr := types.NewPointer(named)
-	for _, name := range scope.Names() {
-		obj, ok := scope.Lookup(name).(*types.TypeName)
-		if !ok || obj == named.Obj() {
+	methodCount := types.NewMethodSet(ptr).Len()
+	var out []*Type
+	for _, cand := range candidates {
+		if cand.obj == named.Obj() {
 			continue
 		}
-		iface, ok := obj.Type().Underlying().(*types.Interface)
-		if !ok {
+		if cand.iface.NumMethods() > methodCount {
 			continue
 		}
-		iface = iface.Complete()
-		if iface.Empty() {
-			continue
-		}
-		if types.Implements(named, iface) || types.Implements(ptr, iface) {
-			out = append(out, s.typ(obj.Type()))
+		if types.Implements(named, cand.iface) || types.Implements(ptr, cand.iface) {
+			out = append(out, s.typ(cand.obj.Type()))
 		}
 	}
 	return out

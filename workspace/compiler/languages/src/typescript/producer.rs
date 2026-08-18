@@ -129,11 +129,7 @@ where
             reason: e,
         })?;
 
-        let entry_points =
-            discover_entry_points(&root).map_err(|e| ProducerError::OracleSpawn {
-                command: "oxc-entry-discovery".to_string(),
-                reason: std::io::Error::other(e),
-            })?;
+        let entry_points = discover_entry_points(&root);
 
         let modules =
             build_and_extract(&entry_points, &root).map_err(|e| ProducerError::OracleSpawn {

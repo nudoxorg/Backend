@@ -254,39 +254,6 @@ fn typed_location(location: Option<&schema::Location>) -> SourceLocation {
     }
 }
 
-#[cfg(test)]
-mod location_tests {
-    use super::*;
-
-    fn location(start: usize, end: usize) -> schema::Location {
-        schema::Location {
-            file: "/pkg/src/lib.cs".to_owned(),
-            start,
-            end,
-            start_line: 3,
-            start_column: 2,
-            end_line: 3,
-            end_column: 8,
-        }
-    }
-
-    #[test]
-    fn missing_roslyn_location_is_explicitly_synthesized() {
-        assert_eq!(
-            typed_location(None),
-            SourceLocation::Unlocated(Unlocated::Synthesized)
-        );
-    }
-
-    #[test]
-    fn empty_roslyn_span_is_an_invalid_recorded_location() {
-        assert_eq!(
-            typed_location(Some(&location(12, 12))),
-            SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation)
-        );
-    }
-}
-
 /// Build the IR [`Symbol`] for a type-level entry.
 fn type_symbol(
     decl: &TypeDecl,
@@ -865,7 +832,7 @@ fn lower_delegate(
     // Document the delegate's invoke signature in the doc string (kept for
     // rendering, complementary to the structural target below).
     // Also build a `Type::FunctionPointer` target for the `Alias` entry.
-    let delegate_target: Option<Type> = decl.delegate_sig.as_ref().and_then(|sig| {
+    let delegate_target: Option<Type> = decl.delegate_sig.as_ref().map(|sig| {
         let params_text: Vec<String> = sig
             .params
             .iter()
@@ -898,11 +865,11 @@ fn lower_delegate(
             }
         });
 
-        Some(Type::FunctionPointer {
+        Type::FunctionPointer {
             params: ir_params,
             ret: ir_ret,
             abi: None, // managed delegate; no unmanaged calling convention.
-        })
+        }
     });
 
     let sym = type_symbol(decl, parsed.as_ref(), &extra);
@@ -1725,4 +1692,37 @@ fn method_declaration_notes(m: &schema::Method) -> Vec<String> {
         ));
     }
     notes
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+
+    fn location(start: usize, end: usize) -> schema::Location {
+        schema::Location {
+            file: "/pkg/src/lib.cs".to_owned(),
+            start,
+            end,
+            start_line: 3,
+            start_column: 2,
+            end_line: 3,
+            end_column: 8,
+        }
+    }
+
+    #[test]
+    fn missing_roslyn_location_is_explicitly_synthesized() {
+        assert_eq!(
+            typed_location(None),
+            SourceLocation::Unlocated(Unlocated::Synthesized)
+        );
+    }
+
+    #[test]
+    fn empty_roslyn_span_is_an_invalid_recorded_location() {
+        assert_eq!(
+            typed_location(Some(&location(12, 12))),
+            SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation)
+        );
+    }
 }

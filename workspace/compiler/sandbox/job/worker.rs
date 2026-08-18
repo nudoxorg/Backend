@@ -205,17 +205,26 @@ struct FreeList {
 
 impl FreeList {
     fn take(&self) -> WorkerSlot {
-        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(slot) = slots.pop() {
                 return slot;
             }
-            slots = self.cv.wait(slots).unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots = self
+                .cv
+                .wait(slots)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
     fn put(&self, slot: WorkerSlot) {
-        let mut slots = self.slots.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         slots.push(slot);
         self.cv.notify_one();
     }

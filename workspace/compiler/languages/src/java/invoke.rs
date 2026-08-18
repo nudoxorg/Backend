@@ -568,8 +568,8 @@ fn class_path_args(legacy: bool) -> Result<Vec<String>, ProducerError> {
         }
     }
     let mut paths = paths;
-    if legacy {
-        if let Some(tools) = std::env::var_os("NUDOX_JAVA8_TOOLS_JAR") {
+    if legacy
+        && let Some(tools) = std::env::var_os("NUDOX_JAVA8_TOOLS_JAR") {
             let path = PathBuf::from(tools);
             if !path.is_file() {
                 return Err(ProducerError::OracleSpawn {
@@ -582,7 +582,6 @@ fn class_path_args(legacy: bool) -> Result<Vec<String>, ProducerError> {
             }
             paths.push(path);
         }
-    }
     let joined = std::env::join_paths(paths).map_err(|e| ProducerError::OracleSpawn {
         command: "javadoc classpath".to_owned(),
         reason: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
@@ -645,14 +644,13 @@ fn walk_java_sources(
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with('.'));
-            if !is_hidden && !(legacy && is_legacy_excluded_dir(&path)) {
+            if !(is_hidden || legacy && is_legacy_excluded_dir(&path)) {
                 walk_java_sources(&path, out, legacy)?;
             }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            if !(legacy && is_legacy_excluded_file(&path)) {
+        } else if path.extension().and_then(|e| e.to_str()) == Some("java")
+            && !(legacy && is_legacy_excluded_file(&path)) {
                 out.push(path);
             }
-        }
     }
     Ok(())
 }

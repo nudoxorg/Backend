@@ -131,7 +131,7 @@ fn the_committed_csharp_oracle_source_declares_the_required_schema() {
         .expect("Program.cs must declare `SchemaFormat = N`");
     let declared: u32 = src[idx + needle.len()..]
         .chars()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>()
         .parse()
         .expect("SchemaFormat must be an integer literal");

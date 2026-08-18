@@ -26,6 +26,10 @@
 //! syntax) on `PATH`, or `NUDOX_JAVAC` pointing at one explicitly. This
 //! program's environment provides JDK 21 via nix.
 //!
+//! A second, isolated Java 8 doclet is compiled when `NUDOX_JAVA8_JAVAC` is
+//! provided. It exists only for source sets such as Lombok 1.18.30 whose
+//! compiler-internal APIs predate JPMS; the normal oracle remains unchanged.
+//!
 //! # No-JDK hosts (including Windows without a JDK)
 //!
 //! The doclet is a *runtime* aid for exactly one producer (Java), not a
@@ -36,10 +40,7 @@
 //! keeps a GUI build — which only needs the *crate* to compile, not the Java
 //! producer to run — possible on a machine that never installed a JDK.
 
-use std::{
-    path::PathBuf,
-    process::Command,
-};
+use std::{path::PathBuf, process::Command};
 
 fn main() {
     let manifest_dir = PathBuf::from(
@@ -47,13 +48,17 @@ fn main() {
     );
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set by cargo"));
 
-    let extractor = manifest_dir.join("oracle").join("java").join("Extractor.java");
+    let extractor = manifest_dir
+        .join("oracle")
+        .join("java")
+        .join("Extractor.java");
     let json = manifest_dir.join("oracle").join("java").join("Json.java");
 
     // Rebuild only when the doclet sources actually change.
     println!("cargo:rerun-if-changed={}", extractor.display());
     println!("cargo:rerun-if-changed={}", json.display());
     println!("cargo:rerun-if-env-changed=NUDOX_JAVAC");
+    println!("cargo:rerun-if-env-changed=NUDOX_JAVA8_JAVAC");
 
     // Declare the fallback cfg so `cfg!(nudox_java_oracle_unavailable)` in
     // `src/java/invoke.rs` never trips the `unexpected_cfgs` lint.
@@ -80,16 +85,57 @@ fn main() {
 
     match status {
         Ok(s) if s.success() => {}
-        Ok(s) => degrade(&javac, &format!(
-            "`{javac}` exited with {s} compiling the Java oracle doclet \
+        Ok(s) => degrade(
+            &javac,
+            &format!(
+                "`{javac}` exited with {s} compiling the Java oracle doclet \
              ({} {}); the Java producer will be unavailable",
-            extractor.display(),
-            json.display(),
-        )),
-        Err(e) => degrade(&javac, &format!(
-            "failed to spawn `{javac}` to compile the Java oracle doclet: {e}; \
+                extractor.display(),
+                json.display(),
+            ),
+        ),
+        Err(e) => degrade(
+            &javac,
+            &format!(
+                "failed to spawn `{javac}` to compile the Java oracle doclet: {e}; \
              the Java producer will be unavailable",
-        )),
+            ),
+        ),
+    }
+
+    let legacy = manifest_dir
+        .join("oracle")
+        .join("java8")
+        .join("LegacyExtractor.java");
+    println!("cargo:rerun-if-changed={}", legacy.display());
+    if let Ok(java8_javac) = std::env::var("NUDOX_JAVA8_JAVAC") {
+        let legacy_dir = out_dir.join("java8-classes");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy_status = Command::new(&java8_javac)
+            .arg("-source")
+            .arg("8")
+            .arg("-target")
+            .arg("8")
+            .arg("-classpath")
+            .arg(
+                PathBuf::from(&java8_javac)
+                    .parent()
+                    .and_then(|p| p.parent())
+                    .map_or_else(|| PathBuf::from("tools.jar"), |p| p.join("lib/tools.jar")),
+            )
+            .arg("-d")
+            .arg(&legacy_dir)
+            .arg("-encoding")
+            .arg("UTF-8")
+            .arg(&legacy)
+            .status();
+        match legacy_status {
+            Ok(s) if s.success() => {}
+            Ok(s) => println!(
+                "cargo:warning=`{java8_javac}` exited with {s} compiling the Java 8 Lombok oracle"
+            ),
+            Err(e) => println!("cargo:warning:failed to spawn Java 8 javac `{java8_javac}`: {e}"),
+        }
     }
 }
 

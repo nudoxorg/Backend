@@ -28,8 +28,8 @@ use nudox_ir::{
     lower::Lowering,
     package::PackageId,
 };
+use nudox_languages::rust::{Error, LoadedWorkspace, RustProducer};
 use nudox_languages::{PackageSource, Producer, ProducerError};
-use nudox_languages::rust::{LoadedWorkspace, RustProducer, Error};
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -112,7 +112,10 @@ fn load(src: &PackageSource) -> LoadedWorkspace {
 }
 
 /// Lower `oracle` into a sealed table.
-fn lower(oracle: &LoadedWorkspace, src: &PackageSource) -> Result<PristineIntroTable, ProducerError> {
+fn lower(
+    oracle: &LoadedWorkspace,
+    src: &PackageSource,
+) -> Result<PristineIntroTable, ProducerError> {
     let root_sym = Symbol {
         name: src.name.as_str().to_owned(),
         visibility: Visibility::Public,
@@ -234,11 +237,10 @@ fn accepting_a_degraded_graph_yields_a_table_missing_its_feature_gated_items() {
     );
     let src = source_for(&root, "nudox_fixture_degraded_accepted");
 
-    let (table, _cost) =
-        heart::cost::measured("lower/fixture-degraded-accepted", &root, || {
-            let oracle = load(&src).accept_degraded_dependencies();
-            lower(&oracle, &src).expect("an explicitly accepted degraded workspace must lower")
-        });
+    let (table, _cost) = heart::cost::measured("lower/fixture-degraded-accepted", &root, || {
+        let oracle = load(&src).accept_degraded_dependencies();
+        lower(&oracle, &src).expect("an explicitly accepted degraded workspace must lower")
+    });
 
     assert!(
         declares(&table, "always_present"),

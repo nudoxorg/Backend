@@ -54,25 +54,26 @@ pub mod toolchains;
 pub mod vm;
 
 pub use backend::smolvm::{RootfsStore, SmolvmRuntime};
-pub use budget::{
-    CapabilityBudget, EgressAllowlist, FsGrant, NetGrant, ThreatTier,
-};
 pub use budget::limits::{LimitOverride, Limits, Network};
 pub use budget::overrides::{OverrideTable, SandboxKey};
 pub use budget::profiles::ProducerProfile;
-pub use cage::{Cage, CageCaps, CageId, DevPassthrough, Policy, run_sealed};
+pub use budget::{CapabilityBudget, EgressAllowlist, FsGrant, NetGrant, ThreatTier};
 pub use cage::smolvm::{
     GoldenPool, SmolvmCage, project_network, project_run_spec, project_vm_config,
     project_vm_config_with_stream,
 };
+pub use cage::{Cage, CageCaps, CageId, DevPassthrough, Policy, run_sealed};
 pub use error::{CageError, KillReason, SandboxError, to_io_error};
 pub use golden::{GoldenContentIo, MAX_GOLDEN_BYTES};
-pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
 pub use job::cancel::CancelToken;
 pub use job::worker::{JobRequest, JobResponse, WorkerLang, WorkerPool, WorkerPoolConfig};
+pub use job::{Acquiring, Job, NetOff, Sealed, SealedBudget, VmForge};
 pub use node::NodeId;
 pub use observer::{CountingObserver, ForgeObserver, NullObserver};
-pub use probe::{HostIsolation, IsolationPolicy, VirtSupport, require as require_isolation};
+pub use probe::{
+    HostIsolation, IsolationPolicy, VirtSupport, VmExecutionCapability, VmUnavailableReason,
+    probe_vm_execution, require as require_isolation,
+};
 pub use seal::{SealedCommand, SealedInput, Sealer};
 pub use spec::{Env, Mounts, Output, ProcessEnd, Spec};
 pub use toolchains::ToolchainSet;

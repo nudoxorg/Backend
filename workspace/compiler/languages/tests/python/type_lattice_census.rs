@@ -47,8 +47,8 @@ use nudox_ir::{
         ty::{Primitive, TupleElement},
     },
 };
-use nudox_languages::{PackageSource, produce};
 use nudox_languages::python::PythonProducer;
+use nudox_languages::{PackageSource, produce};
 
 /// The 22 provisioned pypi entries, mirroring `corpus_sweep.rs::ENTRIES`.
 /// Kept as `(dir, name, version)` because this test needs nothing else.

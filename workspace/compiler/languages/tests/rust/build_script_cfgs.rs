@@ -1,5 +1,6 @@
 //! A load whose build scripts did not run must be observably different from one
-//! whose did — and, for the shape crates.io actually publishes, must not happen.
+//! whose did — and, for the shape crates.io actually publishes, must not
+//! happen.
 //!
 //! # Why this file exists
 //!
@@ -25,9 +26,9 @@
 //! minutes (783.84 s measured 2026-08-07). These four cases isolate the same
 //! mechanism in 62.10 s for the whole file, and —
 //! for `a_phantom_test_target_does_not_stop_the_build_script` — reproduce the
-//! *published tarball* shape exactly: a `[[test]]` entry pointing at a file that
-//! `cargo package`'s `exclude` left out. That is the L50 trigger in full, and
-//! nothing about it needs a real crate.
+//! *published tarball* shape exactly: a `[[test]]` entry pointing at a file
+//! that `cargo package`'s `exclude` left out. That is the L50 trigger in full,
+//! and nothing about it needs a real crate.
 
 use std::path::{Path, PathBuf};
 
@@ -38,12 +39,13 @@ use nudox_ir::{
     lower::Lowering,
     package::PackageId,
 };
-use nudox_languages::{PackageSource, Producer, ProducerError};
-use nudox_languages::rust::{
-    BuildScriptExecution, BuildScriptFailure, LoadedWorkspace, RustProducer, Error,
+use nudox_languages::{
+    PackageSource, Producer, ProducerError,
+    rust::{BuildScriptExecution, BuildScriptFailure, Error, LoadedWorkspace, RustProducer},
 };
 
-// ── Fixtures ──────────────────────────────────────────────────────────────────
+// ── Fixtures
+// ──────────────────────────────────────────────────────────────────
 
 /// The library every fixture here exposes.
 ///
@@ -128,7 +130,8 @@ fn write_fixture(name: &str, build_rs: &str, extra_manifest: &str) -> PathBuf {
     root
 }
 
-// ── Harness ───────────────────────────────────────────────────────────────────
+// ── Harness
+// ───────────────────────────────────────────────────────────────────
 
 fn source_for(root: &Path, name: &str) -> PackageSource {
     PackageSource::new(root, name, "0.1.0")
@@ -192,7 +195,10 @@ fn a_working_build_script_reports_ran_and_lowers_its_cfg_gated_item() {
         lower(&oracle, &src).expect("a complete load must lower without an opt-in")
     });
 
-    assert!(declares(&table, "always_present"), "the ungated fn must be lowered");
+    assert!(
+        declares(&table, "always_present"),
+        "the ungated fn must be lowered"
+    );
     assert!(
         declares(&table, "gated_by_build_script"),
         "`cargo:rustc-cfg=nudox_probe` reached the crate graph, so the item behind it is real \
@@ -211,9 +217,10 @@ fn a_working_build_script_reports_ran_and_lowers_its_cfg_gated_item() {
 /// This is the L50 regression test. `ra_ap_project_model` 0.0.341 passes
 /// `--all-targets` to the build-script `cargo check` unconditionally whenever
 /// the toolchain supports `--compile-time-deps`, which makes cargo resolve
-/// targets whose sources are not in the tarball and abort at target resolution —
-/// before a single build script runs. `ra::loaded::narrowed_build_script_config`
-/// removes the flag, which is why this passes.
+/// targets whose sources are not in the tarball and abort at target resolution
+/// — before a single build script runs.
+/// `ra::loaded::narrowed_build_script_config` removes the flag, which is why
+/// this passes.
 ///
 /// Verified by mutation: restoring the flag (passing the unmodified
 /// `cargo_config` to `run_build_scripts`) turns this red with
@@ -232,18 +239,17 @@ fn a_phantom_test_target_does_not_stop_the_build_script() {
     );
     let src = source_for(&root, "nudox_fixture_phantom_target");
 
-    let (table, _cost) =
-        heart::cost::measured("lower/fixture-phantom-target", &root, || {
-            let oracle = load(&src);
-            assert!(
-                matches!(oracle.build_script_execution(), BuildScriptExecution::Ran),
-                "a target the tarball omits is not a build-script failure: nothing this engine \
+    let (table, _cost) = heart::cost::measured("lower/fixture-phantom-target", &root, || {
+        let oracle = load(&src);
+        assert!(
+            matches!(oracle.build_script_execution(), BuildScriptExecution::Ran),
+            "a target the tarball omits is not a build-script failure: nothing this engine \
                  documents lives in a `[[test]]` target, so the build-script `cargo check` must \
                  not be asked to resolve one. Got {:?}",
-                oracle.build_script_execution()
-            );
-            lower(&oracle, &src).expect("a complete load must lower without an opt-in")
-        });
+            oracle.build_script_execution()
+        );
+        lower(&oracle, &src).expect("a complete load must lower without an opt-in")
+    });
 
     assert!(
         declares(&table, "gated_by_build_script"),
@@ -264,40 +270,39 @@ fn a_failed_build_script_is_refused_and_carries_the_cargo_diagnostic() {
     let root = write_fixture("nudox_fixture_build_script_failed", BUILD_RS_FAILING, "");
     let src = source_for(&root, "nudox_fixture_build_script_failed");
 
-    let (err, _cost) =
-        heart::cost::measured("lower/fixture-build-script-failed", &root, || {
-            let oracle = load(&src);
+    let (err, _cost) = heart::cost::measured("lower/fixture-build-script-failed", &root, || {
+        let oracle = load(&src);
 
-            let failure = oracle
-                .build_script_execution()
-                .failure()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "a build.rs that exits 1 must be recorded as a failure, not as `Ran`; \
-                         got {:?}",
-                        oracle.build_script_execution()
-                    )
-                })
-                .clone();
-            let BuildScriptFailure::CargoRefusedTheWorkspace { .. } = failure else {
+        let failure = oracle
+            .build_script_execution()
+            .failure()
+            .unwrap_or_else(|| {
                 panic!(
-                    "cargo ran and rejected the workspace, so the failure must be \
+                    "a build.rs that exits 1 must be recorded as a failure, not as `Ran`; \
+                         got {:?}",
+                    oracle.build_script_execution()
+                )
+            })
+            .clone();
+        let BuildScriptFailure::CargoRefusedTheWorkspace { .. } = failure else {
+            panic!(
+                "cargo ran and rejected the workspace, so the failure must be \
                      `CargoRefusedTheWorkspace` — `NotRun` means we could not start cargo at \
                      all and would send a reader to check their PATH. Got {failure:?}"
-                );
-            };
-            assert!(
-                failure
-                    .diagnostic()
-                    .is_some_and(|d| d.contains("nudox-fixture-build-script-refused-to-run")),
-                "the diagnostic must carry what the build script itself printed, or the reader \
-                 learns only that something failed; got {:?}",
-                failure.diagnostic()
             );
-            assert!(oracle.completeness().is_degraded());
+        };
+        assert!(
+            failure
+                .diagnostic()
+                .is_some_and(|d| d.contains("nudox-fixture-build-script-refused-to-run")),
+            "the diagnostic must carry what the build script itself printed, or the reader \
+                 learns only that something failed; got {:?}",
+            failure.diagnostic()
+        );
+        assert!(oracle.completeness().is_degraded());
 
-            lower(&oracle, &src).expect_err("a failed build script must not lower by default")
-        });
+        lower(&oracle, &src).expect_err("a failed build script must not lower by default")
+    });
 
     // The refusal must arrive with its cause chain intact: a caller walking
     // `source` has to reach the cargo diagnostic, not a flattened message.
@@ -331,14 +336,11 @@ fn accepting_a_failed_build_script_yields_a_table_describing_a_different_crate()
     );
     let src = source_for(&root, "nudox_fixture_build_script_failed_accepted");
 
-    let (table, _cost) = heart::cost::measured(
-        "lower/fixture-build-script-failed-accepted",
-        &root,
-        || {
+    let (table, _cost) =
+        heart::cost::measured("lower/fixture-build-script-failed-accepted", &root, || {
             let oracle = load(&src).accept_missing_build_script_cfgs();
             lower(&oracle, &src).expect("an explicitly accepted degraded workspace must lower")
-        },
-    );
+        });
 
     assert!(
         declares(&table, "always_present"),
@@ -354,5 +356,60 @@ fn accepting_a_failed_build_script_yields_a_table_describing_a_different_crate()
         "and the other side of the gate is lowered in its place. This assertion is the reason \
          `BuildScriptsFailed` is a refusal rather than a warning: the degraded table is not a \
          subset of the real one, it contains items the real one does not"
+    );
+}
+
+/// L1 performance contract: repeated loads of an unchanged package reuse the
+/// Cargo workspace model, while build scripts and HIR loading remain per-load.
+/// This is deliberately structural — the samples are printed for diagnosis,
+/// while the assertions pin the safe cache boundary without depending on speed.
+#[test]
+fn repeated_load_reuses_workspace_model_but_not_build_scripts_or_hir() {
+    let first_root = write_fixture("nudox_fixture_l1_cached", BUILD_RS_OK, "");
+    let first = source_for(&first_root, "nudox_fixture_l1_cached");
+    let second = source_for(&first_root, "nudox_fixture_l1_cached");
+
+    let first_oracle = load(&first);
+    let second_oracle = load(&second);
+    let first_profile = first_oracle.load_profile();
+    let second_profile = second_oracle.load_profile();
+
+    let expected = [
+        "manifest_discover",
+        "workspace_load",
+        "build_scripts",
+        "load_workspace",
+    ];
+    let phase_names = |profile: &nudox_languages::rust::LoadProfile| {
+        profile.phases().map(|(name, _)| name).collect::<Vec<_>>()
+    };
+    assert_eq!(phase_names(first_profile), expected.to_vec());
+    assert_eq!(
+        phase_names(second_profile),
+        ["manifest_discover", "build_scripts", "load_workspace"].to_vec()
+    );
+
+    // These are the fixed costs that would be tempting to hide behind an
+    // unsafe cross-load workspace/build-script cache.  Keep their repetition
+    // visible until a cache has explicit invalidation semantics.
+    assert_eq!(first_profile.phase_count("workspace_load"), 1);
+    assert_eq!(second_profile.phase_count("workspace_load"), 0);
+    assert_eq!(first_profile.phase_count("build_scripts"), 1);
+    assert_eq!(second_profile.phase_count("build_scripts"), 1);
+    assert_eq!(first_profile.phase_count("load_workspace"), 1);
+    assert_eq!(second_profile.phase_count("load_workspace"), 1);
+
+    // Salsa caches are demand-driven by the documented walk; priming every
+    // crate in each workspace would turn this repeated fixed cost into a
+    // larger one without changing the package shape.
+    assert_eq!(first_profile.cache_prefill_count(), 0);
+    assert_eq!(second_profile.cache_prefill_count(), 0);
+    assert_eq!(first_profile.workspace_cache_hit_count(), 0);
+    assert_eq!(second_profile.workspace_cache_hit_count(), 1);
+
+    eprintln!(
+        "l1 load profiles: first={:?} second={:?}",
+        first_profile.phases().collect::<Vec<_>>(),
+        second_profile.phases().collect::<Vec<_>>()
     );
 }

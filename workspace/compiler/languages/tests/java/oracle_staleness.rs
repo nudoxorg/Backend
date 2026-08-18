@@ -139,7 +139,7 @@ fn the_committed_java_oracle_source_declares_the_required_schema() {
         .and_then(|i| {
             after[i + "json.value(".len()..]
                 .chars()
-                .take_while(|c| c.is_ascii_digit())
+                .take_while(char::is_ascii_digit)
                 .collect::<String>()
                 .parse()
                 .ok()

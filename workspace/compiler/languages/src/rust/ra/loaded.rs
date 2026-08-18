@@ -96,8 +96,7 @@ impl ExtractConfig {
             offline: std::env::var_os("NUDOX_CARGO_ONLINE").is_none(),
             run_build_scripts: true,
             num_threads: thread::available_parallelism()
-                .map(|n| n.get().min(8))
-                .unwrap_or(1),
+                .map_or(1, |n| n.get().min(8)),
         }
     }
 }
@@ -671,11 +670,10 @@ pub(crate) fn load(
         })
         .map_err(|e| Error::Load(e.into()))?;
         let mut cache = workspace_cache().lock().unwrap();
-        if cache.len() >= 32 {
-            if let Some(oldest) = cache.keys().next().cloned() {
+        if cache.len() >= 32
+            && let Some(oldest) = cache.keys().next().cloned() {
                 cache.remove(&oldest);
             }
-        }
         // Cargo may create/update Cargo.lock while resolving metadata, so
         // fingerprint after the load rather than caching under the pre-load
         // key (which would force the next unchanged load to miss).
@@ -836,20 +834,11 @@ pub(crate) fn load(
                 debug!(target: "ra_load", "{msg}");
             }) {
                 Ok(scripts) => {
-                    let outcome = match scripts.error() {
-                        None => BuildScriptExecution::Ran,
-                        // Upstream returns `Ok` here: a `cargo check` that
-                        // exited non-zero is reported out-of-band in
-                        // `WorkspaceBuildScripts::error()`, an `Option<&str>` no
-                        // caller is obliged to read. This is the arm L50 fires
-                        // on, and the arm its own text mis-attributed to the
-                        // `Err` branch below.
-                        Some(diagnostic) => BuildScriptExecution::Failed(
-                            BuildScriptFailure::CargoRefusedTheWorkspace {
-                                diagnostic: diagnostic.to_owned(),
-                            },
-                        ),
-                    };
+                    let outcome = scripts.error().map_or(BuildScriptExecution::Ran, |diagnostic| {
+                        BuildScriptExecution::Failed(BuildScriptFailure::CargoRefusedTheWorkspace {
+                            diagnostic: diagnostic.to_owned(),
+                        })
+                    });
                     // Installed even when cargo refused, because whatever *did*
                     // get emitted before the failure is still better than
                     // nothing for a caller who goes on to call
@@ -871,7 +860,7 @@ pub(crate) fn load(
     };
 
     let load_config = build_load_config(&cfg, run_build_scripts);
-    profile.cache_prefills = if load_config.prefill_caches { 1 } else { 0 };
+    profile.cache_prefills = usize::from(load_config.prefill_caches);
 
     // Clone so we keep `ws` for package metadata after `load_workspace` consumes a
     // copy.

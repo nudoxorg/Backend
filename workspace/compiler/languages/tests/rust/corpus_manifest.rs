@@ -32,8 +32,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 
-use nudox_languages::{PackageSource, Producer, ProducerError};
 use nudox_languages::rust::RustProducer;
+use nudox_languages::{PackageSource, Producer, ProducerError};
 
 use common::{ENTRIES, corpus_root, entry_root};
 
@@ -213,10 +213,8 @@ fn the_corpus_carries_the_vendored_sources_offline_resolution_needs() {
 /// system temp directory has no cargo manifest above it, which is the condition
 /// this test needs to be about the input rather than about its neighbours.
 fn scratch_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "nudox-rust-corpus-{label}-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("nudox-rust-corpus-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create scratch dir");
     dir

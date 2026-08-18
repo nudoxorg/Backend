@@ -314,10 +314,10 @@ fn record(out: &mut Inferred, id: &str, ty: &PyType) {
     };
     for param in list.items() {
         let (name, ty) = match param {
-            Param::PosOnly(n, t, _) => (n.as_ref().map(ToString::to_string), t),
             Param::Pos(n, t, _) | Param::KwOnly(n, t, _) => (Some(n.to_string()), t),
-            Param::Varargs(n, t) => (n.as_ref().map(ToString::to_string), t),
-            Param::Kwargs(n, t) => (n.as_ref().map(ToString::to_string), t),
+            Param::PosOnly(n, t, _) | Param::Varargs(n, t) | Param::Kwargs(n, t) => {
+                (n.as_ref().map(ToString::to_string), t)
+            }
         };
         if let Some(name) = name {
             out.insert(SlotKey::param(id, name), convert(ty));
