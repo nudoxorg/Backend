@@ -63,6 +63,7 @@ fn bare_hit() -> SymbolHit {
         ecosystem: Language::Rust,
         kind: SymbolKind::Function,
         signature: None,
+        reference: None,
     }
 }
 
@@ -181,7 +182,7 @@ fn the_default_fusion_is_precedence_wins() {
     let b = Scored::new(sample_package_hit("beta"), score(0.1));
     let fused = heart::surface::Packages::fuse(a.clone(), b);
     assert_eq!(
-        fused.value.name, a.value.name,
+        fused.value.coordinates.name, a.value.coordinates.name,
         "without an override, the higher-precedence copy wins whole"
     );
 }
@@ -318,10 +319,22 @@ async fn a_merged_duplicate_is_fused_not_merely_replaced() {
     );
 }
 
+/// `PackageHit` has no `name` field (a pre-existing fixture bug fixed here —
+/// see the constructing task's own note on this helper): its real fields are
+/// `id`/`coordinates`/`state`/`quality_ppm`/`description`/`downloads`, and it
+/// derives no `Default`. `name` becomes part of `coordinates.name`.
 fn sample_package_hit(name: &str) -> heart::PackageHit {
     heart::PackageHit {
         id: package(9),
-        name: name.into(),
-        ..Default::default()
+        coordinates: heart::Coordinates {
+            origin: heart::RegistryOrigin::CratesIo,
+            name: heart::PackageName::from_canonical(Language::Rust, name, name),
+            version: heart::PackageVersion::try_from((Language::Rust, "1.0.0"))
+                .expect("fixture version parses"),
+        },
+        state: heart::ResolutionState::Unindexed { needed: true },
+        quality_ppm: None,
+        description: None,
+        downloads: None,
     }
 }

@@ -80,8 +80,13 @@ fn source(tag: u8) -> SourceId {
 /// Build a source that emits `items` then ends. Returns the answer, ready to
 /// hand to `merge`.
 fn finished_source(items: Vec<(Row, Residence)>) -> Answer<Rows> {
-    let (tx, answer) = answer_channel::<Rows>(64, Gen(1));
     let count = items.len() as u64;
+    // Capacity must cover the whole burst: nothing drains this answer until
+    // it is handed to `merge`, and every item below is pushed synchronously
+    // via `.expect("emit")`. `capacity` is now an enforced bound (contract
+    // task 9), not an ignored hint — a fixed `64` would panic on
+    // `suppression_scales_to_a_large_duplicate_set`'s 2_000-item bursts.
+    let (tx, answer) = answer_channel::<Rows>(count.max(1) as usize, Gen(1));
     for (item, residence) in items {
         tx.item(item, residence).expect("emit");
     }

@@ -44,7 +44,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::hash::Hash;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use bytes::{Bytes, BytesMut};
 use futures::Stream;
@@ -307,6 +307,53 @@ pub trait Surface: Send + Sync + 'static {
 
     /// Extract the dedup identity of one item.
     fn key(item: &Self::Item) -> Self::Key;
+
+    /// Resolve two copies of one identity (same [`Surface::key`]) into the
+    /// single row a consumer should hold.
+    ///
+    /// # The error class this closes
+    ///
+    /// [`merge`]'s dedup rule was precedence-wins-wholesale: when a
+    /// higher-precedence source's copy of an already-claimed key arrives, it
+    /// *replaces* the row outright. That is correct when the two copies are
+    /// rival **versions** of a record — the newer one really should win
+    /// completely. It is wrong when the two copies are the same record at two
+    /// different **fidelities**: if a lower-precedence source already
+    /// answered with an enriched copy (say, a rendered signature) and the
+    /// higher-precedence source's copy is merely *bare*, wholesale
+    /// replacement throws the enrichment away and the consumer sees a row get
+    /// visibly *worse* mid-query — the richer copy was already painted on
+    /// screen. `hit_fusion.rs`'s `a_merged_duplicate_is_fused_not_merely_
+    /// replaced` is the end-to-end pin for exactly this case, with `Symbols`
+    /// as the motivating surface (a bare local hit superseding a signed
+    /// remote one must keep the signature).
+    ///
+    /// # Why the default is precedence-wins, unchanged
+    ///
+    /// This method has to exist on every [`Surface`], but most surfaces have
+    /// no notion of "fidelity" distinct from "which source answered" — for
+    /// those, precedence-wins *is* correct, and was already the only
+    /// behaviour before this hook existed. Defaulting to `winner` verbatim
+    /// means adding this method changes nothing for any surface that does not
+    /// deliberately override it — [`Packages`] and [`Usages`] included, both
+    /// of which use the default today. Only a surface whose `Item` can
+    /// genuinely arrive at different fidelities (today, only [`Symbols`],
+    /// because of `SymbolHit::signature`) has a reason to override it.
+    ///
+    /// # Contract
+    ///
+    /// An override must be **idempotent**: `fuse(fuse(a, a), fuse(a, a)) ==
+    /// fuse(a, a)` for any `a`. [`merge`] may call this repeatedly as
+    /// duplicates keep arriving for the same key over the life of one query,
+    /// so a non-idempotent override could oscillate a consumer's row instead
+    /// of converging on a stable, maximally-enriched value. An override must
+    /// also never let `loser` win a field `winner` can already supply on its
+    /// own — fusion is precedence-wins *plus backfill*, not a free-for-all
+    /// field-by-field merge; see [`Symbols::fuse`]'s own doc comment for the
+    /// concrete rule it applies.
+    fn fuse(winner: Self::Item, _loser: Self::Item) -> Self::Item {
+        winner
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +406,35 @@ pub enum Frame<S: Surface> {
     /// Surface-specific out-of-band metadata.
     Note(S::Note),
     /// One element of the answer, tagged with where it came from.
+    ///
+    /// # This is an upsert keyed by [`Surface::key`], not an append
+    ///
+    /// A consumer **must** hold answer rows in a structure keyed by
+    /// `S::key(&item)` and *replace* on a repeat key. It must not push every
+    /// `Item` frame onto a list.
+    ///
+    /// Receiving the same key twice is normal, not a producer bug. Delivery is
+    /// progressive (rows paint as they arrive, with no global sort), so a
+    /// higher-precedence source's copy of a key routinely arrives *after* a
+    /// lower-precedence one has already been painted. [`merge`] handles that by
+    /// fusing the two copies via [`Surface::fuse`] and **re-emitting** the fused
+    /// row, precisely so the consumer can replace what is already on screen —
+    /// see `merge_impl.rs`'s supersede arm, and
+    /// `a_higher_precedence_duplicate_arriving_late_supersedes` in
+    /// `tests/merge.rs`. Refusing to re-emit would strand a stale copy on screen
+    /// forever, so the re-emit is deliberately not budget-checked either.
+    ///
+    /// The failure mode if a consumer appends instead is the exact bug this
+    /// whole contract exists to prevent: **the same symbol rendered twice, once
+    /// per plane, with nothing erroring**. It is also intermittent, because
+    /// whether a supersede happens at all depends on which source answered
+    /// first — so it will pass in a test run and fail in front of a user.
+    ///
+    /// Note that this makes [`Summary::items`] a count of *frames emitted*, not
+    /// of distinct rows; a merge that superseded twice reports more `items` than
+    /// the consumer holds keys. Page limits, by contrast, count **distinct
+    /// keys** (`merge_bounded`), because a supersede replaces a row rather than
+    /// adding one.
     Item(Located<S::Item>),
     /// A source dropped out. Not terminal — see [`Degradation`]'s doc comment.
     Degraded(Degradation),
@@ -502,13 +578,28 @@ impl fmt::Debug for StreamHandle {
 ///
 /// A typed variant rather than a bare `()` or a stringly-typed error, per the
 /// crate's own doctrine (never assert on a message string where a variant will
-/// do). Two genuinely distinct causes exist, and they mean different things at
-/// a call site: [`EmitError::Cancelled`] says "the *consumer* went away, stop
-/// doing the work that produces frames"; [`EmitError::Finished`] says "*this
-/// answer itself* is already over, whatever you were about to emit arrived too
-/// late to matter" — the consumer may be alive and well. Collapsing both into
-/// one variant would make a caller's `match` lie about which situation it is
-/// in.
+/// do). Three genuinely distinct causes exist, and they mean different things
+/// at a call site — collapsing any two into one variant would make a caller's
+/// `match` lie about which situation it is actually in:
+///
+/// * [`EmitError::Cancelled`] — the *consumer* went away. Stop doing the work
+///   that produces frames; nothing will ever read another one.
+/// * [`EmitError::Finished`] — *this answer itself* is already over. The
+///   consumer may be alive and well; whatever was about to be emitted just
+///   arrived too late to matter.
+/// * [`EmitError::Lagged`] — neither of the above. The consumer is still
+///   there and the answer is still open; it is simply behind, and
+///   [`answer_channel`]'s bound (`workspace/heart/surface.rs:845`) was
+///   reached. A producer must not treat this like `Cancelled` (the consumer
+///   has not gone anywhere — stopping work would turn a slow reader into a
+///   truncated answer for no reason) or like `Finished` (the answer has not
+///   ended — a later emit past the moment of lag can, and routinely does,
+///   succeed again once the consumer drains; see
+///   `a_lagged_emitter_recovers_when_the_consumer_drains` in
+///   `tests/backpressure.rs`). It is only ever returned by [`Emitter::push`]
+///   and its non-async wrappers (`item`/`note`) — [`Emitter::push_async`]
+///   never returns it, because an async producer parks for room instead of
+///   dropping the frame (`tests/backpressure.rs` §7).
 ///
 /// `#[non_exhaustive]`: adding a failure class must not break a caller's
 /// `match` — callers fold the unknown into their most conservative decision,
@@ -533,6 +624,21 @@ pub enum EmitError {
     /// still alive).
     #[error("this answer already ended; a terminal frame was already emitted")]
     Finished,
+    /// A [`Frame::Item`] or [`Frame::Note`] was dropped because the channel
+    /// had already reached [`answer_channel`]'s `capacity` — the consumer is
+    /// behind, not gone. This is what makes `push`/`item`/`note` safe to call
+    /// from a plain, non-async context (`Serve::serve` itself, an engine
+    /// worker with no reactor): rather than blocking the calling thread until
+    /// room appears (which would stall lindsey's foreground thread — see this
+    /// module's own doc comment on why `flume::Receiver` was chosen and
+    /// `answer_channel`'s doc comment on the two emit paths), the frame is
+    /// dropped and counted, and the drop is folded into `end`'s summary
+    /// automatically (see [`Emitter::end`]) rather than left for the producer
+    /// to notice and report itself. A producer with a runtime available
+    /// should prefer [`Emitter::push_async`]/[`Emitter::item_async`], which
+    /// park instead of dropping and so never return this variant.
+    #[error("the answer's consumer is behind; this frame was dropped rather than blocking")]
+    Lagged,
 }
 
 // ---------------------------------------------------------------------------
@@ -664,7 +770,12 @@ impl<S: Surface> Answer<S> {
     /// fully materialized) that need to answer without spawning anything or
     /// holding a live `Emitter` open.
     pub fn empty(generation: Gen) -> Self {
-        let (tx, rx) = flume::unbounded();
+        // A small bounded channel, not `flume::unbounded()`: exactly one frame
+        // is ever sent here, so there is nothing for a large bound to buy and
+        // no reason for this constructor to be the one place in the module
+        // that does not go through a bounded channel (see `answer_channel`'s
+        // doc comment for why every other channel in this module is bounded).
+        let (tx, rx) = flume::bounded(1);
         // The sender is dropped at the end of this function, so after this one
         // frame is drained the channel reports "disconnected and empty" —
         // `recv`/`try_recv` correctly see exactly one frame and then `None`
@@ -680,7 +791,7 @@ impl<S: Surface> Answer<S> {
 
     /// An already-finished answer carrying exactly one `Frame::Failed(error)`.
     pub fn failed(generation: Gen, error: WireError) -> Self {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(1);
         let _ = tx.send(Frame::Failed(error));
         Self {
             generation,
@@ -697,33 +808,95 @@ impl<S: Surface> Answer<S> {
 /// `Answer`.
 pub struct Emitter<S: Surface> {
     tx: flume::Sender<Frame<S>>,
+    /// The `capacity` [`answer_channel`] was built with — the point at which
+    /// [`Emitter::push`] starts refusing [`Frame::Item`]/[`Frame::Note`] with
+    /// [`EmitError::Lagged`], strictly below the channel's physical size
+    /// (`capacity + RESERVE`; see `answer_channel`'s doc comment). Stored here
+    /// rather than read back off `tx.capacity()` so the gate and the reserve
+    /// stay two clearly separate numbers in the code, matching how this
+    /// module's docs (and `tests/backpressure.rs`) talk about them.
+    capacity: usize,
     /// Set when a terminal frame has been sent through `tx`, so a later call
     /// on *this* `Emitter` can reject anything further with
     /// [`EmitError::Finished`] instead of queuing frames the paired `Answer`
     /// has already stopped listening for (see [`Answer::recv`]'s doc
     /// comment).
     terminated: AtomicBool,
+    /// Count of [`Frame::Item`]s that actually made it onto `tx`. Read by
+    /// [`Emitter::end`] to decide whether the producer's own [`Summary`] can
+    /// be trusted verbatim — see that method's doc comment.
+    delivered: AtomicU64,
+    /// Count of [`Frame::Item`]/[`Frame::Note`] frames refused by the
+    /// `capacity` gate in [`Emitter::push`]. Non-zero here is what turns
+    /// `end`'s summary dishonest if left unchecked — see [`Emitter::end`].
+    dropped: AtomicU64,
 }
 
 impl<S: Surface> Emitter<S> {
-    /// Emit one answer row, tagged with where it came from.
+    /// Emit one answer row, tagged with where it came from. Non-blocking: on a
+    /// full channel the row is dropped and this returns
+    /// [`EmitError::Lagged`] rather than parking the calling thread — see
+    /// [`answer_channel`]'s doc comment for why, and
+    /// [`Emitter::item_async`] for the alternative that never drops.
     pub fn item(&self, value: S::Item, residence: Residence) -> Result<(), EmitError> {
         self.push(Frame::Item(Located::new(value, residence)))
     }
 
-    /// Emit surface-specific out-of-band metadata.
+    /// The async twin of [`Emitter::item`]: awaits room instead of dropping
+    /// the row on a full channel, so a producer with a runtime (a spawned
+    /// task, not `Serve::serve` itself — see [`Emitter::push_async`]'s doc
+    /// comment) gets real backpressure and never loses an item.
+    pub async fn item_async(&self, value: S::Item, residence: Residence) -> Result<(), EmitError> {
+        self.push_async(Frame::Item(Located::new(value, residence))).await
+    }
+
+    /// Emit surface-specific out-of-band metadata. Shares `item`'s budget and
+    /// its non-blocking, may-drop-and-report behaviour — see
+    /// `notes_are_bounded_by_the_same_budget` in `tests/backpressure.rs`.
     pub fn note(&self, note: S::Note) -> Result<(), EmitError> {
         self.push(Frame::Note(note))
     }
 
+    /// The async twin of [`Emitter::note`] — see [`Emitter::item_async`].
+    pub async fn note_async(&self, note: S::Note) -> Result<(), EmitError> {
+        self.push_async(Frame::Note(note)).await
+    }
+
     /// Report that a source dropped out. Does not end the answer — the caller
-    /// keeps emitting whatever else it can still produce.
+    /// keeps emitting whatever else it can still produce. Not gated by
+    /// `capacity`: a degradation notice may spend [`answer_channel`]'s
+    /// reserve, the same as a terminal frame, because a consumer that fell
+    /// behind has the strongest claim on being told *why* the answer it is
+    /// about to receive is incomplete.
     pub fn degraded(&self, degradation: Degradation) -> Result<(), EmitError> {
         self.push(Frame::Degraded(degradation))
     }
 
     /// End the answer successfully.
+    ///
+    /// # Honesty is structural, not the producer's job
+    ///
+    /// If this `Emitter` has dropped anything (any [`EmitError::Lagged`]
+    /// returned by `push`/`item`/`note` along the way), `summary` is
+    /// discarded and rewritten as [`Summary::partial`] over exactly what was
+    /// delivered — even if the producer explicitly asked to report
+    /// [`Completeness::Complete`]. A producer cannot know, at the call site
+    /// that built `summary`, how many of its own earlier emits were silently
+    /// dropped by a full channel; letting it report `Complete` anyway would
+    /// make a truncated answer indistinguishable from a whole one, which is
+    /// exactly the failure this module's whole backpressure design exists to
+    /// avoid (see `tests/backpressure.rs`'s "A truncated answer cannot claim
+    /// to be complete" section). When nothing was dropped, `summary` is sent
+    /// verbatim, `Complete` included — this override only ever makes an
+    /// answer *more* honest than what the producer supplied, never less.
     pub fn end(&self, summary: Summary) -> Result<(), EmitError> {
+        let dropped = self.dropped.load(Ordering::Acquire);
+        let summary = if dropped == 0 {
+            summary
+        } else {
+            let delivered = self.delivered.load(Ordering::Acquire);
+            Summary::partial(delivered, delivered, Some(delivered + dropped))
+        };
         self.push(Frame::End(summary))
     }
 
@@ -740,7 +913,8 @@ impl<S: Surface> Emitter<S> {
         self.tx.is_disconnected()
     }
 
-    /// Send an already-built frame.
+    /// Send an already-built frame. Non-blocking — see [`Emitter::push_async`]
+    /// for the awaiting twin.
     ///
     /// Public because a *forwarding* producer — [`merge`], a proxy, a recorder —
     /// relays frames it did not construct and must not have to destructure and
@@ -748,6 +922,26 @@ impl<S: Surface> Emitter<S> {
     /// `#[non_exhaustive]`, so a relay that could only re-emit via the typed
     /// constructors would be structurally unable to pass along a variant its
     /// build does not know about, and would silently drop it.
+    ///
+    /// # Why this drops instead of blocking
+    ///
+    /// `answer_channel` builds a *bounded* channel now, but `push` still must
+    /// never block the calling thread: `Serve::serve` is called from
+    /// lindsey's foreground thread, which has no Tokio reactor to park on
+    /// (see `Serve::serve`'s own doc comment), so a blocking send on a full
+    /// channel there would stall the GUI rather than merely lose a frame —
+    /// see this file's top-of-module `# Why the fix is not "make it
+    /// flume::bounded"` reasoning and `push_never_blocks_the_calling_thread`
+    /// in `tests/backpressure.rs`. So instead: [`Frame::Item`]/[`Frame::Note`]
+    /// are gated at `capacity` and refused with [`EmitError::Lagged`] once it
+    /// is reached, dropped rather than queued; [`Frame::Degraded`] and the
+    /// terminal frames are *not* gated and may spend `answer_channel`'s
+    /// reserve, because an answer must always be able to end and always be
+    /// able to say it degraded, no matter how far behind the consumer fell
+    /// (`a_terminal_frame_fits_even_when_the_channel_is_saturated` /
+    /// `a_degradation_fits_even_when_the_channel_is_saturated`). `try_send`
+    /// (never `send`) is used throughout for exactly this reason: this
+    /// function must return immediately either way.
     pub fn push(&self, frame: Frame<S>) -> Result<(), EmitError> {
         // A terminal frame claims the "answer is over" state via `swap`: if it
         // was already `true`, some earlier call already ended the answer, so
@@ -766,45 +960,167 @@ impl<S: Surface> Emitter<S> {
             return Err(EmitError::Finished);
         }
 
-        // `flume::Sender::send` only ever blocks when the underlying channel
-        // is bounded; `answer_channel` deliberately uses an unbounded one (see
-        // its own doc comment), so this never stalls the calling thread — a
-        // producer must be free to call this from a plain, non-async context
-        // (the engine's worker, or synchronously inside `Serve::serve` itself)
-        // without risking blocking on a slow or absent consumer. The only
-        // failure mode left is the receiver having disconnected, which is
-        // exactly `EmitError::Cancelled`.
-        self.tx.send(frame).map_err(|_| EmitError::Cancelled)
+        // Items and notes are gated at `capacity`, checked *before* attempting
+        // the send at all, so a producer that is already over budget never
+        // even touches the reserve `Frame::Degraded`/terminal frames rely on
+        // (`items_cannot_spend_the_terminal_reserve`). `tx.len()` racing a
+        // concurrent sender can only ever admit a small handful more than
+        // `capacity` before the reserve absorbs it — a benign off-by-one, not
+        // a correctness issue (see `answer_channel`'s doc comment).
+        let gated = matches!(frame, Frame::Item(_) | Frame::Note(_));
+        if gated && self.tx.len() >= self.capacity {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return Err(EmitError::Lagged);
+        }
+
+        let is_item = matches!(frame, Frame::Item(_));
+        match self.tx.try_send(frame) {
+            Ok(()) => {
+                if is_item {
+                    self.delivered.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            Err(flume::TrySendError::Disconnected(_)) => Err(EmitError::Cancelled),
+            Err(flume::TrySendError::Full(_)) => {
+                // Only reachable by losing a race against concurrent senders
+                // between the length check above and this send, or — for an
+                // ungated `Degraded`/terminal frame — by finding the reserve
+                // itself spent by concurrent degradation notices. `push` must
+                // never block (see this method's own doc comment), so this is
+                // reported the same way the gate above reports it rather than
+                // parking for room.
+                if gated {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(EmitError::Lagged)
+            }
+        }
+    }
+
+    /// The async twin of [`Emitter::push`]: awaits room on a full channel
+    /// instead of dropping the frame. This is the other half of the two-path
+    /// policy `answer_channel`'s doc comment describes — for a producer that
+    /// *does* have a runtime to park on (a spawned task, not `Serve::serve`
+    /// itself, which must return immediately with no reactor guaranteed to
+    /// exist), real backpressure with no data loss is strictly better than
+    /// `push`'s drop-and-report.
+    ///
+    /// The already-ended check happens *before* parking, synchronously, the
+    /// same as `push` — awaiting must not become a way to sneak a frame past
+    /// a finished answer (`push_async_is_rejected_after_a_terminal_frame`).
+    /// Resolves `Ok(())` once the frame is actually sent, or
+    /// [`EmitError::Cancelled`] if the paired [`Answer`] is dropped while this
+    /// call is parked (`push_async_returns_cancelled_when_the_answer_is_dropped`
+    /// — this must not hang). Never returns [`EmitError::Lagged`]: there is
+    /// nothing to drop when a full channel means "wait", not "give up".
+    pub async fn push_async(&self, frame: Frame<S>) -> Result<(), EmitError> {
+        if frame.is_terminal() {
+            if self.terminated.swap(true, Ordering::AcqRel) {
+                return Err(EmitError::Finished);
+            }
+        } else if self.terminated.load(Ordering::Acquire) {
+            return Err(EmitError::Finished);
+        }
+
+        // Item/note admission has to be parked at `capacity`, not at the
+        // channel's full physical size (`capacity + RESERVE`) — otherwise an
+        // async producer would happily fill the reserve with items, and the
+        // reserve would already be spent by the time a terminal frame needed
+        // it (exactly the failure `items_cannot_spend_the_terminal_reserve`
+        // pins for the sync path). `flume` has no "wait for room below a
+        // custom watermark" primitive, only "wait for room in the queue at
+        // all" — so this polls `tx.len()` against `capacity` and yields to
+        // the runtime between checks, giving the consumer (and flume's own
+        // wakeups on the physical channel) a chance to make progress. This is
+        // deliberately a spin-yield rather than a fixed sleep: it must react
+        // the instant the consumer frees a slot, not after some polling
+        // delay, so `push_async_parks_the_producer_until_the_consumer_drains`
+        // sees the producer resume promptly rather than in coarse steps.
+        let gated = matches!(frame, Frame::Item(_) | Frame::Note(_));
+        if gated {
+            while self.tx.len() >= self.capacity {
+                if self.tx.is_disconnected() {
+                    return Err(EmitError::Cancelled);
+                }
+                tokio::task::yield_now().await;
+            }
+        }
+
+        let is_item = matches!(frame, Frame::Item(_));
+        match self.tx.send_async(frame).await {
+            Ok(()) => {
+                if is_item {
+                    self.delivered.fetch_add(1, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            // The receiver — the paired `Answer`, or whatever it was
+            // converted into — was dropped while this send was parked
+            // waiting for room. `flume::Sender::send_async` resolves an `Err`
+            // the instant that happens rather than parking forever, which is
+            // what keeps this safe to `.await` unconditionally: a consumer
+            // going away can never leak the task awaiting this call.
+            Err(_) => Err(EmitError::Cancelled),
+        }
     }
 }
 
 /// Create a fresh [`Emitter`]/[`Answer`] pair for one query at `generation`.
 ///
-/// # Why `capacity` does not bound a blocking channel
+/// # Two emit paths for two kinds of producer
 ///
-/// The channel underneath is `flume::unbounded`, not `flume::bounded(capacity)`
-/// — deliberately. `Emitter`'s emit methods are plain, non-async functions (see
-/// [`Serve::serve`]'s own doc comment on why `serve` itself cannot be `async`:
-/// the GUI calls it from the foreground thread and cannot await a
-/// constructor), so they must never block the calling thread waiting for a
-/// slow or momentarily-absent consumer to make room — a producer stalling the
-/// GUI's foreground thread, or an engine worker, on backpressure would be
-/// exactly the kind of stall this whole contract exists to design out.
-/// `capacity` is kept as an explicit, validated parameter anyway: it states
-/// the caller's expected burst size (useful for tuning and for keeping the
-/// call site symmetric with `heart::stream`'s bounded-channel precedent), and
-/// a future genuinely-bounded backpressure mechanism belongs on the *consumer*
-/// side (a slow reader), not by blocking emission.
+/// `capacity` is a real bound now: the channel underneath is
+/// `flume::bounded(capacity + RESERVE)`, not `flume::unbounded()`. A producer
+/// that outruns its consumer used to grow this channel without limit — every
+/// call site *stated* a capacity and nothing enforced it — until the process
+/// ran out of memory. That is fixed by giving emission exactly two paths,
+/// because there are genuinely two kinds of producer:
+///
+/// * [`Emitter::push`]/[`Emitter::item`]/[`Emitter::note`] stay plain,
+///   non-async functions that never block the calling thread. On a full
+///   channel the frame is dropped and [`EmitError::Lagged`] is returned. This
+///   is the only option for a producer with no runtime to park on —
+///   [`Serve::serve`] is called from lindsey's foreground thread, which has
+///   no Tokio reactor, so a blocking send there would stall the GUI rather
+///   than merely lose a frame (see this module's top-of-file `# Why the fix
+///   is not "make it flume::bounded"` section).
+/// * [`Emitter::push_async`]/[`Emitter::item_async`]/[`Emitter::note_async`]
+///   await room instead, for a producer that *does* have a runtime (a
+///   spawned task: the merge pump, the server's search tasks, the remote
+///   client's fetch loop) — real backpressure, no data loss, the stall
+///   propagating all the way back to whatever is producing too fast.
+///
+/// # The reserve
+///
+/// The channel is built with `RESERVE` frames of headroom *above* `capacity`,
+/// and only [`Frame::Item`]/[`Frame::Note`] are gated at `capacity` — a
+/// terminal frame or a [`Frame::Degraded`] may spend the reserve. Without
+/// this, a channel saturated with items could not deliver its own `End`, and
+/// the fix for the memory leak would just be a new way to hang forever
+/// waiting for a terminal frame that can structurally never arrive
+/// (`a_terminal_frame_fits_even_when_the_channel_is_saturated` in
+/// `tests/backpressure.rs`). `RESERVE = 2` covers the one terminal frame
+/// every answer ends with plus one concurrent degradation notice; a producer
+/// that piles up more `Degraded` frames than that before ending is currently
+/// unheard of in this codebase (`merge` sends at most one per source, and
+/// only once).
 pub fn answer_channel<S: Surface>(capacity: usize, generation: Gen) -> (Emitter<S>, Answer<S>) {
     assert!(
         capacity > 0,
         "answer_channel capacity must be at least 1, got 0"
     );
-    let (tx, rx) = flume::unbounded();
+    /// Headroom above `capacity` reserved for terminal/`Degraded` frames —
+    /// see this function's own doc comment.
+    const RESERVE: usize = 2;
+    let (tx, rx) = flume::bounded(capacity + RESERVE);
     (
         Emitter {
             tx,
+            capacity,
             terminated: AtomicBool::new(false),
+            delivered: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
         },
         Answer {
             generation,
@@ -1020,8 +1336,12 @@ fn take_line(buffer: &mut BytesMut) -> Option<Bytes> {
     Some(line.freeze())
 }
 
+mod federated;
+mod hit;
 mod merge_impl;
 mod surfaces;
 
+pub use federated::Federated;
+pub use hit::{SigToken, Signature, SymbolHit};
 pub use merge_impl::{MergePump, merge, merge_bounded};
 pub use surfaces::{Packages, SearchNote, Symbols, UsageHit, Usages};

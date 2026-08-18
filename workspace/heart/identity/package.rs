@@ -186,6 +186,28 @@ pub enum RegistryOrigin {
 }
 
 impl RegistryOrigin {
+    /// The registry a package of this [`Language`] is sourced from by default.
+    ///
+    /// Exhaustive with no catch-all: a new `Language` must fail to compile
+    /// until someone decides its registry, rather than silently inheriting
+    /// another ecosystem's — which would mint `PackageId`s under the wrong
+    /// registry and break dedup with no error anywhere.
+    ///
+    /// `Cpp` maps to [`RegistryOrigin::Git`]: it is the registry-less,
+    /// git-native plane (RL-1) — identity is a repo slug, not a registry
+    /// package name.
+    pub fn default_for(language: Language) -> Self {
+        match language {
+            Language::Rust => RegistryOrigin::CratesIo,
+            Language::Typescript => RegistryOrigin::NpmPublic,
+            Language::Python => RegistryOrigin::PyPi,
+            Language::Go => RegistryOrigin::GoProxy,
+            Language::Java => RegistryOrigin::MavenCentral,
+            Language::CSharp => RegistryOrigin::NuGet,
+            Language::Cpp => RegistryOrigin::Git,
+        }
+    }
+
     pub fn token(&self) -> Cow<'static, str> {
         match self {
             RegistryOrigin::CratesIo => Cow::Borrowed("crates.io"),

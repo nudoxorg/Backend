@@ -34,9 +34,8 @@ use crate::identity::PackageId;
 use crate::package::PackageHit;
 use crate::query::{Query, StableReference};
 use crate::score::Scored;
-use crate::symbol::Symbol;
 
-use super::Surface;
+use super::{Surface, SymbolHit};
 
 // ---------------------------------------------------------------------------
 // Symbols
@@ -44,13 +43,15 @@ use super::Surface;
 
 /// The symbol-search surface: `POST /search`.
 ///
-/// Dedup identity is [`SymbolId`] — the durable global id — not the score or
-/// the name, because the federating merge (`heart::surface::merge`) suppresses
-/// a duplicate row across sources on this key. Keying on anything
-/// score-dependent would make the same symbol at two different scores look
-/// like two different rows, which is exactly backwards: it is the *lower*-
-/// precedence source's copy of a key an overlay already claims that must be
-/// suppressed, not two legitimately distinct symbols that happen to collide.
+/// Dedup identity is `(PackageId, path)` — **not** the score and **not** a
+/// durable symbol id (see [`Symbols::key`]'s own doc comment for why the
+/// latter is disqualified) — because the federating merge
+/// (`heart::surface::merge`) suppresses a duplicate row across sources on
+/// this key. Keying on anything score-dependent would make the same symbol
+/// at two different scores look like two different rows, which is exactly
+/// backwards: it is the *lower*-precedence source's copy of a key an overlay
+/// already claims that must be suppressed, not two legitimately distinct
+/// symbols that happen to collide.
 pub struct Symbols;
 
 impl Surface for Symbols {
@@ -58,7 +59,7 @@ impl Surface for Symbols {
     const PATH: &'static str = "/search";
 
     type Request = Query;
-    type Item = Scored<Symbol>;
+    type Item = Scored<SymbolHit>;
     type Note = SearchNote;
 
     /// **Not `SymbolId`.** See [`Symbols::key`] — this is load-bearing.
@@ -66,11 +67,12 @@ impl Surface for Symbols {
 
     /// The dedup identity: the package coordinate plus the fully-qualified path.
     ///
-    /// # Why not `Symbol::id`
+    /// # Why not a durable symbol id
     ///
-    /// `SymbolId` is minted by `EntryUri::symbol_id(instance_token)` as
-    /// `UUIDv5(SYMBOL_ns, instance_token ‖ 0 ‖ package_id/path…)`, where
-    /// `instance_token` is `"{org}/{db}"` read from *server configuration*
+    /// `heart::Symbol::id` (`SymbolId`) is minted by
+    /// `EntryUri::symbol_id(instance_token)` as `UUIDv5(SYMBOL_ns,
+    /// instance_token ‖ 0 ‖ package_id/path…)`, where `instance_token` is
+    /// `"{org}/{db}"` read from *server configuration*
     /// (`index/server/config.rs:527`). Its own doc comment says the salt is
     /// deliberate — "so two instances of the same corpus don't share ids."
     ///
@@ -80,6 +82,9 @@ impl Surface for Symbols {
     /// the same symbol, **dedup never fires** and every remote hit renders as a
     /// second row beside its local twin. Nothing errors — the answer is just
     /// quietly wrong, which is the failure mode most likely to survive review.
+    /// [`SymbolHit`] does not even carry such an id (see its own doc comment on
+    /// why) — there is nothing here for a future reader to reach for by
+    /// mistake.
     ///
     /// # Why this pair is safe
     ///
@@ -89,11 +94,49 @@ impl Surface for Symbols {
     /// fully-qualified path is a property of the source, not of whoever indexed
     /// it. Two instances of the same corpus therefore agree, while distinct
     /// symbols — in the same package or different ones — stay distinct.
+    ///
+    /// The key also does not depend on **fidelity**: a bare hit and a signed
+    /// hit for the same symbol share a `(package, path)` pair, so they are one
+    /// identity and [`Symbols::fuse`] gets a chance to run on them at all
+    /// (`hit_fusion.rs`'s `fidelity_does_not_change_identity` pins this).
     fn key(item: &Self::Item) -> Self::Key {
-        (
-            item.value.package,
-            item.value.name.fully_qualified.clone(),
-        )
+        (item.value.package, item.value.path.clone())
+    }
+
+    /// Backfill a missing signature and a missing reference; never let a bare
+    /// copy erase either one the winner already carries.
+    ///
+    /// This is the concrete instance of the general rule
+    /// [`Surface::fuse`]'s doc comment states: fusion is precedence-wins
+    /// *plus backfill*, not a symmetric field-by-field merge. Every field
+    /// other than `signature` and `reference` comes from `winner`
+    /// unconditionally — a lower-precedence source does not get to overwrite
+    /// `winner`'s package, display name, kind, or ecosystem just because it
+    /// happened to answer with one. `signature` and `reference` are the sole
+    /// exceptions, and only in the direction that adds information: each is
+    /// adopted from `loser` **only** when `winner` has none at all; a
+    /// `winner` that already carries one keeps its own, even if `loser`'s
+    /// differs, because nothing about lower precedence makes `loser`'s copy
+    /// more trustworthy — only "having one at all vs. having none" is a
+    /// strict improvement here, "one value vs. a different value" is not.
+    /// For `reference` in particular, adopting a `loser`'s copy over an
+    /// existing `winner` reference would silently retarget a navigation
+    /// link, which is never correct regardless of score.
+    ///
+    /// Idempotent by construction: once `winner.signature` and
+    /// `winner.reference` are both `Some(_)` (as they are immediately after
+    /// any backfill), a further call with the same or any other `loser`
+    /// takes the untouched-`winner` branch for each field and returns
+    /// `winner` unchanged.
+    fn fuse(winner: Self::Item, loser: Self::Item) -> Self::Item {
+        let mut fused = winner;
+        if fused.value.signature.is_none() {
+            fused.value.signature.clone_from(&loser.value.signature);
+        }
+        if fused.value.reference.is_none() {
+            fused.value.reference.clone_from(&loser.value.reference);
+        }
+        fused
     }
 }
 
@@ -158,7 +201,7 @@ pub struct UsageHit {
 ///
 /// # Why the dedup key is a tuple, not a durable id
 ///
-/// Unlike a [`Symbol`] or a [`PackageHit`], a recorded use has no id of its
+/// Unlike a `Symbol`/[`SymbolHit`] or a [`PackageHit`], a recorded use has no id of its
 /// own — it is a position, not an entity. `(within, kind, relative_span)` is
 /// nonetheless a genuine identity: two occurrences with the same enclosing
 /// symbol, the same reference kind, and the same relative span *are* the same

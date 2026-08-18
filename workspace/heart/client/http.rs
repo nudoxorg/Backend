@@ -9,9 +9,10 @@
 //! server (the GUI, a CLI) opts in with `features = ["client"]`.
 //!
 //! The wire is the domain: `POST /search` takes the one [`crate::query::Query`]
-//! algebra directly and streams NDJSON pages of [`crate::Scored<crate::Symbol>`]
-//! (INDEX-PLAN §9), so this client serializes/deserializes exactly the shared
-//! `heart` types — no bespoke request/response structs.
+//! algebra directly and streams NDJSON frames of
+//! [`crate::surface::Frame<crate::surface::Symbols>`] (INDEX-PLAN §9), so this
+//! client serializes/deserializes exactly the shared `heart` types — no
+//! bespoke request/response structs.
 
 use crate::client::dto::{AddPackageDto, HealthDto};
 use crate::client::remote::RemoteClient;
@@ -19,8 +20,8 @@ use crate::query::Query;
 #[cfg(test)]
 use crate::stream::StreamFrame;
 use crate::stream::WireError;
-use crate::surface::{Frame, Gen, Serve as _, Symbols};
-use crate::{PackageHit, Page, Scored, Symbol};
+use crate::surface::{Frame, Gen, Serve as _, SymbolHit, Symbols};
+use crate::{PackageHit, Page, Scored};
 use url::Url;
 
 /// A client bound to one `nudox-serve` base URL.
@@ -156,12 +157,16 @@ impl NudoxClient {
     /// talking to it (see [`RemoteClient`]'s own module doc comment on why
     /// S1 originally left this method untouched).
     ///
-    /// The public signature — `Result<Vec<Scored<Symbol>>, Error>` — is
-    /// unchanged, so every existing caller (the GUI's `SearchStore`, this
-    /// crate's own tests) keeps compiling and keeps its "collect everything,
-    /// then render" behaviour; a caller that wants the progressive/streaming
-    /// behaviour `Answer<Symbols>` actually offers should call
-    /// `RemoteClient::serve` directly instead of through this shim.
+    /// The public signature returns `Vec<Scored<SymbolHit>>` — `SymbolHit`
+    /// rather than the bare `Symbol` this used to return, following
+    /// `Symbols::Item`'s own move to `Scored<SymbolHit>`
+    /// (`LOCAL-REMOTE-CONTRACT.md` §0.7 / `hit_fusion.rs`): a caller of this
+    /// shim gets the same signature-preview-capable item type any other
+    /// `Serve<Symbols>` consumer gets, not a strictly poorer one. Every
+    /// caller keeps its "collect everything, then render" behaviour; one that
+    /// wants the progressive/streaming behaviour `Answer<Symbols>` actually
+    /// offers should call `RemoteClient::serve` directly instead of through
+    /// this shim.
     ///
     /// `Frame::Failed` becomes [`Error::Wire`] (carrying how many hits arrived
     /// first, same as the old mid-stream [`StreamFrame::Error`] case); an
@@ -172,7 +177,7 @@ impl NudoxClient {
     /// dropping a channel silently) still surfaces as [`Error::Truncated`],
     /// carrying forward the same "no terminal frame is never a silent
     /// success" rule the old NDJSON reader enforced.
-    pub async fn search(&self, query: &Query) -> Result<Vec<Scored<Symbol>>, Error> {
+    pub async fn search(&self, query: &Query) -> Result<Vec<Scored<SymbolHit>>, Error> {
         let answer: crate::surface::Answer<Symbols> = self.remote.serve(query.clone(), Gen(0));
         let mut hits = Vec::new();
         while let Some(frame) = answer.recv().await {

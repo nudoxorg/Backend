@@ -414,7 +414,12 @@ async fn emitting_after_a_terminal_frame_is_rejected() {
 /// not an `impl Stream`.
 #[tokio::test]
 async fn an_answer_supports_the_gui_batched_drain_pattern() {
-    let (tx, answer) = answer_channel::<Widgets>(64, Gen(1));
+    // Capacity must exceed the 100-item + `End` burst below now that
+    // `capacity` is an enforced bound rather than an ignored hint (contract
+    // task 9) — nothing drains this channel until the loop below starts, so
+    // anything at or under the burst size would drop frames and turn this
+    // test's `.unwrap()`s into panics.
+    let (tx, answer) = answer_channel::<Widgets>(128, Gen(1));
     for id in 0..100u32 {
         tx.item(widget(id, "burst"), Residence::Local).unwrap();
     }

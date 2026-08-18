@@ -65,10 +65,10 @@ use crate::client::http::Error as ClientError;
 use crate::stream::WireError;
 use crate::surface::{Answer, Emitter, Frame, Gen, Serve, StreamHandle, Surface, answer_channel, decode_frames};
 
-/// How many frames [`Answer`]'s underlying channel is sized for up front.
-/// `answer_channel`'s channel is unbounded regardless (see its own doc
-/// comment on why emission must never block) — this is a burst-size hint,
-/// not a hard cap.
+/// How many frames [`Answer`]'s underlying channel is sized for. A genuine
+/// bound now (`answer_channel`'s own doc comment, contract task 9) — `pump`
+/// below forwards items through [`Emitter::item_async`], so a slow local
+/// consumer parks this task for room rather than losing frames once it fills.
 const ANSWER_CAPACITY: usize = 64;
 
 /// A client bound to one `nudox-serve` base URL, answering *any* [`Surface`]
@@ -247,7 +247,11 @@ async fn pump<S: Surface>(
                 let _ = emitter.note(note);
             }
             Frame::Item(located) => {
-                let _ = emitter.item(located.value, located.residence);
+                // Awaited, not the sync `item`: `pump` is always spawned
+                // (`Serve::serve`'s `tokio::spawn(pump::<S>(...))` above), so
+                // it can park for real backpressure instead of dropping a
+                // search result a local consumer was merely slow to take.
+                let _ = emitter.item_async(located.value, located.residence).await;
             }
             Frame::Degraded(degradation) => {
                 let _ = emitter.degraded(degradation);

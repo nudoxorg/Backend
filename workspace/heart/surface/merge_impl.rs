@@ -43,6 +43,58 @@
 //! base answered first, which is both common and precisely when a stale row
 //! outranking a corrected one matters most.
 //!
+//! # Supersede FUSES rather than replaces
+//!
+//! A supersede used to just re-emit the higher-precedence source's copy
+//! verbatim, discarding whatever the previously-claimed copy carried. That is
+//! right when the two copies are rival *versions*; it is wrong when they are
+//! the same record at different *fidelities* — `hit_fusion.rs`'s motivating
+//! case is a bare local `SymbolHit` superseding a remote one that already
+//! carries a rendered signature, which would otherwise show the user a row
+//! visibly getting *worse* mid-query. [`Surface::fuse`] is the hook; the
+//! supersede arm here calls `S::fuse(new_copy, previously_claimed_copy)`
+//! instead of discarding the loser outright.
+//!
+//! This is why `claimed` maps a key to `(precedence rank, S::Item)` rather
+//! than just the rank: fusing needs *both* copies in hand, so the
+//! previously-emitted item has to be retained somewhere, not merely its rank.
+//!
+//! ## The memory trade-off, and why the chosen bound is the right one
+//!
+//! Retaining one `S::Item` per **distinct claimed key**, for the life of the
+//! query, is a real and deliberate cost — an `S::Item` can be arbitrarily
+//! larger than the `usize` rank that used to be the only thing stored per
+//! key. Two designs were available:
+//!
+//! 1. **Bound it to exactly what fusion needs** (chosen here): one clone of
+//!    the currently-winning item per distinct key, freed as soon as the
+//!    query ends (`claimed` is local to one call to [`merge`]/[`merge_bounded`]
+//!    and dropped with the pump). For [`merge_bounded`] this is capped at
+//!    `limit` entries by construction — the same budget that already caps
+//!    the *emitted* result set caps the retained set, so a caller that asked
+//!    for 30 results pays for at most 30 retained items, not an unbounded
+//!    number. For the unbounded [`merge`] the retained set is exactly the
+//!    distinct-key result size, which is also exactly what a consumer
+//!    holding the answer is *already* retaining on its own side (the GUI's
+//!    key-and-replace model, `the_final_state_is_the_same_whichever_source_
+//!    answers_first`) — this duplicates a cost the consumer was always going
+//!    to pay, it does not introduce a new unbounded one.
+//! 2. **Retain every frame ever emitted**, not just the current per-key
+//!    winner, so a future fusion could reach further back than "the
+//!    immediately-superseded copy." Rejected: nothing in [`Surface::fuse`]'s
+//!    contract needs more than the current winner and the newly-arrived
+//!    duplicate — fusion is pairwise and, per its idempotence requirement,
+//!    convergent, so a chain of supersedes only ever needs the *latest*
+//!    fused value as one side of the next pairwise call. Keeping history
+//!    beyond that would grow unboundedly with the *number of duplicate
+//!    arrivals* rather than with the *result size*, which is a strictly
+//!    worse bound for no behavioural benefit.
+//!
+//! One clone of `S::Item` is paid on every admitted item (first sighting or
+//! supersede) — unavoidable once retention exists at all, since the same
+//! value has to both go out on the wire now and stay in `claimed` for a
+//! possible future fuse.
+//!
 //! # Degradation
 //!
 //! A source that fails does **not** fail the merge. It becomes a
@@ -63,14 +115,22 @@ use futures::StreamExt as _;
 use futures::stream::SelectAll;
 
 use super::{
-    Answer, Completeness, Degradation, Frame, Gen, StreamHandle, Summary, Surface, answer_channel,
+    Answer, Completeness, Degradation, Frame, Gen, Located, StreamHandle, Summary, Surface,
+    answer_channel,
 };
 use crate::access::SourceId;
 use crate::stream::WireError;
 
-/// Buffer between the merge and its consumer. Frames are small and the consumer
-/// (a GUI drain loop, an axum body writer) is expected to keep up; this exists
-/// to absorb bursts, not to provide backpressure.
+/// Buffer between the merge and its consumer, now a genuine bound rather than
+/// an ignored hint (`answer_channel`'s own doc comment, contract task 9).
+/// The pump below forwards every frame through [`super::Emitter::push_async`], so a
+/// consumer slower than its sources does not lose frames once this buffer
+/// fills — it applies real backpressure, parking the pump (and transitively
+/// the sources it is draining) until the consumer catches up, which is
+/// exactly what `a_slow_consumer_slows_the_merge_without_losing_items` in
+/// `tests/backpressure.rs` pins. `256` is sized to absorb a normal burst
+/// without parking on every frame, not to bound memory on its own — the real
+/// bound is `push_async` refusing to ever exceed it.
 const MERGE_CHANNEL_CAPACITY: usize = 256;
 
 /// The driver returned alongside a merged [`Answer`].
@@ -185,8 +245,12 @@ fn merge_inner<S: Surface>(
     }
 
     let pump = async move {
-        // key -> precedence rank of the source whose copy is currently live.
-        let mut claimed: HashMap<S::Key, usize> = HashMap::new();
+        // key -> (precedence rank of the source whose copy is currently live,
+        // the item last emitted for it). The item is retained — not just the
+        // rank — so a later supersede has something to fuse against; see this
+        // module's own "Supersede FUSES rather than replaces" doc section for
+        // why this is the right bound on that cost.
+        let mut claimed: HashMap<S::Key, (usize, S::Item)> = HashMap::new();
         let mut saw_terminal = vec![false; source_count];
         let mut emitted: u64 = 0;
         let mut failures: usize = 0;
@@ -210,11 +274,17 @@ fn merge_inner<S: Surface>(
 
             let forwarded = match frame {
                 Frame::Item(located) => {
-                    let key = S::key(&located.value);
-                    match claimed.get(&key) {
+                    let Located { value, residence } = located;
+                    let key = S::key(&value);
+                    // `remove` rather than `get`: the supersede arm needs to
+                    // *consume* the previously-held item to fuse against it
+                    // without cloning it, and every arm that keeps the claim
+                    // alive re-inserts (whichever item is now current) before
+                    // falling through — see below.
+                    match claimed.remove(&key) {
                         // First sighting of this key — the only case the budget
                         // applies to, because it is the only one that grows the
-                        // consumer's result set.
+                        // consumer's result set. Nothing to fuse against yet.
                         None => {
                             if limit.is_some_and(|cap| claimed.len() >= cap) {
                                 // Budget spent. Record that the answer is short
@@ -222,32 +292,50 @@ fn merge_inner<S: Surface>(
                                 truncated = true;
                                 Ok(())
                             } else {
-                                claimed.insert(key, rank);
+                                claimed.insert(key, (rank, value.clone()));
                                 emitted += 1;
-                                out.push(Frame::Item(located))
+                                // Awaited, not `push`: this pump is itself
+                                // async and always spawned (`MergePump`'s own
+                                // doc comment), so it can park for real
+                                // backpressure instead of dropping an item a
+                                // consumer was merely slow to take —
+                                // `a_slow_consumer_slows_the_merge_without_
+                                // losing_items` in `tests/backpressure.rs`
+                                // requires exactly this.
+                                out.push_async(Frame::Item(Located::new(value, residence))).await
                             }
                         }
-                        // A higher-precedence source's copy arrived late: re-emit
-                        // so the consumer replaces the row it already painted.
-                        // Deliberately NOT budget-checked — this replaces a row
-                        // rather than adding one, and refusing it would strand a
-                        // stale copy on screen forever.
-                        Some(&holder) if rank < holder => {
-                            claimed.insert(key, rank);
+                        // A higher-precedence source's copy arrived late: fuse it
+                        // with the copy it supersedes (`S::fuse` decides what
+                        // survives — the default is precedence-wins verbatim,
+                        // `Symbols` backfills a missing signature) and re-emit
+                        // the fused row so the consumer replaces what it already
+                        // painted. Deliberately NOT budget-checked — this
+                        // replaces a row rather than adding one, and refusing it
+                        // would strand a stale copy on screen forever.
+                        Some((holder, held_value)) if rank < holder => {
+                            let fused = S::fuse(value, held_value);
+                            claimed.insert(key, (rank, fused.clone()));
                             emitted += 1;
-                            out.push(Frame::Item(located))
+                            out.push_async(Frame::Item(Located::new(fused, residence))).await
                         }
                         // A lower-or-equal-precedence duplicate: suppressed.
-                        Some(_) => Ok(()),
+                        // The current claim is unchanged (and unremoved from
+                        // the map, since we `remove`d it above to inspect it) —
+                        // put it back exactly as it was.
+                        Some(existing) => {
+                            claimed.insert(key, existing);
+                            Ok(())
+                        }
                     }
                 }
-                Frame::Note(note) => out.push(Frame::Note(note)),
+                Frame::Note(note) => out.push_async(Frame::Note(note)).await,
                 Frame::Degraded(degradation) => {
                     // A source may itself be a federation; forward its
                     // degradation with the *original* source id, not this
                     // source's, so the reader learns which node actually failed.
                     degraded = true;
-                    out.push(Frame::Degraded(degradation))
+                    out.push_async(Frame::Degraded(degradation)).await
                 }
                 Frame::End(summary) => {
                     saw_terminal[rank] = true;
@@ -265,10 +353,11 @@ fn merge_inner<S: Surface>(
                     if first_failure.is_none() {
                         first_failure = Some(error.clone());
                     }
-                    out.push(Frame::Degraded(Degradation {
+                    out.push_async(Frame::Degraded(Degradation {
                         source: ids[rank],
                         reason: error,
                     }))
+                    .await
                 }
                 // No catch-all arm, deliberately. `Frame` is
                 // `#[non_exhaustive]` for *downstream* readers, but inside
@@ -299,12 +388,13 @@ fn merge_inner<S: Surface>(
                     ));
                 }
                 if out
-                    .push(Frame::Degraded(Degradation {
+                    .push_async(Frame::Degraded(Degradation {
                         source: ids[rank],
                         reason: WireError::Internal(
                             "source ended without a terminal frame".to_owned(),
                         ),
                     }))
+                    .await
                     .is_err()
                 {
                     return;
@@ -316,7 +406,7 @@ fn merge_inner<S: Surface>(
         if source_count > 0 && failures == source_count {
             let error = first_failure
                 .unwrap_or_else(|| WireError::Internal("every source failed".to_owned()));
-            let _ = out.push(Frame::Failed(error));
+            let _ = out.push_async(Frame::Failed(error)).await;
             return;
         }
 
@@ -334,7 +424,7 @@ fn merge_inner<S: Surface>(
         } else {
             Summary::complete(emitted)
         };
-        let _ = out.push(Frame::End(summary));
+        let _ = out.push_async(Frame::End(summary)).await;
     };
 
     (

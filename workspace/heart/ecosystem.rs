@@ -89,6 +89,48 @@ impl Language {
             token => token.parse().ok(),
         }
     }
+
+    /// The producer-side ecosystem tag the engine names lineages with
+    /// (`cargo`, `npm`, `pypi`, …) — **not** [`Language::as_token`]'s wire
+    /// token (`rust`, `typescript`, …). Two genuinely different vocabularies:
+    /// this one is `ir::change::PackageLineageId { ecosystem, .. }`'s
+    /// spelling, pinned to agree exactly with
+    /// `index/server/coordination/compile_inprocess.rs`'s
+    /// `lineage_ecosystem_tag` (that function is the single source of truth
+    /// this mirrors; it should eventually call this method instead of
+    /// duplicating the match).
+    ///
+    /// Exhaustive with no catch-all: a new `Language` must fail to compile
+    /// here until someone decides its lineage spelling, rather than silently
+    /// reusing another ecosystem's tag.
+    pub fn lineage_tag(self) -> &'static str {
+        match self {
+            Language::Rust => "cargo",
+            Language::Go => "go",
+            Language::Typescript => "npm",
+            Language::Java => "maven",
+            Language::CSharp => "nuget",
+            Language::Python => "pypi",
+            Language::Cpp => "cpp",
+        }
+    }
+
+    /// Parse a producer-side lineage tag (`cargo`, `npm`, …) back into a
+    /// [`Language`]. `None` for anything unknown, including `Language`'s own
+    /// wire tokens (e.g. `"rust"`) — accepting those here would hide a caller
+    /// passing the wrong vocabulary instead of failing loudly.
+    pub fn from_lineage_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "cargo" => Some(Language::Rust),
+            "go" => Some(Language::Go),
+            "npm" => Some(Language::Typescript),
+            "maven" => Some(Language::Java),
+            "nuget" => Some(Language::CSharp),
+            "pypi" => Some(Language::Python),
+            "cpp" => Some(Language::Cpp),
+            _ => None,
+        }
+    }
 }
 
 /// The Rust edition a crate was produced under.

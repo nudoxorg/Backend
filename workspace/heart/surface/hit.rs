@@ -258,6 +258,21 @@ pub struct SymbolHit {
     /// statement about the *source*, never about the symbol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<Signature>,
+    /// This symbol's instance-independent, navigable identity, when the
+    /// source that produced this row could supply one. Exactly the same
+    /// doctrine as [`SymbolHit::signature`]: `None` means *"whatever produced
+    /// this row could not derive a `StableReference`"* — never *"this symbol
+    /// has no identity."* See [`SymbolHit::from`] for why every row built
+    /// from a catalog `Symbol` carries `None` today, and this module's
+    /// top-level doc comment for the two-defect background this field
+    /// closes.
+    ///
+    /// `#[serde(skip_serializing_if = "Option::is_none")]` is load-bearing
+    /// for the same reason it is on `signature`: `/search` is the hottest
+    /// path in this system, and today **every** remote row has no reference,
+    /// so most `reference` fields on the wire would be `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<StableReference>,
 }
 
 impl SymbolHit {
@@ -272,7 +287,7 @@ impl SymbolHit {
 
 impl From<Symbol> for SymbolHit {
     /// Project the engine's rich [`Symbol`] down to the wire hit shape, with
-    /// **no** signature.
+    /// **no** signature and **no** reference.
     ///
     /// This is a *current source limitation*, not a permanent property of
     /// the conversion: every caller of this `From` impl today
@@ -287,6 +302,12 @@ impl From<Symbol> for SymbolHit {
     /// this conversion (or a sibling one, at the call site that has IR in
     /// hand) is the strict upgrade — no schema change, because
     /// `SymbolHit::signature` was already `Option`.
+    ///
+    /// `reference` is `None` for the same structural reason, not merely the
+    /// same operational one: `symbol: Symbol` has no IR to derive an
+    /// [`crate::query::StableReference`] from — it carries `package` and a
+    /// path, nothing else that could produce an `IntroId`. A catalog `Symbol`
+    /// cannot supply one regardless of whether IR-reading ever lands here.
     fn from(symbol: Symbol) -> Self {
         SymbolHit {
             package: symbol.package,
@@ -295,6 +316,7 @@ impl From<Symbol> for SymbolHit {
             ecosystem: symbol.ecosystem,
             kind: symbol.kind,
             signature: None,
+            reference: None,
         }
     }
 }
