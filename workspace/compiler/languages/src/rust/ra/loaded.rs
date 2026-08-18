@@ -86,14 +86,53 @@ impl LoadProfile {
     }
 }
 
+/// Forces `cargo metadata` to run offline when set to a true value.
+///
+/// `1`, `true` or `yes` (any case) mean offline; `0`, `false`, `no` and unset
+/// mean cargo may use the network. Anything else is treated as unset, because a
+/// typo in a variable should not silently switch a producer into a mode where
+/// most packages fail to resolve.
+pub const CARGO_OFFLINE_ENV: &str = "NUDOX_CARGO_OFFLINE";
+
+/// Whether `cargo metadata` should be run offline, given the raw variable.
+///
+/// A pure function so the decision table is testable without touching the
+/// process environment — the same split `nudox` uses wherever an env var
+/// changes behaviour.
+fn offline_from_env(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        Some(v) if v.eq_ignore_ascii_case("1")
+            || v.eq_ignore_ascii_case("true")
+            || v.eq_ignore_ascii_case("yes") => true,
+        _ => false,
+    }
+}
+
 impl ExtractConfig {
-    /// Defaults matched to the rustdoc path (offline, build scripts on).
+    /// Defaults matched to the rustdoc path (build scripts on), with the
+    /// network decision taken from [`CARGO_OFFLINE_ENV`].
+    ///
+    /// # Why this is no longer unconditionally offline
+    ///
+    /// It used to be `offline: true`, always. That is correct for a sealed
+    /// build and wrong for the product: `cargo metadata --offline` needs every
+    /// transitive dependency to already be in the local registry cache, and
+    /// when one is missing rust-analyzer falls back to `--no-deps`, which
+    /// yields an empty dependency graph in which every Cargo feature —
+    /// `default` included — evaluates false. The producer then (rightly)
+    /// refuses to lower the package rather than silently omit every
+    /// `cfg(feature = ...)` item, so the reader gets a failed package.
+    ///
+    /// Opening `serde` on a machine that had not already cached `quote` failed
+    /// exactly that way. For an application whose central action is "open a
+    /// package and read it", that is the common case, not the edge.
+    ///
+    /// Offline is still one variable away, and a sandboxed or sealed build
+    /// should set it: cargo consults the local cache first regardless, so the
+    /// network is touched only for what is genuinely missing.
     pub fn for_extract() -> Self {
         Self {
-            // Corpus checks normally use the pinned, offline registry. A
-            // caller with a real Cargo registry may opt into resolving
-            // published metadata when a vendored shim is absent.
-            offline: std::env::var_os("NUDOX_CARGO_ONLINE").is_none(),
+            offline: offline_from_env(std::env::var(CARGO_OFFLINE_ENV).ok().as_deref()),
             run_build_scripts: true,
             num_threads: thread::available_parallelism()
                 .map_or(1, |n| n.get().min(8)),
@@ -101,8 +140,40 @@ impl ExtractConfig {
     }
 }
 
-// ── Dependency resolution signal
-// ──────────────────────────────────────────────
+#[cfg(test)]
+mod offline_env_tests {
+    use super::offline_from_env;
+
+    #[test]
+    fn unset_allows_the_network() {
+        assert!(!offline_from_env(None));
+    }
+
+    #[test]
+    fn truthy_values_force_offline() {
+        for v in ["1", "true", "TRUE", "Yes", " yes "] {
+            assert!(offline_from_env(Some(v)), "{v:?} should mean offline");
+        }
+    }
+
+    #[test]
+    fn falsey_values_allow_the_network() {
+        for v in ["0", "false", "no", ""] {
+            assert!(!offline_from_env(Some(v)), "{v:?} should allow the network");
+        }
+    }
+
+    #[test]
+    fn a_typo_does_not_silently_force_offline() {
+        // The failure mode this guards: `NUDOX_CARGO_OFFLINE=ture` switching a
+        // producer into the mode where most packages fail to resolve, with
+        // nothing anywhere saying why.
+        assert!(!offline_from_env(Some("ture")));
+        assert!(!offline_from_env(Some("offline")));
+    }
+}
+
+// ── Dependency resolution signal ──────────────────────────────────────────────
 
 /// The `cargo metadata` failure that rust-analyzer swallowed when it fell back
 /// to `--no-deps`.

@@ -72,6 +72,27 @@ use nudox_engine::mcp::{ApiKey, ApiKeyError, Posture, SignInFailure};
 
 use crate::app::account::AccountPresentation;
 use crate::app::actions::{ConfirmOverlay, DismissOverlay};
+
+/// Where a key typed into this card ends up, named for the platform running it.
+///
+/// This line used to say "the macOS Keychain" everywhere, including on Linux,
+/// where there is no Keychain — and, until `account::store` grew a Secret
+/// Service backend, no store at all, so the sentence promised something the
+/// build could not do. Both halves are now true on both platforms; the const is
+/// `cfg`-selected rather than formatted so `render` still does no string work
+/// (§11).
+#[cfg(target_os = "macos")]
+const WHERE_THE_KEY_GOES: &str =
+    "Paste the API key from your dashboard. It is stored in the macOS Keychain, never in a file.";
+/// See the macOS arm.
+#[cfg(target_os = "linux")]
+const WHERE_THE_KEY_GOES: &str =
+    "Paste the API key from your dashboard. It is stored in your desktop keyring, never in a file.";
+/// See the macOS arm.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+const WHERE_THE_KEY_GOES: &str =
+    "Paste the API key from your dashboard. This build has no credential store, so set \
+     NUDOX_API_KEY in the environment instead.";
 use crate::motion::{Motion, Spring};
 use crate::theme::ext::ThemeExtAccessor as _;
 
@@ -656,10 +677,7 @@ impl SignInView {
                             .text_size(ts.prose.size)
                             .line_height(ts.prose.line_height)
                             .text_color(colours.fg_muted)
-                            .child(
-                                "Paste the API key from your dashboard. It is stored in the \
-                                 macOS Keychain, never in a file.",
-                            ),
+                            .child(WHERE_THE_KEY_GOES),
                     )
                     .child(self.field(false))
                     .child(

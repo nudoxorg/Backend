@@ -284,6 +284,26 @@ dead_code = "warn"
 [profile.release]
 lto = "thin"
 
+# Drop DWARF, keep the symbol table. Debug information is a download, a disk
+# cost and a page-cache cost on every user's machine for something none of them
+# can act on; `readelf -S` now reports zero `.debug_*` sections.
+#
+# `"debuginfo"` rather than `"symbols"` is a *live* trade-off, not a default, so
+# here are the real numbers as measured on this tree:
+#
+#   .symtab + .strtab   28 MB   of a 102 MB binary
+#
+# That is what keeps a panic backtrace naming functions instead of printing a
+# column of hex addresses, and a crash report from a stranger is the one
+# diagnostic that cannot be reproduced on request. It is also a quarter of the
+# download. `strip = "symbols"` takes the binary to roughly 74 MB and gives that
+# up; the right answer past a certain user count is neither, but shipping
+# stripped *and* keeping the symbols in a debug archive to symbolise against.
+#
+# Note `file` still says "not stripped" here — it says that whenever `.symtab`
+# is present, which is exactly what this setting preserves.
+strip = "debuginfo"
+
 # ── macOS packaging (cargo-bundle 0.11, `cargo install cargo-bundle`) ────────
 #
 # Consumed by `cargo bundle --release --format osx|dmg`, run from *this*

@@ -109,6 +109,25 @@
               runHook postUnpack
             '';
             doCheck = false;
+
+            # `cargo-bundle` depends on `openssl-sys`, which finds OpenSSL by
+            # asking `pkg-config`. Neither is in a `buildRustPackage` sandbox
+            # unless it is put there, so on Linux this derivation failed with
+            #
+            #     Could not find directory of OpenSSL installation … it looks
+            #     like you're compiling on Linux and also targeting Linux.
+            #     Currently this requires the `pkg-config` utility …
+            #
+            # and, because this package is in the devshell's `packages`, the
+            # failure was not "cargo bundle is unavailable" but **`nix develop`
+            # itself refusing to start**: no shell, no build, nothing, for every
+            # Linux contributor.
+            #
+            # macOS does not see it — `openssl-sys` resolves against
+            # Security.framework there — which is exactly the shape of bug that
+            # reaches a Linux tree unnoticed.
+            nativeBuildInputs = [ nixPackages.pkg-config ];
+            buildInputs = [ nixPackages.openssl ];
           };
 
           # The sandbox's real tests invoke the pinned smolvm CLI as the
@@ -1056,10 +1075,80 @@
               ];
 
               commandPackages = map mkDevshellCommand nuScriptCommands;
+
+              # ── lindsey (workspace/gui) native graphics stack ─────────────
+              #
+              # GPUI's Linux backends need four libraries that nothing else in
+              # this repo does. Two are DT_NEEDED by the linked binary (libxcb,
+              # libxkbcommon + its -x11 companion); two are dlopened by soname
+              # at runtime and so never appear in `patchelf --print-needed` at
+              # all (libwayland-client, libvulkan).
+              #
+              # Leaving them out does not produce a missing-dependency error at
+              # build time, which is what makes it dangerous: `pkg-config` falls
+              # through to the host's /usr/lib copies, the link succeeds, and
+              # the result is a binary that mixes Nix's dynamic linker with the
+              # host's glibc — it requires GLIBC_2.43 under Nix's 2.42 loader
+              # and dies at exec naming neither cause. This is a correctness
+              # fix, not a convenience.
+              guiGraphicsLibraries = with nixPackages; [
+                libxcb
+                libxkbcommon
+                wayland
+                vulkan-loader
+              ];
+
+              # The account keyring's C dependency. The trunk's `KeyringStore`
+              # uses `keyring` with `sync-secret-service`, which chains
+              # `dbus-secret-service` -> `dbus` -> `libdbus-sys` — a *linked* C
+              # library, not a dlopened one — so without it `cargo check` dies
+              # in a build script before compiling anything:
+              #
+              #   HINT: you may need to install a package such as dbus-1,
+              #         dbus-1-dev or dbus-1-devel.
+              #
+              # Linked rather than dlopened means it is needed at run time too,
+              # so it joins the LD_LIBRARY_PATH list below rather than being
+              # build-only like fontconfig.
+              guiCredentialLibraries = with nixPackages; [
+                dbus
+              ];
+
+              # Needed to *build* (font-kit's `yeslogic-fontconfig-sys` and
+              # `freetype-sys` are pkg-config crates), but deliberately kept off
+              # LD_LIBRARY_PATH: font *configuration* is a property of the
+              # machine, and a store fontconfig carries no font paths, finds
+              # nothing, and renders blank text. Link against the store copy,
+              # resolve the host's `libfontconfig.so.1` at run time.
+              guiFontLibraries = with nixPackages; [
+                fontconfig
+                freetype
+              ];
             in
             {
               default = nixPackages.mkShell {
                 name = "NuNuShell";
+
+                # Cargo compiles C dependencies at `-O0` in the dev profile,
+                # while Nix's default hardening injects `-D_FORTIFY_SOURCE=3`.
+                # glibc answers that combination with
+                #
+                #     features.h: #warning _FORTIFY_SOURCE requires compiling
+                #                 with optimization (-O)
+                #
+                # which is harmless until a dependency's autotools probe runs
+                # with `-Werror` — and `tikv-jemalloc-sys`'s does. Both of its
+                # `strerror_r` probes fail on the warning, configure aborts with
+                # "cannot determine return type of strerror_r", and the whole
+                # GUI build dies on a message mentioning neither fortification
+                # nor optimisation.
+                #
+                # It reproduces only in debug builds on Linux: `--release`
+                # compiles the same C at `-O3`, where the warning never fires.
+                hardeningDisable = [
+                  "fortify"
+                  "fortify3"
+                ];
 
                 RUSTC_BOOTSTRAP = "1";
                 LIBRARY_PATH = "${nixPackages.libiconv}/lib";
@@ -1165,15 +1254,51 @@
                         wild-unwrapped
                         openssl
                         clang
+                        # Nix's own pkg-config, so `guiGraphicsLibraries` is
+                        # what gets found rather than the host's
+                        # /usr/lib/pkgconfig — see that binding for what the
+                        # host's answer costs.
+                        pkg-config
                       ]
                     )
                   );
+
+                # `buildInputs` rather than `packages`: the pkg-config setup
+                # hook builds PKG_CONFIG_PATH from this list, which is the whole
+                # point — `xcb.pc` and `xkbcommon.pc` must resolve to the store.
+                buildInputs = nixPackages.lib.optionals nixPackages.stdenv.isLinux (
+                  guiGraphicsLibraries ++ guiCredentialLibraries ++ guiFontLibraries
+                );
 
                 shellHook = ''
                   export PRJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 
                   export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
                   export DOTNET_CLI_HOME="$TMPDIR/dotnet"
+
+                  ${nixPackages.lib.optionalString nixPackages.stdenv.isLinux ''
+                    # lindsey's graphics stack. Two of the four are dlopened by
+                    # soname — libwayland-client by `wayland-client`, libvulkan
+                    # by wgpu — so they are invisible to the linker and must be
+                    # findable at run time or the window never opens.
+                    export LD_LIBRARY_PATH="${nixPackages.lib.makeLibraryPath (guiGraphicsLibraries ++ guiCredentialLibraries)}:$LD_LIBRARY_PATH"
+
+                    # The Vulkan *driver* cannot come from the store on a
+                    # non-NixOS host: its ICD manifest names the vendor library
+                    # by bare soname. Exported as its own variable rather than
+                    # added to LD_LIBRARY_PATH, because putting a host library
+                    # directory on the search path of every compiler and build
+                    # script in the repo broke the build once already — the Nix
+                    # JDK loaded the host's libnet.so and the Java producer's
+                    # build script died on `undefined symbol:
+                    # reuseport_available`. `workspace/gui/packaging/linux/
+                    # run-lindsey` applies it to the one process that needs it.
+                    if [[ -d /run/opengl-driver/lib ]]; then
+                      export NUDOX_GUI_DRIVER_PATH=/run/opengl-driver/lib
+                    elif [[ -d /usr/lib ]]; then
+                      export NUDOX_GUI_DRIVER_PATH=/usr/lib
+                    fi
+                  ''}
 
                   # Sealed-producer PATH prefix (see sandbox::ToolchainSet). Hermetic
                   # PATH alone is /usr/bin:/bin:/nix/var/nix/profiles/default/bin —

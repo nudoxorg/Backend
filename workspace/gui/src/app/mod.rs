@@ -28,6 +28,7 @@
 pub mod account;
 pub mod actions;
 pub mod corpus;
+pub mod desktop;
 pub mod keymaps;
 pub mod lifecycle;
 pub mod mcp;

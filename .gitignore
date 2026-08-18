@@ -50,6 +50,13 @@
 # Crates under /crates need the same allowance — without it a new crate's
 # manifest is silently ignored and the workspace fails to load.
 !/crates/**/Cargo.toml
+# workspace/gui is a standalone Cargo workspace with its own lockfile — that is
+# the whole point of the split, since it is what keeps gpui out of the root
+# workspace's graph. The root allowance above is anchored at `/Cargo.lock` and
+# does not reach it, so the lockfile pinning gpui, gpui-component and the whole
+# wgpu stack was untracked: every fresh checkout re-resolved them, which is not
+# a lockfile at all. It is an application, so the lockfile belongs in the tree.
+!/workspace/gui/Cargo.lock
 # Manifests that tests scaffold at runtime stay ignored.
 /workspace/compiler/tests/fixtures/**/Cargo.toml
 
@@ -159,6 +166,38 @@
 !/workspace/gui/packaging/*.svg
 !/workspace/gui/packaging/*.py
 
+# The vendored gpui-component fork, in full.
+#
+# `workspace/vendor/README.md` lists this package as "Sources Committed: Yes".
+# It was not. The deny-all above keeps `.rs` (allowed globally) and drops
+# everything else, so the fork reached the tree missing 121 files: 99 icon SVGs,
+# 17 tree-sitter `.scm` query files, the default theme and colour JSON, the
+# locale catalogue, and its LICENSE-APACHE. The GUI could not build from a clean
+# clone on any platform —
+#
+#   expected default icons at …/crates/assets/assets/icons, but the directory
+#   is missing
+#   couldn't read …/src/theme/./default-theme.json
+#
+# Allowed as a directory rather than by extension, because "which extensions
+# does a vendored third-party crate need?" is not a question this file can keep
+# answering correctly — it already got it wrong for four of them. Build output
+# is re-denied below, since a later rule wins.
+!/workspace/vendor/gpui-component/crates/**
+/workspace/vendor/gpui-component/**/target/
+
+# lindsey's Linux packaging: the desktop entry, the AppStream metainfo, the
+# installer and the run wrapper. Allowed as a *directory* rather than by
+# extension, which the rules above do and this one deliberately does not.
+#
+# Extension allow-lists have now failed three times in this one directory: the
+# run wrapper has no extension at all, and `install.sh` and the `.metainfo.xml`
+# were both silently skipped by `git add` — the second time producing a commit
+# whose message described two files that were not in it. Everything under this
+# path is hand-written source with no build output in it, so the honest rule is
+# the directory.
+!/workspace/gui/packaging/linux/**
+
 # Data and Configuration Artifacts
 # TODO: Remove from pipeline (currently used for debugging/regression tracking)
 !/**/example.json
@@ -172,6 +211,18 @@
 # Trustfall schema and query sources
 !/**/*.graphql
 !/**/*.trustfall
+
+# Freedesktop entries shipped with the GUI (workspace/gui/packaging/linux). The
+# window's `app_id` is matched against the installed entry by name, so an
+# untracked one means the app loses its icon on every fresh checkout.
+!/**/*.desktop
+
+# The Linux run wrapper, which puts the host's GPU driver on the loader's path
+# for the GUI process only. Listed by name because it has no extension, and
+# every allow-rule in this file keys off one — `git add -A` silently skipped it
+# on the first attempt, which is the same trap the themes and the query-plane
+# sources hit, arriving this time on a file added to fix a packaging problem.
+!/workspace/gui/packaging/linux/run-lindsey
 
 # Go / Java oracle producer sources. Unlike the Rust producer (compiled from
 # committed .rs), the Go and Java oracles ship as source compiled by Buck2's

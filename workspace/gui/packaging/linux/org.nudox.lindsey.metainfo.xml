@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AppStream metadata for lindsey.
+
+  This is what a software centre reads: GNOME Software, KDE Discover, and any
+  distribution index built by `appstreamcli compose`. Without it lindsey can be
+  installed but cannot be *found* — it has no entry to show, no summary, and no
+  icon in any catalogue, which is a different failure from the desktop entry's
+  (that one only affects the menu on a machine where it is already installed).
+
+  The id, the launchable and the icon name must all be the same string as
+  `app::desktop::APP_ID` and the desktop entry's filename. That agreement is
+  what lets `appstreamcli compose` find the desktop entry, and the desktop entry
+  find the icon.
+
+  Validate after editing, from the repository root:
+
+      appstreamcli validate packaging-path
+
+  where packaging-path is this file. Add the "explain" flag for prose on each
+  finding. (XML comments cannot contain a double hyphen, so the flags are
+  described rather than spelled here.)
+-->
+<component type="desktop-application">
+  <id>org.nudox.lindsey</id>
+
+  <name>lindsey</name>
+  <summary>Browse symbols, signatures and provenance across your dependencies</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <description>
+    <p>
+      lindsey is a code-intelligence browser. It reads the packages you depend
+      on — Rust, Python, Go, TypeScript, Java, C# and C++ — and gives you one
+      searchable surface over every symbol in them: signatures, documentation,
+      source, and everywhere each symbol is used.
+    </p>
+    <p>
+      Everything is produced and indexed on your own machine. There is no index
+      server to reach and no account needed to read code you already have, so
+      search keeps working with no network at all.
+    </p>
+    <p>
+      It also hosts a local MCP endpoint, so a coding agent can ask the same
+      questions the window can, against the same corpus, with no second index
+      to keep in step.
+    </p>
+  </description>
+
+  <!--
+    Required for a desktop-application component: it is how the catalogue finds
+    the desktop entry, and through it the icon. Must equal the entry's filename.
+  -->
+  <launchable type="desktop-id">org.nudox.lindsey.desktop</launchable>
+
+  <provides>
+    <binary>lindsey</binary>
+  </provides>
+
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+  </categories>
+
+  <keywords>
+    <keyword>code</keyword>
+    <keyword>symbols</keyword>
+    <keyword>documentation</keyword>
+    <keyword>dependencies</keyword>
+    <keyword>mcp</keyword>
+  </keywords>
+
+  <developer id="org.nudox">
+    <name>nudox</name>
+  </developer>
+
+  <url type="homepage">https://nudox.org</url>
+
+  <!--
+    OARS content rating. Every field omitted means "none", which is the honest
+    answer for a code browser: it renders documentation from packages the user
+    chose to load, and has no chat, no user-generated content and no purchases.
+    Flathub requires this element to be present even when it is empty.
+  -->
+  <content_rating type="oars-1.1" />
+
+  <!--
+    Deliberately absent until they are real:
+
+    * <screenshots/> — every entry must be a reachable URL to a live image, and
+      a catalogue that cannot fetch one shows a broken card. Add these when
+      there is somewhere to host them.
+    * <releases/> — a version history with dates, which needs a release process
+      to be true rather than invented here.
+
+    `appstreamcli validate` reports both as warnings rather than errors. They
+    are worth fixing before any submission to Flathub, which requires both.
+  -->
+</component>

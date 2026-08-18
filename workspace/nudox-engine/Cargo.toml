@@ -410,6 +410,10 @@ name = "engine_semantic_unconfigured_is_actionable"
 path = "tests/engine/semantic_unconfigured_is_actionable.rs"
 
 [[test]]
+name = "mcp_account_platform_store"
+path = "tests/mcp/account_platform_store.rs"
+
+[[test]]
 name = "mcp_account_against_a_fake_service"
 path = "tests/mcp/account_against_a_fake_service.rs"
 

@@ -72,19 +72,24 @@ pub enum Error {
     /// this package" apart from "I can only read part of this package, and here
     /// is the resolution failure to fix".
     ///
-    /// Recover by making the dependencies resolvable (vendor them, warm the
-    /// cargo cache, drop `--offline`) — or, if a dependency-free lowering is
-    /// genuinely what you want, by calling
+    /// Recover by making the dependencies resolvable — `cargo fetch` in the
+    /// package, vendoring them, or letting cargo reach the network (see
+    /// [`crate::ra::loaded::CARGO_OFFLINE_ENV`]) — or, if a dependency-free
+    /// lowering is genuinely what you want, by calling
     /// [`LoadedWorkspace::accept_degraded_dependencies`].
     ///
     /// [`LoadedWorkspace::accept_degraded_dependencies`]:
     ///     crate::rust::LoadedWorkspace::accept_degraded_dependencies
+    ///
+    /// The message names `cargo fetch` on purpose. This error reaches the GUI
+    /// verbatim — a failed package row renders it — so it is read by someone
+    /// who wants their package to open, not by someone debugging a producer.
     #[error(
         "dependency graph unresolved for `{package}`: rust-analyzer loaded it from `--no-deps` \
          cargo metadata, so no dependency is in the crate graph and every Cargo feature \
          (`default` included) evaluates false; lowering it would silently omit every \
-         `cfg(feature = ...)` item. Fix the resolution failure, or call \
-         `LoadedWorkspace::accept_degraded_dependencies` to lower it anyway"
+         `cfg(feature = ...)` item. Run `cargo fetch` in the package to populate the local \
+         registry, or unset NUDOX_CARGO_OFFLINE so cargo may download what is missing"
     )]
     DependenciesUnresolved {
         /// The package whose dependencies did not resolve.
