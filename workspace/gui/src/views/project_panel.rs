@@ -1261,6 +1261,7 @@ mod tests {
                 documented: 8,
                 total: 10,
             }),
+            version: Some("0.8.4".to_owned()),
         };
 
         let prepared = PreparedPackageRow::from_row(&row, empty_versions());

@@ -13,10 +13,9 @@ use gpui::{Context, SharedString};
 use crate::theme::ext::Provenance;
 use crate::theme::kind::LocalKindDiscriminant;
 use crate::ui::signature_line::{SigToken as UiSigToken, SymbolKey as UiSymbolKey};
-use heart::{Scored, Symbol, SymbolKind};
-use nudox_engine::wire::{
-    HitRow, KindTag, Provenance as WireProvenance, SigToken as WireSigToken, SymbolKey,
-};
+use heart::surface::{Located, Residence, SigToken as HeartSigToken, SymbolHit};
+use heart::{Scored, StableReference, SymbolKind};
+use nudox_engine::wire::{Provenance as WireProvenance, SymbolKey};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Section constants
@@ -277,7 +276,17 @@ impl RowQualifier {
 #[derive(Clone, Debug)]
 pub struct PreparedRow {
     /// Stable identity, emitted on open.
-    pub key: SymbolKey,
+    ///
+    /// `None` when the source that produced this hit could not supply a
+    /// [`heart::query::StableReference`] (`heart::surface::SymbolHit::reference`
+    /// is itself `Option` for exactly this reason — see that type's own doc
+    /// comment). A row with no key is rendered normally but is **not
+    /// openable**: fabricating a key from whatever bytes happen to be lying
+    /// around (a durable id, a hash of the display name, …) would let a click
+    /// resolve to the wrong symbol, or to no symbol at all, silently. A row
+    /// that visibly cannot be clicked is the honest state; a row that silently
+    /// fails on click is not.
+    pub key: Option<SymbolKey>,
     /// The symbol's own name, without its path prefix.
     pub leaf: SharedString,
     /// The full module path prefix, with its trailing separator, or empty when
@@ -329,22 +338,34 @@ pub struct PreparedRow {
 }
 
 impl PreparedRow {
-    /// Convert one wire hit, before the batch-wide disambiguation pass.
+    /// Convert one federated hit — `heart::surface::Located<heart::Scored<
+    /// heart::surface::SymbolHit>>`, exactly what a `Frame::Item` carries —
+    /// before the batch-wide disambiguation pass.
     ///
     /// Private on purpose — a row built alone cannot know whether its leaf
     /// name is unique, so it would have to guess, and guessing is what F1 was.
-    fn ingest(hit: &HitRow) -> PreparedRow {
-        let (path, leaf) = split_qualified_name(&hit.display_name);
-        let kind = match hit.kind {
-            KindTag::Known(d) => LocalKindDiscriminant::from_u16(d.as_u16()),
-            // `KindTag` is `#[non_exhaustive]`: this arm covers `Unknown` and
-            // any variant a future wire version adds (LD-7).
-            _ => None,
-        };
+    ///
+    /// # One ingest for both planes
+    ///
+    /// The local engine and a remote server both answer `Serve<Symbols>` with
+    /// the same item type, `Scored<SymbolHit>` (`nudox_engine::surface`'s
+    /// adapter for the former, `heart::client::remote::RemoteClient`'s blanket
+    /// impl for the latter). There is therefore exactly one lowering from wire
+    /// hit to render row, not one per plane — see `docs/LOCAL-REMOTE-CONTRACT.md`
+    /// §2. `Located::residence` (not a field on `SymbolHit` itself, since
+    /// residence is a property of *how the item arrived*, not of the symbol) is
+    /// what [`provenance_of_residence`] maps onto LD-8's trust chrome.
+    fn ingest(located: &Located<Scored<SymbolHit>>) -> PreparedRow {
+        let symbol = &located.value.value;
+        let (path, leaf) = split_qualified_name(&symbol.path);
+        // `SymbolKind` is a closed enum; `Other` (and only `Other`) has no local
+        // discriminant, so it degrades to a visible "other" chip rather than a
+        // panic (LD-7).
+        let kind = local_kind_of(symbol.kind);
         let unknown_kind_label = if kind.is_some() {
             SharedString::default()
         } else {
-            SharedString::from("unknown")
+            SharedString::from("other")
         };
         // The package is the first segment of the path prefix
         // (`"tokio::runtime::"` → `"tokio"`). Empty path ⇒ empty package,
@@ -360,27 +381,36 @@ impl PreparedRow {
         // separates path segments lived in three places and only two of them
         // were kept current.
         let package = package_of(&path);
+        let sig = symbol
+            .signature
+            .as_ref()
+            .map(|s| s.tokens().iter().map(prepare_sig_token).collect())
+            .unwrap_or_default();
 
         PreparedRow {
-            key: hit.key.clone(),
+            // `None` when the source could not supply a `StableReference` —
+            // see this field's own doc comment. Never fabricated.
+            key: symbol.reference.as_ref().and_then(symbol_key_of_reference),
             leaf,
             path,
             package,
             // Overwritten by `prepare`, which is the only caller.
             qualifier: RowQualifier::UniqueLeaf,
-            sig: hit.sig_preview.iter().map(prepare_sig_token).collect(),
+            sig,
             kind,
             unknown_kind_label,
-            provenance: prepare_provenance(&hit.provenance),
-            relevance: hit.score,
+            provenance: provenance_of_residence(&located.residence),
+            relevance: located.value.score.into_inner(),
         }
     }
 
-    /// Convert a whole section's worth of hits, and make them tell each other
+    /// Convert a whole batch of federated hits, and make them tell each other
     /// apart.
     ///
-    /// This is the call `SearchStore` makes in `apply_search_event`, so that
-    /// the cost lands on the arriving generation rather than on every frame.
+    /// This is the call `SearchStore` makes each time its federated `Answer`
+    /// delivers a batch, so that the disambiguation cost lands on the arriving
+    /// generation rather than on every frame. Local and remote hits go through
+    /// this one function — see [`PreparedRow::ingest`]'s own doc comment.
     ///
     /// # The invariant
     ///
@@ -388,71 +418,9 @@ impl PreparedRow {
     /// the engine gave us anything at all to tell them apart with. See
     /// [`PreparedRow::render_identity`] for the exact text compared, and
     /// `tests/screenshots.rs` for the assertion over the real corpus.
-    pub fn prepare(hits: &[HitRow]) -> Arc<[PreparedRow]> {
+    pub fn prepare(hits: &[Located<Scored<SymbolHit>>]) -> Arc<[PreparedRow]> {
         let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest).collect();
-        let names: Vec<&str> = hits.iter().map(|h| &*h.display_name).collect();
-        disambiguate(&mut rows, &names);
-        rows.into()
-    }
-
-    /// Convert one **remote** hit (`heart::Scored<heart::Symbol>`, from the
-    /// `NudoxClient` escape hatch) into a render-ready row — the total,
-    /// no-`unwrap` adapter that lets remote results flow into the same render
-    /// model the local engine feeds, instead of being reduced to a count and
-    /// thrown away.
-    ///
-    /// # Why a second ingest rather than one shared path
-    ///
-    /// The local engine speaks `HitRow` (a wire `SymbolKey`, a tokenised
-    /// signature preview, a `KindTag`); the remote server speaks `heart::Symbol`
-    /// (a durable `SymbolId`, a `SymbolKind`, no signature). They are two
-    /// vocabularies for the same idea, and this is the *one* place the second is
-    /// lowered to the render row — after here everything is a `PreparedRow`, so
-    /// the GUI has a single row type regardless of where the hit came from. The
-    /// batch-wide disambiguation pass ([`disambiguate`]) is shared, so remote
-    /// namesakes are told apart by exactly the rule local ones are.
-    fn ingest_remote(hit: &Scored<Symbol>) -> PreparedRow {
-        let symbol = &hit.value;
-        let (path, leaf) = split_qualified_name(&symbol.name.fully_qualified);
-        let package = package_of(&path);
-        // `SymbolKind` is a closed enum; `Other` (and only `Other`) has no local
-        // discriminant, so it degrades to a visible "other" chip rather than a
-        // panic — the same LD-7 treatment an unknown `KindTag` gets locally.
-        let kind = local_kind_of(symbol.kind);
-        let unknown_kind_label = if kind.is_some() {
-            SharedString::default()
-        } else {
-            SharedString::from("other")
-        };
-        PreparedRow {
-            key: remote_symbol_key(symbol),
-            leaf,
-            path,
-            package,
-            // Overwritten by `prepare_remote`'s disambiguation pass.
-            qualifier: RowQualifier::UniqueLeaf,
-            // The remote surface carries no signature preview; an empty vector
-            // renders as no signature line, which is honest — we were not told
-            // one, so we do not invent one.
-            sig: Vec::new(),
-            kind,
-            unknown_kind_label,
-            // The escape hatch exists to reach packages the reader has *not*
-            // synced locally, so every remote row is, by construction, remote —
-            // LD-8 trust chrome shows that rather than dressing it as local.
-            provenance: Provenance::Remote,
-            relevance: hit.score.into_inner(),
-        }
-    }
-
-    /// Convert a whole batch of remote hits, and make them tell each other
-    /// apart — the remote analogue of [`PreparedRow::prepare`].
-    pub fn prepare_remote(hits: &[Scored<Symbol>]) -> Arc<[PreparedRow]> {
-        let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest_remote).collect();
-        let names: Vec<&str> = hits
-            .iter()
-            .map(|h| &*h.value.name.fully_qualified)
-            .collect();
+        let names: Vec<&str> = hits.iter().map(|h| &*h.value.value.path).collect();
         disambiguate(&mut rows, &names);
         rows.into()
     }
@@ -585,10 +553,11 @@ fn package_of(path: &str) -> SharedString {
     }
 }
 
-/// Map a remote [`SymbolKind`] onto the local kind discriminant used for the
-/// kind badge. Total: `SymbolKind::Other` has no local discriminant and returns
-/// `None`, which the row renders as a visible "other" chip (LD-7) — never a
-/// panic, never a silently-dropped kind.
+/// Map a [`SymbolKind`] onto the local kind discriminant used for the kind
+/// badge — shared by every hit, local or remote, since both planes answer with
+/// the same `SymbolHit::kind`. Total: `SymbolKind::Other` has no local
+/// discriminant and returns `None`, which the row renders as a visible "other"
+/// chip (LD-7) — never a panic, never a silently-dropped kind.
 fn local_kind_of(kind: SymbolKind) -> Option<LocalKindDiscriminant> {
     use LocalKindDiscriminant as K;
     match kind {
@@ -604,39 +573,72 @@ fn local_kind_of(kind: SymbolKind) -> Option<LocalKindDiscriminant> {
     }
 }
 
-/// Synthesize a wire [`SymbolKey`] for a remote [`Symbol`], deterministically.
+/// Resolve a [`StableReference`] (`heart::surface::SymbolHit::reference`) back
+/// into the local engine's own [`SymbolKey`] (`StableRef { package, intro }`),
+/// so a row built from *either* plane opens through the exact same
+/// `SymbolStore::open` path.
 ///
-/// The local render row keys open-on-commit off a `SymbolKey` (ecosystem +
-/// package lineage + a 32-byte intro id). A remote `Symbol` carries a durable
-/// `SymbolId` (a UUID) and an ecosystem, but not the local intro-id scheme, so
-/// there is no *true* `SymbolKey` to recover — the two identity spaces are
-/// different. Rather than `unwrap` or fabricate randomly, we derive a **stable**
-/// key: the ecosystem token, the best available package label (the leading path
-/// segment, falling back to the bare name), and an intro id seeded from the
-/// symbol's own UUID bytes. Same remote symbol ⇒ same key, every time, with no
-/// panic path — which is all the render/selection model needs from it.
-fn remote_symbol_key(symbol: &Symbol) -> SymbolKey {
+/// # Why this is the fix, not a variant of the bug it replaces
+///
+/// The function this replaced (`remote_symbol_key`) fabricated a `SymbolKey`
+/// by copying a UUID's 16 bytes into an `IntroId` and zeroing the rest. A real
+/// `IntroId` is `blake3("nudox.intro.v5" ‖ …)` (`nudox_ir::change::intro`), so
+/// a fabricated one can never equal a sealed entry's real key —
+/// `resolve_symbol` (`nudox-engine/src/doc/mod.rs`) does an exact lookup and
+/// returns `SymbolNotFound` for every single click. `StableReference` is not a
+/// fabrication: it is `F:<eco>/<pkg>#<hex>`, the *same* frozen grammar
+/// `nudox_engine::surface::stable_reference` derives from the real wire
+/// `SymbolKey` on the way out — parsing it back is a decode of real identity,
+/// not a guess. Returns `None` (never a panic, never a wrong key) when the hex
+/// is not exactly 32 bytes — malformed input from a future producer is refused
+/// rather than silently truncated or padded.
+fn symbol_key_of_reference(reference: &StableReference) -> Option<SymbolKey> {
     use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
 
-    let ecosystem = EcosystemId::new(symbol.ecosystem.as_token());
-    let (path, _leaf) = split_qualified_name(&symbol.name.fully_qualified);
-    let package = {
-        let leading = package_of(&path);
-        if leading.is_empty() {
-            symbol.name.plain.to_string()
-        } else {
-            leading.to_string()
-        }
-    };
-    // Seed the 32-byte intro id from the symbol's 16 UUID bytes (rest zero):
-    // deterministic and collision-free across distinct symbol ids.
+    let hex = reference.intro_hex();
+    if hex.len() != 64 {
+        return None;
+    }
     let mut raw = [0u8; 32];
-    raw[..16].copy_from_slice(symbol.id.as_uuid().as_bytes());
+    let (chunks, _remainder) = hex.as_bytes().as_chunks::<2>();
+    for (byte, chunk) in raw.iter_mut().zip(chunks) {
+        *byte = u8::from_str_radix(std::str::from_utf8(chunk).ok()?, 16).ok()?;
+    }
 
-    SymbolKey::new(
-        PackageLineageId::new(ecosystem, PackageName::new(package)),
+    Some(SymbolKey::new(
+        PackageLineageId::new(
+            EcosystemId::new(reference.ecosystem()),
+            PackageName::new(reference.package()),
+        ),
         IntroId::from_raw(raw),
-    )
+    ))
+}
+
+/// Map [`Residence`] (which plane an item arrived from, and how much it can be
+/// trusted while offline — `heart::surface::Residence`'s own doc comment) onto
+/// LD-8's four-way trust chrome.
+///
+/// This is [`prepare_provenance`]'s sibling: `prepare_provenance` adapts the
+/// older `nudox_engine::wire::Provenance` (still used by the symbol-page
+/// header, which reads a `SymbolHead` rather than a federated search answer);
+/// this adapts `heart::surface::Residence`, the type every `Serve<Symbols>`
+/// answer — local, remote, or a federating merge of both — actually carries
+/// per item. The two source enums are deliberately not unified (`Residence`
+/// *is* `heart`'s promotion of `wire::Provenance`, per that type's own doc
+/// comment, but the header's `SymbolHead` has not been migrated onto it yet),
+/// so this stays a second small mapping rather than a wrapper around the first.
+fn provenance_of_residence(residence: &Residence) -> Provenance {
+    match residence {
+        Residence::Local => Provenance::TrustedLocal,
+        Residence::Synced { .. } => Provenance::SyncedLocal,
+        Residence::Remote { .. } => Provenance::Remote,
+        Residence::Stale { .. } => Provenance::Stale,
+        // `Residence` is `#[non_exhaustive]`: a future residence kind reads as
+        // untrusted-until-proven rather than as local — LD-8 is a trust claim,
+        // so the safe default is the weakest one (mirrors `prepare_provenance`'s
+        // fallback, once collapsed onto the same choice — see that function).
+        _ => Provenance::Stale,
+    }
 }
 
 /// Split a display name into its path segments and the separator the producer
@@ -704,10 +706,20 @@ pub fn split_qualified_name(name: &str) -> (SharedString, SharedString) {
     }
 }
 
-/// Map wire provenance onto the trust-chrome selector (LD-8).
+/// Map wire provenance (`SymbolHead`, from the symbol-page header's document
+/// stream) onto the trust-chrome selector (LD-8).
 ///
 /// The payloads (`generation`, `as_of`) do not affect chrome; §10.4 keys the
 /// colour, glyph, and label off the level alone.
+///
+/// This is the *one* `nudox_engine::wire::Provenance` adapter in the app —
+/// `views::symbol_page::header::trust_of` used to duplicate this exact match
+/// with a different `#[non_exhaustive]` fallback arm (`Remote` there,
+/// `Remote` here too before this fix — a live drift a reviewer could not see
+/// without diffing both bodies by hand). `header::trust_of` now calls this
+/// function instead of restating it. See [`provenance_of_residence`] for the
+/// sibling that adapts `heart::surface::Residence`, the type a federated
+/// search answer actually carries per item.
 pub fn prepare_provenance(p: &WireProvenance) -> Provenance {
     match p {
         WireProvenance::TrustedLocal => Provenance::TrustedLocal,
@@ -715,38 +727,42 @@ pub fn prepare_provenance(p: &WireProvenance) -> Provenance {
         WireProvenance::Remote { .. } => Provenance::Remote,
         WireProvenance::Stale { .. } => Provenance::Stale,
         // `WireProvenance` is `#[non_exhaustive]` (LR-12): a level added by a
-        // newer engine reads as remote — visibly not-local, never a panic.
-        _ => Provenance::Remote,
+        // newer engine reads as untrusted-until-proven, never as local — LD-8
+        // is a trust claim, so the safe default is the weakest one.
+        _ => Provenance::Stale,
     }
 }
 
-/// Translate one wire signature token into the component's vocabulary.
+/// Translate one `heart::surface::SigToken` (a federated `SymbolHit`'s
+/// signature preview — local and remote hits both carry this type) into the
+/// component's vocabulary.
 ///
 /// The two enums are deliberately near-identical (see `signature_line.rs`), so
 /// this is a mapping and not a re-implementation. Lifetimes have no dedicated
 /// component variant and render as generics, which is how they read anyway.
-pub fn prepare_sig_token(t: &WireSigToken) -> UiSigToken {
+pub fn prepare_sig_token(t: &HeartSigToken) -> UiSigToken {
     match t {
-        WireSigToken::Kw(s) => UiSigToken::Kw(s),
-        WireSigToken::Ident(s) => UiSigToken::Ident(SharedString::from(s.to_string())),
-        WireSigToken::Ty { text, target } => UiSigToken::Ty {
+        HeartSigToken::Kw(s) => UiSigToken::Kw(SharedString::from(s.to_string())),
+        HeartSigToken::Ident(s) => UiSigToken::Ident(SharedString::from(s.to_string())),
+        HeartSigToken::Ty { text, target } => UiSigToken::Ty {
             text: SharedString::from(text.to_string()),
-            // `SignatureLine`'s key is still the pre-wire mirror; until it
-            // adopts `nudox_engine::wire::SymbolKey` (its own TODO(wire)), a
-            // resolved target is carried as its debug identity so the link is
-            // present and clickable rather than silently dropped.
+            // `SignatureLine`'s key is still the pre-wire mirror (its own
+            // TODO(wire)); a resolved target is carried as its real, navigable
+            // `StableReference` string (`F:<eco>/<pkg>#<hex>`) rather than a
+            // debug dump, so the link text is at least meaningful if ever
+            // inspected before the mirror is retired.
             target: target
                 .as_ref()
-                .map(|k| UiSymbolKey(SharedString::from(format!("{k:?}")))),
+                .map(|r| UiSymbolKey(SharedString::from(r.to_string()))),
         },
-        WireSigToken::Punct(s) => UiSigToken::Punct(s),
-        WireSigToken::Ws => UiSigToken::Ws,
-        WireSigToken::Generic(s) => UiSigToken::Generic(SharedString::from(s.to_string())),
-        WireSigToken::Lifetime(s) => UiSigToken::Generic(SharedString::from(s.to_string())),
-        // `WireSigToken` is `#[non_exhaustive]`: an unknown token renders as a
+        HeartSigToken::Punct(s) => UiSigToken::Punct(SharedString::from(s.to_string())),
+        HeartSigToken::Ws => UiSigToken::Ws,
+        HeartSigToken::Generic(s) => UiSigToken::Generic(SharedString::from(s.to_string())),
+        HeartSigToken::Lifetime(s) => UiSigToken::Generic(SharedString::from(s.to_string())),
+        // `HeartSigToken` is `#[non_exhaustive]`: an unknown token renders as a
         // visible mark rather than vanishing, so a signature never silently
         // loses a piece (LD-7).
-        _ => UiSigToken::Punct("?"),
+        _ => UiSigToken::Punct(SharedString::from("?")),
     }
 }
 
@@ -843,14 +859,15 @@ pub struct SearchSnapshot {
     pub generation: u64,
     /// When this generation's first page landed. `None` until it does.
     pub gen_arrival: Option<Instant>,
-    /// Whether the semantic plane is unreachable.
+    /// Whether the current answer is degraded — some configured source (today,
+    /// only ever the remote index; the local engine is never itself a
+    /// federation member that can degrade) did not answer, per
+    /// `heart::surface::Frame::Degraded`. The local-first rows already in
+    /// `sections` still render; this only says the answer may be missing
+    /// whatever that source would have contributed. Not an error state — see
+    /// `heart::surface::Federated`'s own doc comment on why offline is a
+    /// smaller answer, never a failed one.
     pub offline: bool,
-    /// The remote (`NudoxClient`) search escape hatch's current state (§15
-    /// zero-hit state, "Search remote INDEX"). Not one of the
-    /// [`SECTION_COUNT`] sections and not part of cursor navigation — it is a
-    /// standalone status the zero-hit view renders alongside its button,
-    /// additive to the local-first `sections` above.
-    pub remote: RemoteStatus,
 }
 
 impl Default for SearchSnapshot {
@@ -869,109 +886,8 @@ impl Default for SearchSnapshot {
             generation: 0,
             gen_arrival: None,
             offline: false,
-            remote: RemoteStatus::NotConfigured,
         }
     }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// RemoteStatus
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// State of the remote (`heart::client::http::NudoxClient`) search escape
-/// hatch — a real network call to a configured `nudox-serve` instance,
-/// additive to (never a replacement for) the local-first `nudox-engine`
-/// sections above. See `SearchStore::search_remote` (docs/AGENTS-DOCTRINE.md §1,
-/// `heart` capability-port seam).
-/// Why a remote search failed, as a **typed decision**, not a rendered string.
-///
-/// The old `Unreachable { reason: SharedString }` flattened every failure into a
-/// truncated `Display` string, so the only thing the UI could do with a failure
-/// was print it — "should I offer a retry? is the query itself wrong? is the
-/// server degraded?" were all unanswerable without parsing prose. This enum is
-/// the answer: [`SearchStore`] maps a structured `heart` `ClientError` onto one
-/// of these variants, and the view decides behaviour from the *variant*. The
-/// human label is still a string, but it is derived from the decision, not the
-/// decision itself.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteFailure {
-    /// Connect / timeout / transport (or an unusable URL): the server is
-    /// unreachable. Retrying later is sensible; the query is fine.
-    Offline,
-    /// The server rejected the query (4xx, or a `WireError::BadRequest`).
-    /// Retrying the *same* query will not help — the caller must change it.
-    Rejected,
-    /// The server errored while (or before) answering (5xx, or a
-    /// `WireError::Backend`/`Timeout`/`Internal`). Degraded; a retry may help.
-    ServerError,
-    /// The stream ended without its terminal frame — an incomplete answer, not
-    /// an empty one. A retry may get a complete stream.
-    Truncated,
-    /// A frame/line could not be decoded, or arrived after the terminal frame —
-    /// a client/server protocol mismatch. Retrying is unlikely to help.
-    Protocol,
-}
-
-impl RemoteFailure {
-    /// A short human label for the status line. The *decision* is the variant;
-    /// this is only its caption.
-    pub fn label(self) -> &'static str {
-        match self {
-            RemoteFailure::Offline => "unreachable",
-            RemoteFailure::Rejected => "rejected the query",
-            RemoteFailure::ServerError => "errored",
-            RemoteFailure::Truncated => "sent a truncated answer",
-            RemoteFailure::Protocol => "spoke an unexpected protocol",
-        }
-    }
-
-    /// Whether offering the reader a "try again" makes sense for this class.
-    pub fn is_retriable(self) -> bool {
-        matches!(
-            self,
-            RemoteFailure::Offline | RemoteFailure::ServerError | RemoteFailure::Truncated
-        )
-    }
-}
-
-/// State of the remote search escape hatch.
-///
-/// Not `PartialEq`/`Eq`: `Ready` now carries the render-ready rows
-/// (`Arc<[PreparedRow]>`, which is not `Eq`), because the remote hits flow into
-/// the render model here rather than being reduced to a count. The *decision*
-/// half of a failure lives in [`RemoteFailure`], so the view still switches on a
-/// typed value, never on a string.
-#[derive(Clone, Debug, Default)]
-pub enum RemoteStatus {
-    /// No `NUDOX_SERVER_URL` was reachable/parseable at store construction —
-    /// distinct from `Unreachable`, which means a configured server was
-    /// *tried* and failed. Never rendered as an error: there is simply no
-    /// remote escape hatch on this run.
-    #[default]
-    NotConfigured,
-    /// Configured, but `search_remote` has not been triggered this session.
-    Idle,
-    /// A request is in flight.
-    Loading,
-    /// The server answered: `hits` symbols in `elapsed_ms`, with `rows` the
-    /// render-ready hits (additive to the local sections; the remote path
-    /// augments, it does not replace).
-    Ready {
-        /// How many hits the server returned.
-        hits: usize,
-        /// Round-trip time in milliseconds.
-        elapsed_ms: u64,
-        /// The render-ready remote hits.
-        rows: Arc<[PreparedRow]>,
-    },
-    /// The configured server did not give a usable answer. `kind` is the typed
-    /// decision (retry? offline? degraded?); `detail` is the human caption.
-    Unreachable {
-        /// The typed failure class the view decides behaviour from.
-        kind: RemoteFailure,
-        /// A short human-readable detail for the status line.
-        detail: SharedString,
-    },
 }
 
 impl SearchSnapshot {
@@ -1041,10 +957,6 @@ pub trait SearchAccess: 'static + Sized {
 
     /// Record the new cursor. Pure state; the view has already applied policy.
     fn set_selection(&mut self, cursor: Option<Cursor>, cx: &mut Context<Self>);
-
-    /// Re-issue the current query against the remote INDEX (§15 zero-hit
-    /// empty-state action).
-    fn search_remote(&mut self, cx: &mut Context<Self>);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1055,28 +967,34 @@ pub trait SearchAccess: 'static + Sized {
 mod tests {
     use super::*;
 
-    use nudox_engine::wire::{
-        EcosystemId, IntroId, KindDiscriminant, PackageLineageId, PackageName, SharedStr,
-    };
+    use heart::{PackageId, Score};
 
-    /// A hit whose display name is `name` and whose signature is one keyword,
-    /// i.e. the shape a `mod` hit really has.
+    /// A hit whose path is `name` and whose signature is one keyword, i.e. the
+    /// shape a `mod` hit really has. Wrapped as [`Located<Scored<SymbolHit>>`],
+    /// exactly what a `Frame::Item` carries — this is the one ingest now, for
+    /// both planes.
     ///
-    /// Every hit shares one `IntroId`: the point of these cases is that the
-    /// *rendered text* must differ, and a key the row never draws cannot be
-    /// what makes it differ.
-    fn hit(name: &str) -> HitRow {
-        HitRow {
-            key: SymbolKey::new(
-                PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("memchr")),
-                IntroId::from_raw([0u8; 32]),
+    /// The point of these cases is that the *rendered text* must differ, and
+    /// nothing these rows carry but never draw (the package id, the residence)
+    /// is what makes them differ.
+    fn hit(name: &str) -> Located<Scored<SymbolHit>> {
+        Located::new(
+            Scored::new(
+                SymbolHit {
+                    package: PackageId::new_random(),
+                    path: name.into(),
+                    display_name: name.into(),
+                    ecosystem: heart::Language::Rust,
+                    kind: SymbolKind::Module,
+                    signature: Some(heart::surface::Signature::new(vec![HeartSigToken::Kw(
+                        "mod".into(),
+                    )])),
+                    reference: None,
+                },
+                Score::try_new(1.0).expect("1.0 is finite"),
             ),
-            display_name: SharedStr::from(name),
-            sig_preview: vec![WireSigToken::Kw("mod")],
-            kind: KindTag::Known(KindDiscriminant::Module),
-            provenance: WireProvenance::TrustedLocal,
-            score: 1.0,
-        }
+            Residence::Local,
+        )
     }
 
     /// Every rendered row in a batch must be textually distinct. This is the

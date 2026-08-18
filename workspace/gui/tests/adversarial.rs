@@ -272,9 +272,21 @@ async fn click_and_enter_open_the_same_document(cx: &mut TestAppContext) {
     })
     .await;
 
-    // Extract the first-row key from both stores — they must be the same corpus.
-    let key_a = search_a.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
-    let key_b = search_b.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    // Extract the first-row key from both stores — they must be the same
+    // corpus. A local hit always resolves to a real `SymbolKey`
+    // (`PreparedRow::key`'s own doc comment).
+    let key_a = search_a.read_with(cx, |s, _| {
+        s.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
+    });
+    let key_b = search_b.read_with(cx, |s, _| {
+        s.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
+    });
 
     // Open via "keyboard" path (store.open directly).
     let tab_a = symbols_a.update(cx, |s, cx| {
@@ -649,7 +661,12 @@ async fn opening_same_symbol_twice_does_not_create_duplicate_tab(cx: &mut TestAp
     })
     .await;
 
-    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    let key = search.read_with(cx, |s, _| {
+        s.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
+    });
 
     let tab_a = symbols.update(cx, |s, cx| {
         s.open(key.clone(), OpenDisposition::Replace, cx)
@@ -689,8 +706,14 @@ async fn open_several_then_close_one_leaves_no_orphan(cx: &mut TestAppContext) {
     .await;
 
     let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
-    let key1 = rows[0].key.clone();
-    let key2 = rows[1].key.clone();
+    let key1 = rows[0]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
+    let key2 = rows[1]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
 
     // `Stay` — the disposition `cmd` maps to — is what opens an *additional*
     // tab. `Replace` now supersedes the active tab (its documented contract,
@@ -745,8 +768,14 @@ async fn reveal_document_background_does_not_steal_focus(cx: &mut TestAppContext
     .await;
 
     let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
-    let key1 = rows[0].key.clone();
-    let key2 = rows[1].key.clone();
+    let key1 = rows[0]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
+    let key2 = rows[1]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
 
     // Open key1 in the foreground.
     symbols.update(cx, |s, cx| {
@@ -1235,7 +1264,12 @@ async fn reveal_document_reuses_existing_pane_tab(cx: &mut TestAppContext) {
     })
     .await;
 
-    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    let key = search.read_with(cx, |s, _| {
+        s.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
+    });
 
     // First open.
     symbols.update(cx, |s, cx| {
@@ -1274,8 +1308,14 @@ async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContex
     .await;
 
     let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
-    let key1 = rows[0].key.clone();
-    let key2 = rows[1].key.clone();
+    let key1 = rows[0]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
+    let key2 = rows[1]
+        .key
+        .clone()
+        .expect("a local hit must resolve to a real SymbolKey");
     let key3 = synthetic_key(99);
 
     let tab1 = symbols.update(cx, |s, cx| s.open(key1.clone(), OpenDisposition::Stay, cx));
@@ -1379,7 +1419,12 @@ async fn activating_a_tab_focuses_the_symbol_page_not_the_pane(cx: &mut TestAppC
     })
     .await;
 
-    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    let key = search.read_with(cx, |s, _| {
+        s.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
+    });
     // `SymbolHeader`'s URI is the key's own rendering (see
     // `HeaderModel::from_head`), so this is the exact string a correct
     // `CopySymbolUri` must produce for *this* symbol and no other.

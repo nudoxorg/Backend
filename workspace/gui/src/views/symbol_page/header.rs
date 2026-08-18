@@ -83,8 +83,8 @@ pub(crate) fn link_ix(key: &UiKey) -> Option<usize> {
 pub(crate) fn sig_tokens(src: &[WireSigToken], links: &mut Vec<SymbolKey>) -> Vec<SigToken> {
     src.iter()
         .map(|t| match t {
-            WireSigToken::Kw(s) => SigToken::Kw(s),
-            WireSigToken::Punct(s) => SigToken::Punct(s),
+            WireSigToken::Kw(s) => SigToken::Kw(SharedString::from(*s)),
+            WireSigToken::Punct(s) => SigToken::Punct(SharedString::from(*s)),
             WireSigToken::Ws => SigToken::Ws,
             WireSigToken::Ident(s) => SigToken::Ident(shared(s)),
             WireSigToken::Generic(s) => SigToken::Generic(shared(s)),
@@ -105,17 +105,18 @@ pub(crate) fn sig_tokens(src: &[WireSigToken], links: &mut Vec<SymbolKey>) -> Ve
 }
 
 /// The one place `wire::Provenance` becomes the display mirror (LD-8).
+///
+/// A thin alias for `stores::search_model::prepare_provenance` — the same
+/// `WireProvenance -> Provenance` mapping used to be written out here a
+/// second time, and the two copies disagreed on their `#[non_exhaustive]`
+/// fallback arm (`Remote` here, `Remote` there too, until that drift was
+/// caught and both collapsed onto `Stale` — see `prepare_provenance`'s own
+/// doc comment). Kept as a distinct name at this call site rather than
+/// replaced everywhere with the fully-qualified path, since "the one
+/// adaptation point in the whole page" (this module's own doc comment) is
+/// worth keeping nameable from here.
 pub(crate) fn trust_of(p: &WireProvenance) -> Provenance {
-    match p {
-        WireProvenance::TrustedLocal => Provenance::TrustedLocal,
-        WireProvenance::SyncedLocal { .. } => Provenance::SyncedLocal,
-        WireProvenance::Remote { .. } => Provenance::Remote,
-        WireProvenance::Stale { .. } => Provenance::Stale,
-        // The wire enum is `#[non_exhaustive]`: an unrecognised provenance is
-        // treated as untrusted-until-proven, never as local (LD-8 is a trust
-        // claim, so the safe default is the weakest claim).
-        _ => Provenance::Stale,
-    }
+    crate::stores::search_model::prepare_provenance(p)
 }
 
 /// A kind label that survives a producer we do not know about (LD-7).

@@ -225,7 +225,10 @@ async fn opening_a_hit_streams_a_document(cx: &mut TestAppContext) {
     })
     .await;
 
-    // Extract the key from the first hit.
+    // Extract the key from the first hit. The local engine always supplies a
+    // `StableReference` it can resolve back to a real `SymbolKey`
+    // (`PreparedRow::key`'s own doc comment) — `None` here would mean the
+    // local adapter itself is broken, which this test wants to fail loudly on.
     let key = search.read_with(cx, |store, _cx| {
         store.snapshot().sections[0]
             .rows
@@ -233,6 +236,7 @@ async fn opening_a_hit_streams_a_document(cx: &mut TestAppContext) {
             .expect("Name section has at least one row")
             .key
             .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
     });
 
     let key_for_check = key.clone();
@@ -302,7 +306,10 @@ async fn opening_the_same_symbol_twice_reuses_its_tab(cx: &mut TestAppContext) {
     .await;
 
     let key = search.read_with(cx, |store, _cx| {
-        store.snapshot().sections[0].rows[0].key.clone()
+        store.snapshot().sections[0].rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey")
     });
 
     // First open.

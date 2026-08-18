@@ -2108,8 +2108,14 @@ mod tests {
             use crate::stores::search_model::SearchAccess as _;
             s.snapshot().sections[0].rows[0..2].to_vec()
         });
-        let key1 = rows[0].key.clone();
-        let key2 = rows[1].key.clone();
+        let key1 = rows[0]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey");
+        let key2 = rows[1]
+            .key
+            .clone()
+            .expect("a local hit must resolve to a real SymbolKey");
 
         let _tab1 = symbols.update(&mut vcx, |s, cx| s.open(key1, OpenDisposition::Stay, cx));
         let _tab2 = symbols.update(&mut vcx, |s, cx| s.open(key2, OpenDisposition::Stay, cx));

@@ -1,61 +1,73 @@
-//! `SearchStore` — GUI-PLAN §12.3
+//! `SearchStore` — GUI-PLAN §12.3, `docs/LOCAL-REMOTE-CONTRACT.md` §2 (task S4).
+//!
+//! ## The one federated search path
+//!
+//! There is no local call path and a separate remote one. `trigger_search`
+//! builds a `heart::surface::Federated<Symbols>` over the local engine (always)
+//! and a remote `RemoteClient` (when `NUDOX_SERVER_URL` is configured), calls
+//! its one `serve`, and drains the merged `Answer<Symbols>` — see
+//! [`SearchStore::apply_frame`] for the consumption rule (upsert, never
+//! append) and why every hit lands in one section.
 //!
 //! ## State ownership
 //!
 //! - `input`, `scope`, `mode` — raw user intent; mutated synchronously.
-//! - `sections: [SectionBuf; 3]` — render-ready `Arc<[PreparedRow]>` per
-//!   section; updated once at ingest, never in render (§1.1.4).
+//! - `sections: [SectionBuf; 3]` — render-ready `Arc<[PreparedRow]>`, though
+//!   only `sections[0]` is ever populated today (`SectionBuf`'s own doc
+//!   comment); updated once per drained batch, never in render (§1.1.4).
+//! - `raw_rows` — the upsert buffer `sections[0].rows` is rebuilt from.
 //! - `selection: Option<Cursor>` — typed cursor; the §15 "never wraps silently
 //!   across sections" invariant is checkable here, not inferred from a flat int.
 //! - `gens: GenSource` — per-slot monotonic counter.
 //! - `generation: u64` — current generation counter (mirrors `slot.generation`).
 //! - `gen_arrival: Option<Instant>` — when the current gen's first events landed;
 //!   controls entrance-animation windows (§4.1).
+//! - `offline: bool` — whether the current answer is degraded (some source
+//!   did not answer; local-first rows already collected still render).
 //! - `debounce_task: Option<Task<()>>` — the 24 ms foreground timer task;
 //!   owned here (LD-18), replaced on each keystroke, which drops and cancels
 //!   the predecessor.
-//! - `drain_task: Task<()>` — drains the search event stream.
+//! - `search_task: Task<()>` — drains the federated `Answer<Symbols>`; owns it,
+//!   so replacing this task drops the `Answer` and cancels every source.
 //!
 //! ## The §7.4 shape, applied
 //!
 //! `trigger_search` is the only place that issues a query. It follows the
 //! four-line §7.4 pattern exactly. `debounce_task` is the 24 ms wrapper that
 //! delays calling `trigger_search`.
-//!
-//! ## Section independence (LD-15, LR-10)
-//!
-//! Name / Type / Semantic sections are stored separately. A `SearchEvent::Section`
-//! for section 0 (Name) never clears or reorders section 1 (Type) or 2
-//! (Semantic). A slow semantic result arriving after local results just fills its
-//! own slot — it does not push earlier rows.
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long one search may wait on a source that never terminates.
+///
+/// Far longer than any healthy search, far shorter than "never". See
+/// `Federated::with_deadline` — it bounds waiting, not delivering: rows already
+/// received are kept and a source that finishes in time is untouched.
+const SEARCH_DEADLINE: Duration = Duration::from_secs(10);
 
 use gpui::{Context, SharedString, Task};
-use heart::client::http::NudoxClient;
-use nudox_engine::wire::{Gen, HitRow, SearchEvent, SearchSectionId};
-use nudox_engine::{EngineHandle, SearchQuery, SectionState};
+use heart::client::RemoteClient;
+use heart::surface::{
+    Federated, Frame, Located, MergePump, SearchNote, Serve, Surface as _, SymbolHit, Symbols,
+};
+use heart::{PageSpecification, Query, QueryMode, RankSpecification, Routing, Scope, Scored, Target};
 
-use crate::bridge::drain::drain;
 use crate::bridge::generation::GenSource;
-use crate::bridge::handle::StreamHandle as BridgeStreamHandle;
 use crate::stores::events::{OpenDisposition, OpenSymbol};
 use crate::stores::search_model::{
-    Cursor, PreparedRow, RemoteFailure, RemoteStatus, SECTION_COUNT, ScopeChip, SearchMode,
-    SearchSnapshot, SectionData, SectionStatus,
+    Cursor, PreparedRow, SECTION_COUNT, ScopeChip, SearchMode, SearchSnapshot, SectionData,
+    SectionStatus,
 };
-use heart::client::http::ClientError;
-use heart::stream::WireError;
 
 // ---------------------------------------------------------------------------
-// Remote (`NudoxClient`) escape hatch — docs/AGENTS-DOCTRINE.md §1, `heart` seam
+// Remote (`heart::client::RemoteClient`) federation source
 // ---------------------------------------------------------------------------
 
-/// Env var naming the remote `nudox-serve` base URL for the §15 zero-hit
-/// escape hatch ("Search remote INDEX"). Unset/unparseable → no remote
-/// client is built and the escape hatch reports [`RemoteStatus::NotConfigured`]
-/// rather than attempting a request that could only fail.
+/// Env var naming the remote `nudox-serve` base URL. Unset/unparseable → no
+/// remote source is added to the federation, and `SearchStore` becomes a
+/// federation of exactly one (the local engine) — a passthrough, not a
+/// special case (`heart::surface::Federated`'s own doc comment).
 const NUDOX_SERVER_URL_ENV: &str = "NUDOX_SERVER_URL";
 
 /// Matches `ServerConfiguration::default().serving_address`
@@ -64,25 +76,58 @@ const NUDOX_SERVER_URL_ENV: &str = "NUDOX_SERVER_URL";
 /// config either.
 const NUDOX_SERVER_URL_DEFAULT: &str = "http://127.0.0.1:8080";
 
-/// Build the remote client from `NUDOX_SERVER_URL` (default
-/// [`NUDOX_SERVER_URL_DEFAULT`]). Building a [`NudoxClient`] only parses a
-/// URL and constructs a `reqwest::Client` — no I/O — so this is synchronous
-/// and safe to call from [`SearchStore::new`].
-fn remote_client_from_env() -> Option<NudoxClient> {
+/// Build the remote federation source from `NUDOX_SERVER_URL` (default
+/// [`NUDOX_SERVER_URL_DEFAULT`]). Parsing a URL and constructing a
+/// `RemoteClient` does no I/O, so this is synchronous and safe to call from
+/// [`SearchStore::new`].
+fn remote_source_from_env() -> Option<Arc<dyn Serve<Symbols>>> {
     let base =
         std::env::var(NUDOX_SERVER_URL_ENV).unwrap_or_else(|_| NUDOX_SERVER_URL_DEFAULT.to_owned());
-    NudoxClient::connect(&base).ok()
+    let url = url::Url::parse(&base).ok()?;
+    let client = RemoteClient::new(url).ok()?;
+    Some(Arc::new(client) as Arc<dyn Serve<Symbols>>)
 }
 
-// ---------------------------------------------------------------------------
-// Section constants (Name=0, Type=1, Semantic=2)
-// ---------------------------------------------------------------------------
+/// Wraps a remote federation source so its `Serve::serve` call runs with the
+/// engine's Tokio runtime entered.
+///
+/// # Why this exists
+///
+/// `heart::client::RemoteClient::serve` — the blanket `Serve<S>` impl the
+/// federation relies on — spawns its HTTP-streaming pump with a bare
+/// `tokio::spawn(pump::<S>(...))`. That call needs a Tokio runtime entered on
+/// whatever thread calls it (`Handle::current()` must resolve), and lindsey
+/// links none of its own (LR-9: "the engine owns every runtime and lindsey
+/// links none"). Calling `RemoteClient::serve` directly from `Federated::serve`
+/// — itself called synchronously from `trigger_search`, on GPUI's own thread —
+/// would panic with the same "there is no reactor running" failure the old
+/// `search_remote_inner` worked around by building a throwaway runtime per
+/// request (deleted along with it; see this module's own doc comment).
+///
+/// `EngineHandle::runtime_handle` is the sanctioned alternative to building a
+/// second runtime: "hosts borrow this runtime, they do not build one" (that
+/// method's own doc comment). Entering it for the duration of one synchronous
+/// `serve` call — which is exactly when the `tokio::spawn` happens — gives
+/// `RemoteClient`'s pump a valid context without lindsey ever constructing a
+/// runtime of its own; the spawned task then runs on the engine's own worker
+/// pool, the same as every other piece of async work the engine hands out
+/// (`open_symbol`, `search`, …).
+struct EngineScopedRemote {
+    engine: nudox_engine::EngineHandle,
+    remote: Arc<dyn Serve<Symbols>>,
+}
 
-const SECTION_NAME: SearchSectionId = SearchSectionId(0);
-#[allow(dead_code)]
-const SECTION_TYPE: SearchSectionId = SearchSectionId(1);
-#[allow(dead_code)]
-const SECTION_SEMANTIC: SearchSectionId = SearchSectionId(2);
+impl Serve<Symbols> for EngineScopedRemote {
+    fn serve(&self, request: Query, generation: heart::surface::Gen) -> heart::surface::Answer<Symbols> {
+        // Named, not chained: `EnterGuard` borrows from the handle, so the
+        // handle needs a binding that outlives it in this scope — chaining
+        // `.runtime_handle().enter()` would drop the handle (a temporary)
+        // while the guard still borrowed it.
+        let handle = self.engine.runtime_handle();
+        let _entered = handle.enter();
+        self.remote.serve(request, generation)
+    }
+}
 
 /// The 24 ms debounce interval (§12.3).
 const DEBOUNCE_MS: u64 = 24;
@@ -101,6 +146,14 @@ const DEBOUNCE_MS: u64 = 24;
 const PERCEPTIBLE_LATENCY_MS: u128 = 100;
 
 /// Restricts the search to a subset of the corpus.
+///
+/// `kinds` is not wired into `heart::Query` yet — that request type has no
+/// kind-filter field (only `scope.packages`/`scope.ecosystems`), the same gap
+/// `SearchMode`'s own doc comment already documents for the mode chips. Kept
+/// here rather than deleted so the scope-chip UI has somewhere to land its
+/// state once the query algebra grows the field; toggling it today changes
+/// nothing observable, honestly (no query is re-shaped by a value that goes
+/// nowhere).
 #[derive(Clone, Debug, Default)]
 pub struct SearchScope {
     /// When `Some`, restrict to these package coordinates.
@@ -114,55 +167,29 @@ pub struct SearchScope {
 // ---------------------------------------------------------------------------
 
 /// One section's render-ready state, owned by the store.
+///
+/// Only `sections[0]` (Name) is ever populated today: `heart::surface::Symbols`
+/// (what `Federated::serve` answers) carries no per-item section — see
+/// `SearchStore::apply_frame`'s own doc comment. `sections[1]`/`[2]` (Type,
+/// Semantic) stay `Idle` and empty; `Section`/`SECTION_COUNT`/`Cursor` are
+/// otherwise untouched so cmd-1/2/3 and the rest of the selection model keep
+/// working exactly as before over however many sections actually hold rows.
 #[derive(Clone, Debug)]
 struct SectionBuf {
-    /// Render-ready rows, sorted by score descending. Cloning is a refcount bump.
+    /// Render-ready rows. Cloning is a refcount bump.
     rows: Arc<[PreparedRow]>,
-    /// Whether the stream for this section has delivered its initial batch.
-    complete: bool,
     /// Pre-formatted latency string (e.g. `"4 ms"`). Empty until reported.
     latency: SharedString,
     /// Current phase, for `SectionData::status`.
     status: SectionStatus,
-    /// What the engine said this section's rows *mean*, if it has said yet.
-    ///
-    /// # Why this is kept rather than folded straight into `status`
-    ///
-    /// `SearchEvent::SectionState` arrives **before** the section's rows, and
-    /// the `Section` handler unconditionally set `status = Ready`. Folding the
-    /// state in on arrival would therefore have it overwritten a moment later
-    /// by the rows it was describing — the caveat would be delivered, stored,
-    /// and then silently dropped, which is a worse failure than never sending
-    /// it because the wire would look correct.
-    ///
-    /// So the engine's claim is recorded here and `status` is *derived* from it
-    /// when rows land. One value, one owner, no chance for the two to disagree.
-    declared: Option<SectionState>,
 }
 
 impl SectionBuf {
     fn empty() -> Self {
         Self {
             rows: Arc::from([] as [PreparedRow; 0]),
-            complete: false,
             latency: SharedString::default(),
             status: SectionStatus::Idle,
-            declared: None,
-        }
-    }
-
-    /// The status this section should show now that its rows have arrived.
-    ///
-    /// `Ready` when the engine claimed completeness or said nothing at all —
-    /// the latter keeps an older engine, or a section that predates
-    /// `SectionState`, rendering exactly as it did before.
-    fn status_for_delivered_rows(&self) -> SectionStatus {
-        match self.declared {
-            Some(SectionState::Building { covered, total }) => {
-                SectionStatus::Building { covered, total }
-            }
-            Some(SectionState::Unavailable { .. }) => SectionStatus::Unavailable,
-            _ => SectionStatus::Ready,
         }
     }
 
@@ -176,100 +203,43 @@ impl SectionBuf {
 }
 
 // ---------------------------------------------------------------------------
-// Engine capability trait
-// ---------------------------------------------------------------------------
-
-/// The engine capability required by `SearchStore`.
-///
-/// This is a thin trait so that `SearchStore` can be constructed with any
-/// implementation (real engine or a test double) without depending on a
-/// concrete type.
-pub trait SearchEngine: 'static {
-    /// Issue a search query for the given text and generation.
-    ///
-    /// Returns a `StreamHandle` (for cancellation) and a bounded flume
-    /// receiver over `SearchEvent`.
-    fn search(
-        &self,
-        text: &str,
-        scope: &SearchScope,
-        mode: SearchMode,
-        generation: Gen,
-    ) -> (BridgeStreamHandle, flume::Receiver<SearchEvent>);
-}
-
-/// Implement `SearchEngine` for the real engine handle.
-///
-/// `EngineHandle::search` takes `(SearchQuery, Gen)`; we bridge the store's
-/// `(text, scope, mode, gen)` parameters to it.  `BridgeStreamHandle` is a
-/// re-export of `nudox_engine::StreamHandle`, so no conversion is needed.
-impl SearchEngine for EngineHandle {
-    fn search(
-        &self,
-        text: &str,
-        scope: &SearchScope,
-        _mode: SearchMode,
-        generation: Gen,
-    ) -> (BridgeStreamHandle, flume::Receiver<SearchEvent>) {
-        use nudox_engine::wire::KindDiscriminant;
-
-        // Map scope.kinds into SearchQuery.kinds.  `_mode` is reserved for
-        // future routing hints (Mode::Type / Mode::Semantic) — the engine's
-        // LR-10 fan-out already handles section assignment.
-        let kinds: Vec<KindDiscriminant> = scope
-            .kinds
-            .iter()
-            .filter_map(|kt| match kt {
-                nudox_engine::wire::KindTag::Known(d) => Some(*d),
-                _ => None,
-            })
-            .collect();
-
-        let query = SearchQuery {
-            text: text.to_owned(),
-            kinds,
-            exclude_kinds: Vec::new(),
-            limit: 50,
-            // Empty means "every loaded package", which is what the omni-search
-            // has always done — the field exists because MCP's `search_symbols`
-            // needs to filter *before* the engine truncates to `limit` (filtering
-            // after truncation can return zero rows while matches exist). The GUI
-            // has no package-scoping UI today; when it gets one, this is where it
-            // plugs in, and it will be correct by construction rather than needing
-            // the same fix again.
-            packages: Vec::new(),
-        };
-
-        // `EngineHandle::search` returns `(StreamHandle, Receiver<SearchEvent>)`.
-        // `StreamHandle` is re-exported by `bridge::handle` so there is no type
-        // mismatch — no conversion needed (see handle.rs).
-        EngineHandle::search(self, query, generation)
-    }
-}
-
-// ---------------------------------------------------------------------------
 // SearchStore
 // ---------------------------------------------------------------------------
 
 /// `SearchStore` — GUI-PLAN §12.3.
-pub struct SearchStore<E: SearchEngine> {
+///
+/// # Why this is not generic over the section it populates
+///
+/// It still is generic — over `E`, the local engine capability — but only at
+/// [`SearchStore::new`]: `E: Serve<Symbols>` is erased into `Arc<dyn
+/// Serve<Symbols>>` immediately, the same "transparency mechanism" every
+/// `Serve<S>` caller in the system relies on (`heart::surface::Serve`'s own
+/// doc comment). Nothing past construction cares whether the local source is
+/// a real `EngineHandle` or a test double.
+pub struct SearchStore {
     // ── User intent ─────────────────────────────────────────────────────
     pub input: SharedString,
     pub scope: SearchScope,
     pub mode: SearchMode,
 
     // ── Section storage (render-ready, §12 / §1.1.4) ──────────────────────
-    /// Per-section render-ready state.  Indexed by `SearchSectionId.0`.
+    /// Per-section render-ready state. Only `sections[0]` (Name) is ever
+    /// populated — see [`SectionBuf`]'s own doc comment.
     sections: [SectionBuf; SECTION_COUNT],
+    /// Upsert buffer backing `sections[0].rows`, keyed implicitly by
+    /// `Symbols::key`. A repeat key from `Frame::Item` replaces its slot in
+    /// place rather than appending — see [`SearchStore::apply_frame`].
+    raw_rows: Vec<Located<Scored<SymbolHit>>>,
 
     // ── Generation tracking ────────────────────────────────────────────────
     pub gens: GenSource,
     /// Current generation (echoed into snapshots for entrance-animation keying).
     generation: u64,
-    /// Stream handle — held to cancel the previous query on supersession.
-    stream_handle: Option<BridgeStreamHandle>,
     /// When the current generation's first page landed.
     gen_arrival: Option<Instant>,
+    /// Whether the current answer is degraded — see [`SearchSnapshot::offline`]'s
+    /// own doc comment.
+    offline: bool,
 
     // ── Selection ─────────────────────────────────────────────────────────
     /// Cursor into `sections`.  `Cursor { section, row }` makes the §15
@@ -279,33 +249,56 @@ pub struct SearchStore<E: SearchEngine> {
     // ── Task ownership (LD-18) ────────────────────────────────────────────
     /// The 24 ms debounce timer. Replaced per keystroke; dropping cancels it.
     debounce_task: Option<Task<()>>,
-    /// Drain loop for the current search stream.
-    drain_task: Task<()>,
+    /// Drains the current federated `Answer<Symbols>`. Replacing this task
+    /// drops the `Answer` it holds — which cancels every source in the
+    /// federation, local and remote alike (`Federated::serve`'s doc comment on
+    /// `dropping_the_answer_cancels_every_source`), the same way dropping
+    /// `stream_handle` used to cancel the old single-source stream.
+    search_task: Task<()>,
 
-    // ── Remote (`NudoxClient`) escape hatch (§15, docs/AGENTS-DOCTRINE.md §1) ──
-    /// `None` when `NUDOX_SERVER_URL` is unset/unparseable — see
-    /// [`remote_client_from_env`]. Cheap to clone (`Arc`-backed
-    /// `reqwest::Client`), so `search_remote` clones it into its spawned task
-    /// rather than borrowing `self` across an `.await`.
-    remote_client: Option<NudoxClient>,
-    /// Render-ready status the zero-hit view's status line reads.
-    remote_status: RemoteStatus,
-    /// Owns the in-flight remote search task (LD-18); replaced on each call,
-    /// which drops and cancels a still-running predecessor.
-    remote_task: Task<()>,
-
-    // ── Engine handle ─────────────────────────────────────────────────────
-    engine: E,
+    // ── The one federated search path (§2, task S4) ─────────────────────────
+    /// The local source. Always present, always first in precedence —
+    /// `nudox_engine`'s `Serve<Symbols>` adapter, erased once at construction.
+    local: Arc<dyn Serve<Symbols>>,
+    /// The remote source, when `NUDOX_SERVER_URL` parses to a reachable
+    /// client — see [`remote_source_from_env`]. `None` here is not a branch
+    /// callers have to think about: [`SearchStore::sources`] just omits it
+    /// from the `Vec` handed to [`Federated::new`], and a federation of one is
+    /// a passthrough (pinned by `heart/tests/federated.rs::
+    /// a_federation_of_one_is_a_passthrough`).
+    remote: Option<Arc<dyn Serve<Symbols>>>,
 }
 
-impl<E: SearchEngine> SearchStore<E> {
-    pub fn new(engine: E) -> Self {
-        let remote_client = remote_client_from_env();
-        let remote_status = if remote_client.is_some() {
-            RemoteStatus::Idle
-        } else {
-            RemoteStatus::NotConfigured
-        };
+impl SearchStore {
+    /// Construct against the real engine — the only production path.
+    ///
+    /// Builds the federation — local always, remote when `NUDOX_SERVER_URL`
+    /// parses to a reachable client (see [`remote_source_from_env`]) — and
+    /// wraps the remote source in [`EngineScopedRemote`] so its `Serve::serve`
+    /// call runs with the engine's Tokio runtime entered. See that type's own
+    /// doc comment for why this is necessary and why it does not violate LR-9.
+    pub fn new(engine: nudox_engine::EngineHandle) -> Self {
+        let remote = remote_source_from_env().map(|remote| {
+            Arc::new(EngineScopedRemote {
+                engine: engine.clone(),
+                remote,
+            }) as Arc<dyn Serve<Symbols>>
+        });
+        Self::from_parts(Arc::new(engine), remote)
+    }
+
+    /// Construct with an arbitrary local source and no remote. Test-only: a
+    /// production host always has a real `EngineHandle` and goes through
+    /// [`SearchStore::new`], which also wires up [`EngineScopedRemote`] — a
+    /// generic local-only constructor would make it easy to accidentally ship
+    /// a store whose remote source (if any were added generically) skips the
+    /// runtime-entering wrapper and panics the first time it actually runs.
+    #[cfg(test)]
+    fn for_local<E: Serve<Symbols>>(local: E) -> Self {
+        Self::from_parts(Arc::new(local), None)
+    }
+
+    fn from_parts(local: Arc<dyn Serve<Symbols>>, remote: Option<Arc<dyn Serve<Symbols>>>) -> Self {
         Self {
             input: SharedString::default(),
             scope: SearchScope::default(),
@@ -315,18 +308,30 @@ impl<E: SearchEngine> SearchStore<E> {
                 SectionBuf::empty(),
                 SectionBuf::empty(),
             ],
+            raw_rows: Vec::new(),
             gens: GenSource::new(),
             generation: 0,
-            stream_handle: None,
             gen_arrival: None,
+            offline: false,
             selection: None,
             debounce_task: None,
-            drain_task: Task::ready(()),
-            remote_client,
-            remote_status,
-            remote_task: Task::ready(()),
-            engine,
+            search_task: Task::ready(()),
+            local,
+            remote,
         }
+    }
+
+    /// The federation sources, in precedence order (local first) — built
+    /// fresh on every call, which is cheap (two `Arc` clones and a `Vec`).
+    /// This is the one place "is a remote configured" is asked; nowhere else
+    /// in the store branches on it (per the task's own "single federated
+    /// search path" requirement).
+    fn sources(&self) -> Vec<(heart::SourceId, Arc<dyn Serve<Symbols>>)> {
+        let mut sources = vec![(heart::SourceId::new_random(), Arc::clone(&self.local))];
+        if let Some(remote) = &self.remote {
+            sources.push((heart::SourceId::new_random(), Arc::clone(remote)));
+        }
+        sources
     }
 
     // ── §7.4 shape ────────────────────────────────────────────────────────
@@ -339,21 +344,84 @@ impl<E: SearchEngine> SearchStore<E> {
         // 1. Supersede — advance the generation.
         let generation = self.gens.next();
         self.generation = generation.0;
-        // 2. Reset section state for the new query.
-        for s in &mut self.sections {
-            *s = SectionBuf::empty();
-            s.status = SectionStatus::Loading;
-        }
+        // 2. Reset section state for the new query. Only section 0 (Name) is
+        //    ever populated — see `SectionBuf`'s own doc comment.
+        self.sections[0] = SectionBuf::empty();
+        self.sections[0].status = SectionStatus::Loading;
+        self.raw_rows.clear();
         self.gen_arrival = None;
-        // 3. Open the stream — dropping the previous handle cancels it.
-        let (handle, rx) = self
-            .engine
-            .search(&self.input, &self.scope, self.mode, generation);
-        // 4. Assign handle — drops+cancels predecessor.
-        self.stream_handle = Some(handle);
-        // 5. Spin up the drain loop (owned, not detached — LD-18).
-        self.drain_task = drain(cx, rx, |store, ev, cx| {
-            store.apply_search_event(ev, cx);
+        self.offline = false;
+
+        // 3. Build the federation and issue the query. `serve` returns
+        //    immediately, before any source has answered (`Federated::serve`'s
+        //    own doc comment) — the answer arrives on `answer`'s channel.
+        let executor = cx.background_executor().clone();
+        let spawn: Arc<dyn Fn(MergePump) + Send + Sync> = Arc::new(move |pump| {
+            // GPUI's executor, not `tokio::spawn` — lindsey has no Tokio
+            // reactor of its own (`Federated`'s own doc comment on why the
+            // spawner is injected rather than hard-coded). Detached: nothing
+            // here holds the returned `Task`, so the pump must keep running on
+            // its own — the same shape `drain`'s doc comment describes for the
+            // "nothing is `.detach()`ed" rule, except the pump's lifetime is
+            // tied to the `Answer` it feeds, not to a GPUI entity, so there is
+            // nothing else to own it.
+            executor.spawn(pump).detach();
+        });
+        // The offline-first bound. `merge` ends an answer only once *every*
+        // source has produced a terminal frame, and `RemoteClient` sets a
+        // connect timeout but deliberately no whole-request timeout (a search
+        // stream is legitimately long-lived). So an index that accepts the
+        // connection and then wedges — a half-open socket, a stalled server, a
+        // laptop that changed networks mid-query — would leave this answer open
+        // forever: local rows painted instantly and correctly, over a spinner
+        // that never stops.
+        //
+        // Ten seconds is chosen to be far longer than any healthy search and far
+        // shorter than "never". It bounds *waiting*, not delivering: rows already
+        // received are kept, a source that finishes in time is untouched, and
+        // only a source still silent at expiry is reported as degraded. See
+        // `heart/tests/offline_first.rs`.
+        //
+        // The timer is injected for the same reason the spawner is: the merge
+        // pump runs on GPUI's executor, where `tokio::time::sleep` panics with
+        // "there is no reactor running". GPUI's own `timer` is the right clock
+        // here — it is the one this pump is actually being driven by.
+        let timer_executor = cx.background_executor().clone();
+        let timer: heart::surface::Timer = Arc::new(move || {
+            let sleep = timer_executor.timer(SEARCH_DEADLINE);
+            Box::pin(async move {
+                sleep.await;
+            })
+        });
+        let federated = Federated::new(self.sources(), spawn).with_deadline(timer);
+        let query = build_query(&self.input);
+        let answer = federated.serve(query, heart::surface::Gen(generation.0));
+
+        // 4. Spin up the drain loop (owned, not detached — LD-18). Mirrors
+        //    `bridge::drain::drain`'s batching rule exactly (await one frame,
+        //    `try_recv` the rest, one `cx.notify()`) — `Answer` cannot be
+        //    handed to `drain` directly (it is not a bare `flume::Receiver`),
+        //    but it exposes the same `recv`/`try_recv` pairing for precisely
+        //    this pattern (`heart::surface::Answer::try_recv`'s own doc
+        //    comment).
+        self.search_task = cx.spawn(async move |store, cx| {
+            loop {
+                let Some(first) = answer.recv().await else {
+                    break;
+                };
+                let alive = store.update(cx, |store, cx| {
+                    store.apply_frame(first);
+                    while let Some(frame) = answer.try_recv() {
+                        store.apply_frame(frame);
+                    }
+                    store.rebuild_rows();
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    // The store entity was dropped — stop draining.
+                    break;
+                }
+            }
         });
         // Clear selection for the new generation.
         self.selection = None;
@@ -376,264 +444,123 @@ impl<E: SearchEngine> SearchStore<E> {
         }));
     }
 
-    // ── Remote (`NudoxClient`) escape hatch ─────────────────────────────────
-
-    /// §15 zero-hit state: issue a real `POST /search` against the configured
-    /// `nudox-serve` instance (see [`remote_client_from_env`]).
-    ///
-    /// This is additive, never a replacement: the local `sections` are
-    /// untouched, and the result lands only in `remote_status`, which the
-    /// zero-hit view renders as a status line next to its "Search remote
-    /// INDEX" button.
-    fn search_remote_inner(&mut self, cx: &mut Context<Self>) {
-        let Some(client) = self.remote_client.clone() else {
-            self.remote_status = RemoteStatus::NotConfigured;
-            cx.notify();
-            return;
-        };
-
-        self.remote_status = RemoteStatus::Loading;
-        cx.notify();
-
-        let text = self.input.to_string();
-        let started = Instant::now();
-        // Owned (LD-18): replacing `remote_task` drops and cancels a
-        // still-running predecessor, mirroring `debounce_task`/`drain_task`.
-        self.remote_task = cx.spawn(async move |store, cx| {
-            let query = heart::query::Query {
-                target: heart::query::Target::Symbols,
-                text,
-                scope: heart::query::Scope::default(),
-                rank: heart::query::RankSpecification::default(),
-                // Precise (lexical): the local-first sections above already
-                // cover the semantic path; the remote escape hatch's job is
-                // to check whether the *literal* term exists in a package the
-                // reader has not synced, not to re-run a semantic query.
-                mode: heart::query::QueryMode::Precise,
-                routing: heart::query::Routing::default(),
-                session: None,
-                at: None,
-                page: heart::query::PageSpecification::default(),
-                query_id: None,
-            };
-            // `NudoxClient::search` is async **reqwest**, and reqwest's futures
-            // panic with "there is no reactor running, must be called from the
-            // context of a Tokio 1.x runtime" unless they are polled inside a
-            // Tokio runtime. GPUI's executor is not one, so awaiting the future
-            // directly here aborted the app the first time this button was ever
-            // pressed against a live server — the escape hatch had the right URL
-            // and a dead code path (LR-9's "lindsey links no async runtime"
-            // describes the *executor*; reqwest, and therefore Tokio, has been
-            // in the graph since `heart`'s `client` feature was switched on).
-            //
-            // Rather than adopt Tokio as the app's runtime, the request is
-            // driven on a background thread that owns a minimal current-thread
-            // runtime for exactly the length of one request. The UI thread still
-            // only ever sees the resolved value, through the same `store.update`
-            // below.
-            let outcome = cx
-                .background_executor()
-                .spawn(async move {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(RemoteDriveFailure::Runtime)?;
-                    runtime
-                        .block_on(client.search(&query))
-                        .map_err(RemoteDriveFailure::Client)
-                })
-                .await;
-            let elapsed_ms = started.elapsed().as_millis() as u64;
-            let _ = store.update(cx, |store, cx| {
-                store.remote_status = match outcome {
-                    Ok(hits) => {
-                        // Convert once, here, into the same render row the local
-                        // engine produces — the remote hits now flow into the
-                        // render model instead of being reduced to a count.
-                        let rows = PreparedRow::prepare_remote(&hits);
-                        RemoteStatus::Ready {
-                            hits: hits.len(),
-                            elapsed_ms,
-                            rows,
-                        }
-                    }
-                    Err(RemoteDriveFailure::Client(error)) => {
-                        let (kind, detail) = classify_remote_error(&error);
-                        RemoteStatus::Unreachable { kind, detail }
-                    }
-                    // The request never left this process. Reported as its own
-                    // caption rather than folded into `Offline`, which would
-                    // blame a server that was never contacted.
-                    Err(RemoteDriveFailure::Runtime(error)) => RemoteStatus::Unreachable {
-                        kind: RemoteFailure::Offline,
-                        detail: SharedString::from(format!(
-                            "could not start a runtime for the request: {error}"
-                        )),
-                    },
-                };
-                cx.notify();
-            });
-        });
-    }
-
     // ── Event application ─────────────────────────────────────────────────
 
-    fn apply_search_event(&mut self, ev: SearchEvent, cx: &mut Context<Self>) {
-        match ev {
-            SearchEvent::Section {
-                generation,
-                section,
-                rows,
-            } => {
-                // Stale guard: drop events from superseded queries.
-                if generation.0 != self.generation {
-                    return;
-                }
+    /// Apply one frame from the federated `Answer<Symbols>`.
+    ///
+    /// # THE consumption rule
+    ///
+    /// `Frame::Item` is an **upsert keyed by `Surface::key`**, not an append —
+    /// see that variant's own doc comment in `heart/surface.rs`. A repeat key
+    /// is a supersede: `merge` already fused the two copies before re-emitting,
+    /// so this replaces the held row rather than pushing a second one. Getting
+    /// this wrong reintroduces the exact bug the whole federated contract
+    /// exists to remove: the same symbol rendered twice, intermittently,
+    /// depending on which plane answered first.
+    ///
+    /// # Why every hit lands in `sections[0]`
+    ///
+    /// `heart::surface::Symbols` — what `Federated::serve` answers, for both
+    /// planes — carries no per-item section: a `Frame::Item` is `Located<
+    /// Scored<SymbolHit>>`, with nothing naming which of the local engine's
+    /// three internal ranking passes (name/type/semantic) produced it, and the
+    /// remote index's own ranking is a single fused list (`RankSpecification::
+    /// Fused`) with no section concept at all. `sections[1]`/`[2]` (Type,
+    /// Semantic) stay empty; `SECTION_COUNT`/`Section`/`Cursor` are otherwise
+    /// unchanged, so cmd-1 (jump to Name) and the rest of the selection model
+    /// keep working over whichever sections actually hold rows.
+    ///
+    /// Does not itself rebuild `sections[0].rows` or notify — `trigger_search`'s
+    /// drain loop calls this for every frame in a batch, then
+    /// [`SearchStore::rebuild_rows`] and `cx.notify()` once, mirroring
+    /// `bridge::drain::drain`'s batching rule.
+    fn apply_frame(&mut self, frame: Frame<Symbols>) {
+        match frame {
+            Frame::Item(located) => {
                 if self.gen_arrival.is_none() {
                     self.gen_arrival = Some(Instant::now());
                 }
-                let idx = section.0 as usize;
-                if idx < SECTION_COUNT {
-                    // Convert once at ingest — §1.1.4.
-                    // The engine already sorts by score descending before sending
-                    // (see nudox_engine::search), so we preserve that order.
-                    self.sections[idx].rows = PreparedRow::prepare(&rows);
-                    self.sections[idx].status = self.sections[idx].status_for_delivered_rows();
-                    // LD-15: only this section is touched.
+                let key = Symbols::key(&located.value);
+                match self
+                    .raw_rows
+                    .iter_mut()
+                    .find(|existing| Symbols::key(&existing.value) == key)
+                {
+                    Some(slot) => *slot = located,
+                    None => self.raw_rows.push(located),
                 }
-                self.clamp_selection();
-                cx.notify();
             }
 
-            SearchEvent::Merge {
-                generation,
-                section,
-                rows,
-            } => {
-                if generation.0 != self.generation {
-                    return;
-                }
-                if self.gen_arrival.is_none() {
-                    self.gen_arrival = Some(Instant::now());
-                }
-                let idx = section.0 as usize;
-                if idx < SECTION_COUNT {
-                    // Append prepared rows without clearing earlier sections (LD-15).
-                    let mut combined: Vec<PreparedRow> = self.sections[idx].rows.to_vec();
-                    let new_rows = PreparedRow::prepare(&rows);
-                    combined.extend_from_slice(&new_rows);
-                    self.sections[idx].rows = Arc::from(combined.as_slice());
-                    self.sections[idx].status = self.sections[idx].status_for_delivered_rows();
-                }
-                self.clamp_selection();
-                cx.notify();
+            // One source dropped out. Not terminal (`Frame::Degraded`'s own
+            // doc comment) — whatever the other source(s) already delivered
+            // keeps rendering; this only says the answer may be incomplete.
+            // Offline-first honesty, not failure.
+            Frame::Degraded(_) => {
+                self.offline = true;
             }
 
-            // What a section's rows *mean*. Arrives before them (see
-            // `SectionBuf::declared`), so it is recorded rather than applied.
-            //
-            // `Unavailable` is applied to `status` immediately as well as
-            // recorded: unlike the other states it is knowable before any rows
-            // exist and there may never be a `Section` event worth waiting for
-            // — and until it lands the section is still showing `Loading`,
-            // i.e. a shimmer promising rows that are not coming.
-            SearchEvent::SectionState {
-                generation,
-                section,
-                state,
-            } => {
-                if generation.0 != self.generation {
-                    return;
-                }
-                let idx = section.0 as usize;
-                if idx < SECTION_COUNT {
-                    if matches!(state, SectionState::Unavailable { .. }) {
-                        self.sections[idx].status = SectionStatus::Unavailable;
-                    }
-                    self.sections[idx].declared = Some(state);
-                }
-                cx.notify();
+            Frame::Note(SearchNote::Latency { millis }) => {
+                // Pre-format here — §1.1.4 forbids formatting in render.
+                //
+                // # Why fast searches report no latency at all
+                //
+                // The results header used to read `2  0 ms`: a count and a
+                // duration, adjacent, both unlabelled, the second of them
+                // always zero because a local fixture search takes under a
+                // millisecond. Nielsen's threshold is the reason to drop it
+                // rather than punctuate it: 0.1 s is "the limit for having the
+                // user feel that the system is reacting instantaneously"
+                // (nngroup.com/articles/response-times-3-important-limits).
+                // Below that, the reader did not experience a wait, so a
+                // duration explains nothing that happened to them.
+                self.sections[0].latency = if u128::from(millis) >= PERCEPTIBLE_LATENCY_MS {
+                    SharedString::from(format!("{millis} ms"))
+                } else {
+                    SharedString::default()
+                };
             }
 
-            SearchEvent::Latency {
-                generation,
-                section,
-                elapsed,
-            } => {
-                if generation.0 != self.generation {
-                    return;
-                }
-                let idx = section.0 as usize;
-                if idx < SECTION_COUNT {
-                    // Pre-format here — §1.1.4 forbids formatting in render.
-                    //
-                    // # Why fast searches report no latency at all
-                    //
-                    // The results header used to read `2  0 ms`: a count and a
-                    // duration, adjacent, both unlabelled, the second of them
-                    // always zero because a local fixture search takes under a
-                    // millisecond. Two numbers side by side with no separator
-                    // do not read as two numbers — they read as one damaged
-                    // one, which is what made that header cryptic.
-                    //
-                    // Nielsen's threshold is the reason to drop it rather than
-                    // to punctuate it: 0.1 s is "the limit for having the user
-                    // feel that the system is reacting instantaneously"
-                    // (nngroup.com/articles/response-times-3-important-limits).
-                    // Below that, the reader did not experience a wait, so a
-                    // duration explains nothing that happened to them — it is
-                    // instrumentation shown to the wrong audience. Above it,
-                    // they felt something and the number says what.
-                    //
-                    // Elastic's Search UI ships no latency component at all;
-                    // Algolia's Stats widget shows one by default. This splits
-                    // the difference on the honest axis: show it when it is
-                    // information.
-                    let ms = elapsed.as_millis();
-                    self.sections[idx].latency = if ms >= PERCEPTIBLE_LATENCY_MS {
-                        SharedString::from(format!("{ms} ms"))
-                    } else {
-                        SharedString::default()
-                    };
-                }
-                cx.notify();
+            Frame::Note(SearchNote::Coverage { covered, total }) => {
+                self.sections[0].status = SectionStatus::Building {
+                    covered: u32::try_from(covered).unwrap_or(u32::MAX),
+                    total: total
+                        .and_then(|t| u32::try_from(t).ok())
+                        .unwrap_or(u32::MAX),
+                };
             }
 
-            SearchEvent::Done { generation } => {
-                if generation.0 != self.generation {
-                    return;
+            Frame::End(_) => {
+                // "Settled" is not always `Ready`: a `Coverage` note that
+                // already set `Building` must not be silently upgraded to a
+                // completed, uncaveated search just because the stream closed.
+                if self.sections[0].status == SectionStatus::Loading {
+                    self.sections[0].status = SectionStatus::Ready;
                 }
-                // Mark all sections that are still Loading as settled (stream
-                // closed). "Settled" is not always `Ready`: a section that
-                // declared `Building` or `Unavailable` and then delivered no
-                // rows must keep saying so, or the close of the stream would
-                // quietly upgrade a caveat into a completed empty search.
-                for s in &mut self.sections {
-                    if s.status == SectionStatus::Loading {
-                        s.status = s.status_for_delivered_rows();
-                    }
-                }
-                self.stream_handle = None;
-                cx.notify();
             }
 
-            SearchEvent::Failed { generation, error } => {
-                if generation.0 != self.generation {
-                    return;
-                }
-                // Mark all Loading sections as Offline on failure.
-                for s in &mut self.sections {
-                    if s.status == SectionStatus::Loading {
-                        s.status = SectionStatus::Offline;
-                    }
-                }
-                self.stream_handle = None;
-                cx.notify();
+            // Structurally rare: `Federated` appends a phantom
+            // always-succeeding source specifically so "every real source
+            // failed" degrades (`Frame::Degraded` + `Frame::End`) rather than
+            // failing the whole answer (`Federated`'s own doc comment).
+            // Handled anyway, honestly, in case a future host ever hands this
+            // store a bare `Serve<Symbols>` with no federation wrapper.
+            Frame::Failed(_) if self.sections[0].status == SectionStatus::Loading => {
+                self.sections[0].status = SectionStatus::Offline;
             }
+            Frame::Failed(_) => {}
 
-            // Forward-compat: unknown variants are ignored.
+            // `Frame` is `#[non_exhaustive]`: a future frame kind is ignored,
+            // not a compile break.
             _ => {}
         }
+    }
+
+    /// Rebuild `sections[0].rows` from `raw_rows` and re-clamp the cursor.
+    /// Called once per drained batch (not once per frame) — see
+    /// [`SearchStore::apply_frame`]'s own doc comment.
+    fn rebuild_rows(&mut self) {
+        self.sections[0].rows = PreparedRow::prepare(&self.raw_rows);
+        self.clamp_selection();
     }
 
     // ── Selection helpers ─────────────────────────────────────────────────
@@ -734,12 +661,38 @@ impl<E: SearchEngine> SearchStore<E> {
             }
         };
 
-        if cursor.section < SECTION_COUNT {
-            if let Some(row) = self.sections[cursor.section].rows.get(cursor.row) {
-                let key = row.key.clone();
-                cx.emit(OpenSymbol { key, disposition });
-            }
+        if cursor.section < SECTION_COUNT
+            && let Some(row) = self.sections[cursor.section].rows.get(cursor.row)
+            && let Some(key) = row.key.clone()
+        {
+            // `row.key` is `None` when the source could not supply a
+            // `StableReference` — see `PreparedRow::key`'s own doc comment.
+            // Committing such a row does nothing rather than opening a
+            // fabricated (and therefore wrong) symbol.
+            cx.emit(OpenSymbol { key, disposition });
         }
+    }
+}
+
+/// Build the one `heart::Query` every generation issues, local and remote
+/// alike — the single federated search path has exactly one request shape,
+/// not a local `SearchQuery` and a separate remote `Query`.
+fn build_query(text: &str) -> Query {
+    Query {
+        target: Target::Symbols,
+        text: text.to_owned(),
+        scope: Scope::default(),
+        rank: RankSpecification::default(),
+        // Precise (lexical): matches the local engine's own default routing.
+        mode: QueryMode::Precise,
+        routing: Routing::default(),
+        session: None,
+        at: None,
+        page: PageSpecification {
+            limit: 50,
+            cursor: None,
+        },
+        query_id: None,
     }
 }
 
@@ -749,7 +702,7 @@ impl<E: SearchEngine> SearchStore<E> {
 
 use crate::stores::search_model::SearchAccess;
 
-impl<E: SearchEngine> SearchAccess for SearchStore<E> {
+impl SearchAccess for SearchStore {
     fn snapshot(&self) -> SearchSnapshot {
         // Cheap: only `Arc` refcount bumps and `SharedString` clones — no row
         // data allocation, no formatting (§12: stores hold render-ready state).
@@ -766,9 +719,7 @@ impl<E: SearchEngine> SearchAccess for SearchStore<E> {
             selection: self.selection,
             generation: self.generation,
             gen_arrival: self.gen_arrival,
-            // Offline if the semantic section (idx 2) is in the Offline state.
-            offline: self.sections[2].status == SectionStatus::Offline,
-            remote: self.remote_status.clone(),
+            offline: self.offline,
         }
     }
 
@@ -789,75 +740,9 @@ impl<E: SearchEngine> SearchAccess for SearchStore<E> {
         self.selection = cursor;
         cx.notify();
     }
-
-    fn search_remote(&mut self, cx: &mut Context<Self>) {
-        SearchStore::search_remote_inner(self, cx);
-    }
 }
 
-impl<E: SearchEngine> gpui::EventEmitter<OpenSymbol> for SearchStore<E> {}
-
-// ---------------------------------------------------------------------------
-// Remote failure classification — the typed contract boundary
-// ---------------------------------------------------------------------------
-
-/// Map a structured `heart` [`ClientError`] onto the GUI's typed
-/// [`RemoteFailure`] decision plus a human caption.
-///
-/// This is the whole point of the typed error envelope: the *decision* (retry?
-/// offline? degraded?) is made here on typed variants — a mid-stream server
-/// error, a truncated stream, and a malformed line are three different classes
-/// with three different right answers — rather than by string-matching a
-/// flattened `Display`. The caption is derived last, and only for the human.
-///
-/// Both `ClientError` and `WireError` are `#[non_exhaustive]`, so the `_` arms
-/// fold any future class into the most conservative decision rather than failing
-/// to compile.
-/// Why one remote round-trip did not produce hits.
-///
-/// Two genuinely different failures that must not be reported as one: the
-/// server answered badly ([`Self::Client`]), or the request never left this
-/// process because no Tokio runtime could be built to drive reqwest
-/// ([`Self::Runtime`]). Collapsing the second into "offline" would blame a
-/// server nothing ever contacted.
-enum RemoteDriveFailure {
-    /// The request was made and the client rejected the outcome.
-    Client(ClientError),
-    /// A Tokio runtime for this request could not be constructed.
-    Runtime(std::io::Error),
-}
-
-fn classify_remote_error(error: &ClientError) -> (RemoteFailure, SharedString) {
-    let kind = match error {
-        // No route to the server: connect refused, timeout, DNS, or an unusable
-        // base URL. The query is fine; the server is not there right now.
-        ClientError::Transport(_) | ClientError::Url(_) => RemoteFailure::Offline,
-        // The server answered a non-2xx before streaming: 4xx is on the request,
-        // everything else is on the server.
-        ClientError::Status { status, .. } if (400..500).contains(status) => {
-            RemoteFailure::Rejected
-        }
-        ClientError::Status { .. } => RemoteFailure::ServerError,
-        // A malformed line, or frames after the terminal frame: protocol trouble.
-        ClientError::Decode(_) | ClientError::Protocol { .. } => RemoteFailure::Protocol,
-        // The stream was cut before its terminal frame: incomplete, not empty.
-        ClientError::Truncated { .. } => RemoteFailure::Truncated,
-        // A structured mid-stream failure the server *chose to send*: switch on
-        // the wire class to decide whether the query or the server is at fault.
-        ClientError::Wire { error, .. } => match error {
-            WireError::BadRequest(_) => RemoteFailure::Rejected,
-            WireError::Backend(_) | WireError::Timeout | WireError::Internal(_) => {
-                RemoteFailure::ServerError
-            }
-            _ => RemoteFailure::ServerError,
-        },
-        _ => RemoteFailure::Offline,
-    };
-    // Capped: a connection-refused/DNS message is short, but nothing guarantees
-    // that of every `ClientError::Status` body, and this renders in one line.
-    let detail = SharedString::from(error.to_string().chars().take(160).collect::<String>());
-    (kind, detail)
-}
+impl gpui::EventEmitter<OpenSymbol> for SearchStore {}
 
 // ---------------------------------------------------------------------------
 // Pure cursor helpers (mirrors the view's policy; the view is authoritative)
@@ -938,44 +823,40 @@ fn step_up(current: Option<Cursor>, counts: &[usize; SECTION_COUNT]) -> Option<C
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName, SymbolKey};
+    use heart::surface::Residence;
+    use heart::{PackageId, Score, SymbolKind};
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
-    fn test_key(n: u8) -> SymbolKey {
-        let mut raw = [0u8; 32];
-        raw[0] = n;
-        SymbolKey::new(
-            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture")),
-            IntroId::from_raw(raw),
+    /// A federated hit — `Located<Scored<SymbolHit>>`, exactly what a
+    /// `Frame::Item` carries. `package`/`path` together are `Symbols::key`, so
+    /// tests that want two hits to collide pass the same `package` and `path`.
+    fn hit(package: PackageId, path: &str, score: f32) -> Located<Scored<SymbolHit>> {
+        Located::new(
+            Scored::new(
+                SymbolHit {
+                    package,
+                    path: path.into(),
+                    display_name: path.into(),
+                    ecosystem: heart::Language::Rust,
+                    kind: SymbolKind::Module,
+                    signature: None,
+                    reference: None,
+                },
+                Score::try_new(score).expect("test score is finite"),
+            ),
+            Residence::Local,
         )
     }
 
-    fn make_hit(n: u8, score: f32) -> HitRow {
-        nudox_engine::wire::HitRow {
-            key: test_key(n),
-            display_name: nudox_engine::wire::SharedStr::from("fixture::Item"),
-            sig_preview: vec![],
-            kind: nudox_engine::wire::KindTag::Unknown(0),
-            provenance: nudox_engine::wire::Provenance::TrustedLocal,
-            score,
-        }
-    }
-
-    // Minimal test double for SearchEngine.
+    // Minimal test double: a local source that never answers on its own —
+    // every test here drives `apply_frame`/`rebuild_rows` directly rather than
+    // through a live `Answer`.
     struct NullEngine;
 
-    impl SearchEngine for NullEngine {
-        fn search(
-            &self,
-            _text: &str,
-            _scope: &SearchScope,
-            _mode: SearchMode,
-            generation: Gen,
-        ) -> (BridgeStreamHandle, flume::Receiver<SearchEvent>) {
-            let (_, rx) = flume::bounded(1);
-            let handle = BridgeStreamHandle::new(generation, || {});
-            (handle, rx)
+    impl Serve<Symbols> for NullEngine {
+        fn serve(&self, _request: Query, generation: heart::surface::Gen) -> heart::surface::Answer<Symbols> {
+            heart::surface::Answer::empty(generation)
         }
     }
 
@@ -991,66 +872,87 @@ mod tests {
         assert!(g2 < g3);
     }
 
-    // ── Section independence (LD-15) ──────────────────────────────────────
+    // ── The upsert rule (THE consumption rule) ──────────────────────────────
 
-    /// Updating section 0 must not touch section 1 or 2.
+    /// A repeat key must replace the held row, never append a second one —
+    /// `Frame::Item`'s own doc comment, and the exact bug class the whole
+    /// federated contract exists to remove (the same symbol rendered twice,
+    /// intermittently, depending on which plane answered first).
     #[test]
-    fn section_event_does_not_clear_other_sections() {
-        let mut store = SearchStore::new(NullEngine);
-        store.generation = 1;
+    fn a_repeat_key_replaces_rather_than_appends() {
+        let mut store = SearchStore::for_local(NullEngine);
+        let package = PackageId::new_random();
 
-        // Pre-populate section 1 with one prepared row.
-        let row1 = make_hit(1, 0.9);
-        store.sections[1].rows = PreparedRow::prepare(&[row1]);
-        store.sections[1].status = SectionStatus::Ready;
+        store.apply_frame(Frame::Item(hit(package, "fixture::Item", 0.5)));
+        store.apply_frame(Frame::Item(hit(package, "fixture::Item", 0.9)));
+        store.rebuild_rows();
 
-        // Simulate a Section event for section 0.
-        let row0 = make_hit(0, 1.0);
-        let rows: Arc<[HitRow]> = Arc::from([row0]);
-        let ev = SearchEvent::Section {
-            generation: Gen(1),
-            section: SECTION_NAME,
-            rows,
-        };
-
-        // We can't call apply_search_event without a Context, so test the
-        // LD-15 property at the data level directly.
-        let prepared = PreparedRow::prepare(&[make_hit(0, 1.0)]);
-        store.sections[0].rows = prepared;
-        store.sections[0].status = SectionStatus::Ready;
-
-        assert_eq!(
-            store.sections[1].rows.len(),
-            1,
-            "Type section must survive Name arrival"
-        );
         assert_eq!(
             store.sections[0].rows.len(),
             1,
-            "Name section has the new row"
+            "a repeat (package, path) key must replace in place, not append"
         );
-        assert_eq!(
-            store.sections[2].rows.len(),
-            0,
-            "Semantic section untouched"
-        );
+        assert_eq!(store.sections[0].rows[0].relevance, 0.9, "the later copy wins");
     }
 
-    /// A Merge event appends to target section only (LD-15).
+    /// Two genuinely distinct keys both survive.
     #[test]
-    fn merge_appends_to_target_section_only() {
-        let mut store = SearchStore::new(NullEngine);
-        store.sections[0].rows = PreparedRow::prepare(&[make_hit(1, 0.5)]);
-        store.sections[2].rows = PreparedRow::prepare(&[make_hit(2, 0.5)]);
+    fn distinct_keys_both_land() {
+        let mut store = SearchStore::for_local(NullEngine);
+        let package = PackageId::new_random();
 
-        // Append to section 0 only.
-        let existing = store.sections[0].rows.to_vec();
-        let mut combined = existing;
-        combined.extend_from_slice(&PreparedRow::prepare(&[make_hit(3, 0.4)]));
-        store.sections[0].rows = Arc::from(combined.as_slice());
+        store.apply_frame(Frame::Item(hit(package, "fixture::One", 0.9)));
+        store.apply_frame(Frame::Item(hit(package, "fixture::Two", 0.5)));
+        store.rebuild_rows();
 
-        assert_eq!(store.sections[0].rows.len(), 2, "Name grew by 1");
-        assert_eq!(store.sections[2].rows.len(), 1, "Semantic unchanged");
+        assert_eq!(store.sections[0].rows.len(), 2);
+    }
+
+    /// `heart::surface::Symbols` carries no per-item section, so every hit
+    /// lands in `sections[0]` — `sections[1]`/`[2]` must stay exactly as a
+    /// caller left them (see `SectionBuf`'s own doc comment).
+    #[test]
+    fn only_section_zero_is_ever_populated() {
+        let mut store = SearchStore::for_local(NullEngine);
+        let package = PackageId::new_random();
+        // Simulate a stray write to section 1, as a regression would.
+        store.sections[1].rows = PreparedRow::prepare(&[hit(package, "fixture::Stray", 0.9)]);
+        store.sections[1].status = SectionStatus::Ready;
+
+        store.apply_frame(Frame::Item(hit(package, "fixture::Item", 1.0)));
+        store.rebuild_rows();
+
+        assert_eq!(store.sections[0].rows.len(), 1, "section 0 holds the new row");
+        assert_eq!(
+            store.sections[1].rows.len(),
+            1,
+            "apply_frame/rebuild_rows must never touch section 1"
+        );
+        assert_eq!(store.sections[2].rows.len(), 0, "section 2 untouched");
+    }
+
+    // ── Degradation ──────────────────────────────────────────────────────
+
+    /// One source failing degrades the snapshot's `offline` flag; local rows
+    /// already collected still render (offline-first honesty, not failure).
+    #[test]
+    fn a_degraded_frame_sets_offline_without_dropping_rows() {
+        let mut store = SearchStore::for_local(NullEngine);
+        let package = PackageId::new_random();
+
+        store.apply_frame(Frame::Item(hit(package, "fixture::Item", 1.0)));
+        store.apply_frame(Frame::Degraded(heart::surface::Degradation {
+            source: heart::SourceId::new_random(),
+            reason: heart::stream::WireError::Timeout,
+        }));
+        store.rebuild_rows();
+
+        assert!(store.offline, "a degraded source must set offline");
+        assert_eq!(
+            store.sections[0].rows.len(),
+            1,
+            "the healthy source's row still renders"
+        );
     }
 
     // ── Latency pre-formatting ─────────────────────────────────────────────
@@ -1058,14 +960,20 @@ mod tests {
     /// Latency is formatted as `"{ms} ms"` at ingest, not in render.
     #[test]
     fn latency_preformatted_as_ms_string() {
-        let mut store = SearchStore::new(NullEngine);
-        store.generation = 1;
-        // Simulate the formatting logic from apply_search_event.
-        let elapsed = std::time::Duration::from_millis(42);
-        let ms = elapsed.as_millis();
-        let s = SharedString::from(format!("{ms} ms"));
-        store.sections[0].latency = s.clone();
-        assert_eq!(store.sections[0].latency.as_ref(), "42 ms");
+        let mut store = SearchStore::for_local(NullEngine);
+        // Above the 100 ms perceptibility threshold, or this is
+        // indistinguishable from the "no line at all" case below.
+        store.apply_frame(Frame::Note(SearchNote::Latency { millis: 142 }));
+        assert_eq!(store.sections[0].latency.as_ref(), "142 ms");
+    }
+
+    /// Below Nielsen's 100 ms threshold, nothing is reported at all — see
+    /// `apply_frame`'s own doc comment on why sub-perceptible latency is noise.
+    #[test]
+    fn imperceptible_latency_reports_nothing() {
+        let mut store = SearchStore::for_local(NullEngine);
+        store.apply_frame(Frame::Note(SearchNote::Latency { millis: 4 }));
+        assert!(store.sections[0].latency.is_empty());
     }
 
     // ── Cursor-based selection ─────────────────────────────────────────────
@@ -1146,7 +1054,7 @@ mod tests {
     /// Snapshot clones only Arc/SharedString; it does not allocate row data.
     #[test]
     fn snapshot_is_cheap_clones_only() {
-        let store = SearchStore::new(NullEngine);
+        let store = SearchStore::for_local(NullEngine);
         // This is a compile-time / structural test: we verify snapshot() returns
         // a SearchSnapshot and that the fields are Arc / SharedString types
         // (refcount bumps, no row allocation).  We cannot check allocation
@@ -1161,10 +1069,15 @@ mod tests {
 
     // ── PreparedRow conversion at ingest ──────────────────────────────────
 
-    /// `PreparedRow::prepare` converts wire rows once; the result is an `Arc` slice.
+    /// `PreparedRow::prepare` converts federated hits once; the result is an
+    /// `Arc` slice.
     #[test]
-    fn prepare_converts_hit_rows_to_prepared_rows() {
-        let hits = vec![make_hit(1, 0.9), make_hit(2, 0.5)];
+    fn prepare_converts_hits_to_prepared_rows() {
+        let package = PackageId::new_random();
+        let hits = vec![
+            hit(package, "fixture::One", 0.9),
+            hit(package, "fixture::Two", 0.5),
+        ];
         let prepared = PreparedRow::prepare(&hits);
         assert_eq!(prepared.len(), 2);
     }
@@ -1172,16 +1085,8 @@ mod tests {
     /// `PreparedRow::prepare` splits qualified names correctly.
     #[test]
     fn prepared_row_splits_qualified_name() {
-        use nudox_engine::wire::{HitRow, KindTag, Provenance, SharedStr};
-        let hit = HitRow {
-            key: test_key(0),
-            display_name: SharedStr::from("serde_json::value::Value"),
-            sig_preview: vec![],
-            kind: KindTag::Unknown(0),
-            provenance: Provenance::TrustedLocal,
-            score: 1.0,
-        };
-        let row = &PreparedRow::prepare(std::slice::from_ref(&hit))[0];
+        let one = hit(PackageId::new_random(), "serde_json::value::Value", 1.0);
+        let row = &PreparedRow::prepare(std::slice::from_ref(&one))[0];
         assert_eq!(row.path.as_ref(), "serde_json::value::");
         assert_eq!(row.leaf.as_ref(), "Value");
     }
@@ -1189,30 +1094,18 @@ mod tests {
     /// `PreparedRow::prepare` handles a bare name (no separator).
     #[test]
     fn prepared_row_bare_name_has_empty_path() {
-        use nudox_engine::wire::{HitRow, KindTag, Provenance, SharedStr};
-        let hit = HitRow {
-            key: test_key(0),
-            display_name: SharedStr::from("Value"),
-            sig_preview: vec![],
-            kind: KindTag::Unknown(0),
-            provenance: Provenance::TrustedLocal,
-            score: 1.0,
-        };
-        let row = &PreparedRow::prepare(std::slice::from_ref(&hit))[0];
+        let one = hit(PackageId::new_random(), "Value", 1.0);
+        let row = &PreparedRow::prepare(std::slice::from_ref(&one))[0];
         assert!(row.path.is_empty());
         assert_eq!(row.leaf.as_ref(), "Value");
     }
 
-    // ── Stale guard ───────────────────────────────────────────────────────
-
-    /// Events from an old generation are dropped.
+    /// A hit with no `reference` gets no fabricated key — it renders, but
+    /// `PreparedRow::key` is `None` rather than a made-up `SymbolKey`.
     #[test]
-    fn stale_gen_guard_logic() {
-        let current_gen = Gen(2);
-        let stale_gen = Gen(1);
-        let is_stale = stale_gen.0 != current_gen.0;
-        assert!(is_stale);
-        let is_current = current_gen.0 != current_gen.0;
-        assert!(!is_current);
+    fn a_hit_with_no_reference_has_no_key() {
+        let one = hit(PackageId::new_random(), "fixture::Item", 1.0);
+        let row = &PreparedRow::prepare(std::slice::from_ref(&one))[0];
+        assert!(row.key.is_none());
     }
 }

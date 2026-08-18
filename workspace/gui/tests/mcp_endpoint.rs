@@ -383,7 +383,7 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
          `nudox-fixture-rich` missing from {packages:?}",
     );
     assert!(
-        packages.contains("fixture:nudox-fixture-rich"),
+        packages.contains("cargo:nudox-fixture-rich"),
         "package rows must carry real lineage data: {packages:?}",
     );
 
@@ -418,7 +418,7 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
         "an agent searching the window's corpus for `Point` must find it; got {text:?}",
     );
     assert!(
-        text.contains("fixture:nudox-fixture-rich::"),
+        text.contains("cargo:nudox-fixture-rich::"),
         "hits must come from the fixture corpus this window loaded; got {text:?}",
     );
 
@@ -766,8 +766,14 @@ fn wait_for_two_fixture_symbols(
         cx.update(|cx| {
             for section in search.read(cx).snapshot().sections.iter() {
                 for row in section.rows.iter() {
-                    if !distinct.contains(&row.key) {
-                        distinct.push(row.key.clone());
+                    // `row.key` is `None` for a hit with no `StableReference`
+                    // (`PreparedRow::key`'s own doc comment) — skip it, the
+                    // same as a caller trying to open it would.
+                    let Some(key) = row.key.clone() else {
+                        continue;
+                    };
+                    if !distinct.contains(&key) {
+                        distinct.push(key);
                     }
                 }
             }

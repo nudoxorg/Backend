@@ -51,8 +51,10 @@ pub mod symbol;
 /// The engine the shipping app runs on (LR-9).
 pub type Engine = nudox_engine::EngineHandle;
 
-/// [`search::SearchStore`] over the real engine.
-pub type SearchStore = search::SearchStore<Engine>;
+/// [`search::SearchStore`] — no longer generic; the local engine is erased to
+/// `Arc<dyn heart::surface::Serve<heart::surface::Symbols>>` at construction
+/// (see `search::SearchStore::new`).
+pub use search::SearchStore;
 
 /// [`symbol::SymbolStore`] over the real engine.
 pub type SymbolStore = symbol::SymbolStore<Engine>;

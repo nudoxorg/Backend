@@ -21,10 +21,15 @@ let
   };
 
   inherit (pkgs) lib;
+
+  # Single source for the version stamped into Info.plist below — was two
+  # independently hardcoded "0.1.0" literals inside the installPhase heredoc,
+  # decoupled from this derivation's own `version` and from Cargo.toml.
+  version = "0.1.0";
 in
 rustPlatform.buildRustPackage {
   pname = "lindsey";
-  version = "0.1.0";
+  inherit version;
 
   inherit src;
 
@@ -33,7 +38,7 @@ rustPlatform.buildRustPackage {
 
   # cargoLock.outputHashes collides on `trustfall-0.8.1` (crates.io + git).
   # `cargo vendor` via cargoHash names those two copies apart.
-  cargoHash = "sha256-BSOvxwCMneDIlTuRHjToa5gyVIcap07JfJJd5vwoAEo=";
+  cargoHash = "sha256-mX3Uz5s88eX2HrF8Yg6PjXbsYfQvX5382eVaaj2hEWg=";
 
   nativeBuildInputs = [
     pkgs.pkg-config
@@ -102,9 +107,9 @@ rustPlatform.buildRustPackage {
         <key>CFBundleIdentifier</key>
         <string>com.nudox.lindsey</string>
         <key>CFBundleVersion</key>
-        <string>0.1.0</string>
+        <string>${version}</string>
         <key>CFBundleShortVersionString</key>
-        <string>0.1.0</string>
+        <string>${version}</string>
         <key>CFBundleExecutable</key>
         <string>lindsey</string>
         <key>CFBundleIconFile</key>

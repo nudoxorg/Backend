@@ -470,7 +470,7 @@ mod tests {
             // formatting, not navigation. `root_is_retained_across_a_later_event`
             // below is the one that supplies a real key.
             root: None,
-            metadata: nudox_engine::PackageMetadata::default(),
+            metadata: Box::new(nudox_engine::PackageMetadata::default()),
         }
     }
 
@@ -490,7 +490,7 @@ mod tests {
             version: None,
             symbol_count: symbols,
             root: Some(root),
-            metadata: nudox_engine::PackageMetadata::default(),
+            metadata: Box::new(nudox_engine::PackageMetadata::default()),
         }
     }
 
@@ -501,7 +501,7 @@ mod tests {
             version: Some(version.to_owned()),
             symbol_count: symbols,
             root: None,
-            metadata: nudox_engine::PackageMetadata::default(),
+            metadata: Box::new(nudox_engine::PackageMetadata::default()),
         }
     }
 
@@ -626,7 +626,7 @@ mod tests {
             version: Some("0.8.4".to_owned()),
             symbol_count: 4220,
             root: None,
-            metadata: nudox_engine::PackageMetadata {
+            metadata: Box::new(nudox_engine::PackageMetadata {
                 description: Some("HTTP primitives".to_owned()),
                 repository: Some("https://github.com/tokio-rs/axum".to_owned()),
                 license: Some("MIT".to_owned()),
@@ -638,7 +638,8 @@ mod tests {
                     documented: 8,
                     total: 10,
                 }),
-            },
+                version: Some("0.8.4".to_owned()),
+            }),
         });
 
         let row = &store.rows()[0];

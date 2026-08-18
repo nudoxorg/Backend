@@ -46,7 +46,12 @@ pub struct SymbolKey(pub SharedString);
 #[non_exhaustive]
 pub enum SigToken {
     /// A language keyword — `pub`, `fn`, `struct`, `impl`.
-    Kw(&'static str),
+    ///
+    /// `SharedString`, not `&'static str`: the wire tokens this renders may
+    /// come from `heart::surface::SigToken`, whose `Kw`/`Punct` are owned
+    /// `SmolStr` (a signature can be server-supplied, and nothing deserialized
+    /// off a wire can be `'static` — see that type's own doc comment).
+    Kw(SharedString),
     /// The declared name of the symbol itself.
     Ident(SharedString),
     /// A type reference. `target` is `Some` when it resolves to a symbol we can
@@ -58,7 +63,7 @@ pub enum SigToken {
         target: Option<SymbolKey>,
     },
     /// Punctuation — `(`, `)`, `,`, `->`, `<`, `>`.
-    Punct(&'static str),
+    Punct(SharedString),
     /// A single space. Modelled as a token rather than baked into neighbours so
     /// that the renderer controls spacing consistently.
     Ws,
@@ -73,7 +78,7 @@ impl SigToken {
     /// blank gap in a signature is a bug rather than a silent omission.
     fn text(&self) -> &str {
         match self {
-            Self::Kw(s) | Self::Punct(s) => s,
+            Self::Kw(s) | Self::Punct(s) => s.as_ref(),
             Self::Ident(s) | Self::Generic(s) => s.as_ref(),
             Self::Ty { text, .. } => text.as_ref(),
             Self::Ws => " ",
@@ -204,10 +209,10 @@ mod tests {
     #[test]
     fn every_token_renders_non_empty_text() {
         let tokens = vec![
-            SigToken::Kw("pub"),
+            SigToken::Kw("pub".into()),
             SigToken::Ws,
             SigToken::Ident("map_err".into()),
-            SigToken::Punct("("),
+            SigToken::Punct("(".into()),
             SigToken::Generic("T".into()),
             SigToken::Ty {
                 text: "Result".into(),

@@ -93,20 +93,28 @@ nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 # about the IR's shape crosses this seam, which is the same test the engine's
 # MCP and embedder planes pass.
 #
-# The remote section is additive, never a replacement: `nudox-engine` stays the
-# only source of the local-first (offline) results; a remote server, when one
-# is configured and reachable, contributes a second, clearly-labelled result
-# group. `features = ["client"]` is what pulls `reqwest` in at all — bare
+# The remote source is additive, never a replacement: `nudox-engine` stays the
+# local-first (offline) source in `heart::surface::Federated`; a remote server,
+# when one is configured and reachable, is federated in as a second source and
+# merged into the one result list — see `stores::search::SearchStore`'s own
+# module doc. `features = ["client"]` is what pulls `reqwest` in at all — bare
 # `heart` (as `index` itself depends on it) carries no transport.
 heart = { path = "../../workspace/heart", features = ["client"] }
 
+# Only for `url::Url::parse` when building the remote federation source
+# (`heart::client::RemoteClient::new` takes a parsed `Url`, not a `&str`) — no
+# transport of its own, `heart`'s own `client` feature already carries that.
+url = "2.5"
+
 # Not an async runtime for the *app* — GPUI's executor remains the only thing
-# that drives lindsey's futures (LR-9). This is the minimum needed to poll one
-# reqwest future: `heart`'s `client` feature puts reqwest (and therefore Tokio)
-# in the graph already, and reqwest's futures panic outright — "there is no
-# reactor running" — unless polled inside a Tokio runtime. The remote escape
-# hatch builds a current-thread runtime on a background thread for the length of
-# one request; see `SearchStore::search_remote_inner`.
+# that drives lindsey's futures (LR-9). `heart`'s `client` feature puts reqwest
+# (and therefore Tokio) in the graph already; `RemoteClient::serve` spawns its
+# HTTP pump with a bare `tokio::spawn`, which needs a runtime entered on the
+# calling thread. lindsey does not build one — `EngineScopedRemote`
+# (`stores::search`) borrows the engine's own runtime via
+# `EngineHandle::runtime_handle` instead (LR-9: "hosts borrow this runtime,
+# they do not build one"). This dependency exists so that method resolves;
+# nothing in `lindsey`'s own source constructs a `tokio::runtime::Runtime`.
 tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
 
 # ── Bridge & support ─────────────────────────────────────────────────────────

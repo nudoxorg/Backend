@@ -1,16 +1,20 @@
 //! Omni-search overlay — GUI-PLAN §15. The homepage of lindsey.
 //!
 //! `cmd-K` opens a centred 640 px overlay: an input row with mode and scope
-//! chips, three independently-arriving result sections (Name / Type / Semantic)
-//! each under a sticky caption header carrying a per-section latency readout,
-//! and a footer of [`KeyHint`]s.
+//! chips, a results list under a sticky caption header carrying a latency
+//! readout, and a footer of [`KeyHint`]s.
 //!
-//! # What makes this beat a flat search list
+//! # One federated list, not local/remote groups
 //!
-//! * **Sections arrive independently.** Local name/type hits paint as soon as
-//!   the drain delivers them (< 10 ms, §15 acceptance). The semantic section
-//!   shimmers *in its own section only* and never clears or reorders what is
-//!   already on screen (LD-15).
+//! Results come from `stores::search::SearchStore`'s one
+//! `heart::surface::Federated<Symbols>` — local and, when configured, a
+//! synced remote index, merged into a single list with no visible seam (the
+//! trust badge below says *how trusted* a row is, never *which plane served
+//! it* — LD-8). The layout still addresses rows as `Section`/`Cursor` (only
+//! `Section::Name`, index 0, is ever populated today — `SectionData`'s own
+//! doc comment in `search_model.rs`), which is what keeps cmd-1 and the rest
+//! of the selection model unchanged.
+//!
 //! * **Every row is typed.** Kind badge, display name, a real
 //!   [`SignatureLine`] built from pre-tokenised signature tokens, the module
 //!   path, and a trust badge (LD-8).
@@ -23,12 +27,12 @@
 //!
 //! # Zero string work in render (§1.1.4 / §15 Perf)
 //!
-//! Rows are [`PreparedRow`]s, not [`HitRow`]s. The wire→UI conversion (splitting
-//! the display name into path + leaf, mapping `KindTag` to a local kind,
-//! mapping wire provenance to trust chrome, and translating each wire signature
-//! token into the one [`SignatureLine`] consumes) happens **once, at ingest**,
-//! via [`PreparedRow::prepare`]. `render` only clones `Arc`s and
-//! `SharedString`s.
+//! Rows are [`PreparedRow`]s, never a wire type directly. The wire→UI
+//! conversion (splitting the display name into path + leaf, mapping
+//! `SymbolKind` to a local kind, mapping residence to trust chrome, and
+//! translating each signature token into the one [`SignatureLine`] consumes)
+//! happens **once, at ingest**, via `PreparedRow::prepare`. `render` only
+//! clones `Arc`s and `SharedString`s.
 //!
 //! # Entrance identity (§4.1 — the rule that makes virtualization safe)
 //!
@@ -79,8 +83,8 @@ use nudox_engine::wire::SymbolKey;
 // belongs in stores (§12), not views.  The re-exports keep every existing import
 // path and all 19 tests in this file compiling unchanged.
 pub use crate::stores::search_model::{
-    Cursor, PreparedRow, RemoteStatus, SECTION_COUNT, ScopeChip, SearchAccess, SearchMode,
-    SearchSnapshot, Section, SectionData, SectionStatus, prepare_provenance, prepare_sig_token,
+    Cursor, PreparedRow, SECTION_COUNT, ScopeChip, SearchAccess, SearchMode, SearchSnapshot,
+    Section, SectionData, SectionStatus, prepare_provenance, prepare_sig_token,
     split_qualified_name,
 };
 
@@ -408,10 +412,6 @@ impl SearchAccess for StubSearchStore {
 
     fn set_selection(&mut self, cursor: Option<Cursor>, cx: &mut Context<Self>) {
         self.snapshot.selection = cursor;
-        cx.notify();
-    }
-
-    fn search_remote(&mut self, cx: &mut Context<Self>) {
         cx.notify();
     }
 }
@@ -1195,7 +1195,11 @@ impl<S: SearchAccess> OmniSearch<S> {
         let Some(row) = snapshot.row_at(cursor) else {
             return;
         };
-        let key = row.key.clone();
+        // `row.key` is `None` when the source could not supply a
+        // `StableReference` — see `PreparedRow::key`'s own doc comment.
+        // Committing such a row does nothing rather than opening a fabricated
+        // (and therefore wrong) symbol.
+        let Some(key) = row.key.clone() else { return };
         cx.emit(OmniSearchEvent::Open { key, disposition });
     }
 
@@ -2071,10 +2075,16 @@ impl<S: SearchAccess> OmniSearch<S> {
                     let Some(row) = rows.get(ix) else {
                         return div().into_any_element();
                     };
+                    // `row.key` is `None` when the source could not supply a
+                    // `StableReference` (`PreparedRow::key`'s own doc
+                    // comment). No `on_click` is attached at all in that case
+                    // — a row that visibly cannot be clicked, rather than one
+                    // that silently fails on click.
                     let key = row.key.clone();
                     let this = this.clone();
-                    let element = Self::render_row(section, ix, row, row_height, cx).on_click(
-                        move |event, _window, cx| {
+                    let base = Self::render_row(section, ix, row, row_height, cx);
+                    let element = match key {
+                        Some(key) => base.on_click(move |event, _window, cx| {
                             let key = key.clone();
                             // cmd-click opens as a new foreground tab and
                             // keeps the overlay open (user can pick more
@@ -2095,8 +2105,9 @@ impl<S: SearchAccess> OmniSearch<S> {
                                 );
                                 cx.emit(OmniSearchEvent::Open { key, disposition });
                             });
-                        },
-                    );
+                        }),
+                        None => base,
+                    };
 
                     if cascading {
                         row_enter(element, entrance_id(namespace, generation, ix), ix, &tokens)
@@ -2358,21 +2369,27 @@ impl<S: SearchAccess> OmniSearch<S> {
                     let Some(row) = rows.get(ix) else {
                         return div().into_any_element();
                     };
+                    // See `render_section`'s row builder for why `on_click` is
+                    // conditional on `row.key` being `Some`.
                     let key = row.key.clone();
                     let this = this.clone();
-                    Self::render_row(Section::Name, ix, row, row_height, cx)
-                        .on_click(move |event, _window, cx| {
-                            let key = key.clone();
-                            let disposition = if event.modifiers().platform {
-                                OpenDisposition::Stay
-                            } else {
-                                OpenDisposition::Replace
-                            };
-                            let _ = this.update(cx, |_view, cx| {
-                                cx.emit(OmniSearchEvent::Open { key, disposition });
-                            });
-                        })
-                        .into_any_element()
+                    let base = Self::render_row(Section::Name, ix, row, row_height, cx);
+                    match key {
+                        Some(key) => base
+                            .on_click(move |event, _window, cx| {
+                                let key = key.clone();
+                                let disposition = if event.modifiers().platform {
+                                    OpenDisposition::Stay
+                                } else {
+                                    OpenDisposition::Replace
+                                };
+                                let _ = this.update(cx, |_view, cx| {
+                                    cx.emit(OmniSearchEvent::Open { key, disposition });
+                                });
+                            })
+                            .into_any_element(),
+                        None => base.into_any_element(),
+                    }
                 })
                 .collect()
         })
@@ -2393,113 +2410,29 @@ impl<S: SearchAccess> OmniSearch<S> {
             .into_any_element()
     }
 
-    /// §15 zero-hit state: a designed screen with a remote-search escape hatch
-    /// (LD-16 — an empty result is a state, not an absence).
-    fn render_no_hits(&self, snapshot: &SearchSnapshot, cx: &Context<Self>) -> AnyElement {
+    /// §15 zero-hit state (LD-16 — an empty result is a state, not an
+    /// absence).
+    ///
+    /// No remote affordance here any more: local and remote results are one
+    /// federated list now (`stores::search::SearchStore`'s own module doc), so
+    /// a zero-hit answer already reflects both planes — there is nothing left
+    /// for a "Search remote INDEX" button to do that the search this state is
+    /// already reporting on did not already do.
+    fn render_no_hits(&self, _snapshot: &SearchSnapshot, cx: &Context<Self>) -> AnyElement {
         let ext = cx.theme_ext();
         let sp = ext.space;
         let motion = MotionTokens::new(ext.motion_scale);
-        let store = self.store.clone();
 
         div()
             .w_full()
             .p(sp.space_6)
-            .child(
-                EmptyState::new(
-                    IconName::Inbox,
-                    SharedString::from("No matches here"),
-                    SharedString::from(
-                        "Nothing in the local corpus matches. The remote INDEX covers packages you have not synced.",
-                    ),
-                    motion,
-                )
-                .action(SharedString::from("Search remote INDEX"), move |_, cx| {
-                    store.update(cx, |s, cx| s.search_remote(cx));
-                }),
-            )
-            .child(Self::render_remote_status(&snapshot.remote, cx))
+            .child(EmptyState::new(
+                IconName::Inbox,
+                SharedString::from("No matches here"),
+                SharedString::from("Nothing in the corpus matches, local or synced."),
+                motion,
+            ))
             .into_any_element()
-    }
-
-    /// The "Search remote INDEX" button's own status line — a real
-    /// `NudoxClient` request against a configured `nudox-serve` instance
-    /// (`SearchStore::search_remote_inner`, `heart`'s off-by-default `client`
-    /// feature). Additive to the local-first sections; a remote row is drawn
-    /// with `trust.remote` chrome (LD-8), so it never claims to be a local
-    /// corpus result.
-    ///
-    /// A `Ready` status now carries the render-ready hits, so this both reports
-    /// the count *and* lists the top rows — the remote results are rendered
-    /// rather than discarded. `Unreachable` renders a caption derived from a
-    /// typed [`RemoteFailure`], not from a flattened error string.
-    fn render_remote_status(remote: &RemoteStatus, cx: &App) -> AnyElement {
-        let ext = cx.theme_ext();
-        let sp = ext.space;
-        let ts = ext.type_scale;
-        let colours = ext.colours;
-
-        let text: Option<SharedString> = match remote {
-            // Nothing to say yet — no line at all rather than a permanent
-            // "Idle" caption competing with the button above it.
-            RemoteStatus::NotConfigured | RemoteStatus::Idle => None,
-            RemoteStatus::Loading => Some(SharedString::from("Searching the remote INDEX…")),
-            RemoteStatus::Ready { hits: 0, .. } => {
-                Some(SharedString::from("The remote INDEX has no matches either"))
-            }
-            RemoteStatus::Ready {
-                hits, elapsed_ms, ..
-            } => Some(SharedString::from(format!(
-                "Remote INDEX: {hits} match{} ({elapsed_ms} ms)",
-                if *hits == 1 { "" } else { "es" }
-            ))),
-            RemoteStatus::Unreachable { kind, detail } => Some(SharedString::from(format!(
-                "Remote INDEX {}: {detail}",
-                kind.label()
-            ))),
-        };
-
-        let Some(text) = text else {
-            return div().into_any_element();
-        };
-
-        let mut column = v_flex().w_full().pt(sp.space_2).gap(sp.space_1).child(
-            div()
-                .text_size(ts.dense.size)
-                .line_height(ts.dense.line_height)
-                .text_color(colours.fg_muted)
-                .child(text),
-        );
-
-        // Render the remote hits (LD-16 augment: additive to the local
-        // sections). A compact row — kind chip, leaf, and package label — drawn
-        // from the same `PreparedRow` the local path renders, so there is one
-        // row vocabulary regardless of provenance.
-        if let RemoteStatus::Ready { rows, .. } = remote {
-            for row in rows.iter().take(VISIBLE_ROWS_PER_SECTION) {
-                let kind_label: SharedString = match row.kind {
-                    Some(k) => SharedString::from(k.short_label()),
-                    None => row.unknown_kind_label.clone(),
-                };
-                column = column.child(
-                    h_flex()
-                        .w_full()
-                        .gap(sp.space_2)
-                        .text_size(ts.dense.size)
-                        .line_height(ts.dense.line_height)
-                        .child(div().text_color(colours.fg_muted).child(kind_label))
-                        .child(div().text_color(colours.fg_default).child(row.leaf.clone()))
-                        .when(!row.package.is_empty(), |el| {
-                            el.child(
-                                div()
-                                    .text_color(colours.fg_muted)
-                                    .child(row.package.clone()),
-                            )
-                        }),
-                );
-            }
-        }
-
-        column.into_any_element()
     }
 
     /// The panel body when the input is a package URL.
