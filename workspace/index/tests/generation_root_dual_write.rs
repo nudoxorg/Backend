@@ -136,18 +136,11 @@ fn row(tag: &str, e: &Entry) -> RootEntry {
 /// content-addressed body, which is precisely what must stay stable. This is
 /// the resolution `ir/model/tests/storage_hash.rs` already recorded — the entry
 /// payload dedups; the root carries where each entry was that time.
+/// The payload is the hash's own **preimage** (`entry_storage_payload`), so
+/// `blake3(payload) == entry_storage_hash` by construction and the CAS's single
+/// integrity rule applies to these sections exactly as to every other one.
 fn payload(e: &Entry) -> Bytes {
-    let positionless = Entry::new(
-        symbol(
-            &e.sym().name,
-            &e.sym().documentation,
-            "",
-            0..0,
-        ),
-        Node::build(None::<RawRef>, []),
-        Kind::Module(Module),
-    );
-    Bytes::from(serde_json::to_vec(&positionless).expect("an entry serializes"))
+    Bytes::from(ir::content::entry_storage_payload(e))
 }
 
 /// A package of three declarations, as (root, per-entry payloads).

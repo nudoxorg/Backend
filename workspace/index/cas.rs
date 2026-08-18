@@ -156,47 +156,34 @@ impl Store<Live> {
         Path::from(format!("ptr/{}", package.as_uuid()))
     }
 
-    /// Verify a section's bytes against its declared key, in `cas/{hash}` —
-    /// there is exactly one namespace and every object in it is checked,
-    /// never skipped.
+    /// Verify a section's bytes against its declared key, in `cas/{hash}`.
     ///
-    /// Two addressing schemes currently produce objects in that namespace,
-    /// so this accepts either:
+    /// **One namespace, one rule, no exceptions:** `hash ==
+    /// ContentHash::of_bytes(bytes)`. Every section is checked and none is ever
+    /// skipped, including generation-root entry payloads.
     ///
-    /// - the ordinary physical scheme, `hash == ContentHash::of_bytes(bytes)`
-    ///   — every section except generation-root entry payloads (files,
-    ///   `ir_ref`, `references_ref`, the `GenerationRoot`'s own encoded
-    ///   bytes); or
-    /// - the entry-payload scheme
-    ///   ([`crate::blob::BlobBuilder::set_generation_root`]): `hash` is
-    ///   `ir::content::entry_storage_hash` of the semantic `Entry` the bytes
-    ///   decode to — a domain-separated hash over a narrower, position-free
-    ///   preimage than the bytes themselves (it excludes `sym.source`/
-    ///   `sym.span`; see `ir::generation`'s module doc, "Moved is not
-    ///   changed"), so it cannot be recomputed by rehashing the bytes
-    ///   directly. It is instead recomputed the *same way the addressing
-    ///   itself works*: decode the payload back into an `Entry` (the wire
-    ///   format `set_generation_root`'s payloads commit to — JSON) and ask
-    ///   `ir` for its storage hash.
+    /// That uniformity is not free — it is a constraint this layer *imposes* on
+    /// what may be stored, and P3 had to be built to satisfy it. Entry payloads
+    /// are addressed by `ir::content::entry_storage_hash`, a hash over a
+    /// deliberately narrower, position-free preimage than a serialized `Entry`
+    /// (it excludes `sym.source`/`sym.span`, task #17). The resolution is that
+    /// the stored bytes *are* that preimage —
+    /// `ir::content::entry_storage_payload` — so the plain digest matches by
+    /// construction (`hash_domain(d, p) = blake3(d ‖ p)`, `ir` `change/hash.rs`).
     ///
-    /// A section satisfying neither is genuinely corrupt or mis-addressed:
-    /// the physical-scheme mismatch is what's returned in that case, since
-    /// that is the scheme every pre-P3 section still uses.
+    /// Two earlier attempts are worth not repeating: routing entry payloads
+    /// through a second, *unverified* namespace (which would have blinded
+    /// `server/save/blobs.rs`'s corruption audit for the newest section class
+    /// in the system), and special-casing this function to decode payloads as
+    /// `ir::entry::Entry` and recompute an IR hash (which preserved the safety
+    /// property but put knowledge of IR encoding inside the storage layer, and
+    /// silently pinned the payload format to JSON forever). Neither is needed:
+    /// store the preimage and the contradiction disappears.
     fn verify_section_integrity(
         path: &Path,
         bytes: &bytes::Bytes,
         hash: ContentHash,
     ) -> Result<(), StoreError> {
-        if ContentHash::of_bytes(bytes) == hash {
-            return Ok(());
-        }
-        if let Ok(entry) = serde_json::from_slice::<ir::entry::Entry>(bytes) {
-            let recomputed =
-                ContentHash::from_bytes(*ir::content::entry_storage_hash(&entry).as_bytes());
-            if recomputed == hash {
-                return Ok(());
-            }
-        }
         verify_integrity(path.clone(), bytes, hash)
     }
 
