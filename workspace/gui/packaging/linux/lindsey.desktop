@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=lindsey
+Comment=Local-first documentation and code intelligence for seven languages
+Exec=lindsey
+Icon=lindsey
+Terminal=false
+Categories=Development;Utility;
+Keywords=documentation;docs;code;intelligence;references;
