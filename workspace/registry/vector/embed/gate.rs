@@ -39,7 +39,7 @@ impl Default for GateConfig {
     fn default() -> Self {
         Self {
             max_sessions: 1,
-            unload_idle: Duration::from_millis(120_000),
+            unload_idle: Duration::from_mins(2),
         }
     }
 }
@@ -97,16 +97,13 @@ impl<E: Send + Sync + 'static> EmbedGate<E> {
 
         let embedder = {
             let mut slot = self.slot.lock().await;
-            match &*slot {
-                Some(embedder) => Arc::clone(embedder),
-                None => {
-                    tracing::info!("embed gate: loading embedder");
-                    let embedder = Arc::new((self.factory)().await?);
-                    *slot = Some(Arc::clone(&embedder));
-                    self.loaded.store(true, Ordering::Release);
-                    self.loads.fetch_add(1, Ordering::Relaxed);
-                    embedder
-                }
+            if let Some(embedder) = &*slot { Arc::clone(embedder) } else {
+                tracing::info!("embed gate: loading embedder");
+                let embedder = Arc::new((self.factory)().await?);
+                *slot = Some(Arc::clone(&embedder));
+                self.loaded.store(true, Ordering::Release);
+                self.loads.fetch_add(1, Ordering::Relaxed);
+                embedder
             }
         };
 
@@ -233,13 +230,12 @@ where
         if let Some(info) = self.runtime_cache.get() {
             return info.clone();
         }
-        if let Ok(guard) = self.gate.slot.try_lock() {
-            if let Some(embedder) = &*guard {
+        if let Ok(guard) = self.gate.slot.try_lock()
+            && let Some(embedder) = &*guard {
                 let info = embedder.runtime();
                 let _ = self.runtime_cache.set(info.clone());
                 return info;
             }
-        }
         crate::vector::core::EmbedRuntimeInfo {
             model_id: <Self::Model as crate::vector::core::EmbeddingModel>::id(),
             accel: crate::vector::core::AccelKind::Cpu,

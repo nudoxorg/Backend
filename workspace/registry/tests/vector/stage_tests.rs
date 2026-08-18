@@ -9,10 +9,31 @@ use registry::vector::embed::mock::{MockEmbedder, deterministic_unit_vector};
 use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
 use registry::vector::embed::stage;
 use registry::vector::embed::stage::{EmbedStage, Error, StageConfig, TraceStore};
+use registry::vector::key::{ChangedSymbol, SymbolDelta, SymbolPartHashes};
 use registry::vector::key as vkey;
 use registry::vector::recipe::VectorName;
 use registry::vector::{EmbeddingModel, JinaCodeV2, Metric};
 use support::*;
+
+fn point_count(store: &MemStore) -> usize {
+    store.state.lock().unwrap().points.len()
+}
+
+fn deleted(store: &MemStore) -> Vec<registry::vector::store::PointId> {
+    store.state.lock().unwrap().deleted.clone()
+}
+
+fn delta_changed(symbol: &TestSymbol, old: SymbolPartHashes) -> SymbolDelta {
+    SymbolDelta {
+        added: Vec::new(),
+        removed: Vec::new(),
+        changed: vec![ChangedSymbol {
+            id: symbol.id,
+            old,
+            new: symbol.parts,
+        }],
+    }
+}
 
 struct Harness {
     mock: Arc<MockEmbedder>,
@@ -77,10 +98,10 @@ async fn doc_only_edit_infers_exactly_once() {
         .expect("cold index");
     assert_eq!(cold.infer_count, 100);
     assert_eq!(cold.upsert_count, 100);
-    assert_eq!(h.store.point_count(), 100);
+    assert_eq!(point_count(&h.store), 100);
 
     // Gen N: symbol 42's doc comment changes; nothing else does.
-    let old_parts = corpus[42].parts.clone();
+    let old_parts = corpus[42].parts;
     corpus[42].parts = parts("sig-42", "body-42", "doc-42-EDITED");
     corpus[42].facets = facets(
         "pkg::module::sym_42",
@@ -108,7 +129,7 @@ async fn doc_only_edit_infers_exactly_once() {
         "unchanged symbols never embedded"
     );
     assert_eq!(
-        h.store.point_count(),
+        point_count(&h.store),
         100,
         "same point set, one vector replaced"
     );
@@ -162,7 +183,7 @@ async fn cas_hit_upserts_without_infer() {
     assert_eq!(report.skip_cas, 1);
     assert_eq!(report.upsert_count, 1);
     assert_eq!(h.mock.call_count(), 0, "model never invoked");
-    assert_eq!(h.store.point_count(), 1);
+    assert_eq!(point_count(&h.store), 1);
     assert!(
         h.traces.has(stage::STAGE_ID, &key, &tool_digest()).await,
         "trace written for CAS hit"
@@ -213,8 +234,8 @@ async fn removed_symbols_deleted_never_embedded() {
         embeds_before,
         "removed symbols never embedded"
     );
-    assert_eq!(h.store.point_count(), 0);
-    assert_eq!(h.store.deleted().len(), 3);
+    assert_eq!(point_count(&h.store), 0);
+    assert_eq!(deleted(&h.store).len(), 3);
 }
 
 /// A pre-cancelled run does no embedding work and reports cancellation.
@@ -242,7 +263,7 @@ async fn missing_facets_skipped_not_fatal() {
     let unknown = symbol(1);
 
     let mut delta = delta_added(&known);
-    delta.added.push((unknown.id, unknown.parts.clone()));
+    delta.added.push((unknown.id, unknown.parts));
 
     let report = h
         .stage

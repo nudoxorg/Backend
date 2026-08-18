@@ -205,9 +205,11 @@ async fn fanout_3_shards_exact_global_order_with_cross_shard_tie() {
         pid(9999),
         "cross-shard tie: larger id is second; expected pid(9999) at rank 1"
     );
-    assert_eq!(
-        all[0].score, all[1].score,
-        "both score-1.0 hits must have equal scores (identical vectors)"
+    assert!(
+        (all[0].score - all[1].score).abs() < f32::EPSILON,
+        "both score-1.0 hits must have equal scores (identical vectors): {} vs {}",
+        all[0].score,
+        all[1].score,
     );
 
     // Limit=2 cuts exactly AT the tie — both tie points included.
@@ -225,17 +227,9 @@ async fn fanout_3_shards_exact_global_order_with_cross_shard_tie() {
     // graded(1) weight = 2*0.05=0.10 → score 1/√(1+0.01) ≈ 0.995
     // graded(30) weight = 31*0.05=1.55 → score 1/√(1+2.4025) ≈ 0.541
     // So all A's graded points beat dep2's.
-    let proj_ids: Vec<_> = all
-        .iter()
-        .map(|h| h.id)
-        .filter(|&id| id == pid(1) || id == pid(2))
-        .collect();
-    let dep2_non_tie_ids: Vec<_> = all
-        .iter()
-        .map(|h| h.id)
-        .filter(|&id| id == pid(200))
-        .collect();
-    if !proj_ids.is_empty() && !dep2_non_tie_ids.is_empty() {
+    if all.iter().any(|h| h.id == pid(1) || h.id == pid(2))
+        && all.iter().any(|h| h.id == pid(200))
+    {
         let proj_rank = all.iter().position(|h| h.id == pid(1)).unwrap();
         let dep2_rank = all.iter().position(|h| h.id == pid(200)).unwrap();
         assert!(
@@ -278,9 +272,11 @@ fn merge_hits_large_interleaved_tie_break_is_exact() {
             "pair {i}: expected score {expected_score}, got {}",
             pair[0].score
         );
-        assert_eq!(
-            pair[0].score, pair[1].score,
-            "pair {i}: both should have equal scores (tied)"
+        assert!(
+            (pair[0].score - pair[1].score).abs() < f32::EPSILON,
+            "pair {i}: both should have equal scores (tied): {} vs {}",
+            pair[0].score,
+            pair[1].score,
         );
         // Even id < odd id → even wins tie.
         let even_id = pid(i as u128 * 2);

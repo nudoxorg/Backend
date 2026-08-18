@@ -257,12 +257,6 @@ struct QueryAdapter<'a> {
     graph: &'a IrTrustfallAdapter<'a>,
 }
 
-impl<'a> QueryAdapter<'a> {
-    fn local_entry(&self, target: &StableRef) -> Option<GraphVertex<'a>> {
-        local_entry(self.graph.ir, target)
-    }
-}
-
 fn local_entry<'a>(ir: &'a IrView, target: &StableRef) -> Option<GraphVertex<'a>> {
     (target.package == *ir.package())
         .then(|| ir.entry(target.intro))

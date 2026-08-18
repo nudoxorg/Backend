@@ -95,9 +95,11 @@ async fn fanout_merge_is_deterministic_and_keeps_package_payload() {
     );
 
     // Cross-shard tie really is a tie, broken by id, not by shard luck.
-    assert_eq!(
-        first[0].score, first[1].score,
-        "identical vectors must score identically"
+    assert!(
+        (first[0].score - first[1].score).abs() < f32::EPSILON,
+        "identical vectors must score identically: {} vs {}",
+        first[0].score,
+        first[1].score,
     );
 
     // Provenance payload survives the merge on every hit.

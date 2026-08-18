@@ -84,7 +84,7 @@ async fn interactive_overtakes_100_background_jobs() {
     assert!(
         first_batch.contains(&"interactive query text".to_owned()),
         "interactive job must appear in the first batch: batches={:?}",
-        batches.iter().map(|b| b.len()).collect::<Vec<_>>()
+        batches.iter().map(std::vec::Vec::len).collect::<Vec<_>>()
     );
 
     // The interactive job is in a batch before any background batch.
@@ -140,8 +140,7 @@ async fn cancelled_group_all_reply_cancelled_never_hits_embedder() {
         let result = job.await.expect("join");
         assert!(
             matches!(result, Err(Error::Cancelled)),
-            "every cancelled-group job must return Cancelled, got {:?}",
-            result
+            "every cancelled-group job must return Cancelled, got {result:?}"
         );
     }
 
@@ -212,7 +211,7 @@ async fn runtime_while_idle_no_load() {
     let gate = EmbedGate::new(
         GateConfig {
             max_sessions: 1,
-            unload_idle: Duration::from_secs(120),
+            unload_idle: Duration::from_mins(2),
         },
         Box::new(|| Box::pin(async { Ok(MockEmbedder::new()) })),
     );
@@ -265,7 +264,7 @@ async fn permit_cap_1_no_overlapping_sessions() {
     let gate = EmbedGate::new(
         GateConfig {
             max_sessions: 1,
-            unload_idle: Duration::from_secs(120),
+            unload_idle: Duration::from_mins(2),
         },
         Box::new(|| Box::pin(async { Ok(MockEmbedder::new()) })),
     );
@@ -317,7 +316,7 @@ async fn unload_then_use_reload_load_count_is_2() {
     let gate = EmbedGate::new(
         GateConfig {
             max_sessions: 1,
-            unload_idle: Duration::from_secs(120),
+            unload_idle: Duration::from_mins(2),
         },
         Box::new(|| Box::pin(async { Ok(MockEmbedder::new()) })),
     );

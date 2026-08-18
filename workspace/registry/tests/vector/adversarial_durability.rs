@@ -6,6 +6,7 @@
 mod common;
 
 use common::*;
+use registry::vector::store::Payload;
 use registry::vector::local::{LocalShardStore, SCHEMA_FILE, open_or_create, upsert_raw};
 use registry::vector::{StoreError, VectorStore};
 
@@ -335,10 +336,11 @@ async fn upsert_raw_and_upsert_give_identical_search_results() {
             "upsert_raw equivalence: position {i} id mismatch: actor={} raw={}",
             a.id, b.id
         );
-        assert_eq!(
-            a.score, b.score,
+        assert!(
+            (a.score - b.score).abs() < f32::EPSILON,
             "upsert_raw equivalence: position {i} score mismatch: actor={} raw={}",
-            a.score, b.score
+            a.score,
+            b.score
         );
         assert_eq!(
             a.payload, b.payload,
@@ -363,7 +365,7 @@ async fn upsert_raw_dim_767_rejected_shard_remains_usable() {
 
         // 767-dim: one short.
         let short_vec: Vec<f32> = vec![1.0f32; 767];
-        let err = upsert_raw(&shard, pid(0), short_vec, Default::default())
+        let err = upsert_raw(&shard, pid(0), short_vec, Payload::default())
             .expect_err("767-dim vector into 768 shard must fail");
         // Error must encode as a Backend variant (Edge rejects the wrong dim).
         assert!(
@@ -377,7 +379,7 @@ async fn upsert_raw_dim_767_rejected_shard_remains_usable() {
             v[0] = 1.0;
             v
         };
-        upsert_raw(&shard, pid(1), ok_vec, Default::default())
+        upsert_raw(&shard, pid(1), ok_vec, Payload::default())
             .expect("valid 768-dim upsert after rejected 767-dim must succeed");
         shard.flush();
 
@@ -407,7 +409,7 @@ async fn upsert_raw_dim_4096_rejected_shard_remains_usable() {
 
         // 4096-dim: wildly oversized.
         let big_vec: Vec<f32> = vec![1.0f32; 4096];
-        let err = upsert_raw(&shard, pid(0), big_vec, Default::default())
+        let err = upsert_raw(&shard, pid(0), big_vec, Payload::default())
             .expect_err("4096-dim vector into 768 shard must fail");
         assert!(
             matches!(err, StoreError::Backend(_)),
@@ -420,7 +422,7 @@ async fn upsert_raw_dim_4096_rejected_shard_remains_usable() {
             v[0] = 1.0;
             v
         };
-        upsert_raw(&shard, pid(42), ok_vec, Default::default())
+        upsert_raw(&shard, pid(42), ok_vec, Payload::default())
             .expect("valid upsert after oversized-dim rejection must succeed");
         shard.flush();
 

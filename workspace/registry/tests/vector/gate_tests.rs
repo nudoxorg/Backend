@@ -20,7 +20,7 @@ fn mock_gate(unload_idle: Duration) -> Arc<EmbedGate<MockEmbedder>> {
 
 #[tokio::test(start_paused = true)]
 async fn starts_idle_loads_on_first_acquire() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
     assert_eq!(gate.state(), LoadState::Idle);
     assert_eq!(gate.load_count(), 0);
 
@@ -32,7 +32,7 @@ async fn starts_idle_loads_on_first_acquire() {
 
 #[tokio::test(start_paused = true)]
 async fn unloads_after_idle_and_reloads_on_demand() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
 
     drop(gate.acquire().await.expect("first acquire"));
     assert_eq!(gate.state(), LoadState::Loaded);
@@ -54,12 +54,12 @@ async fn unloads_after_idle_and_reloads_on_demand() {
 
 #[tokio::test(start_paused = true)]
 async fn stays_loaded_while_recently_used() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
 
     // Touch every 60 s — never idle long enough to unload.
     for _ in 0..5 {
         drop(gate.acquire().await.expect("acquire"));
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_mins(1)).await;
     }
     assert_eq!(gate.state(), LoadState::Loaded);
     assert_eq!(gate.load_count(), 1, "never reloaded");
@@ -67,7 +67,7 @@ async fn stays_loaded_while_recently_used() {
 
 #[tokio::test(start_paused = true)]
 async fn held_guard_blocks_unload() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
 
     let guard = gate.acquire().await.expect("acquire");
     tokio::time::sleep(Duration::from_secs(500)).await;
@@ -81,7 +81,7 @@ async fn held_guard_blocks_unload() {
 
 #[tokio::test(start_paused = true)]
 async fn single_session_serializes_acquires() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
 
     let guard = gate.acquire().await.expect("first session");
     let second = tokio::time::timeout(Duration::from_millis(100), gate.acquire()).await;
@@ -100,7 +100,7 @@ async fn single_session_serializes_acquires() {
 
 #[tokio::test(start_paused = true)]
 async fn manual_unload_then_reload() {
-    let gate = mock_gate(Duration::from_secs(120));
+    let gate = mock_gate(Duration::from_mins(2));
     drop(gate.acquire().await.expect("acquire"));
 
     gate.unload().await;

@@ -71,7 +71,7 @@ pub fn deterministic_unit_vector(text: &str) -> Vec<f32> {
             state ^= state << 13;
             state ^= state >> 7;
             state ^= state << 17;
-            (state as f64 / u64::MAX as f64) as f32 * 2.0 - 1.0
+            ((state as f64 / u64::MAX as f64) as f32).mul_add(2.0, -1.0)
         })
         .collect();
 

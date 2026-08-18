@@ -18,8 +18,8 @@ pub struct HfTokenCounter {
 }
 
 impl HfTokenCounter {
-    /// Load from a `tokenizer.json` path (normally
-    /// [`super::weights::WeightsSpec::sidecar`]`("tokenizer.json")`).
+    /// Load from a `tokenizer.json` path (normally via
+    /// [`super::weights::WeightsSpec::sidecar`] with `"tokenizer.json"`).
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, String> {
         Tokenizer::from_file(path.as_ref())
             .map(|tokenizer| Self { tokenizer })

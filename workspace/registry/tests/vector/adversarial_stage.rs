@@ -14,7 +14,7 @@ use registry::vector::JinaCodeV2;
 use registry::vector::StoreError;
 use registry::vector::embed::mock::MockEmbedder;
 use registry::vector::embed::scheduler::{CancelGroup, EmbedScheduler, SchedulerConfig};
-use registry::vector::embed::stage::{EmbedStage, Error, StageConfig, TraceStore, VectorCas};
+use registry::vector::embed::stage::{EmbedStage, Error, StageConfig, TraceStore};
 use registry::vector::store::{
     PointId, SearchFilter, SearchHit, StoreCapabilities, VectorPoint, VectorStore,
 };
@@ -24,8 +24,6 @@ use support::*;
 
 struct Harness {
     mock: Arc<MockEmbedder>,
-    traces: MemTraces,
-    cas: MemCas,
     store: MemStore,
     stage: EmbedStage<MemStore>,
 }
@@ -38,16 +36,14 @@ fn harness() -> Harness {
     let handle = EmbedScheduler::spawn(Arc::clone(&mock), SchedulerConfig::default());
     let stage = EmbedStage::new(
         store.clone(),
-        Box::new(traces.clone()),
-        Box::new(cas.clone()),
+        Box::new(traces),
+        Box::new(cas),
         handle,
         Box::new(WhitespaceCounter),
         StageConfig::default(),
     );
     Harness {
         mock,
-        traces,
-        cas,
         store,
         stage,
     }
@@ -291,12 +287,12 @@ async fn symbol_in_added_and_changed_pinned_behavior() {
 
     // Construct a delta where sym appears in both added and changed.
     let delta = SymbolDelta {
-        added: vec![(sym.id, sym.parts.clone())],
+        added: vec![(sym.id, sym.parts)],
         removed: Vec::new(),
         changed: vec![ChangedSymbol {
             id: sym.id,
             old: old_parts,
-            new: sym.parts.clone(),
+            new: sym.parts,
         }],
     };
 
@@ -391,8 +387,7 @@ async fn cancellation_mid_run_no_traces_for_tail() {
     // Must report Cancelled.
     assert!(
         matches!(result, Err(Error::Cancelled)),
-        "stage must return Cancelled when CancelGroup is set: {:?}",
-        result
+        "stage must return Cancelled when CancelGroup is set: {result:?}"
     );
 
     // Traces must be <= MAX_BATCH (first chunk only; second chunk cancelled).

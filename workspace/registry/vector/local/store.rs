@@ -53,14 +53,14 @@ pub struct LocalShardStore {
     policy: Arc<Mutex<CompactPolicy>>,
     /// Held for the life of a *mutable* store (09c §1.1); `None` for baked
     /// read-only dep shards.
-    _lock: Option<ShardLock>,
+    shard_lock: Option<ShardLock>,
 }
 
 impl std::fmt::Debug for LocalShardStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LocalShardStore")
             .field("rescore", &self.rescore)
-            .field("locked", &self._lock.is_some())
+            .field("locked", &self.shard_lock.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -95,7 +95,7 @@ impl LocalShardStore {
             handle,
             rescore,
             policy: Arc::new(Mutex::new(CompactPolicy::default())),
-            _lock: lock,
+            shard_lock: lock,
         })
     }
 

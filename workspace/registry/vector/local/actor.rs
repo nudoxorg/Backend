@@ -64,15 +64,12 @@ impl ActorCompletion {
             }
             notified.await;
         }
-        match self
+        self
             .error
             .lock()
             .expect("actor completion mutex poisoned")
             .take()
-        {
-            Some(error) => Err(backend_error(error)),
-            None => Ok(()),
-        }
+            .map_or(Ok(()), |error| Err(backend_error(error)))
     }
 }
 

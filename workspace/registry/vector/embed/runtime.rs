@@ -52,8 +52,7 @@ impl RuntimeConfig {
     fn resolved_intra_threads(&self) -> usize {
         self.intra_threads.unwrap_or_else(|| {
             let cores = std::thread::available_parallelism()
-                .map(std::num::NonZero::get)
-                .unwrap_or(4);
+                .map_or(4, std::num::NonZero::get);
             (cores / 2).clamp(1, 4)
         })
     }
@@ -85,7 +84,6 @@ pub struct FastembedOrt {
     /// The actual sha256 of the loaded ONNX file (always known: we hash while
     /// verifying, pinned or not).
     weights_sha256: [u8; 32],
-    intra_threads: usize,
 }
 
 impl FastembedOrt {
@@ -133,7 +131,6 @@ impl FastembedOrt {
         Ok(Self {
             inner: Arc::new(Mutex::new(session)),
             weights_sha256: verified.sha256,
-            intra_threads,
         })
     }
 
@@ -152,7 +149,7 @@ impl FastembedOrt {
             Box::pin(async move {
                 Self::load(spec, config)
                     .await
-                    .map_err(|error| super::backend_error(error))
+                    .map_err(super::backend_error)
             })
         })
     }
@@ -224,8 +221,8 @@ impl Embedder for FastembedOrt {
             session.embed(&owned, Some(MAX_BATCH))
         })
         .await
-        .map_err(|join| super::backend_error(join))?
-        .map_err(|error| super::backend_error(error))?;
+        .map_err(super::backend_error)?
+        .map_err(super::backend_error)?;
 
         rows.into_iter().map(Self::finish).collect()
     }

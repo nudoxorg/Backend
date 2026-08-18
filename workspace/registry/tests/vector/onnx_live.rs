@@ -36,9 +36,7 @@ use registry::vector::{EmbedRole, Embedder, EmbeddingModel as _, JinaCodeV2};
 const ENV_DIR: &str = "NUDOX_EMBED_MODEL_DIR";
 
 fn model_dir() -> std::path::PathBuf {
-    std::env::var_os(ENV_DIR)
-        .map(Into::into)
-        .unwrap_or_else(|| panic!("set {ENV_DIR} to the pinned model directory to run this test"))
+    std::env::var_os(ENV_DIR).map_or_else(|| panic!("set {ENV_DIR} to the pinned model directory to run this test"), Into::into)
 }
 
 #[tokio::test]

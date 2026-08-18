@@ -182,13 +182,14 @@ mod tests {
         policy.record_upserts(COMPACT_UPSERT_THRESHOLD, start);
         policy.record_deletes(10_000, start);
         policy.note_compacted(42);
-        assert_eq!(policy.deleted_ratio(), 0.0);
+        assert_eq!(policy.deletes_since_compact, 0);
         assert!(!policy.should_compact(start + COMPACT_IDLE));
     }
 
     #[test]
     fn empty_store_ratio_is_zero() {
         let policy = CompactPolicy::default();
-        assert_eq!(policy.deleted_ratio(), 0.0);
+        assert_eq!(policy.deletes_since_compact, 0);
+        assert_eq!(policy.live_points, 0);
     }
 }

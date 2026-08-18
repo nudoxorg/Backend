@@ -9,7 +9,7 @@ use heart::{ContentHash, SymbolId};
 use registry::vector::JinaCodeV2;
 use registry::vector::StoreError;
 use registry::vector::embed::stage::{TraceStore, VectorCas};
-use registry::vector::key::{ChangedSymbol, SymbolDelta, SymbolPartHashes};
+use registry::vector::key::{SymbolDelta, SymbolPartHashes};
 use registry::vector::recipe::{EmbedFacetsBuf, TokenCounter};
 use registry::vector::store::{
     PointId, SearchFilter, SearchHit, StoreCapabilities, VectorPoint, VectorStore,
@@ -64,10 +64,6 @@ impl MemCas {
     pub fn insert(&self, key: ContentHash, vector: Vec<f32>) {
         self.blobs.lock().unwrap().insert(key, vector);
     }
-
-    pub fn len(&self) -> usize {
-        self.blobs.lock().unwrap().len()
-    }
 }
 
 #[async_trait]
@@ -102,14 +98,6 @@ impl MemStore {
 
     pub fn upserted(&self) -> usize {
         self.state.lock().unwrap().upserted
-    }
-
-    pub fn deleted(&self) -> Vec<PointId> {
-        self.state.lock().unwrap().deleted.clone()
-    }
-
-    pub fn point_count(&self) -> usize {
-        self.state.lock().unwrap().points.len()
     }
 }
 
@@ -246,21 +234,9 @@ pub fn facet_lookup(corpus: &[TestSymbol]) -> impl Fn(&SymbolId) -> Option<Embed
 
 pub fn delta_added(corpus: &[TestSymbol]) -> SymbolDelta {
     SymbolDelta {
-        added: corpus.iter().map(|s| (s.id, s.parts.clone())).collect(),
+        added: corpus.iter().map(|s| (s.id, s.parts)).collect(),
         removed: Vec::new(),
         changed: Vec::new(),
-    }
-}
-
-pub fn delta_changed(symbol: &TestSymbol, old: SymbolPartHashes) -> SymbolDelta {
-    SymbolDelta {
-        added: Vec::new(),
-        removed: Vec::new(),
-        changed: vec![ChangedSymbol {
-            id: symbol.id,
-            old,
-            new: symbol.parts.clone(),
-        }],
     }
 }
 

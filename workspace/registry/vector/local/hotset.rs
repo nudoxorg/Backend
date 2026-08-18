@@ -88,17 +88,19 @@ impl HotSetManager {
     /// present. An unreadable/corrupt state file logs a warning and starts
     /// empty (stats are advisory signals, not source of truth).
     pub fn open(state_path: PathBuf, budget: AdmissionBudget) -> Self {
-        let state = match fs::read(&state_path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|err| {
-                tracing::warn!(
-                    path = %state_path.display(),
-                    %err,
-                    "corrupt hot-set state file; starting with empty stats"
-                );
-                AdmissionState::default()
-            }),
-            Err(_) => AdmissionState::default(),
-        };
+        let state = fs::read(&state_path).map_or_else(
+            |_| AdmissionState::default(),
+            |bytes| {
+                serde_json::from_slice(&bytes).unwrap_or_else(|err| {
+                    tracing::warn!(
+                        path = %state_path.display(),
+                        %err,
+                        "corrupt hot-set state file; starting with empty stats"
+                    );
+                    AdmissionState::default()
+                })
+            },
+        );
         Self {
             state_path,
             budget,
@@ -136,7 +138,7 @@ impl HotSetManager {
                 stats.is_direct = is_direct;
                 stats.ref_density = ref_density;
             })
-            .or_insert(PackageStats {
+            .or_insert_with(|| PackageStats {
                 ram_estimate,
                 is_direct,
                 ref_density,

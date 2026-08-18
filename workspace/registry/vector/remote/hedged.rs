@@ -171,7 +171,7 @@ mod tests {
         let local_fut = async { Ok::<_, String>(local_hits.clone()) };
         // Remote sleeps longer than the budget.
         let remote_fut = async {
-            tokio::time::sleep(Duration::from_secs(60)).await;
+            tokio::time::sleep(Duration::from_mins(1)).await;
             Ok::<_, String>(Vec::new())
         };
 

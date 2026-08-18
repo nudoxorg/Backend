@@ -62,9 +62,7 @@ use nudox_engine::{
 const ENV_DIR: &str = "NUDOX_EMBED_MODEL_DIR";
 
 fn model_dir() -> std::path::PathBuf {
-    std::env::var_os(ENV_DIR)
-        .map(Into::into)
-        .unwrap_or_else(|| panic!("set {ENV_DIR} to the pinned model directory to run this test"))
+    std::env::var_os(ENV_DIR).map_or_else(|| panic!("set {ENV_DIR} to the pinned model directory to run this test"), Into::into)
 }
 
 // ---------------------------------------------------------------------------
@@ -131,7 +129,7 @@ fn real_crate_root(name: &str, version: &str) -> Option<std::path::PathBuf> {
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../result")
         .join(format!("{name}-{version}"));
-    root.join("Cargo.toml").is_file().then(|| root)
+    root.join("Cargo.toml").is_file().then_some(root)
 }
 
 /// Start an engine over one real crate with the ONNX embedder installed, and
