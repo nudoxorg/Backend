@@ -61,6 +61,12 @@ if not ($resources | path join "csharp-oracle/oracle.dll" | path exists) {
 if not ($resources | path join "embed-model/model.onnx" | path exists) {
   error make { msg: "wrap did not copy model.onnx into Resources/nudox/embed-model" }
 }
+# Darwin GUI links @rpath/libonnxruntime.1.dylib; Linux wrap has no ORT tarball.
+if (uname | get kernel-name) == "Darwin" {
+  if not ($app | path join "Contents/Frameworks/libonnxruntime.1.dylib" | path exists) {
+    error make { msg: "wrap did not copy libonnxruntime.1.dylib into Contents/Frameworks (dyld @rpath abort at launch)" }
+  }
+}
 
 let output = (^($app | path join "Contents/MacOS/lindsey") | complete)
 if $output.exit_code != 0 {

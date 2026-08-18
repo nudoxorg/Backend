@@ -491,3 +491,136 @@ will not have.
    a server emitting a `Note` variant an older client lacks needs a rule.
    `#[non_exhaustive]` plus "ignore unknown notes" is probably enough, since
    notes are by construction non-essential to the items.
+
+---
+
+## 6. Resolutions (2026-08-18)
+
+Recorded here rather than folded into §1–§5 so the reasoning stays next to what
+was originally asked. Everything below is landed and verified unless marked
+otherwise.
+
+### 6.1 Backpressure — `capacity` stops being a lie
+
+`answer_channel(capacity, generation)` validated `capacity > 0` and then built
+`flume::unbounded()`, discarding it. Every call site — `merge` at 256, the
+remote client at 64, the server's source answers at 256 — declared a bound
+nothing enforced.
+
+It could not simply become `flume::bounded`. `Emitter::push` is a plain
+non-async fn because `Serve::serve` is called from lindsey's foreground thread,
+which has no reactor; and the canonical `Serve` impl emits **synchronously
+inside `serve()`, before the `Answer` has been handed to anybody**. A blocking
+send there is not a stall, it is a self-deadlock: nothing can drain a receiver
+that does not yet exist anywhere else.
+
+The policy, therefore, is two emit paths for two genuinely different producers:
+
+* `push`/`item`/`note` stay non-blocking. On a full channel the frame is
+  dropped and the call returns **`EmitError::Lagged`** — a third variant,
+  distinct from `Cancelled` (consumer gone, stop working) and `Finished`
+  (answer over). Memory is bounded, no thread ever parks, and a sync producer
+  with no runtime keeps working.
+* `push_async`/`item_async` await room. The spawned producers — the merge pump,
+  the server's search tasks, the remote client's pump — use these and get real
+  no-loss backpressure that propagates back to the socket.
+
+**Honesty is structural, not a producer responsibility.** The emitter counts
+what it dropped and `end()` rewrites its own summary to `Completeness::Partial
+{ covered: delivered, total: Some(delivered + dropped) }`. A producer cannot
+report `Complete` over a truncated answer even by explicitly asking to. A small
+reserve above `capacity` is kept for terminal and `Degraded` frames only, so an
+answer can always end and always explain itself — without it the memory bug
+would have become a hang at the terminal frame.
+
+Pinned by `heart/tests/backpressure.rs` (20 tests).
+
+### 6.2 `Federated<S>` — and who drives the pump
+
+`merge` deliberately does not spawn; it returns a `MergePump` the caller drives,
+which is what keeps it runtime-agnostic. But `Serve::serve` returns only an
+`Answer<S>`, and a `Serve` impl that needed special handling from its caller
+would not be a transparent one.
+
+So the executor is **injected once, at construction**: `Federated::new(sources,
+spawn)`. The index server passes `tokio::spawn`; lindsey passes a GPUI
+background-executor closure. After that `serve` is an ordinary call with no
+runtime assumptions in its signature — the one thing that genuinely differs
+between hosts is named once, in one place.
+
+Pinned by `heart/tests/federated.rs` (12 tests).
+
+**Known wart.** `Federated` guarantees that every source failing still yields a
+terminating `Frame::End` (offline is not failure), while `merge` itself sends a
+terminal `Failed` when *all* its sources fail — a rule the index server wants
+and `tests/merge.rs` pins. The gap is currently closed by appending a silent,
+always-complete phantom source so `merge`'s all-failed branch can never trigger.
+It works, is unobservable, and is covered by
+`every_source_failing_still_ends_the_answer`, but the guarantee is expressed as
+an emergent consequence of a counting rule rather than stated outright. Prefer
+an explicit merge policy parameter when the index crate is next open.
+
+### 6.3 Cross-plane symbol identity — two defects
+
+**The local plane could not produce a `SymbolHit` at all.** `Symbols::key` is
+`(PackageId, path)`, defended in `surfaces.rs` on the grounds that `PackageId`
+is not instance-salted the way `SymbolId` is. True — and it reasons only about
+two *index* instances. `PackageId` derives from `RegistryOrigin` + name +
+concrete version; the engine holds `PackageLineageId { ecosystem, name }`, which
+is deliberately version-free, and `RegistryOrigin` appears nowhere in
+`nudox-engine`. Task #16 removed the *salt* from the key and never checked
+*availability* — the same defect class one step on.
+
+**Remote hits are already non-navigable, in shipping code.**
+`gui/src/stores/search_model.rs:607` fabricates a `SymbolKey` by copying a
+UUID's 16 bytes into an `IntroId` and zeroing the rest. A real `IntroId` is
+`blake3("nudox.intro.v5" ‖ lineage ‖ kind ‖ path ‖ name ‖ disambiguator)`, and
+`resolve_symbol` does an exact lookup, so **clicking a remote search result
+returns `SymbolNotFound`**. The function's own doc comment concedes there is no
+true key to recover and synthesizes one anyway.
+
+The fix keeps the key. A version-free key was considered and rejected:
+`heart::Symbol` — all the index has at hit-build time — carries a `PackageId`
+and no package *name*, so a lineage-stem key merely moves the mapping problem to
+the remote side, per hit. Since some derivation is needed either way it belongs
+on the side that does not work today, leaving the index and `merge`'s verified
+dedup semantics untouched. So:
+
+* `Language::lineage_tag`/`from_lineage_tag` and
+  `RegistryOrigin::default_for` — two small closed mappings, exhaustive with no
+  catch-all arm, letting the engine derive the *same* `PackageId` the index
+  does. A catch-all would mint ids under the wrong registry and break dedup
+  silently, so the totality is pinned rather than trusted.
+* `SymbolHit::reference: Option<StableReference>` — navigable identity, using
+  the grammar `heart::query` already froze and `Usages` already keys on. Unlike
+  `SymbolId` it is content-derived, which is what §0.7 actually asked for.
+  `Symbols::fuse` backfills it exactly as it backfills `signature`.
+
+`Option` is a statement about the **source**, never the symbol. A row without a
+reference is not navigable *yet*; it becomes navigable when the index serves IR,
+with no schema change. That is honest — fabricating a key that always fails is
+not.
+
+Pinned by `heart/tests/cross_plane_identity.rs`.
+
+### 6.4 lindsey did not compile — and root-workspace green never said so
+
+`workspace/gui` declares its own `[workspace]`, so it is not a member of the
+root one. Cargo applies `[patch]` only from the workspace root of the crate
+being built, so the root's `libpijul = { path = "workspace/vendor/libpijul" }`
+did nothing there and lindsey resolved the *unpatched* crates.io release:
+
+```
+error[E0433]: cannot find `nudox_f1` in `libpijul`
+  --> workspace/ir/vcs/f1/mod.rs:41:19
+```
+
+Every green build reported during this work was root-workspace and never
+touched the GUI. Fixing the patch table then exposed two real errors that had
+been hiding behind it — a `Box<PackageMetadata>` drift, and `stores/search.rs`
+passing `Vec<Scored<SymbolHit>>` to a function expecting `&[Scored<Symbol>]`
+(a live consequence of task #16, verified against the root workspace only).
+
+**Any change to `heart` or `nudox-engine` public types can break lindsey
+invisibly.** Check it separately; mirror new vendored patches into
+`workspace/gui/Cargo.toml` and run `cargo update -p <crate>` there.

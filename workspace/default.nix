@@ -6,7 +6,6 @@
 {
   pkgs,
   fenixPackages,
-  nixos,
   buildImage,
   src,
   version,
@@ -19,7 +18,7 @@ let
   inherit (pkgs) lib callPackage;
 
   helpers = import ../nix/lib.nix {
-    inherit pkgs fenixPackages nixos;
+    inherit pkgs fenixPackages;
   };
 
   inherit (helpers)

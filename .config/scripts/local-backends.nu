@@ -341,23 +341,26 @@ def "main serve" [
 
 # Ingest one real package and wait until it is searchable on BOTH planes.
 #
-# # Why this re-POSTs after the package reaches `Stored`
+# # No re-registration workaround needed anymore
 #
-# The Text sink gets exactly one outbox intent per package, emitted by
-# `store::apply::apply_run`'s `CatalogOp::UpsertVersion` arm -- i.e. when the
-# version row is first written, at registration time. The package's symbols do
-# not exist yet at that moment: they appear ~a minute later, when compilation
-# finishes. `runtime::text::poll`'s `poll_once` consumes that intent within its
-# poll interval, calls `symbols_for(package)`, gets `NotFound`, maps it to an
-# empty batch (poll.rs:138-144) and still advances the durable watermark
-# (poll.rs:153). `store/lifecycle.rs` deliberately no longer fans out to the
-# Text sink on phase transitions, so nothing re-signals once the symbols land.
-# Net effect: a freshly ingested package is semantically searchable but
+# This used to re-POST `/packages` after the package reached `Stored`, to work
+# around "lexical search is permanently empty for every newly ingested
+# package": the Text sink got exactly one outbox intent per package, emitted
+# by `store::apply::apply_run`'s `CatalogOp::UpsertVersion` arm at
+# *registration* time, before any symbol existed. `runtime::text::poll`'s
+# `poll_once` consumed that intent, got zero symbols, and advanced the durable
+# watermark past it forever -- nothing re-signalled Text once symbols actually
+# landed, so a freshly ingested package was semantically searchable but
 # lexically invisible, permanently, with no error anywhere.
 #
-# Re-registering the package emits a fresh `UpsertVersion` intent, which the
-# poller now resolves against a catalog that *does* have the symbols. This is
-# an operational workaround for that defect, not a fix -- see docs/TESTING.md.
+# Fixed at the root: `coordination::Outbox::record_stored` now also emits a
+# Text intent when a generation reaches the terminal `Stored` state --
+# symmetric with the pre-existing Vector/Graph emits there, and never a no-op
+# because symbols genuinely exist by `Stored` time (see that function's doc
+# comment, and the regression test `tests/text_sink_recovers_after_stored.rs`).
+# So this command now just waits for the normal poll interval to carry that
+# intent into the replica-local tantivy index, the same way it already waits
+# for the vector sink, instead of forcing a second registration.
 def "main ingest" [
     ecosystem: string   # rust | go | npm | pypi | maven | nuget
     name: string        # package name
@@ -406,11 +409,35 @@ def "main ingest" [
     }
     log info $"($name)@($version) compiled and stored"
 
-    # Phase 2: re-register so the Text sink gets an intent it can actually
-    # resolve into symbols (see this command's doc comment).
-    do $post | ignore
-    sleep 10sec
-    log info $"($name)@($version) re-registered to fan out to the text index"
+    # Phase 2: wait for the (fixed) Stored-time Text intent to be carried into
+    # the replica-local tantivy index by the next `text_index_poller` tick
+    # (default poll interval: 2s -- see `defaults::poll_interval` in
+    # `server/config.rs`). No re-registration needed; see this command's doc
+    # comment for why.
+    let search_body = ({target: "Symbols", text: $name, page: {limit: 5}} | to json)
+    let text_deadline = (date now) + 30sec
+    mut lexically_searchable = false
+    while (date now) < $text_deadline {
+        let hits = (
+            ^curl -sf -m 30 -XPOST $"http://127.0.0.1:($SERVE_PORT)/search" -H "Content-Type: application/json" -d $search_body
+            | lines
+            | length
+        )
+        if $hits > 0 {
+            $lexically_searchable = true
+            break
+        }
+        sleep 2sec
+    }
+    if not $lexically_searchable {
+        error make {msg: $"($name)@($version) reached Stored but is still not lexically searchable after 30s -- the Text-sink fix in coordination::Outbox::record_stored may have regressed; see (serve-log-file)"}
+    }
+    # Parens are escaped: inside `$"..."` a bare `(...)` is an *expression*, so
+    # `(no re-registration needed)` parsed as a call to a command named `no` and
+    # aborted `main ingest` on its very last line — after the package had
+    # already been ingested and verified. Every other log line in this file
+    # escapes them; this one did not.
+    log info $"($name)@($version) is lexically searchable \(no re-registration needed\)"
 
     print ""
     print "Verify both planes:"

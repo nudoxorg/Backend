@@ -322,36 +322,45 @@
                   url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-osx-arm64-1.28.0.tgz";
                   hash = "sha256-EmizWXGAmb3izttVeH8YKhMAZ7xPMejIhHjERbhQ09g=";
                 };
+                # ONNX Runtime 1.28 ships linux-x64 and osx-arm64 desktop libs only
+                # (no macOS Intel, no Linux arm64 in the standard release set).
+                x86_64-linux = {
+                  url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz";
+                  hash = "sha256-o+G3nXuxvwlpbOZ19J5AZObIH2ICuCJWJP/w6T+NZAc=";
+                };
               };
-              dist = distBySystem.${system} or (throw "no pinned ONNX Runtime 1.28 tarball for ${system}");
+              dist = distBySystem.${system} or null;
             in
-            nixPackages.stdenvNoCC.mkDerivation {
-              name = "onnxruntime-1.28.0-lib";
-              src = nixPackages.fetchurl {
-                inherit (dist) url hash;
+            if dist == null then
+              null
+            else
+              nixPackages.stdenvNoCC.mkDerivation {
+                name = "onnxruntime-1.28.0-lib";
+                src = nixPackages.fetchurl {
+                  inherit (dist) url hash;
+                };
+                dontUnpack = true;
+                nativeBuildInputs = [
+                  nixPackages.gnutar
+                  nixPackages.gzip
+                ];
+                installPhase = ''
+                  mkdir -p "$out"
+                  tar -xzf "$src"
+                  libdir="$(find . -type d -name lib | head -n 1)"
+                  if [ -z "$libdir" ]; then
+                    echo "ONNX Runtime tarball has no lib/ directory" >&2
+                    find . >&2
+                    exit 1
+                  fi
+                  cp -R "$libdir"/. "$out/"
+                  if ! find "$out" -name 'libonnxruntime*' | grep -q .; then
+                    echo "ONNX Runtime lib dir has no libonnxruntime*" >&2
+                    ls -la "$out" >&2
+                    exit 1
+                  fi
+                '';
               };
-              dontUnpack = true;
-              nativeBuildInputs = [
-                nixPackages.gnutar
-                nixPackages.gzip
-              ];
-              installPhase = ''
-                mkdir -p "$out"
-                tar -xzf "$src"
-                libdir="$(find . -type d -name lib | head -n 1)"
-                if [ -z "$libdir" ]; then
-                  echo "ONNX Runtime tarball has no lib/ directory" >&2
-                  find . >&2
-                  exit 1
-                fi
-                cp -R "$libdir"/. "$out/"
-                if ! find "$out" -name 'libonnxruntime*' | grep -q .; then
-                  echo "ONNX Runtime lib dir has no libonnxruntime*" >&2
-                  ls -la "$out" >&2
-                  exit 1
-                fi
-              '';
-            };
 
           rustToolchain = (helpersFor nixPackages fenixPackages).rustToolchain;
 
@@ -367,16 +376,23 @@
             jdk = nixPackages.jdk21_headless;
             libclang = nixPackages.libclang.lib;
             dotnet = nixPackages.dotnetCorePackages.sdk_10_0;
+            # Pass null on platforms without a pinned ORT tarball; the wrap
+            # then skips Contents/Frameworks (Linux .so / macOS .dylib).
+            onnxruntimeLib = onnxruntimeLib;
           };
 
-          lindseyAppPackage = import ./workspace/gui/package.nix {
-            pkgs = nixPackages;
-            inherit rustToolchain;
-            cargoBundle = cargoBundleUnstable;
-            src = ./.;
-            inherit (lindseyBundlePackaging) installWrapper;
-            inherit onnxruntimeLib;
-          };
+          lindseyAppPackage =
+            if onnxruntimeLib == null then
+              throw "lindsey-app: no pinned ONNX Runtime 1.28 for ${system} (supported: aarch64-darwin, x86_64-linux)"
+            else
+              import ./workspace/gui/package.nix {
+                pkgs = nixPackages;
+                inherit rustToolchain;
+                cargoBundle = cargoBundleUnstable;
+                src = ./.;
+                inherit (lindseyBundlePackaging) installWrapper;
+                inherit onnxruntimeLib;
+              };
 
           # Build the reproducible corpus from the Nix-owned corpus catalog
           # (`nix/corpus.nix`), across all seven declared ecosystems —

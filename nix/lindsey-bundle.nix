@@ -4,9 +4,10 @@
 #
 # cargo-bundle only copies the GUI binary and the icon/DMG metadata in
 # workspace/gui/Cargo.toml. Go/Java/C# oracles are separate artifacts, the
-# embed model is a Nix-pinned directory, and `go`/`javadoc`/`dotnet` have to
-# be on PATH for those oracles to run. None of that is Cargo metadata. This
-# file is the declarative seam: one wrapper, one set of environment names.
+# embed model is a Nix-pinned directory, `go`/`javadoc`/`dotnet` have to
+# be on PATH, and the GUI's @rpath/libonnxruntime.1.dylib is not a Cargo
+# resource. This file is the declarative seam: one wrapper, one set of
+# environment names, one Frameworks copy of ONNX Runtime.
 {
   pkgs,
   cargoBundle,
@@ -18,6 +19,9 @@
   jdk,
   libclang,
   dotnet,
+  # Official ONNX Runtime 1.28 lib dir (dylibs). Null on platforms that
+  # do not pin a tarball; the wrap then skips Contents/Frameworks.
+  onnxruntimeLib ? null,
 }:
 
 let
@@ -45,11 +49,18 @@ let
 
   # Runtime wrapper dropped in as Contents/MacOS/lindsey. Store paths are
   # baked by Nix; `$here` / user overrides are expanded when lindsey starts.
+  # `$0` is the absolute bundle executable (Finder cwd is $HOME).
   macosWrapper = pkgs.writeText "lindsey-macos-wrapper" ''
     #!/bin/sh
     set -eu
-    here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+    self="$0"
+    case "$self" in
+      /*) ;;
+      *) self="$(CDPATH= cd -- "$(dirname "$self")" && pwd)/$(basename "$self")" ;;
+    esac
+    here="$(CDPATH= cd -- "$(dirname "$self")" && pwd)"
     resources="$here/../Resources/nudox"
+    frameworks="$here/../Frameworks"
     # User-set values win so NUDOX_PACKAGE_ROOT / a hand-built oracle still
     # work. The bundled copies are the defaults that make a Go/Java/C# package
     # load without a scavenger hunt for NUDOX_*_ORACLE_*.
@@ -60,6 +71,12 @@ let
     export ${envNames.embedModel}="''${${envNames.embedModel}:-$resources/embed-model}"
     export ${envNames.libclang}="''${${envNames.libclang}:-${libclang}/lib}"
     export PATH="${toolchainPath}:$PATH"
+    # Belt for @rpath/libonnxruntime.1.dylib. The Mach-O also has
+    # LC_RPATH=@executable_path/../Frameworks; DYLD_FALLBACK is what SIP
+    # is less likely to strip than DYLD_LIBRARY_PATH when Finder launches.
+    if [ -d "$frameworks" ]; then
+      export DYLD_FALLBACK_LIBRARY_PATH="$frameworks''${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+    fi
     exec "$here/.lindsey-wrapped" "$@"
   '';
 
@@ -68,7 +85,10 @@ let
   # build-machine OUT_DIR or a Nix store path the user never installed.
   installWrapper = pkgs.writeShellApplication {
     name = "lindsey-install-wrapper";
-    runtimeInputs = [ pkgs.coreutils ];
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.file
+    ];
     text = ''
       set -euo pipefail
 
@@ -124,6 +144,44 @@ let
         chmod +x "$bin"
       else
         mv "$bin" "$unwrapped"
+      fi
+
+      chmod u+w "$unwrapped" || true
+
+      ${lib.optionalString (onnxruntimeLib != null) ''
+        # The GUI links @rpath/libonnxruntime.1.dylib. cargo-bundle (and the
+        # handwritten .app assemble) never copy that dylib, so dyld aborts
+        # before main. Ship the loader name + its target; skip .dSYM (48MB of
+        # ONNX debug info) and the duplicate unversioned 38MB copy.
+        frameworks="$app/Contents/Frameworks"
+        mkdir -p "$frameworks"
+        ort="${onnxruntimeLib}"
+        if [ -e "$ort/libonnxruntime.1.dylib" ]; then
+          cp -a "$ort/libonnxruntime.1.dylib" "$frameworks/"
+          if [ -L "$ort/libonnxruntime.1.dylib" ]; then
+            target="$(readlink "$ort/libonnxruntime.1.dylib")"
+            case "$target" in
+              /*) cp -a "$target" "$frameworks/" ;;
+              *) cp -a "$ort/$target" "$frameworks/" ;;
+            esac
+          fi
+        else
+          echo "lindsey-install-wrapper: $ort has no libonnxruntime.1.dylib" >&2
+          ls -la "$ort" >&2 || true
+          exit 1
+        fi
+        chmod -R u+w "$frameworks"
+      ''}
+
+      if file "$unwrapped" | grep -q 'Mach-O'; then
+        # Release profile already ran; this only drops the symbol table so
+        # Get Info is not a 73MB unstripped Mach-O next to a 612MB model.
+        /usr/bin/strip -x "$unwrapped" || true
+        ${lib.optionalString (onnxruntimeLib != null && pkgs.stdenv.isDarwin) ''
+          if ! /usr/bin/otool -l "$unwrapped" | grep -q '@executable_path/../Frameworks'; then
+            /usr/bin/install_name_tool -add_rpath '@executable_path/../Frameworks' "$unwrapped"
+          fi
+        ''}
       fi
 
       cp ${macosWrapper} "$bin"

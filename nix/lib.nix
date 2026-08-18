@@ -8,7 +8,6 @@
 {
   pkgs,
   fenixPackages,
-  nixos,
 }:
 
 let
@@ -35,8 +34,51 @@ let
   rustToolchainDev = rustToolchain;
   rustToolchainHooks = mkRustToolchain rustComponents.hooks;
 
-  # ── rustService from MachineConfigurations ───────────────────────────────
-  mkRustService = nixos.lib.build.rustService { inherit pkgs; };
+  # ── Repository-local Rust service package helper ──────────────────────────
+  # Keep the package recipe contract small and implement it entirely with
+  # nixpkgs. This replaces the former private MachineConfigurations helper.
+  mkRustService =
+    {
+      pname,
+      version,
+      src,
+      cargoPackage,
+      mainProgram ? "",
+      description ? "",
+    }:
+    pkgs.rustPlatform.buildRustPackage {
+      inherit pname version src;
+      cargoLock = {
+        lockFile = "${src}/Cargo.lock";
+        outputHashes = {
+          "grit-lib-0.5.0" = "sha256-1nNJ9zlGKxIu3at0jVs9Lo7BQLyCmspuJRjDuvWw+0s=";
+          "lsp-types-0.95.2" = "sha256-+f3XtEm0fSvgl12LVSeGJGnPElGScAufh9dmMOqKnI8=";
+          "pyrefly-1.3.0-dev.1" = "sha256-ngBgvB7SRIRWuc/BdbIao3Sr4wj7l+L2qkITsv+Ekag=";
+          "smolfile-1.6.1" = "sha256-3TpuKwjHwazr4EJTfRaK7sK20ONosqKtUBt+GmTfmGQ=";
+          "tsz-binder-0.1.48" = "sha256-dmOcoNcf+c8op4y3x3426gGcR9qbPiXOUXJuDn010h4=";
+          "trustfall-0.8.1" = "sha256-BeT7dLLJvurdpO0HkFA3wtn202OQFSLkoTZrNMPiI9w=";
+        };
+      };
+      cargoBuildFlags = [
+        "-p"
+        cargoPackage
+      ]
+      ++ lib.optional (mainProgram != "") [
+        "--bin"
+        mainProgram
+      ];
+      doCheck = false;
+      installPhase =
+        if mainProgram == "" then
+          "mkdir -p $out"
+        else
+          ''
+            install -Dm755 "target/release/${mainProgram}" "$out/bin/${mainProgram}"
+          '';
+      meta = {
+        inherit description mainProgram;
+      };
+    };
 
   # ── Snowydeer / impure environment → package override ───────────────────
   # Pure evaluation returns {}, while --impure adds exactly one store path.
@@ -142,19 +184,33 @@ let
   # Logic lives in .nu (and tests/lib modules). Nix only wires store paths,
   # PATH, sandbox attrs, and impure env vars.
   #
-  # Prefers running under stdenvNoCC so __noChroot / darwin networking /
-  # preferLocalBuild / impureEnvVars behave like the previous check.
+  # Uses the platform stdenv so Rust build scripts can invoke the native
+  # C/C++ compiler and linker while retaining the existing sandbox attrs.
   # PATH includes nushell + runtimeInputs; NU_LIB_DIRS points at test modules.
   mkNuCheck =
     {
       name,
       # Path to the .nu entry script (run as the buildPhase).
       script,
+      # Optional source tree to unpack before running the check.
+      src ? null,
       # Store path / source dir of shared Nu modules (tests/lib).
       nuLib,
       runtimeInputs ? [ ],
       # Extra environment (string values) exported before the script runs.
       env ? { },
+      # Optional source preparation performed after unpacking and before the
+      # check script. This keeps fetched build inputs in the derivation rather
+      # than relying on files outside the flake source snapshot.
+      preBuild ? "",
+      # Files declared by Cargo manifests that may be untracked in a dirty
+      # checkout. Each file is copied into the unpacked source at its relative
+      # path; callers must keep this list narrow and target-specific.
+      extraSrcFiles ? [ ],
+      # Source subtrees copied with their own caller-supplied filter. This is
+      # for dirty checkouts where a package's declared Rust modules are
+      # untracked; the filter must reject artifacts and unrelated files.
+      extraSrcTrees ? [ ],
       # Optional attrs merged into the derivation (e.g. server = ... for deps).
       passthruAttrs ? { },
       noChroot ? false,
@@ -166,7 +222,7 @@ let
       # Optional install-phase summary lines written to $out/result.txt.
       resultLines ? [ "${name}: ok" ],
     }:
-    pkgs.stdenvNoCC.mkDerivation (
+    pkgs.stdenv.mkDerivation (
       {
         inherit name meta;
 
@@ -177,14 +233,25 @@ let
         __noChroot = noChroot;
         __darwinAllowLocalNetworking = darwinAllowLocalNetworking;
 
-        dontUnpack = true;
+        dontUnpack = src == null;
         dontConfigure = true;
+
+        inherit src;
 
         buildPhase = ''
           runHook preBuild
           ${lib.concatMapStringsSep "\n" (n: "export ${n}=${lib.escapeShellArg (toString env.${n})}") (
             builtins.attrNames env
           )}
+          ${lib.concatMapStringsSep "\n" (
+            file:
+            "mkdir -p \"$(dirname ${lib.escapeShellArg file.relPath})\"; cp ${lib.escapeShellArg file.source} ${lib.escapeShellArg file.relPath}"
+          ) extraSrcFiles}
+          ${lib.concatMapStringsSep "\n" (
+            tree:
+            "mkdir -p ${lib.escapeShellArg tree.relPath}; cp -R ${lib.escapeShellArg tree.source}/. ${lib.escapeShellArg tree.relPath}/"
+          ) extraSrcTrees}
+          ${preBuild}
           ${pkgs.nushell}/bin/nu --no-config-file --include-path ${toString nuLib} ${script}
           runHook postBuild
         '';

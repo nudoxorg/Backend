@@ -160,21 +160,6 @@
         "type": "github"
       }
     },
-    "nixos": {
-      "locked": {
-        "lastModified": 1783873609,
-        "narHash": "sha256-+nJwc/A/x09nF5pYywApTMzRFZTiuoKp6v8dFSkNBpg=",
-        "ref": "refs/heads/main",
-        "rev": "4741259a241fbca430b2410078cb9a0dbde3a28b",
-        "revCount": 428,
-        "type": "git",
-        "url": "https://dev.nudox.org/git/Nudox/MachineConfigurations.git"
-      },
-      "original": {
-        "type": "git",
-        "url": "https://dev.nudox.org/git/Nudox/MachineConfigurations.git"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1783522502,
@@ -236,7 +221,6 @@
         "flake-parts": "flake-parts",
         "git-hooks": "git-hooks",
         "nix2container": "nix2container",
-        "nixos": "nixos",
         "nixpkgs": "nixpkgs",
         "nuenv": "nuenv"
       }

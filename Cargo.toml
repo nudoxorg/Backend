@@ -101,6 +101,25 @@ libpijul = { path = "workspace/vendor/libpijul" }
 # objc2 (pulled by iroh/netdev on macOS) adds a recursive blanket impl that
 # overflows the default trait-solver limit inside qdrant-edge's anonymize.rs.
 qdrant-edge = { path = "workspace/vendor/qdrant-edge" }
+# zstd-seekable 0.1.23 with build.rs changed to link `zstd-sys`'s libzstd
+# instead of bundling a second, independently-compiled copy (see
+# workspace/vendor/zstd-seekable/Cargo.toml). Upstream's copy is what
+# `libpijul` (workspace/vendor/libpijul, patched above) optionally depends on
+# for change-file compression, and its two copies of every `ZSTD_*` symbol
+# were clashing with `index::pack`'s own `zstd` -> `zstd-safe` -> `zstd-sys`
+# dependency -- a duplicate macOS `ld` only warns about instead of failing
+# on, so the build looked clean while corrupting memory at runtime.
+zstd-seekable = { path = "workspace/vendor/zstd-seekable" }
+# pyroscope 0.5.8 verbatim except `session.rs`'s `Session::upload`: upstream
+# built a brand-new `reqwest::blocking::Client` (its own dedicated OS thread
+# driving a private Tokio runtime) on every periodic flush, forever, for the
+# life of the agent. That recurring thread creation raced `pprof2`'s
+# SIGPROF-based sampling timer against `std::thread`'s per-thread init and
+# reliably aborted `nudox-serve` with "fatal runtime error: current thread
+# handle already set during thread spawn" within a couple of minutes of
+# telemetry being enabled. See workspace/vendor/README.md and
+# workspace/vendor/pyroscope-fork.patch.
+pyroscope = { path = "workspace/vendor/pyroscope" }
 
 [workspace.package]
 edition = "2024"
@@ -220,7 +239,6 @@ significant_drop_tightening = "allow"
 significant_drop_in_scrutinee = "allow"
 future_not_send = "allow"
 unused_async = "allow"
-unused_async_trait_impl = "allow"
 
 # ── Cargo lints ───────────────────────────────────────────────────────────────
 multiple_crate_versions = "allow"

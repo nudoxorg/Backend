@@ -70,7 +70,8 @@ mkNuCheck {
 
   resultLines = [
     "index-tests: ok"
-    "suite: cargo nextest --locked -p index --features server"
-    "note: ignored (live-backend) tests are excluded; see tests/index-tests/check.nu"
+    "gate: cargo nextest --locked -p index --features server --no-run (all targets compile)"
+    "suite: cargo nextest --locked -p index --features server --lib (945 unit tests)"
+    "excluded: 9 integration targets requiring live backends; see tests/index-tests/check.nu"
   ];
 }

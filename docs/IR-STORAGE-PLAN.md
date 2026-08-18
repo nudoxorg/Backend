@@ -347,6 +347,30 @@ names, kinds, visibility, and trait-link targets. And the two `impl`s for
 different nominal self-types did **not** collide, despite `raise.rs` warning they
 could. The damage is **type erasure** via `TypeWire::Any`, not entry loss.
 
+### Resolved — and the resolution is a local `GenerationRoot`
+
+Making `IrRepository`'s own payload lossless was investigated and **ruled out on
+evidence**: `PayloadTable` is concretely typed as
+`BTreeMap<IntroId, (OwnedEntryPayload, Option<IntroId>)>`
+(`ir/vcs/wire.rs:591-597`), `record_generation`/`materialize` are hard-typed to
+it, and the payload is serialized through NdIrF1 whose key registry is **vendored
+inside the libpijul fork** (`ir/vcs/f1/mod.rs:40`). Widening it means redesigning
+a format inside a vendored dependency — structural coupling, not a local edit.
+
+So the fix keeps `IrRepository` for versioning and adds a **content-addressed
+entry sidecar** holding the semantic `Entry` verbatim:
+
+- `EntryRecord { entry: Entry, parent: Option<IntroId> }`, content-addressed in a
+  `heart::cache::DiskCas`.
+- `EntrySidecarManifest { entries: Vec<(IntroId, ContentHash)> }` per lineage —
+  **literally §1's `GenerationRoot`, arrived at independently**, which is a
+  useful corroboration that the shape is right.
+- Materialization reads *only* the sidecar. A missing or incomplete sidecar
+  causes the lineage to be **skipped and recomputed from source**, never served
+  degraded — the §4a bar, enforced in code.
+
+Both specs green: `persistence_fidelity` 3/3, `local_persistence` 4/4.
+
 ### The rule this establishes
 
 `ir_vcs::wire` exists for libpijul's **patch** layer. Promoting it to a
@@ -413,6 +437,13 @@ P0 is running now and is independent of everything else. P1 gates P2's design.
 
 ## 7. Open questions — decide before P2
 
+> **Status (2026-08-18).** Q1 and Q3 are **closed on evidence**; Q2 is decided
+> in principle and verified at P3. Q4 and Q5 remain genuinely open. The
+> resolutions are recorded in §7a below, immediately after the original
+> questions, so the reasoning that produced them stays readable next to what
+> was actually asked.
+
+
 1. **What is the real churn rate?** The Δ=8-of-400 (2%) figure driving the ~15×
    estimate is `ir-vcs`'s *own benchmark's assumption*, not a production
    measurement. If IR is re-emitted wholesale per release, there is no unchanged
@@ -432,6 +463,86 @@ P0 is running now and is independent of everything else. P1 gates P2's design.
 5. **GC mechanism** — refcount side table transactional with the pointer write,
    or snapshot-fenced mark-sweep? `poll.rs:356-359` names both and picks neither.
    Decide before P4, so P6 is designed for the right shape rather than retrofitted.
+
+---
+
+## 7a. Resolutions
+
+### Q1 — churn rate: **closed, measured**
+
+Measured on real adjacent-version package pairs rather than assumed. The result
+was **bimodal**: median 11.2%, with the distribution spread across 0.05% and
+72% rather than clustered anywhere near the benchmark's 2%. The ~15× estimate
+therefore stands only as a *best case* and is labelled as such wherever it
+appears; the plan's premise survives (there is a real unchanged remainder to
+credit) but the headline multiplier does not generalise.
+
+The measurement also produced Q3's answer as a side effect — see below.
+
+### Q3 — where parent edges live: **closed, already true in the code**
+
+**Answer: in the root, as a field on `RootEntry` — not inside the hashed
+payload.** No change was required to establish this; `entry_storage_hash`
+already excludes the `Node`'s tree edges, and says so
+(`ir/model/src/content/mod.rs:403-405`: "The entry's own `IntroId` and its
+`Node` tree edges (parent + children) are **excluded**").
+
+The rationale is the one task #17 established for `source`/`span`, applied to
+the same class of data. A content hash must answer "what is this entry?", and a
+declaration that was *reparented* — moved from one module to another without a
+character of its own text changing — is the same entry. Folding the parent into
+the payload hash would rewrite the child's content hash on a parent-only
+change, which is precisely the position-sensitivity that inflated apparent
+churn **58×** (75.6% "modified" vs 1.3%) before it was removed.
+
+So location and tree position are both **generation-scoped**: they live in the
+root, which is rewritten every generation anyway and where volatile data costs
+nothing, rather than in the content-addressed body, which is exactly what must
+stay stable. `GenerationRoot::diff` classifies such an entry as `Moved`, never
+`Changed`, and a moved entry needs no refetch and no re-store — only its row in
+the root is rewritten. `ir/model/tests/generation_root.rs` pins this
+(`a_move_is_classified_as_moved_not_changed`,
+`a_reparent_is_classified_as_moved_not_changed`).
+
+### Q2 — are function parameters their own entries? **Inline. Verify at P3.**
+
+Decided in the direction §7 anticipated ("probably inline"), now with a reason
+rather than an intuition. The case *for* keeping `KindWire::Param` first-class
+was per-parameter sharing across entries. P1 measured that sharing directly and
+it is worth almost nothing: **cross-package dedup came out at ~1.02×**. Against
+that, every separate entry costs a 32-byte hash, a row in every root that names
+it, and an object-store round trip on fault-in — overhead paid per entry,
+forever, whether or not the sharing ever materialises.
+
+Inlining trades a benefit measured at ~2% for a per-entry cost paid on every
+entry. That is not close.
+
+This is a **producer-side** change (what the seal pass emits into
+`PristineIntroTable`), not a `GenerationRoot` change, so it lands with P3 rather
+than P2 — `GenerationRoot` is indifferent to how many entries it is handed.
+Confirm at P3 that params are in fact separate entries today before writing the
+change; if they are already inlined, this question was moot.
+
+### Q4 — does `identity_bytes()` survive? **Still open, revisit at P4.**
+
+Unchanged. With a root, "has this package changed" collapses to "is this the
+same root hash", which may make `BlobManifest`'s Hash①/Hash② split redundant.
+But that split exists precisely to keep change-detection and storage-addressing
+from being confused for one another, and this plan just spent task #17
+re-establishing the same distinction one level down
+(`entry_content_hash` vs `entry_storage_hash`). Collapsing it at the manifest
+level while deepening it at the entry level deserves more care than a P2
+decision. Defer to P4, where the readers actually move.
+
+### Q5 — GC mechanism: **still open, decide before P4.**
+
+Unchanged, and still the right call: P8 is the only destructive phase in the
+plan, and designing P6's fault-in for the wrong reclamation shape would mean
+retrofitting it. Note that `GenerationRoot` narrows the choice usefully — the
+root set is now literally enumerable (live `ptr/` → generation roots → entry
+hashes), which favours snapshot-fenced mark-sweep over a refcount side table,
+since the mark phase no longer needs to parse opaque blobs to find outbound
+references.
 
 ---
 

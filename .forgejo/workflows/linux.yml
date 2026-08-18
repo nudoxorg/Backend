@@ -1,0 +1,38 @@
+# Forgejo mirror of .github/workflows/ci.yml (Avrea runners live on GitHub).
+# Kept for self-hosted Forgejo; uses GitHub-hosted Ubuntu labels here.
+name: Linux
+
+on:
+  push:
+    branches:
+      - canonical
+  pull_request:
+
+jobs:
+  workspace-tests:
+    name: workspace tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-22.04
+          - ubuntu-24.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          diagnostic-endpoint: ""
+
+      - name: Prove offline devshell evaluation
+        run: bash .config/scripts/nix-offline-check.sh
+
+      - name: Run reproducible Nix workspace check
+        run: |
+          nix flake check \
+            --impure \
+            --no-update-lock-file \
+            ".#checks.x86_64-linux.workspace-tests"

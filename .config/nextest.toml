@@ -433,7 +433,7 @@ default-filter = '''
 not (
   binary(=store_real_crate) or (package(=nudox-engine) and binary(=store_real_package))
 or binary(=engine_real_producer_links)
-  or binary(=engine_real_lineage) or binary(=mcp_real_crate_tokio)
+  or binary(=mcp_real_crate_tokio)
   or binary(=store_feature_gated_api) or binary(=store_bytes_bench_name_collision_regression)
   or binary(=engine_generic_signature_shapes) or binary(=engine_real_memchr_generic_return)
   or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
@@ -527,7 +527,7 @@ store-failure-output = true
 default-filter = '''
 binary(=store_real_crate) or (package(=nudox-engine) and binary(=store_real_package))
 or binary(=engine_real_producer_links)
-or binary(=engine_real_lineage) or binary(=mcp_real_crate_tokio)
+or binary(=mcp_real_crate_tokio)
 or binary(=store_feature_gated_api) or binary(=store_bytes_bench_name_collision_regression)
 or binary(=engine_generic_signature_shapes) or binary(=engine_real_memchr_generic_return)
 or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
@@ -536,6 +536,12 @@ or test(=search::tests::real_memchr_leaf_collisions_get_distinct_display_names)
 or binary(=escape) or test(=smolvm_backend::tests::smoke_real_launch_succeeds_or_typed_unavailable)
 or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and_seal_overhead)))
 or binary(/corpus_sweep/)
+or (package(=index) and (
+  binary(=ingest_pipeline_e2e) or binary(=ingest_enumerate)
+  or binary(=storage_catalog_scaling) or binary(=storage_pack_vs_raw)
+  or binary(=storage_symbol_projection) or binary(=store_apply)
+  or binary(=object_pack_adversarial) or binary(=object_pack_transport)
+))
 '''
 test-threads = 1
 retries = 0
@@ -559,7 +565,7 @@ failure-output = "immediate"
 filter = '''
 binary(=store_real_crate) or (package(=nudox-engine) and binary(=store_real_package))
 or binary(=engine_real_producer_links)
-or binary(=engine_real_lineage) or binary(=mcp_real_crate_tokio)
+or binary(=mcp_real_crate_tokio)
 or binary(=store_feature_gated_api) or binary(=store_bytes_bench_name_collision_regression)
 or binary(=engine_generic_signature_shapes) or binary(=engine_real_memchr_generic_return)
 or test(=real_memchr_arch_module_cfg_reaches_symbol_head)
@@ -577,6 +583,33 @@ or (package(=ir-vcs) and (test(=bench_replay_vs_snapshot) or test(=repo_size_and
 '''
 test-group = "slow"
 slow-timeout = { period = "60s", terminate-after = 3, on-timeout = "fail" }
+
+[[profile.default.overrides]]
+# `index`'s live-backend contract tests: `tests/live_download.rs`,
+# `tests/live_socket.rs` (both `#[ignore]`d at the source, opted into via
+# `--run-ignored all` with `SERVER_TEST_BACKENDS=1`), plus
+# `tests/indexing_flow.rs` and `tests/pipeline_end_to_end.rs` (opt-in via
+# `SERVER_TEST_BACKENDS` at runtime, per `tests/server_common`'s
+# `required_assembled_server` — not `#[ignore]`d, but a zero-work no-op
+# without the env var, so they only do real work under the same opt-in). All
+# four drive the real acquire-compile-emit pipeline against a real crate
+# (`either` or `serde`) via rust-analyzer's `cargo metadata`/build, over a
+# real network + real qdrant/embeddings backends, and fell through to
+# `[profile.default]`'s bare `slow-timeout = { period = "10s",
+# terminate-after = 3 }` — a hard SIGKILL at 30s — with no group of their
+# own. `source_file_download_and_traversal_rejection` and every
+# `pipeline_end_to_end` test poll for the pipeline to reach `Stored`,
+# self-documented as bounded at 5 minutes (`PIPELINE_DEADLINE`/
+# `Duration::from_secs(300)` in both files); `indexing_flow`'s tests share
+# the identical compile step with no shorter internal bound of its own. All
+# nine were observed being killed at 10-13% of that 300s budget, every run,
+# never reaching either a pass or a fail outcome. `period x terminate-after`
+# = 360s gives ~1 minute of margin over the self-declared 300s bound.
+filter = '''
+binary(=live_download) or binary(=live_socket)
+or binary(=indexing_flow) or binary(=pipeline_end_to_end)
+'''
+slow-timeout = { period = "60s", terminate-after = 6, on-timeout = "fail" }
 
 [[profile.default.overrides]]
 # The Rust corpus sweep goes to `real-crate-serial`, NOT `corpus-sweep`, and

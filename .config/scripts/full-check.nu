@@ -36,8 +36,18 @@ def main [
     --nix (-n) # Also run `nix flake check`.
     --live (-l) # Run ignored tests against the configured live services.
     --nightly # Run mutation/fuzz tooling when installed.
+    --fleet # Require VM/Linux/model/RSS/vendor evidence prerequisites.
 ] {
     let total_started = (date now)
+
+    if $fleet {
+        run-required "fleet evidence preflight" {
+            nu .config/scripts/fleet-preflight.nu --strict
+        }
+    } else {
+        print "NOT RUN: strict fleet evidence preflight (pass --fleet to require external prerequisites)"
+        nu .config/scripts/fleet-preflight.nu
+    }
 
     run-required "root Cargo workspace tests" {
         # Use the repository's default nextest profile rather than plain

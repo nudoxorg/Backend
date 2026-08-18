@@ -1009,3 +1009,53 @@ The remaining Lombok assertion deliberately proves its known failure mode. This
 improves the dated coverage result from the stale 5/22, 6/22, and 19/22
 snapshots above, but does **not** close L45: Lombok's source incompleteness and
 the general dependency-artifact policy remain open.
+
+---
+
+# 2026-08-18 — `/usages` closed; two follow-ups it surfaced
+
+`POST /usages` returned **503 on every platform, in every deployment**, and had
+since the route existed. Root cause was a wiring gap, not missing extraction:
+`Driver.usage_backend` was a bare value field assigned once to
+`ReverseIndexUsageBackend::empty()` at `Driver::assemble`, with no setter and no
+interior mutability, while the occurrence data it needed was already being
+computed and thrown away — `produced.occurrences` sat unread at
+`compile_inprocess.rs:119` even though the sibling `nudox-engine` producer does
+exactly the right thing with the identical value.
+
+Closed by giving the backend `tokio::sync::Mutex` interior mutability (following
+the `PackageSearchIndex`/`TextIndex` precedent already on the same struct),
+moving it from a `Driver` singleton to per-source `SourceStores`, populating it
+from `produced.occurrences` on the in-process path and from the already-decoded
+`Bodies` frames on the cage path, and having `Server::usages` read through it.
+
+The write/read chain was verified by inspection to reach the same object:
+`run_indexing_job` → `federation.base()` → `compile_in_process(stores)` →
+`stores.usage_backend.store(..)`, and `Server::usages` →
+`federation().in_precedence()` → `sourced.value.usage_backend`, sharing one
+`Arc<SharedUsageBackend>`.
+
+Two things remain open, neither blocking:
+
+**1. No end-to-end coverage of the wiring.** The new tests are unit-level and
+genuinely assert content (owner intro, target ref, kind, confidence, span — not
+counts, not status codes). But nothing exercises
+compile → store → `/usages` → content through the real server. The unit pieces
+could all stay green while the wiring rots. `tests/pipeline_end_to_end.rs` is
+the right harness (it drives the real server in-process against a real fixture
+crate, opt-in via `SERVER_TEST_BACKENDS`); a usages assertion belongs there.
+
+**2. `/usages` is first-source-wins, not a union.** `Server::usages` returns the
+first source that answers `Ok`. A source with a loaded scope but no usages for
+the symbol returns `Ok(empty)`, and overlays that *do* have usages are never
+consulted. For a single-source deployment this is correct; for a federation it
+silently under-reports. Usages of a symbol legitimately live in many packages
+across many sources, so this most likely wants the same
+`heart::surface::merge` treatment the search path already uses — which would
+also make it stream rather than return a whole `Page`.
+
+Also note the cage (Linux) path's occurrence projection is compiled but **not
+executed** on macOS, where this work was done: its call site is
+`#[cfg(target_os = "linux")]`. The helper was deliberately left un-gated so its
+body is still type-checked on every host, but it needs a Linux run before it can
+be called verified.

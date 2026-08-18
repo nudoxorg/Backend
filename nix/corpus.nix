@@ -20,6 +20,10 @@
           version = "0.17.1";
           hash = "0jmqz7i4yl6cm7rbn0i2ffkfrmwi6xkmzkaldr2v8bcsx2v0jngd";
         }
+        {
+          version = "0.16.1";
+          hash = "004i3njw38ji3bzdp9z178ba9x3k0c1pgy8x69pj7yfppv4iq7c4";
+        }
       ];
     }
     {
@@ -142,6 +146,10 @@
           version = "1.0.196";
           hash = "0civrvhbwwk442xhlkfdkkdn478by486qxmackq6k3501zk2c047";
         }
+        {
+          version = "1.0.229";
+          hash = "1fp04fq4a79bpm61xz1zy0pbz4kpc7d771zii1k3inmszq55jj21";
+        }
       ];
     }
     {
@@ -156,11 +164,419 @@
     }
     {
       ecosystem = "crates.io";
+      name = "automod";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.11";
+          hash = "057sa45859nb8arbshkqc6va8b8jf5a8vx6zr739viibqbj989md";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "ryu";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.23";
+          hash = "0zs70sg00l2fb9jwrf6cbkdyscjs53anrvai2hf7npyyfi5blx4p";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "equivalent";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.2";
+          hash = "03swzqznragy8n0x31lqc78g2af054jwivp7lkrbrc0khz74lyl7";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "indoc";
+      role = "dependency";
+      versions = [
+        {
+          version = "2.0.7";
+          hash = "01np60qdq6lvgh8ww2caajn9j4dibx9n58rvzf7cya1jz69mrkvr";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "ref-cast";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.26";
+          hash = "0vdra0766jcc2czzqwhql41kkfyajdnai1pbkjxbq8vr7mvqyvi1";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "ref-cast-impl";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.26";
+          hash = "0g70ff9an5i97cw9kijgzqrqydz7smcfic2zyydddizfbxl874ic";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "rustversion";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.23";
+          hash = "07z2a843fs80fawwflj9jwn49k9b0bd0dhhbvy0ar69vaxd72m6g";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "serde_bytes";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.11.19";
+          hash = "1a1y1v0r9akqyvprxnmpgc0i8wybqqpvgi01mi8qxn3rkrq41m55";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "serde_derive";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.229";
+          hash = "0j4k63i7h1bikxwz2c89ig0hrwbnl9mz1czn85xx99x5cc9dg9g7";
+        }
+        {
+          version = "1.0.196";
+          hash = "0rybziqrfaxkaxrybkhrps7zv3ibxnjdk0fwais16zayr5h57j1k";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "serde_core";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.229";
+          hash = "0j1ajiha76h3nmd976il9li6975k121xa7jb39ws8n0yqp4s5p37";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "serde_stacker";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.1.14";
+          hash = "0jhgpgcki4gqa8z28g1bxliz6ilf9wsak4r2ybpyfjqcsmsn74yl";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "stacker";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.1.25";
+          hash = "0rwrws4iyh8cay7pghzf2dy55pprwfn1vm805f5czfh6cza4jzvh";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "cfg-if";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.4";
+          hash = "008q28ajc546z5p2hcwdnckmg0hia7rnx52fni04bwqkzyrghc4k";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "psm";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.1.32";
+          hash = "08m67yndaikwq8kviipphi50lfb25ph7j3gp4w3rffz6k52h7kad";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "ar_archive_writer";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.5.3";
+          hash = "1dhjwdapx0ydx38r7aj8w4rqmdhxs1xl2zp8xala0h11zzg5ikbk";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "object";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.39.1";
+          hash = "16vkcaamik55jd9f04g73hvgsm5w636gb4w06x3nafvsih4nqnif";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "cc";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.4.3";
+          hash = "0v9b5arr047vbihfbh3fmbd3aj9vf1i7dbdgfpvlwzynpjvr35ah";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "find-msvc-tools";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.1.11";
+          hash = "145qpfb9r4ml2klr8v4byvrkikp61qyiks9n69b8z0vbscbb0pfl";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "shlex";
+      role = "dependency";
+      versions = [
+        {
+          version = "2.0.1";
+          hash = "1fjsll1cd7d2bcpdij9kd6w62rpbc7qqzvydvs021vsmr1cxvypq";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "windows-sys";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.61.2";
+          hash = "1z7k3y9b6b5h52kid57lvmvm05362zv1v8w0gc7xyv5xphlp44xf";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "windows-link";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.2.1";
+          hash = "1rag186yfr3xx7piv5rg8b6im2dwcf8zldiflvb22xbzwli5507h";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "winapi-util";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.1.11";
+          hash = "08hdl7mkll7pz8whg869h58c1r9y7in0w0pk8fm24qc77k0b39y2";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "trybuild";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.120";
+          hash = "1r38znl4w0l9d0fh709fndmxza4dpvw89sd4icyncmwkngv5nq0y";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "dissimilar";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.11";
+          hash = "0gh99yfpjqv5gqzk2fwfm8c7ncl1r7lwkfgjhcmgviar82midnmf";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "glob";
+      role = "dependency";
+      versions = [
+        {
+          version = "0.3.4";
+          hash = "02zby4rsidb2ksrnysyrsaap7rk6wpp7vl5chflndafhl5gaisz4";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "target-triple";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.1";
+          hash = "0wfixgm6scp13s2di1kz3sl3cc1gg0gscl27s9rgmbcr7p7bz9n3";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "termcolor";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.4.1";
+          hash = "0mappjh3fj3p2nmrg4y7qv94rchwi9mzmgmfflr8p2awdj7lyy86";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "toml";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.1.4+spec-1.1.0";
+          hash = "1xanf3v10j8hdjz37mkhg80w92cw25kxwndhcp4w5pxw9czydb1s";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "serde_spanned";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.1.1";
+          hash = "09jzk7i6wihn3d8i3wi4j4n98ghi93c3b8m8k64nxq0ijn3vaqk6";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "toml_datetime";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.1.1+spec-1.1.0";
+          hash = "1mws2mkkf46l7inn77azhm0vdwxngv9vsbhbl0ah33p2c9gzcr9i";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "toml_parser";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.1.3+spec-1.1.0";
+          hash = "0mjdvihdkmjd4ykh574xgii71hpxw7ns7h4n4bisqpxrz4faqf0x";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "toml_writer";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.1.2+spec-1.1.0";
+          hash = "1lk6pqf9mac3v1x6282n6a66qx5b18c8f4a23bsd0nk658x3amkx";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "winnow";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.4";
+          hash = "10fzxipa7lx16172p3aca9j60hzbqgjki2f95kqksd5qywcp7f93";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
       name = "syn";
       versions = [
         {
           version = "1.0.109";
           hash = "0ds2if4600bd59wsv7jjgfkayfzy3hnazs394kz6zdkmna8l3dkj";
+        }
+        {
+          version = "2.0.119";
+          hash = "15vjy620l91a3q4n4f4gzhnflmdr6pnm38v2m6cpk86i8av32a47";
+        }
+        {
+          version = "3.0.3";
+          hash = "18srnql3cd39j9q6hf1az02p67rlr1rf6njx9zx4vxj9i3jvmsak";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "proc-macro2";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.107";
+          hash = "1nb6ly8kp65f724kj73ippc7lvydss24sm2vagk6qpklpg4pwplq";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "quote";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.47";
+          hash = "00ch0yyzvv6s671ik0kcsbw8nigdaj2g3fr61kcahwx48aqlvgqz";
+        }
+      ];
+    }
+    {
+      ecosystem = "crates.io";
+      name = "unicode-ident";
+      role = "dependency";
+      versions = [
+        {
+          version = "1.0.20";
+          hash = "01lafj17xwizrlvn006zz8ip99hqisf77kjk0a8flfmpmrsynbj6";
         }
       ];
     }
@@ -419,6 +835,16 @@
         {
           version = "v1.28.0";
           hash = "174i31w6k9agpiyjbllzpwzpkb1qkkp3s3ikx7180x2kjxs2imj9";
+        }
+      ];
+    }
+    {
+      ecosystem = "go";
+      name = "google.golang.org/grpc";
+      versions = [
+        {
+          version = "v1.83.0";
+          hash = "06q1h39siffkcpfkhbfp4p9zajjvpqd01f1r1yw5dp3h3yn5kybl";
         }
       ];
     }
@@ -913,6 +1339,46 @@
         {
           version = "1.18.30";
           hash = "0wdcksgld0k32zbbnb9znb4ckk16bjnd4idm9524iv6096rkl76l";
+          # The published sources classifier omits lombok.spi.Provides and
+          # five test-harness declarations. These are exact source files from
+          # the matching upstream tag; flake.nix overlays them into this
+          # checkout. They are source input, never the compiled Lombok jar.
+          source_overlay = {
+            url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/src/spiProcessor/lombok/spi/Provides.java";
+            hash = "1pgwld0l7zg1q8c06iv7s97i5pa4yk4lkyx4raaajanwp5wzfkdv";
+            target = "lombok/spi/Provides.java";
+          };
+          # The Maven sources classifier also retains two published test
+          # harness entry points in TestBase.java/TestJavac.java, but omits
+          # their suite declarations. These are source inputs from the
+          # matching upstream tag, not classes copied from the Lombok jar.
+          source_overlays = [
+            {
+              url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/test/bytecode/src/lombok/bytecode/RunBytecodeTests.java";
+              hash = "1dcmjpq8cj6bdcxk2sxz23kkw9991ba3j0gqby7aiz6j69hhs2rf";
+              target = "lombok/bytecode/RunBytecodeTests.java";
+            }
+            {
+              url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/test/configuration/src/lombok/core/configuration/RunConfigurationTests.java";
+              hash = "0kp37qbc3yhz2hlg7j0cf3wh1hw6w7vin9ivmcsswa7l8cnbnamg";
+              target = "lombok/core/configuration/RunConfigurationTests.java";
+            }
+            {
+              url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/test/bytecode/src/lombok/bytecode/TestClassFileMetaData.java";
+              hash = "0mifxawgas91lsb1a2azf0v4hrk6zmajr17hfycfwl24k91jllnh";
+              target = "lombok/bytecode/TestClassFileMetaData.java";
+            }
+            {
+              url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/test/bytecode/src/lombok/bytecode/TestPostCompiler.java";
+              hash = "1fnnwjr1bi285c2siazqyyqfqxzhpd1fzmz42ikgclajfhmlwwd2";
+              target = "lombok/bytecode/TestPostCompiler.java";
+            }
+            {
+              url = "https://raw.githubusercontent.com/projectlombok/lombok/v1.18.30/test/configuration/src/lombok/core/configuration/TestConfiguration.java";
+              hash = "05j6qszpc1dm23yps77nr8y1zlxcmd13qiqz1kd4inwz5kn6mdja";
+              target = "lombok/core/configuration/TestConfiguration.java";
+            }
+          ];
         }
       ];
     }
@@ -1580,6 +2046,20 @@
         }
       ];
     }
+    # The NuGet artifact above is binary-only. Keep a separate, real upstream
+    # source checkout for Roslyn occurrence/reference coverage; it is never
+    # used as a compiled dependency or a fabricated test target.
+    {
+      ecosystem = "nuget";
+      name = "Polly.Source";
+      versions = [
+        {
+          version = "8.3.0";
+          url = "https://github.com/App-vNext/Polly/archive/refs/tags/8.3.0.tar.gz";
+          hash = "06qk0npv3dm4gyzlsz2v16s0ygbp5xr7ka1dy7jmwvxwwasmh47g";
+        }
+      ];
+    }
     {
       ecosystem = "nuget";
       name = "Dapper";
@@ -2002,5 +2482,256 @@
       ];
     }
   ];
+  # Compiled Java dependencies required only for three exceptional source
+  # artifacts. `flake.nix` places these in `result/.class-path/`, never
+  # extracts them, and `JavaProducer` receives them only through an explicit
+  # per-entry `--class-path` setting. They can therefore resolve types without
+  # becoming lowering input.
+  java_classpath = [
+    {
+      name = "org.projectlombok:lombok";
+      versions = [
+        {
+          version = "1.18.30";
+          hash = "sha256-FBUbR1gtVwtN4WoUfs4729GazkruW946VXjIfbnsuZg=";
+        }
+      ];
+    }
+    {
+      name = "org.projectlombok:lombok.patcher";
+      versions = [
+        {
+          version = "0.48";
+          url = "https://projectlombok.org/downloads/lombok.patcher-0.48.jar";
+          hash = "1r1fxas7qjqd72av3cgsd9vpy09sx83d35vpqrqppd6xw3296jbv";
+        }
+      ];
+    }
+    {
+      name = "zwitserloot.com:cmdreader";
+      versions = [
+        {
+          version = "1.2";
+          url = "https://projectlombok.org/ivyrepo/tools/com.zwitserloot.cmdreader-1.2.jar";
+          hash = "144ikxhrhiz0ig3jlhclv261q9ms3bwwi23zbaca4afp68p6vv9g";
+        }
+      ];
+    }
+    {
+      name = "org.apache.ant:ant";
+      versions = [
+        {
+          version = "1.10.5";
+          hash = "02sjqklkf5xsyl3dp43xxy2mi72lka6cbmgh500fsa89s3rp87x3";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.jdt:ecj";
+      versions = [
+        {
+          version = "3.32.0";
+          hash = "1qk0cxmd33rddw2gvh43c27m3ra4qfsyfvm0jiihr7019b239q07";
+        }
+      ];
+    }
+    {
+      name = "org.ow2.asm:asm";
+      versions = [
+        {
+          version = "9.5";
+          hash = "0lq31x32ls1m2di5ildq5da2gxv62g7k9iaq0hdpaa87k2sq8bmn";
+        }
+      ];
+    }
+    {
+      name = "org.ow2.asm:asm-commons";
+      versions = [
+        {
+          version = "9.5";
+          hash = "1bn9254ds5xypy3wkm1a2pjvgvlclj2da3gjcfa8vpmrmzxykvkj";
+        }
+      ];
+    }
+    {
+      name = "org.ow2.asm:asm-tree";
+      versions = [
+        {
+          version = "9.5";
+          hash = "156dkbflsm85aangp1py82g2z5akn54rmhdpmspawy8h354accrw";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.core.runtime";
+      versions = [
+        {
+          version = "3.13.0";
+          hash = "0a2sa0ll5xasm0zdwshc1dw61kdj336hi2mirffn1n5vn1p3qy2j";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.jdt:org.eclipse.jdt.core";
+      versions = [
+        {
+          version = "3.13.102";
+          hash = "14ifa49azv7b5k8j96havhk00xgvn7vm8c837bcd9dz6d59jq08i";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.jdt:org.eclipse.jdt.ui";
+      versions = [
+        {
+          version = "3.13.100";
+          hash = "1kb2h0280f3xgwpw59hzhphx585cfs25rp7h55xhj4h0m5gpmy1s";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.equinox.common";
+      versions = [
+        {
+          version = "3.9.0";
+          hash = "0qczsqaizn9cbyc171c79ql3w834g4ahhs1l34392ab98wpbn56y";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.equinox.registry";
+      versions = [
+        {
+          version = "3.7.0";
+          hash = "0gdzy9v1ldryr891iqw6ljfh0gz0875x0y5i3cwxwsp4vsj63jzn";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.equinox.app";
+      versions = [
+        {
+          version = "1.3.400";
+          hash = "1mj8w3jrfxsi0937rpwzg5myp3gd03kxbisxv2abkqhz07w0p1pc";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.core.resources";
+      versions = [
+        {
+          version = "3.12.0";
+          hash = "0nqyr4kallsbhzdq4yf68a8ia8nwid5sv0xddl6r6fkhshs98xjk";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.core.contenttype";
+      versions = [
+        {
+          version = "3.6.0";
+          hash = "1brgzvxi2hf7v6ksyn1sw0ly2rmirb3s291xyfjr8sir0vj1ckkd";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.core.jobs";
+      versions = [
+        {
+          version = "3.9.0";
+          hash = "00a2p56pb2bispg2qnvrkxg935ydrvix3jbazyisqpzybgmd5n2z";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.osgi";
+      versions = [
+        {
+          version = "3.12.100";
+          hash = "0njl185f8n2rsppx03i9spmcx0g724g47iqdkih845hqi28mxan1";
+        }
+      ];
+    }
+    {
+      name = "org.eclipse.platform:org.eclipse.text";
+      versions = [
+        {
+          version = "3.6.100";
+          hash = "1nw7lxh9nfx6qkhnj6pc69cvqqpmak24xliwb0lsh4h50qb0lmz4";
+        }
+      ];
+    }
+    {
+      name = "org.jetbrains.kotlin:kotlin-stdlib";
+      versions = [
+        {
+          version = "1.3.72";
+          hash = "sha256-OFanNJ66zW0b5oArL+2cTcLFpWTqkra5RayYgkPUsWs=";
+        }
+      ];
+    }
+    {
+      name = "com.squareup.okhttp3:okhttp";
+      versions = [
+        {
+          version = "3.14.9";
+          hash = "sha256-JXD6tVUVy/iB16TO70n8UVSQvAJwV+Zmd2ooMkZa7KA=";
+        }
+      ];
+    }
+    {
+      name = "com.squareup.okio:okio";
+      versions = [
+        {
+          version = "1.17.2";
+          hash = "sha256-+AzkLS/6xHrUxH4db5gNYE0kfOsaiGcFz0WBqwyf4rg=";
+        }
+      ];
+    }
+    {
+      name = "org.codehaus.mojo:animal-sniffer-annotations";
+      versions = [
+        {
+          version = "1.18";
+          hash = "sha256-R/BYUrSO6brv74D6PYzqYO+kdTwAExId1/5e7y5ccp0=";
+        }
+      ];
+    }
+    {
+      name = "com.google.android:android";
+      versions = [
+        {
+          version = "4.1.1.4";
+          hash = "sha256-hAclQcu3Ee/4n3J3EA/4VJKaRG26fOsbGVw0DgtP08s=";
+        }
+      ];
+    }
+    {
+      name = "com.fasterxml.jackson.core:jackson-databind";
+      versions = [
+        {
+          version = "2.16.1";
+          hash = "sha256-uvio6+6PRe9ozdXi3Tkjs+KWwJN7luwLSAaqOjG8zR0=";
+        }
+      ];
+    }
+    {
+      name = "com.fasterxml.jackson.core:jackson-core";
+      versions = [
+        {
+          version = "2.16.1";
+          hash = "sha256-9fjvkGCeZP7ILrkI5JfcfYGy65g/5Qm4cCkqGTzeTfs=";
+        }
+      ];
+    }
+    {
+      name = "com.fasterxml.jackson.core:jackson-annotations";
+      versions = [
+        {
+          version = "2.16.1";
+          hash = "sha256-pHMHceakld03k6Qs24zmvduWx34V9AyY/Y2aeuCecoY=";
+        }
+      ];
+    }
+  ];
 }
-
