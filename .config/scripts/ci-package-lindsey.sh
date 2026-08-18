@@ -479,8 +479,12 @@ smoke_oracles() {
   [ "$schema" = "2" ] || die "go oracle schema=$schema expected 2"
 
   log "smoke: csharp oracle format"
+  local csharp_fixture="$STAGE/csharp-fixture"
+  mkdir -p "$csharp_fixture"
+  printf 'namespace Fixture;\npublic class Hello { public static string Greet() => "ok"; }\n' \
+    > "$csharp_fixture/Hello.cs"
   local fmt
-  fmt="$(dotnet "$RESOURCES/csharp-oracle/oracle.dll" --mode source --root "$fixture" --assembly-name fixture 2>/dev/null \
+  fmt="$(dotnet "$RESOURCES/csharp-oracle/oracle.dll" --mode source --root "$csharp_fixture" --assembly-name fixture 2>/dev/null \
     | jq -r '.format')"
   [ "$fmt" = "1" ] || die "csharp oracle format=$fmt expected 1"
 }
