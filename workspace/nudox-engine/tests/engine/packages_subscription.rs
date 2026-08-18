@@ -103,7 +103,11 @@ async fn already_loaded_packages_delivered_to_late_subscriber() {
         // reference), so it takes two derefs to reach `str` and one reborrow
         // to name `&str`.
         assert_eq!(&**name, "nudox-fixture-rich");
-        assert_eq!(&**ecosystem, "fixture");
+        // `cargo`, not a synthetic `fixture` tag: see `FIXTURE_VERSION`'s doc
+        // comment in `store/source/fixtures.rs`. `Language` models exactly the
+        // seven supported ecosystems, so a fixture claiming an eighth cannot
+        // produce a `SymbolHit` and silently vanishes from local search.
+        assert_eq!(&**ecosystem, "cargo");
         assert!(
             *symbol_count > 0,
             "symbol_count must be positive; got {symbol_count}"

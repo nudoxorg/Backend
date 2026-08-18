@@ -61,10 +61,22 @@ use crate::store::{
 // Corpus IDs
 // ---------------------------------------------------------------------------
 
+/// The version every fixture package reports.
+///
+/// Fixtures are tagged `cargo`, not a synthetic `fixture` ecosystem, and carry
+/// a real semver string, because both are load-bearing rather than cosmetic:
+/// `crate::surface`'s `Serve<Symbols>` adapter mints a cross-plane `PackageId`
+/// from (origin, name, version) and needs `Language::from_lineage_tag` to
+/// resolve the ecosystem. `Language` models exactly the seven supported
+/// ecosystems and has no "other" variant — by design, since every real package
+/// is one of them — so a fixture claiming an eighth could not produce a
+/// `SymbolHit` at all, and fixture-corpus search silently returned nothing.
+pub const FIXTURE_VERSION: &str = "0.1.0";
+
 /// The lineage of the hand-authored rich fixture package.
 pub fn rich_lineage() -> PackageLineageId {
     PackageLineageId::new(
-        EcosystemId::new("fixture"),
+        EcosystemId::new("cargo"),
         PackageName::new("nudox-fixture-rich"),
     )
 }
@@ -72,7 +84,7 @@ pub fn rich_lineage() -> PackageLineageId {
 /// The lineage of the generated performance fixture package.
 pub fn perf_lineage() -> PackageLineageId {
     PackageLineageId::new(
-        EcosystemId::new("fixture"),
+        EcosystemId::new("cargo"),
         PackageName::new("nudox-fixture-perf"),
     )
 }
@@ -663,7 +675,7 @@ fn build_fixture_events(set: FixtureSet) -> Vec<Result<LoadEvent, Error>> {
             lineage: lineage.clone(),
             hint: PackageHint {
                 display_name: "nudox-fixture-rich".to_owned(),
-                ecosystem: "fixture".to_owned(),
+                ecosystem: "cargo".to_owned(),
                 version: Some("0.1.0".to_owned()),
             },
         }));
@@ -675,7 +687,16 @@ fn build_fixture_events(set: FixtureSet) -> Vec<Result<LoadEvent, Error>> {
         }));
 
         let view = build_rich_view();
-        let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
+        // The version must be carried onto the view, not merely announced in
+        // the `Discovered` hint above: `crate::surface`'s `Serve<Symbols>`
+        // adapter derives a cross-plane `PackageId` from
+        // (origin, name, **version**), and a view that cannot report its own
+        // version yields no `SymbolHit` at all. Dropping it here made every
+        // fixture-corpus search return zero rows.
+        let pkg = Arc::new(
+            PackageView::build(view, Provenance::TrustedLocal)
+                .with_version(Some(FIXTURE_VERSION.to_owned())),
+        );
 
         events.push(Ok(LoadEvent::Progress {
             lineage,
@@ -692,13 +713,16 @@ fn build_fixture_events(set: FixtureSet) -> Vec<Result<LoadEvent, Error>> {
             lineage,
             hint: PackageHint {
                 display_name: "nudox-fixture-perf".to_owned(),
-                ecosystem: "fixture".to_owned(),
+                ecosystem: "cargo".to_owned(),
                 version: Some("0.1.0".to_owned()),
             },
         }));
 
         let view = build_perf_view();
-        let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
+        let pkg = Arc::new(
+            PackageView::build(view, Provenance::TrustedLocal)
+                .with_version(Some(FIXTURE_VERSION.to_owned())),
+        );
         events.push(Ok(LoadEvent::Ready { package: pkg }));
     }
 

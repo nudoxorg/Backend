@@ -149,6 +149,11 @@ heart = { path = "../heart" }
 # `tests/engine/purl_url_parity.rs` and `tests/store/corpus_contract.rs` read
 # `nix/corpus.nix` and `nix/entry-baseline.toml`.
 toml = { workspace = true }
+# `tests/engine/serve_symbols.rs` builds the `heart::PackageVersion::Cargo`
+# variant directly, to assert the engine mints the *same* `PackageId` the index
+# would from full coordinates. Test-only: the engine itself never parses
+# versions, it only carries the string its `IrSource` supplied.
+semver = "1.0"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync", "net", "io-util"] }

@@ -402,11 +402,23 @@ async fn drain(
 }
 
 /// The plain "find everything named X" request.
+///
+/// Spelled out field by field rather than via `..Default::default()`:
+/// `heart::query::Query` deliberately does not implement `Default` (a query
+/// with no `target` is meaningless), and its per-field defaults are what the
+/// `#[serde(default)]` attributes already promise.
 fn query(text: &str) -> heart::query::Query {
     heart::query::Query {
         target: heart::query::Target::Symbols,
         text: text.to_owned(),
-        ..Default::default()
+        scope: heart::query::Scope::default(),
+        rank: heart::query::RankSpecification::default(),
+        mode: heart::query::QueryMode::default(),
+        routing: heart::query::Routing::default(),
+        session: None,
+        at: None,
+        page: heart::query::PageSpecification::default(),
+        query_id: None,
     }
 }
 
@@ -620,7 +632,9 @@ async fn a_point_in_time_request_fails_rather_than_answering_with_current_data()
     let serve = fixture::engine_serve(PKG, VERSION).await;
 
     let request = heart::query::Query {
-        at: Some(heart::query::AsOf::Time(1_700_000_000_000)),
+        at: Some(heart::query::AsOf::Time(heart::UnixMilliseconds(
+            1_700_000_000_000,
+        ))),
         ..query("Router")
     };
     let (rows, terminal) = drain(serve.serve(request, SurfaceGen(1))).await;
@@ -708,10 +722,35 @@ async fn dropping_the_answer_cancels_the_underlying_search() {
     let serve = fixture::engine_serve_with_many(PKG, VERSION, 500).await;
 
     let answer = serve.serve(query("Router"), SurfaceGen(1));
+
+    // Guard against vacuity: the counter must actually *rise* first. Without
+    // this, a search that simply finished on its own inside the sleep below
+    // would leave the count at zero and the test would "pass" while proving
+    // nothing about cancellation — and so would a counter that is never
+    // incremented at all.
+    //
+    // Polled rather than sampled once, because `serve` returns *before* the
+    // task it spawned has been scheduled (that promptness is itself pinned by
+    // `serve_returns_before_the_search_completes`), so a single immediate read
+    // races the executor and observes zero.
+    let mut observed_live = false;
+    for _ in 0..100 {
+        if fixture::has_in_flight_search() {
+            observed_live = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(
+        observed_live,
+        "no search ever registered as live; the rest of this test would pass \
+         vacuously — either the counter is not maintained, or the fixture \
+         search completes too fast to observe and needs to be slower"
+    );
+
     drop(answer);
 
-    // The engine's own `StreamHandle` must have fired. `fixture::in_flight`
-    // reports whether the engine still considers a search live.
+    // The engine's own `StreamHandle` must have fired.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     assert!(
         !fixture::has_in_flight_search(),

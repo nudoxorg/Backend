@@ -163,10 +163,9 @@ async fn list_packages_returns_the_fixture_package() {
             )
         });
 
-    assert_eq!(
-        pkg.ecosystem, "fixture",
-        "ecosystem field must be 'fixture'"
-    );
+    // `cargo`, not a synthetic `fixture` tag — see `FIXTURE_VERSION`'s doc
+    // comment in `store/source/fixtures.rs`.
+    assert_eq!(pkg.ecosystem, "cargo", "ecosystem field must be 'cargo'");
     assert_eq!(pkg.name, "nudox-fixture-rich", "name must match");
 }
 
