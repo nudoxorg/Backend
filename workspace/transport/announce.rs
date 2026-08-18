@@ -178,8 +178,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::endpoint::{AddressLookup, SecretKey, bind_endpoint};
+    use super::*;
 
     async fn make_receiver(key: SecretKey, lookup: AddressLookup) -> iroh::Endpoint {
         bind_endpoint(vec![ANNOUNCE_ALPN.to_vec()], key, Some(lookup))
