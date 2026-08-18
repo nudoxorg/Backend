@@ -1,0 +1,118 @@
+# Reproducible Nix checks on every Avrea Linux runner shape we care about.
+#
+# Avrea intercepts actions/cache and provides a colocated Nix binary cache —
+# see https://docs.avrea.com/cache/
+#
+# Prerequisites: Avrea GitHub App installed on this repository.
+
+name: CI
+
+on:
+  push:
+    branches: [canonical, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  nix-offline:
+    name: nix offline devshell
+    runs-on: avrea-ubuntu-24.04-4-vcpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          diagnostic-endpoint: ""
+
+      - uses: ./.github/actions/avrea-nix-cache
+
+      - name: Prove offline devshell evaluation
+        run: bash .config/scripts/nix-offline-check.sh
+
+  nix-workspace:
+    name: nix workspace (${{ matrix.label }})
+    needs: nix-offline
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64-22.04
+            runs-on: avrea-ubuntu-22.04-8-vcpu
+            nix-system: x86_64-linux
+          - label: linux-x64-24.04
+            runs-on: avrea-ubuntu-24.04-8-vcpu
+            nix-system: x86_64-linux
+          - label: linux-x64-26.04
+            runs-on: avrea-ubuntu-26.04-8-vcpu
+            nix-system: x86_64-linux
+          - label: linux-arm64-24.04
+            runs-on: avrea-ubuntu-24.04-arm-8-vcpu
+            nix-system: aarch64-linux
+
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          diagnostic-endpoint: ""
+
+      - uses: ./.github/actions/avrea-nix-cache
+
+      - name: Run workspace check
+        run: |
+          nix flake check \
+            --impure \
+            --no-update-lock-file \
+            ".#checks.${{ matrix.nix-system }}.workspace-tests"
+
+      - name: Push built paths to Avrea Nix cache
+        if: success()
+        run: |
+          out="$(nix build --no-link --print-out-paths ".#checks.${{ matrix.nix-system }}.workspace-tests")"
+          nix copy --to http://cache.avrea.com:8290/nix-build/cache "$out" || true
+
+  nix-integration-spot:
+    name: nix spot checks (${{ matrix.label }})
+    needs: nix-offline
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: go-oracle
+            runs-on: avrea-ubuntu-24.04-4-vcpu
+            attr: go-oracle
+          - label: csharp-oracle
+            runs-on: avrea-ubuntu-24.04-4-vcpu
+            attr: csharp-oracle
+          - label: lindsey-bundle
+            runs-on: avrea-ubuntu-24.04-4-vcpu
+            attr: lindsey-bundle
+
+    runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          diagnostic-endpoint: ""
+
+      - uses: ./.github/actions/avrea-nix-cache
+
+      - name: Run check
+        run: |
+          nix flake check \
+            --impure \
+            --no-update-lock-file \
+            ".#checks.x86_64-linux.${{ matrix.attr }}"

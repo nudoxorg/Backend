@@ -312,9 +312,25 @@
 !/**/.keep
 !/.config/scripts/*.nu
 !/.config/scripts/nix-offline-check.sh
+# The lindsey desktop release packaging script — invoked directly by
+# .github/workflows/release-artifacts.yml, not through Nix, so nothing else
+# forces it to be tracked. Named explicitly rather than a `*.sh` glob,
+# matching this file's existing per-script convention above.
+!/.config/scripts/ci-package-lindsey.sh
 !/.forgejo/
 !/.forgejo/workflows/
 !/.forgejo/workflows/*.yml
+# GitHub Actions (ci.yml, release-artifacts.yml, and the composite actions
+# they use) — the exact same class of gap the .forgejo rule above already
+# covers, just never added here. Confirmed via `git ls-files` that every
+# file under .github/ was invisible to git before this rule: present on
+# disk, never committed, never pushed to the GitHub mirror or Forgejo —
+# meaning no workflow in this directory has ever actually run anywhere.
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
+!/.github/actions/
+!/.github/actions/**/*.yml
 # The stub embeddings server local-backends.nu spawns for the `index`
 # server-integration "Live" tier (docs/TESTING.md) -- source, not a build
 # output; without this carve-out the blanket `/**/*` rule swallows it the

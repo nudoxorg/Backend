@@ -1,0 +1,59 @@
+# Install sccache and wire it to Avrea's colocated WebDAV build cache.
+# https://docs.avrea.com/cache/build-cache/sccache/
+name: Avrea sccache
+description: Install sccache for the runner OS/arch and start the daemon against Avrea's build cache
+inputs:
+  version:
+    description: sccache release tag (e.g. v0.10.0)
+    required: false
+    default: v0.10.0
+runs:
+  using: composite
+  steps:
+    - name: Install and start sccache
+      shell: bash
+      env:
+        SCCACHE_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64)
+            triple=x86_64-unknown-linux-musl
+            archive="sccache-${SCCACHE_VERSION}-${triple}.tar.gz"
+            inner="sccache-${SCCACHE_VERSION}-${triple}/sccache"
+            curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${archive}" \
+              | tar xz --strip-components=1 -C /usr/local/bin "$inner"
+            ;;
+          Linux-ARM64)
+            triple=aarch64-unknown-linux-musl
+            archive="sccache-${SCCACHE_VERSION}-${triple}.tar.gz"
+            inner="sccache-${SCCACHE_VERSION}-${triple}/sccache"
+            curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${archive}" \
+              | tar xz --strip-components=1 -C /usr/local/bin "$inner"
+            ;;
+          macOS-ARM64)
+            triple=aarch64-apple-darwin
+            archive="sccache-${SCCACHE_VERSION}-${triple}.tar.gz"
+            inner="sccache-${SCCACHE_VERSION}-${triple}/sccache"
+            curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${archive}" \
+              | tar xz --strip-components=1 -C /usr/local/bin "$inner"
+            ;;
+          Windows-X64)
+            triple=x86_64-pc-windows-msvc
+            archive="sccache-${SCCACHE_VERSION}-${triple}.zip"
+            install_dir="${RUNNER_TEMP}/sccache-bin"
+            mkdir -p "$install_dir"
+            curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${archive}" \
+              -o /tmp/sccache.zip
+            unzip -q -j /tmp/sccache.zip "sccache-${SCCACHE_VERSION}-${triple}/sccache.exe" -d "$install_dir"
+            echo "$install_dir" >> "$GITHUB_PATH"
+            ;;
+          *)
+            echo "::warning::No sccache binary for ${RUNNER_OS}-${RUNNER_ARCH}; skipping"
+            exit 0
+            ;;
+        esac
+        sccache --version
+        sccache --start-server
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"

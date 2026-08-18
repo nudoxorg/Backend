@@ -341,12 +341,27 @@
                   url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-osx-arm64-1.28.0.tgz";
                   hash = "sha256-EmizWXGAmb3izttVeH8YKhMAZ7xPMejIhHjERbhQ09g=";
                 };
-                # ONNX Runtime 1.28 ships linux-x64 and osx-arm64 desktop libs only
-                # (no macOS Intel, no Linux arm64 in the standard release set).
                 x86_64-linux = {
                   url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-x64-1.28.0.tgz";
                   hash = "sha256-o+G3nXuxvwlpbOZ19J5AZObIH2ICuCJWJP/w6T+NZAc=";
                 };
+                # linux-aarch64 IS published upstream (verified against the
+                # v1.28.0 GitHub release asset list 2026-08-18); the previous
+                # comment here claiming it wasn't was stale and this system
+                # was falling through to `null` — i.e. `nix build .#lindsey-app`
+                # threw on aarch64-linux for no real upstream reason. Mirrors
+                # the same asset `.config/scripts/ci-package-lindsey.sh`
+                # already fetches for the `linux-arm64` release job.
+                aarch64-linux = {
+                  url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-aarch64-1.28.0.tgz";
+                  hash = "sha256-4V/4tdha/mwUTZfG/UMiVL92ohnarxdlgIfW7LPo8Ls=";
+                };
+                # x86_64-darwin (macOS Intel) has no entry: ONNX Runtime 1.28.0
+                # ships no osx-x86_64 build at all — not in the GitHub release
+                # assets, not as a PyPI wheel (checked both 2026-08-18). This
+                # is an upstream gap, not an oversight here; `lindseyAppPackage`
+                # below throws a clear error on this system instead of quietly
+                # producing nothing.
               };
               dist = distBySystem.${system} or null;
             in
@@ -402,7 +417,7 @@
 
           lindseyAppPackage =
             if onnxruntimeLib == null then
-              throw "lindsey-app: no pinned ONNX Runtime 1.28 for ${system} (supported: aarch64-darwin, x86_64-linux)"
+              throw "lindsey-app: no ONNX Runtime 1.28 build for ${system} — upstream publishes no osx-x86_64 (macOS Intel) release for 1.28.0 (supported: aarch64-darwin, x86_64-linux, aarch64-linux)"
             else
               import ./workspace/gui/package.nix {
                 pkgs = nixPackages;
