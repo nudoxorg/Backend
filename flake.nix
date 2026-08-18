@@ -1257,7 +1257,7 @@
                   ++ (
                     with nixPackages.lib;
                     optionals isLinuxSystem [
-                      libkrun
+                      nixPackages.libkrun
                       smolvmBinary
                     ]
                   )
