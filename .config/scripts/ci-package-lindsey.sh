@@ -195,7 +195,7 @@ build_csharp_oracle() {
   mkdir -p "$out"
   (
     cd "$dir"
-    dotnet publish oracle.csproj -c Release -o "$out" --force-evaluate
+    dotnet publish oracle.csproj -c Release -o "$out"
   )
   [ -e "$out/oracle.dll" ] || die "csharp oracle missing oracle.dll"
 }
