@@ -202,6 +202,37 @@ image = "0.25"
 gpui = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
 gpui_macros = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e" }
 
+# ── vendored crates.io patches, mirrored from the root workspace ─────────────
+#
+# lindsey declares its own `[workspace]` (line 10) and is therefore NOT a member
+# of the root workspace. Cargo applies `[patch]` from the *workspace root of the
+# crate being built* only — a patch in the root `Cargo.toml` does nothing here,
+# exactly as the gpui-ce note above says about a dependency's own patch table.
+#
+# The consequence was that lindsey did not build at all. `nudox-engine` pulls
+# `ir-vcs`, which requires `libpijul = "=1.0.0-beta.11"` and uses the vendored
+# fork's `libpijul::nudox_f1::registry` module (`ir/vcs/f1/mod.rs:41,718`). Under
+# the root workspace that resolves to `workspace/vendor/libpijul`; here it
+# resolved to the unpatched crates.io release, which has no `nudox_f1` at all:
+#
+#     error[E0433]: cannot find `nudox_f1` in `libpijul`
+#       --> workspace/ir/vcs/f1/mod.rs:41:19
+#
+# So these must be kept in sync with the root `[patch.crates-io]` block
+# (root `Cargo.toml:98-122`); paths are the same vendored directories, spelled
+# relative to this manifest. See that block for why each fork exists — the
+# `zstd-seekable` one in particular is not cosmetic: two copies of every `ZSTD_*`
+# symbol link cleanly on macOS and corrupt memory at runtime.
+#
+# Only the two the GUI's dependency graph actually reaches are listed. The root
+# also patches `qdrant-edge` and `pyroscope`; both are unreachable from lindsey
+# (no `registry` local feature, no telemetry agent) and cargo reports an unused
+# patch as a warning on every build, so they are deliberately omitted rather
+# than copied wholesale. Add one here if lindsey ever pulls it in.
+[patch.crates-io]
+libpijul = { path = "../vendor/libpijul" }
+zstd-seekable = { path = "../vendor/zstd-seekable" }
+
 [[test]]
 name = "shell_flow"
 path = "tests/shell_flow.rs"

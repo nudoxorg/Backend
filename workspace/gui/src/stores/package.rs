@@ -245,7 +245,7 @@ impl<E: PackageEngine> PackageStore<E> {
                 None,
                 None,
                 None,
-                nudox_engine::PackageMetadata::default(),
+                Box::new(nudox_engine::PackageMetadata::default()),
             ),
             // `PackageLoadEvent` is `#[non_exhaustive]`; a variant added later
             // is not a reason to lose the rows we already have.
@@ -268,12 +268,12 @@ impl<E: PackageEngine> PackageStore<E> {
                 if root.is_some() {
                     row.root = root;
                 }
-                row.metadata = metadata;
+                row.metadata = *metadata;
             }
             None => self.rows.push(PackageRow {
                 name,
                 status,
-                metadata,
+                metadata: *metadata,
                 lineage,
                 current_version,
                 root,
