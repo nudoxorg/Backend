@@ -109,6 +109,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::StreamExt as _;
@@ -217,10 +218,67 @@ pub fn merge_bounded<S: Surface>(
     merge_inner(generation, sources, Some(limit.get()))
 }
 
+/// [`merge`], with a bound on how long the answer may stay open waiting for
+/// sources that never terminate.
+///
+/// # The error class this closes
+///
+/// `merge` ends an answer only once **every** source has produced a terminal
+/// frame. A source that connects and then simply stops — a half-open TCP
+/// connection, a wedged server, a laptop that changed networks mid-query —
+/// therefore leaves the merged answer permanently unterminated. Local rows
+/// appear instantly and are perfectly usable, and the query never finishes: a
+/// spinner that never stops, over results that are already correct.
+///
+/// A transport-level timeout cannot fix this, and `client/remote.rs:89-100`
+/// explains why it deliberately sets none: a search stream is legitimately
+/// long-lived, and a blanket request timeout would sever a healthy connection
+/// mid-answer. The federation *can* tell the difference, because it knows how
+/// long the whole answer has been open and that its other sources have already
+/// finished.
+///
+/// On expiry every source that has not yet terminated is reported as a
+/// [`Frame::Degraded`] and the answer ends [`Completeness::Partial`]. This is a
+/// bound on **waiting**, never on **delivering**: frames that already arrived
+/// are kept (`rows_delivered_before_the_deadline_survive_it` in
+/// `tests/offline_first.rs`), and a source that beats the deadline is untouched.
+/// # Why a timer *factory* and not a `Duration`
+///
+/// The pump is runtime-agnostic by construction — that is the whole reason
+/// [`merge`] hands it back instead of spawning it (`lindsey` drives it on
+/// GPUI's executor, the index server on Tokio). `tokio::time::sleep` needs
+/// Tokio's time driver, so reaching for it here would panic — "there is no
+/// reactor running" — in exactly the host this deadline most exists to protect.
+///
+/// So the timer is injected the same way the executor already is: the host
+/// supplies something that resolves after its chosen delay, and the merge only
+/// awaits it.
+pub fn merge_with_deadline<S: Surface>(
+    generation: Gen,
+    sources: Vec<(SourceId, Answer<S>)>,
+    deadline: Option<Timer>,
+) -> (Answer<S>, MergePump) {
+    merge_inner_with(generation, sources, None, deadline)
+}
+
+/// A host-supplied timer: called once per answer, resolving when that answer
+/// has waited long enough. See [`merge_with_deadline`] for why this is a
+/// closure rather than a `Duration`.
+pub type Timer = Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
+
 fn merge_inner<S: Surface>(
     generation: Gen,
     sources: Vec<(SourceId, Answer<S>)>,
     limit: Option<usize>,
+) -> (Answer<S>, MergePump) {
+    merge_inner_with(generation, sources, limit, None)
+}
+
+fn merge_inner_with<S: Surface>(
+    generation: Gen,
+    sources: Vec<(SourceId, Answer<S>)>,
+    limit: Option<usize>,
+    deadline: Option<Timer>,
 ) -> (Answer<S>, MergePump) {
     let (out, answer) = answer_channel::<S>(MERGE_CHANNEL_CAPACITY, generation);
 
@@ -260,12 +318,62 @@ fn merge_inner<S: Surface>(
         // Set when the budget refused a key that was genuinely available.
         let mut truncated = false;
 
+        // `Option<Sleep>` rather than a bare `Sleep`: with no deadline the
+        // branch must never become ready, and `pending()` in a `select!` arm is
+        // the only way to express "this arm is permanently disabled" without
+        // duplicating the whole loop.
+        let expiry = deadline.map(|timer| timer());
+        tokio::pin!(expiry);
+
         loop {
             let next = tokio::select! {
                 // Cancellation wins ties: once the consumer is gone there is no
                 // point forwarding another frame.
                 biased;
                 _ = cancel_rx.changed() => return,
+                // The deadline is checked *before* the source streams for the
+                // same reason cancellation is: once it has fired, forwarding
+                // another frame only delays an answer the consumer is already
+                // owed. Frames that arrived before this point were forwarded
+                // normally and are untouched — this bounds waiting, not
+                // delivery.
+                () = async {
+                    match expiry.as_mut().as_pin_mut() {
+                        Some(sleep) => sleep.await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    // Report every source that never terminated, so the
+                    // consumer learns *which* plane it is missing rather than
+                    // just that something is absent.
+                    //
+                    // `saw_terminal[rank]` is set as each is reported — not
+                    // because the source really finished, but to claim it as
+                    // *already accounted for*. The post-loop sweep below emits
+                    // its own `Degraded` for any source still unterminated
+                    // (truncation — "the producer was dropped mid-answer"), and
+                    // without this the same source would be reported twice:
+                    // once as a timeout and once as a truncation. It would also
+                    // increment `failures`, which feeds the "every source
+                    // failed" check and would turn a deadline expiry on a
+                    // single-source federation into a terminal `Frame::Failed`
+                    // — precisely the offline-first promise this deadline
+                    // exists to keep.
+                    for rank in 0..source_count {
+                        if saw_terminal[rank] {
+                            continue;
+                        }
+                        saw_terminal[rank] = true;
+                        degraded = true;
+                        let _ = out
+                            .push_async(Frame::Degraded(Degradation {
+                                source: ids[rank],
+                                reason: WireError::Timeout,
+                            }))
+                            .await;
+                    }
+                    break;
+                }
                 next = streams.next() => next,
             };
             let Some((rank, frame)) = next else {

@@ -56,7 +56,7 @@ use std::sync::Arc;
 
 use crate::access::SourceId;
 
-use super::{Answer, Gen, MergePump, Serve, Surface, merge};
+use super::{Answer, Gen, MergePump, Serve, Surface, Timer, merge_with_deadline};
 
 /// A `Serve<S>` that fans one request out to several `Serve<S>` sources and
 /// merges their answers — see this module's own doc comment for the design.
@@ -69,6 +69,10 @@ pub struct Federated<S: Surface> {
     /// The executor a host injects once, at construction — see this module's
     /// doc comment for why this cannot be hard-coded to `tokio::spawn`.
     spawn: Arc<dyn Fn(MergePump) + Send + Sync>,
+    /// How long an answer may stay open waiting for a source that never
+    /// terminates. `None` — the default — preserves `merge`'s own behaviour
+    /// exactly: wait indefinitely.
+    deadline: Option<Timer>,
 }
 
 impl<S: Surface> Federated<S> {
@@ -78,7 +82,38 @@ impl<S: Surface> Federated<S> {
         sources: Vec<(SourceId, Arc<dyn Serve<S>>)>,
         spawn: Arc<dyn Fn(MergePump) + Send + Sync>,
     ) -> Self {
-        Self { sources, spawn }
+        Self {
+            sources,
+            spawn,
+            deadline: None,
+        }
+    }
+
+    /// Bound how long an answer waits for sources that never terminate.
+    ///
+    /// # Why an offline-first host wants this
+    ///
+    /// A source that *fails* is already handled: it degrades, the healthy
+    /// sources' rows stand, and the answer still ends. A source that **hangs**
+    /// is not, because [`merge`] ends an answer only once every source has
+    /// produced a terminal frame. `RemoteClient` sets a connect timeout but
+    /// deliberately no whole-request timeout (`client/remote.rs:89-100` — a
+    /// search stream is legitimately long-lived), so a wedged index leaves the
+    /// merged answer permanently open. The user-visible result is specific and
+    /// bad: local rows appear instantly and are perfectly usable, and the query
+    /// never finishes.
+    ///
+    /// This bounds **waiting**, never **delivering**. Rows already received are
+    /// kept; sources that beat the deadline are untouched and the answer is
+    /// still `Complete`; only the ones still silent at expiry are reported as
+    /// degraded. See `tests/offline_first.rs`.
+    ///
+    /// Opt-in on purpose: a host that has not thought about the right value
+    /// should get today's behaviour rather than a silent timeout chosen for it.
+    #[must_use]
+    pub fn with_deadline(mut self, timer: Timer) -> Self {
+        self.deadline = Some(timer);
+        self
     }
 }
 
@@ -133,7 +168,7 @@ impl<S: Surface> Serve<S> for Federated<S> {
         // no [`Surface::fuse`] contest.
         answers.push((SourceId::new_random(), Answer::empty(generation)));
 
-        let (answer, pump) = merge(generation, answers);
+        let (answer, pump) = merge_with_deadline(generation, answers, self.deadline.clone());
         (self.spawn)(pump);
         answer
     }

@@ -1343,5 +1343,5 @@ mod surfaces;
 
 pub use federated::Federated;
 pub use hit::{SigToken, Signature, SymbolHit};
-pub use merge_impl::{MergePump, merge, merge_bounded};
+pub use merge_impl::{MergePump, Timer, merge, merge_bounded, merge_with_deadline};
 pub use surfaces::{Packages, SearchNote, Symbols, UsageHit, Usages};
