@@ -12,9 +12,7 @@
 
 pub mod outbox;
 
-pub use outbox::{
-    catalog_sink, Outbox, OutboxEntry, OutboxOp, OutboxSeq, SinkKind, SinkLockGuard,
-};
+pub use outbox::{Outbox, OutboxEntry, OutboxOp, OutboxSeq, SinkKind, SinkLockGuard, catalog_sink};
 // NOTE: `outbox` needs `crate::catalog::GlobalStore`; catalog lands in Tier 3
 // just above this in build order, so this compiles once catalog is present.
 

@@ -101,7 +101,11 @@ pub struct ProgressRow {
 
 impl ProgressRow {
     /// A row showing a known fraction.
-    pub fn determinate(id: impl Into<ElementId>, label: impl Into<SharedString>, fraction: f32) -> Self {
+    pub fn determinate(
+        id: impl Into<ElementId>,
+        label: impl Into<SharedString>,
+        fraction: f32,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
@@ -165,18 +169,14 @@ impl RenderOnce for ProgressRow {
             .py(space.space_2);
 
         // Label line: name on the left, detail on the right, cancel at the end.
-        let mut label_line = div()
-            .flex()
-            .items_center()
-            .gap(space.space_2)
-            .child(
-                div()
-                    .flex_1()
-                    .text_size(ui.size)
-                    .line_height(ui.line_height)
-                    .text_color(colours.fg_default)
-                    .child(self.label),
-            );
+        let mut label_line = div().flex().items_center().gap(space.space_2).child(
+            div()
+                .flex_1()
+                .text_size(ui.size)
+                .line_height(ui.line_height)
+                .text_color(colours.fg_default)
+                .child(self.label),
+        );
 
         if let Some(detail) = self.detail {
             label_line = label_line.child(

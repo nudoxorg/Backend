@@ -45,8 +45,8 @@ pub mod signature;
 // Private shared walk — not pub; callers go through `plan` or `sections`.
 pub(crate) mod walk;
 
-use nudox_ir::{change::IntroId, view::IrView};
 use crate::store::package::PackageView;
+use nudox_ir::{change::IntroId, view::IrView};
 
 use crate::wire::{RenderSection, SymbolHead};
 

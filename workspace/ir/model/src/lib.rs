@@ -172,7 +172,9 @@ pub mod prelude {
             CodecError, HEADER_LEN, MAGIC_LEN, Plane, decode_body, decode_entry, encode_body,
             encode_entry, intro_id_of, ir_path, is_ir_path,
         },
-        content::{ENTRY_CONTENT_DOMAIN, entry_content_hash},
+        content::{
+            ENTRY_CONTENT_DOMAIN, ENTRY_STORAGE_DOMAIN, entry_content_hash, entry_storage_hash,
+        },
         entry::{AttrTok, CfgExpr, Deprecation, DocLink, Entry, EntryInner, Node, Symbol},
         id::{PackageId, PackageIdView, UniqueId},
         index::{EntryIndex, RawRef, Ref, UntypedEntryIndex},
@@ -185,7 +187,10 @@ pub mod prelude {
             generation_stamp, manifest_stamp,
         },
         package::{IrPackage, PackageInfo},
-        reflect::{ExportPolicy, exported, moniker_path, monikers},
+        reflect::{
+            ExportPolicy, PathStyle, exported, moniker_path, moniker_path_styled, moniker_segments,
+            monikers,
+        },
         registry::{Registry, RegistryResolver},
         relation::{RelEnd, Relation, RelationKey, RelationSet},
         view::IrView,
@@ -202,7 +207,9 @@ pub mod build {
             OracleTypeMention, TreesitterBody, merge_body, overlapping_call,
         },
         change::{ContentBlake3, EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
-        content::{ENTRY_CONTENT_DOMAIN, entry_content_hash},
+        content::{
+            ENTRY_CONTENT_DOMAIN, ENTRY_STORAGE_DOMAIN, entry_content_hash, entry_storage_hash,
+        },
         entry::{
             AttrTok, CfgExpr, Deprecation, DocLink, Entry, EntryInner, Node, Symbol, Visibility,
         },
@@ -217,7 +224,10 @@ pub mod build {
             generation_stamp, manifest_stamp,
         },
         package::{EntryBuilder, IrPackage},
-        reflect::{ExportPolicy, exported, moniker_path, monikers},
+        reflect::{
+            ExportPolicy, PathStyle, exported, moniker_path, moniker_path_styled, moniker_segments,
+            monikers,
+        },
         relation::{RelEnd, Relation, RelationKey, RelationSet},
         skeleton::{function_signature_skeleton, trait_impl_skeleton},
         view::IrView,

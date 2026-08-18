@@ -113,9 +113,9 @@ impl StructuredName {
                 vec![segments.join(".")]
             }
 
-            // Bare Java, Nix flake outputs, and C/C++ repo slugs are all
+            // Bare Java and C/C++ repo slugs are all
             // addressed by the terminal name segment.
-            Language::Java | Language::Nix | Language::Cpp => vec![self.name.to_string()],
+            Language::Java | Language::Cpp => vec![self.name.to_string()],
         }
     }
 }

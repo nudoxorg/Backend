@@ -22,7 +22,7 @@ pub struct Module;
 
 pub use self::{
     alias::Alias,
-    const_::Const,
+    const_::{Const, ConstExpr, ConstToken},
     facts::{AutoFact, AutoState, AutoTrait, Sealed, TriState},
     function::{FnModifier, Function, Receiver},
     generics::{GenericParam, WherePred, lifetime_label},

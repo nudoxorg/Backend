@@ -2,6 +2,8 @@
 //!
 //! Extracts:
 //! - `Description:` → `facts.description`.
+//! - `URL:` → `facts.repository` (the package's homepage per the pkg-config
+//!   spec), and sets `facts.documentation`.
 //! - `Requires:` and `Requires.private:` → dependency records with mechanism
 //!   [`DependencyMechanism::PkgConfig`].
 //!
@@ -57,6 +59,11 @@ pub fn parse(text: &str) -> CppManifest {
             if key.eq_ignore_ascii_case("Description") {
                 if manifest.facts.description.is_none() && !value.is_empty() {
                     manifest.facts.description = Some(value.to_owned());
+                }
+            } else if key.eq_ignore_ascii_case("URL") {
+                if manifest.facts.repository.is_none() && !value.is_empty() {
+                    manifest.facts.repository = Some(value.to_owned());
+                    manifest.facts.documentation = true;
                 }
             } else if key.eq_ignore_ascii_case("Requires")
                 || key.eq_ignore_ascii_case("Requires.private")
@@ -225,5 +232,95 @@ mod tests {
             manifest.facts.description.as_deref(),
             Some("Real description")
         );
+    }
+
+    // ── `URL:` (P6 gap fill) ──────────────────────────────────────────────────
+
+    #[test]
+    fn parse_pkgconfig_url_sets_repository_and_documentation() {
+        let text = "Name: zlib\nURL: https://zlib.net/\nDescription: compression\n";
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://zlib.net/")
+        );
+        assert!(manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_pkgconfig_no_url_leaves_repository_none() {
+        let text = "Name: zlib\nDescription: compression\n";
+        let manifest = parse(text);
+        assert!(manifest.facts.repository.is_none());
+        assert!(!manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_pkgconfig_real_world_shape() {
+        // Shaped after a real zlib.pc.
+        let text = "prefix=/usr\nexec_prefix=${prefix}\nlibdir=${exec_prefix}/lib\nincludedir=${prefix}/include\n\nName: zlib\nDescription: zlib compression library\nVersion: 1.3.1\nURL: https://zlib.net/\nRequires:\nLibs: -L${libdir} -lz\nCflags: -I${includedir}\n";
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("zlib compression library")
+        );
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://zlib.net/")
+        );
+        assert!(manifest.facts.documentation);
+        assert!(
+            manifest.dependencies.is_empty(),
+            "empty Requires: is no deps"
+        );
+    }
+
+    // ── Hostile-input hardening ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_pkgconfig_url_key_is_case_insensitive() {
+        let text = "url: https://example.com\n";
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn parse_pkgconfig_unicode_description() {
+        let text = "Description: 圧縮ライブラリ 😀\n";
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("圧縮ライブラリ 😀")
+        );
+    }
+
+    #[test]
+    fn parse_pkgconfig_enormous_requires_line_no_panic() {
+        let many_deps = (0..50_000)
+            .map(|i| format!("dep{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = format!("Requires: {many_deps}\n");
+        let manifest = parse(&text);
+        assert_eq!(manifest.dependencies.len(), 50_000);
+    }
+
+    #[test]
+    fn parse_pkgconfig_only_colons_no_panic() {
+        let text = ":::::::::::::::::\n";
+        let manifest = parse(text);
+        assert_eq!(manifest, CppManifest::default());
+    }
+
+    #[test]
+    fn parse_pkgconfig_key_with_no_value_no_panic() {
+        let text = "Description:\nURL:\nRequires:\n";
+        let manifest = parse(text);
+        assert!(manifest.facts.description.is_none());
+        assert!(manifest.facts.repository.is_none());
+        assert!(manifest.dependencies.is_empty());
     }
 }

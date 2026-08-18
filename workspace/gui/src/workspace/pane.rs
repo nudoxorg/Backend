@@ -52,15 +52,15 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, AnyView, App, AppContext as _, Context, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Subscription, Window, div, px,
-    prelude::FluentBuilder as _,
+    FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
+    SharedString, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
 };
 
-use crate::motion::spring::{Motion, Spring};
 use crate::app::actions::{
     ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
     ActivateTab7, ActivateTab8, ActivateTab9, CloseTab,
 };
+use crate::motion::spring::{Motion, Spring};
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use crate::workspace::item::WorkspaceItem;
 use gpui::prelude::*;
@@ -207,11 +207,7 @@ pub struct ItemSlot {
 /// That matters more than it looks: the alternative is a test double that
 /// *reimplements* this arithmetic beside the real pane, which passes happily
 /// while proving nothing about the code that actually ships.
-pub(crate) fn active_ix_after_close(
-    closed_ix: usize,
-    active_ix: usize,
-    remaining: usize,
-) -> usize {
+pub(crate) fn active_ix_after_close(closed_ix: usize, active_ix: usize, remaining: usize) -> usize {
     if remaining == 0 {
         // Nothing left to activate.
         0
@@ -542,10 +538,7 @@ impl Pane {
 
     /// Move a tab from `from_ix` to `to_ix`, maintaining active item identity.
     fn reorder(&mut self, from_ix: usize, to_ix: usize) {
-        if from_ix == to_ix
-            || from_ix >= self.slots.len()
-            || to_ix >= self.slots.len()
-        {
+        if from_ix == to_ix || from_ix >= self.slots.len() || to_ix >= self.slots.len() {
             return;
         }
         // Track which id was active so we can restore it after the move.
@@ -556,11 +549,7 @@ impl Pane {
         self.tab_springs.insert(to_ix, spring);
         // Restore active index by id.
         if let Some(aid) = active_id {
-            self.active_ix = self
-                .slots
-                .iter()
-                .position(|s| s.id == aid)
-                .unwrap_or(0);
+            self.active_ix = self.slots.iter().position(|s| s.id == aid).unwrap_or(0);
         }
     }
 
@@ -665,115 +654,90 @@ impl Render for Pane {
             .border_b_1()
             .border_color(theme.colours.border_default)
             .bg(theme.colours.bg_raised)
-            .children(
-                self.slots
-                    .iter()
-                    .enumerate()
-                    .map(|(ix, slot)| {
-                        let tab_id = slot.id;
-                        let is_active = ix == active_ix;
-                        let entity = cx.entity();
+            .children(self.slots.iter().enumerate().map(|(ix, slot)| {
+                let tab_id = slot.id;
+                let is_active = ix == active_ix;
+                let entity = cx.entity();
 
-                        // Each tab is a button-like div with hover reveal of close button.
+                // Each tab is a button-like div with hover reveal of close button.
+                div()
+                    .id(ElementId::Integer(tab_id.0.get() as u64))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(theme.space.space_1)
+                    .px(theme.space.space_2)
+                    .py(theme.space.space_1)
+                    .cursor_pointer()
+                    // Hover tint (§5.1) — GPUI built-in, zero cost, no notify.
+                    .hover(|s| s.bg(theme.colours.bg_hover))
+                    .when(is_active, |s| s.text_color(theme.colours.fg_default))
+                    .when(!is_active, |s| s.text_color(theme.colours.fg_muted))
+                    // Activate on click.
+                    .on_mouse_down(MouseButton::Left, {
+                        let entity = entity.clone();
+                        move |_: &MouseDownEvent, window, cx| {
+                            entity.update(cx, |pane, cx| {
+                                // A direct click on the strip is
+                                // the user asking to read this tab.
+                                pane.activate_ix(ix, Activation::Focus, window, cx);
+                                cx.emit(PaneEvent::ActiveTabChanged {
+                                    id: pane.active_id(),
+                                });
+                                cx.notify();
+                            });
+                        }
+                    })
+                    // Middle-click closes (§13.4).
+                    .on_mouse_down(MouseButton::Middle, {
+                        let entity = entity.clone();
+                        move |_: &MouseDownEvent, window, cx| {
+                            entity.update(cx, |pane, cx| {
+                                pane.close_tab(tab_id, window, cx);
+                                cx.emit(PaneEvent::TabClosed { id: tab_id });
+                                cx.notify();
+                            });
+                        }
+                    })
+                    // The label is the item's own (§13.4): icon, title,
+                    // provenance dot, and any streaming count. `TabItem`
+                    // keeps that reachable after type erasure, so a pane
+                    // can never invent a name for content it holds.
+                    .child(slot.item.tab_content(cx))
+                    // Close button — revealed by group-hover (§13.4).
+                    .child(
                         div()
-                            .id(ElementId::Integer(tab_id.0.get() as u64))
+                            .id(ElementId::Integer((tab_id.0.get() as u64) << 16 | 0xFFFF))
+                            .w(theme.space.space_3)
+                            .h(theme.space.space_3)
                             .flex()
-                            .flex_row()
                             .items_center()
-                            .gap(theme.space.space_1)
-                            .px(theme.space.space_2)
-                            .py(theme.space.space_1)
+                            .justify_center()
+                            .rounded(theme.space.r_sm)
+                            // Hover tint on the close button itself.
+                            .hover(|s| s.bg(theme.colours.bg_active))
                             .cursor_pointer()
-                            // Hover tint (§5.1) — GPUI built-in, zero cost, no notify.
-                            .hover(|s| s.bg(theme.colours.bg_hover))
-                            .when(is_active, |s| {
-                                s.text_color(theme.colours.fg_default)
+                            .on_mouse_down(MouseButton::Left, {
+                                let entity = entity.clone();
+                                move |_ev: &MouseDownEvent, window, cx| {
+                                    // Stop propagation so the tab isn't also activated.
+                                    cx.stop_propagation();
+                                    entity.update(cx, |pane, cx| {
+                                        pane.close_tab(tab_id, window, cx);
+                                        cx.emit(PaneEvent::TabClosed { id: tab_id });
+                                        cx.notify();
+                                    });
+                                }
                             })
-                            .when(!is_active, |s| {
-                                s.text_color(theme.colours.fg_muted)
-                            })
-                            // Activate on click.
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                {
-                                    let entity = entity.clone();
-                                    move |_: &MouseDownEvent, window, cx| {
-                                        entity.update(cx, |pane, cx| {
-                                            // A direct click on the strip is
-                                            // the user asking to read this tab.
-                                            pane.activate_ix(
-                                                ix,
-                                                Activation::Focus,
-                                                window,
-                                                cx,
-                                            );
-                                            cx.emit(PaneEvent::ActiveTabChanged {
-                                                id: pane.active_id(),
-                                            });
-                                            cx.notify();
-                                        });
-                                    }
-                                },
-                            )
-                            // Middle-click closes (§13.4).
-                            .on_mouse_down(
-                                MouseButton::Middle,
-                                {
-                                    let entity = entity.clone();
-                                    move |_: &MouseDownEvent, window, cx| {
-                                        entity.update(cx, |pane, cx| {
-                                            pane.close_tab(tab_id, window, cx);
-                                            cx.emit(PaneEvent::TabClosed { id: tab_id });
-                                            cx.notify();
-                                        });
-                                    }
-                                },
-                            )
-                            // The label is the item's own (§13.4): icon, title,
-                            // provenance dot, and any streaming count. `TabItem`
-                            // keeps that reachable after type erasure, so a pane
-                            // can never invent a name for content it holds.
-                            .child(slot.item.tab_content(cx))
-                            // Close button — revealed by group-hover (§13.4).
+                            // × glyph for the close button.
                             .child(
                                 div()
-                                    .id(ElementId::Integer(
-                                        (tab_id.0.get() as u64) << 16 | 0xFFFF,
-                                    ))
-                                    .w(theme.space.space_3)
-                                    .h(theme.space.space_3)
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(theme.space.r_sm)
-                                    // Hover tint on the close button itself.
-                                    .hover(|s| s.bg(theme.colours.bg_active))
-                                    .cursor_pointer()
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        {
-                                            let entity = entity.clone();
-                                            move |_ev: &MouseDownEvent, window, cx| {
-                                                // Stop propagation so the tab isn't also activated.
-                                                cx.stop_propagation();
-                                                entity.update(cx, |pane, cx| {
-                                                    pane.close_tab(tab_id, window, cx);
-                                                    cx.emit(PaneEvent::TabClosed { id: tab_id });
-                                                    cx.notify();
-                                                });
-                                            }
-                                        },
-                                    )
-                                    // × glyph for the close button.
-                                    .child(
-                                        div()
-                                            .text_size(theme.type_scale.dense.size)
-                                            .text_color(theme.colours.fg_faint)
-                                            .child("×"),
-                                    ),
-                            )
-                    }),
-            );
+                                    .text_size(theme.type_scale.dense.size)
+                                    .text_color(theme.colours.fg_faint)
+                                    .child("×"),
+                            ),
+                    )
+            }));
 
         // ── Active underline (leaf animation, §5.3 `tab.switch`) ───────────────
         // A 2 px absolutely-positioned quad sliding under the active tab.
@@ -872,7 +836,6 @@ impl Render for Pane {
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
-
 
 #[cfg(test)]
 mod tests {

@@ -189,11 +189,11 @@ fn default_rerank_model_is_licensed() {
 // Bakery: double-claim, stale-claim reaper (unit via mock ClaimStore)
 // ─────────────────────────────────────────────────────────────────────────────
 
+use heart::{ContentHash, PackageId};
 use index::server::bakery::{
     BakeOutcome, BakeRequest, BakedArtifact, BakeryError, ClaimStore, EdgepackStatus, RECIPE_ID,
     run_bake,
 };
-use heart::{ContentHash, PackageId};
 use std::collections::HashSet;
 use std::sync::{
     Mutex,

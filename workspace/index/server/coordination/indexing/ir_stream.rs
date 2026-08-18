@@ -199,9 +199,10 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
             attach_empty_ir_sections(builder);
             return IrIngestOutcome {
                 identifiers,
-                degraded_reason: Some(degraded_reason.unwrap_or_else(|| {
-                    format!("IR payload serialization failed: {err}")
-                })),
+                degraded_reason: Some(
+                    degraded_reason
+                        .unwrap_or_else(|| format!("IR payload serialization failed: {err}")),
+                ),
             };
         }
     }
@@ -240,8 +241,7 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
         // A dropped reference set is a silent loss of real data (the cross-
         // reference graph for this snapshot), not a cosmetic degrade — W1
         // applies here too, unless the stream was already flagged degraded.
-        degraded_reason
-            .get_or_insert_with(|| format!("set_references failed: {err}"));
+        degraded_reason.get_or_insert_with(|| format!("set_references failed: {err}"));
     }
 
     IrIngestOutcome {
@@ -385,7 +385,7 @@ fn make_ref_target(
 /// table, and nothing decodes this section as payloads yet (only its
 /// byte-integrity is audited — see `crate::server::save::blobs`), so it stays
 /// empty-but-valid while references carry the real graph.
-pub(super) fn set_empty_ir_section(builder: &mut BlobBuilder) {
+pub(in crate::server::coordination) fn set_empty_ir_section(builder: &mut BlobBuilder) {
     let empty_payloads: Vec<ir_vcs::wire::OwnedEntryPayload> = Vec::new();
     let ir_blob = postcard::to_allocvec(&empty_payloads).unwrap_or_default();
     let _ = builder.set_ir(bytes::Bytes::from(ir_blob));
@@ -394,7 +394,7 @@ pub(super) fn set_empty_ir_section(builder: &mut BlobBuilder) {
 /// Attach an empty IR section and an empty reference section to `builder` so
 /// that `finalize()` does not fail with `MissingIrSection` or
 /// `MissingReferencesSection`. Used when the stream is empty or undecodable.
-pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
+pub(in crate::server::coordination) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
     set_empty_ir_section(builder);
     let empty_refs = crate::server::registry::blob::ReferenceSet {
         by_file: Vec::new(),
@@ -438,12 +438,12 @@ pub(super) fn attach_empty_ir_sections(builder: &mut BlobBuilder) {
 /// tree edges; those are structural containment, not usage, so any `Ref::Intro`
 /// naming this entry's own parent or a child is dropped. What remains is exactly
 /// the type-nominal usage graph.
-pub(super) fn build_reference_set_from_table(
+pub(in crate::server::coordination) fn build_reference_set_from_table(
     table: &ir::apply::PristineIntroTable,
     source_root: &std::path::Path,
     owning_pkg: Option<&str>,
 ) -> crate::server::registry::blob::ReferenceSet {
-    use crate::server::registry::blob::{FileReferences, Reference, ReferenceSet, RefTarget};
+    use crate::server::registry::blob::{FileReferences, RefTarget, Reference, ReferenceSet};
     use ir::index::Ref;
     use ir::vocab::ReferenceKind;
     use smol_str::SmolStr;
@@ -548,9 +548,11 @@ fn reference_source_path(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::identity_toolchain;
-    use ir_vcs::protocol::{FailureKindWire, FrameWriter, ProducerId, StreamFrame, IR_STREAM_VERSION};
+    use super::*;
+    use ir_vcs::protocol::{
+        FailureKindWire, FrameWriter, IR_STREAM_VERSION, ProducerId, StreamFrame,
+    };
 
     // ── W1: ingest_ir_bytes must distinguish producer breakage from a
     // genuinely empty package ──────────────────────────────────────────────
@@ -588,7 +590,10 @@ mod tests {
                 producer_digest: heart::content::ContentHash::from_bytes([0u8; 32]),
             },
         ]);
-        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
         assert_eq!(outcome.degraded_reason, None);
         assert!(outcome.identifiers.is_empty());
@@ -600,7 +605,10 @@ mod tests {
     #[test]
     fn w1_truncated_after_hello_is_degraded() {
         let bytes = encode_frames(&[hello_frame()]);
-        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
         assert!(
             outcome.degraded_reason.is_some(),
@@ -618,7 +626,10 @@ mod tests {
                 message: "producer crashed mid-parse".to_owned(),
             },
         ]);
-        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
         let reason = outcome.degraded_reason.expect("Abort must degrade the job");
         assert!(reason.contains("aborted"), "reason: {reason}");
@@ -633,9 +644,14 @@ mod tests {
         // not a valid postcard-encoded `StreamFrame`.
         bytes.extend_from_slice(&4u32.to_le_bytes());
         bytes.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
-        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
-        let reason = outcome.degraded_reason.expect("corrupt frame must degrade the job");
+        let reason = outcome
+            .degraded_reason
+            .expect("corrupt frame must degrade the job");
         assert!(reason.contains("decode error"), "reason: {reason}");
     }
 
@@ -645,7 +661,10 @@ mod tests {
     #[test]
     fn w1_missing_hello_is_degraded() {
         let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02];
-        let mut builder = BlobBuilder::new(test_package(), identity_toolchain(crate::ecosystem::Language::Rust));
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
         let outcome = ingest_ir_bytes(&mut builder, &bytes);
         assert!(outcome.degraded_reason.is_some());
         assert!(outcome.identifiers.is_empty());
@@ -689,10 +708,8 @@ mod tests {
         }
 
         let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
-        let core = PackageLineageId::new(
-            EcosystemId::new("rust-sysroot"),
-            PackageName::new("core"),
-        );
+        let core =
+            PackageLineageId::new(EcosystemId::new("rust-sysroot"), PackageName::new("core"));
 
         // `struct Widget;` + `impl Clone for Widget` — the impl's `self_ty`
         // references the same-package `Widget` (→ a `Ref::Intro`, i.e. a Local
@@ -723,14 +740,14 @@ mod tests {
             .seal(&lineage, &Unlinked)
             .table;
 
-        let ref_set = build_reference_set_from_table(
-            &table,
-            std::path::Path::new(""),
-            Some("cargo:fixture"),
-        );
+        let ref_set =
+            build_reference_set_from_table(&table, std::path::Path::new(""), Some("cargo:fixture"));
 
-        let edges: Vec<&crate::server::registry::blob::Reference> =
-            ref_set.by_file.iter().flat_map(|f| f.references.iter()).collect();
+        let edges: Vec<&crate::server::registry::blob::Reference> = ref_set
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .collect();
 
         assert!(
             !edges.is_empty(),
@@ -739,7 +756,9 @@ mod tests {
              used to leave empty, blinding Target::Usages on macOS"
         );
         assert!(
-            edges.iter().any(|r| matches!(&r.target, RefTarget::Local(_))),
+            edges
+                .iter()
+                .any(|r| matches!(&r.target, RefTarget::Local(_))),
             "the impl's self_ty referencing same-package `Widget` must be a \
              Local edge; got {edges:?}"
         );
@@ -788,8 +807,7 @@ mod tests {
             }
         }
 
-        let lineage =
-            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
         let mut low: Lowering<&'static str> =
             Lowering::new(PackageId::path("fixture"), sym("fixture"));
         low.declare("Lonely", None, sym("Lonely"), Record::builder().build());
@@ -845,8 +863,7 @@ mod tests {
             }
         }
 
-        let lineage =
-            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
         let core =
             PackageLineageId::new(EcosystemId::new("rust-sysroot"), PackageName::new("core"));
         let mut low: Lowering<&'static str> =
@@ -875,27 +892,42 @@ mod tests {
 
         let ref_set =
             build_reference_set_from_table(&table, std::path::Path::new(""), Some("cargo:fixture"));
-        let edges: Vec<&crate::server::registry::blob::Reference> =
-            ref_set.by_file.iter().flat_map(|f| f.references.iter()).collect();
+        let edges: Vec<&crate::server::registry::blob::Reference> = ref_set
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .collect();
 
         // Exactly one Local (self_ty → same-package Widget) and one External
         // (foreign Clone trait) — no phantom duplicates from the Node tree.
         assert_eq!(
-            edges.iter().filter(|r| matches!(r.target, RefTarget::Local(_))).count(),
+            edges
+                .iter()
+                .filter(|r| matches!(r.target, RefTarget::Local(_)))
+                .count(),
             1,
             "exactly one Local edge; got {edges:?}"
         );
         let external: Vec<_> = edges
             .iter()
             .filter_map(|r| match &r.target {
-                RefTarget::External { path, dependency } => Some((path.clone(), dependency.clone())),
+                RefTarget::External { path, dependency } => {
+                    Some((path.clone(), dependency.clone()))
+                }
                 _ => None,
             })
             .collect();
-        assert_eq!(external.len(), 1, "exactly one External edge; got {edges:?}");
+        assert_eq!(
+            external.len(),
+            1,
+            "exactly one External edge; got {edges:?}"
+        );
         assert_eq!(
             external[0],
-            ("core::clone::Clone".to_owned(), "rust-sysroot:core".to_owned()),
+            (
+                "core::clone::Clone".to_owned(),
+                "rust-sysroot:core".to_owned()
+            ),
             "External edge must carry the foreign key's canonical path + owning package"
         );
         // Documented degeneracy: no per-reference span from a sealed table.
@@ -904,12 +936,15 @@ mod tests {
             "sealed-table references have degenerate 0..0 spans"
         );
         // Codec must preserve every edge.
-        let round = crate::server::registry::blob::ReferenceSet::decode(
-            &ref_set.encode().expect("encode"),
-        )
-        .expect("decode");
+        let round =
+            crate::server::registry::blob::ReferenceSet::decode(&ref_set.encode().expect("encode"))
+                .expect("decode");
         assert_eq!(
-            round.by_file.iter().map(|f| f.references.len()).sum::<usize>(),
+            round
+                .by_file
+                .iter()
+                .map(|f| f.references.len())
+                .sum::<usize>(),
             edges.len(),
             "encode/decode must preserve the exact edge count"
         );

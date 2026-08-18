@@ -26,7 +26,19 @@
 /// Deterministic TEXT/JSON codec for catalog enums and ids.
 pub mod codec;
 /// The shared iroh/bao content-transfer plane (re-exported `transport` crate).
-pub use ::transport as transport;
+pub use ::transport;
+/// Shard-bakery ledger (`edgepack_artifacts` claim store).
+pub mod bakery;
+/// Content-addressed package blob manifest + builder + emit.
+pub mod blob;
+/// Content-addressed object store (`Store`).
+pub mod cas;
+/// Global catalog store glue (`GlobalStore` + `InstanceToken`).
+pub mod catalog;
+/// Object-store-backed compiled-IR lookup store.
+pub mod compiled;
+/// Transactional outbox + server-folded coordination flows.
+pub mod coordination;
 /// Per-ecosystem name/version/upstream/manifest grammar.
 pub mod ecosystem;
 /// The catalog engine facade (DoltLite / test-engine) behind all access.
@@ -35,62 +47,50 @@ pub mod engine;
 pub mod entity;
 /// Codec TEXT enums plus the `TextEnum` decode trait.
 pub mod enums;
+/// Crate-root salvage error union (blob/store/ingest/queue/index/...).
+pub mod error;
+/// Health/readiness probe re-exports.
+pub mod health;
+/// Deterministic identity re-exports (heart-backed).
+pub mod identity;
 /// Catalog id newtypes (blob ids) plus heart `PackageId`.
 pub mod ids;
 /// Upstream feed and git ingestion (followers, drivers, watermarks).
 pub mod ingest;
+/// Package metadata and facet extraction heuristics.
+pub mod metadata;
 /// Schema DDL rendering plus `pre-migrate-vN` snapshot branches.
 pub mod migrations;
 /// Tabular overlay records and merge policies.
 pub mod overlays;
 /// The NDPK v1 object-pack container engine.
 pub mod pack;
-/// The catalog op/edge protocol vocabulary.
-pub mod protocol;
-/// The registryless edge-resolution pass.
-pub mod resolution;
-/// Ephemeral scratch.sqlite store (jobs/wanted/sessions/claims).
-pub mod scratch;
-/// Seed system-model packages and aliases.
-pub mod seed_models;
-/// The `Catalog` read trait and `CatalogWriter` write facade.
-pub mod store;
-/// Crate-root salvage error union (blob/store/ingest/queue/index/...).
-pub mod error;
-/// Deterministic identity re-exports (heart-backed).
-pub mod identity;
 /// Package vocabulary re-exports (heart::package).
 pub mod package;
-/// Package metadata and facet extraction heuristics.
-pub mod metadata;
-/// Registry↔catalog data-mapping codecs.
-pub mod schema;
-/// Read-plane runtime salvage (error surfaces).
-pub mod runtime;
-/// Content-addressed package blob manifest + builder + emit.
-pub mod blob;
-/// Content-addressed object store (`Store`).
-pub mod cas;
+/// The catalog op/edge protocol vocabulary.
+pub mod protocol;
 /// Durable scratch-backed indexing job queue.
 pub mod queue;
-/// Object-store-backed compiled-IR lookup store.
-pub mod compiled;
+/// The registryless edge-resolution pass.
+pub mod resolution;
 /// Version resolution (name + request → `PackageVersion`).
 pub mod resolve;
-/// Health/readiness probe re-exports.
-pub mod health;
-/// Shard-bakery ledger (`edgepack_artifacts` claim store).
-pub mod bakery;
-/// `ContentIo` implementation for vector edge-shard artifacts.
-pub mod shard_sync;
-/// Shared upstream HTTP client + catalog followers.
-pub mod upstream;
-/// Global catalog store glue (`GlobalStore` + `InstanceToken`).
-pub mod catalog;
+/// Read-plane runtime salvage (error surfaces).
+pub mod runtime;
+/// Registry↔catalog data-mapping codecs.
+pub mod schema;
+/// Ephemeral scratch.sqlite store (jobs/wanted/sessions/claims).
+pub mod scratch;
 /// Registry package search (tantivy replica + ranking cascade).
 pub mod search;
-/// Transactional outbox + server-folded coordination flows.
-pub mod coordination;
+/// Seed system-model packages and aliases.
+pub mod seed_models;
+/// `ContentIo` implementation for vector edge-shard artifacts.
+pub mod shard_sync;
+/// The `Catalog` read trait and `CatalogWriter` write facade.
+pub mod store;
+/// Shared upstream HTTP client + catalog followers.
+pub mod upstream;
 
 /// Serving composition (`Driver`) behind the `server` feature.
 #[cfg(feature = "server")]
@@ -100,7 +100,21 @@ pub mod server;
 pub use entity as tables;
 
 /// Schema version this crate authors and reads (INDEX-PLAN ID-5).
-pub const SCHEMA_VERSION: u32 = 4;
+///
+/// Bumped 4 -> 5 to add `idx_edges_unresolved` and the `generations`/
+/// `listing_events`/`symbols_proj` version-id indexes (see
+/// `migrations::ddl::schema_v4_statements`). The bump is what makes existing
+/// v4 catalogs actually pick up the new indexes: [`migrations::runner`]
+/// short-circuits when `current_user_version == SCHEMA_VERSION`, so without
+/// this bump a catalog already at 4 would skip the migration forever and
+/// never acquire the new indexes — only brand-new databases would benefit.
+/// Bumping forces one more (idempotent, `IF NOT EXISTS`) DDL pass on every
+/// v4 catalog, which is exactly the migration path for a set of
+/// index-only changes. The runner function keeps its `migrate_to_v4` name
+/// (several test files under `index/tests/` call it directly and are owned
+/// by other in-flight work) but it has always migrated to `SCHEMA_VERSION`
+/// dynamically, never a hardcoded 4, so the rename-free bump is safe.
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub use codec::CodecError;
 pub use enums::{

@@ -52,10 +52,11 @@
 //!   `Type::Any`) but their `bound=`/constraint arguments are not parsed;
 //!   only the PEP 695 `[T: Foo]` form carries a bound through.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::{PackageSource, ProducerError};
+use ruff_python_ast::visitor::{self, Visitor};
 use ruff_python_ast::{
     Decorator, Expr, ExprSubscript, ModModule, Operator, Parameter, ParameterWithDefault, Stmt,
     StmtClassDef, StmtFunctionDef, TypeParam, TypeParams,
@@ -139,7 +140,7 @@ pub fn build_oracle(src: &PackageSource) -> Result<PythonOracle, ProducerError> 
             continue;
         }
 
-        modules.push(extract_module(parsed.syntax(), &source, module_name));
+        modules.push(extract_module(parsed.syntax(), &source, module_name, file));
     }
 
     Ok(PythonOracle { modules })
@@ -189,7 +190,9 @@ fn is_excluded_dir(name: &str) -> bool {
     if name.ends_with(".egg-info") || name.ends_with(".dist-info") {
         return true;
     }
-    EXCLUDED_DIR_NAMES.iter().any(|d| name.eq_ignore_ascii_case(d))
+    EXCLUDED_DIR_NAMES
+        .iter()
+        .any(|d| name.eq_ignore_ascii_case(d))
 }
 
 fn is_excluded_file(name: &str) -> bool {
@@ -283,12 +286,18 @@ fn module_dotted_name(file: &Path) -> String {
 // Module extraction
 // ---------------------------------------------------------------------------
 
-fn extract_module(module: &ModModule, source: &str, module_name: String) -> ModuleData {
+fn extract_module(
+    module: &ModModule,
+    source: &str,
+    module_name: String,
+    source_path: PathBuf,
+) -> ModuleData {
     let parsed_doc = leading_docstring(&module.body).map(docstring::parse);
     let documentation = parsed_doc.as_ref().and_then(ParsedDocstring::documentation);
 
     let typevars = collect_typevar_names(&module.body, source);
     let items = walk_scope(&module.body, &module_name, source, &typevars, false, true);
+    let references = collect_references(&module.body, &items, &module_name, source);
 
     ModuleData {
         name: module_name,
@@ -296,7 +305,123 @@ fn extract_module(module: &ModModule, source: &str, module_name: String) -> Modu
         deprecation: None,
         items,
         span: 0..source.len(),
+        source: source_path,
+        references,
     }
+}
+
+struct CallCollector<'a> {
+    owner: PythonId,
+    module: &'a str,
+    known: &'a HashSet<String>,
+    imported: &'a HashMap<String, PythonId>,
+    references: Vec<crate::python::oracle::ReferenceData>,
+}
+
+impl<'a> Visitor<'a> for CallCollector<'a> {
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        if let Expr::Call(call) = expr {
+            let target_name = match call.func.as_ref() {
+                Expr::Name(name) if self.known.contains(name.id.as_str()) => Some(PythonId::new(
+                    format!("{}.{}", self.module, name.id.as_str()),
+                )),
+                Expr::Name(name) => self.imported.get(name.id.as_str()).cloned(),
+                _ => None,
+            };
+            if let Some(target) = target_name {
+                self.references.push(crate::python::oracle::ReferenceData {
+                    owner: self.owner.clone(),
+                    target,
+                    span: call.func.range().to_std_range(),
+                });
+            }
+        }
+        visitor::walk_expr(self, expr);
+    }
+}
+
+fn collect_references(
+    body: &[Stmt],
+    items: &[ItemData],
+    module: &str,
+    source: &str,
+) -> Vec<crate::python::oracle::ReferenceData> {
+    let known: HashSet<String> = items
+        .iter()
+        .filter_map(|item| match item.body {
+            ItemBody::Function(_) | ItemBody::Overloaded(_) => Some(item.name.clone()),
+            _ => None,
+        })
+        .collect();
+    let imported = imported_call_targets(source, module);
+    let mut references = Vec::new();
+    for stmt in body {
+        let Stmt::FunctionDef(function) = stmt else {
+            continue;
+        };
+        let owner = PythonId::new(format!("{}.{}", module, function.name.as_str()));
+        let mut collector = CallCollector {
+            owner,
+            module,
+            known: &known,
+            imported: &imported,
+            references: Vec::new(),
+        };
+        visitor::walk_body(&mut collector, &function.body);
+        references.extend(collector.references);
+    }
+    references
+}
+
+fn imported_call_targets(source: &str, module: &str) -> HashMap<String, PythonId> {
+    let mut targets = HashMap::new();
+    let package = module.rsplit_once('.').map_or("", |(p, _)| p);
+    for line in source.lines() {
+        let line = line.trim();
+        let Some(rest) = line.strip_prefix("from ") else {
+            continue;
+        };
+        let Some((origin, names)) = rest.split_once(" import ") else {
+            continue;
+        };
+        let dots = origin.chars().take_while(|c| *c == '.').count();
+        let tail = &origin[dots..];
+        let mut base = package.to_owned();
+        for _ in 1..dots {
+            base = base
+                .rsplit_once('.')
+                .map_or_else(String::new, |(parent, _)| parent.to_owned());
+        }
+        let origin = if dots > 0 {
+            if tail.is_empty() {
+                base
+            } else if base.is_empty() {
+                tail.to_owned()
+            } else {
+                format!("{base}.{tail}")
+            }
+        } else {
+            tail.to_owned()
+        };
+        for part in names.split(',') {
+            let mut words = part.split_whitespace();
+            let Some(name) = words.next() else { continue };
+            let alias = if words.next() == Some("as") {
+                words.next().unwrap_or(name)
+            } else {
+                name
+            };
+            targets.insert(
+                alias.to_owned(),
+                PythonId::new(if origin.is_empty() {
+                    name.to_owned()
+                } else {
+                    format!("{origin}.{name}")
+                }),
+            );
+        }
+    }
+    targets
 }
 
 /// Extract the module/class/function's own leading docstring, if its first
@@ -384,10 +509,18 @@ fn walk_scope(
     let mut pending: Vec<&StmtFunctionDef> = Vec::new();
     let mut declared: HashSet<String> = HashSet::new();
 
-    let flush = |pending: &mut Vec<&StmtFunctionDef>, items: &mut Vec<ItemData>, declared: &mut HashSet<String>| {
+    let flush = |pending: &mut Vec<&StmtFunctionDef>,
+                 items: &mut Vec<ItemData>,
+                 declared: &mut HashSet<String>| {
         if !pending.is_empty() {
             if declared.insert(pending[0].name.as_str().to_owned()) {
-                items.push(build_function_group(pending, parent, source, typevars, is_method_scope));
+                items.push(build_function_group(
+                    pending,
+                    parent,
+                    source,
+                    typevars,
+                    is_method_scope,
+                ));
             }
             pending.clear();
         }
@@ -463,7 +596,11 @@ fn build_function_group(
         })
     });
 
-    let effective: Vec<&StmtFunctionDef> = if is_property_pair { vec![first] } else { group.to_vec() };
+    let effective: Vec<&StmtFunctionDef> = if is_property_pair {
+        vec![first]
+    } else {
+        group.to_vec()
+    };
 
     let decorators = decorator_tokens(&first.decorator_list, source);
     let parsed_doc = leading_docstring(&first.body).map(docstring::parse);
@@ -472,7 +609,13 @@ fn build_function_group(
 
     let body = if effective.len() == 1 {
         let doc = leading_docstring(&effective[0].body).map(docstring::parse);
-        ItemBody::Function(function_data(effective[0], source, typevars, is_method_scope, doc.as_ref()))
+        ItemBody::Function(function_data(
+            effective[0],
+            source,
+            typevars,
+            is_method_scope,
+            doc.as_ref(),
+        ))
     } else {
         let branches = effective
             .iter()
@@ -526,19 +669,49 @@ fn function_data(
 
     let mut params = Vec::new();
     for p in &f.parameters.posonlyargs {
-        params.push(param_data(p, ParamKind::PositionalOnly, source, &local_typevars, doc));
+        params.push(param_data(
+            p,
+            ParamKind::PositionalOnly,
+            source,
+            &local_typevars,
+            doc,
+        ));
     }
     for p in &f.parameters.args {
-        params.push(param_data(p, ParamKind::Normal, source, &local_typevars, doc));
+        params.push(param_data(
+            p,
+            ParamKind::Normal,
+            source,
+            &local_typevars,
+            doc,
+        ));
     }
     if let Some(va) = f.parameters.vararg.as_deref() {
-        params.push(bare_param(va, ParamKind::Varargs, source, &local_typevars, doc));
+        params.push(bare_param(
+            va,
+            ParamKind::Varargs,
+            source,
+            &local_typevars,
+            doc,
+        ));
     }
     for p in &f.parameters.kwonlyargs {
-        params.push(param_data(p, ParamKind::KeywordOnly, source, &local_typevars, doc));
+        params.push(param_data(
+            p,
+            ParamKind::KeywordOnly,
+            source,
+            &local_typevars,
+            doc,
+        ));
     }
     if let Some(kw) = f.parameters.kwarg.as_deref() {
-        params.push(bare_param(kw, ParamKind::Kwargs, source, &local_typevars, doc));
+        params.push(bare_param(
+            kw,
+            ParamKind::Kwargs,
+            source,
+            &local_typevars,
+            doc,
+        ));
     }
 
     let is_static = decorators.iter().any(|d| d == "staticmethod");
@@ -556,7 +729,10 @@ fn function_data(
         ReceiverKind::None
     };
 
-    let return_ty = f.returns.as_deref().map(|e| expr_to_type(e, source, &local_typevars));
+    let return_ty = f
+        .returns
+        .as_deref()
+        .map(|e| expr_to_type(e, source, &local_typevars));
     let generics = pep695_generics(f.type_params.as_deref(), source, &local_typevars);
     let is_abstract = decorators.iter().any(|d| {
         let last = d.rsplit('.').next().unwrap_or(d);
@@ -588,10 +764,20 @@ fn bare_param(
     doc: Option<&ParsedDocstring>,
 ) -> ParamData {
     let name = p.name.as_str().to_owned();
-    let ty = p.annotation.as_deref().map(|e| expr_to_type(e, source, typevars));
+    let ty = p
+        .annotation
+        .as_deref()
+        .map(|e| expr_to_type(e, source, typevars));
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
     let span = p.range().to_std_range();
-    ParamData { name, ty, kind, has_default: false, doc_description, span }
+    ParamData {
+        name,
+        ty,
+        kind,
+        has_default: false,
+        doc_description,
+        span,
+    }
 }
 
 fn param_data(
@@ -602,7 +788,11 @@ fn param_data(
     doc: Option<&ParsedDocstring>,
 ) -> ParamData {
     let name = p.parameter.name.as_str().to_owned();
-    let ty = p.parameter.annotation.as_deref().map(|e| expr_to_type(e, source, typevars));
+    let ty = p
+        .parameter
+        .annotation
+        .as_deref()
+        .map(|e| expr_to_type(e, source, typevars));
     let has_default = p.default.is_some();
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
     // `p.range()` (`ParameterWithDefault`) covers the name, annotation, and
@@ -610,14 +800,26 @@ fn param_data(
     // whole parameter as written is the more useful span for a symbol whose
     // identity might need to fall back to it.
     let span = p.range().to_std_range();
-    ParamData { name, ty, kind, has_default, doc_description, span }
+    ParamData {
+        name,
+        ty,
+        kind,
+        has_default,
+        doc_description,
+        span,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Classes
 // ---------------------------------------------------------------------------
 
-fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: &HashSet<String>) -> ItemData {
+fn extract_class(
+    c: &StmtClassDef,
+    parent: &str,
+    source: &str,
+    module_typevars: &HashSet<String>,
+) -> ItemData {
     let name = c.name.as_str().to_owned();
     let class_id = format!("{parent}.{name}");
     let decorators = decorator_tokens(&c.decorator_list, source);
@@ -629,7 +831,10 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
         typevars.insert(n);
     }
 
-    let super_types: Vec<TypeData> = base_exprs.iter().map(|e| expr_to_type(e, source, &typevars)).collect();
+    let super_types: Vec<TypeData> = base_exprs
+        .iter()
+        .map(|e| expr_to_type(e, source, &typevars))
+        .collect();
     let base_names: Vec<String> = base_exprs.iter().map(|e| dotted_name(e, source)).collect();
     let form = classify_form(&base_names, &decorators);
     let generics = pep695_generics(c.type_params.as_deref(), source, &typevars);
@@ -645,7 +850,8 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
     // and both a method and a field declaring the same `PythonId` is a
     // `Lowering::finish` collision, not two distinct members).
     let scope_items = walk_scope(&c.body, &class_id, source, &typevars, true, false);
-    let method_and_nested_names: HashSet<String> = scope_items.iter().map(|i| i.name.clone()).collect();
+    let method_and_nested_names: HashSet<String> =
+        scope_items.iter().map(|i| i.name.clone()).collect();
 
     let mut methods = Vec::with_capacity(scope_items.len());
     let mut nested = Vec::new();
@@ -657,7 +863,13 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
         }
     }
 
-    let fields = extract_fields(&c.body, source, &typevars, parsed_doc.as_ref(), &method_and_nested_names);
+    let fields = extract_fields(
+        &c.body,
+        source,
+        &typevars,
+        parsed_doc.as_ref(),
+        &method_and_nested_names,
+    );
 
     ItemData {
         id: PythonId::new(class_id),
@@ -668,7 +880,14 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
         deprecation: deprecation_from_decorators(&c.decorator_list, source),
         decorators,
         span: c.range().to_std_range(),
-        body: ItemBody::Class(ClassData { super_types, generics, form, fields, methods, nested }),
+        body: ItemBody::Class(ClassData {
+            super_types,
+            generics,
+            form,
+            fields,
+            methods,
+            nested,
+        }),
     }
 }
 
@@ -683,10 +902,12 @@ fn extract_class(c: &StmtClassDef, parent: &str, source: &str, module_typevars: 
 fn classify_form(base_names: &[String], decorators: &[String]) -> ClassForm {
     let base_last: Vec<&str> = base_names.iter().map(|b| last_segment(b)).collect();
 
-    if base_last
-        .iter()
-        .any(|b| matches!(*b, "Enum" | "IntEnum" | "StrEnum" | "Flag" | "IntFlag" | "ReprEnum"))
-    {
+    if base_last.iter().any(|b| {
+        matches!(
+            *b,
+            "Enum" | "IntEnum" | "StrEnum" | "Flag" | "IntFlag" | "ReprEnum"
+        )
+    }) {
         return ClassForm::Enum;
     }
     if base_last.contains(&"Protocol") {
@@ -722,12 +943,15 @@ fn extract_fields(
     for stmt in body {
         match stmt {
             Stmt::AnnAssign(a) => {
-                let Expr::Name(target) = a.target.as_ref() else { continue };
+                let Expr::Name(target) = a.target.as_ref() else {
+                    continue;
+                };
                 let name = target.id.as_str().to_owned();
                 if taken.contains(&name) || !seen.insert(name.clone()) {
                     continue;
                 }
-                let (ty, is_class_var, is_final) = annotation_to_field_type(&a.annotation, source, typevars);
+                let (ty, is_class_var, is_final) =
+                    annotation_to_field_type(&a.annotation, source, typevars);
                 fields.push(FieldData {
                     documentation: doc.and_then(|d| d.params.get(&name).cloned()),
                     name,
@@ -740,7 +964,9 @@ fn extract_fields(
                 });
             }
             Stmt::Assign(asg) => {
-                let [Expr::Name(target)] = asg.targets.as_slice() else { continue };
+                let [Expr::Name(target)] = asg.targets.as_slice() else {
+                    continue;
+                };
                 let name = target.id.as_str().to_owned();
                 if name.starts_with("__") && name.ends_with("__") {
                     // Dunder class attributes (`__slots__`, `__all__`, …) are
@@ -772,16 +998,34 @@ fn extract_fields(
 /// annotation, since neither is a real member of Python's type algebra —
 /// both are qualifiers `oracle::FieldData` models as flags rather than
 /// nested `TypeData`.
-fn annotation_to_field_type(ann: &Expr, source: &str, typevars: &HashSet<String>) -> (Option<TypeData>, bool, bool) {
+fn annotation_to_field_type(
+    ann: &Expr,
+    source: &str,
+    typevars: &HashSet<String>,
+) -> (Option<TypeData>, bool, bool) {
     if let Expr::Subscript(sub) = ann {
         let base_full = dotted_name(&sub.value, source);
         match last_segment(&base_full) {
-            "ClassVar" => return (Some(expr_to_type(&sub.slice, source, typevars)), true, false),
-            "Final" => return (Some(expr_to_type(&sub.slice, source, typevars)), false, true),
+            "ClassVar" => {
+                return (
+                    Some(expr_to_type(&sub.slice, source, typevars)),
+                    true,
+                    false,
+                );
+            }
+            "Final" => {
+                return (
+                    Some(expr_to_type(&sub.slice, source, typevars)),
+                    false,
+                    true,
+                );
+            }
             _ => {}
         }
     }
-    if last_segment(&dotted_name(ann, source)) == "Final" && matches!(ann, Expr::Name(_) | Expr::Attribute(_)) {
+    if last_segment(&dotted_name(ann, source)) == "Final"
+        && matches!(ann, Expr::Name(_) | Expr::Attribute(_))
+    {
         return (None, false, true);
     }
     (Some(expr_to_type(ann, source, typevars)), false, false)
@@ -791,11 +1035,18 @@ fn annotation_to_field_type(ann: &Expr, source: &str, typevars: &HashSet<String>
 // Module-level bindings: Const / Alias
 // ---------------------------------------------------------------------------
 
-fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<String>) -> Option<ItemData> {
+fn binding_item(
+    stmt: &Stmt,
+    parent: &str,
+    source: &str,
+    typevars: &HashSet<String>,
+) -> Option<ItemData> {
     match stmt {
         // PEP 695 `type X = ...`.
         Stmt::TypeAlias(ta) => {
-            let Expr::Name(name_expr) = ta.name.as_ref() else { return None };
+            let Expr::Name(name_expr) = ta.name.as_ref() else {
+                return None;
+            };
             let name = name_expr.id.as_str().to_owned();
             let generics = pep695_generics(ta.type_params.as_deref(), source, typevars);
             let target = Some(expr_to_type(&ta.value, source, typevars));
@@ -807,7 +1058,9 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
             ))
         }
         Stmt::AnnAssign(a) => {
-            let Expr::Name(target) = a.target.as_ref() else { return None };
+            let Expr::Name(target) = a.target.as_ref() else {
+                return None;
+            };
             let name = target.id.as_str().to_owned();
             if name.starts_with("__") && name.ends_with("__") {
                 return None;
@@ -815,20 +1068,33 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
             let span = a.range().to_std_range();
             // Legacy `X: TypeAlias = <expr>`.
             if last_segment(&dotted_name(&a.annotation, source)) == "TypeAlias" {
-                let target = a.value.as_deref().map(|v| expr_to_type(v, source, typevars));
+                let target = a
+                    .value
+                    .as_deref()
+                    .map(|v| expr_to_type(v, source, typevars));
                 return Some(plain_item(
                     parent,
                     name,
-                    ItemBody::Alias(AliasData { target, generics: Vec::new() }),
+                    ItemBody::Alias(AliasData {
+                        target,
+                        generics: Vec::new(),
+                    }),
                     span,
                 ));
             }
             let ty = Some(expr_to_type(&a.annotation, source, typevars));
             let value = a.value.as_deref().map(|v| source[v.range()].to_owned());
-            Some(plain_item(parent, name, ItemBody::Const(ConstData { ty, value }), span))
+            Some(plain_item(
+                parent,
+                name,
+                ItemBody::Const(ConstData { ty, value }),
+                span,
+            ))
         }
         Stmt::Assign(asg) => {
-            let [Expr::Name(target)] = asg.targets.as_slice() else { return None };
+            let [Expr::Name(target)] = asg.targets.as_slice() else {
+                return None;
+            };
             let name = target.id.as_str().to_owned();
             if name.starts_with("__") && name.ends_with("__") {
                 return None;
@@ -845,7 +1111,12 @@ fn binding_item(stmt: &Stmt, parent: &str, source: &str, typevars: &HashSet<Stri
     }
 }
 
-fn plain_item(parent: &str, name: String, body: ItemBody, span: std::ops::Range<usize>) -> ItemData {
+fn plain_item(
+    parent: &str,
+    name: String,
+    body: ItemBody,
+    span: std::ops::Range<usize>,
+) -> ItemData {
     ItemData {
         id: PythonId::new(format!("{parent}.{name}")),
         parent: Some(PythonId::new(parent.to_owned())),
@@ -864,7 +1135,9 @@ fn plain_item(parent: &str, name: String, body: ItemBody, span: std::ops::Range<
 // ---------------------------------------------------------------------------
 
 fn decorator_tokens(list: &[Decorator], source: &str) -> Vec<String> {
-    list.iter().map(|d| decorator_head_name(&d.expression, source)).collect()
+    list.iter()
+        .map(|d| decorator_head_name(&d.expression, source))
+        .collect()
 }
 
 /// The decorator's callee name, ignoring any call arguments: `@dataclass`
@@ -913,27 +1186,43 @@ fn pep695_names(tp: Option<&TypeParams>) -> Vec<String> {
         .collect()
 }
 
-fn pep695_generics(tp: Option<&TypeParams>, source: &str, typevars: &HashSet<String>) -> Vec<GenericParamData> {
+fn pep695_generics(
+    tp: Option<&TypeParams>,
+    source: &str,
+    typevars: &HashSet<String>,
+) -> Vec<GenericParamData> {
     let Some(tp) = tp else { return Vec::new() };
     tp.iter()
         .map(|t| match t {
             TypeParam::TypeVar(v) => GenericParamData {
                 name: v.name.as_str().to_owned(),
-                bound: v.bound.as_deref().map(|b| expr_to_type(b, source, typevars)),
+                bound: v
+                    .bound
+                    .as_deref()
+                    .map(|b| expr_to_type(b, source, typevars)),
                 constraints: Vec::new(),
-                default: v.default.as_deref().map(|d| expr_to_type(d, source, typevars)),
+                default: v
+                    .default
+                    .as_deref()
+                    .map(|d| expr_to_type(d, source, typevars)),
             },
             TypeParam::TypeVarTuple(v) => GenericParamData {
                 name: v.name.as_str().to_owned(),
                 bound: None,
                 constraints: Vec::new(),
-                default: v.default.as_deref().map(|d| expr_to_type(d, source, typevars)),
+                default: v
+                    .default
+                    .as_deref()
+                    .map(|d| expr_to_type(d, source, typevars)),
             },
             TypeParam::ParamSpec(v) => GenericParamData {
                 name: v.name.as_str().to_owned(),
                 bound: None,
                 constraints: Vec::new(),
-                default: v.default.as_deref().map(|d| expr_to_type(d, source, typevars)),
+                default: v
+                    .default
+                    .as_deref()
+                    .map(|d| expr_to_type(d, source, typevars)),
             },
         })
         .collect()
@@ -960,7 +1249,11 @@ fn dotted_name(e: &Expr, source: &str) -> String {
 
 fn tuple_or_single(e: &Expr, source: &str, typevars: &HashSet<String>) -> Vec<TypeData> {
     match e {
-        Expr::Tuple(t) => t.elts.iter().map(|el| expr_to_type(el, source, typevars)).collect(),
+        Expr::Tuple(t) => t
+            .elts
+            .iter()
+            .map(|el| expr_to_type(el, source, typevars))
+            .collect(),
         other => vec![expr_to_type(other, source, typevars)],
     }
 }
@@ -1009,13 +1302,23 @@ fn expr_to_type(e: &Expr, source: &str, typevars: &HashSet<String>) -> TypeData 
             TypeData::Union(members)
         }
 
-        Expr::Tuple(t) => TypeData::Tuple(t.elts.iter().map(|el| expr_to_type(el, source, typevars)).collect()),
+        Expr::Tuple(t) => TypeData::Tuple(
+            t.elts
+                .iter()
+                .map(|el| expr_to_type(el, source, typevars))
+                .collect(),
+        ),
         // A bracketed list only appears in type position as `Callable`'s
         // parameter list (`Callable[[int, str], R]`); there is no dedicated
         // "list of types" `TypeData` variant, so it is approximated as a
         // `Tuple` — order and arity survive, the "this is a param list, not
         // a value tuple" distinction does not.
-        Expr::List(l) => TypeData::Tuple(l.elts.iter().map(|el| expr_to_type(el, source, typevars)).collect()),
+        Expr::List(l) => TypeData::Tuple(
+            l.elts
+                .iter()
+                .map(|el| expr_to_type(el, source, typevars))
+                .collect(),
+        ),
 
         // Every `Expr` shape this front end has no case for: a lambda, a
         // call, a comparison, a bool-op, an f-string, … This is the
@@ -1098,7 +1401,10 @@ fn annotated_type(slice: &Expr, source: &str, typevars: &HashSet<String>) -> Typ
     {
         let inner = expr_to_type(first, source, typevars);
         let metadata = rest.iter().map(|m| source[m.range()].to_owned()).collect();
-        return TypeData::Annotated { inner: Box::new(inner), metadata };
+        return TypeData::Annotated {
+            inner: Box::new(inner),
+            metadata,
+        };
     }
     // `Annotated[T]` with no metadata is not valid Python, but degrade to
     // the inner type rather than panicking on malformed input.

@@ -8,7 +8,7 @@
 //! `lindsey` never creates a Tokio runtime of its own. Everything async goes
 //! through the `EngineHandle` returned by [`Engine::start`].
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::SystemTime};
 
 use tokio::runtime::Runtime;
 use tokio::sync::broadcast;
@@ -22,7 +22,8 @@ use crate::store::{
 };
 
 use crate::{
-    PackageHistorySpec, PackageLoadEvent, PackageSpec, versions::VersionRegistry,
+    ClientCommand, JobEvent, JobId, PackageHistorySpec, PackageLoadEvent, PackageSpec,
+    ProducerLanguage, ProjectEvent, SyncEvent, versions::VersionRegistry,
     wire::SharedStr,
 };
 
@@ -33,6 +34,109 @@ mod semantic;
 // `crate::runtime::drive_load` / `crate::runtime::LoadFailures` — the paths
 // `doc` and `acquire` already reference — keep resolving unchanged.
 pub(crate) use load::{LoadFailures, drive_load};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ManifestStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    language: ProducerLanguage,
+}
+
+pub(crate) async fn watch_project(
+    root: PathBuf, generation: crate::wire::Gen, tx: flume::Sender<ProjectEvent>,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    let initial = match scan_manifests(&root) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = tx.send(ProjectEvent::Error { message: SharedStr::from(format!("{}: {error}", root.display())) });
+            let _ = tx.send(ProjectEvent::Done { generation });
+            return;
+        }
+    };
+    for (path, stamp) in &initial {
+        if tx.send(ProjectEvent::Discovered { path: path.clone(), language: stamp.language }).is_err() { return; }
+    }
+    if tx.send(ProjectEvent::Done { generation }).is_err() { return; }
+    let mut previous = initial;
+    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(250));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! { _ = cancel.cancelled() => return, _ = ticker.tick() => {} }
+        let current = match scan_manifests(&root) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                if tx.send(ProjectEvent::Error { message: SharedStr::from(format!("{}: {error}", root.display())) }).is_err() { return; }
+                continue;
+            }
+        };
+        for (path, stamp) in &current {
+            match previous.get(path) {
+                None => if tx.send(ProjectEvent::Discovered { path: path.clone(), language: stamp.language }).is_err() { return; },
+                Some(old) if old != stamp => if tx.send(ProjectEvent::Changed { path: path.clone() }).is_err() { return; },
+                Some(_) => {}
+            }
+        }
+        for path in previous.keys().filter(|path| !current.contains_key(*path)) {
+            if tx.send(ProjectEvent::Removed { path: path.clone() }).is_err() { return; }
+        }
+        previous = current;
+    }
+}
+
+fn scan_manifests(root: &Path) -> std::io::Result<HashMap<PathBuf, ManifestStamp>> {
+    if !root.is_dir() { return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "project root is not a directory")); }
+    let mut pending = vec![root.to_owned()];
+    let mut manifests = HashMap::new();
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                let name = entry.file_name();
+                if name != ".git" && name != "target" && name != "node_modules" { pending.push(path); }
+                continue;
+            }
+            if !file_type.is_file() { continue; }
+            let Some(language) = manifest_language(&path) else { continue; };
+            let metadata = entry.metadata()?;
+            manifests.insert(path, ManifestStamp { modified: metadata.modified().ok(), len: metadata.len(), language });
+        }
+    }
+    Ok(manifests)
+}
+
+pub(crate) fn sync_specs(root: &Path) -> std::io::Result<Vec<crate::PackageSpec>> {
+    let manifests = scan_manifests(root)?;
+    let mut specs = Vec::new();
+    for (path, stamp) in manifests {
+        if stamp.language != ProducerLanguage::Rust { continue; }
+        let text = std::fs::read_to_string(&path)?;
+        let value: toml::Value = text.parse().map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{path:?}: {e}")))?;
+        let package = value.get("package").and_then(toml::Value::as_table)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "Cargo.toml has no [package]"))?;
+        let name = package.get("name").and_then(toml::Value::as_str)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "package.name is missing"))?;
+        let version = package.get("version").and_then(toml::Value::as_str).unwrap_or("0.0.0");
+        specs.push(crate::PackageSpec { root: path.parent().unwrap().to_owned(), name: name.to_owned(), version: version.to_owned(), language: ProducerLanguage::Rust });
+    }
+    specs.sort_by(|a, b| a.root.cmp(&b.root));
+    Ok(specs)
+}
+
+fn manifest_language(path: &Path) -> Option<ProducerLanguage> {
+    match path.file_name()?.to_str()? {
+        "Cargo.toml" => Some(ProducerLanguage::Rust),
+        "go.mod" => Some(ProducerLanguage::Go),
+        "pom.xml" | "build.gradle" | "build.gradle.kts" => Some(ProducerLanguage::Java),
+        "pyproject.toml" | "setup.py" => Some(ProducerLanguage::Python),
+        "package.json" => Some(ProducerLanguage::TypeScript),
+        _ if path.extension().and_then(|e| e.to_str()) == Some("csproj") => Some(ProducerLanguage::CSharp),
+        "CMakeLists.txt" | "meson.build" | "BUILD" | "BUILD.bazel" => Some(ProducerLanguage::Cpp),
+        _ => None,
+    }
+}
 
 use load::package_root_key;
 use semantic::semantic_indexer;
@@ -159,6 +263,19 @@ pub(crate) struct EngineInner {
     /// each entry is one `Arc` clone, and the consumer drains strictly faster
     /// than a producer can lower new IR.
     pub(crate) semantic_tx: Option<flume::Sender<Arc<crate::store::package::PackageView>>>,
+    pub(crate) jobs: Mutex<HashMap<JobId, JobStatus>>,
+    pub(crate) job_tx: broadcast::Sender<JobEvent>,
+    pub(crate) sync_tx: broadcast::Sender<SyncEvent>,
+    pub(crate) next_job: std::sync::atomic::AtomicU64,
+    pub(crate) cancellations: Mutex<HashMap<JobId, tokio_util::sync::CancellationToken>>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum JobStatus {
+    Running,
+    Succeeded(SharedStr),
+    Failed(SharedStr),
+    Cancelled,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +319,8 @@ impl Engine {
         // Capacity 64: broadcast channel for package load notifications.  See
         // `EngineInner::pkg_tx` for the capacity rationale.
         let (pkg_tx, _initial_rx) = broadcast::channel::<PackageLoadEvent>(64);
+        let (job_tx, _job_rx) = broadcast::channel::<JobEvent>(256);
+        let (sync_tx, _sync_rx) = broadcast::channel::<SyncEvent>(256);
         // `_initial_rx` is immediately dropped; real subscribers are created
         // inside `EngineHandle::packages()` before they read the snapshot.
 
@@ -233,6 +352,11 @@ impl Engine {
             embedder: config.embedder.clone(),
             semantic,
             semantic_tx,
+            jobs: Mutex::new(HashMap::new()),
+            job_tx,
+            sync_tx,
+            next_job: std::sync::atomic::AtomicU64::new(1),
+            cancellations: Mutex::new(HashMap::new()),
         });
 
         // Seed the corpus from the source on the runtime's thread pool.
@@ -529,6 +653,7 @@ impl EngineHandle {
                 version,
                 symbol_count,
                 root,
+                ..
             }) => Ok(crate::packages::acquire::LoadedPackage {
                 name,
                 ecosystem,
@@ -723,6 +848,7 @@ impl EngineHandle {
                     version,
                     symbol_count,
                     root: package_root_key(&pkg),
+                    metadata: pkg.metadata().clone(),
                 };
                 // Backpressure: if the GUI is slow, we block here rather than
                 // dropping events.  This is the correct trade-off: the status

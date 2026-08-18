@@ -58,7 +58,11 @@
 
 mod common;
 
-use sea_orm::{ColumnTrait, DbBackend, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait};
+use std::io::Write;
+
+use sea_orm::{
+    ColumnTrait, DbBackend, EntityTrait, QueryFilter, QueryOrder, QuerySelect, QueryTrait,
+};
 
 use common::{init_repo_with_tags, migrated_writer, push_one_more_tagged_commit};
 
@@ -70,6 +74,7 @@ use index::ingest::git::{GitCommandAdapter, GitRepository};
 use index::ingest::grit::GritAdapter;
 use index::ingest::monitor::{GitMonitor, TickOutcome};
 use index::ingest::watermark::{GitWatermark, MemoryWatermarkStore, WatermarkStore};
+use index::ingest::{FollowerDriver, GitDriveOutcome};
 use index::protocol::CatalogOp;
 use index::store::writer::CatalogWriter;
 use index::store::{Catalog, CatalogCursor, MetaStore};
@@ -104,7 +109,10 @@ fn committed_versions(
 /// `CatalogOp::SourceMoved`). Distinct from `MemoryWatermarkStore::git_watermark`,
 /// which is the driver-side seam `drive_one_git_poll` actually reads/writes on
 /// every tick — see the module doc for why the two disagree on purpose.
-fn catalog_git_watermark_row(writer: &CatalogWriter<Configured>, stem: PackageStemId) -> Option<(Option<String>, i64)> {
+fn catalog_git_watermark_row(
+    writer: &CatalogWriter<Configured>,
+    stem: PackageStemId,
+) -> Option<(Option<String>, i64)> {
     let stmt = git_watermarks::Entity::find()
         .filter(git_watermarks::Column::StemId.eq(stem))
         .select_only()
@@ -195,19 +203,36 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     writer
         .apply_ops(&[upsert_cpp_package(SLUG, &url)])
         .expect("register package");
-    writer.commit_batch("register package").expect("commit registration");
+    writer
+        .commit_batch("register package")
+        .expect("commit registration");
 
     // ── Poll 1: first observation of a real repo with N real tagged releases.
-    let (outcome1, _cost1) = heart::cost::measured(&format!("{case_prefix}.poll1_first_observation"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 1_000, 20_250_101_000_000)
-    });
+    let (outcome1, _cost1) = heart::cost::measured(
+        &format!("{case_prefix}.poll1_first_observation"),
+        dir.path(),
+        || {
+            drive_one_git_poll(
+                &writer,
+                &watermarks,
+                &monitor,
+                stem,
+                &url,
+                1_000,
+                20_250_101_000_000,
+            )
+        },
+    );
     let rev1 = match outcome1 {
         TickOutcome::Moved { rev, ops } => {
             assert!(
                 matches!(ops.first(), Some(CatalogOp::SourceMoved { .. })),
                 "first poll must lead with SourceMoved"
             );
-            let version_ops = ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count();
+            let version_ops = ops
+                .iter()
+                .filter(|op| matches!(op, CatalogOp::UpsertVersion { .. }))
+                .count();
             assert_eq!(version_ops, N, "one UpsertVersion op per real tag");
             rev
         }
@@ -216,52 +241,104 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
 
     // The registered package reads back correctly through the crate's own
     // `Catalog::get_package` — real content, not merely `is_some()`.
-    let package = writer.get_package(stem).expect("read package").expect("package registered");
+    let package = writer
+        .get_package(stem)
+        .expect("read package")
+        .expect("package registered");
     assert_eq!(package.name_canonical, SLUG);
     assert_eq!(package.repo_url.as_deref(), Some(url.as_str()));
 
     // Real content, not a count: every one of the N tags landed with a real
     // 40-hex commit SHA-1 pinned as `source_rev`, in canonical order.
     let rows = committed_versions(&writer, stem);
-    assert_eq!(rows.len(), N, "N real tags committed as N real version rows");
+    assert_eq!(
+        rows.len(),
+        N,
+        "N real tags committed as N real version rows"
+    );
     for (i, (canonical, source_rev)) in rows.iter().enumerate() {
         assert_eq!(canonical, &format!("v1.0.{i}"));
         let rev = source_rev.as_ref().expect("git source_rev pinned");
-        assert_eq!(rev.len(), 40, "full commit SHA-1, not truncated or absent: {rev}");
-        assert!(rev.chars().all(|c| c.is_ascii_hexdigit()), "source_rev must be hex: {rev}");
+        assert_eq!(
+            rev.len(),
+            40,
+            "full commit SHA-1, not truncated or absent: {rev}"
+        );
+        assert!(
+            rev.chars().all(|c| c.is_ascii_hexdigit()),
+            "source_rev must be hex: {rev}"
+        );
     }
 
     // The watermark this poll wrote is genuinely readable back in BOTH
     // stores — closing the catalog table's "write-only" gap named in the
     // module doc (a fresh raw query sees exactly what `SourceMoved` wrote),
     // and confirming the driver-side seam agrees with it after a real move.
-    let (stored_rev, checked_at) = catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
+    let (stored_rev, checked_at) =
+        catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
     assert_eq!(stored_rev.as_deref(), Some(rev1.as_str()));
     assert_eq!(checked_at, 1_000);
-    let driver_watermark1 = watermarks.git_watermark(stem).expect("read").expect("watermark exists");
+    let driver_watermark1 = watermarks
+        .git_watermark(stem)
+        .expect("read")
+        .expect("watermark exists");
     assert_eq!(driver_watermark1.last_rev.as_deref(), Some(rev1.as_str()));
     assert_eq!(driver_watermark1.last_checked_at, 1_000);
 
     // ── Poll 2: nothing changed upstream. Must be a TRUE no-op: zero new
     // catalog rows, zero outbox re-notifications — not merely an empty
     // `ops` Vec that happens not to be asserted on.
-    let before_cursor = writer.changed_since(CatalogCursor::default()).expect("page before poll 2").next;
-    let (outcome2, _cost2) = heart::cost::measured(&format!("{case_prefix}.poll2_true_noop"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 2_000, 20_250_101_000_000)
-    });
+    let before_cursor = writer
+        .changed_since(CatalogCursor::default())
+        .expect("page before poll 2")
+        .next;
+    let (outcome2, _cost2) = heart::cost::measured(
+        &format!("{case_prefix}.poll2_true_noop"),
+        dir.path(),
+        || {
+            drive_one_git_poll(
+                &writer,
+                &watermarks,
+                &monitor,
+                stem,
+                &url,
+                2_000,
+                20_250_101_000_000,
+            )
+        },
+    );
     assert!(
         matches!(outcome2, TickOutcome::Unchanged { .. }),
         "an unchanged real repo must read as Unchanged, not a Moved batch with zero ops"
     );
-    let after_poll2 = writer.changed_since(before_cursor).expect("page after poll 2");
-    assert!(after_poll2.rows.is_empty(), "an unchanged poll must write zero outbox rows");
-    assert_eq!(committed_versions(&writer, stem).len(), N, "version row count unchanged by a no-op poll");
+    let after_poll2 = writer
+        .changed_since(before_cursor)
+        .expect("page after poll 2");
+    assert!(
+        after_poll2.rows.is_empty(),
+        "an unchanged poll must write zero outbox rows"
+    );
+    assert_eq!(
+        committed_versions(&writer, stem).len(),
+        N,
+        "version row count unchanged by a no-op poll"
+    );
 
     // The driver-side seam DOES advance its crawl clock on a no-op — that is
     // its whole purpose (see `drive_one_git_poll`'s `Unchanged` arm).
-    let driver_watermark2 = watermarks.git_watermark(stem).expect("read").expect("watermark exists");
-    assert_eq!(driver_watermark2.last_rev.as_deref(), Some(rev1.as_str()), "digest unchanged");
-    assert_eq!(driver_watermark2.last_checked_at, 2_000, "the driver-side crawl clock still advances on a no-op");
+    let driver_watermark2 = watermarks
+        .git_watermark(stem)
+        .expect("read")
+        .expect("watermark exists");
+    assert_eq!(
+        driver_watermark2.last_rev.as_deref(),
+        Some(rev1.as_str()),
+        "digest unchanged"
+    );
+    assert_eq!(
+        driver_watermark2.last_checked_at, 2_000,
+        "the driver-side crawl clock still advances on a no-op"
+    );
 
     // The CATALOG's own `git_watermarks` row does NOT — this is the real gap
     // documented at the top of this file: `TickOutcome::Unchanged` carries no
@@ -269,7 +346,8 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // behind is byte-for-byte identical to what poll 1 wrote. A production
     // `WatermarkStore` backed directly by this table would silently lose
     // every "checked, nothing changed" observation.
-    let (catalog_rev2, catalog_checked_at2) = catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
+    let (catalog_rev2, catalog_checked_at2) =
+        catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
     assert_eq!(catalog_rev2.as_deref(), Some(rev1.as_str()));
     assert_eq!(
         catalog_checked_at2, 1_000,
@@ -279,13 +357,26 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // ── Poll 3: a genuine new upstream release lands — one more real,
     // committed, tagged changelog entry pushed to the SAME repo.
     let new_tag = push_one_more_tagged_commit(dir.path(), N);
-    let (outcome3, _cost3) = heart::cost::measured(&format!("{case_prefix}.poll3_new_release"), dir.path(), || {
-        drive_one_git_poll(&writer, &watermarks, &monitor, stem, &url, 3_000, 20_250_101_000_000)
-    });
+    let (outcome3, _cost3) = heart::cost::measured(
+        &format!("{case_prefix}.poll3_new_release"),
+        dir.path(),
+        || {
+            drive_one_git_poll(
+                &writer,
+                &watermarks,
+                &monitor,
+                stem,
+                &url,
+                3_000,
+                20_250_101_000_000,
+            )
+        },
+    );
     let version_ops_in_poll3 = match outcome3 {
-        TickOutcome::Moved { ops, .. } => {
-            ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count()
-        }
+        TickOutcome::Moved { ops, .. } => ops
+            .iter()
+            .filter(|op| matches!(op, CatalogOp::UpsertVersion { .. }))
+            .count(),
         TickOutcome::Unchanged { .. } => panic!("a genuinely new tag must read as a move"),
     };
     // The finding worth reporting: re-enumeration re-lists EVERY tag on ANY
@@ -300,12 +391,23 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     );
 
     let rows_after = committed_versions(&writer, stem);
-    assert_eq!(rows_after.len(), N + 1, "prior history preserved AND the new tag added");
-    assert!(rows_after.iter().any(|(canonical, _)| canonical == &new_tag), "the new tag is present");
+    assert_eq!(
+        rows_after.len(),
+        N + 1,
+        "prior history preserved AND the new tag added"
+    );
+    assert!(
+        rows_after
+            .iter()
+            .any(|(canonical, _)| canonical == &new_tag),
+        "the new tag is present"
+    );
     for i in 0..N {
         let expected = format!("v1.0.{i}");
         assert!(
-            rows_after.iter().any(|(canonical, _)| canonical == &expected),
+            rows_after
+                .iter()
+                .any(|(canonical, _)| canonical == &expected),
             "tag {expected} survived re-enumeration and re-application"
         );
     }
@@ -313,10 +415,175 @@ fn run_end_to_end<Repository: GitRepository>(case_prefix: &str, adapter: Reposit
     // catalog's own table catches back up to the driver-side seam here,
     // confirming the gap is specific to `Unchanged` ticks, not a general
     // divergence between the two stores.
-    let (_, catalog_checked_at3) = catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
-    assert_eq!(catalog_checked_at3, 3_000, "a Moved tick DOES update the catalog's own git_watermarks row");
-    let driver_watermark3 = watermarks.git_watermark(stem).expect("read").expect("watermark exists");
+    let (_, catalog_checked_at3) =
+        catalog_git_watermark_row(&writer, stem).expect("watermark row exists");
+    assert_eq!(
+        catalog_checked_at3, 3_000,
+        "a Moved tick DOES update the catalog's own git_watermarks row"
+    );
+    let driver_watermark3 = watermarks
+        .git_watermark(stem)
+        .expect("read")
+        .expect("watermark exists");
     assert_eq!(driver_watermark3.last_checked_at, 3_000);
+}
+
+/// The production git driver, rather than a test-only composition, must carry
+/// one changed upstream tag through monitor → catalog → commit → watermark.
+#[test]
+fn git_driver_propagates_only_the_changed_upstream_version() {
+    const INITIAL_TAGS: usize = 2;
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo_with_tags(dir.path(), INITIAL_TAGS);
+    let url = format!("file://{}", dir.path().display());
+    let stem = cpp_stem_id(SLUG);
+    let writer = migrated_writer();
+    writer
+        .apply_ops(&[upsert_cpp_package(SLUG, &url)])
+        .expect("register package");
+    writer
+        .commit_batch("register package")
+        .expect("commit package");
+
+    let watermarks = MemoryWatermarkStore::new();
+    let driver = FollowerDriver::new(&writer, &watermarks);
+    let monitor = GitMonitor::new(GritAdapter::default());
+
+    let first = driver
+        .drive_git_once(&monitor, stem, SLUG, &url, 1_000, 20_250_101_000_000)
+        .expect("first git poll");
+    assert!(matches!(first, GitDriveOutcome::Committed { .. }));
+    assert_eq!(committed_versions(&writer, stem).len(), INITIAL_TAGS);
+
+    let cursor = writer
+        .changed_since(CatalogCursor::default())
+        .expect("read initial changes")
+        .next;
+    let unchanged = driver
+        .drive_git_once(&monitor, stem, SLUG, &url, 2_000, 20_250_101_000_000)
+        .expect("unchanged git poll");
+    assert_eq!(unchanged, GitDriveOutcome::NoChange);
+    assert!(
+        writer
+            .changed_since(cursor)
+            .expect("read unchanged delta")
+            .rows
+            .is_empty(),
+        "unchanged polling must not emit catalog changes or outbox work"
+    );
+
+    push_one_more_tagged_commit(dir.path(), INITIAL_TAGS);
+    let changed = driver
+        .drive_git_once(&monitor, stem, SLUG, &url, 3_000, 20_250_101_000_000)
+        .expect("changed git poll");
+    assert_eq!(
+        changed,
+        GitDriveOutcome::Committed { applied: 2 },
+        "the moved snapshot must apply SourceMoved plus one typed add delta"
+    );
+    assert_eq!(
+        committed_versions(&writer, stem).len(),
+        INITIAL_TAGS + 1,
+        "the new tag must become one new catalog version"
+    );
+    let delta = writer
+        .changed_since(cursor)
+        .expect("read changed delta")
+        .rows;
+    assert_eq!(
+        delta.len(),
+        1,
+        "the changed poll must emit one text event for the changed version"
+    );
+    assert!(
+        catalog_git_watermark_row(&writer, stem)
+            .expect("read catalog watermark")
+            .0
+            .is_some(),
+        "SourceMoved must update the catalog watermark even though it is not a text event"
+    );
+    assert_eq!(
+        watermarks
+            .git_watermark(stem)
+            .expect("read driver watermark")
+            .expect("driver watermark exists")
+            .last_checked_at,
+        3_000
+    );
+}
+
+/// A moved remote is reconciled as the complete set delta: one add, one
+/// source-revision change, and one removal. The durable catalog and its outbox
+/// must receive exactly those three typed effects; unchanged versions are not
+/// re-looped.
+#[test]
+fn git_driver_propagates_add_change_remove_deltas_without_full_rescan() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_repo_with_tags(dir.path(), 2);
+    let url = format!("file://{}", dir.path().display());
+    let stem = cpp_stem_id(SLUG);
+    let writer = migrated_writer();
+    writer
+        .apply_ops(&[upsert_cpp_package(SLUG, &url)])
+        .expect("register package");
+    writer
+        .commit_batch("register package")
+        .expect("commit package");
+
+    let watermarks = MemoryWatermarkStore::new();
+    let driver = FollowerDriver::new(&writer, &watermarks);
+    let monitor = GitMonitor::new(GritAdapter::default());
+    driver
+        .drive_git_once(&monitor, stem, SLUG, &url, 1_000, 20_250_101_000_000)
+        .expect("initial poll");
+    let cursor = writer
+        .changed_since(CatalogCursor::default())
+        .expect("read initial changes")
+        .next;
+
+    // Repoint v1.0.0, remove v1.0.1, and add v1.0.2 on a real new commit.
+    let changelog = dir.path().join("CHANGELOG");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&changelog)
+        .expect("open changelog")
+        .write_all(b"reconciled release\n")
+        .expect("append changelog");
+    common::git(dir.path(), &["add", "CHANGELOG"]);
+    common::git(dir.path(), &["commit", "-q", "-m", "reconcile"]);
+    common::git(dir.path(), &["tag", "-f", "v1.0.0"]);
+    common::git(dir.path(), &["tag", "-d", "v1.0.1"]);
+    common::git(dir.path(), &["tag", "v1.0.2"]);
+
+    let outcome = driver
+        .drive_git_once(&monitor, stem, SLUG, &url, 2_000, 20_250_101_000_000)
+        .expect("reconciliation poll");
+    assert_eq!(
+        outcome,
+        GitDriveOutcome::Committed { applied: 4 },
+        "SourceMoved plus add/change/remove typed deltas"
+    );
+
+    let rows = writer
+        .changed_since(cursor)
+        .expect("read delta outbox")
+        .rows;
+    assert_eq!(rows.len(), 3, "one outbox row per version delta");
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.op == index::enums::OutboxOperation::Upsert)
+            .count(),
+        2,
+        "add and change are upserts"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.op == index::enums::OutboxOperation::Delete)
+            .count(),
+        1,
+        "remove is a delete tombstone"
+    );
+    assert_eq!(committed_versions(&writer, stem).len(), 2);
 }
 
 #[test]
@@ -353,18 +620,27 @@ fn ingest_throughput_and_storage_scale_with_real_tag_count() {
         // (real git objects/refs/tags), not a diff against a pre-populated
         // fixture.
         let dir = tempfile::tempdir().expect("tempdir");
-        let (_, build_cost) = heart::cost::measured(&format!("{case}.build_repo"), dir.path(), || {
-            init_repo_with_tags(dir.path(), n)
-        });
+        let (_, build_cost) =
+            heart::cost::measured(&format!("{case}.build_repo"), dir.path(), || {
+                init_repo_with_tags(dir.path(), n)
+            });
         let url = format!("file://{}", dir.path().display());
 
         // Phase B: enumerate — the real cost of one `ls-remote` + parse
         // against a repo with n tags.
-        let (ops, enumerate_cost) = heart::cost::measured(&format!("{case}.enumerate"), dir.path(), || {
-            enumerate_git_versions(&adapter, &slug, &url, 20_250_101_000_000).expect("enumerate real repo")
-        });
-        let version_ops = ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count();
-        assert_eq!(version_ops, n, "case n={n} must enumerate exactly n real tags, not a fixture-sized stand-in");
+        let (ops, enumerate_cost) =
+            heart::cost::measured(&format!("{case}.enumerate"), dir.path(), || {
+                enumerate_git_versions(&adapter, &slug, &url, 20_250_101_000_000)
+                    .expect("enumerate real repo")
+            });
+        let version_ops = ops
+            .iter()
+            .filter(|op| matches!(op, CatalogOp::UpsertVersion { .. }))
+            .count();
+        assert_eq!(
+            version_ops, n,
+            "case n={n} must enumerate exactly n real tags, not a fixture-sized stand-in"
+        );
 
         // A reliable byte figure independent of wall-clock noise: the
         // postcard-encoded wire size of the batch a real poll would apply.
@@ -373,9 +649,16 @@ fn ingest_throughput_and_storage_scale_with_real_tag_count() {
         // `pack/format.rs::TableOfContents` for the existing precedent).
         let encoded_bytes: usize = ops
             .iter()
-            .map(|op| postcard::to_allocvec(op).expect("postcard-encode a real op").len())
+            .map(|op| {
+                postcard::to_allocvec(op)
+                    .expect("postcard-encode a real op")
+                    .len()
+            })
             .sum();
-        assert!(encoded_bytes > 0, "a non-empty real batch must encode to a non-empty byte string");
+        assert!(
+            encoded_bytes > 0,
+            "a non-empty real batch must encode to a non-empty byte string"
+        );
 
         let bytes_per_version = encoded_bytes as f64 / version_ops.max(1) as f64;
         let repo_bytes_per_version = build_cost.disk_delta_bytes as f64 / n.max(1) as f64;
@@ -430,14 +713,19 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     let adapter = GritAdapter::default();
     let writer = migrated_writer();
 
-    writer.apply_ops(&[upsert_cpp_package(slug, &url)]).expect("register");
+    writer
+        .apply_ops(&[upsert_cpp_package(slug, &url)])
+        .expect("register");
     writer.commit_batch("register").expect("commit register");
 
-    let (ops, enumerate_cost) = heart::cost::measured("ingest/breakdown.enumerate", dir.path(), || {
-        enumerate_git_versions(&adapter, slug, &url, 20_250_101_000_000).expect("enumerate")
-    });
+    let (ops, enumerate_cost) =
+        heart::cost::measured("ingest/breakdown.enumerate", dir.path(), || {
+            enumerate_git_versions(&adapter, slug, &url, 20_250_101_000_000).expect("enumerate")
+        });
     assert_eq!(
-        ops.iter().filter(|op| matches!(op, CatalogOp::UpsertVersion { .. })).count(),
+        ops.iter()
+            .filter(|op| matches!(op, CatalogOp::UpsertVersion { .. }))
+            .count(),
         N,
         "enumerate phase must produce exactly N real version ops"
     );
@@ -449,25 +737,33 @@ fn ingest_poll_time_breakdown_enumerate_vs_apply_vs_watermark() {
     // for this path is measured in `tests/storage_catalog_scaling.rs`, which
     // opens the same engine at a path.
     let scratch = tempfile::tempdir().expect("scratch for catalog-phase measurement");
-    let (report, apply_cost) = heart::cost::measured("ingest/breakdown.apply_and_commit", scratch.path(), || {
-        let report = writer.apply_ops(&ops).expect("apply real ops");
-        writer.commit_batch("breakdown batch").expect("commit");
-        report
-    });
-    assert_eq!(report.applied, N, "apply phase must apply exactly the N ops enumerate produced");
-    assert_eq!(report.outbox_rows, N, "every UpsertVersion fans out exactly one outbox row");
+    let (report, apply_cost) =
+        heart::cost::measured("ingest/breakdown.apply_and_commit", scratch.path(), || {
+            let report = writer.apply_ops(&ops).expect("apply real ops");
+            writer.commit_batch("breakdown batch").expect("commit");
+            report
+        });
+    assert_eq!(
+        report.applied, N,
+        "apply phase must apply exactly the N ops enumerate produced"
+    );
+    assert_eq!(
+        report.outbox_rows, N,
+        "every UpsertVersion fans out exactly one outbox row"
+    );
 
     let watermarks = MemoryWatermarkStore::new();
-    let ((), watermark_cost) = heart::cost::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
-        watermarks
-            .put_git_watermark(&GitWatermark {
-                stem_id: stem,
-                last_rev: Some("d".repeat(40)),
-                last_checked_at: 9_000,
-                last_error: None,
-            })
-            .expect("persist watermark");
-    });
+    let ((), watermark_cost) =
+        heart::cost::measured("ingest/breakdown.watermark_persist", scratch.path(), || {
+            watermarks
+                .put_git_watermark(&GitWatermark {
+                    stem_id: stem,
+                    last_rev: Some("d".repeat(40)),
+                    last_checked_at: 9_000,
+                    last_error: None,
+                })
+                .expect("persist watermark");
+        });
 
     println!(
         "cost case=ingest/breakdown.summary n_versions={N} \

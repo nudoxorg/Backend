@@ -124,11 +124,12 @@ pub fn extract(
 
     // Normalize so the top keyword = 1.0.
     if let Some(&(top_w, _)) = keywords.first()
-        && top_w > 0.0 {
-            for (w, _) in &mut keywords {
-                *w = (*w / top_w).clamp(0.0, 1.0);
-            }
+        && top_w > 0.0
+    {
+        for (w, _) in &mut keywords {
+            *w = (*w / top_w).clamp(0.0, 1.0);
         }
+    }
 
     // Categories: from manifest, else infer from keywords.
     let categories = derive_categories(input, &keywords);

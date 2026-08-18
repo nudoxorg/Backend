@@ -16,6 +16,7 @@
 //! stay free of, so it cannot sit below `heart`.
 
 pub mod archive;
+pub mod license;
 pub mod manifest;
 pub mod name;
 pub mod policy;
@@ -31,7 +32,6 @@ pub mod cpp;
 mod csharp;
 mod go;
 mod java;
-mod nix;
 mod python;
 mod rust;
 mod ts;
@@ -332,7 +332,6 @@ pub fn spec(language: Language) -> &'static dyn DynSpec {
         Language::Go => &Erased::<go::Go>(PhantomData),
         Language::Java => &Erased::<java::Java>(PhantomData),
         Language::CSharp => &Erased::<csharp::CSharp>(PhantomData),
-        Language::Nix => &Erased::<nix::Nix>(PhantomData),
         Language::Cpp => &Erased::<cpp::Cpp>(PhantomData),
     }
 }

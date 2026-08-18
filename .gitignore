@@ -1,6 +1,13 @@
 # Ignore everything by default
 /**/*
 
+# The Java 8 Lombok compatibility doclet is source, not a generated artifact.
+!workspace/compiler/languages/oracle/java8/
+!workspace/compiler/languages/oracle/java8/LegacyExtractor.java
+!workspace/compiler/languages/tests/go/fixtures/
+!workspace/compiler/languages/tests/go/fixtures/cross-target/
+!workspace/compiler/languages/tests/go/fixtures/cross-target/*
+
 # Allow all directories for traversal
 !**/
 
@@ -39,6 +46,7 @@
 !/Cargo.toml
 !/Cargo.lock
 !/workspace/**/Cargo.toml
+!/workspace/gui/Cargo.lock
 # Crates under /crates need the same allowance — without it a new crate's
 # manifest is silently ignored and the workspace fails to load.
 !/crates/**/Cargo.toml
@@ -118,6 +126,17 @@
 !/workspace/gui/assets/
 !/workspace/gui/assets/themes/*.json
 
+# Vendored gpui-component: path-dep of lindsey. Icons are `RustEmbed`'d and
+# advertised to dependents at build time; highlighter queries and theme JSON
+# are `include_str!`'d. The deny-all would leave a green local GUI build and
+# a `nix build .#lindsey-app` that panics in `gpui-component-assets`'s
+# build.rs.
+!/workspace/vendor/gpui-component/**/*.svg
+!/workspace/vendor/gpui-component/**/*.json
+!/workspace/vendor/gpui-component/**/*.scm
+!/workspace/vendor/gpui-component/**/*.md
+!/workspace/vendor/gpui-component-fork.patch
+
 # The brand mark. Every visual artefact lindsey ships with — app icon, DMG
 # volume icon, DMG background art — is generated FROM this one file (see
 # workspace/gui/packaging/), so it is source, not a build output. It was
@@ -188,6 +207,7 @@
 !/workspace/compiler/languages/oracle/csharp/*.cs
 !/workspace/compiler/languages/oracle/csharp/oracle.csproj
 !/workspace/compiler/languages/oracle/csharp/packages.lock.json
+!/workspace/compiler/languages/oracle/csharp/deps.json
 !/workspace/compiler/languages/tests/csharp/fixture/*.cs
 !/workspace/compiler/languages/tests/csharp/fixture/fixture.csproj
 
@@ -240,6 +260,15 @@
 # Allow empty .keep files
 !/**/.keep
 !/.config/scripts/*.nu
+!/.config/scripts/nix-offline-check.sh
+!/.forgejo/
+!/.forgejo/workflows/
+!/.forgejo/workflows/*.yml
+# The stub embeddings server local-backends.nu spawns for the `index`
+# server-integration "Live" tier (docs/TESTING.md) -- source, not a build
+# output; without this carve-out the blanket `/**/*` rule swallows it the
+# same way it would swallow the .nu scripts above.
+!/.config/scripts/*.py
 # cargo-nextest configuration. Without this the blanket `/**/*` rule at the top
 # swallows it, `git add .config/nextest.toml` silently no-ops, and a fresh clone
 # gets no test groups at all — which is how the GUI and real-crate serialisation

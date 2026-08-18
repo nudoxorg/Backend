@@ -192,14 +192,15 @@ pub(crate) fn classify(prev: &Seen<'_>, cur: &Entry, cur_sig: &[SigToken]) -> Ti
         return TimelineChange::Undeprecated;
     }
 
-    if prev.sig.as_slice() != cur_sig {
-        return TimelineChange::SignatureChanged;
-    }
-
-    // Reached only when the rendered signature is identical, so this catches
-    // visibility changes that the renderer does not surface as a token.
+    // Visibility is its own user-facing axis. The signature renderer includes
+    // visibility in its token stream, so checking it first would misclassify a
+    // visibility-only change as a signature change.
     if before.visibility != after.visibility {
         return TimelineChange::VisibilityChanged;
+    }
+
+    if prev.sig.as_slice() != cur_sig {
+        return TimelineChange::SignatureChanged;
     }
 
     if before.documentation != after.documentation {
@@ -221,8 +222,8 @@ pub(crate) fn classify(prev: &Seen<'_>, cur: &Entry, cur_sig: &[SigToken]) -> Ti
 mod tests {
     use std::sync::Arc;
 
-    use nudox_ir::{change::StableRef, entry::Visibility};
     use crate::store::package::PackageView;
+    use nudox_ir::{change::StableRef, entry::Visibility};
 
     use super::*;
     use crate::{

@@ -74,8 +74,8 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
-use nudox_ir::{change::PackageLineageId, kind::KindDiscriminant};
 use crate::store::corpus::Corpus;
+use nudox_ir::{change::PackageLineageId, kind::KindDiscriminant};
 
 use crate::{
     chunk::signature,
@@ -87,7 +87,7 @@ mod hits;
 
 pub(crate) use hits::{
     Candidate, collect_name_hits, collect_type_hits, compare_candidates, finalize_candidates,
-    qualified_display_name, score_of,
+    is_member_kind, qualified_display_name, score_of,
 };
 
 // ---------------------------------------------------------------------------
@@ -122,7 +122,28 @@ pub struct SearchQuery {
     /// The raw query text typed by the user.
     pub text: String,
     /// If non-empty, restrict results to these kind discriminants.
+    ///
+    /// This is the **caller naming kinds**, and it does two things at once:
+    /// it filters the name section, and it *drives* the kind-facet section
+    /// (`collect_type_hits`), which emits every symbol of these kinds whether
+    /// or not the query text matches anything. That second behaviour is the
+    /// point of `search("trait")`, and it is why this field must not be used
+    /// to express a *default* scope — see [`Self::exclude_kinds`].
     pub kinds: Vec<KindDiscriminant>,
+    /// Kinds to drop from results the caller did not ask about.
+    ///
+    /// # Why this is not just `kinds` with the complement filled in
+    ///
+    /// Populating `kinds` with "everything except members" looks equivalent
+    /// and is not: a non-empty `kinds` switches the kind-facet section on, so
+    /// every query — including one matching nothing — starts returning every
+    /// declaration in every package, at facet relevance. Search stops being a
+    /// search. That is a real regression this field exists to avoid, caught by
+    /// `tool_integration::search_symbols_nonsense_query_returns_empty`.
+    ///
+    /// So exclusion is its own axis: it subtracts from whatever the sections
+    /// produced, and never causes a section to produce anything.
+    pub exclude_kinds: Vec<KindDiscriminant>,
     /// If non-empty, restrict results to these package lineages.
     ///
     /// # Why this has to live here and not at the MCP call site
@@ -148,6 +169,7 @@ impl Default for SearchQuery {
         Self {
             text: String::new(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 50,
         }
@@ -160,8 +182,16 @@ impl SearchQuery {
         self.kinds.is_empty()
     }
 
-    /// `true` when `kind` passes the optional kind filter.
+    /// `true` when `kind` passes both the optional kind filter and the
+    /// default-scope exclusion.
+    ///
+    /// Exclusion is checked first and is unconditional: a caller that named
+    /// kinds explicitly leaves `exclude_kinds` empty, so the two can never
+    /// disagree about the same kind.
     fn kind_matches(&self, kind: KindDiscriminant) -> bool {
+        if self.exclude_kinds.contains(&kind) {
+            return false;
+        }
         self.any_kind() || self.kinds.contains(&kind)
     }
 
@@ -395,9 +425,20 @@ async fn collect_semantic_hits(
     use crate::semantic::{SectionState, Unavailable};
 
     let Some(embedder) = embedder else {
+        // No embedder is installed on this engine. `embed::unavailable_reason`
+        // is the same env check `embed::load_from_env` itself uses to decide
+        // there is no embedder to install, so it is the truthful source for
+        // why — today that is always a missing `NUDOX_EMBED_MODEL_DIR`, since
+        // the runtime is compiled in unconditionally. The fallback only
+        // matters for a caller that builds an `EngineConfig` with no embedder
+        // by hand rather than through `load_from_env` (as the fixture-corpus
+        // tests do) in an environment where the variable happens to be set;
+        // `NoModelConfigured` is the right default there because it is this
+        // crate's only remaining "no embedder" state.
         return (
             SectionState::Unavailable {
-                reason: Unavailable::NoEmbedder,
+                reason: crate::embed::unavailable_reason()
+                    .unwrap_or(Unavailable::NoModelConfigured),
             },
             Vec::new(),
         );
@@ -504,11 +545,7 @@ async fn collect_semantic_hits(
                 sig_preview: signature::tokens(ir_entry, pkg),
                 kind: KindTag::Known(disc),
                 provenance: pkg.provenance().into(),
-                score: score_of(
-                    cosine_to_relevance(cosine),
-                    ir_entry.sym().visibility,
-                    disc,
-                ),
+                score: score_of(cosine_to_relevance(cosine), ir_entry.sym().visibility, disc),
             },
             qualified: qualified_display_name(indexes, intro, leaf_str, pkg_name),
         });
@@ -591,6 +628,7 @@ mod tests {
         let query = SearchQuery {
             text: "Point".to_owned(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 50,
         };
@@ -744,6 +782,7 @@ mod tests {
     /// see `real_memchr_leaf_collisions_get_distinct_display_names` below for
     /// the real-fixture counterpart.
     fn package_with_leaf_collision() -> Arc<crate::store::package::PackageView> {
+        use crate::store::package::{PackageView, Provenance};
         use nudox_ir::{
             apply::PristineIntroTable,
             change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -753,7 +792,6 @@ mod tests {
             kinds::{Function, Module},
             view::IrView,
         };
-        use crate::store::package::{PackageView, Provenance};
 
         fn sym(name: &str) -> Symbol {
             Symbol {
@@ -768,6 +806,12 @@ mod tests {
                 attrs: Box::new([]),
                 cfg: None,
             }
+        }
+
+        fn sym_with_alias(name: &str, alias: &str) -> Symbol {
+            let mut symbol = sym(name);
+            symbol.aliases = vec![alias.to_owned()].into_boxed_slice();
+            symbol
         }
 
         let root_id = IntroId::from_raw([21u8; 32]);
@@ -789,12 +833,20 @@ mod tests {
         );
         table.insert_live(
             mod_a_id,
-            Entry::new(sym("a"), Node::build(None::<RawRef>, []), Kind::Module(Module)),
+            Entry::new(
+                sym("a"),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
             Some(root_id),
         );
         table.insert_live(
             mod_b_id,
-            Entry::new(sym("b"), Node::build(None::<RawRef>, []), Kind::Module(Module)),
+            Entry::new(
+                sym("b"),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
             Some(root_id),
         );
         table.insert_live(
@@ -818,7 +870,7 @@ mod tests {
         table.insert_live(
             unique_id,
             Entry::new(
-                sym("zzunique"),
+                sym_with_alias("zzunique", "testpkg::publicAlias"),
                 Node::build(None::<RawRef>, []),
                 Kind::Function(Function::builder().build()),
             ),
@@ -830,14 +882,34 @@ mod tests {
         Arc::new(PackageView::build(view, Provenance::TrustedLocal))
     }
 
+    #[test]
+    fn public_reexport_alias_is_visible_to_name_search() {
+        let pkg = package_with_leaf_collision();
+        let query = SearchQuery {
+            text: "publicAlias".to_owned(),
+            kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
+            packages: Vec::new(),
+            limit: 50,
+        };
+
+        let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
+
+        assert_eq!(rows.len(), 1, "the public alias must produce one hit");
+        assert_eq!(
+            &*rows[0].display_name, "publicAlias",
+            "the alias spelling should be visible in the name-search hit"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // The comparator is a *total* order, including over genuine ties
     // -----------------------------------------------------------------------
 
     /// Build a candidate that differs from its siblings only in `intro`.
     fn tied_candidate(pkg: &str, intro_byte: u8, leaf: &str, score: f32) -> super::Candidate {
-        use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
         use crate::wire::{HitRow, KindTag, Provenance};
+        use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 
         let key = nudox_ir::change::StableRef::new(
             PackageLineageId::new(EcosystemId::new("test"), PackageName::new(pkg)),
@@ -936,6 +1008,35 @@ mod tests {
         );
     }
 
+    /// Search candidates commonly originate in hash-backed indexes. The
+    /// rendered order must therefore be invariant to equivalent insertion
+    /// orders before the ranking comparator runs.
+    #[test]
+    fn hash_map_insertion_orders_produce_identical_hit_keys() {
+        fn ranked(insertion: impl IntoIterator<Item = u8>) -> Vec<u8> {
+            let mut candidates = std::collections::HashMap::new();
+            for id in insertion {
+                candidates.insert(id, tied_candidate("aaa", id, "dup", 1.0));
+            }
+            let mut candidates: Vec<_> = candidates.into_values().collect();
+            candidates.sort_by(super::compare_candidates);
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.row.key.intro.as_bytes()[0])
+                .collect()
+        }
+
+        let forward = ranked(0x10..=0x70);
+        let reversed = ranked((0x10..=0x70).rev());
+        let expected: Vec<u8> = (0x10..=0x70).collect();
+
+        assert_eq!(forward, expected);
+        assert_eq!(
+            reversed, expected,
+            "equivalent HashMap contents must not inherit traversal order"
+        );
+    }
+
     /// A higher score always wins, whatever the identities say.
     ///
     /// Guards the ordering of the comparator's terms: identity is the *last*
@@ -985,8 +1086,19 @@ mod tests {
             Visibility::Private,
         ];
         let all_kinds = [
-            K::Module, K::Record, K::Field, K::Function, K::Alias, K::Trait,
-            K::Impl, K::Enum, K::Variant, K::Const, K::Static, K::Reexport, K::Param,
+            K::Module,
+            K::Record,
+            K::Field,
+            K::Function,
+            K::Alias,
+            K::Trait,
+            K::Impl,
+            K::Enum,
+            K::Variant,
+            K::Const,
+            K::Static,
+            K::Reexport,
+            K::Param,
         ];
         for v in all_visibilities {
             for k in all_kinds {
@@ -1035,6 +1147,7 @@ mod tests {
         let query = SearchQuery {
             text: "foo".to_owned(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 50,
         };
@@ -1069,6 +1182,7 @@ mod tests {
         let query = SearchQuery {
             text: "zzunique".to_owned(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 50,
         };
@@ -1078,6 +1192,26 @@ mod tests {
         assert_eq!(
             &*rows[0].display_name, "zzunique",
             "a non-colliding leaf name must not be qualified"
+        );
+    }
+
+    #[test]
+    fn zero_limit_returns_all_name_hits() {
+        let pkg = package_with_leaf_collision();
+
+        let query = SearchQuery {
+            text: "foo".to_owned(),
+            kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
+            packages: Vec::new(),
+            limit: 0,
+        };
+        let rows = collect_name_hits(std::slice::from_ref(&pkg), &query);
+
+        assert_eq!(
+            rows.len(),
+            2,
+            "limit zero means unlimited, so both matching entries must be returned"
         );
     }
 
@@ -1098,11 +1232,11 @@ mod tests {
     #[test]
     #[ignore = "loads a real Cargo workspace through rust-analyzer; run with --ignored"]
     fn real_memchr_leaf_collisions_get_distinct_display_names() {
+        use crate::store::package::{PackageView, Provenance};
+        use crate::store::source::producer::PackageDescriptor;
         use nudox_ir::view::IrView;
         use nudox_languages::produce;
         use nudox_languages::rust::RustProducer;
-        use crate::store::package::{PackageView, Provenance};
-        use crate::store::source::producer::PackageDescriptor;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../result/memchr-2.8.3")
@@ -1127,7 +1261,8 @@ mod tests {
             &descriptor.lineage,
             &nudox_ir::foreign::Unlinked,
         )
-        .expect("memchr must lower without error for a real checkout").table;
+        .expect("memchr must lower without error for a real checkout")
+        .table;
 
         let view = IrView::with_package(descriptor.lineage, table);
         let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
@@ -1135,6 +1270,7 @@ mod tests {
         let query = SearchQuery {
             text: "memchr".to_owned(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 0, // unlimited — we need the full collision set to exist
         };
@@ -1158,7 +1294,10 @@ mod tests {
                 .get(&row.key.intro)
                 .copied()
                 .expect("every hit row must resolve back to a real entry");
-            groups.entry(leaf).or_default().push(row.display_name.clone());
+            groups
+                .entry(leaf)
+                .or_default()
+                .push(row.display_name.clone());
         }
 
         let mut proved_a_collision = false;

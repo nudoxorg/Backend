@@ -41,11 +41,11 @@
 //! let table = produced.table;
 //! ```
 
-pub mod schema;
-pub mod javadoc;
 pub mod invoke;
+pub mod javadoc;
 pub mod lower;
 pub mod producer;
+pub mod schema;
 
 // Re-export at the crate root, matching `crate::typescript`'s and
 // `crate::rust`'s convention — callers (e.g. `ProducerRegistry`)

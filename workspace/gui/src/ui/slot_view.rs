@@ -27,7 +27,7 @@
 use gpui::{AnyElement, App, IntoElement, Window, div, prelude::FluentBuilder as _};
 use gpui_component::{ActiveTheme as _, StyledExt as _, skeleton::Skeleton, spinner::Spinner};
 
-use crate::bridge::slot::{Display as SlotDisplay, SKELETON_GRACE, Error, StreamSlot};
+use crate::bridge::slot::{Display as SlotDisplay, Error, SKELETON_GRACE, StreamSlot};
 use crate::motion::declarative::shimmer;
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::MotionTokens;
@@ -129,7 +129,12 @@ where
             div()
                 .w_full()
                 .v_flex()
-                .child(div().w_full().opacity(AlphaTokens::STANDARD.dim).child(content))
+                .child(
+                    div()
+                        .w_full()
+                        .opacity(AlphaTokens::STANDARD.dim)
+                        .child(content),
+                )
                 .child(animated_strip)
                 .into_any_element()
         }
@@ -144,21 +149,13 @@ where
                 .v_flex()
                 .child(content)
                 .when(show_spinner, |el| {
-                    el.child(
-                        div()
-                            .flex()
-                            .justify_end()
-                            .p_1()
-                            .child(Spinner::new()),
-                    )
+                    el.child(div().flex().justify_end().p_1().child(Spinner::new()))
                 })
                 .into_any_element()
         }
 
         // ── Stream complete, fresh content ────────────────────────────────────
-        SlotDisplay::Fresh(v) => {
-            render_content(v, SlotContentState::Fresh)
-        }
+        SlotDisplay::Fresh(v) => render_content(v, SlotContentState::Fresh),
 
         // ── Cold-load error: no prior value ───────────────────────────────────
         SlotDisplay::Error(e) => {
@@ -176,7 +173,12 @@ where
             div()
                 .w_full()
                 .v_flex()
-                .child(div().w_full().opacity(AlphaTokens::STANDARD.dim).child(content))
+                .child(
+                    div()
+                        .w_full()
+                        .opacity(AlphaTokens::STANDARD.dim)
+                        .child(content),
+                )
                 .child(error_bar)
                 .into_any_element()
         }
@@ -203,8 +205,8 @@ fn error_message(error: &Error) -> SharedString {
     }
 }
 
-use gpui::{IntoElement as _, RenderOnce, SharedString};
 use gpui::prelude::*;
+use gpui::{IntoElement as _, RenderOnce, SharedString};
 
 #[derive(IntoElement)]
 struct SlimErrorBar {

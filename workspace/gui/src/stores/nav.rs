@@ -124,7 +124,9 @@ impl NavHistory {
     where
         F: Fn(&NavKind) -> bool,
     {
-        let Some(next) = self.forward.pop() else { return };
+        let Some(next) = self.forward.pop() else {
+            return;
+        };
         if let Some(current) = self.current.take() {
             self.back.push(current);
         }
@@ -192,8 +194,11 @@ mod tests {
         let mut h = make_history();
 
         // First push: current becomes Some, back stays empty.
-        let e1 = NavEntry { kind: NavKind::Screen(ScreenId::Settings), scroll_fraction: 0.0 };
-        h.back.push(e1.clone());   // simulate what push() does
+        let e1 = NavEntry {
+            kind: NavKind::Screen(ScreenId::Settings),
+            scroll_fraction: 0.0,
+        };
+        h.back.push(e1.clone()); // simulate what push() does
         h.current = Some(e1);
         assert!(h.can_go_back());
     }
@@ -215,8 +220,14 @@ mod tests {
     #[test]
     fn back_moves_current_to_forward() {
         let mut h = make_history();
-        let e1 = NavEntry { kind: NavKind::Screen(ScreenId::Settings), scroll_fraction: 0.0 };
-        let e2 = NavEntry { kind: NavKind::Screen(ScreenId::Jobs), scroll_fraction: 0.5 };
+        let e1 = NavEntry {
+            kind: NavKind::Screen(ScreenId::Settings),
+            scroll_fraction: 0.0,
+        };
+        let e2 = NavEntry {
+            kind: NavKind::Screen(ScreenId::Jobs),
+            scroll_fraction: 0.5,
+        };
 
         h.back.push(e1.clone());
         h.current = Some(e2.clone());

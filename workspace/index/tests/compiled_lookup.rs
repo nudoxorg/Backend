@@ -182,9 +182,8 @@ fn lookup_request(job_keys: &[&str]) -> axum::http::Request<axum::body::Body> {
 /// All genuinely-unknown keys return miss entries.
 #[tokio::test]
 async fn all_unknown_keys_return_miss() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_all_miss").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("compiled_lookup_all_miss").await;
     let keys = ["a".repeat(64), "b".repeat(64)];
     let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     let (status, response) = server_common::call(router(server), lookup_request(&keys_ref)).await;
@@ -211,9 +210,8 @@ async fn all_unknown_keys_return_miss() {
 /// Results preserve input order.
 #[tokio::test]
 async fn results_preserve_input_order() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_ordering").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("compiled_lookup_ordering").await;
     let keys: Vec<String> = (0..8_u64).map(|i| format!("{:064x}", i)).collect();
     let keys_ref: Vec<&str> = keys.iter().map(|s| s.as_str()).collect();
     let (status, response) = server_common::call(router(server), lookup_request(&keys_ref)).await;
@@ -237,9 +235,7 @@ async fn results_preserve_input_order() {
 /// Duplicate keys each produce an independent entry.
 #[tokio::test]
 async fn duplicate_keys_produce_independent_entries() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_dedup").await else {
-        return;
-    };
+    let (server, _data) = server_common::required_assembled_server("compiled_lookup_dedup").await;
     let key = "a".repeat(64);
     let (status, response) = server_common::call(
         router(server),
@@ -255,9 +251,8 @@ async fn duplicate_keys_produce_independent_entries() {
 /// Empty `job_keys` list → 400.
 #[tokio::test]
 async fn empty_keys_returns_400() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_empty_keys").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("compiled_lookup_empty_keys").await;
     let (status, _response) = server_common::call(router(server), lookup_request(&[])).await;
     assert_eq!(
         status,
@@ -269,9 +264,8 @@ async fn empty_keys_returns_400() {
 /// A body larger than 256 KiB is rejected with 413.
 #[tokio::test]
 async fn oversized_body_is_rejected() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_oversize").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("compiled_lookup_oversize").await;
     let keys: Vec<String> = (0..4097_u64).map(|i| format!("{:064x}", i)).collect();
     let body = serde_json::json!({ "job_keys": keys }).to_string();
     let request = axum::http::Request::builder()
@@ -297,9 +291,8 @@ async fn seeded_record_returns_vcs_hit() {
     use heart::content::ContentHash;
     use registry::compiled::{ChangeId, ChannelName, CompiledRecord, ObjectCompiledStore};
 
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_seeded_hit").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("compiled_lookup_seeded_hit").await;
 
     let package = server_common::package_id("compiled-lookup-seeded-fixture");
     let job_key = heart::JobKey::derive(
@@ -367,11 +360,10 @@ async fn seeded_record_returns_vcs_hit() {
 /// Invalid hex in a key → 422.
 #[tokio::test]
 async fn bad_hex_key_returns_422() {
-    let Some((server, _data)) = server_common::assembled_server("compiled_lookup_bad_hex").await else {
-        return;
-    };
+    let (server, _data) = server_common::required_assembled_server("compiled_lookup_bad_hex").await;
     let bad_key = "g".repeat(64);
-    let (status, _) = server_common::call(router(server), lookup_request(&[bad_key.as_str()])).await;
+    let (status, _) =
+        server_common::call(router(server), lookup_request(&[bad_key.as_str()])).await;
     assert!(
         status == StatusCode::UNPROCESSABLE_ENTITY || status == StatusCode::BAD_REQUEST,
         "invalid hex must return 400 or 422; got {status}"

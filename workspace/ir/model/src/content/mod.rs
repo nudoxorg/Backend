@@ -1,4 +1,5 @@
-//! Entry content-hash — the *third* identity layer.
+//! Entry content-hash and entry storage-hash — the *third* and *fourth*
+//! identity layers.
 //!
 //! nudox-ir carries two existing identity concepts:
 //!
@@ -15,6 +16,52 @@
 //!    declaration's payload* changed since the last snapshot?" It is a total,
 //!    deterministic BLAKE3 hash of every field that describes the declaration
 //!    itself — its symbol metadata and its kind body.
+//!
+//! 4. **Storage identity** ([`entry_storage_hash`]): answers a *different*
+//!    question — "is this the same stored payload, independent of where it
+//!    currently sits?" See "Storage identity" below for why this could not be
+//!    answered by reusing (3).
+//!
+//! # Storage identity: why a fourth thing is needed (`docs/IR-STORAGE-PLAN.md` §3a.1)
+//!
+//! `entry_content_hash` folds `sym.source` and `sym.span.start`/`.end`
+//! (see `encode_symbol`, below) into its preimage — the declaration's **byte
+//! offsets in its file**. That is correct for the question it answers ("did
+//! anything about this entry change, *including where it is*?" — the same
+//! "the source changed" framing `encode_generic_param`'s comment applies to
+//! renamed generic parameters applies here too, and is equally true of a
+//! moved declaration). But it makes `entry_content_hash` unusable as a
+//! **storage identity**: editing one line at the top of a file shifts every
+//! later declaration's span, so every declaration below the edit gets a new
+//! hash even though not one byte of *its own* text changed.
+//!
+//! This was measured, not assumed. Running the real producers over one real
+//! adjacent-version pair (testify v1.9.0 → v1.11.1) and diffing entries by
+//! `IntroId`:
+//!
+//! | hash | reported "modified" |
+//! |---|---|
+//! | `entry_content_hash` as-is | **75.6%** |
+//! | same, with `source`/`span` excluded | **1.3%** |
+//!
+//! A 58× inflation of apparent churn, entirely from code *moving* rather than
+//! *changing*. `manifest::generation_stamp` already folds `entry_content_hash`
+//! over every entry to build a `(IntroId, ContentBlake3)` sequence — precisely
+//! the shape a storage-dedup plane would want — so a naive reuse of that hash
+//! for storage identity would make a real deployment's dedup ratio look
+//! catastrophically worse than it is, for reasons unrelated to real edits.
+//!
+//! [`entry_storage_hash`] is the fix: the same total, deterministic encoding as
+//! [`entry_content_hash`], minus `sym.source`/`sym.span`. Two hashes, two
+//! questions — this mirrors an existing split in this codebase,
+//! `index::blob::BlobManifest`'s Hash①/Hash② (`workspace/index/blob/mod.rs:67-105`),
+//! whose own doc comment warns that unifying a change-detection hash with a
+//! storage-address hash is a bug class, not a simplification. Where does
+//! position go instead? It becomes **generation-scoped, not content-scoped** —
+//! it belongs on the (as yet unbuilt) `GenerationRoot`, which is rewritten every
+//! generation anyway, rather than inside the content-addressed body, which is
+//! precisely what must stay stable across a pure move. See
+//! `workspace/ir/model/tests/storage_hash.rs` for the pinned spec.
 //!
 //! # Why the two layers are kept orthogonal
 //!
@@ -243,6 +290,9 @@
 //! | Isolated  | 0x05   |
 //! | Variadic  | 0x06   |
 //! | Optional  | 0x07   |
+//! | KeywordOnly | 0x08 |
+//! | Kwargs    | 0x09   |
+//! | Out       | 0x0A   |
 //!
 //! ## `VariantForm` opcodes
 //!
@@ -311,10 +361,10 @@ use crate::{
     index::{RawRef, Ref},
     kind::Kind,
     kinds::{
-        Alias, AutoFact, AutoState, AutoTrait, Const, Enum, Field, FieldAttribute, FieldKey,
-        FnModifier, Function, GenericParam, Impl, ImplFlags, Module, Param, ParamAttribute,
-        Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait, TraitFlags, TriState,
-        Variant, VariantForm, WherePred,
+        Alias, AutoFact, AutoState, AutoTrait, Const, ConstExpr, ConstToken, Enum, Field,
+        FieldAttribute, FieldKey, FnModifier, Function, GenericParam, Impl, ImplFlags, Module,
+        Param, ParamAttribute, Receiver, Record, RecordForm, Reexport, Sealed, Static, Trait,
+        TraitFlags, TriState, Variant, VariantForm, WherePred,
         ty::{
             AnonRecordForm, MappedModifier, Primitive, TemplatePart, TupleElement, Type,
             UnknownType, Variance, Width,
@@ -327,7 +377,25 @@ use crate::{
 /// `v3` matches the `IntroId` format version so that the two hashing planes
 /// are clearly versioned together. A format-breaking change to either plane
 /// must bump both domains.
-pub const ENTRY_CONTENT_DOMAIN: &str = "nudox.entry.v3";
+pub const ENTRY_CONTENT_DOMAIN: &str = "nudox.entry.v4";
+
+/// Domain tag for entry storage-hash preimages.
+///
+/// A **sibling** of [`ENTRY_CONTENT_DOMAIN`], not a reuse of it. `blake3(domain
+/// || preimage)` (see `change::hash::hash_domain`) is domain-separated by
+/// construction whenever the two domain strings differ, so keeping this a
+/// distinct constant — rather than branching on a flag inside a single
+/// `from_domain` call — is what guarantees
+/// [`entry_content_hash`] and [`entry_storage_hash`] can never coincide, even
+/// on an entry whose position-bearing fields are empty and whose encoded
+/// bytes would otherwise be identical (see
+/// `the_two_hashes_are_domain_separated` in `tests/storage_hash.rs`).
+///
+/// Versioned independently of `ENTRY_CONTENT_DOMAIN`: this hash has its own
+/// wire format (the same total encoding, minus position) and its own
+/// evolution — a future field added only to one preimage must not force a
+/// version bump on the other.
+pub const ENTRY_STORAGE_DOMAIN: &str = "nudox.entry.storage.v1";
 
 /// Compute the content hash of an [`Entry`].
 ///
@@ -335,6 +403,15 @@ pub const ENTRY_CONTENT_DOMAIN: &str = "nudox.entry.v3";
 /// and [`EntryInner`] in full. The entry's own `IntroId` and its `Node` tree
 /// edges (parent + children) are **excluded**; see the module documentation
 /// for the rationale.
+///
+/// This hash is **position-sensitive**: it includes `sym.source` and
+/// `sym.span`, so a declaration that only moved (same file, different offset,
+/// or a different file entirely) gets a different hash. That is intentional —
+/// this function answers "did anything about this entry change, including
+/// where it is?" — but it means this hash must never be used as a *storage*
+/// identity; use [`entry_storage_hash`] for that. See the module
+/// documentation's "Storage identity" section for the measured cost of getting
+/// this mixed up (a 58× churn inflation on a real package pair).
 ///
 /// # Panics (debug)
 ///
@@ -344,27 +421,98 @@ pub const ENTRY_CONTENT_DOMAIN: &str = "nudox.entry.v3";
 /// seal pass.
 pub fn entry_content_hash(entry: &Entry) -> ContentBlake3 {
     let mut buf = Vec::new();
-    encode_symbol(&mut buf, entry.sym());
+    encode_symbol(&mut buf, entry.sym(), SymbolPosition::Included);
     encode_entry_inner(&mut buf, entry.kind());
     ContentBlake3::from_domain(ENTRY_CONTENT_DOMAIN, &buf)
+}
+
+/// Compute the storage hash of an [`Entry`] — a **position-independent**
+/// content hash fit to be a storage identity.
+///
+/// This is [`entry_content_hash`]'s preimage with exactly one thing removed:
+/// `sym.source` and `sym.span` (the declaration's file and byte offsets). Every
+/// other field — name, visibility, documentation, aliases, deprecation,
+/// doc-links, attrs, cfg, and the full kind body — is encoded identically, via
+/// the same shared encoders, so the two hashes cannot silently drift apart as
+/// fields are added to `Symbol` or any `Kind` variant in the future.
+///
+/// # Why this exists (`docs/IR-STORAGE-PLAN.md` §3a.1)
+///
+/// A declaration's byte span shifts whenever code earlier in the same file is
+/// edited, even though the declaration's own text is untouched. Measured on a
+/// real adjacent-version pair (testify v1.9.0 → v1.11.1): `entry_content_hash`
+/// reports 75.6% of entries "modified"; the same hash with `source`/`span`
+/// excluded reports 1.3%. A storage layer that deduplicates on the
+/// position-sensitive hash would re-store 58× more than it needs to, entirely
+/// from code moving rather than changing.
+///
+/// # Where position goes instead
+///
+/// Excluding position here does not throw the information away — a consumer
+/// still needs to know where a symbol currently lives. That data is
+/// **generation-scoped**, not content-scoped: it belongs on the (planned,
+/// not-yet-built) `GenerationRoot`, which is rewritten every generation
+/// regardless, rather than inside this content-addressed payload, which is
+/// exactly what must stay stable when a declaration merely moves.
+///
+/// # Domain separation
+///
+/// This hash uses [`ENTRY_STORAGE_DOMAIN`], a sibling of
+/// [`ENTRY_CONTENT_DOMAIN`], never the same constant. `ContentBlake3::from_domain`
+/// folds the domain string into the BLAKE3 preimage ahead of the encoded
+/// bytes, so distinct domain strings guarantee the two hashes never coincide
+/// — including on an entry whose position fields are already empty, where the
+/// two encoders would otherwise diverge only in the domain tag.
+///
+/// # Panics (debug)
+///
+/// Same as [`entry_content_hash`]: a `debug_assert!` fires on an unlowered
+/// `Ref::Local`, since both hashes share the same `Kind`/`Ref` encoders.
+pub fn entry_storage_hash(entry: &Entry) -> ContentBlake3 {
+    let mut buf = Vec::new();
+    encode_symbol(&mut buf, entry.sym(), SymbolPosition::Excluded);
+    encode_entry_inner(&mut buf, entry.kind());
+    ContentBlake3::from_domain(ENTRY_STORAGE_DOMAIN, &buf)
 }
 
 // ---------------------------------------------------------------------------
 // Symbol encoding
 // ---------------------------------------------------------------------------
 
-fn encode_symbol(out: &mut Vec<u8>, sym: &Symbol) {
+/// Whether [`encode_symbol`] should fold `sym.source`/`sym.span` into the
+/// preimage.
+///
+/// A `bool` would work but reads as noise at the call site (`encode_symbol(out,
+/// sym, true)` — included what?). This exists so [`entry_content_hash`] and
+/// [`entry_storage_hash`] can share one encoder — see the module
+/// documentation's "Storage identity" section for why a second, drifting copy
+/// of this function is the outcome to avoid: the next field added to `Symbol`
+/// should only need to be decided about once, not once per hash.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SymbolPosition {
+    /// Fold `sym.source` and `sym.span` into the preimage. Used by
+    /// [`entry_content_hash`].
+    Included,
+    /// Omit `sym.source` and `sym.span` entirely — not zeroed, not
+    /// length-prefixed-empty, simply absent from the preimage. Used by
+    /// [`entry_storage_hash`].
+    Excluded,
+}
+
+fn encode_symbol(out: &mut Vec<u8>, sym: &Symbol, position: SymbolPosition) {
     encode_str(out, &sym.name);
     encode_visibility(out, &sym.visibility);
     encode_str(out, &sym.documentation);
-    // source path — encode as a string via to_string_lossy so it is
-    // platform-independent in UTF-8; lossiness is acceptable because the path
-    // is producer-reported metadata, not a cryptographic identifier.
-    encode_str(out, &sym.source.to_string_lossy());
-    // span: start and end as u64le (widened from usize for cross-platform
-    // determinism).
-    write_u64le(out, sym.span.start as u64);
-    write_u64le(out, sym.span.end as u64);
+    if position == SymbolPosition::Included {
+        // source path — encode as a string via to_string_lossy so it is
+        // platform-independent in UTF-8; lossiness is acceptable because the
+        // path is producer-reported metadata, not a cryptographic identifier.
+        encode_str(out, &sym.source.to_string_lossy());
+        // span: start and end as u64le (widened from usize for cross-platform
+        // determinism).
+        write_u64le(out, sym.span.start as u64);
+        write_u64le(out, sym.span.end as u64);
+    }
     // aliases — deterministic order (declaration order from producer)
     encode_str_seq(out, &sym.aliases);
     // deprecation
@@ -409,6 +557,14 @@ fn encode_opt_deprecation(out: &mut Vec<u8>, dep: Option<&Deprecation>) {
 fn encode_doc_link(out: &mut Vec<u8>, dl: &DocLink) {
     encode_str(out, &dl.target);
     encode_opt_str(out, dl.label.as_deref());
+    match &dl.source_span {
+        None => out.push(0x00),
+        Some(span) => {
+            out.push(0x01);
+            write_u64le(out, span.start as u64);
+            write_u64le(out, span.end as u64);
+        }
+    }
 }
 
 fn encode_attr_tok(out: &mut Vec<u8>, attr: &AttrTok) {
@@ -748,7 +904,7 @@ fn encode_variant_form(out: &mut Vec<u8>, form: &VariantForm) {
 
 fn encode_const(out: &mut Vec<u8>, c: &Const) {
     encode_type(out, &c.ty);
-    encode_opt_str(out, c.value.as_deref());
+    encode_opt_const_expr(out, c.value.as_ref());
 }
 
 fn encode_static(out: &mut Vec<u8>, s: &Static) {
@@ -763,9 +919,46 @@ fn encode_reexport(_out: &mut Vec<u8>, _rx: &Reexport) {
 
 fn encode_param(out: &mut Vec<u8>, p: &Param) {
     encode_opt_type(out, p.ty.as_ref());
+    encode_opt_const_expr(out, p.default_value.as_ref());
     write_u32le(out, p.attributes.len() as u32);
     for attr in &p.attributes {
         encode_param_attribute(out, attr);
+    }
+}
+
+fn encode_opt_const_expr(out: &mut Vec<u8>, expr: Option<&ConstExpr>) {
+    match expr {
+        None => out.push(0x00),
+        Some(expr) => {
+            out.push(0x01);
+            encode_type(out, &expr.ty);
+            write_u32le(out, expr.tokens.len() as u32);
+            for token in &expr.tokens {
+                match token {
+                    ConstToken::Identifier(value) => {
+                        out.push(0x01);
+                        encode_str(out, value);
+                    }
+                    ConstToken::Number(value) => {
+                        out.push(0x02);
+                        encode_str(out, value);
+                    }
+                    ConstToken::String(value) => {
+                        out.push(0x03);
+                        encode_str(out, value);
+                    }
+                    ConstToken::Character(value) => {
+                        out.push(0x04);
+                        encode_str(out, value);
+                    }
+                    ConstToken::Punctuation(value) => {
+                        out.push(0x05);
+                        encode_str(out, value);
+                    }
+                }
+            }
+            encode_str(out, &expr.source);
+        }
     }
 }
 
@@ -780,6 +973,8 @@ fn encode_param_attribute(out: &mut Vec<u8>, attr: &ParamAttribute) {
         ParamAttribute::Variadic => out.push(0x06),
         ParamAttribute::Optional => out.push(0x07),
         ParamAttribute::KeywordOnly => out.push(0x08),
+        ParamAttribute::Kwargs => out.push(0x09),
+        ParamAttribute::Out => out.push(0x0A),
     }
 }
 

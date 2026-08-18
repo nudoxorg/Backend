@@ -458,8 +458,8 @@ pub fn parse_pkg_info(text: &str) -> ExtractedFacts {
     // PEP 639 expression wins; fall back to `License:` header value.
     let resolved_license = license_expression.or(license);
     // Classifier-only → has_license_file signal, no expression.
-    let (final_license, has_license_file) = resolved_license
-        .map_or((None, license_from_classifier), |expr| (Some(expr), false));
+    let (final_license, has_license_file) =
+        resolved_license.map_or((None, license_from_classifier), |expr| (Some(expr), false));
 
     ExtractedFacts {
         description,

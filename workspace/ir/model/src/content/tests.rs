@@ -7,8 +7,8 @@ use crate::{
     index::{RawRef, Ref},
     kind::EntryKind,
     kinds::{
-        Field, FieldKey, FnModifier, Function, GenericParam, Module, Trait, function::Receiver,
-        generics::WherePred, ty::Type,
+        Const, ConstExpr, Field, FieldKey, FnModifier, Function, GenericParam, Module, Param,
+        Trait, function::Receiver, generics::WherePred, ty::Type,
     },
     test_helpers::sym,
 };
@@ -170,6 +170,39 @@ fn sensitive_to_generic_bound() {
     );
 }
 
+#[test]
+fn typed_const_expr_survives_encoding_and_hashing() {
+    let default = ConstExpr::builder()
+        .ty(Type::I32)
+        .source("42".to_owned())
+        .build();
+    let param = Param::builder()
+        .ty(Type::I32)
+        .default_value(default.clone())
+        .build();
+    let constant = Const::builder().ty(Type::I32).value(default).build();
+
+    let param_entry = Entry::new(
+        base_sym(),
+        Node::build(None::<RawRef>, []),
+        param.into_kind(),
+    );
+    let const_entry = Entry::new(
+        base_sym(),
+        Node::build(None::<RawRef>, []),
+        constant.into_kind(),
+    );
+
+    let param_bytes = crate::codec::encode_entry(&param_entry).expect("encode param");
+    let const_bytes = crate::codec::encode_entry(&const_entry).expect("encode const");
+    assert!(!param_bytes.is_empty());
+    assert!(!const_bytes.is_empty());
+    assert_ne!(
+        entry_content_hash(&param_entry),
+        entry_content_hash(&const_entry)
+    );
+}
+
 // -------------------------------------------------------------------------
 // 3. Tree-independence — the central design decision
 // -------------------------------------------------------------------------
@@ -220,7 +253,7 @@ fn tree_independent() {
 /// failure message here) or an accident (investigate before merging).
 #[test]
 fn golden_content_hash() {
-    const EXPECTED: &str = "1d22e68ccc87cb32ca22ec5702ac36fe5c372977723a963dd83eaf8c187a299d";
+    const EXPECTED: &str = "b74b9a7557d63f213094ef53fb6f67ff5a4857b4fbe19bec1e6e2d533ae47d69";
 
     let sym = Symbol {
         name: "do_work".to_owned(),
@@ -236,6 +269,7 @@ fn golden_content_hash() {
         doc_links: Box::new([DocLink {
             target: "crate::new_do_work".to_owned(),
             label: Some("new_do_work".to_owned()),
+            source_span: None,
         }]),
         attrs: Box::new([AttrTok {
             token: "must_use".to_owned(),

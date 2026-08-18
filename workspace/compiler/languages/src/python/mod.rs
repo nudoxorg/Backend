@@ -117,14 +117,14 @@
 //! `nudox-ir` specifically for this case; its own doc comment cites Python's
 //! `def f(a, *, b)`.
 
-pub mod oracle;
-pub mod syntax;
 #[cfg(feature = "pyrefly")]
 pub mod context;
-pub mod types;
 pub mod docstring;
 pub mod emit;
+pub mod oracle;
 pub mod producer;
+pub mod syntax;
+pub mod types;
 
 pub use oracle::PythonId;
 pub use producer::PythonProducer;

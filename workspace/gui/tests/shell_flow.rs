@@ -25,9 +25,9 @@ use std::time::Duration;
 use gpui::{App, AppContext as _, TestAppContext, WindowOptions};
 use lindsey::app::keymaps;
 use lindsey::motion::tokens::MotionTokens;
+use lindsey::stores::events::OpenDisposition;
 use lindsey::stores::search_model::SearchAccess as _;
 use lindsey::stores::search_model::SearchSnapshot;
-use lindsey::stores::events::OpenDisposition;
 use lindsey::stores::{PackageStore, SearchStore, SymbolStore};
 use lindsey::theme::ext::NudoxThemeExt;
 use lindsey::workspace::overlays::OverlayKind;
@@ -145,7 +145,10 @@ async fn search_over_the_live_corpus_returns_hits(cx: &mut TestAppContext) {
             "At least one result's leaf or path must contain {:?} (case-insensitive). \
              Returned leaves: {:?}",
             REAL_QUERY,
-            name_rows.iter().map(|r| r.leaf.as_ref()).collect::<Vec<_>>()
+            name_rows
+                .iter()
+                .map(|r| r.leaf.as_ref())
+                .collect::<Vec<_>>()
         );
     });
 }
@@ -224,9 +227,7 @@ async fn opening_a_hit_streams_a_document(cx: &mut TestAppContext) {
 
     // Extract the key from the first hit.
     let key = search.read_with(cx, |store, _cx| {
-        store
-            .snapshot()
-            .sections[0]
+        store.snapshot().sections[0]
             .rows
             .first()
             .expect("Name section has at least one row")
@@ -359,8 +360,7 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
     let search = cx.new(|_cx| SearchStore::new(engine.clone()));
     let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
     let packages = cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
-    let index_jobs =
-        cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
+    let index_jobs = cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
     // Capture the root Entity<Shell>: the window constructor closure runs
     // synchronously inside open_window, so by the time we return from
@@ -370,14 +370,16 @@ async fn cmd_k_opens_the_omni_search_overlay(cx: &mut TestAppContext) {
     let window = cx
         .update(|cx: &mut App| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
-                let entity = cx.new(|cx| Shell::new(
-                    search.clone(),
-                    symbols.clone(),
-                    packages.clone(),
-                    index_jobs.clone(),
-                    window,
-                    cx,
-                ));
+                let entity = cx.new(|cx| {
+                    Shell::new(
+                        search.clone(),
+                        symbols.clone(),
+                        packages.clone(),
+                        index_jobs.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
                 // `Input` (`SignInView`'s field) requires a `Root`-rooted
                 // window; see the identical comment in `main.rs`.
@@ -433,22 +435,23 @@ async fn escape_closes_the_overlay(cx: &mut TestAppContext) {
     let search = cx.new(|_cx| SearchStore::new(engine.clone()));
     let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
     let packages = cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
-    let index_jobs =
-        cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
+    let index_jobs = cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
     let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<gpui::Entity<Shell>>));
     let shell_cell_w = shell_cell.clone();
     let window = cx
         .update(|cx: &mut App| {
             cx.open_window(WindowOptions::default(), move |window, cx| {
-                let entity = cx.new(|cx| Shell::new(
-                    search.clone(),
-                    symbols.clone(),
-                    packages.clone(),
-                    index_jobs.clone(),
-                    window,
-                    cx,
-                ));
+                let entity = cx.new(|cx| {
+                    Shell::new(
+                        search.clone(),
+                        symbols.clone(),
+                        packages.clone(),
+                        index_jobs.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 *shell_cell_w.lock().unwrap() = Some(entity.clone());
                 // `Input` (`SignInView`'s field) requires a `Root`-rooted
                 // window; see the identical comment in `main.rs`.
@@ -485,8 +488,7 @@ async fn escape_closes_the_overlay(cx: &mut TestAppContext) {
 
     let after = shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned());
     assert_eq!(
-        after,
-        None,
+        after, None,
         "escape must close the OmniSearch overlay — a Some(…) here \
          means DismissOverlay was not routed to Shell::close_overlay"
     );

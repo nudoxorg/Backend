@@ -4,8 +4,8 @@
 use crate::server::registry;
 use std::sync::Arc;
 
-use registry::vector::EmbeddingModel;
 use crate::ecosystem::PackageNameExt as _;
+use registry::vector::EmbeddingModel;
 
 use crate::server::Server;
 
@@ -100,7 +100,6 @@ pub(crate) async fn catalog_follower_worker<M: EmbeddingModel>(
         Language::Python => RegistryOrigin::PyPi,
         Language::Go => RegistryOrigin::GoProxy,
         Language::Java => RegistryOrigin::MavenCentral,
-        Language::Nix => RegistryOrigin::FlakeHub,
         // `cpp` followers are git-native (RL-1); there is no upstream registry.
         Language::Cpp => RegistryOrigin::Git,
     };

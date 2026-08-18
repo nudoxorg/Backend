@@ -360,8 +360,7 @@ async fn refuse(conn: &iroh::endpoint::Connection, reason: &str) -> Result<(), S
     let accepted = tokio::time::timeout(TERMINAL_DRAIN, conn.accept_bi())
         .await
         .map_err(|_| SyncError::Timeout)?;
-    let (mut send, _recv) =
-        accepted.map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
+    let (mut send, _recv) = accepted.map_err(|e| SyncError::Transport(std::io::Error::other(e)))?;
 
     let response = SyncResponse::Refused {
         reason: reason.to_owned(),

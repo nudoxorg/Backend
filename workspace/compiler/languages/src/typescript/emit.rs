@@ -40,6 +40,7 @@ use nudox_ir::{
         Module, Param, ParamAttribute, Record, RecordForm, Static, Trait, Variant, VariantForm,
         ty::{Primitive, TupleElement, Type},
     },
+    vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
 use nudox_ir::lower::Lowering;
@@ -50,7 +51,8 @@ use crate::typescript::{
     extract::{
         Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, DeprecationOwned, EnumBody,
         FunctionBody, GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
-        ModuleFacts, NamespaceBody, ReceiverKind, StaticBody, TypeAliasBody, TypeOwned,
+        ModuleFacts, NamespaceBody, OccurrenceKind, ReceiverKind, StaticBody, TypeAliasBody,
+        TypeOwned,
     },
     id::TsId,
 };
@@ -130,7 +132,82 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
         }
 
         // Emit re-exports from the export table.
-        emit_reexports(module, Some(module_id.clone()), out, &export_index, &resolver);
+        emit_reexports(
+            module,
+            Some(module_id.clone()),
+            out,
+            &export_index,
+            &resolver,
+        );
+    }
+
+    // ── Same-module occurrence graph ─────────────────────────────────────────
+    // A deliberate second pass over every module, run only after the loop
+    // above has `declare()`d every declaration in the package: mirrors
+    // `RustProducer::lower` (`rust/mod.rs`), which likewise defers all
+    // `record_occurrence` calls until `lower_workspace` has finished
+    // declaring, rather than interleaving them with the first pass. Nothing
+    // here actually needs a *different* module's declarations — every edge
+    // in `module.occurrences` is same-module by construction (see
+    // `extract::OccurrenceFact`'s doc comment) — but recomputing `decl_ids`
+    // per module here, instead of trying to carry it out of the loop above,
+    // keeps that one-pass-per-module loop free of a second piece of
+    // bookkeeping it doesn't otherwise need.
+    for module in modules {
+        let module_id = module_ts_id(module);
+        let decl_ids: Vec<TsId> = module
+            .declarations
+            .iter()
+            .map(|decl| decl_ts_id(decl, Some(&module_id)))
+            .collect();
+
+        for occ in &module.occurrences {
+            let owner_id = decl_ids[occ.owner].clone();
+            let target_id = decl_ids[occ.target].clone();
+            let owner_decl = &module.declarations[occ.owner];
+            let (kind, confidence) = occurrence_kind_and_confidence(occ.kind);
+            // `RelSpan` is relative to the *owner*'s own span start (see its
+            // doc comment in `nudox_ir::vocab`), not an absolute file offset
+            // — `occ.span_start/end` are absolute (OXC bytes), so they are
+            // rebased here rather than in extraction, where the owner's span
+            // is not yet in scope. `saturating_sub` rather than plain `-`:
+            // the reference site is only ever inside the owner's span by the
+            // containment check `record_occurrences` already performed, so
+            // this cannot actually underflow, but a doctrine-clean producer
+            // does not reach for `unwrap`/`expect` to say so.
+            let span = RelSpan::new(
+                occ.span_start.saturating_sub(owner_decl.span_start),
+                occ.span_end.saturating_sub(owner_decl.span_start),
+            );
+            out.record_occurrence(owner_id, target_id, kind, confidence, span);
+        }
+    }
+}
+
+/// Map an extraction-level [`OccurrenceKind`] onto the IR's
+/// `nudox_ir::vocab::ReferenceKind` and the [`Confidence`] it earns.
+///
+/// A call and a plain value use are both graded `Confidence::Oracle`: OXC's
+/// `Semantic` resolved the identifier to its declaring symbol through real
+/// lexical scope analysis — a binder, in compiler terms — the same kind of
+/// resolution `RustProducer` earns `Oracle` for via rust-analyzer's HIR. It
+/// is exact name resolution, not a heuristic guess.
+///
+/// A type-position reference is graded one tier lower, `Confidence::Index`:
+/// TypeScript lets an interface, a class, and a namespace all merge under one
+/// name, and each merged declaration becomes its own `DeclFact`/`TsId` here
+/// (see `id.rs`'s doc comment). OXC's binder resolves a type reference to
+/// *a* declaring symbol span without knowing which sibling of that merged
+/// group the author meant as "the type" — there is no type-checking pass
+/// here to disambiguate, only the same name-in-scope resolution a call site
+/// gets. A call target is exactly one function; a type target can silently
+/// land on the wrong sibling of a merged declaration group, which is real,
+/// weaker ground than a call.
+fn occurrence_kind_and_confidence(kind: OccurrenceKind) -> (ReferenceKind, Confidence) {
+    match kind {
+        OccurrenceKind::Call => (ReferenceKind::FunctionCall, Confidence::Oracle),
+        OccurrenceKind::Type => (ReferenceKind::TypeReference, Confidence::Index),
+        OccurrenceKind::ValueUse => (ReferenceKind::VariableUse, Confidence::Oracle),
     }
 }
 
@@ -206,7 +283,16 @@ fn emit_decl(
         DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
-            emit_namespace(id, parent, sym, body, out, module_index, export_index, resolver);
+            emit_namespace(
+                id,
+                parent,
+                sym,
+                body,
+                out,
+                module_index,
+                export_index,
+                resolver,
+            );
         }
         DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
         DeclBody::Const(body) => emit_const(id, parent, sym, body, out),
@@ -275,7 +361,11 @@ fn emit_interface(
             source: id.module.clone(),
             span: (method.sig.span_start as usize)..(method.sig.span_end as usize),
             aliases: Box::new([]),
-            deprecation: method.doc.deprecation.clone().map(DeprecationOwned::into_ir),
+            deprecation: method
+                .doc
+                .deprecation
+                .clone()
+                .map(DeprecationOwned::into_ir),
             doc_links: Box::new([]),
             attrs: Box::new([]),
             cfg: None,
@@ -430,7 +520,11 @@ fn emit_class(
                     source: id.module.clone(),
                     span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
-                    deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
+                    deprecation: member
+                        .doc
+                        .deprecation
+                        .clone()
+                        .map(DeprecationOwned::into_ir),
                     doc_links: Box::new([]),
                     attrs: Box::new([]),
                     cfg: None,
@@ -495,7 +589,11 @@ fn emit_class(
                         // (the `Function` value node) omits the name.
                         span: (member.span_start as usize)..(member.span_end as usize),
                         aliases: Box::new([]),
-                        deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
+                        deprecation: member
+                            .doc
+                            .deprecation
+                            .clone()
+                            .map(DeprecationOwned::into_ir),
                         doc_links: Box::new([]),
                         attrs: Box::new([]),
                         cfg: None,
@@ -516,7 +614,11 @@ fn emit_class(
                     source: id.module.clone(),
                     span: (member.span_start as usize)..(member.span_end as usize),
                     aliases: Box::new([]),
-                    deprecation: member.doc.deprecation.clone().map(DeprecationOwned::into_ir),
+                    deprecation: member
+                        .doc
+                        .deprecation
+                        .clone()
+                        .map(DeprecationOwned::into_ir),
                     doc_links: Box::new([]),
                     attrs: Box::new([]),
                     cfg: None,
@@ -646,7 +748,14 @@ fn emit_namespace(
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
     for child in &body.children {
-        emit_decl(child, Some(id.clone()), out, module_index, export_index, resolver);
+        emit_decl(
+            child,
+            Some(id.clone()),
+            out,
+            module_index,
+            export_index,
+            resolver,
+        );
     }
 }
 
@@ -696,7 +805,9 @@ fn emit_function(
         let param_id = TsId::new(
             id.module.clone(),
             format!("{}::param::{}", id.name, p.name),
-            id.discriminant.saturating_mul(1000).saturating_add(idx as u32),
+            id.discriminant
+                .saturating_mul(1000)
+                .saturating_add(idx as u32),
         );
         let pref: Ref<Param> = out.refer(param_id.clone());
         param_refs.push(pref);
@@ -813,8 +924,13 @@ fn emit_const(
         parent,
         sym,
         Const::builder()
-            .ty(ty)
-            .maybe_value(body.value.clone())
+            .ty(ty.clone())
+            .maybe_value(body.value.clone().map(|source| {
+                nudox_ir::build::ConstExpr::builder()
+                    .ty(ty)
+                    .source(source)
+                    .build()
+            }))
             .build(),
     );
 }
@@ -889,8 +1005,13 @@ fn resolve_export_target(
     use crate::typescript::extract::LocalExport;
 
     match table.locals.get(name) {
-        Some(LocalExport::Named { local_name, overload_count }) => (0..*overload_count)
-            .map(|discriminant| TsId::new(table_path.to_path_buf(), local_name.clone(), discriminant))
+        Some(LocalExport::Named {
+            local_name,
+            overload_count,
+        }) => (0..*overload_count)
+            .map(|discriminant| {
+                TsId::new(table_path.to_path_buf(), local_name.clone(), discriminant)
+            })
             .collect(),
         Some(LocalExport::NamespaceOf(module_request)) => {
             resolve_module_path(resolver, table_path, module_request)
@@ -1092,7 +1213,10 @@ fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> 
         return None;
     }
     let parent_dir = current.parent()?;
-    let resolved = resolver.resolve(parent_dir, specifier).ok()?.into_path_buf();
+    let resolved = resolver
+        .resolve(parent_dir, specifier)
+        .ok()?
+        .into_path_buf();
     if resolved.is_file() && is_ts_module_path(&resolved) {
         Some(resolved)
     } else {
@@ -1133,19 +1257,11 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             Type::Primitive(Primitive::Builtin(s.clone()))
         }
         TypeOwned::Nominal(name) => {
-            // UNCERTAINTY: We emit a RawRef::Name here, but the actual IR Type::Nominal
-            // takes a RawRef. RawRef has no public name-only constructor in the
-            // signatures we read. Using Builtin as fallback for unresolvable nominals.
-            //
-            // The correct production path: resolve name → TsId → refer() → Ref → RawRef.
-            // That requires the full lowering context (the `out: &mut Lowering<TsId>`).
-            // Here in a pure helper we don't have it. This is the primary compile-time
-            // uncertainty: `Type::Nominal(RawRef)` cannot be constructed from a string
-            // alone without the Lowering sink.
-            //
-            // Mitigation: callers that need nominal resolution pass the Lowering in
-            // directly; this helper uses Builtin as a conservative fallback.
-            Type::Primitive(Primitive::Builtin(name.clone()))
+            // This helper has no lowering sink, so it cannot mint the local
+            // `Ref` required by `Type::Nominal`. Preserve the unresolved name
+            // explicitly instead of misrepresenting an imported declaration as
+            // a language builtin.
+            Type::unresolved_external(name.clone())
         }
         TypeOwned::TypeVar(name) => {
             // TypeVar represents a generic type parameter use (e.g. `T` in `Array<T>`).
@@ -1254,7 +1370,9 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             let ir_parts: Vec<IrPart> = parts
                 .iter()
                 .map(|p| match p {
-                    crate::typescript::extract::TemplatePart::Literal(s) => IrPart::Literal(s.clone()),
+                    crate::typescript::extract::TemplatePart::Literal(s) => {
+                        IrPart::Literal(s.clone())
+                    }
                     crate::typescript::extract::TemplatePart::Interpolated(ty) => {
                         IrPart::Interpolated(Box::new(lower_type(ty)))
                     }
@@ -1386,7 +1504,10 @@ mod cc2_tests {
             Type::Unknown(UnknownType::DynamicallyTyped),
             "`any` is the gradual-typing escape hatch, not a top type"
         );
-        assert_ne!(unknown, any, "`unknown` and `any` must not share an encoding");
+        assert_ne!(
+            unknown, any,
+            "`unknown` and `any` must not share an encoding"
+        );
     }
 
     /// An *implicit* any — a parameter with no annotation at all — is a third
@@ -1401,5 +1522,17 @@ mod cc2_tests {
         );
         assert_ne!(unannotated, lower_type(&TypeOwned::Unknown));
         assert_eq!(unannotated.to_string(), "?unannotated");
+    }
+
+    #[test]
+    fn unresolved_nominal_preserves_external_name() {
+        let ty = lower_type(&TypeOwned::Nominal("ImportedWidget".to_string()));
+        assert_eq!(
+            ty,
+            Type::Unknown(nudox_ir::kinds::UnknownType::UnresolvedExternal {
+                name: "ImportedWidget".to_string(),
+            }),
+            "an unresolved imported type must not be erased as a builtin"
+        );
     }
 }

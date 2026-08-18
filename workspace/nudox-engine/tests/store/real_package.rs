@@ -31,10 +31,10 @@
 
 use std::path::PathBuf;
 
-use nudox_languages::produce;
-use nudox_languages::rust::RustProducer;
 use nudox_engine::store::package::{PackageView, Provenance};
 use nudox_engine::store::source::producer::PackageDescriptor;
+use nudox_languages::produce;
+use nudox_languages::rust::RustProducer;
 
 // ---------------------------------------------------------------------------
 // Invocation
@@ -146,7 +146,8 @@ fn a_real_crate_lowers_to_a_populated_table() {
                 cursor = source;
             }
             panic!("{} must lower without error:\n{chain}", target.name);
-        }).table;
+        })
+        .table;
 
         let ir = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
         PackageView::build(ir, Provenance::TrustedLocal)

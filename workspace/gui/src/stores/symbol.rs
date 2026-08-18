@@ -37,8 +37,8 @@ use std::sync::Arc;
 
 use gpui::{Context, Task};
 use nudox_engine::wire::{
-    DocEvent, HighlightSpan, ImplsPage, RefsPage, RenderSection,
-    SectionId, SymbolHead, SymbolKey, Timeline,
+    DocEvent, HighlightSpan, ImplsPage, RefsPage, RenderSection, SectionId, SymbolHead, SymbolKey,
+    Timeline,
 };
 
 use crate::bridge::drain::drain;
@@ -310,7 +310,10 @@ impl<E: SymbolEngine> SymbolStore<E> {
         // Dedup: re-activate existing tab.
         if let Some(&tab_id) = self.key_to_tab.get(&key) {
             self.active = Some(tab_id);
-            cx.emit(TabActivated { tab_id, disposition });
+            cx.emit(TabActivated {
+                tab_id,
+                disposition,
+            });
             return tab_id;
         }
 
@@ -362,7 +365,10 @@ impl<E: SymbolEngine> SymbolStore<E> {
             self.active = Some(tab_id);
         }
 
-        cx.emit(TabActivated { tab_id, disposition });
+        cx.emit(TabActivated {
+            tab_id,
+            disposition,
+        });
 
         if let Some(outgoing) = outgoing {
             self.close(outgoing, cx);
@@ -433,12 +439,7 @@ impl<E: SymbolEngine> SymbolStore<E> {
     ///
     /// Semantics: stale content dims and stays readable (LD-15); the new
     /// generation streams over it.
-    pub fn select_version(
-        &mut self,
-        tab_id: TabId,
-        version: String,
-        cx: &mut Context<Self>,
-    ) {
+    pub fn select_version(&mut self, tab_id: TabId, version: String, cx: &mut Context<Self>) {
         let key = match self.docs.get(&tab_id) {
             Some(doc) => doc.key.clone(),
             None => return,
@@ -715,7 +716,10 @@ mod tests {
         store.read_with(cx, |store, _| {
             let doc = store.doc(tab).expect("reloaded document must remain open");
             assert!(
-                matches!(doc.slot_meta.phase, crate::bridge::slot::Phase::Loading { .. }),
+                matches!(
+                    doc.slot_meta.phase,
+                    crate::bridge::slot::Phase::Loading { .. }
+                ),
                 "a stale Done event must not complete the replacement stream"
             );
         });
@@ -734,7 +738,11 @@ mod tests {
         map.insert(k1, TabId(1));
 
         let found = map.get(&k2).copied();
-        assert_eq!(found, Some(TabId(1)), "dedup: second open finds existing tab");
+        assert_eq!(
+            found,
+            Some(TabId(1)),
+            "dedup: second open finds existing tab"
+        );
     }
 
     /// Two different keys must produce different tab ids.
@@ -802,7 +810,11 @@ mod tests {
         }));
         // Assign a new handle — old one dropped, canceller fires.
         slot.handle = Some(StreamHandle::new(BridgeGen(2), || {}));
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "predecessor cancelled");
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "predecessor cancelled"
+        );
     }
 
     // ── Section accumulation is append-only ───────────────────────────────
@@ -810,8 +822,14 @@ mod tests {
     #[test]
     fn sections_append_only() {
         let mut prog: Progressive<RenderSection> = Progressive::new();
-        prog.push(RenderSection::Prose { id: SectionId(1), blocks: vec![] });
-        prog.push(RenderSection::Prose { id: SectionId(2), blocks: vec![] });
+        prog.push(RenderSection::Prose {
+            id: SectionId(1),
+            blocks: vec![],
+        });
+        prog.push(RenderSection::Prose {
+            id: SectionId(2),
+            blocks: vec![],
+        });
 
         assert_eq!(prog.len(), 2);
         assert_eq!(prog[0].section_id(), SectionId(1));
@@ -823,10 +841,20 @@ mod tests {
     #[test]
     fn slow_section_does_not_clear_fast_section() {
         let mut prog: Progressive<RenderSection> = Progressive::new();
-        prog.push(RenderSection::Prose { id: SectionId(1), blocks: vec![] }); // fast
-        prog.push(RenderSection::Prose { id: SectionId(2), blocks: vec![] }); // slow
+        prog.push(RenderSection::Prose {
+            id: SectionId(1),
+            blocks: vec![],
+        }); // fast
+        prog.push(RenderSection::Prose {
+            id: SectionId(2),
+            blocks: vec![],
+        }); // slow
 
-        assert_eq!(prog[0].section_id(), SectionId(1), "fast section must remain at index 0");
+        assert_eq!(
+            prog[0].section_id(),
+            SectionId(1),
+            "fast section must remain at index 0"
+        );
         assert_eq!(prog[1].section_id(), SectionId(2));
     }
 
@@ -836,12 +864,19 @@ mod tests {
     fn highlights_stored_separately_from_sections() {
         let key = make_key(5);
         let mut doc = SymbolDoc::new(key.clone());
-        doc.sections.push(RenderSection::Prose { id: SectionId(1), blocks: vec![] });
+        doc.sections.push(RenderSection::Prose {
+            id: SectionId(1),
+            blocks: vec![],
+        });
 
         let spans: Arc<[HighlightSpan]> = Arc::from(vec![].as_slice());
         doc.highlights.insert(SectionId(1), spans);
 
-        assert_eq!(doc.sections.len(), 1, "section count unchanged by highlight");
+        assert_eq!(
+            doc.sections.len(),
+            1,
+            "section count unchanged by highlight"
+        );
         assert!(doc.highlights.contains_key(&SectionId(1)));
     }
 }

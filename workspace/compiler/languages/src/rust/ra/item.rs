@@ -422,13 +422,12 @@ pub(crate) fn lower_module(
             }
         };
 
-        // The location that belongs here is the `pub use` statement's own, and
-        // this scan reaches re-exports through module *scope* rather than
-        // through any syntax node, so there is nothing to point at yet.
-        // Deliberately not the target item's location: a re-export and the
-        // thing it names are two different places, and reporting one as the
-        // other is worse than reporting neither.
-        let reexport_location = SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation);
+        // This scan reaches re-exports through module scope rather than the
+        // `use` syntax node. The canonical item's location is not the
+        // re-export's location, and pointing there would make navigation land
+        // on a different declaration. The alias entry itself is synthesized
+        // by this lowering pass, so its absence is irreducible and explicit.
+        let reexport_location = scope_only_reexport_location();
         let (reexport_source, reexport_span) = reexport_location.legacy_pair();
         let reexport_sym = nudox_ir::entry::Symbol {
             name: scope_name.to_string(),
@@ -454,6 +453,13 @@ pub(crate) fn lower_module(
     }
 
     Ok(())
+}
+
+/// A scope-only alias has no syntax node in the lowering input. Its target's
+/// location is intentionally not borrowed because that would navigate to a
+/// different declaration.
+fn scope_only_reexport_location() -> SourceLocation {
+    SourceLocation::Unlocated(Unlocated::Synthesized)
 }
 
 // ── Primary item lowering ─────────────────────────────────────────────────────
@@ -876,10 +882,7 @@ fn rel_span(fn_span_start: u32, r: ra_ap_syntax::TextRange) -> RelSpan {
     let end = u32::from(r.end())
         .checked_sub(fn_span_start)
         .expect("a body descendant cannot precede its owning function");
-    RelSpan::new(
-        start,
-        end,
-    )
+    RelSpan::new(start, end)
 }
 
 /// Resolve a method call's target `Function` to a `PendingTarget`.
@@ -1123,6 +1126,8 @@ fn lower_enum(
                 .build();
 
             let doc = docs::documentation(ctx, v);
+            let doc_links = docs::doc_links(ctx, v, doc.as_deref()).unwrap_or_default();
+            let attrs = v.source(ctx.db).map(|src| docs::ast_attrs(src.value));
             let variant_location = source::variant_location(ctx, v);
             let (variant_source, variant_span) = variant_location.legacy_pair();
             let variant_sym = nudox_ir::entry::Symbol {
@@ -1133,9 +1138,9 @@ fn lower_enum(
                 span: variant_span,
                 aliases: Box::new([]),
                 deprecation: None,
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
+                doc_links: doc_links.into(),
+                attrs: attrs.unwrap_or_default(),
+                cfg: docs::cfg_expr(ctx, v),
             };
 
             ctx.check_unique(&variant_id);
@@ -1520,6 +1525,7 @@ pub(crate) fn lower_impl(
     // produced.
     let impl_location = source::impl_location(ctx, imp);
     let (impl_source, impl_span) = impl_location.legacy_pair();
+    let impl_attrs = impl_ast.as_ref().map(|ast| docs::ast_attrs(ast.clone()));
     let sym = nudox_ir::entry::Symbol {
         name: impl_display_name(ctx, imp),
         visibility: nudox_ir::entry::Visibility::Public,
@@ -1529,8 +1535,8 @@ pub(crate) fn lower_impl(
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
-        attrs: Box::new([]),
-        cfg: None,
+        attrs: impl_attrs.unwrap_or_default(),
+        cfg: docs::cfg_expr(ctx, imp),
     };
 
     // ── Declare the impl entry FIRST ─────────────────────────────────────────
@@ -2026,8 +2032,6 @@ fn lower_const_with_id(
     //       Unknown(String),    // source text fallback
     //   }
     //   ```
-    //   `nudox_ir::kinds::Const::value` becomes `Option<ConstExpr>`.
-    //   Until then we use the best string we can obtain.
     let value: Option<String> = {
         // Try evaluated value first (panic-safe).
         let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2044,7 +2048,15 @@ fn lower_const_with_id(
         }
     };
 
-    let const_body = Const::builder().ty(const_ty).maybe_value(value).build();
+    let const_body = Const::builder()
+        .ty(const_ty.clone())
+        .maybe_value(value.map(|source| {
+            nudox_ir::build::ConstExpr::builder()
+                .ty(const_ty)
+                .source(source)
+                .build()
+        }))
+        .build();
 
     let location = source::def_location(ctx, def);
     let parts = ctx.symbol_parts(def).unwrap_or_else(default_parts);
@@ -2124,6 +2136,9 @@ struct FieldData {
     ty: nudox_ir::kinds::Type,
     visibility: nudox_ir::entry::Visibility,
     doc: String,
+    doc_links: Vec<nudox_ir::entry::DocLink>,
+    cfg: Option<nudox_ir::entry::CfgExpr>,
+    attrs: Box<[nudox_ir::entry::AttrTok]>,
     /// Where the field is written.
     ///
     /// Computed in a pass *before* `ref_for` exists, because `ref_for` borrows
@@ -2183,6 +2198,17 @@ fn declare_hir_fields(
 
                 let visibility = ctx.visibility(*f);
                 let doc = docs::documentation(ctx, *f).unwrap_or_default();
+                let doc_links = docs::doc_links(ctx, *f, Some(&doc)).unwrap_or_default();
+                let cfg = docs::cfg_expr(ctx, *f);
+                let attrs = ctx
+                    .sema
+                    .source(*f)
+                    .or_else(|| f.source(ctx.db))
+                    .map(|src| match src.value {
+                        FieldSource::Named(field) => docs::ast_attrs(field),
+                        FieldSource::Pos(field) => docs::ast_attrs(field),
+                    })
+                    .unwrap_or_default();
 
                 FieldData {
                     field_id,
@@ -2191,6 +2217,9 @@ fn declare_hir_fields(
                     ty: field_ty,
                     visibility,
                     doc,
+                    doc_links,
+                    cfg,
+                    attrs,
                     location,
                 }
             })
@@ -2216,9 +2245,9 @@ fn declare_hir_fields(
                 span: field_span,
                 aliases: Box::new([]),
                 deprecation: None,
-                doc_links: Box::new([]),
-                attrs: Box::new([]),
-                cfg: None,
+                doc_links: fd.doc_links.into_boxed_slice(),
+                attrs: fd.attrs,
+                cfg: fd.cfg,
             };
 
             ctx.check_unique(&fd.field_id);
@@ -2382,14 +2411,22 @@ fn default_parts() -> super::ctx::SymbolParts {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_qualified_path_qualifiers;
+    use super::{scope_only_reexport_location, strip_qualified_path_qualifiers};
     use nudox_ir::{
         change::{EcosystemId, PackageLineageId, PackageName},
-        entry::EntryInner,
+        entry::{EntryInner, SourceLocation, Unlocated},
         kinds::{Field, FieldKey, Module as IrModule, Record, RecordForm, Reexport, Type},
         lower::Lowering,
         package::PackageId,
     };
+
+    #[test]
+    fn scope_only_reexport_location_is_explicitly_synthesized() {
+        assert_eq!(
+            scope_only_reexport_location(),
+            SourceLocation::Unlocated(Unlocated::Synthesized)
+        );
+    }
 
     fn sym(name: &str) -> nudox_ir::entry::Symbol {
         nudox_ir::entry::Symbol {

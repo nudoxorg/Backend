@@ -199,7 +199,8 @@ fn param_insert_middle_emits_param_added_at_correct_index() {
 
     // Should have: ParamAdded{index:1} and SignatureEvolved
     assert!(
-        ops.iter().any(|op| matches!(op, IrOp::ParamAdded { index: 1 })),
+        ops.iter()
+            .any(|op| matches!(op, IrOp::ParamAdded { index: 1 })),
         "expected ParamAdded{{index:1}}, got: {ops:?}"
     );
 

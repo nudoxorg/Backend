@@ -47,9 +47,7 @@ pub use outboard::{MemberOutboard, OutboardSidecar, verify_bao_range};
 pub use reader::ObjectPackReader;
 pub use store::{FilesystemObjectPackStore, ObjectPackStore};
 pub use sync::{ObjectPackApplyHook, ObjectPackContentIo};
-pub use transport::{
-    ObjectPackFetcher, ObjectPackProvider, ProvideTarget, provide_to_trusted,
-};
+pub use transport::{ObjectPackFetcher, ObjectPackProvider, ProvideTarget, provide_to_trusted};
 pub use tree::TreeIngest;
 
 // Re-export the frozen vocabulary for ergonomic downstream use.

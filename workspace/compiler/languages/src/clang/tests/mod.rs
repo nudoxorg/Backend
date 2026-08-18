@@ -436,6 +436,62 @@ struct Vec2 {
     );
 }
 
+#[test]
+fn clang_resolves_function_call_occurrences() {
+    let Some((_guard, clang)) = require_clang("clang_resolves_function_call_occurrences") else {
+        return;
+    };
+    let index = Index::new(&clang, false, false);
+    let oracle = parse_c(
+        &index,
+        "int callee(void) { return 1; }\nint caller(void) { return callee(); }\n",
+    );
+    assert!(
+        oracle.references.iter().any(|reference| {
+            reference.owner != reference.target && reference.byte_start < reference.byte_end
+        }),
+        "libclang must expose a located caller -> callee reference"
+    );
+}
+
+#[test]
+fn function_parameters_retain_real_source_spans() {
+    let Some((_guard, clang)) = require_clang("function_parameters_retain_real_source_spans")
+    else {
+        return;
+    };
+    let index = Index::new(&clang, false, false);
+    let src = "int add(int left, int right) { return left + right; }\n";
+    let oracle = parse_c(&index, src);
+    let pkg_id = nudox_ir::package::PackageId::path("/tmp");
+    let root_sym = nudox_ir::entry::Symbol {
+        name: "test".to_owned(),
+        visibility: nudox_ir::entry::Visibility::Public,
+        documentation: String::new(),
+        source: std::path::PathBuf::from("/tmp"),
+        span: 0..0,
+        aliases: Box::new([]),
+        deprecation: None,
+        doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
+    };
+    let mut sink = Lowering::new(pkg_id, root_sym);
+    lower_oracle(&oracle, &mut sink);
+    let pkg = sink.finish().expect("lowering must finish");
+    let params: Vec<_> = pkg
+        .iter()
+        .filter(|(_, e)| e.sym().name == "left" || e.sym().name == "right")
+        .collect();
+    assert_eq!(params.len(), 2, "both function parameters must be emitted");
+    for (_, entry) in params {
+        assert_eq!(entry.sym().source, Path::new("/tmp/test.c"));
+        let bytes = entry.sym().span.clone();
+        assert!(!bytes.is_empty(), "parameter span must not be 0..0");
+        assert_eq!(&src.as_bytes()[bytes], entry.sym().name.as_bytes());
+    }
+}
+
 // ── Union round-trips as RecordForm::Union ───────────────────────────────────
 
 #[test]
@@ -512,7 +568,8 @@ union Value {
 /// carries the parameter and return types without degrading to `Type::Any`.
 #[test]
 fn c_function_pointer_lowers_to_function_pointer() {
-    let Some((_guard, clang)) = require_clang("c_function_pointer_lowers_to_function_pointer") else {
+    let Some((_guard, clang)) = require_clang("c_function_pointer_lowers_to_function_pointer")
+    else {
         return;
     };
     let index = Index::new(&clang, false, false);
@@ -660,4 +717,74 @@ typedef void (*Callback)(void);
         other => panic!("Callback must be Alias; got {other:?}"),
     }
     let _ = alias; // checked via oracle above
+}
+
+/// docs/LIMITATIONS.md L53 / docs/ISSUES.md: `extract.rs` visits
+/// `ClassTemplate` but has no arm for
+/// `EntityKind::ClassTemplatePartialSpecialization`, so a partial
+/// specialization's distinct members never reach the oracle.
+#[test]
+fn partial_template_specialization_is_extracted() {
+    let Some((_guard, clang)) = require_clang("partial_template_specialization_is_extracted")
+    else {
+        return;
+    };
+    let index = Index::new(&clang, false, false);
+
+    let src = r#"
+template<typename T>
+struct Trait { static const int value = 0; };
+
+template<typename T>
+struct Trait<T*> { static const int value = 1; };
+"#;
+
+    let oracle = parse_cpp(&index, src);
+    let traits: Vec<_> = oracle
+        .records
+        .iter()
+        .filter(|r| r.name == "Trait")
+        .collect();
+    assert!(
+        traits.len() >= 2,
+        "primary template and partial specialization must both be records, got {} Trait record(s)",
+        traits.len()
+    );
+}
+
+/// docs/LIMITATIONS.md L54: preprocessor macros are a real C public API
+/// (`Z_OK`, `deflateInit`-style wrappers) and this producer never requests
+/// a detailed preprocessing record or visits `MacroDefinition`.
+#[test]
+fn macro_definition_is_extracted_as_a_named_declaration() {
+    let Some((_guard, clang)) =
+        require_clang("macro_definition_is_extracted_as_a_named_declaration")
+    else {
+        return;
+    };
+    let index = Index::new(&clang, false, false);
+
+    let src = r#"
+#define Z_OK 0
+int dummy;
+"#;
+
+    let oracle = parse_c(&index, src);
+    let macro_var = oracle.vars.iter().find(|v| v.name == "Z_OK");
+    if let Some(var) = macro_var {
+        assert!(
+            var.byte_offset > 0,
+            "macro declaration should retain a real source offset"
+        );
+    }
+    let named = oracle.vars.iter().any(|v| v.name == "Z_OK")
+        || oracle.aliases.iter().any(|a| a.name == "Z_OK")
+        || oracle.enums.iter().any(|e| e.name == "Z_OK");
+    assert!(
+        named,
+        "macro Z_OK must appear as a named declaration (var/alias/enum); \
+         vars={:?} aliases={:?}",
+        oracle.vars.iter().map(|v| &v.name).collect::<Vec<_>>(),
+        oracle.aliases.iter().map(|a| &a.name).collect::<Vec<_>>(),
+    );
 }

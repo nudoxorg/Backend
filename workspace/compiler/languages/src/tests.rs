@@ -103,8 +103,14 @@ impl Producer for FakeProducer {
 
 #[test]
 fn fake_producer_seals_non_empty_table() {
-    let table: PristineIntroTable =
-        produce(&FakeProducer, &test_src(), &test_lineage(), &nudox_ir::foreign::Unlinked).expect("produce must succeed").table;
+    let table: PristineIntroTable = produce(
+        &FakeProducer,
+        &test_src(),
+        &test_lineage(),
+        &nudox_ir::foreign::Unlinked,
+    )
+    .expect("produce must succeed")
+    .table;
 
     // root module + Point + x + y = 4 entries.
     assert_eq!(table.len(), 4, "expected root + Point + x + y");
@@ -142,8 +148,13 @@ impl Producer for BrokenProducer {
 
 #[test]
 fn undeclared_refer_surfaces_as_lowering_failed() {
-    let err = produce(&BrokenProducer, &test_src(), &test_lineage(), &nudox_ir::foreign::Unlinked)
-        .expect_err("BrokenProducer must fail");
+    let err = produce(
+        &BrokenProducer,
+        &test_src(),
+        &test_lineage(),
+        &nudox_ir::foreign::Unlinked,
+    )
+    .expect_err("BrokenProducer must fail");
 
     match &err {
         ProducerError::LoweringFailed { package, source } => {
@@ -629,12 +640,9 @@ fn identity_failure_message_names_the_package_and_the_declaration() {
         .expect("finish must succeed")
         .seal(&test_lineage(), &nudox_ir::foreign::Unlinked);
 
-    let error = crate::enforce_identity_contract_under(
-        &test_src(),
-        sealed,
-        crate::OrdinalPolicy::Reject,
-    )
-    .expect_err("must fail");
+    let error =
+        crate::enforce_identity_contract_under(&test_src(), sealed, crate::OrdinalPolicy::Reject)
+            .expect_err("must fail");
 
     let message = error.to_string();
     assert!(

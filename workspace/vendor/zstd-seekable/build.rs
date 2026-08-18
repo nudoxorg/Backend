@@ -30,13 +30,9 @@ fn main() {
     // version-matched to whichever zstd `zstd-sys` actually built and
     // linked, with no path guessing and no environment variable this build
     // depends on beyond the one cargo itself wires up.
-    let dep_include = env::var("DEP_ZSTD_INCLUDE").expect(
-        "DEP_ZSTD_INCLUDE is not set. `zstd-sys` must be a direct dependency \
-         of this crate (see Cargo.toml) for its build script to export the \
-         zstd header path this build compiles the seekable-format wrapper \
-         against.",
-    );
-    let zstd_include = PathBuf::from(&dep_include);
+    let dep_include = env::var("DEP_ZSTD_INCLUDE")
+        .expect("DEP_ZSTD_INCLUDE is not set; zstd-sys must provide the shared zstd headers");
+    let zstd_include = PathBuf::from(dep_include);
     // zstd-sys exports only the top-level `zstd/lib` include path; the
     // wrapper's `#include "mem.h"` / `#include "xxhash.h"` (unqualified,
     // resolved via an explicit -I) live one level down, in `common/`, which
@@ -48,6 +44,7 @@ fn main() {
         .include(&zstd_common_include)
         .file("zstd/contrib/seekable_format/zstdseek_compress.c")
         .file("zstd/contrib/seekable_format/zstdseek_decompress.c")
+        .file(zstd_common_include.join("xxhash.c"))
         // xxhash.c from zstd-sys's own tree (same version as the libzstd
         // being linked against), NOT recompiled from a second vendored
         // copy. It is compiled here WITHOUT `XXH_PRIVATE_API` (unlike
@@ -60,9 +57,11 @@ fn main() {
         // confirmed to introduce no new duplicate symbol: XXH64 never
         // appeared in the pre-fix duplicate-symbol list, only `ZSTD_*`
         // compress/decompress entry points did.
-        .file(zstd_common_include.join("xxhash.c"))
         .file("xxh64.c")
         .opt_level(3)
         .warnings(false)
         .compile("zstdseek");
+    // zstd-sys emits the library search path but intentionally leaves the
+    // link directive to consumers. The seekable wrapper is one such consumer.
+    println!("cargo:rustc-link-lib=static=zstd");
 }

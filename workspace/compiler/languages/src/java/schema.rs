@@ -23,7 +23,14 @@ use serde::Deserialize;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Extraction {
-    /// Schema version stamped by the oracle (currently `1`).
+    /// The payload schema this build reads.
+    ///
+    /// `0` when the field is absent, which is what a doclet classes
+    /// directory built before this handshake existed produces — see
+    /// [`Extraction::staleness`]. The doclet (`Extractor.run` in
+    /// `oracle/java/Extractor.java`) stamps this unconditionally, never
+    /// omitted.
+    #[serde(default)]
     pub format: u32,
     /// `java.version` of the JVM the oracle ran on.
     pub java_version: Box<str>,
@@ -36,6 +43,90 @@ pub struct Extraction {
     /// Every included type declaration (flat list; nesting via `TypeDecl::enclosing`).
     #[serde(default)]
     pub types: Box<[TypeDecl]>,
+    #[serde(default)]
+    pub references: Box<[Reference]>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reference {
+    pub owner: Box<str>,
+    pub target: Box<str>,
+    pub file: Box<str>,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Why an oracle payload cannot be trusted to be complete.
+///
+/// Mirrors `crate::go::oracle::Staleness` — see that type's doc comment for
+/// the field report that motivated the mechanism. Unlike the Go binary or the
+/// C# `oracle.dll`, this crate's own `build.rs` compiles the doclet classes
+/// this producer runs by default at *this crate's* build time, so there is no
+/// separately-published artifact to fall behind in the ordinary case. The
+/// door that stays open is `NUDOX_JAVA_ORACLE_CLASSES`
+/// (`src/java/invoke.rs`'s documented "runtime escape hatch … for pointing at
+/// a hand-built classes directory during doclet development") — a genuinely
+/// older classes directory kept around by hand is exactly as capable of
+/// under-reporting as an old Go binary or `oracle.dll`.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Staleness {
+    /// The doclet predates a field — or a field's scope — this build reads.
+    #[error(
+        "the Java oracle doclet is out of date: it speaks payload schema \
+         {found}, but this build reads schema {required}. Data added since \
+         (currently: `references`, the same-package call graph that backs \
+         `refs`) is absent or incomplete in its output, so `refs` will look \
+         empty for every Java package rather than genuinely reference-free. \
+         This is not a build artifact this crate can rebuild for you the way \
+         `nudox-go-oracle` or `oracle.dll` are — it means \
+         NUDOX_JAVA_ORACLE_CLASSES points at a classes directory built from an \
+         older checkout. Rebuild this crate (which recompiles the doclet from \
+         current source into $OUT_DIR/classes), or repoint \
+         NUDOX_JAVA_ORACLE_CLASSES at that fresh directory instead."
+    )]
+    OlderThanRequired {
+        /// What the doclet declared (`0` when it declared nothing).
+        found: u32,
+        /// What this build needs.
+        required: u32,
+    },
+}
+
+impl Extraction {
+    /// The payload schema this build reads.
+    ///
+    /// Bump this in lockstep with the literal `json.value(1)` call right
+    /// after `json.name("format")` in `Extractor.run`
+    /// (`oracle/java/Extractor.java`) whenever the Rust side starts *reading*
+    /// a field the doclet only recently started emitting — that is exactly
+    /// the moment a classes directory built from an older checkout begins
+    /// under-reporting it. Currently `1`: every field this build reads
+    /// (including `references`) has been part of `format` 1 since it was
+    /// introduced, so nothing has forced a bump yet.
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 1;
+
+    /// Whether the doclet that produced this payload is older than this build
+    /// expects.
+    ///
+    /// # Why this is not a deserialization error
+    ///
+    /// Every field on [`Extraction`] is `#[serde(default)]`, deliberately: a
+    /// *newer* doclet adding fields must not break an older reader. The cost
+    /// is that an *older* doclet omitting fields is indistinguishable from a
+    /// package that genuinely has none — both arrive as an empty `Box<[_]>`.
+    /// See `crate::go::oracle::Output::staleness` for the incident that made
+    /// this worth guarding before a Java-specific field report is what
+    /// surfaces it.
+    ///
+    /// Returns `None` for a current *or newer* doclet: only older
+    /// under-reports.
+    pub fn staleness(&self) -> Option<Staleness> {
+        (self.format < Self::REQUIRED_SCHEMA_VERSION).then_some(Staleness::OlderThanRequired {
+            found: self.format,
+            required: Self::REQUIRED_SCHEMA_VERSION,
+        })
+    }
 }
 
 // ── Module ─────────────────────────────────────────────────────────────────

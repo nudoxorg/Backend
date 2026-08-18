@@ -49,12 +49,12 @@ use std::sync::Arc;
 use futures::StreamExt as _;
 use nudox_engine::graph::adapter::CorpusAdapter;
 use nudox_engine::graph::probe::{AdapterProbe, StoreProbe};
-use nudox_ir::view::IrView;
-use nudox_languages::produce;
-use nudox_languages::rust::RustProducer;
 use nudox_engine::store::corpus::Corpus;
 use nudox_engine::store::package::{PackageView, Provenance, TypePosition};
 use nudox_engine::store::source::producer::PackageDescriptor;
+use nudox_ir::view::IrView;
+use nudox_languages::produce;
+use nudox_languages::rust::RustProducer;
 use trustfall::{FieldValue, Schema, execute_query_async};
 
 // ---------------------------------------------------------------------------
@@ -64,9 +64,11 @@ use trustfall::{FieldValue, Schema, execute_query_async};
 fn root() -> PathBuf {
     std::env::var("NUDOX_PKG_ROOT")
         .ok()
-        .filter(|v| !v.trim().is_empty()).map_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-        }, PathBuf::from)
+        .filter(|v| !v.trim().is_empty())
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3"),
+            PathBuf::from,
+        )
 }
 
 /// Lower memchr once, wrapped in the `cost case=` line doctrine §4 requires.
@@ -412,10 +414,7 @@ fn field_types_and_the_forward_signature_edge_answer_on_a_real_crate() {
                     heldBy { path @output }
                 }
             }"#,
-            [(
-                "record".to_owned(),
-                FieldValue::String("Record".into()),
-            )],
+            [("record".to_owned(), FieldValue::String("Record".into()))],
             "path",
         )
         .await;
@@ -472,7 +471,10 @@ fn signature_index_growth_on_a_real_crate() {
     eprintln!("occurrence postings       : {usages}");
     eprintln!("type-ref postings (total) : {total}");
     eprintln!("  of which relational     : {relational}  <- all the index held before");
-    eprintln!("distinct target symbols   : {}", indexes.type_refs.key_count());
+    eprintln!(
+        "distinct target symbols   : {}",
+        indexes.type_refs.key_count()
+    );
     for (position, count) in &per_position {
         eprintln!("  {position:<18}: {count}");
     }

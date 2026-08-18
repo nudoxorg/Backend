@@ -51,18 +51,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::store::{
+    corpus::Corpus,
+    package::{PackageView, TypePosition, TypeRef, typerefs_of_entry},
+};
 use futures::{StreamExt as _, lock::Mutex, stream};
+use nudox_ir::package::KeyTier;
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
     entry::{Deprecation, SourceLocation, Unlocated, Visibility},
     index::{RawRef, Ref},
     kind::{Kind, KindDiscriminant},
     kinds::{FnModifier, Receiver, Type},
-};
-use nudox_ir::package::KeyTier;
-use crate::store::{
-    corpus::Corpus,
-    package::{PackageView, TypePosition, TypeRef, typerefs_of_entry},
 };
 use thiserror::Error;
 use trustfall::FieldValue;
@@ -258,10 +258,7 @@ fn error_stream<'v>(e: Error) -> VertexStream<'v, Result<Vertex, Error>> {
 }
 
 /// Construct the concrete [`Vertex`] variant for a symbol intro in a package.
-pub(crate) fn vertex_for_intro(
-    package: Arc<PackageView>,
-    intro: IntroId,
-) -> Result<Vertex, Error> {
+pub(crate) fn vertex_for_intro(package: Arc<PackageView>, intro: IntroId) -> Result<Vertex, Error> {
     // Read the discriminant out *before* constructing the vertex: `entry`
     // borrows `package`, and `SymbolVertex` takes it by value. `discriminant()`
     // yields a `Copy` value, so the borrow ends on this statement.
@@ -417,9 +414,7 @@ fn symbol_property(sv: &SymbolVertex, property_name: &str) -> Result<FieldValue,
             _ => FieldValue::Null,
         },
         "deprecationSince" => match &sym.deprecation {
-            Some(Deprecation {
-                since: Some(s), ..
-            }) => FieldValue::String(s.clone().into()),
+            Some(Deprecation { since: Some(s), .. }) => FieldValue::String(s.clone().into()),
             _ => FieldValue::Null,
         },
         _ => {
@@ -453,24 +448,26 @@ fn location_property(loc: &SourceLocation, property_name: &str) -> Result<FieldV
         "file" => loc
             .file()
             .map_or(FieldValue::Null, |f| FieldValue::String(f.as_str().into())),
-        "byteStart" => loc
-            .bytes()
-            .map_or(FieldValue::Null, |b| FieldValue::Int64(b.as_range().start as i64)),
-        "byteEnd" => loc
-            .bytes()
-            .map_or(FieldValue::Null, |b| FieldValue::Int64(b.as_range().end as i64)),
-        "startLine" => lines
-            .map_or(FieldValue::Null, |(s, _)| FieldValue::Int64(i64::from(s.line()))),
-        "startColumn" => lines
-            .map_or(FieldValue::Null, |(s, _)| FieldValue::Int64(i64::from(s.column()))),
-        "endLine" => lines
-            .map_or(FieldValue::Null, |(_, e)| FieldValue::Int64(i64::from(e.line()))),
-        "endColumn" => lines
-            .map_or(FieldValue::Null, |(_, e)| FieldValue::Int64(i64::from(e.column()))),
+        "byteStart" => loc.bytes().map_or(FieldValue::Null, |b| {
+            FieldValue::Int64(b.as_range().start as i64)
+        }),
+        "byteEnd" => loc.bytes().map_or(FieldValue::Null, |b| {
+            FieldValue::Int64(b.as_range().end as i64)
+        }),
+        "startLine" => lines.map_or(FieldValue::Null, |(s, _)| {
+            FieldValue::Int64(i64::from(s.line()))
+        }),
+        "startColumn" => lines.map_or(FieldValue::Null, |(s, _)| {
+            FieldValue::Int64(i64::from(s.column()))
+        }),
+        "endLine" => lines.map_or(FieldValue::Null, |(_, e)| {
+            FieldValue::Int64(i64::from(e.line()))
+        }),
+        "endColumn" => lines.map_or(FieldValue::Null, |(_, e)| {
+            FieldValue::Int64(i64::from(e.column()))
+        }),
         "unlocatedReason" => match loc {
-            SourceLocation::Unlocated(reason) => {
-                FieldValue::String(unlocated_name(*reason).into())
-            }
+            SourceLocation::Unlocated(reason) => FieldValue::String(unlocated_name(*reason).into()),
             SourceLocation::Declared { .. } | SourceLocation::BytesOnly { .. } => FieldValue::Null,
         },
         _ => {
@@ -569,9 +566,11 @@ fn type_to_stable_ref_str(ty: &Type, package: &PackageLineageId) -> Option<Strin
             // even when the trait's package is not in the corpus. Returning
             // `None` there is how the previous version silently shortened
             // every `Trait.supertraits` list instead of failing.
-            Ref::Foreign { key, target } => {
-                Some(target.as_ref().map_or_else(|| key.path.to_string(), |sr| sr.to_string()))
-            }
+            Ref::Foreign { key, target } => Some(
+                target
+                    .as_ref()
+                    .map_or_else(|| key.path.to_string(), |sr| sr.to_string()),
+            ),
             Ref::Local(_) => None,
         },
         Type::Apply { base, .. } => type_to_stable_ref_str(base, package),
@@ -609,33 +608,27 @@ fn run_symbol_plan<'v>(
             }
         })),
 
-        SymbolPlan::Names(names) => {
-            per_package(memo, move |pkg, memo| {
-                names
-                    .iter()
-                    .flat_map(|name| {
-                        memo.record(StoreProbe::IndexProbe);
-                        pkg.indexes()
-                            .by_name
-                            .get_exact(name)
-                            .iter()
-                            .map(|e| e.intro)
-                            .collect::<Vec<_>>()
-                    })
-                    .collect()
-            })
-        }
+        SymbolPlan::Names(names) => per_package(memo, move |pkg, memo| {
+            names
+                .iter()
+                .flat_map(|name| {
+                    memo.record(StoreProbe::IndexProbe);
+                    pkg.indexes()
+                        .by_name
+                        .get_exact(name)
+                        .iter()
+                        .map(|e| e.intro)
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }),
 
         SymbolPlan::Kinds(discs) => per_package(memo, move |pkg, memo| {
             discs
                 .iter()
                 .flat_map(|disc| {
                     memo.record(StoreProbe::IndexProbe);
-                    pkg.indexes()
-                        .by_kind
-                        .get(disc)
-                        .cloned()
-                        .unwrap_or_default()
+                    pkg.indexes().by_kind.get(disc).cloned().unwrap_or_default()
                 })
                 .collect()
         }),
@@ -861,12 +854,10 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             "Package" => {
                 let prop = property_name.to_string();
                 async_helpers::try_resolve_property_with(contexts, move |vertex| {
-                    let pkg = vertex
-                        .as_package()
-                        .ok_or_else(|| Error::UnknownProperty {
-                            ty: "Package".to_string(),
-                            prop: prop.clone(),
-                        })?;
+                    let pkg = vertex.as_package().ok_or_else(|| Error::UnknownProperty {
+                        ty: "Package".to_string(),
+                        prop: prop.clone(),
+                    })?;
                     Ok(match prop.as_str() {
                         "lineage" => FieldValue::String(pkg.lineage().to_string().into()),
                         "name" => {
@@ -889,12 +880,12 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
             "SourceLocation" => {
                 let prop = property_name.to_string();
                 async_helpers::try_resolve_property_with(contexts, move |vertex| {
-                    let sv = vertex.as_source_location().ok_or_else(|| {
-                        Error::UnknownProperty {
+                    let sv = vertex
+                        .as_source_location()
+                        .ok_or_else(|| Error::UnknownProperty {
                             ty: "SourceLocation".to_string(),
                             prop: prop.clone(),
-                        }
-                    })?;
+                        })?;
                     let view = sv.package.view();
                     let entry = view
                         .entry(sv.intro)
@@ -1156,9 +1147,7 @@ impl<'vertex> AsyncAdapter<'vertex> for CorpusAdapter {
                     },
                     |sv| {
                         let sv = sv.clone();
-                        Box::pin(stream::once(async move {
-                            Ok(Vertex::SourceLocation(sv))
-                        }))
+                        Box::pin(stream::once(async move { Ok(Vertex::SourceLocation(sv)) }))
                     },
                 )
             }),

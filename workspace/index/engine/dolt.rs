@@ -45,9 +45,9 @@ pub struct DoltEngine {
 impl DoltEngine {
     /// Open (or create) `catalog.dolt` at the given path.
     pub fn open(path: &std::path::Path) -> Result<Self, EngineError> {
-        let path_text = path
-            .to_str()
-            .ok_or_else(|| EngineError::Open(format!("non-UTF-8 catalog path {}", path.display())))?;
+        let path_text = path.to_str().ok_or_else(|| {
+            EngineError::Open(format!("non-UTF-8 catalog path {}", path.display()))
+        })?;
         let connection = engine::Connection::open(path_text).map_err(from_engine_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
@@ -115,7 +115,9 @@ fn from_engine_error(error: engine::EngineError) -> EngineError {
         Engine::Constraint { message } => {
             EngineError::Statement(format!("constraint violation: {message}"))
         }
-        Engine::Corrupt { message } => EngineError::Statement(format!("corrupt database: {message}")),
+        Engine::Corrupt { message } => {
+            EngineError::Statement(format!("corrupt database: {message}"))
+        }
         Engine::Sql {
             primary_code,
             extended_message,
@@ -144,12 +146,10 @@ fn from_engine_error(error: engine::EngineError) -> EngineError {
             operation: leak_operation(&operation),
             detail: message,
         },
-        Engine::InvalidBranchName { name, reason } => {
-            EngineError::Versioning {
-                operation: "branch_name",
-                detail: format!("invalid branch name {name:?}: {reason}"),
-            }
-        }
+        Engine::InvalidBranchName { name, reason } => EngineError::Versioning {
+            operation: "branch_name",
+            detail: format!("invalid branch name {name:?}: {reason}"),
+        },
         Engine::InvalidCommitHash { value, reason } => EngineError::Versioning {
             operation: "commit_hash",
             detail: format!("invalid commit hash {value:?}: {reason}"),
@@ -157,9 +157,7 @@ fn from_engine_error(error: engine::EngineError) -> EngineError {
         Engine::NulInterior { context } => {
             EngineError::Statement(format!("interior NUL byte in {context}"))
         }
-        Engine::Utf8 { context } => {
-            EngineError::Statement(format!("non-UTF-8 bytes in {context}"))
-        }
+        Engine::Utf8 { context } => EngineError::Statement(format!("non-UTF-8 bytes in {context}")),
         Engine::Internal { message } => EngineError::Statement(format!("internal: {message}")),
         Engine::LengthOverflow {
             context,
@@ -338,7 +336,10 @@ impl VersioningEngine for DoltEngine {
 
     fn dolt_merge(&self, from: &BranchName) -> Result<MergeOutcome, EngineError> {
         let branch = to_engine_branch(from)?;
-        let outcome = self.locked()?.dolt_merge(&branch).map_err(from_engine_error)?;
+        let outcome = self
+            .locked()?
+            .dolt_merge(&branch)
+            .map_err(from_engine_error)?;
         Ok(match outcome {
             // The three clean outcomes collapse into the facade's `Clean`; the
             // resulting head is best-effort (AlreadyUpToDate carries none, so we
@@ -351,11 +352,9 @@ impl VersioningEngine for DoltEngine {
             | engine::MergeOutcome::MergeCommit { new_head } => MergeOutcome::Clean {
                 commit: CommitHash(new_head.into_string()),
             },
-            engine::MergeOutcome::Conflicts { conflicted_tables } => {
-                MergeOutcome::Conflicts {
-                    tables: conflicted_tables,
-                }
-            }
+            engine::MergeOutcome::Conflicts { conflicted_tables } => MergeOutcome::Conflicts {
+                tables: conflicted_tables,
+            },
         })
     }
 

@@ -1,10 +1,31 @@
 //! The Go module proxy (proxy.golang.org).
+//!
+//! ## `description`: still no source available
+//!
+//! `go.mod` carries no description field, and Go has no second manifest that
+//! would (no GitHub/GitLab API fetch is in scope for a pure offline parser).
+//! README text carries that weight instead (see `facets::extract_facets`'s
+//! README-discovery step, ecosystem-generic).
+//!
+//! ## `license` / `has_license_file`: now sourced from a standalone LICENSE file
+//!
+//! `go.mod` itself carries neither field, but `server::coordination::indexing::facets::extract_facets`
+//! now merges facts across *every* matching manifest candidate in priority
+//! order (`ExtractedFacts::merge`) instead of stopping at the first one that
+//! parses, so a `LICENSE`/`LICENCE`/`COPYING` candidate appended after
+//! `go.mod` (see [`Go::manifest_candidates`]) is finally reachable: `go.mod`
+//! still wins (and is tried first) for `dependencies`/`repository`, and the
+//! license candidate only fills in the fields `go.mod` never had. Detection
+//! is conservative — [`crate::ecosystem::license::detect_spdx`] recognizes a
+//! short list of unambiguous signatures and otherwise leaves `license: None`
+//! with `has_license_file: true` rather than guess from the filename alone.
 
 use smol_str::SmolStr;
 
 use crate::ecosystem::{
     EcosystemSpec, Language,
     archive::ArchiveKind,
+    license,
     manifest::{self, ExtractedFacts, ManifestCandidate},
     name,
     policy::UpstreamPolicy,
@@ -107,13 +128,43 @@ impl EcosystemSpec for Go {
             .collect()
     }
 
+    /// `go.mod` first (authoritative for module path / dependencies), then
+    /// the standalone license filenames — last, since a license file is a
+    /// heuristic content sniff with nothing to ever outrank (`go.mod` sets
+    /// neither `license` nor `has_license_file`). Kept in sync with
+    /// [`license::LICENSE_FILENAMES`]; see the `license_candidates_match_shared_list`
+    /// test.
     fn manifest_candidates() -> &'static [ManifestCandidate] {
-        static CANDIDATES: &[ManifestCandidate] = &[ManifestCandidate::new("go.mod")];
+        static CANDIDATES: &[ManifestCandidate] = &[
+            ManifestCandidate::new("go.mod"),
+            ManifestCandidate::new("LICENSE"),
+            ManifestCandidate::new("LICENSE.txt"),
+            ManifestCandidate::new("LICENSE.md"),
+            ManifestCandidate::new("LICENCE"),
+            ManifestCandidate::new("LICENCE.txt"),
+            ManifestCandidate::new("LICENCE.md"),
+            ManifestCandidate::new("COPYING"),
+            ManifestCandidate::new("COPYING.txt"),
+        ];
         CANDIDATES
     }
 
-    fn parse_manifest(_candidate: &ManifestCandidate, bytes: &[u8]) -> Option<Self::Manifest> {
+    fn parse_manifest(candidate: &ManifestCandidate, bytes: &[u8]) -> Option<Self::Manifest> {
         let text = std::str::from_utf8(bytes).ok()?;
+        // Strip a leading UTF-8 BOM — left in place it corrupts the very
+        // first line, which is almost always the `module ...` directive (or,
+        // for a license file, the first line of its boilerplate).
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+        if license::LICENSE_FILENAMES
+            .iter()
+            .any(|f| candidate.path_suffix.eq_ignore_ascii_case(f))
+        {
+            return Some(ExtractedFacts {
+                has_license_file: true,
+                license: license::detect_spdx(text),
+                ..ExtractedFacts::default()
+            });
+        }
         Some(parse_go_mod(text))
     }
 
@@ -452,6 +503,113 @@ require (
         assert!(facts.repository.is_none());
     }
 
+    // ── Hostile-input hardening ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_go_mod_bom_stripped() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"module github.com/gorilla/mux\n");
+        let facts = Go::parse_manifest(&ManifestCandidate::new("go.mod"), &bytes)
+            .expect("valid utf8 with BOM parses");
+        assert_eq!(
+            facts.repository.as_deref(),
+            Some("https://github.com/gorilla/mux")
+        );
+    }
+
+    #[test]
+    fn parse_go_mod_crlf_line_endings() {
+        let text = "module github.com/example/foo\r\n\r\nrequire golang.org/x/sync v0.1.0\r\n";
+        let facts = parse_go_mod(text);
+        assert_eq!(
+            facts.repository.as_deref(),
+            Some("https://github.com/example/foo")
+        );
+        assert!(facts.dependencies.contains(&"golang.org/x/sync".to_owned()));
+    }
+
+    #[test]
+    fn parse_go_mod_unterminated_require_block_no_hang() {
+        let text = "module example.com/foo\n\nrequire (\n    github.com/a/b v1.0.0\n";
+        let facts = parse_go_mod(text);
+        assert!(facts.dependencies.contains(&"github.com/a/b".to_owned()));
+    }
+
+    #[test]
+    fn parse_go_mod_unicode_and_control_bytes_no_panic() {
+        let text =
+            "module example.com/日本語モジュール\n\nrequire github.com/a/b v1.0.0\n\0garbage\0\n";
+        let facts = parse_go_mod(text);
+        assert!(facts.dependencies.contains(&"github.com/a/b".to_owned()));
+    }
+
+    #[test]
+    fn parse_go_mod_enormous_require_block_no_panic() {
+        use std::fmt::Write as _;
+        let mut text = String::from("module example.com/foo\n\nrequire (\n");
+        for i in 0..50_000 {
+            let _ = writeln!(text, "    example.com/dep{i} v1.0.0");
+        }
+        text.push(')');
+        let facts = parse_go_mod(&text);
+        assert_eq!(facts.dependencies.len(), 50_000);
+    }
+
+    #[test]
+    fn parse_go_mod_module_line_with_only_whitespace_after_keyword() {
+        let text = "module   \n\nrequire github.com/a/b v1.0.0\n";
+        let facts = parse_go_mod(text);
+        assert!(facts.repository.is_none());
+    }
+
+    #[test]
+    fn parse_go_mod_invalid_utf8_bytes_returns_none() {
+        let bytes = [0xFF, 0xFE, b'm', b'o', b'd'];
+        assert!(Go::parse_manifest(&ManifestCandidate::new("go.mod"), &bytes).is_none());
+    }
+
+    #[test]
+    fn parse_go_mod_real_world_shape() {
+        // Shaped after a real go.mod (gorilla/mux-style, mixed single + block
+        // require forms, indirect markers, replace/exclude directives that
+        // must be silently ignored).
+        let text = r#"module github.com/gorilla/mux
+
+go 1.20
+
+require github.com/stretchr/testify v1.8.4
+
+require (
+	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+replace github.com/old/pkg => github.com/new/pkg v1.2.3
+
+exclude github.com/bad/pkg v0.0.1
+"#;
+        let facts = parse_go_mod(text);
+        assert_eq!(
+            facts.repository.as_deref(),
+            Some("https://github.com/gorilla/mux")
+        );
+        assert!(
+            facts
+                .dependencies
+                .contains(&"github.com/stretchr/testify".to_owned())
+        );
+        assert!(
+            facts
+                .dependencies
+                .contains(&"github.com/davecgh/go-spew".to_owned())
+        );
+        assert!(facts.dependencies.contains(&"gopkg.in/yaml.v3".to_owned()));
+        assert!(facts.description.is_none());
+        assert!(facts.license.is_none());
+        assert!(!facts.has_license_file);
+    }
+
     #[test]
     fn strip_go_authority_strips() {
         assert_eq!(strip_go_authority("github.com/gorilla/mux"), "gorilla/mux");
@@ -571,5 +729,52 @@ require (
         assert_eq!(Go::parse_download_count(br#"{"downloads":null}"#), None);
         assert_eq!(Go::parse_download_count(br#"{"downloads":"nope"}"#), None);
         assert_eq!(Go::parse_download_count(b""), None);
+    }
+
+    // ── LICENSE candidates (previously unreachable — see module doc) ─────────
+
+    #[test]
+    fn manifest_candidates_go_mod_then_license_files() {
+        let suffixes: Vec<&str> = Go::manifest_candidates()
+            .iter()
+            .map(|c| c.path_suffix)
+            .collect();
+        assert_eq!(suffixes[0], "go.mod", "go.mod must stay highest priority");
+        assert_eq!(&suffixes[1..], license::LICENSE_FILENAMES);
+    }
+
+    #[test]
+    fn parse_manifest_dispatches_go_mod_by_default() {
+        let facts = Go::parse_manifest(
+            &ManifestCandidate::new("go.mod"),
+            b"module example.com/foo\n",
+        )
+        .unwrap();
+        assert!(facts.license.is_none());
+        assert!(!facts.has_license_file);
+    }
+
+    #[test]
+    fn parse_manifest_dispatches_license_candidate() {
+        let text = b"MIT License\n\nPermission is hereby granted, free of charge, to any \
+person obtaining a copy of this software and associated documentation files (the \"Software\")...";
+        let facts = Go::parse_manifest(&ManifestCandidate::new("LICENSE"), text).unwrap();
+        assert!(facts.has_license_file);
+        assert_eq!(facts.license.as_deref(), Some("MIT"));
+        // A license file contributes nothing else — go.mod is still the sole
+        // source of dependencies/repository.
+        assert!(facts.dependencies.is_empty());
+        assert!(facts.repository.is_none());
+    }
+
+    #[test]
+    fn parse_manifest_license_candidate_unrecognized_content_no_fabrication() {
+        let facts = Go::parse_manifest(
+            &ManifestCandidate::new("LICENCE"),
+            b"Proprietary. All rights reserved.",
+        )
+        .unwrap();
+        assert!(facts.has_license_file);
+        assert!(facts.license.is_none());
     }
 }

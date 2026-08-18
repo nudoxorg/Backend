@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use nudox_ir::change::{IntroId, StableRef};
 use crate::store::package::PackageView;
+use nudox_ir::change::{IntroId, StableRef};
 use trustfall::provider::TrustfallEnumVertex;
 
 // ---------------------------------------------------------------------------

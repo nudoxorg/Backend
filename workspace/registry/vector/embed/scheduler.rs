@@ -143,10 +143,7 @@ impl<M: EmbeddingModel + Send + 'static> EmbedHandle<M> {
             cancel: cancel.clone(),
             reply,
         };
-        self.tx
-            .send(job)
-            .await
-            .map_err(|_| Error::Closed)?;
+        self.tx.send(job).await.map_err(|_| Error::Closed)?;
         match rx.await {
             Ok(Ok(embedding)) => Ok(embedding),
             Ok(Err(error)) => Err(Error::Embed(error)),

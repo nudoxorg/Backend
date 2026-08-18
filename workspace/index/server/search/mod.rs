@@ -5,10 +5,11 @@
 //! a [`SymbolStore`] additionally walks graph relationships. Streams are
 //! keyset-paginated via the query's [`query::Page`] cursor.
 //!
-//! Precise (literal) symbol search used to ride a replica-local tantivy
-//! `TextIndex`. That plane is gone: literal queries answer empty, identity
-//! lookup is pending a catalog `symbols_proj` read, and gated semantic search
-//! (qdrant) remains the live symbol surface.
+//! Precise (literal) symbol search rides the replica-local
+//! [`crate::runtime::text::TextIndex`] tantivy index — kept caught up by
+//! [`crate::server::poll::text_index_poller`] off the catalog's Text-sink
+//! outbox. Gated semantic search (qdrant) is the other live symbol surface;
+//! identity lookup answers from a catalog `symbols_proj` read.
 
 pub mod planner;
 pub mod registry;
@@ -16,9 +17,12 @@ pub mod routing;
 pub mod semantic;
 
 use std::collections::HashSet;
+use std::num::NonZeroUsize;
 
+use crate::ecosystem::FilterExt as _;
+use crate::runtime::text::{TextCursorKey, TextQuery};
 use crate::server::registry::vector::EmbeddingModel;
-use futures::Stream;
+use futures::{Stream, StreamExt};
 use heart::{Scored, StoreError, Symbol, SymbolId};
 
 pub use heart::client::query::{
@@ -28,7 +32,7 @@ pub use heart::client::query::{
 pub use planner::SearchPlanner;
 
 use crate::server::SourceStores;
-use crate::server::error::ServerError;
+use crate::server::error::{BadRequestReason, ServerError};
 
 /// A store/target that answers searches with a stream of scored results.
 pub trait SearchTarget {
@@ -98,17 +102,22 @@ impl<M: EmbeddingModel> SourceStores<M> {
     /// `symbols_proj` projection `symbols_for` (the vector outbox consumer)
     /// already reads.
     pub async fn symbol_by_id(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {
-        self.global_store
-            .symbol_by_id(id)
-            .await
-            .map_err(|error| ServerError::Registry(crate::server::registry::RegistryError::from(error)))
+        self.global_store.symbol_by_id(id).await.map_err(|error| {
+            ServerError::Registry(crate::server::registry::RegistryError::from(error))
+        })
     }
 }
 
-// ── One federated source is itself a full symbol store: identity lookup and
-// graph walking. Literal/precise search no longer has a backend; the server's
-// federation logic still composes these per-source stores overlay-first so the
-// semantic path and expand keep a uniform shape.
+// ── One federated source is itself a full symbol store: precise (tantivy)
+// search, identity lookup, and graph walking. The server's federation logic
+// composes these per-source stores overlay-first so the precise, semantic,
+// and expand paths keep a uniform shape.
+
+/// Lift a [`crate::runtime::error::TextError`] into the server's error
+/// vocabulary via [`crate::runtime::error::RuntimeError`] (`ServerError::Runtime`).
+fn text_error(error: crate::runtime::error::TextError) -> ServerError {
+    ServerError::Runtime(error.into())
+}
 
 impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
     type Item = Symbol;
@@ -116,12 +125,69 @@ impl<M: EmbeddingModel> SearchTarget for SourceStores<M> {
 
     async fn search(
         &self,
-        _request: &Search<'_>,
+        request: &Search<'_>,
     ) -> Result<impl Stream<Item = Result<Scored<Symbol>, ServerError>> + Send, ServerError> {
-        // Precise symbol search (tantivy TextIndex) was removed. Literal queries
-        // and degraded abstract queries answer empty here; gated semantic search
-        // is planned separately and never reaches this arm.
-        Ok(futures::stream::empty())
+        // The planner (`SearchPlanner::plan`) routes both literal queries and
+        // quota-degraded abstract queries here; a genuinely gated abstract
+        // query never reaches this arm. Either way `query.text()` is the
+        // right search string.
+        let terms = request.query.text();
+        if terms.trim().is_empty() {
+            return Ok(futures::stream::empty().boxed());
+        }
+        let text_query = TextQuery::new(terms);
+
+        let limit = NonZeroUsize::new(request.page.limit as usize).unwrap_or(NonZeroUsize::MIN);
+        let after = match request.page.cursor.as_deref() {
+            Some(token) => {
+                // The text index mints `Enforced` cursors: freshness is
+                // re-checked against the live snapshot at decode, not merely
+                // carried as a hint (see `heart::Cursor::<_, Enforced>`).
+                // `TextIndex::snapshot` is synchronous (tantivy reload), so it
+                // runs on the blocking pool like every other tantivy call.
+                let text = std::sync::Arc::clone(&self.text);
+                let live = tokio::task::spawn_blocking(move || text.snapshot())
+                    .await
+                    .unwrap_or_else(|join| {
+                        Err(crate::runtime::error::TextError::Io(std::io::Error::other(
+                            join,
+                        )))
+                    })
+                    .map_err(text_error)?;
+                let decoded = heart::Cursor::<TextCursorKey, heart::Enforced>::decode(token, live)
+                    .map_err(|source| BadRequestReason::InvalidCursor {
+                        token: token.to_owned(),
+                        source,
+                    })?;
+                Some(decoded)
+            }
+            None => None,
+        };
+
+        // Post-filter (ecosystem/package selectors), matching the semantic
+        // path's `request.filter.admits(&symbol)` — the same over-fetch/limit
+        // tradeoff applies here as there: a filter can shrink a full page.
+        //
+        // Drained eagerly (not left lazy) rather than adapted in place: under
+        // Rust 2024's `impl Trait` capture rules, `TextIndex::search`'s
+        // returned stream is treated as borrowing its `&TextQuery` argument
+        // for as long as the stream lives, so a lazily-adapted stream cannot
+        // outlive this call's local `text_query`. Every real caller collects
+        // this trait's stream into a `Vec` immediately anyway
+        // (`precise_hits`/`semantic_hits`), so draining here costs nothing
+        // observable.
+        let filter = request.filter.clone();
+        let stream = self.text.search(&text_query, limit, after);
+        futures::pin_mut!(stream);
+        let mut hits = Vec::new();
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(scored) if filter.admits(&scored.value) => hits.push(Ok(scored)),
+                Ok(_) => {}
+                Err(error) => hits.push(Err(text_error(error))),
+            }
+        }
+        Ok(futures::stream::iter(hits).boxed())
     }
 
     async fn get_by_id(&self, id: SymbolId) -> Result<Option<Symbol>, ServerError> {

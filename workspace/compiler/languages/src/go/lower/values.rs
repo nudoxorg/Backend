@@ -23,7 +23,13 @@ pub(super) fn lower_alias(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
     let target = decl
         .target
@@ -55,10 +61,23 @@ pub(super) fn lower_func(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
-    let (input_refs, output_refs) =
-        lower_sig_params_into_lowering(pkg, "", &decl.name, decl.signature.as_ref(), low, local);
+    let (input_refs, output_refs) = lower_sig_params_into_lowering(
+        pkg,
+        "",
+        &decl.name,
+        None,
+        decl.signature.as_ref(),
+        low,
+        local,
+    );
 
     let generics: Vec<GenericParam> = decl
         .type_params
@@ -89,19 +108,32 @@ pub(super) fn lower_const(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
-    let ty = decl
-        .r#type
-        .as_ref()
-        .map_or(Type::UNANNOTATED, |t| types::lower_type_with_lowering(t, low, local));
+    let ty = decl.r#type.as_ref().map_or(Type::UNANNOTATED, |t| {
+        types::lower_type_with_lowering(t, low, local)
+    });
     let value = if decl.value.is_empty() {
         None
     } else {
         Some(decl.value.clone())
     };
 
-    let const_kind = Const::builder().ty(ty).maybe_value(value).build();
+    let const_kind = Const::builder()
+        .ty(ty.clone())
+        .maybe_value(value.map(|source| {
+            nudox_ir::build::ConstExpr::builder()
+                .ty(ty)
+                .source(source)
+                .build()
+        }))
+        .build();
     low.declare(item_id, Some(parent), sym, const_kind);
 }
 
@@ -118,12 +150,17 @@ pub(super) fn lower_var(
         import_path: pkg.import_path.clone(),
         name: decl.name.clone(),
     };
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
-    let ty = decl
-        .r#type
-        .as_ref()
-        .map_or(Type::UNANNOTATED, |t| types::lower_type_with_lowering(t, low, local));
+    let ty = decl.r#type.as_ref().map_or(Type::UNANNOTATED, |t| {
+        types::lower_type_with_lowering(t, low, local)
+    });
 
     let static_kind = Static::builder().ty(ty).mutable(true).build();
     low.declare(item_id, Some(parent), sym, static_kind);

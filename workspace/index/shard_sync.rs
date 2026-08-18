@@ -24,7 +24,10 @@
 use std::io;
 use std::sync::Arc;
 
-use heart::{content::ContentHash, sync::{ContentIo, VerifyError}};
+use heart::{
+    content::ContentHash,
+    sync::{ContentIo, VerifyError},
+};
 
 use crate::blob::creation::PendingSection;
 use crate::cas::Store;

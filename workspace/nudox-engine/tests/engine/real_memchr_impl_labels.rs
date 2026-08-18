@@ -47,13 +47,13 @@
 
 use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 
-use nudox_ir::{kind::Kind, view::IrView};
-use nudox_languages::produce;
-use nudox_languages::rust::RustProducer;
 use nudox_engine::store::{
     package::{PackageView, Provenance},
     source::producer::PackageDescriptor,
 };
+use nudox_ir::{kind::Kind, view::IrView};
+use nudox_languages::produce;
+use nudox_languages::rust::RustProducer;
 
 use nudox_engine::{chunk::signature, wire::SigToken};
 
@@ -62,9 +62,12 @@ fn var(key: &str) -> Option<String> {
 }
 
 fn root() -> PathBuf {
-    var("NUDOX_PKG_ROOT").map_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-    }, PathBuf::from)
+    var("NUDOX_PKG_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| var("NUDOX_CORPUS_ROOT").map(|root| PathBuf::from(root).join("memchr-2.8.3")))
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
+        })
 }
 
 fn render_text(toks: &[SigToken]) -> String {
@@ -89,8 +92,6 @@ fn render_text(toks: &[SigToken]) -> String {
 /// Asserts on the set of trait names, not on a count: a count of six is
 /// satisfied by six rows that all say `?`, which is exactly what shipped.
 #[test]
-#[ignore = "drives in-process rust-analyzer over a real cargo workspace (~20-45 s); \
-            run explicitly with --ignored"]
 fn memchr_impl_labels_name_their_real_traits() {
     let root = root();
     assert!(
@@ -100,24 +101,23 @@ fn memchr_impl_labels_name_their_real_traits() {
     );
 
     let descriptor = PackageDescriptor::cargo(&root, "memchr", "2.8.3");
-    let (produced, cost) =
-        heart::cost::measured("l39/memchr-2.8.3/impl-labels", &root, || {
-            produce(
-                &RustProducer { direct_repo: false },
-                &descriptor.source,
-                &descriptor.lineage,
-                &nudox_ir::foreign::Unlinked,
-            )
-            .unwrap_or_else(|err| {
-                let mut chain = format!("{err}");
-                let mut cursor: &dyn std::error::Error = &err;
-                while let Some(source) = std::error::Error::source(cursor) {
-                    chain.push_str(&format!("\n  caused by: {source}"));
-                    cursor = source;
-                }
-                panic!("memchr must lower without error:\n{chain}");
-            })
-        });
+    let (produced, cost) = heart::cost::measured("l39/memchr-2.8.3/impl-labels", &root, || {
+        produce(
+            &RustProducer { direct_repo: false },
+            &descriptor.source,
+            &descriptor.lineage,
+            &nudox_ir::foreign::Unlinked,
+        )
+        .unwrap_or_else(|err| {
+            let mut chain = format!("{err}");
+            let mut cursor: &dyn std::error::Error = &err;
+            while let Some(source) = std::error::Error::source(cursor) {
+                chain.push_str(&format!("\n  caused by: {source}"));
+                cursor = source;
+            }
+            panic!("memchr must lower without error:\n{chain}");
+        })
+    });
 
     let report = &produced.report;
     // Every colliding group of size N used to collapse to one entry, so

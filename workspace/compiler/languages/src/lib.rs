@@ -25,21 +25,21 @@
 
 pub mod oracle;
 
-pub mod rust;
+pub mod clang;
+pub mod csharp;
 pub mod go;
 pub mod java;
-pub mod csharp;
-pub mod clang;
-pub mod typescript;
 pub mod python;
+pub mod rust;
+pub mod typescript;
 
-pub use rust::RustProducer;
+pub use clang::ClangProducer;
+pub use csharp::CSharpProducer;
 pub use go::GoProducer;
 pub use java::JavaProducer;
-pub use csharp::CSharpProducer;
-pub use clang::ClangProducer;
-pub use typescript::TypescriptProducer;
 pub use python::PythonProducer;
+pub use rust::RustProducer;
+pub use typescript::TypescriptProducer;
 
 #[cfg(test)]
 mod tests;
@@ -397,9 +397,33 @@ pub enum ProducerError {
 
     /// The oracle subprocess could not be spawned at all (binary missing, I/O
     /// error before the process started, …).
-    #[error("oracle spawn failed")]
+    ///
+    /// `command` and `hint` are inlined into the message for exactly the reason
+    /// [`Self::OracleExit`]'s comment gives about its own fields: neither is a
+    /// `#[source]`, so neither is reachable by walking the error chain, and
+    /// `nudox-engine` flattens this error to a string
+    /// (`store::source::producer` → `Error::OracleFailed { detail: chain(..) }`)
+    /// before it reaches `PackageLoadEvent::LoadFailed` and the GUI. A field
+    /// that is in neither the message nor the chain is, from a reader's point
+    /// of view, not reported at all.
+    ///
+    /// It used to render as the bare string `oracle spawn failed`, with only
+    /// `No such file or directory (os error 2)` behind it. `lindsey.app` does
+    /// not ship the Go oracle, so opening a Go package produced exactly that
+    /// and nothing else: not which binary, not where it was looked for, not
+    /// that an override exists. Diagnosing it meant finding the binary in the
+    /// repository by hand.
+    #[error("oracle `{command}` could not be spawned")]
     OracleSpawn {
         /// The command that could not be spawned.
+        ///
+        /// Callers that resolve their binary through an environment variable
+        /// append that variable to this label (see
+        /// [`crate::oracle::run_json_with_override`]), so the one string a
+        /// reader gets says both what was missing and how to point at it. It
+        /// is one field rather than two because a dozen call sites across the
+        /// producers construct this variant directly with nothing useful to
+        /// put in a second one.
         command: String,
         /// The underlying I/O error.
         #[source]
@@ -494,6 +518,11 @@ pub enum ProducerError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+
+    /// Soft proc-macro unavailability was raised as a hard error. Callers should
+    /// not see this from a correct `invoke`: it belongs on `LoadCompleteness`.
+    #[error("proc-macro server degraded")]
+    ProcMacroDegraded { package: String, diagnostic: String },
 
     /// The producer promised declarations ([`YieldContract::Declarations`]) and
     /// contributed none: the lowering holds nothing but the root module
@@ -888,6 +917,15 @@ pub fn produce<P: Producer>(
     let mut sink: Lowering<P::Id> = Lowering::new(pkg_id, root_sym);
     sink.set_language(P::LANGUAGE);
     producer.lower(&oracle, &mut sink)?;
+    // Frontends report whatever path their parser was given (often absolute);
+    // normalize the entire lowering graph once, at the package boundary,
+    // before any source location is sealed or hashed.
+    sink.relativize_sources(src.root());
+    // Complete legacy producer spans into typed, navigable locations.  This
+    // is intentionally after path normalisation so every language emits the
+    // same package-relative file name, including producers that still use the
+    // legacy Symbol fields internally.
+    sink.complete_source_locations(src.root());
 
     let ir_package = sink.finish().map_err(|err| ProducerError::LoweringFailed {
         package: src.name.as_str().to_owned(),

@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use heart::PackageId;
-use registry::vector::{AdmissionBudget, StoreError, VectorStore, NAMESPACE_NUDOX};
 use registry::vector::local::{
-    HotSetManager,
-    COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, ShardLock,
+    COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, HotSetManager,
+    ShardLock,
 };
+use registry::vector::{AdmissionBudget, NAMESPACE_NUDOX, StoreError, VectorStore};
 
 fn pkg(name: &str) -> PackageId {
     PackageId::from_name(&NAMESPACE_NUDOX, name.as_bytes())
@@ -31,7 +31,10 @@ fn pkg(name: &str) -> PackageId {
 #[test]
 fn diff_plan_identical_states_is_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let budget = AdmissionBudget { budget_bytes: 10_000, project_ram: 0 };
+    let budget = AdmissionBudget {
+        budget_bytes: 10_000,
+        project_ram: 0,
+    };
     let mut manager = HotSetManager::open(dir.path().join("hotset.json"), budget);
 
     let now = 5_000_000u64;
@@ -47,7 +50,10 @@ fn diff_plan_identical_states_is_empty() {
         plan1.is_empty(),
         "plan for already-installed admitted packages must be empty: {plan1:?}"
     );
-    assert_eq!(plan1, plan2, "diff_plan must be idempotent for identical states");
+    assert_eq!(
+        plan1, plan2,
+        "diff_plan must be idempotent for identical states"
+    );
 }
 
 /// Oscillating stats (alternating between two configurations) must not thrash:
@@ -56,7 +62,10 @@ fn diff_plan_identical_states_is_empty() {
 #[test]
 fn diff_plan_oscillating_stats_no_thrash() {
     let dir = tempfile::tempdir().unwrap();
-    let budget = AdmissionBudget { budget_bytes: 500, project_ram: 0 };
+    let budget = AdmissionBudget {
+        budget_bytes: 500,
+        project_ram: 0,
+    };
     let now = 6_000_000u64;
 
     // State A: `a` admitted (score wins), `b` not (score loses).
@@ -89,7 +98,10 @@ fn diff_plan_oscillating_stats_no_thrash() {
 
     // After applying the swap, re-planning is empty (no further thrash).
     let plan_after_swap = manager_a.plan(now, &BTreeSet::from([pkg("a")]));
-    assert!(plan_after_swap.is_empty(), "after applying the swap plan, next plan must be empty");
+    assert!(
+        plan_after_swap.is_empty(),
+        "after applying the swap plan, next plan must be empty"
+    );
 }
 
 /// State file with UNKNOWN JSON fields written by a "newer version".
@@ -105,7 +117,10 @@ fn diff_plan_oscillating_stats_no_thrash() {
 fn hotset_state_file_with_unknown_fields_loads_gracefully() {
     let dir = tempfile::tempdir().unwrap();
     let state_path = dir.path().join("hotset.json");
-    let budget = AdmissionBudget { budget_bytes: 10_000, project_ram: 0 };
+    let budget = AdmissionBudget {
+        budget_bytes: 10_000,
+        project_ram: 0,
+    };
 
     let now = 7_000_000u64;
 
@@ -149,14 +164,18 @@ fn hotset_state_file_with_unknown_fields_loads_gracefully() {
 /// `apply_plan` with an empty plan is a no-op: working set unchanged, no errors.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_plan_empty_plan_is_noop() {
-    use std::collections::BTreeMap;
     use registry::vector::local::{InstallPlan, apply_plan};
+    use std::collections::BTreeMap;
 
     let project_dir = tempfile::tempdir().unwrap();
     let project = open_mutable_f32(project_dir.path()).await;
     let ws = common::settle_and_wrap(project).await;
 
-    let empty_plan = InstallPlan { install: vec![], evict: vec![], over_budget: false };
+    let empty_plan = InstallPlan {
+        install: vec![],
+        evict: vec![],
+        over_budget: false,
+    };
     let result = apply_plan(
         &empty_plan,
         &BTreeMap::new(),
@@ -168,14 +187,23 @@ async fn apply_plan_empty_plan_is_noop() {
     .await
     .unwrap();
 
-    assert!(result.is_empty(), "empty plan apply must return empty outcomes");
-    assert!(ws.read().await.resident_packages().is_empty(), "working set must be unchanged");
+    assert!(
+        result.is_empty(),
+        "empty plan apply must return empty outcomes"
+    );
+    assert!(
+        ws.read().await.resident_packages().is_empty(),
+        "working set must be unchanged"
+    );
 }
 
 struct NoopFetcher;
 #[async_trait::async_trait]
 impl registry::vector::local::ArtifactFetcher for NoopFetcher {
-    async fn fetch(&self, h: &heart::ContentHash) -> Result<Vec<u8>, registry::vector::local::FetchError> {
+    async fn fetch(
+        &self,
+        h: &heart::ContentHash,
+    ) -> Result<Vec<u8>, registry::vector::local::FetchError> {
         Err(registry::vector::local::FetchError::NotFound(*h))
     }
 }

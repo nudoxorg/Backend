@@ -329,9 +329,7 @@ impl<T> StreamSlot<T> {
     /// side task can be garbage-collected). The `value` must have been set
     /// by the drain closure before calling this.
     pub fn complete(&mut self) {
-        self.phase = Phase::Ready {
-            at: Instant::now(),
-        };
+        self.phase = Phase::Ready { at: Instant::now() };
         self.handle = None;
     }
 
@@ -341,9 +339,7 @@ impl<T> StreamSlot<T> {
     /// The `value` from any previous generation is preserved so `display()`
     /// can return `StaleWithError` instead of discarding readable content.
     pub fn fail(&mut self, e: Error) {
-        self.phase = Phase::Failed {
-            at: Instant::now(),
-        };
+        self.phase = Phase::Failed { at: Instant::now() };
         self.error = Some(e);
         self.handle = None;
     }
@@ -425,12 +421,13 @@ impl<T> StreamSlot<T> {
             (Some(v), Phase::Ready { .. }) => Display::Fresh(v),
 
             // Refresh failed — stale content + slim error bar.
-            (Some(v), Phase::Failed { .. }) => {
-                Display::StaleWithError(v, self.error.as_ref().unwrap_or_else(|| {
+            (Some(v), Phase::Failed { .. }) => Display::StaleWithError(
+                v,
+                self.error.as_ref().unwrap_or_else(|| {
                     static FALLBACK: Error = Error::Cancelled;
                     &FALLBACK
-                }))
-            }
+                }),
+            ),
 
             // Some + Idle is prevented by reset() clearing the value, but
             // handle defensively.
@@ -448,7 +445,10 @@ impl<T> Default for StreamSlot<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     // Helper: a slot with a value already set.
     fn slot_with_value(v: &str) -> StreamSlot<String> {
@@ -523,7 +523,9 @@ mod tests {
     fn some_failed_is_stale_with_error() {
         let mut slot = slot_with_value("old");
         slot.begin_loading();
-        slot.fail(Error::Transient { message: "network".to_string() });
+        slot.fail(Error::Transient {
+            message: "network".to_string(),
+        });
         assert!(matches!(slot.display(), Display::StaleWithError(_, _)));
     }
 
@@ -533,7 +535,10 @@ mod tests {
     fn begin_loading_preserves_value() {
         let mut slot = slot_with_value("stale");
         slot.begin_loading();
-        assert!(slot.value.is_some(), "value must survive begin_loading (LD-15)");
+        assert!(
+            slot.value.is_some(),
+            "value must survive begin_loading (LD-15)"
+        );
     }
 
     #[test]
@@ -551,14 +556,21 @@ mod tests {
         let c = counter.clone();
         let mut slot: StreamSlot<String> = StreamSlot::new();
         slot.begin_loading();
-        slot.handle = Some(crate::bridge::handle::StreamHandle::new(Gen(1), move || {
-            c.fetch_add(1, Ordering::SeqCst);
-        }));
+        slot.handle = Some(crate::bridge::handle::StreamHandle::new(
+            Gen(1),
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            },
+        ));
         slot.value = Some("done".to_string());
         slot.complete();
         // Handle was dropped by complete().
         assert!(slot.handle.is_none());
-        assert_eq!(counter.load(Ordering::SeqCst), 1, "canceller fired on complete");
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "canceller fired on complete"
+        );
     }
 
     #[test]
@@ -568,7 +580,10 @@ mod tests {
         slot.first_event();
         let phase_after_first = slot.phase;
         slot.first_event();
-        assert_eq!(slot.phase, phase_after_first, "second first_event is a no-op");
+        assert_eq!(
+            slot.phase, phase_after_first,
+            "second first_event is a no-op"
+        );
     }
 
     #[test]

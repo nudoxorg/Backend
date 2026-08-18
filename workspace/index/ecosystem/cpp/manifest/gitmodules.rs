@@ -86,10 +86,14 @@ struct KeyValue<'line> {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Emit a [`DependencyRecord`] for the completed submodule section, if a URL
-/// was found.
+/// Emit a [`DependencyRecord`] for the completed submodule section, if a
+/// non-empty URL was found. A present-but-blank `url =` line (hostile or
+/// just sloppily hand-edited input) is treated the same as an absent one —
+/// it must not produce a degenerate empty-token dependency edge.
 fn flush_submodule(manifest: &mut CppManifest, url: Option<String>) {
-    let Some(raw_url) = url else { return };
+    let Some(raw_url) = url.filter(|u| !u.trim().is_empty()) else {
+        return;
+    };
     let token = crate::ecosystem::repo::normalize_repo_url(&raw_url)
         .map_or(raw_url, |slug| slug.as_str().to_owned());
     manifest.push_dependency(DependencyRecord::new(token, DependencyMechanism::Submodule));
@@ -241,5 +245,108 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "github.com/user/real");
+    }
+
+    // ── Hostile-input hardening ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_path_traversal_url_does_not_panic_and_is_not_normalized() {
+        // A `url` value that looks like a filesystem path-traversal attempt.
+        // `.gitmodules` parsing never touches the filesystem — the value is
+        // just stored as a dependency token (or normalized if it happens to
+        // look like a real repo URL) — so there is no traversal *risk* here,
+        // but it must not panic or produce a bogus normalized slug.
+        let text = "[submodule \"evil\"]\n\turl = ../../../../../../etc/passwd\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(
+            manifest.dependencies[0].token,
+            "../../../../../../etc/passwd"
+        );
+    }
+
+    #[test]
+    fn parse_file_scheme_url_does_not_panic() {
+        let text = "[submodule \"local\"]\n\turl = file:///etc/passwd\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 1);
+        // Never dereferenced as a filesystem path — just a stored token.
+        let _ = &manifest.dependencies[0].token;
+    }
+
+    #[test]
+    fn parse_submodule_path_field_is_never_used_as_token() {
+        // The `path` key (the on-disk checkout location) must never leak into
+        // the dependency token — only `url` does. A path-traversal `path`
+        // value must have zero effect.
+        let text = "[submodule \"x\"]\n\tpath = ../../../outside\n\turl = https://github.com/owner/x.git\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].token, "github.com/owner/x");
+    }
+
+    #[test]
+    fn parse_duplicate_submodule_section_names_both_recorded() {
+        // Two sections declaring the same submodule name (malformed, but not
+        // impossible in a hand-edited or hostile .gitmodules) with different
+        // URLs: both must be recorded, no panic, no silent dedup that could
+        // hide one of them.
+        let text = "[submodule \"dup\"]\n\turl = https://github.com/a/a.git\n[submodule \"dup\"]\n\turl = https://github.com/b/b.git\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 2);
+    }
+
+    #[test]
+    fn parse_unicode_submodule_name_and_url() {
+        let text = "[submodule \"库\"]\n\turl = https://github.com/用户/库.git\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 1);
+    }
+
+    #[test]
+    fn parse_enormous_number_of_submodules_no_panic() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..20_000 {
+            let _ = writeln!(
+                text,
+                "[submodule \"dep{i}\"]\n\turl = https://github.com/org/dep{i}.git"
+            );
+        }
+        let manifest = parse(&text);
+        assert_eq!(manifest.dependencies.len(), 20_000);
+    }
+
+    #[test]
+    fn parse_unterminated_section_header_no_panic() {
+        let text = "[submodule \"unterminated\n\turl = https://github.com/a/b.git\n";
+        let manifest = parse(text);
+        // Malformed header (no closing `]`) — not recognised as a section at
+        // all, so the url line is orphaned (no active submodule section).
+        assert!(manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn parse_empty_url_value_produces_no_degenerate_dependency() {
+        // A present-but-blank `url =` line must not synthesize a bogus
+        // empty-token dependency edge (P6 hardening fix).
+        let text = "[submodule \"empty\"]\n\turl = \n";
+        let manifest = parse(text);
+        assert!(manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn parse_whitespace_only_url_value_produces_no_degenerate_dependency() {
+        let text = "[submodule \"empty\"]\n\turl =    \n";
+        let manifest = parse(text);
+        assert!(manifest.dependencies.is_empty());
+    }
+
+    #[test]
+    fn parse_enormous_url_value_no_panic() {
+        let huge_path = "a/".repeat(500_000);
+        let text = format!("[submodule \"x\"]\n\turl = https://github.com/{huge_path}repo.git\n");
+        let manifest = parse(&text);
+        assert_eq!(manifest.dependencies.len(), 1);
     }
 }

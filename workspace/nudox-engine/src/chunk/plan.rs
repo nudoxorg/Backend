@@ -4,8 +4,8 @@
 //! a named public function so callers and tests can import `plan::section_plan`
 //! without knowing about the shared walk.
 
-use nudox_ir::{change::IntroId, entry::Entry, view::IrView};
 use crate::store::package::PackageView;
+use nudox_ir::{change::IntroId, entry::Entry, view::IrView};
 
 use crate::wire::SectionPlan;
 

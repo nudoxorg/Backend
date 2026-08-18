@@ -29,7 +29,6 @@
 
 use std::time::SystemTime;
 
-use nudox_engine::{Engine, EngineConfig, EngineHandle};
 use nudox_engine::mcp::account::cache::{AUTHORIZATION_FILE, CachedAuthorization};
 use nudox_engine::mcp::account::credential::{ApiKey, ApiKeyError};
 use nudox_engine::mcp::account::gate::AccountGate;
@@ -37,6 +36,7 @@ use nudox_engine::mcp::account::state::{GateState, QuotaKnowledge, UserId};
 use nudox_engine::mcp::account::store::{CredentialStore, KeySource, MemoryStore};
 use nudox_engine::mcp::{McpEndpoint, NudoxMcpServer, SessionToken};
 use nudox_engine::store::source::fixtures::FixtureSource;
+use nudox_engine::{Engine, EngineConfig, EngineHandle};
 
 /// The distinctive middle of the test key. Every assertion looks for *this*
 /// rather than for the whole value, so a truncated leak is caught too.
@@ -174,7 +174,8 @@ fn nothing_written_to_disk_contains_the_key() {
         .save(&dir)
         .expect("save succeeds");
 
-    let ledger = nudox_engine::mcp::account::ledger::UsageLedger::open(Some(&dir), &key().fingerprint());
+    let ledger =
+        nudox_engine::mcp::account::ledger::UsageLedger::open(Some(&dir), &key().fingerprint());
     ledger.record_call();
     ledger.checkpoint();
 
@@ -191,7 +192,8 @@ fn nothing_written_to_disk_contains_the_key() {
         files += 1;
     }
     assert_eq!(
-        files, 2,
+        files,
+        2,
         "both state files must exist and both must have been checked: {}",
         dir.display()
     );

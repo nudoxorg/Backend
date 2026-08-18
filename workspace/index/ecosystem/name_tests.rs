@@ -80,22 +80,6 @@ mod differential {
         valid.then(|| raw.to_ascii_lowercase())
     }
 
-    fn ref_canonicalize_nix_flake(raw: &str) -> Option<String> {
-        if raw.is_empty()
-            || raw.starts_with('/')
-            || raw.ends_with('/')
-            || raw.contains("..")
-            || raw.matches('/').count() > 1
-        {
-            return None;
-        }
-        let valid = raw
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
-            && raw.starts_with(|c: char| c.is_ascii_alphanumeric());
-        valid.then(|| raw.to_ascii_lowercase())
-    }
-
     fn new_canonical(lang: Language, raw: &str) -> Option<String> {
         lang.spec()
             .parse_name(raw)
@@ -617,60 +601,6 @@ mod differential {
     }
 
     // ── Nix fixtures ───────────────────────────────────────────────────────────
-
-    const NIX_VALID: &[&str] = &[
-        "NixOS/nixpkgs",
-        "nixos/nixpkgs",
-        "numtide/flake-utils",
-        "nix-community/home-manager",
-        "nix-community/nixd",
-        "nix-community/rust-overlay",
-        "cachix/cachix",
-        "cachix/devenv",
-        "hercules-ci/flake-parts",
-        "ipetkov/crane",
-        "oxalica/rust-overlay",
-        "divnix/std",
-        "flake-utils",
-        "nixpkgs",
-        "home-manager",
-        "devenv",
-        "rust-overlay",
-        "crane",
-        "flake-parts",
-        "treefmt-nix",
-    ];
-
-    const NIX_INVALID: &[&str] = &[
-        "",
-        "/leading",
-        "trailing/",
-        "a/b/c", // two slashes
-        "has..double-dot",
-        "has space",
-        "unicode\u{e9}",
-    ];
-
-    #[test]
-    fn nix_differential() {
-        for &raw in NIX_VALID {
-            let reference = ref_canonicalize_nix_flake(raw);
-            let new_val = new_canonical(Language::Nix, raw);
-            assert_eq!(
-                reference, new_val,
-                "Nix canonical mismatch for {raw:?}: ref={reference:?} new={new_val:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn nix_rejection_agreement() {
-        for &raw in NIX_INVALID {
-            let reference = ref_canonicalize_nix_flake(raw);
-            let new_val = new_canonical(Language::Nix, raw);
-            assert_eq!(reference, new_val, "Nix rejection disagreement for {raw:?}");
-        }
-    }
 }
 
 #[cfg(test)]
@@ -746,10 +676,6 @@ mod round_trip {
         // NuGet
         for &raw in &["Newtonsoft.Json", "Microsoft.Extensions.Logging", "Serilog"] {
             check(Language::CSharp, raw);
-        }
-        // Nix
-        for &raw in &["NixOS/nixpkgs", "nixpkgs", "nix-community/home-manager"] {
-            check(Language::Nix, raw);
         }
     }
 }
@@ -850,13 +776,6 @@ mod symbol_roots_tests {
     fn nuget_microsoft_extensions_root() {
         let r = roots(Language::CSharp, "Microsoft.Extensions.Logging");
         assert_eq!(r, vec!["microsoft.extensions.logging"]);
-    }
-
-    // Nix: project slug
-    #[test]
-    fn nix_nixos_nixpkgs_root() {
-        let r = roots(Language::Nix, "NixOS/nixpkgs");
-        assert_eq!(r, vec!["nixpkgs"]);
     }
 }
 

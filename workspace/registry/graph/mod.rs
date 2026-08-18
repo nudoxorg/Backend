@@ -9,10 +9,9 @@
 //!    linear scan over all occurrences.
 //!
 //! 2. [`trustfall_adapter`] — an [`IrTrustfallAdapter`] that wraps an `IrView` (plus an
-//!    optional `ReversePositionIndex` for the fast path) and exposes plain-Rust neighbour
-//!    methods that a Trustfall schema can call once the full schema wiring is completed in
-//!    a later wave. [`execute_graph_query`] is present as a correctly-typed stub that
-//!    returns [`Error::Unsupported`] until the schema is wired.
+//!    optional `ReversePositionIndex` for the fast path), exposes the package-local
+//!    Trustfall schema, and executes supported graph queries. Catalog-backed edges remain
+//!    explicitly unsupported because this module has no catalog join.
 //!
 //! HTTP routes (`GET /v1/symbols/:ref/usages`, etc.) are a later wave — this module
 //! exposes library functions only.

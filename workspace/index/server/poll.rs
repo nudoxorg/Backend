@@ -148,8 +148,12 @@ async fn consume_once<M: EmbeddingModel>(
 ///
 /// **`Upsert`** — reads the package's symbol projection from the global index
 /// and writes it into the sink:
-/// - [`SinkKind::Text`] is consumed by the package-index poller (replica-local
-///   package tantivy); the outbox consumer advances the watermark only;
+/// - [`SinkKind::Text`] is consumed by [`text_index_poller`] (the replica-local
+///   *symbol* tantivy index, `crate::runtime::text::TextIndex`), which reads
+///   the same Text-sink outbox under its own file-persisted watermark; this
+///   consumer advances only the catalog-side per-sink watermark here (the
+///   signal [`crate::server::coordination::search`]-adjacent tests read to
+///   confirm the intent was acknowledged);
 /// - [`SinkKind::Vector`] embeds each symbol and upserts a [`VectorPoint`] into
 ///   qdrant (keyed by a symbol-derived point id, so a re-embed replaces in place);
 /// - [`SinkKind::Graph`] is a no-op until the IR reverse-position index lands.
@@ -157,7 +161,12 @@ async fn consume_once<M: EmbeddingModel>(
 /// **`Delete`** — removes the package's search projection from the sink.
 /// **Blob / CAS data is never touched** — the mirror keeps full history; only
 /// search visibility ends. Per sink:
-/// - [`SinkKind::Text`] issues a `delete_term` on the package index, then commits;
+/// - [`SinkKind::Text`] issues a `delete_term` on the replica-local *package*
+///   tantivy index, then commits — note this does **not** yet tombstone the
+///   symbol-level [`crate::runtime::text::TextIndex`] `text_index_poller` feeds;
+///   `TextIndex` currently exposes no delete-by-package primitive, so a withdrawn
+///   package's symbols remain precise-searchable until a future symbol-level
+///   tombstone lands (tracked, not exercised by any current test);
 /// - [`SinkKind::Vector`] deletes all qdrant points whose payload
 ///   `package` field matches the package uuid;
 /// - [`SinkKind::Graph`] nothing to tombstone yet.
@@ -418,6 +427,30 @@ pub(crate) async fn package_index_poller<M: EmbeddingModel>(server: Arc<Server<M
     }
 }
 
+/// Keep every source's replica-local *symbol* text index (the precise-search
+/// surface, [`crate::runtime::text::TextIndex`]) caught up to the catalog's
+/// Text-sink outbox intents.
+///
+/// Distinct from [`package_index_poller`] above, which projects *packages*
+/// into a separate replica-local tantivy index — the two are independent
+/// projections over the same outbox sink, each with its own watermark file.
+/// Each tick reuses the per-source [`crate::runtime::text::Poller`] built at
+/// assembly (`Driver::connect_source`) rather than reconstructing one, since
+/// it is not `Clone`.
+#[tracing::instrument(skip_all, name = "text_index_poller")]
+pub(crate) async fn text_index_poller<M: EmbeddingModel>(server: Arc<Server<M>>) {
+    let interval = server.config().limits.poll_interval;
+    loop {
+        for sourced in server.federation().in_precedence() {
+            let stores = sourced.value;
+            if let Err(error) = stores.text_poller.poll_once(&stores.text).await {
+                tracing::warn!(source = %sourced.source, error = %error, "text index poll failed");
+            }
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
 /// How often to recompute corpus dependents + per-eco popularity percentiles.
 /// Heavy-ish full scan; keep well below hot poll intervals.
 const PACKAGE_SIGNALS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
@@ -471,4 +504,3 @@ pub(crate) async fn package_signals_poller<M: EmbeddingModel>(server: Arc<Server
         tokio::time::sleep(PACKAGE_SIGNALS_INTERVAL).await;
     }
 }
-

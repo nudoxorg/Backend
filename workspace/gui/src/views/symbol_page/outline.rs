@@ -177,6 +177,41 @@ pub struct PageSectionEntry {
     pub children: Arc<[SharedString]>,
 }
 
+/// Append page-owned sections to the outline projection.
+///
+/// This deliberately does not receive disclosure state. A collapsed body is
+/// still a page section, and its known children are still useful navigation
+/// landmarks. Visibility belongs to the page layout; the outline is the map
+/// of the page, not a mirror of whichever bodies happen to be open.
+fn append_page_entries(next: &mut Vec<OutlineEntry>, page: &[PageSectionEntry]) {
+    for entry in page {
+        next.push(OutlineEntry {
+            label: entry.label.clone(),
+            // The page sections carry their count inside `label` already
+            // (`"Implementations 6"`), formatted by
+            // `SymbolPage::page_section_entries`.
+            count: SharedString::default(),
+            marker: OutlineMarker::Section,
+            // A page section is structure that exists whether or not its
+            // contents have streamed; marking it pending would make the
+            // rail flicker between two greys for no information.
+            pending: false,
+            indented: false,
+            target: OutlineTarget::Page(entry.section),
+        });
+        for (ix, child) in entry.children.iter().enumerate() {
+            next.push(OutlineEntry {
+                label: child.clone(),
+                count: SharedString::default(),
+                marker: OutlineMarker::Row,
+                pending: false,
+                indented: true,
+                target: OutlineTarget::PageRow(entry.section, ix),
+            });
+        }
+    }
+}
+
 /// Sections that read as subordinate to the prose around them.
 fn is_nested(kind: SectionKind) -> bool {
     matches!(
@@ -250,32 +285,7 @@ impl Outline {
             })
             .collect();
 
-        for entry in page {
-            next.push(OutlineEntry {
-                label: entry.label.clone(),
-                // The page sections carry their count inside `label` already
-                // (`"Implementations 6"`), formatted by
-                // `SymbolPage::page_section_entries`.
-                count: SharedString::default(),
-                marker: OutlineMarker::Section,
-                // A page section is structure that exists whether or not its
-                // contents have streamed; marking it pending would make the
-                // rail flicker between two greys for no information.
-                pending: false,
-                indented: false,
-                target: OutlineTarget::Page(entry.section),
-            });
-            for (ix, child) in entry.children.iter().enumerate() {
-                next.push(OutlineEntry {
-                    label: child.clone(),
-                    count: SharedString::default(),
-                    marker: OutlineMarker::Row,
-                    pending: false,
-                    indented: true,
-                    target: OutlineTarget::PageRow(entry.section, ix),
-                });
-            }
-        }
+        append_page_entries(&mut next, page);
 
         let arrived = docs.arrived_count().min(slots.len());
         let progress = if slots.is_empty() || arrived >= slots.len() {
@@ -355,151 +365,147 @@ impl Outline {
             .child(header)
             .child(
                 // LD-6: a 200-section document has a 200-row outline.
-                uniform_list(
-                    "symbol.outline.list",
-                    count,
-                    move |range, _window, cx| {
-                        let ext = cx.theme_ext();
-                        let sp = ext.space;
-                        let ts = ext.type_scale;
-                        let colours = ext.colours;
-                        range
-                            .map(|ix| {
-                                let entry = &entries[ix];
-                                let is_active = ix == active;
-                                let pick = pick.clone();
-                                let target = entry.target;
-                                let colour = if is_active {
-                                    colours.fg_default
-                                } else if entry.pending {
-                                    // Not here yet — visibly so.
-                                    colours.fg_faint
-                                } else {
-                                    colours.fg_muted
-                                };
-                                // Resolved per frame from the marker rather
-                                // than cached on the entry, so a theme switch
-                                // repaints the rail instead of leaving last
-                                // theme's hues in it.
-                                let swatch = entry.marker.swatch(&ext);
+                uniform_list("symbol.outline.list", count, move |range, _window, cx| {
+                    let ext = cx.theme_ext();
+                    let sp = ext.space;
+                    let ts = ext.type_scale;
+                    let colours = ext.colours;
+                    range
+                        .map(|ix| {
+                            let entry = &entries[ix];
+                            let is_active = ix == active;
+                            let pick = pick.clone();
+                            let target = entry.target;
+                            let colour = if is_active {
+                                colours.fg_default
+                            } else if entry.pending {
+                                // Not here yet — visibly so.
+                                colours.fg_faint
+                            } else {
+                                colours.fg_muted
+                            };
+                            // Resolved per frame from the marker rather
+                            // than cached on the entry, so a theme switch
+                            // repaints the rail instead of leaving last
+                            // theme's hues in it.
+                            let swatch = entry.marker.swatch(&ext);
 
-                                div()
-                                    .id(("symbol.outline.row", ix))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    // The row must be exactly the rail's width
-                                    // and clip at its own edge.
-                                    //
-                                    // Without `w_full` the row is sized by its
-                                    // content, so a long label makes the *row*
-                                    // wider than the 200 px rail. The label's
-                                    // `flex_1 + min_w_0 + truncate` then
-                                    // resolves against that oversized row,
-                                    // finds it has all the space it needs, and
-                                    // never truncates — the text simply runs
-                                    // out of the panel and is clipped by the
-                                    // window instead. Fixing the flex child
-                                    // alone was not enough; the containing
-                                    // block is what had no definite width.
-                                    .w_full()
-                                    .overflow_hidden()
-                                    .h(ts.dense.line_height + sp.space_2)
-                                    .pr(sp.space_2)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(colours.bg_hover))
-                                    .on_click(move |_, window, cx| pick(target, window, cx))
-                                    // A 2 px accent rail marks the section you
-                                    // are reading; every row reserves the rail
-                                    // so nothing shifts as it moves.
-                                    .child(
-                                        div()
-                                            .w(sp.focus_ring_width)
-                                            .h_full()
-                                            .flex_shrink_0()
-                                            .when(is_active, |s| s.bg(colours.accent)),
-                                    )
-                                    // The kind swatch: a 3 px square in the
-                                    // gutter, in the same hue the body's badge
-                                    // for that kind uses. Every row reserves
-                                    // the column whether or not it draws one,
-                                    // so labels stay on a single left edge and
-                                    // the *absence* of a swatch on an authored
-                                    // heading is legible as an absence rather
-                                    // than as a shifted row.
-                                    .child(
-                                        div()
-                                            .w(sp.space_3)
-                                            .flex_shrink_0()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(
-                                                div()
-                                                    .size(sp.space_1 - sp.border_width)
-                                                    .rounded(sp.border_width)
-                                                    .when_some(swatch, |el, c| el.bg(c)),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            // `min_w_0` is what makes the
-                                            // `truncate()` below actually fire.
-                                            //
-                                            // A flex item's automatic minimum
-                                            // size is its *content* size, so
-                                            // `flex_1` alone cannot shrink a
-                                            // row narrower than its longest
-                                            // label: the item stays content-
-                                            // width, overflows the 200 px rail,
-                                            // and `overflow_hidden` clips it at
-                                            // the panel edge with no ellipsis.
-                                            // That is why `impl ? for
-                                            // memchr.memchr.mem` ran out of the
-                                            // rail in `08-symbol-opened.png`
-                                            // despite `truncate()` being set
-                                            // here all along — the truncation
-                                            // was correct and simply never had
-                                            // a box narrow enough to apply to.
-                                            // Same class as doctrine §8's
-                                            // dropped `relative()`: a
-                                            // constraint that silently does not
-                                            // bind.
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .truncate()
-                                            // The swatch column already supplies
-                                            // the left gutter, so only a nested
-                                            // row needs padding of its own.
-                                            .when(entry.indented, |el| el.pl(sp.space_3))
-                                            .text_size(ts.dense.size)
-                                            .line_height(ts.dense.line_height)
-                                            .text_color(colour)
-                                            .child(entry.label.clone()),
-                                    )
-                                    // The count, right-aligned in the same
-                                    // column for every row that has one. This
-                                    // is the second half of telling the two
-                                    // `Fields` rows apart: the derived table
-                                    // says how many rows it has, the authored
-                                    // heading has nothing to say, and the
-                                    // reader can now name the one they want.
-                                    .when(!entry.count.is_empty(), |el| {
-                                        el.child(
+                            div()
+                                .id(("symbol.outline.row", ix))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                // The row must be exactly the rail's width
+                                // and clip at its own edge.
+                                //
+                                // Without `w_full` the row is sized by its
+                                // content, so a long label makes the *row*
+                                // wider than the 200 px rail. The label's
+                                // `flex_1 + min_w_0 + truncate` then
+                                // resolves against that oversized row,
+                                // finds it has all the space it needs, and
+                                // never truncates — the text simply runs
+                                // out of the panel and is clipped by the
+                                // window instead. Fixing the flex child
+                                // alone was not enough; the containing
+                                // block is what had no definite width.
+                                .w_full()
+                                .overflow_hidden()
+                                .h(ts.dense.line_height + sp.space_2)
+                                .pr(sp.space_2)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(colours.bg_hover))
+                                .on_click(move |_, window, cx| pick(target, window, cx))
+                                // A 2 px accent rail marks the section you
+                                // are reading; every row reserves the rail
+                                // so nothing shifts as it moves.
+                                .child(
+                                    div()
+                                        .w(sp.focus_ring_width)
+                                        .h_full()
+                                        .flex_shrink_0()
+                                        .when(is_active, |s| s.bg(colours.accent)),
+                                )
+                                // The kind swatch: a 3 px square in the
+                                // gutter, in the same hue the body's badge
+                                // for that kind uses. Every row reserves
+                                // the column whether or not it draws one,
+                                // so labels stay on a single left edge and
+                                // the *absence* of a swatch on an authored
+                                // heading is legible as an absence rather
+                                // than as a shifted row.
+                                .child(
+                                    div()
+                                        .w(sp.space_3)
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
                                             div()
-                                                .flex_shrink_0()
-                                                .pl(sp.space_2)
-                                                .text_size(ts.caption.size)
-                                                .line_height(ts.dense.line_height)
-                                                .text_color(colours.fg_faint)
-                                                .child(entry.count.clone()),
-                                        )
-                                    })
-                            })
-                            .collect::<Vec<_>>()
-                    },
-                )
+                                                .size(sp.space_1 - sp.border_width)
+                                                .rounded(sp.border_width)
+                                                .when_some(swatch, |el, c| el.bg(c)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        // `min_w_0` is what makes the
+                                        // `truncate()` below actually fire.
+                                        //
+                                        // A flex item's automatic minimum
+                                        // size is its *content* size, so
+                                        // `flex_1` alone cannot shrink a
+                                        // row narrower than its longest
+                                        // label: the item stays content-
+                                        // width, overflows the 200 px rail,
+                                        // and `overflow_hidden` clips it at
+                                        // the panel edge with no ellipsis.
+                                        // That is why `impl ? for
+                                        // memchr.memchr.mem` ran out of the
+                                        // rail in `08-symbol-opened.png`
+                                        // despite `truncate()` being set
+                                        // here all along — the truncation
+                                        // was correct and simply never had
+                                        // a box narrow enough to apply to.
+                                        // Same class as doctrine §8's
+                                        // dropped `relative()`: a
+                                        // constraint that silently does not
+                                        // bind.
+                                        .min_w_0()
+                                        .overflow_hidden()
+                                        .truncate()
+                                        // The swatch column already supplies
+                                        // the left gutter, so only a nested
+                                        // row needs padding of its own.
+                                        .when(entry.indented, |el| el.pl(sp.space_3))
+                                        .text_size(ts.dense.size)
+                                        .line_height(ts.dense.line_height)
+                                        .text_color(colour)
+                                        .child(entry.label.clone()),
+                                )
+                                // The count, right-aligned in the same
+                                // column for every row that has one. This
+                                // is the second half of telling the two
+                                // `Fields` rows apart: the derived table
+                                // says how many rows it has, the authored
+                                // heading has nothing to say, and the
+                                // reader can now name the one they want.
+                                .when(!entry.count.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .flex_shrink_0()
+                                            .pl(sp.space_2)
+                                            .text_size(ts.caption.size)
+                                            .line_height(ts.dense.line_height)
+                                            .text_color(colours.fg_faint)
+                                            .child(entry.count.clone()),
+                                    )
+                                })
+                        })
+                        .collect::<Vec<_>>()
+                })
                 .track_scroll(&self.scroll)
                 .flex_1(),
             )
@@ -542,7 +548,6 @@ mod tests {
         );
     }
 
-
     /// Code, callout and example sections read as subordinate; prose, members
     /// and fields are top-level landmarks.
     #[test]
@@ -582,5 +587,65 @@ mod tests {
         let o = Outline::new();
         assert!(o.is_empty());
         assert_eq!(o.len(), 0);
+    }
+
+    /// The rail remains useful when real implementations and references are
+    /// collapsed: disclosure state controls body visibility, not whether the
+    /// page's landmarks exist in its map.
+    #[test]
+    fn collapsed_page_sections_keep_real_landmarks_in_outline_projection() {
+        let implementations = PageSectionEntry {
+            section: PageSection::Implementations,
+            label: SharedString::from("Implementations 6"),
+            children: Arc::from(vec![
+                SharedString::from("Clone"),
+                SharedString::from("Iterator"),
+            ]),
+        };
+        let references = PageSectionEntry {
+            section: PageSection::References,
+            label: SharedString::from("References 12"),
+            children: Arc::from(Vec::new()),
+        };
+        let source = PageSectionEntry {
+            section: PageSection::Source,
+            label: SharedString::from("Source"),
+            children: Arc::from(Vec::new()),
+        };
+        let mut entries = Vec::new();
+
+        append_page_entries(&mut entries, &[implementations, references, source]);
+
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| &*entry.label)
+                .collect::<Vec<_>>(),
+            vec![
+                "Implementations 6",
+                "Clone",
+                "Iterator",
+                "References 12",
+                "Source"
+            ],
+        );
+        assert_eq!(
+            entries[0].target,
+            OutlineTarget::Page(PageSection::Implementations)
+        );
+        assert_eq!(
+            entries[1].target,
+            OutlineTarget::PageRow(PageSection::Implementations, 0)
+        );
+        assert!(entries[1].indented);
+        assert_eq!(
+            entries[3].target,
+            OutlineTarget::Page(PageSection::References)
+        );
+        assert_eq!(entries[4].target, OutlineTarget::Page(PageSection::Source));
+        assert!(
+            entries.iter().all(|entry| !entry.pending),
+            "collapsed page sections are known structure, not pending docs",
+        );
     }
 }

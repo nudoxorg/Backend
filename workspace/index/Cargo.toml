@@ -68,13 +68,17 @@ test-engine = []
 default = ["dolt-engine"]
 # The serving composition (`index::server` + the `nudox-serve` bin). OFF by
 # default so a plain `cargo build/test -p index` stays the lean catalog library:
-# no axum/ir-vcs/sandbox/embedrs, and — load-bearing — no `ir-vcs → libpijul →
-# zstd-seekable`, which statically bundles a second copy of the zstd C library
-# and collides with `index::pack`'s `zstd-sys` symbols (a duplicate-symbol clash
-# that corrupts memory at runtime; it segfaulted the pack unit tests when the
-# server was linked unconditionally). Confining the server behind this feature
-# keeps that clash out of every default `index` build and, when it is enabled,
-# scopes it to exactly the serving binary (as the retired `driver` crate did).
+# no axum/ir-vcs/sandbox/embedrs. This used to also be the only thing keeping
+# `ir-vcs → libpijul → zstd-seekable`'s independently-compiled second copy of
+# the zstd C library from clashing with `index::pack`'s own `zstd-sys` symbols
+# (a duplicate macOS `ld` only warns about instead of failing on, so the build
+# looked clean while corrupting memory at runtime — it segfaulted the pack
+# unit tests whenever the server was linked). That clash is now fixed at the
+# source: `workspace/vendor/zstd-seekable` is a fork whose build.rs links
+# `zstd-sys`'s libzstd instead of bundling a second one (see that crate's
+# Cargo.toml and workspace/vendor/README.md). `server` stays off by default
+# regardless, to keep the lean catalog build free of the serving stack's
+# dependency weight (axum/tokio/sandbox/embedrs), not because of this.
 server = [
     "dep:sandbox", "dep:ir-vcs", "dep:axum", "dep:tower", "dep:tower-http",
     "dep:http", "dep:http-body-util", "dep:hyper", "dep:tokio-util",
@@ -208,7 +212,7 @@ qdrant-client = "1.18"
 # Full-text search replica (salvaged `runtime/text` + `search/tantivy`).
 tantivy = "0.22"
 # HTTP client for upstream crates/nuget pollers + version resolve.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 
 # Newtypes / vocab used across the folded surface.
 nonempty = { version = "0.11", features = ["serialize"] }

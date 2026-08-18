@@ -20,4 +20,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type SchemaMetaRow = Model;
 
 pub const TABLE: &str = "schema_meta";
-

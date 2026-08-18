@@ -130,10 +130,12 @@ mod tests {
     #[test]
     fn frames_are_externally_tagged_single_key_objects() {
         let end: StreamFrame<i32> = StreamFrame::End(StreamSummary::new(2));
-        assert_eq!(serde_json::to_string(&end).unwrap(), r#"{"end":{"hits":2}}"#);
+        assert_eq!(
+            serde_json::to_string(&end).unwrap(),
+            r#"{"end":{"hits":2}}"#
+        );
 
-        let err: StreamFrame<i32> =
-            StreamFrame::Error(Error::BadRequest("empty text".into()));
+        let err: StreamFrame<i32> = StreamFrame::Error(Error::BadRequest("empty text".into()));
         assert_eq!(
             serde_json::to_string(&err).unwrap(),
             r#"{"error":{"kind":"bad_request","detail":"empty text"}}"#

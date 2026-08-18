@@ -14,7 +14,7 @@ checkable evidence is recorded as `UNVERIFIED_CLAIM`, not RESOLVED.
 > substantially superseded.** It is kept because the reasoning trail has value and
 > because several of its rows turned out to be wrong in instructive ways — but its
 > status column should not be quoted. The current state is the dated sections at
-> the end, most recently **§ 2026-08-08**, which supersede it wherever they
+> the end, most recently **§ 2026-08-16**, which supersede it wherever they
 > disagree.
 >
 > If you only read one thing: **the single largest defect in this document was not
@@ -24,6 +24,86 @@ checkable evidence is recorded as `UNVERIFIED_CLAIM`, not RESOLVED.
 > evidence, under "housekeeping". It was a total build failure for every reader of
 > the repository. Fixed in `e07a0b8` / `bcc320c`, and now machine-checked by
 > `workspace/heart/tests/checkout_completeness.rs`.
+
+## Current-state reconciliation — 2026-08-16
+
+This section is the current summary. The register and suite table below retain
+historical snapshots, including claims that were valid when written but are no
+longer current. No row is treated as resolved here without a named passing test
+or an executed command.
+
+### Language coverage
+
+- **Java:** `nix develop -c cargo test -p nudox-languages --test java_corpus_sweep -- --nocapture`
+  passed all nine assertions and lowered **21/22** Maven entries under
+  `javac 21.0.11` (the current Java 21/22 toolchain line). Kafka and Retrofit
+  now use explicit, Nix-pinned binary dependency classpaths; those jars are
+  classpath-only and are not lowering input. **L45 remains open/partial**:
+  Lombok is the sole red entry.
+- **Lombok's remaining barrier is not merely a missing artifact.** Its sources
+  require a pre-Java-10 source level because of `public @interface var`, while
+  the same sources use removed/non-exported `com.sun.tools.javac` APIs on the
+  running JDK. `--release` cannot be combined with the required `--add-exports`,
+  so even a complete dependency/artifact closure would not make this
+  source/JDK combination lower cleanly. The published sources also omit
+  generated/build-only material; the named red tests deliberately retain both
+  failure modes.
+- **Python is supported in the current tree.** The real-PyPI sweep
+  `every_provisioned_pypi_corpus_package_lowers_real_named_declarations` covers
+  all 22 provisioned entries with named-symbol canaries and non-module floors;
+  `a_producer_that_contributes_nothing_is_rejected_even_under_the_default_contract`
+  guards against the former root-only stub. The old L43/“22 packages each
+  produce one root” text is historical evidence, not the current verdict.
+
+### Index deltas
+
+Facet-only version changes are covered by
+`changing_version_facets_emits_one_delta_outbox_without_duplicates`, alongside
+`reapplying_identical_package_and_version_emits_no_duplicate_outbox` and the
+related store/enumeration/pipeline tests. This supports the narrower claim that
+unchanged metadata does not duplicate outbox work and a real facet change emits
+one notification. It does **not** close L43-ic: complete changeset/delta
+representation and propagation through ingest, store, and search remain open.
+
+### L5 update — serde_json corpus lowering is bounded and green
+
+The registered `rust_serde_json_diagnosis` real-corpus test now provisions its
+complete offline Cargo dependency closure and runs under the 300-second
+acceptance budget: 5,201 entries in 38,079.7 ms (build scripts 485.8 ms,
+lowering 35,890.9 ms). The former timeout was missing offline metadata
+dependencies, first `automod`, rather than an undiagnosed lowering hang.
+
+### L49 update — bounded mutation gate executes in Nix
+
+`cargo-mutants 27.1.0` is now reproducibly provided by the Nix dev shell. The
+bounded six-mutant library run completed with five mutants caught, zero
+survived, and one unviable result; its baseline and zero-limit regression both
+pass. This replaces the earlier “tool unavailable” blocker with an executable
+gate.
+
+### Categories whose deletion would still be dishonest
+
+The following categories remain open, partial, or explicitly environment-bound:
+
+- unresolved corpus/IR correctness and measurement: L1, L3, L19, L23,
+  source-location remainder L31/L42, and remaining foreign/type/value gaps;
+- Java's Lombok source/JDK barrier and the broader dependency-artifact policy
+  (L45);
+- full index changesets/search propagation (L43-ic), live transport/watermark
+  and other integration boundaries, and multi-package memory-pressure testing;
+- semantic-search runtime/model provisioning and default-build availability;
+- remote/shared package and IR storage, including the still-limited archive
+  boundary;
+- MCP/application wiring and remaining daemon/file-watching stubs (L35/L37);
+- real-VM sandbox infrastructure (L26) and cross-platform/Linux validation;
+- GUI/backend source jumping, provenance/metadata incompleteness, and remaining
+  producer location gaps;
+- unverified or partial historical claims and reproducibility/packaging
+  boundaries recorded by the older register.
+
+Python support and facet-delta tests update the current state, but neither
+justifies deleting the historical audit or declaring the remaining categories
+resolved.
 
 ## Answering the three questions
 
@@ -858,3 +938,74 @@ the honest one to make and being wrong about it is the good outcome.
 actually holds is: **clone HEAD into a fresh directory and build it.** Everything
 weaker — including four `#[test]`s written specifically to catch this class —
 measures the machine that has the bug.
+
+---
+
+# 2026-08-15 — mechanical defects closed against the 2026-08-08 register
+
+The 2026-08-08 "Still open, honestly" table is the previous snapshot. This
+section is what changed in this session. Tests were written first and confirmed
+red, then implemented.
+
+## Closed here
+
+| row | what landed | proof |
+|---|---|---|
+| L40 | C# namespaces declared as `Module` (`N:{name}`); member Roslyn doc-ids stored as aliases | `oracle_namespace_is_declared_as_a_module`, `method_carries_its_roslyn_doc_id_as_an_alias` |
+| L49-cs | `ParamAttribute::Out` and `ParamAttribute::Kwargs` added; C# `out` ≠ `ref`; Python `**kwargs` ≠ `*args` | `out_parameter_is_not_the_same_attribute_as_ref_parameter`, `varargs_and_kwargs_are_not_the_same_param_attribute` |
+| L43-ic | Reapplying unchanged version metadata no longer emits duplicate outbox upserts | `reapplying_identical_package_and_version_emits_no_duplicate_outbox` plus 9 store, 13 enumeration, and 4 pipeline tests |
+| L3 (producer remainder) | Enum variants, impls, and HIR fields take `docs::cfg_expr` instead of `cfg: None` | `cfg_on_an_enum_variant_survives_lowering` |
+| L53 | clang visits `ClassTemplatePartialSpecialization` | `partial_template_specialization_is_extracted` |
+| L54 | clang requests a detailed preprocessing record and extracts `#define` as a named var | `macro_definition_is_extracted_as_a_named_declaration` |
+| F1 | `qualified_display_name` collapses adjacent identical path segments | `qualified_display_name_does_not_repeat_the_crate_root_segment` |
+| L51 | Proc-macro unavailability is `LoadCompleteness.proc_macros`, not a `warn!` and not `UnsupportedConstruct` | `missing_proc_macro_server_is_recorded_and_is_not_a_hard_error`, `proc_macro_degraded_is_not_mapped_to_unsupported_construct` |
+| L48-ic (2 clauses) | `HttpTransport` (`reqwest` blocking) and `FileWatermarkStore` (JSON on disk) implement the ingest traits alongside the fixtures | `http_transport_fetches_and_honors_etag`, `file_watermark_store_survives_reopen` |
+| L56 | GUI `Shell` owns a 60s posture recheck task and re-engages the gate if grace expires mid-session | `shell_arms_an_account_posture_recheck_while_the_window_stays_open` |
+
+L40 is only the namespace/alias half; oracle diagnostics and C# array-rank /
+`Decimal` gaps remain. L3 `attrs`/`aliases` on Rust symbols remain empty.
+L48-ic's *follower loop* is still unwired in `ingest/main.rs` (the binary now
+constructs the live types and exits; deployment still owns the catalog writer
+loop). L51's corpus fixture still does not assert on a proc-macro-derived item.
+
+## Still open, honestly (after this session)
+
+| row | status |
+|---|---|
+| L43-ic | Conditional version deltas now suppress unchanged outbox upserts; full changeset/search propagation remains future work. |
+| L45 (16 packages) | Corpus-provisioning work, one Maven artifact at a time. |
+| L41 | Semantic search; blocked on a model artifact. |
+| L5 | serde_json still times out (>300 s); still no diagnosis. |
+| L8 | Durable SHA-256 archive caching now supports reopen-by-digest and `ProducerSource` lowering from PURLs; shared IPLD/iroh package-and-IR storage remains open. |
+| L26 | sandbox real-VM tests: `smolvm`/`libkrun` / `NUDOX_GUEST_ROOTFS`. Environmental. |
+| L49 (mutants) | A bounded executable mutation gate now reports whether `cargo-mutants` is available; execution remains blocked here because the tool is unavailable. |
+| L27, L32, L34, L46-prop | Unchanged or partial; see their detailed entries. |
+| L31 / L42 | Source-location IR exists; GUI jumping and remaining `0..0` producer sites are a separate pass. |
+| L52 | Typed build-constraint diagnostics now expose excluded Go declarations; cross-platform oracle execution remains environment-dependent. |
+| L55 | Typed `generatorSupport: unavailable` metadata exposes the C# limitation; source generators still do not run. |
+| L48 (Linux) | Nothing has been tested on Linux from this host. |
+
+---
+
+# 2026-08-16 — latest Java artifact-coverage result
+
+Re-run under the repository's Nix dev shell (`javac 21.0.11`):
+
+```text
+nix develop -c cargo test -p nudox-languages --test java_corpus_sweep -- --nocapture
+```
+
+The suite's nine assertions passed and its diagnostic sweep now lowers **21/22**
+Maven corpus entries. Kafka and Retrofit were closed by adding an explicit,
+per-package binary dependency classpath; those jars are Nix-pinned under
+`result/.class-path`, passed only through `--class-path`, and are never source
+walked or lowered. Lombok is the sole remaining entry:
+
+| entry | established boundary |
+|---|---|
+| `org.projectlombok:lombok:1.18.30` | The default release rejects Lombok's `@interface var`; lowering the release unmasks JDK-internal/compiler API and incomplete-source-jar dependencies. |
+
+The remaining Lombok assertion deliberately proves its known failure mode. This
+improves the dated coverage result from the stale 5/22, 6/22, and 19/22
+snapshots above, but does **not** close L45: Lombok's source incompleteness and
+the general dependency-artifact policy remain open.

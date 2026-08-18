@@ -18,8 +18,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nudox_ir::{body::Language, lower::Lowering};
 use crate::{PackageSource, Producer, ProducerError, ProducerId, oracle};
+use nudox_ir::{body::Language, lower::Lowering};
 
 use crate::csharp::schema::Extraction;
 
@@ -28,13 +28,6 @@ pub const ORACLE_PATH_ENV: &str = "NUDOX_CSHARP_ORACLE";
 
 /// Overrides the `dotnet` executable used to host the oracle.
 pub const DOTNET_ENV: &str = "NUDOX_DOTNET";
-
-/// The schema version this crate understands.
-///
-/// The oracle stamps its own version into `format`; a mismatch is rejected
-/// rather than parsed optimistically, because the fields that moved would
-/// otherwise deserialize to their defaults and look like an API that shrank.
-const SUPPORTED_FORMAT: u32 = 1;
 
 /// The C# package producer: `dotnet oracle.dll` → [`Extraction`] → IR.
 ///
@@ -70,10 +63,11 @@ impl CSharpProducer {
     /// package that actually needed it, where the error can name it. See
     /// [`Self::is_available`] for the pre-flight check.
     pub fn from_env() -> Self {
-        let oracle = std::env::var_os(ORACLE_PATH_ENV).map_or_else(default_oracle_path, PathBuf::from);
+        let oracle =
+            std::env::var_os(ORACLE_PATH_ENV).map_or_else(default_oracle_path, PathBuf::from);
 
-        let dotnet = std::env::var_os(DOTNET_ENV)
-            .map_or_else(|| PathBuf::from("dotnet"), PathBuf::from);
+        let dotnet =
+            std::env::var_os(DOTNET_ENV).map_or_else(|| PathBuf::from("dotnet"), PathBuf::from);
 
         Self {
             dotnet,
@@ -158,14 +152,20 @@ impl Producer for CSharpProducer {
 
         let extraction: Extraction = oracle::run_json(Self::ID.0, &self.dotnet, args)?;
 
-        if extraction.format != SUPPORTED_FORMAT {
-            return Err(unacceptable(
-                src,
-                format!(
-                    "oracle emitted schema format {} but this producer implements {SUPPORTED_FORMAT}",
-                    extraction.format,
-                ),
-            ));
+        // A binary older than this build under-reports silently: every field
+        // is `#[serde(default)]`, so its missing `references` arrives as an
+        // empty `Vec` and `refs` answers "nothing here" for the whole
+        // language. Failing loudly is the only way that reads as a stale
+        // oracle rather than an empty package — see
+        // `schema::Extraction::staleness`, and `crate::go::producer::GoProducer`'s
+        // identical wiring for the incident that made this worth doing before
+        // it happens again in C#.
+        if let Some(stale) = extraction.staleness() {
+            return Err(ProducerError::OracleExit {
+                command,
+                code: "stale".to_owned(),
+                stderr: stale.to_string(),
+            });
         }
 
         if extraction.types.is_empty() {

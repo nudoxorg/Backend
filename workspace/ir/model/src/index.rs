@@ -384,9 +384,16 @@ impl<T: Indexable> PartialEq for Ref<T> {
         match (self, other) {
             (Ref::Local(a), Ref::Local(b)) => a == b,
             (Ref::Intro(a), Ref::Intro(b)) => a == b,
-            (Ref::Foreign { key: ka, target: ta }, Ref::Foreign { key: kb, target: tb }) => {
-                ka == kb && ta == tb
-            }
+            (
+                Ref::Foreign {
+                    key: ka,
+                    target: ta,
+                },
+                Ref::Foreign {
+                    key: kb,
+                    target: tb,
+                },
+            ) => ka == kb && ta == tb,
             _ => false,
         }
     }

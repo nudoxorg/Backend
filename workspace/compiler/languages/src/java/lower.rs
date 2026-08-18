@@ -106,11 +106,13 @@ use nudox_ir::kinds::record::{FieldAttribute, FieldKey};
 use nudox_ir::kinds::sum::VariantForm;
 use nudox_ir::kinds::trait_::TraitFlags;
 use nudox_ir::kinds::ty::Variance;
+use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
 
 use crate::java::javadoc::{self, ParsedJavadoc};
 use crate::java::schema::{
     self, Annotation, Directive, EnumConstant, Extraction, Field as SchemaField, Method, Modifier,
-    NestingKind, Param, TypeDecl, TypeDeclKind, TypeMirror, TypeParam, Value, has_modifier, is_synthetic,
+    NestingKind, Param, TypeDecl, TypeDeclKind, TypeMirror, TypeParam, Value, has_modifier,
+    is_synthetic,
 };
 
 // ── JavaId ──────────────────────────────────────────────────────────────────
@@ -137,7 +139,12 @@ impl JavaId {
         JavaId(format!("{owner_qualified}#{member_name}"))
     }
 
-    fn method(owner_qualified: &str, name: &str, params: &[Param], typevar_bounds: &TypevarBounds<'_>) -> Self {
+    fn method(
+        owner_qualified: &str,
+        name: &str,
+        params: &[Param],
+        typevar_bounds: &TypevarBounds<'_>,
+    ) -> Self {
         let sig = params
             .iter()
             .map(|p| type_erase(&p.ty, typevar_bounds))
@@ -192,7 +199,10 @@ type TypevarBounds<'a> = HashMap<&'a str, &'a TypeMirror>;
 /// overload) that this fix has no real corpus evidence for. Leaving them as
 /// their bare name preserves prior, already-correct-for-this-case behavior;
 /// only the bounded case this sweep actually found broken is changed.
-fn typevar_bounds_map<'a>(class_type_params: &'a [TypeParam], method_type_params: &'a [TypeParam]) -> TypevarBounds<'a> {
+fn typevar_bounds_map<'a>(
+    class_type_params: &'a [TypeParam],
+    method_type_params: &'a [TypeParam],
+) -> TypevarBounds<'a> {
     let mut map = HashMap::new();
     for tp in class_type_params.iter().chain(method_type_params.iter()) {
         if let Some(bound) = tp.bounds.first() {
@@ -207,11 +217,11 @@ fn typevar_bounds_map<'a>(class_type_params: &'a [TypeParam], method_type_params
 /// reports source names.
 fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
     match t {
-        TypeMirror::Primitive { name, .. } | TypeMirror::Declared { name, .. } => {
-            name.to_string()
-        }
+        TypeMirror::Primitive { name, .. } | TypeMirror::Declared { name, .. } => name.to_string(),
         TypeMirror::Void => "void".to_owned(),
-        TypeMirror::Array { component, .. } => format!("{}[]", type_erase(component, typevar_bounds)),
+        TypeMirror::Array { component, .. } => {
+            format!("{}[]", type_erase(component, typevar_bounds))
+        }
         TypeMirror::Typevar { name, .. } => typevar_bounds.get(name.as_ref()).map_or_else(
             || name.to_string(),
             |bound| type_erase(bound, typevar_bounds),
@@ -330,13 +340,13 @@ fn make_sym(
     source: &str,
     line: Option<u64>,
 ) -> Symbol {
-    let span_end = line.unwrap_or(0) as usize;
+    let span = source_line_span(source, line);
     Symbol {
         name: name.to_owned(),
         visibility: vis,
         documentation: doc.unwrap_or_default(),
         source: PathBuf::from(source),
-        span: 0..span_end,
+        span,
         aliases: Box::new([]),
         deprecation: depr,
         doc_links: {
@@ -345,6 +355,7 @@ fn make_sym(
                 .map(|t| DocLink {
                     target: t.clone(),
                     label: None,
+                    source_span: None,
                 })
                 .collect();
             links.into_boxed_slice()
@@ -352,6 +363,38 @@ fn make_sym(
         attrs: annotation_attrs(attrs).into_boxed_slice(),
         cfg: None,
     }
+}
+
+/// Convert javadoc's 1-based source line into a byte range for that line.
+///
+/// The doclet exposes a file and line, but not a byte offset. A line-sized
+/// range is still a genuine navigation target and, unlike `0..line`, uses
+/// UTF-8 byte offsets in the file named by `source`.
+fn source_line_span(source: &str, line: Option<u64>) -> std::ops::Range<usize> {
+    let Some(line) = line.filter(|line| *line > 0) else {
+        return 0..0;
+    };
+    let Ok(text) = std::fs::read(source) else {
+        return 0..0;
+    };
+    let line_index = usize::try_from(line - 1).unwrap_or(usize::MAX);
+    let mut offset = 0usize;
+    let mut start = None;
+    for (index, chunk) in text.split_inclusive(|byte| *byte == b'\n').enumerate() {
+        if index == line_index {
+            start = Some(offset);
+            break;
+        }
+        offset = offset.saturating_add(chunk.len());
+    }
+    let Some(start) = start else {
+        return 0..0;
+    };
+    let end = text[start..]
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(text.len(), |offset| start + offset);
+    start..end
 }
 
 // ── Visibility ───────────────────────────────────────────────────────────────
@@ -480,7 +523,9 @@ pub fn lower_type(ctx: &mut LoweringCtx<'_>, t: &TypeMirror) -> Type {
 /// limitation instead of fabricating a coordinate that would render as a
 /// working hyperlink and never resolve.
 fn java_foreign_key(fqn: &str) -> ForeignKey {
-    let (namespace, simple) = fqn.rfind('.').map_or(("", fqn), |i| (&fqn[..i], &fqn[i + 1..]));
+    let (namespace, simple) = fqn
+        .rfind('.')
+        .map_or(("", fqn), |i| (&fqn[..i], &fqn[i + 1..]));
     ForeignKey::in_namespace(EcosystemId::new("maven"), namespace, fqn, simple)
 }
 
@@ -748,6 +793,21 @@ pub fn lower_extraction(ctx: &mut LoweringCtx<'_>, extraction: &Extraction) {
     // Types (flat list; nesting expressed via parent pointer).
     for decl in &extraction.types {
         lower_type_decl(ctx, decl, extraction);
+    }
+    for reference in &extraction.references {
+        let Ok(start) = u32::try_from(reference.start) else {
+            continue;
+        };
+        let Ok(end) = u32::try_from(reference.end) else {
+            continue;
+        };
+        ctx.low.record_occurrence(
+            JavaId(reference.owner.to_string()),
+            JavaId(reference.target.to_string()),
+            ReferenceKind::FunctionCall,
+            Confidence::Oracle,
+            RelSpan::new(start, end),
+        );
     }
 }
 
@@ -1664,7 +1724,12 @@ fn lower_method(
 }
 
 /// Lower a constructor into a `Function` entry with no receiver.
-fn lower_constructor(ctx: &mut LoweringCtx<'_>, owner_qname: &str, m: &Method, class_type_params: &[TypeParam]) {
+fn lower_constructor(
+    ctx: &mut LoweringCtx<'_>,
+    owner_qname: &str,
+    m: &Method,
+    class_type_params: &[TypeParam],
+) {
     let typevar_bounds = typevar_bounds_map(class_type_params, &m.type_params);
     let mid = JavaId::method(owner_qname, "<init>", &m.params, &typevar_bounds);
     let parsed = ctx.parse_doc(m.doc.as_deref(), m.doc_kind.as_deref(), Some(owner_qname));
@@ -3026,6 +3091,30 @@ mod tests {
         assert_ne!(
             plain_key.path, other_key.path,
             "two distinct external types must carry distinct keys"
+        );
+    }
+
+    #[test]
+    fn source_line_becomes_a_real_byte_span() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let path = dir.path().join("Example.java");
+        std::fs::write(&path, "class Example {}\nvoid run() {}\n").expect("write fixture");
+
+        let sym = make_sym(
+            "run",
+            Visibility::Public,
+            None,
+            None,
+            &[],
+            &[],
+            path.to_str().expect("utf8 path"),
+            Some(2),
+        );
+
+        assert_eq!(sym.source, path);
+        assert_eq!(
+            &std::fs::read(&sym.source).expect("read fixture")[sym.span.clone()],
+            b"void run() {}"
         );
     }
 }

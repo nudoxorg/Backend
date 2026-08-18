@@ -29,7 +29,8 @@ impl PackageSearchIndex {
     /// Open (or create) the replica-local index at `directory`. Hydration
     /// happens per-tick via [`Self::synchronize`], off the catalog outbox feed.
     pub fn open(directory: &Path) -> ServerResult<Self> {
-        let index = PackageIndex::open(directory).map_err(crate::server::registry::RegistryError::from)?;
+        let index =
+            PackageIndex::open(directory).map_err(crate::server::registry::RegistryError::from)?;
         Ok(Self {
             index: tokio::sync::Mutex::new(index),
         })
@@ -170,6 +171,7 @@ impl RegistrySearchSurface {
 
 #[cfg(test)]
 mod tests {
+    use crate::ecosystem::PackageNameExt as _;
     use crate::server::registry::{
         GlobalPackage, Package,
         metadata::SearchFacets,
@@ -177,7 +179,6 @@ mod tests {
         search::{PackageSearchRequest, tantivy::PackageIndex},
     };
     use heart::{Edition, Language, PackageVersion, RegistryOrigin, ResolutionState, Toolchain};
-    use crate::ecosystem::PackageNameExt as _;
     use smol_str::SmolStr;
 
     /// Create a temporary directory for tantivy.

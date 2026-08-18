@@ -64,20 +64,40 @@ pub fn gen_stamp(seed: u8) -> index::ids::GenerationStamp {
 /// The repository root, derived from `CARGO_MANIFEST_DIR` (this package is
 /// `workspace/index`, two levels below the root).
 pub fn repo_root() -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 /// The real, checked-in corpus manifest — the exact source
-/// `nix build .#checks.corpus` reads. Tests key off this file (not off re-derived
-/// directory-name guesses) so every corpus fact this suite relies on is
-/// exactly the fact the fetch step itself relied on.
+/// `nix build .#checks.<system>.corpus` reads. Tests key off this file (not
+/// off re-derived directory-name guesses) so every corpus fact this suite
+/// relies on is exactly the fact the fetch step itself relied on.
+///
+/// This is executable Nix (`nix/corpus.nix`), not a second hand-maintained
+/// TOML manifest — see that file's own header comment. It is therefore
+/// parsed by evaluating it with `nix-instantiate`, not with the `toml` crate:
+/// mirrors `workspace/nudox-engine/tests/store/corpus_contract.rs`'s
+/// `manifest_keys_with_role`, the other place this repo reads this same file.
 pub fn corpus_manifest_path() -> std::path::PathBuf {
     repo_root().join("nix/corpus.nix")
 }
 
-/// Where `nix build .#checks.corpus` materializes fixtures.
+/// Where the real corpus fixtures live.
+///
+/// CI supplies `NUDOX_CORPUS_ROOT` from the pinned Nix corpus derivation. A
+/// developer checkout falls back to the conventional `result/` symlink, but a
+/// present environment variable is authoritative: a configured-but-missing
+/// corpus must fail loudly rather than silently reading a different tree.
 pub fn real_crates_root() -> std::path::PathBuf {
+    if let Some(root) = std::env::var_os("NUDOX_CORPUS_ROOT") {
+        let path = std::path::PathBuf::from(root);
+        assert!(
+            path.is_dir(),
+            "NUDOX_CORPUS_ROOT does not name a directory: {}",
+            path.display()
+        );
+        return path;
+    }
+
     repo_root().join("result")
 }
 
@@ -97,31 +117,38 @@ pub struct ManifestVersion {
     pub hash: String,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct ManifestFile {
-    packages: Vec<ManifestPackage>,
-}
-
 /// Parse the real corpus manifest (doctrine §4: real data, not a fixture this
-/// suite authored). Panics on a missing/malformed manifest — that is a repo
-/// setup defect, not a soft-skippable test outcome.
+/// suite authored). Panics on a missing/malformed manifest, or on a failed
+/// Nix evaluation — that is a repo setup defect, not a soft-skippable test
+/// outcome.
 pub fn load_corpus_manifest() -> Vec<ManifestPackage> {
     let path = corpus_manifest_path();
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    let parsed: ManifestFile = toml::from_str(&text)
-        .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
-    parsed.packages
+    let output = std::process::Command::new("nix-instantiate")
+        .args([
+            "--eval",
+            "--raw",
+            "-E",
+            &format!("builtins.toJSON (import {}).packages", path.display()),
+        ])
+        .output()
+        .unwrap_or_else(|error| {
+            panic!("evaluate {} with nix-instantiate: {error}", path.display())
+        });
+    assert!(
+        output.status.success(),
+        "nix-instantiate --eval {} failed: {}",
+        path.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("parse evaluated {}: {error}", path.display()))
 }
 
 /// Filesystem-safe directory name, mirroring `nix build .#checks.corpus`'s
 /// `safe-dir-name` byte-for-byte (`/` and `:` both become `__`), so this
 /// resolves exactly the directories the fetch script wrote.
 pub fn safe_dir_name(name: &str, version: &str) -> String {
-    format!(
-        "{}-{version}",
-        name.replace(['/', ':'], "__")
-    )
+    format!("{}-{version}", name.replace(['/', ':'], "__"))
 }
 
 /// One real, on-disk fixture: which package/version the manifest says it is,

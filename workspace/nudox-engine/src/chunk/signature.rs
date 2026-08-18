@@ -54,6 +54,7 @@
 //! when the ref is resolved (`Intro` or `Foreign`), and `target = None` for
 //! unresolved `Local` refs (which should not appear in sealed tables).
 
+use crate::store::package::PackageView;
 use nudox_ir::{
     entry::{Entry, Visibility},
     index::Ref,
@@ -64,7 +65,6 @@ use nudox_ir::{
         ty::{Primitive, TemplatePart, TupleElement, Variance, Width},
     },
 };
-use crate::store::package::PackageView;
 
 use crate::wire::{SharedStr, SigToken, SymbolKey};
 
@@ -870,10 +870,7 @@ fn resolve_nominal(
         // Only *clickability* varies with the corpus — `target` is `Some` only
         // when a resolver actually placed the reference, so a token is never a
         // hyperlink to nothing.
-        Ref::Foreign { key, target } => (
-            SharedStr::from(key.display.as_ref()),
-            target.clone(),
-        ),
+        Ref::Foreign { key, target } => (SharedStr::from(key.display.as_ref()), target.clone()),
         Ref::Local(_) => {
             // This comment used to say "Should not appear in a sealed table"
             // while 35% of memchr's functions rendered `?`. It is true now:
@@ -1028,9 +1025,8 @@ fn display_path(
 /// conservatively treated as "not a re-export", which only means it can still
 /// contribute to disambiguation, never that a real collision gets hidden.
 fn is_reexport(view: &nudox_ir::view::IrView, intro: nudox_ir::change::IntroId) -> bool {
-    view.entry(intro).is_some_and(|entry| {
-        matches!(entry.kind().as_owned_kind(), None | Some(Kind::Reexport(_)))
-    })
+    view.entry(intro)
+        .is_some_and(|entry| matches!(entry.kind().as_owned_kind(), None | Some(Kind::Reexport(_))))
 }
 
 /// Collapse adjacent identical segments in a `.`-joined moniker path.
@@ -1043,7 +1039,7 @@ fn is_reexport(view: &nudox_ir::view::IrView, intro: nudox_ir::change::IntroId) 
 /// ever turned into crumbs or signature text — which is what lets
 /// `display_path` fix the *label* rather than relying on every renderer to
 /// post-process it.
-fn collapse_repeated_segments(path: &str) -> Vec<&str> {
+pub(crate) fn collapse_repeated_segments(path: &str) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
     for seg in path.split('.') {
         if out.last() != Some(&seg) {
@@ -1181,6 +1177,7 @@ fn push_visibility(toks: &mut Vec<SigToken>, vis: Visibility) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::package::{PackageView, Provenance};
     use nudox_ir::{
         apply::PristineIntroTable,
         change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -1188,12 +1185,11 @@ mod tests {
         index::Ref,
         kind::Kind,
         kinds::{
-            Alias, Const, Field, FieldKey, Function, GenericParam, Module, Record, Type,
+            Alias, Const, ConstExpr, Field, FieldKey, Function, GenericParam, Module, Record, Type,
             ty::Primitive,
         },
         view::IrView,
     };
-    use crate::store::package::{PackageView, Provenance};
 
     // -----------------------------------------------------------------------
     // Test helpers
@@ -1292,7 +1288,10 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "struct");
         let t = text_of(&toks);
-        assert!(t.starts_with("pub struct Point"), "visibility must be in signature: {t}");
+        assert!(
+            t.starts_with("pub struct Point"),
+            "visibility must be in signature: {t}"
+        );
         assert!(t.contains("struct"), "expected struct: {t}");
         assert!(t.contains("Point"), "expected name: {t}");
     }
@@ -1328,7 +1327,12 @@ mod tests {
                     Kind::Const(
                         Const::builder()
                             .ty(Type::U64)
-                            .value("1024".to_owned())
+                            .value(
+                                ConstExpr::builder()
+                                    .ty(Type::U64)
+                                    .source("1024".to_owned())
+                                    .build(),
+                            )
                             .build(),
                     ),
                 ),
@@ -1380,7 +1384,10 @@ mod tests {
         let toks = tokens(e, &pkg);
         assert_no_empty(&toks, "fn noop");
         let t = text_of(&toks);
-        assert!(t.starts_with("pub fn noop"), "visibility must be in signature: {t}");
+        assert!(
+            t.starts_with("pub fn noop"),
+            "visibility must be in signature: {t}"
+        );
         assert!(t.contains("fn"), "expected fn: {t}");
         assert!(t.contains("noop"), "expected name: {t}");
         assert!(t.contains("()"), "expected parens: {t}");

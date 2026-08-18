@@ -13,32 +13,34 @@ pub mod rich;
 
 pub use rich::{RichMetadata, SearchFacets};
 
-pub use heuristics::{normalize_keyword, Specifics, Synonyms};
+pub use heuristics::{Specifics, Synonyms, normalize_keyword};
 
 /// The metadata row for one package: its identity and the per-store
 /// materialization links the read plane joins on.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageMetadata {
-	/// The deterministic global identity.
-	pub id: PackageId,
+    /// The deterministic global identity.
+    pub id: PackageId,
 
-	/// Whether each derived store has materialized this generation.
-	pub links: StoreLinks,
+    /// Whether each derived store has materialized this generation.
+    pub links: StoreLinks,
 }
 
 /// Which derived stores currently hold this package's latest generation — the
 /// cross-store link bitmap the outbox pollers advance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct StoreLinks {
-	/// Materialized in the vector store (qdrant).
-	pub vector: bool,
-	/// Materialized in the graph store (terminus).
-	pub graph: bool,
-	/// Materialized in the text index (tantivy).
-	pub text: bool,
+    /// Materialized in the vector store (qdrant).
+    pub vector: bool,
+    /// Materialized in the graph store (terminus).
+    pub graph: bool,
+    /// Materialized in the text index (tantivy).
+    pub text: bool,
 }
 
 impl StoreLinks {
-	/// Whether every derived store is caught up to this generation.
-	pub const fn fully_linked(self) -> bool { self.vector && self.graph && self.text }
+    /// Whether every derived store is caught up to this generation.
+    pub const fn fully_linked(self) -> bool {
+        self.vector && self.graph && self.text
+    }
 }

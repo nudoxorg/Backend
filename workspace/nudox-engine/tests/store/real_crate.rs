@@ -63,12 +63,15 @@ use nudox_languages::{PackageSource, produce};
 
 /// Where `scripts/fetch-real-crate.sh axum 0.8.9` puts the checkout.
 fn axum_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(
+        |_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        }, PathBuf::from)
+        },
+        PathBuf::from,
+    )
 }
 
 /// Where `scripts/fetch-real-crate.sh <name> <version>` puts a crate checkout.
@@ -425,26 +428,28 @@ fn impl_members_are_keyed_under_their_impl() {
     for id in &fmt_entries {
         if let Some(parent_id) = view.parent_of(*id)
             && let Some(parent_entry) = view.entry(parent_id)
-                && let Some(k) = parent_entry.kind().as_owned_kind()
-                    && k.discriminant() != KindDiscriminant::Impl {
-                        // Walk one more level to identify the grandparent
-                        // (the module that *should* contain the failing impl).
-                        let grandparent_name = view
-                            .parent_of(parent_id)
-                            .and_then(|gid| view.entry(gid)).map_or_else(|| "<root>".to_owned(), |ge| ge.sym().name.clone());
+            && let Some(k) = parent_entry.kind().as_owned_kind()
+            && k.discriminant() != KindDiscriminant::Impl
+        {
+            // Walk one more level to identify the grandparent
+            // (the module that *should* contain the failing impl).
+            let grandparent_name = view
+                .parent_of(parent_id)
+                .and_then(|gid| view.entry(gid))
+                .map_or_else(|| "<root>".to_owned(), |ge| ge.sym().name.clone());
 
-                        non_impl_parents.push(format!(
-                            "fmt@{}  parent «{}» ({:?})  grandparent «{}»\n\
+            non_impl_parents.push(format!(
+                "fmt@{}  parent «{}» ({:?})  grandparent «{}»\n\
                              \x20\x20hint: the impl that should own this `fmt` \
                              was not declared — check for a duplicate impl_id \
                              in the block containing «{}»",
-                            &id.to_hex()[..12],
-                            parent_entry.sym().name,
-                            k.discriminant(),
-                            grandparent_name,
-                            parent_entry.sym().name,
-                        ));
-                    }
+                &id.to_hex()[..12],
+                parent_entry.sym().name,
+                k.discriminant(),
+                grandparent_name,
+                parent_entry.sym().name,
+            ));
+        }
     }
 
     assert!(
@@ -481,7 +486,8 @@ fn same_name_in_different_scopes_has_distinct_ids() {
     for (id, entry) in view.entries() {
         let parent_name = view
             .parent_of(id)
-            .and_then(|p| view.entry(p)).map_or_else(|| "<root>".to_string(), |e| e.sym().name.clone());
+            .and_then(|p| view.entry(p))
+            .map_or_else(|| "<root>".to_string(), |e| e.sym().name.clone());
         by_name
             .entry(entry.sym().name.clone())
             .or_default()
@@ -605,25 +611,27 @@ fn all_intro_refs_resolve_locally() {
         // Check Node children/parent refs.
         for child_ref in entry.children() {
             if let Ref::Intro(target) = child_ref
-                && !live.contains(target) {
-                    dangling.push(format!(
-                        "entry «{}» ({}) has Intro child ref {} that is not in the local table",
-                        entry.sym().name,
-                        &id.to_hex()[..12],
-                        &target.to_hex()[..12]
-                    ));
-                }
+                && !live.contains(target)
+            {
+                dangling.push(format!(
+                    "entry «{}» ({}) has Intro child ref {} that is not in the local table",
+                    entry.sym().name,
+                    &id.to_hex()[..12],
+                    &target.to_hex()[..12]
+                ));
+            }
         }
         if let Some(parent_ref) = entry.parent()
             && let Ref::Intro(target) = parent_ref
-                && !live.contains(target) {
-                    dangling.push(format!(
-                        "entry «{}» ({}) has Intro parent ref {} that is not in the local table",
-                        entry.sym().name,
-                        &id.to_hex()[..12],
-                        &target.to_hex()[..12]
-                    ));
-                }
+            && !live.contains(target)
+        {
+            dangling.push(format!(
+                "entry «{}» ({}) has Intro parent ref {} that is not in the local table",
+                entry.sym().name,
+                &id.to_hex()[..12],
+                &target.to_hex()[..12]
+            ));
+        }
 
         // Also check that every Impl's self_ty and of Nominal refs resolve.
         if let Some(Kind::Impl(impl_)) = entry.kind().as_owned_kind() {
@@ -649,9 +657,10 @@ fn all_intro_refs_resolve_locally() {
                 dangling.push(msg);
             }
             if let Some(of) = &impl_.of
-                && let Some(msg) = check_ty_ref(of, "of") {
-                    dangling.push(msg);
-                }
+                && let Some(msg) = check_ty_ref(of, "of")
+            {
+                dangling.push(msg);
+            }
         }
     }
 
@@ -985,15 +994,16 @@ fn all_impl_members_are_parented_to_an_impl() {
         if let Some(parent_id) = view.parent_of(*id) {
             if let Some(parent_entry) = view.entry(parent_id)
                 && let Some(k) = parent_entry.kind().as_owned_kind()
-                    && k.discriminant() != KindDiscriminant::Impl {
-                        non_impl_parents.push(format!(
-                            "{}@{}… has parent «{}» (kind={:?})",
-                            name,
-                            &id.to_hex()[..12],
-                            parent_entry.sym().name,
-                            k.discriminant()
-                        ));
-                    }
+                && k.discriminant() != KindDiscriminant::Impl
+            {
+                non_impl_parents.push(format!(
+                    "{}@{}… has parent «{}» (kind={:?})",
+                    name,
+                    &id.to_hex()[..12],
+                    parent_entry.sym().name,
+                    k.discriminant()
+                ));
+            }
         } else {
             non_impl_parents.push(format!(
                 "{}@{}… has no parent at all",
@@ -1186,9 +1196,7 @@ fn occurrences_are_recorded_for_axum_functions() {
          IrView::add_occurrence must not silently drop or deduplicate occurrences."
     );
 
-    eprintln!(
-        "occurrence test passed: {total_in_view} Oracle occurrences across axum"
-    );
+    eprintln!("occurrence test passed: {total_in_view} Oracle occurrences across axum");
 }
 
 /// Symbol names must not contain any character that is only valid inside a

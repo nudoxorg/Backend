@@ -20,8 +20,15 @@ pub enum Health {
     Ready,
     /// Serving, but one or more backends are degraded.
     Degraded(Vec<BackendKind>),
-    /// Not serving.
-    Down,
+    /// Not serving; carries the backends that took it down.
+    ///
+    /// The list is the whole reason this is not a unit variant. `/readyz`
+    /// previously answered a `Down` verdict with `{"ready":false,
+    /// "degraded":[]}` — "not ready, and nothing is wrong" — because the
+    /// impaired set [`Server::health`] had already computed was discarded at
+    /// the point it became most useful. An operator reading a 503 needs to
+    /// know *which* store is down at least as much as one reading a 200.
+    Down(Vec<BackendKind>),
 }
 
 impl<M: EmbeddingModel> Server<M> {
@@ -41,7 +48,16 @@ impl<M: EmbeddingModel> Server<M> {
                 crate::server::registry::health::Health::Down => {
                     if sourced.role == heart::SourceRole::Definitive {
                         // The base is required; without it the server cannot serve.
-                        return Health::Down;
+                        // Report which backends took it down: a 503 whose body
+                        // names no impaired store sends the reader to guess.
+                        let mut down: Vec<BackendKind> = probes
+                            .iter()
+                            .filter(|probe| !probe.healthy)
+                            .map(|probe| probe.backend)
+                            .collect();
+                        down.sort_by_key(|backend| format!("{backend}"));
+                        down.dedup();
+                        return Health::Down(down);
                     }
                     // A dead overlay is shed, not fatal: every backend it fronts is
                     // reported degraded so operators see it.
@@ -70,13 +86,37 @@ impl<M: EmbeddingModel> Server<M> {
 
 /// Probe one source's backends concurrently via [`Probeable`].
 ///
-/// The replica-local package index is pure process-local state (opened at
-/// assemble); it is not a remote backend and is not probed here.
+/// # Why the process-local text index is probed too
+///
+/// It used to be excluded, on the reasoning that it "is pure process-local
+/// state (opened at assemble); it is not a remote backend". That is true about
+/// where it lives and wrong about what readiness means. `/readyz` answers "can
+/// this process serve requests", not "are my remote dependencies up", and the
+/// symbol-search index is the store every `/search` reads. It is also the store
+/// most likely to vanish underneath a *running* process, because it is the only
+/// one that lives in a plain directory: on macOS `SourceConfig::data_directory`
+/// defaults under `$TMPDIR` (`/var/folders/...`), which the OS periodically
+/// purges.
+///
+/// Measured on macOS, 2026-08-16, against a live `nudox-serve` with `itoa`
+/// ingested: deleting the data directory made every `POST /search` answer
+/// `503 text index engine error` while `/readyz` kept answering
+/// `{"ready":true,"degraded":[]}`. A load balancer would have gone on routing
+/// to a replica that could not answer a single query. `TextIndex` had
+/// implemented [`Probeable`] the whole time and nothing ever called it — the
+/// dead-impl tell (docs/LIMITATIONS.md L35).
+///
+/// The probe deliberately does **not** treat an *empty* index as unhealthy: a
+/// server that has ingested nothing yet is genuinely ready to accept ingest,
+/// and zero hits from an empty corpus is an honest answer rather than a
+/// degraded one. What it catches is the index erroring, which is what a purged
+/// or corrupt directory actually does.
 async fn probe_source<M: EmbeddingModel>(stores: &SourceStores<M>) -> Vec<heart::Probe> {
-    let (catalog, object_store, qdrant) = tokio::join!(
+    let (catalog, object_store, qdrant, text) = tokio::join!(
         stores.global_store.probe(),
         stores.blobs.probe(),
         stores.semantics.probe(),
+        stores.text.probe(),
     );
-    vec![catalog, object_store, qdrant]
+    vec![catalog, object_store, qdrant, text]
 }

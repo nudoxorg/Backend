@@ -227,9 +227,30 @@ interface Symbol {
     # The records or classes that name this symbol as a base class or
     # implemented interface.
     #
-    # The non-Rust half of "who implements this": Java, C#, C++ and Go have no
-    # `impl` entry, so `class Foo implements Bar` lands here rather than in
-    # `Trait.implementors`.
+    # The non-Rust half of "who implements this": Java, C#, C++, Python and Go
+    # have no `impl` entry, so `class Foo implements Bar` lands here rather
+    # than in `Trait.implementors`.
+    #
+    # GO IS STRUCTURAL AND ITS SCOPE IS NARROWER. A Go type never *names* the
+    # interface it satisfies, so there is no `implements Bar` to read. The Go
+    # oracle computes satisfaction with `types.Implements` (method-set
+    # inclusion) and records it here for named types that are not themselves
+    # interfaces, checked against every non-empty interface declared **in the
+    # same module** — any package the oracle loaded, not only the satisfying
+    # type's own package. `main.AuthDeps` satisfied by `auth.Client` (two
+    # different packages of the same module, no import between them) is
+    # exactly the case this covers.
+    #
+    # The remaining scope limit: satisfaction of an interface declared in the
+    # standard library or an external dependency is NOT indexed, because the
+    # oracle only loads and emits declarations for packages within the target
+    # module (`packages.Load(cfg, "./...")` in oracle/go/main.go) — it never
+    # sees the standard library's or a dependency's own interface
+    # declarations to check against. That empty is a scope limit, not an
+    # absence of the relationship.
+    #
+    # `workspace/compiler/languages/tests/producer_capabilities.rs` pins which
+    # languages populate this at all.
     subtypes: [Symbol!]
 
     # The functions whose return type names this symbol.

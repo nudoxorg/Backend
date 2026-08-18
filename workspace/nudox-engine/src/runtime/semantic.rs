@@ -2,6 +2,14 @@
 
 use std::sync::Arc;
 
+/// Maximum number of resident packages waiting for semantic indexing.
+///
+/// Semantic indexing is deliberately best-effort: name/type search becomes
+/// available at package arrival, while embedding may lag. A bounded queue
+/// keeps a slow or failed embedder from retaining the entire multi-package
+/// corpus indefinitely.
+pub(crate) const SEMANTIC_QUEUE_CAPACITY: usize = 4;
+
 // ---------------------------------------------------------------------------
 // Semantic indexing — incremental, off the load path
 // ---------------------------------------------------------------------------
@@ -190,4 +198,35 @@ fn documents_of(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SEMANTIC_QUEUE_CAPACITY;
+    use std::sync::Arc;
+
+    #[test]
+    fn semantic_admission_is_bounded_and_does_not_accumulate_residency() {
+        let (tx, rx) = flume::bounded(SEMANTIC_QUEUE_CAPACITY);
+        let accounted: Vec<_> = (0..=SEMANTIC_QUEUE_CAPACITY)
+            .map(|n| Arc::new(vec![n; 1024]))
+            .collect();
+
+        for item in accounted.iter().take(SEMANTIC_QUEUE_CAPACITY) {
+            tx.try_send(Arc::clone(item))
+                .expect("capacity-sized admission must succeed");
+        }
+        assert_eq!(rx.len(), SEMANTIC_QUEUE_CAPACITY);
+        assert!(
+            tx.try_send(Arc::clone(&accounted[SEMANTIC_QUEUE_CAPACITY]))
+                .is_err(),
+            "a slow embedder must not accumulate beyond the fixed budget"
+        );
+
+        for _ in 0..SEMANTIC_QUEUE_CAPACITY {
+            rx.try_recv()
+                .expect("every admitted item must remain drainable");
+        }
+        assert!(rx.is_empty());
+    }
 }

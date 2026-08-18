@@ -19,13 +19,13 @@
 //! Acceptance (09b §16.4): a doc-only edit of one symbol in any-size corpus
 //! is exactly `infer_count == 1 && upsert_count == 1`.
 
+use crate::vector::core::StoreError;
 use crate::vector::core::key::{self, SymbolDelta, SymbolPartHashes};
 use crate::vector::core::model::{EmbeddingModel, Metric, ModelId};
 use crate::vector::core::recipe::{
     EmbedFacetsBuf, RECIPE_ID, TokenCounter, VectorName, build_embed_text,
 };
 use crate::vector::core::store::{Payload, PointId, VectorPoint, VectorStore};
-use crate::vector::core::StoreError;
 use crate::vector::core::{EmbedRole, Embedding, JinaCodeV2};
 use async_trait::async_trait;
 use heart::{ContentHash, SymbolId};

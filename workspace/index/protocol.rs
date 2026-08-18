@@ -12,8 +12,8 @@ use smol_str::SmolStr;
 use heart::Language;
 
 use crate::enums::{
-    AliasConfidence, EdgeKind, EdgeSource, IrStatus, LineageEvidence, LineageRelation, ListingStatus,
-    SourceKind,
+    AliasConfidence, EdgeKind, EdgeSource, IrStatus, LineageEvidence, LineageRelation,
+    ListingStatus, SourceKind,
 };
 use crate::ids::{ChannelTip, GenerationStamp, ObjectPackHash, PackageId, PackageStemId};
 
@@ -100,6 +100,45 @@ pub struct SourceAcquisitionWire {
     /// after the pack exists).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_package_uri: Option<String>,
+}
+
+/// The complete version payload carried by a reconciliation delta.
+///
+/// Keeping the payload separate from [`CatalogOp::UpsertVersion`] makes the
+/// add/change/remove classification explicit on the wire while preserving the
+/// existing producer-facing upsert operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionRecordWire {
+    /// The version identity and published coordinates.
+    pub coordinates: VersionCoordinates,
+    /// Publish instant.
+    pub published_at: Option<UnixMs>,
+    /// Toolchain reference.
+    pub toolchain: Option<ToolchainRef>,
+    /// SPDX license expression.
+    pub license: Option<String>,
+    /// Dependency edges.
+    pub edges: Vec<EdgeWire>,
+    /// Search facets.
+    pub facets: FacetWire,
+    /// Source acquisition provenance.
+    pub source: Option<SourceAcquisitionWire>,
+}
+
+/// One typed version reconciliation change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VersionDelta {
+    /// A version absent from the durable catalog was observed upstream.
+    Added { version: VersionRecordWire },
+    /// An existing version's payload changed upstream.
+    Changed { version: VersionRecordWire },
+    /// A previously observed version disappeared upstream.
+    Removed {
+        /// The owning stem.
+        stem_id: PackageStemId,
+        /// The removed version identity.
+        version_id: PackageId,
+    },
 }
 
 /// Upstream repository facts (INDEX-PLAN §8 `repo_facts`).
@@ -196,6 +235,11 @@ pub enum CatalogOp {
         /// Source acquisition provenance.
         source: Option<SourceAcquisitionWire>,
     },
+    /// Apply one add/change/remove version reconciliation delta.
+    VersionDelta {
+        /// The typed version change.
+        delta: VersionDelta,
+    },
     /// Replace repository facts for a stem.
     SetRepoFacts {
         /// The stem.
@@ -282,6 +326,7 @@ impl CatalogOp {
         match self {
             CatalogOp::UpsertPackage { .. } => "upsert_package",
             CatalogOp::UpsertVersion { .. } => "upsert_version",
+            CatalogOp::VersionDelta { .. } => "version_delta",
             CatalogOp::SetRepoFacts { .. } => "set_repo_facts",
             CatalogOp::SetListing { .. } => "set_listing",
             CatalogOp::UpsertAdvisory { .. } => "upsert_advisory",

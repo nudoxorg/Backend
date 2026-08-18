@@ -42,10 +42,14 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::{
+    Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor,
+};
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use nudox_ir::entry::{Entry, Node, Symbol, Visibility};
@@ -53,10 +57,6 @@ use nudox_ir::index::RawRef;
 use nudox_ir::kind::Kind;
 use nudox_ir::kinds::Module;
 use nudox_ir::view::IrView;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::{
-    IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error,
-};
 
 use futures::stream::BoxStream;
 use nudox_engine::wire::{Gen, SearchEvent};
@@ -72,7 +72,10 @@ use nudox_engine::{
 const DIMS: usize = 3;
 
 fn lineage(name: &str) -> PackageLineageId {
-    PackageLineageId::new(EcosystemId::new("test-semantic-fail"), PackageName::new(name))
+    PackageLineageId::new(
+        EcosystemId::new("test-semantic-fail"),
+        PackageName::new(name),
+    )
 }
 
 fn intro(n: u8) -> IntroId {
@@ -257,7 +260,8 @@ async fn wait_for_n_loaded(engine: &nudox_engine::EngineHandle, n: usize) {
 async fn wait_for_document_calls(counter: &AtomicUsize, n: usize) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     while counter.load(Ordering::SeqCst) < n {
-        assert!(tokio::time::Instant::now() < deadline, 
+        assert!(
+            tokio::time::Instant::now() < deadline,
             "embedder saw only {} document batches within 5s, expected {n}",
             counter.load(Ordering::SeqCst)
         );

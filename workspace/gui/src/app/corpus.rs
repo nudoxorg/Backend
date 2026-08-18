@@ -165,8 +165,7 @@ pub fn select(
                 return Err(Error::RootNotADirectory { root });
             }
             let name = lookup(ENV_PACKAGE_NAME).unwrap_or_else(|| default_name(&root));
-            let version =
-                lookup(ENV_PACKAGE_VERSION).unwrap_or_else(|| "0.0.0".to_owned());
+            let version = lookup(ENV_PACKAGE_VERSION).unwrap_or_else(|| "0.0.0".to_owned());
             let language = match lookup(ENV_PACKAGE_LANGUAGE) {
                 Some(v) => parse_language(&v)?,
                 None => ProducerLanguage::Rust,
@@ -244,10 +243,7 @@ mod tests {
 
     #[test]
     fn empty_environment_is_fixtures() {
-        assert_eq!(
-            select(env(&[]), any_dir).unwrap(),
-            CorpusChoice::Fixtures,
-        );
+        assert_eq!(select(env(&[]), any_dir).unwrap(), CorpusChoice::Fixtures,);
     }
 
     #[test]

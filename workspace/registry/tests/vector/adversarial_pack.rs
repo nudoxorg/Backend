@@ -24,7 +24,9 @@ fn hardlink_entry_in_artifact_rejected_as_unsafe() {
     header.set_size(0);
     header.set_mode(0o644);
     // Link target: some file that might exist on the host.
-    builder.append_link(&mut header, "innocent.txt", "/etc/passwd").unwrap();
+    builder
+        .append_link(&mut header, "innocent.txt", "/etc/passwd")
+        .unwrap();
     let tar_bytes = builder.into_inner().unwrap();
     let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
     let hash = ContentHash::of_bytes(&artifact);
@@ -36,7 +38,10 @@ fn hardlink_entry_in_artifact_rejected_as_unsafe() {
         matches!(err, PackError::UnsafeEntry(_)),
         "hardlink entry must be UnsafeEntry, got {err:?}"
     );
-    assert!(!dest.exists(), "no partial extraction after hardlink rejection");
+    assert!(
+        !dest.exists(),
+        "no partial extraction after hardlink rejection"
+    );
 }
 
 /// A tar entry with entry type `Fifo` (special file) must be rejected.
@@ -47,7 +52,9 @@ fn fifo_entry_in_artifact_rejected_as_unsafe() {
     header.set_entry_type(tar::EntryType::Fifo);
     header.set_size(0);
     header.set_mode(0o644);
-    builder.append_data(&mut header, "pipe.fifo", std::io::empty()).unwrap();
+    builder
+        .append_data(&mut header, "pipe.fifo", std::io::empty())
+        .unwrap();
     let tar_bytes = builder.into_inner().unwrap();
     let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
     let hash = ContentHash::of_bytes(&artifact);
@@ -70,7 +77,9 @@ fn char_device_entry_in_artifact_rejected_as_unsafe() {
     header.set_entry_type(tar::EntryType::Char);
     header.set_size(0);
     header.set_mode(0o644);
-    builder.append_data(&mut header, "dev.char", std::io::empty()).unwrap();
+    builder
+        .append_data(&mut header, "dev.char", std::io::empty())
+        .unwrap();
     let tar_bytes = builder.into_inner().unwrap();
     let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
     let hash = ContentHash::of_bytes(&artifact);
@@ -93,7 +102,9 @@ fn block_device_entry_in_artifact_rejected_as_unsafe() {
     header.set_entry_type(tar::EntryType::Block);
     header.set_size(0);
     header.set_mode(0o644);
-    builder.append_data(&mut header, "dev.block", std::io::empty()).unwrap();
+    builder
+        .append_data(&mut header, "dev.block", std::io::empty())
+        .unwrap();
     let tar_bytes = builder.into_inner().unwrap();
     let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
     let hash = ContentHash::of_bytes(&artifact);
@@ -150,7 +161,10 @@ fn artifact_with_large_zero_payload_unpacks_bounded() {
     // CONTRACT: unpack succeeds — no size cap is enforced.
     unpack_shard(&artifact, &hash, &dest)
         .expect("4 MiB zero payload artifact should unpack successfully (no size limit enforced)");
-    assert!(dest.exists(), "destination must exist after successful unpack");
+    assert!(
+        dest.exists(),
+        "destination must exist after successful unpack"
+    );
     let extracted = dest.join("big_zero_payload.bin");
     let metadata = std::fs::metadata(&extracted).unwrap();
     assert_eq!(
@@ -222,7 +236,11 @@ fn unicode_filenames_roundtrip_pack_unpack() {
     ];
 
     for name in &names {
-        std::fs::write(src.path().join(name), format!("content of {name}").as_bytes()).unwrap();
+        std::fs::write(
+            src.path().join(name),
+            format!("content of {name}").as_bytes(),
+        )
+        .unwrap();
     }
 
     let (artifact, hash) = pack_shard(src.path()).unwrap();
@@ -268,7 +286,10 @@ fn single_schema_json_entry_exact_preserve() {
     unpack_shard(&artifact, &hash, &dest).unwrap();
 
     let actual = std::fs::read(dest.join("schema.json")).unwrap();
-    assert_eq!(actual, schema_content, "schema.json content must be preserved exactly");
+    assert_eq!(
+        actual, schema_content,
+        "schema.json content must be preserved exactly"
+    );
 }
 
 /// Empty artifact (no entries): unpack succeeds and destination is an empty directory.
@@ -282,7 +303,10 @@ fn empty_tar_artifact_creates_empty_destination() {
     let root = tempfile::tempdir().unwrap();
     let dest = root.path().join("empty-shard");
     unpack_shard(&artifact, &hash, &dest).unwrap();
-    assert!(dest.is_dir(), "empty artifact must create an empty destination directory");
+    assert!(
+        dest.is_dir(),
+        "empty artifact must create an empty destination directory"
+    );
     assert_eq!(
         std::fs::read_dir(&dest).unwrap().count(),
         0,
@@ -300,7 +324,9 @@ fn curdir_component_in_path_is_allowed() {
     h.set_size(content.len() as u64);
     h.set_mode(0o644);
     // Path with `./` prefix — CurDir component, which is explicitly allowed.
-    builder.append_data(&mut h, "./subdir/file.bin", content.as_slice()).unwrap();
+    builder
+        .append_data(&mut h, "./subdir/file.bin", content.as_slice())
+        .unwrap();
     let tar_bytes = builder.into_inner().unwrap();
     let artifact = zstd::stream::encode_all(tar_bytes.as_slice(), 3).unwrap();
     let hash = ContentHash::of_bytes(&artifact);

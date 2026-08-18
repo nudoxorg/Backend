@@ -1,5 +1,5 @@
 //! Crate-private `Visitor` derive for walking every `Ref`.
-use crate::index::{erase_mut, Indexable, RawRef, Ref};
+use crate::index::{Indexable, RawRef, Ref, erase_mut};
 
 // derive macro re-export
 pub(crate) use self::m::Visitor;
@@ -19,7 +19,7 @@ impl<T: Indexable> Visitor for Ref<T> {
 mod default_impl {
     use std::{num::NonZeroU16, ops::Range, path::PathBuf};
 
-    use super::{m, RawRef, Visitor};
+    use super::{RawRef, Visitor, m};
 
     impl<T: Visitor> Visitor for Option<T> {
         fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {

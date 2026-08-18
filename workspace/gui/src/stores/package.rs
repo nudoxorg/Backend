@@ -26,10 +26,36 @@
 //! fixture corpus loads packages nobody requested by name.
 
 use gpui::{Context, EventEmitter, SharedString, Task};
-use nudox_engine::{PackageLoadEvent, SymbolKey, wire::{EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList}};
+use nudox_engine::{
+    PackageLoadEvent, SymbolKey,
+    wire::{EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList},
+};
 
 use crate::bridge::drain::drain;
 use crate::stores::events::PackagesChanged;
+
+/// Read-only package data consumed by package-oriented GUI views.
+///
+/// The GUI projects these rows into its own render models; it does not access
+/// engine IR or fabricate package names and paths in a view.
+pub trait PackageAccess: EventEmitter<PackagesChanged> + 'static {
+    /// The current package snapshot, in request-then-arrival order.
+    fn rows(&self) -> Vec<PackageRow>;
+
+    /// Every loaded generation of a package, newest first.
+    fn versions(&self, package: &PackageLineageId) -> VersionList;
+
+    /// Switch the corpus to a loaded generation.
+    fn select_version(
+        &self,
+        package: PackageLineageId,
+        version: &str,
+        generation: Gen,
+    ) -> flume::Receiver<VersionEvent>;
+
+    /// Preformatted corpus summary for compact package surfaces.
+    fn summary_label(&self) -> SharedString;
+}
 
 // ---------------------------------------------------------------------------
 // Engine capability trait
@@ -116,6 +142,10 @@ pub enum PackageStatus {
 pub struct PackageRow {
     pub name: SharedString,
     pub status: PackageStatus,
+    /// Manifest provenance fields; `None` means unknown, not empty.
+    pub metadata: nudox_engine::PackageMetadata,
+    /// The generation reported by the latest successful load event.
+    pub current_version: Option<SharedString>,
     /// The lineage identifier for this package (ecosystem + name).
     ///
     /// Stored here so the project panel can call `engine.versions(lineage)` at
@@ -154,6 +184,8 @@ impl<E: PackageEngine> PackageStore<E> {
             .map(|name| PackageRow {
                 name: SharedString::from(name.clone()),
                 status: PackageStatus::Pending,
+                metadata: nudox_engine::PackageMetadata::default(),
+                current_version: None,
                 lineage: None, // unknown until the Loaded event arrives
                 root: None,
             })
@@ -183,25 +215,26 @@ impl<E: PackageEngine> PackageStore<E> {
     /// `Ready`/`Failed` in place, keeping its position so the list does not
     /// reorder under the user. An unrecognised name appends.
     fn apply(&mut self, event: PackageLoadEvent) {
-        let (name, status, lineage, root) = match event {
+        let (name, status, lineage, current_version, root, metadata) = match event {
             PackageLoadEvent::Loaded {
                 name,
                 ecosystem,
+                version,
                 symbol_count,
                 root,
-                ..
+                metadata,
             } => {
-                let lid = PackageLineageId::new(
-                    EcosystemId::new(&*ecosystem),
-                    PackageName::new(&*name),
-                );
+                let lid =
+                    PackageLineageId::new(EcosystemId::new(&*ecosystem), PackageName::new(&*name));
                 (
                     name,
                     PackageStatus::Ready {
                         symbols: symbol_count,
                     },
                     Some(lid),
+                    version.map(SharedString::from),
                     root,
+                    metadata,
                 )
             }
             PackageLoadEvent::LoadFailed { name, error, .. } => (
@@ -211,6 +244,8 @@ impl<E: PackageEngine> PackageStore<E> {
                 },
                 None,
                 None,
+                None,
+                nudox_engine::PackageMetadata::default(),
             ),
             // `PackageLoadEvent` is `#[non_exhaustive]`; a variant added later
             // is not a reason to lose the rows we already have.
@@ -227,14 +262,20 @@ impl<E: PackageEngine> PackageStore<E> {
                 if lineage.is_some() {
                     row.lineage = lineage;
                 }
+                if current_version.is_some() {
+                    row.current_version = current_version;
+                }
                 if root.is_some() {
                     row.root = root;
                 }
+                row.metadata = metadata;
             }
             None => self.rows.push(PackageRow {
                 name,
                 status,
+                metadata,
                 lineage,
+                current_version,
                 root,
             }),
         }
@@ -328,6 +369,29 @@ impl<E: PackageEngine> PackageStore<E> {
 
 impl<E: PackageEngine> EventEmitter<PackagesChanged> for PackageStore<E> {}
 
+impl<E: PackageEngine> PackageAccess for PackageStore<E> {
+    fn rows(&self) -> Vec<PackageRow> {
+        self.rows().to_vec()
+    }
+
+    fn versions(&self, package: &PackageLineageId) -> VersionList {
+        self.versions(package)
+    }
+
+    fn select_version(
+        &self,
+        package: PackageLineageId,
+        version: &str,
+        generation: Gen,
+    ) -> flume::Receiver<VersionEvent> {
+        self.select_version(package, version, generation)
+    }
+
+    fn summary_label(&self) -> SharedString {
+        self.summary_label()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -362,17 +426,18 @@ mod tests {
         ) -> flume::Receiver<VersionEvent> {
             let (tx, rx) = flume::bounded(1);
             let version = nudox_engine::wire::SharedStr::from(version);
-            let _ = tx.try_send(VersionEvent::NotLoaded { generation, package, version });
+            let _ = tx.try_send(VersionEvent::NotLoaded {
+                generation,
+                package,
+                version,
+            });
             rx
         }
     }
 
     fn store_with(
         requested: &[&str],
-    ) -> (
-        flume::Sender<PackageLoadEvent>,
-        PackageStore<StubEngine>,
-    ) {
+    ) -> (flume::Sender<PackageLoadEvent>, PackageStore<StubEngine>) {
         let (tx, rx) = flume::bounded(32);
         let names: Vec<String> = requested.iter().map(|s| (*s).to_owned()).collect();
         // Construct without a Context: `subscribe` is the only part that needs
@@ -384,6 +449,8 @@ mod tests {
                 .map(|name| PackageRow {
                     name: SharedString::from(name.clone()),
                     status: PackageStatus::Pending,
+                    metadata: nudox_engine::PackageMetadata::default(),
+                    current_version: None,
                     lineage: None,
                     root: None,
                 })
@@ -403,6 +470,7 @@ mod tests {
             // formatting, not navigation. `root_is_retained_across_a_later_event`
             // below is the one that supplies a real key.
             root: None,
+            metadata: nudox_engine::PackageMetadata::default(),
         }
     }
 
@@ -422,6 +490,18 @@ mod tests {
             version: None,
             symbol_count: symbols,
             root: Some(root),
+            metadata: nudox_engine::PackageMetadata::default(),
+        }
+    }
+
+    fn loaded_version(name: &str, version: &str, symbols: u64) -> PackageLoadEvent {
+        PackageLoadEvent::Loaded {
+            name: SharedStr::from(name),
+            ecosystem: SharedStr::from("cargo"),
+            version: Some(version.to_owned()),
+            symbol_count: symbols,
+            root: None,
+            metadata: nudox_engine::PackageMetadata::default(),
         }
     }
 
@@ -507,15 +587,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sequential_generations_update_the_current_visible_version() {
+        let (_tx, mut store) = store_with(&[]);
+        store.apply(loaded_version("axum", "0.7.9", 10));
+        store.apply(loaded_version("axum", "0.8.1", 20));
+
+        assert_eq!(store.rows().len(), 1);
+        assert_eq!(
+            store.rows()[0].current_version.as_deref(),
+            Some("0.8.1"),
+            "the visible version must follow the latest generation"
+        );
+    }
+
     /// A `Ready` event carries the package's root; the panel navigates to it.
     #[test]
     fn a_ready_package_records_its_root() {
         let (_tx, mut store) = store_with(&["axum"]);
-        assert!(store.rows()[0].root.is_none(), "pending row has no root yet");
+        assert!(
+            store.rows()[0].root.is_none(),
+            "pending row has no root yet"
+        );
 
         store.apply(loaded_with_root("axum", 4220, sample_key()));
 
         assert_eq!(store.rows()[0].root, Some(sample_key()));
+    }
+
+    /// Minimum provenance repro: a loaded event must preserve metadata already
+    /// available from manifest extraction, or an explicit unknown value.
+    #[test]
+    fn a_loaded_package_exposes_provenance_metadata_to_the_panel() {
+        let (_tx, mut store) = store_with(&[]);
+        store.apply(PackageLoadEvent::Loaded {
+            name: SharedStr::from("axum"),
+            ecosystem: SharedStr::from("cargo"),
+            version: Some("0.8.4".to_owned()),
+            symbol_count: 4220,
+            root: None,
+            metadata: nudox_engine::PackageMetadata {
+                description: Some("HTTP primitives".to_owned()),
+                repository: Some("https://github.com/tokio-rs/axum".to_owned()),
+                license: Some("MIT".to_owned()),
+                owner: Some("tokio-rs".to_owned()),
+                dependencies: vec!["hyper".to_owned(), "tower".to_owned()],
+                release_date: Some("2026-08-01".to_owned()),
+                homepage: Some("https://docs.rs/axum".to_owned()),
+                coverage: Some(nudox_engine::PackageCoverage {
+                    documented: 8,
+                    total: 10,
+                }),
+            },
+        });
+
+        let row = &store.rows()[0];
+        assert_eq!(row.metadata.description.as_deref(), Some("HTTP primitives"));
+        assert_eq!(
+            row.metadata.repository.as_deref(),
+            Some("https://github.com/tokio-rs/axum")
+        );
+        assert_eq!(row.metadata.license.as_deref(), Some("MIT"));
+        assert_eq!(row.metadata.owner.as_deref(), Some("tokio-rs"));
+        assert_eq!(row.metadata.dependencies, ["hyper", "tower"]);
+        assert_eq!(row.metadata.release_date.as_deref(), Some("2026-08-01"));
+        assert_eq!(
+            row.metadata.homepage.as_deref(),
+            Some("https://docs.rs/axum")
+        );
+        assert_eq!(
+            row.metadata.coverage,
+            Some(nudox_engine::PackageCoverage {
+                documented: 8,
+                total: 10,
+            })
+        );
     }
 
     /// A later failure must not erase a root we already learned.

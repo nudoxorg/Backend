@@ -2,9 +2,9 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::AliasConfidence;
 use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "package_aliases")]
@@ -29,4 +29,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type PackageAliasRow = Model;
 
 pub const TABLE: &str = "package_aliases";
-

@@ -19,6 +19,7 @@ use crate::engine::{CommitHash, EngineError, VersioningEngine};
 use super::read::{self, CatalogAsOf};
 use super::{
     ApplyReport, Catalog, CatalogCursor, ChangedPage, GenerationRegistration, MetaError, MetaStore,
+    VersionSnapshot,
 };
 use crate::enums::SinkKind;
 use crate::ids::PackageStemId;
@@ -61,18 +62,11 @@ impl<E: VersioningEngine + Send + Sync> MetaStore for CatalogWriter<E> {
         super::apply::apply_ops(&self.engine, ops)
     }
 
-    fn register_generation(
-        &self,
-        registration: GenerationRegistration,
-    ) -> Result<(), MetaError> {
+    fn register_generation(&self, registration: GenerationRegistration) -> Result<(), MetaError> {
         super::apply::register_generation(&self.engine, registration)
     }
 
-    fn outbox_claim(
-        &self,
-        sink: SinkKind,
-        limit: usize,
-    ) -> Result<Vec<OutboxRow>, MetaError> {
+    fn outbox_claim(&self, sink: SinkKind, limit: usize) -> Result<Vec<OutboxRow>, MetaError> {
         read::outbox_claim(&self.engine, sink, limit)
     }
 
@@ -95,15 +89,16 @@ impl<E: VersioningEngine + Send + Sync> MetaStore for CatalogWriter<E> {
 }
 
 impl<E: VersioningEngine + Send + Sync> Catalog for CatalogWriter<E> {
-    fn get_package(
-        &self,
-        stem: PackageStemId,
-    ) -> Result<Option<PackageRow>, MetaError> {
+    fn get_package(&self, stem: PackageStemId) -> Result<Option<PackageRow>, MetaError> {
         read::get_package(&self.engine, stem)
     }
 
     fn changed_since(&self, cursor: CatalogCursor) -> Result<ChangedPage, MetaError> {
         read::changed_since(&self.engine, cursor)
+    }
+
+    fn version_snapshots(&self, stem: PackageStemId) -> Result<Vec<VersionSnapshot>, MetaError> {
+        read::version_snapshots(&self.engine, stem)
     }
 
     fn at(&self, as_of: &AsOf) -> Result<CatalogAsOf, MetaError> {

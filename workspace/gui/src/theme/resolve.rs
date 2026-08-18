@@ -145,7 +145,13 @@ fn roles(p: &Palette) -> ColourRoles {
 /// make the vocabulary a property of the reader's colour preference. So the
 /// non-colour half of `TrustStyle` lives here, in code, and only the ramp comes
 /// from the spec.
-fn trust_style(ramp: &Ramp, on_solid: gpui::Hsla, glyph: char, label: &'static str, hatched: bool) -> TrustStyle {
+fn trust_style(
+    ramp: &Ramp,
+    on_solid: gpui::Hsla,
+    glyph: char,
+    label: &'static str,
+    hatched: bool,
+) -> TrustStyle {
     TrustStyle {
         colour: ramp.get(Step::Solid),
         fg_on: on_solid,
@@ -190,7 +196,9 @@ fn elevation(p: &Palette) -> ElevTokens {
     // theme's shadows should be warm, or the whole page reads as two
     // temperatures stacked.
     let shade = |alpha: f32| {
-        let mut c = p.neutral.get(if dark { Step::AppBg } else { Step::TextHigh });
+        let mut c = p
+            .neutral
+            .get(if dark { Step::AppBg } else { Step::TextHigh });
         // In dark appearances shadows do almost nothing; keep them present but
         // negligible rather than removing the draw, so the geometry of a raised
         // surface does not change between themes.

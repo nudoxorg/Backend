@@ -62,9 +62,9 @@ use gpui_component::{Icon, IconName, h_flex, v_flex};
 
 use crate::app::actions::{
     ConfirmOverlay, Copy, Cut, DismissOverlay, FilterAuto, FilterName, FilterSemantic, FilterType,
-    JumpToSection1, JumpToSection2, JumpToSection3,
-    MoveSelectionDown, MoveSelectionUp, NextSection, OpenInBackgroundTab, OpenWithoutClosing,
-    Paste, PrevSection, Redo, SelectAll, Undo,
+    JumpToSection1, JumpToSection2, JumpToSection3, MoveSelectionDown, MoveSelectionUp,
+    NextSection, OpenInBackgroundTab, OpenWithoutClosing, Paste, PrevSection, Redo, SelectAll,
+    Undo,
 };
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
@@ -80,8 +80,8 @@ use nudox_engine::wire::SymbolKey;
 // path and all 19 tests in this file compiling unchanged.
 pub use crate::stores::search_model::{
     Cursor, PreparedRow, RemoteStatus, SECTION_COUNT, ScopeChip, SearchAccess, SearchMode,
-    SearchSnapshot, Section, SectionData, SectionStatus, split_qualified_name,
-    prepare_provenance, prepare_sig_token,
+    SearchSnapshot, Section, SectionData, SectionStatus, prepare_provenance, prepare_sig_token,
+    split_qualified_name,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -218,8 +218,7 @@ impl RevealState {
             RevealState::Revealed => {
                 if !pointer_in_zone && !pinned {
                     RevealState::ExitingZone {
-                        exit_at: now
-                            + std::time::Duration::from_millis(CONTRACT_LAG_MS),
+                        exit_at: now + std::time::Duration::from_millis(CONTRACT_LAG_MS),
                     }
                 } else {
                     RevealState::Revealed
@@ -240,7 +239,10 @@ impl RevealState {
 
     /// Whether the overlay surface should be rendered at full height.
     pub fn is_revealed(&self) -> bool {
-        matches!(self, RevealState::Revealed | RevealState::ExitingZone { .. })
+        matches!(
+            self,
+            RevealState::Revealed | RevealState::ExitingZone { .. }
+        )
     }
 
     /// Whether the bar is in its resting (contracted) state.
@@ -544,10 +546,7 @@ pub fn step_cursor(
     let Some(cursor) = current else {
         // Nothing selected: `↓` takes the first hit, `↑` takes the last.
         return match step {
-            Step::Down => first_populated_from(counts, 0).map(|s| Cursor {
-                section: s,
-                row: 0,
-            }),
+            Step::Down => first_populated_from(counts, 0).map(|s| Cursor { section: s, row: 0 }),
             Step::Up => last_populated_before(counts, SECTION_COUNT - 1).map(|s| Cursor {
                 section: s,
                 row: counts[s].saturating_sub(1),
@@ -568,10 +567,7 @@ pub fn step_cursor(
                 })
             } else {
                 match first_populated_from(counts, cursor.section + 1) {
-                    Some(s) => Some(Cursor {
-                        section: s,
-                        row: 0,
-                    }),
+                    Some(s) => Some(Cursor { section: s, row: 0 }),
                     // Last row of the last populated section: hold.
                     None => Some(cursor),
                 }
@@ -622,10 +618,7 @@ pub fn next_section_cursor(
                 .map(|section| Cursor { section, row: 0 });
         };
         if current_cursor.section == 0 {
-            return Some(Cursor {
-                section: 0,
-                row: 0,
-            });
+            return Some(Cursor { section: 0, row: 0 });
         }
         match last_populated_before(counts, current_cursor.section - 1) {
             Some(section) => Some(Cursor { section, row: 0 }),
@@ -638,10 +631,7 @@ pub fn next_section_cursor(
 }
 
 /// `cmd-1/2/3`: jump directly to a section, if it has rows.
-pub fn jump_to_section_cursor(
-    section: Section,
-    counts: &[usize; SECTION_COUNT],
-) -> Option<Cursor> {
+pub fn jump_to_section_cursor(section: Section, counts: &[usize; SECTION_COUNT]) -> Option<Cursor> {
     let ix = section.index();
     (counts[ix] > 0).then_some(Cursor {
         section: ix,
@@ -890,7 +880,6 @@ pub struct OmniSearch<S: SearchAccess> {
     row_height: f32,
 
     // ── Resting-bar / auto-reveal ─────────────────────────────────────────
-
     /// Current reveal state: `Resting`, `Revealed`, or `ExitingZone`.
     ///
     /// Updated in `on_mouse_move` and every render cycle; never written from
@@ -995,7 +984,12 @@ impl<S: SearchAccess> OmniSearch<S> {
     ///
     /// LD-18: this handler is on the view struct, not a detached task, so it
     /// is cancelled automatically when the view is dropped.
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let in_zone = f32::from(event.position.y) < REVEAL_ZONE_H;
         if in_zone == self.pointer_in_zone {
             return; // No change: avoid spurious notifies.
@@ -1664,9 +1658,7 @@ impl<S: SearchAccess> OmniSearch<S> {
             .gap(sp.space_2)
             .px(sp.space_3)
             .py(sp.space_3)
-            .child(
-                Icon::new(IconName::Search).text_color(colours.fg_faint),
-            )
+            .child(Icon::new(IconName::Search).text_color(colours.fg_faint))
             .child(field);
 
         let mode = snapshot.mode;
@@ -1818,10 +1810,9 @@ impl<S: SearchAccess> OmniSearch<S> {
                     )
                     // Tier 2 — the signature, at `mono`.
                     .child(
-                        div().overflow_hidden().child(SignatureLine::new(
-                            ("search.row.sig", ix),
-                            row.sig.clone(),
-                        )),
+                        div()
+                            .overflow_hidden()
+                            .child(SignatureLine::new(("search.row.sig", ix), row.sig.clone())),
                     )
                     // Tier 3 — the module path that tells this row apart from
                     // its namesakes, at `caption`. Quietest of the three.
@@ -1967,8 +1958,8 @@ impl<S: SearchAccess> OmniSearch<S> {
         // This lives in the sticky header, not under the list, because the
         // panel's max-height clips anything below the last visible row — an
         // affordance the reader cannot see is not an affordance.
-        let more_hint: Option<SharedString> = (count > VISIBLE_ROWS_PER_SECTION)
-            .then(|| SharedString::from("scroll for more"));
+        let more_hint: Option<SharedString> =
+            (count > VISIBLE_ROWS_PER_SECTION).then(|| SharedString::from("scroll for more"));
 
         let header = SectionHeader::new(section.caption()).action(
             h_flex()
@@ -2071,59 +2062,50 @@ impl<S: SearchAccess> OmniSearch<S> {
         let namespace = section.entrance_namespace();
         let this = cx.weak_entity();
 
-        let list = uniform_list(
-            section.list_id(),
-            count,
-            move |range, _window, cx| {
-                // One token set per visible page, not per row: `MotionTokens`
-                // carries a census handle and constructing it is not free.
-                let tokens = MotionTokens::new(scale);
-                range
-                    .map(|ix| {
-                        let Some(row) = rows.get(ix) else {
-                            return div().into_any_element();
-                        };
-                        let key = row.key.clone();
-                        let this = this.clone();
-                        let element = Self::render_row(section, ix, row, row_height, cx).on_click(
-                            move |event, _window, cx| {
-                                let key = key.clone();
-                                // cmd-click opens as a new foreground tab and
-                                // keeps the overlay open (user can pick more
-                                // results); plain click replaces the current
-                                // view and closes the overlay.
-                                let disposition = if event.modifiers().platform {
-                                    OpenDisposition::Stay
-                                } else {
-                                    OpenDisposition::Replace
-                                };
-                                let _ = this.update(cx, |view, cx| {
-                                    view.apply_cursor(
-                                        Some(Cursor {
-                                            section: index,
-                                            row: ix,
-                                        }),
-                                        cx,
-                                    );
-                                    cx.emit(OmniSearchEvent::Open { key, disposition });
-                                });
-                            },
-                        );
+        let list = uniform_list(section.list_id(), count, move |range, _window, cx| {
+            // One token set per visible page, not per row: `MotionTokens`
+            // carries a census handle and constructing it is not free.
+            let tokens = MotionTokens::new(scale);
+            range
+                .map(|ix| {
+                    let Some(row) = rows.get(ix) else {
+                        return div().into_any_element();
+                    };
+                    let key = row.key.clone();
+                    let this = this.clone();
+                    let element = Self::render_row(section, ix, row, row_height, cx).on_click(
+                        move |event, _window, cx| {
+                            let key = key.clone();
+                            // cmd-click opens as a new foreground tab and
+                            // keeps the overlay open (user can pick more
+                            // results); plain click replaces the current
+                            // view and closes the overlay.
+                            let disposition = if event.modifiers().platform {
+                                OpenDisposition::Stay
+                            } else {
+                                OpenDisposition::Replace
+                            };
+                            let _ = this.update(cx, |view, cx| {
+                                view.apply_cursor(
+                                    Some(Cursor {
+                                        section: index,
+                                        row: ix,
+                                    }),
+                                    cx,
+                                );
+                                cx.emit(OmniSearchEvent::Open { key, disposition });
+                            });
+                        },
+                    );
 
-                        if cascading {
-                            row_enter(
-                                element,
-                                entrance_id(namespace, generation, ix),
-                                ix,
-                                &tokens,
-                            )
-                        } else {
-                            element.into_any_element()
-                        }
-                    })
-                    .collect()
-            },
-        )
+                    if cascading {
+                        row_enter(element, entrance_id(namespace, generation, ix), ix, &tokens)
+                    } else {
+                        element.into_any_element()
+                    }
+                })
+                .collect()
+        })
         // `uniform_list` defaults to `ListSizingBehavior::Auto`, which means it
         // takes its height from its own style rather than from its items — and
         // a bare `div()` is `display: Block` in GPUI, so an auto-height child
@@ -2152,7 +2134,12 @@ impl<S: SearchAccess> OmniSearch<S> {
         v_flex()
             .w_full()
             .child(header)
-            .child(div().w_full().h(px(row_height_px * visible as f32)).child(list))
+            .child(
+                div()
+                    .w_full()
+                    .h(px(row_height_px * visible as f32))
+                    .child(list),
+            )
             .into_any_element()
     }
 
@@ -2228,7 +2215,13 @@ impl<S: SearchAccess> OmniSearch<S> {
             .gap(sp.space_2)
             .px(sp.space_3)
             .py(sp.space_2)
-            .child(div().w(sp.space_2).h(sp.space_2).rounded_full().bg(stale.colour))
+            .child(
+                div()
+                    .w(sp.space_2)
+                    .h(sp.space_2)
+                    .rounded_full()
+                    .bg(stale.colour),
+            )
             .child(
                 div()
                     .text_size(ts.dense.size)
@@ -2453,7 +2446,9 @@ impl<S: SearchAccess> OmniSearch<S> {
             RemoteStatus::Ready { hits: 0, .. } => {
                 Some(SharedString::from("The remote INDEX has no matches either"))
             }
-            RemoteStatus::Ready { hits, elapsed_ms, .. } => Some(SharedString::from(format!(
+            RemoteStatus::Ready {
+                hits, elapsed_ms, ..
+            } => Some(SharedString::from(format!(
                 "Remote INDEX: {hits} match{} ({elapsed_ms} ms)",
                 if *hits == 1 { "" } else { "es" }
             ))),
@@ -2920,10 +2915,7 @@ mod tests {
         let c = counts(3, 2, 0);
         assert_eq!(
             step_cursor(None, Step::Down, &c),
-            Some(Cursor {
-                section: 0,
-                row: 0
-            })
+            Some(Cursor { section: 0, row: 0 })
         );
     }
 
@@ -2933,26 +2925,17 @@ mod tests {
         let c = counts(0, 4, 0);
         assert_eq!(
             step_cursor(None, Step::Down, &c),
-            Some(Cursor {
-                section: 1,
-                row: 0
-            })
+            Some(Cursor { section: 1, row: 0 })
         );
     }
 
     #[test]
     fn down_crosses_into_the_next_populated_section() {
         let c = counts(2, 0, 5);
-        let at_end_of_name = Cursor {
-            section: 0,
-            row: 1,
-        };
+        let at_end_of_name = Cursor { section: 0, row: 1 };
         assert_eq!(
             step_cursor(Some(at_end_of_name), Step::Down, &c),
-            Some(Cursor {
-                section: 2,
-                row: 0
-            }),
+            Some(Cursor { section: 2, row: 0 }),
             "an empty Type section must be transparent, not a trap"
         );
     }
@@ -2961,10 +2944,7 @@ mod tests {
     #[test]
     fn down_at_the_very_end_holds_instead_of_wrapping() {
         let c = counts(2, 2, 0);
-        let last = Cursor {
-            section: 1,
-            row: 1,
-        };
+        let last = Cursor { section: 1, row: 1 };
         assert_eq!(
             step_cursor(Some(last), Step::Down, &c),
             Some(last),
@@ -2975,26 +2955,17 @@ mod tests {
     #[test]
     fn up_at_the_very_start_holds_instead_of_wrapping() {
         let c = counts(2, 2, 0);
-        let first = Cursor {
-            section: 0,
-            row: 0,
-        };
+        let first = Cursor { section: 0, row: 0 };
         assert_eq!(step_cursor(Some(first), Step::Up, &c), Some(first));
     }
 
     #[test]
     fn up_crosses_back_to_the_last_row_of_the_previous_section() {
         let c = counts(3, 0, 2);
-        let top_of_semantic = Cursor {
-            section: 2,
-            row: 0,
-        };
+        let top_of_semantic = Cursor { section: 2, row: 0 };
         assert_eq!(
             step_cursor(Some(top_of_semantic), Step::Up, &c),
-            Some(Cursor {
-                section: 0,
-                row: 2
-            })
+            Some(Cursor { section: 0, row: 2 })
         );
     }
 
@@ -3008,32 +2979,20 @@ mod tests {
     #[test]
     fn tab_advances_to_the_next_populated_section_only() {
         let c = counts(2, 0, 3);
-        let in_name = Cursor {
-            section: 0,
-            row: 1,
-        };
+        let in_name = Cursor { section: 0, row: 1 };
         assert_eq!(
             next_section_cursor(Some(in_name), true, &c),
-            Some(Cursor {
-                section: 2,
-                row: 0
-            })
+            Some(Cursor { section: 2, row: 0 })
         );
     }
 
     #[test]
     fn tab_from_the_last_section_does_not_wrap() {
         let c = counts(2, 0, 3);
-        let in_semantic = Cursor {
-            section: 2,
-            row: 1,
-        };
+        let in_semantic = Cursor { section: 2, row: 1 };
         assert_eq!(
             next_section_cursor(Some(in_semantic), true, &c),
-            Some(Cursor {
-                section: 2,
-                row: 0
-            }),
+            Some(Cursor { section: 2, row: 0 }),
             "tab past the end must stay in the last section, not wrap to the first"
         );
     }
@@ -3041,16 +3000,10 @@ mod tests {
     #[test]
     fn shift_tab_goes_back_one_populated_section() {
         let c = counts(2, 0, 3);
-        let in_semantic = Cursor {
-            section: 2,
-            row: 1,
-        };
+        let in_semantic = Cursor { section: 2, row: 1 };
         assert_eq!(
             next_section_cursor(Some(in_semantic), false, &c),
-            Some(Cursor {
-                section: 0,
-                row: 0
-            })
+            Some(Cursor { section: 0, row: 0 })
         );
     }
 
@@ -3060,20 +3013,14 @@ mod tests {
         assert_eq!(jump_to_section_cursor(Section::Type, &c), None);
         assert_eq!(
             jump_to_section_cursor(Section::Semantic, &c),
-            Some(Cursor {
-                section: 2,
-                row: 0
-            })
+            Some(Cursor { section: 2, row: 0 })
         );
     }
 
     /// §15 acceptance: semantic arriving must not move the selection.
     #[test]
     fn a_section_arriving_leaves_an_existing_cursor_untouched() {
-        let cursor = Cursor {
-            section: 0,
-            row: 2,
-        };
+        let cursor = Cursor { section: 0, row: 2 };
         assert_eq!(clamp_cursor(cursor, &counts(4, 0, 0)), Some(cursor));
         assert_eq!(
             clamp_cursor(cursor, &counts(4, 0, 20)),
@@ -3084,31 +3031,19 @@ mod tests {
 
     #[test]
     fn a_shrinking_section_reseats_the_cursor_to_its_last_row() {
-        let cursor = Cursor {
-            section: 0,
-            row: 9,
-        };
+        let cursor = Cursor { section: 0, row: 9 };
         assert_eq!(
             clamp_cursor(cursor, &counts(3, 0, 0)),
-            Some(Cursor {
-                section: 0,
-                row: 2
-            })
+            Some(Cursor { section: 0, row: 2 })
         );
     }
 
     #[test]
     fn a_cursor_in_a_now_empty_section_moves_to_the_first_populated_one() {
-        let cursor = Cursor {
-            section: 1,
-            row: 0,
-        };
+        let cursor = Cursor { section: 1, row: 0 };
         assert_eq!(
             clamp_cursor(cursor, &counts(2, 0, 0)),
-            Some(Cursor {
-                section: 0,
-                row: 0
-            })
+            Some(Cursor { section: 0, row: 0 })
         );
     }
 

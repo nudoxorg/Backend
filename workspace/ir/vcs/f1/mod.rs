@@ -642,9 +642,10 @@ fn split_cfg_args(s: &str) -> Result<Vec<CfgExpr>, Error> {
 // ---------------------------------------------------------------------------
 
 fn encode_attr(a: &AttrTok) -> String {
-    a.arg
-        .as_ref()
-        .map_or_else(|| a.token.clone(), |arg| format!("{}\t{}", a.token, escape(arg)))
+    a.arg.as_ref().map_or_else(
+        || a.token.clone(),
+        |arg| format!("{}\t{}", a.token, escape(arg)),
+    )
 }
 
 fn decode_attr(s: &str) -> Result<AttrTok, Error> {
@@ -822,10 +823,13 @@ pub fn serialize_f1(
             .map(|dl| {
                 let label = dl.label.as_deref().unwrap_or("");
                 format!(
-                    "{}\t{}\t{}\n",
+                    "{}\t{}\t{}{}\n",
                     KEY_DLINK,
                     encode_stable_ref_f(&dl.target),
-                    escape(label)
+                    escape(label),
+                    dl.source_span
+                        .as_ref()
+                        .map_or(String::new(), |span| format!("\t{}..{}", span.0, span.1))
                 )
             })
             .collect();
@@ -1564,14 +1568,23 @@ impl<'a> F1View<'a> {
             .dlink_lines
             .iter()
             .map(|s| {
-                // format: <stable-ref>TAB<escaped label>
+                // format: <stable-ref>TAB<escaped label>[TAB<start>..<end>]
                 let tab = s.find('\t').unwrap_or(s.len());
                 let target = decode_stable_ref(&s[..tab])?;
-                let label_raw = if tab < s.len() { &s[tab + 1..] } else { "" };
+                let rest = if tab < s.len() { &s[tab + 1..] } else { "" };
+                let (label_raw, source_span) =
+                    rest.rsplit_once('\t')
+                        .map_or((rest, None), |(label, span)| {
+                            let parsed = span.split_once("..").and_then(|(start, end)| {
+                                Some((start.parse().ok()?, end.parse().ok()?))
+                            });
+                            (label, parsed)
+                        });
                 let label = unescape(label_raw)?;
                 Ok::<_, Error>(DocLinkWire {
                     target,
                     label: if label.is_empty() { None } else { Some(label) },
+                    source_span,
                 })
             })
             .collect();

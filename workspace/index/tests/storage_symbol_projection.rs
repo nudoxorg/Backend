@@ -56,8 +56,8 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use common::{migrated_disk_writer, real_crates_root};
-use heart::identity::derive::package_id_from_parts;
 use heart::Language;
+use heart::identity::derive::package_id_from_parts;
 use index::ids::{PackageId, PackageStemId};
 use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
 use index::store::MetaStore;
@@ -128,9 +128,10 @@ fn module_path_for(crate_name: &str, src_root: &Path, file: &Path) -> String {
         .map(|c| c.as_os_str().to_string_lossy().into_owned())
         .collect();
     if let Some(last) = segments.last_mut()
-        && let Some(stripped) = last.strip_suffix(".rs") {
-            *last = stripped.to_owned();
-        }
+        && let Some(stripped) = last.strip_suffix(".rs")
+    {
+        *last = stripped.to_owned();
+    }
     if matches!(segments.last().map(String::as_str), Some("mod")) {
         segments.pop();
     }
@@ -162,13 +163,14 @@ fn scan_real_pub_items(crate_name: &str, src_root: &Path) -> Vec<ScannedSymbol> 
             let trimmed = line.trim_start();
             for (prefix, kind) in PUB_ITEM_PREFIXES {
                 if let Some(rest) = trimmed.strip_prefix(prefix)
-                    && let Some(name) = extract_identifier(rest) {
-                        out.push(ScannedSymbol {
-                            moniker: format!("{module_path}::{name}"),
-                            kind,
-                        });
-                        break;
-                    }
+                    && let Some(name) = extract_identifier(rest)
+                {
+                    out.push(ScannedSymbol {
+                        moniker: format!("{module_path}::{name}"),
+                        kind,
+                    });
+                    break;
+                }
             }
         }
     }
@@ -384,8 +386,8 @@ fn symbol_storage_scales_with_a_larger_real_crate() {
     // grep-verifiable type in syn 1.0.109's public API.
     let rows = symbols_for_version(writer.engine(), syn_version).expect("read back");
     assert!(
-        rows.iter().any(|(_, moniker, kind)| kind == "struct"
-            && moniker.ends_with("::ItemFn")),
+        rows.iter()
+            .any(|(_, moniker, kind)| kind == "struct" && moniker.ends_with("::ItemFn")),
         "syn's real `pub struct ItemFn` must be projected somewhere in the \
          module tree; found monikers: {:?}",
         rows.iter().map(|(_, m, _)| m).take(5).collect::<Vec<_>>()

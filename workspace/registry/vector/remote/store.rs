@@ -437,10 +437,7 @@ fn payload_value_to_match(value: &PayloadValue) -> qdrant::r#match::MatchValue {
 // =============================================================================
 
 /// Bootstrap a Qdrant collection for the given [`CollectionConfig`] if missing.
-pub async fn ensure_collection(
-    client: &Qdrant,
-    config: CollectionConfig,
-) -> Result<(), Error> {
+pub async fn ensure_collection(client: &Qdrant, config: CollectionConfig) -> Result<(), Error> {
     let collection_name = config.collection_name();
 
     if is_collection_present(client, collection_name).await? {
@@ -472,14 +469,12 @@ pub async fn ensure_collection(
     Ok(())
 }
 
-async fn is_collection_present(
-    client: &Qdrant,
-    collection_name: &str,
-) -> Result<bool, Error> {
+async fn is_collection_present(client: &Qdrant, collection_name: &str) -> Result<bool, Error> {
     if let Ok(info) = client.collection_info(collection_name).await
-        && info.result.is_some() {
-            return Ok(true);
-        }
+        && info.result.is_some()
+    {
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -511,10 +506,7 @@ fn build_vectors_config(dimensions: u64, vector_name: &str) -> VectorsConfig {
     }
 }
 
-async fn create_payload_indexes(
-    client: &Qdrant,
-    collection_name: &str,
-) -> Result<(), Error> {
+async fn create_payload_indexes(client: &Qdrant, collection_name: &str) -> Result<(), Error> {
     for field_name in ["language", "kind"] {
         client
             .create_field_index(CreateFieldIndexCollectionBuilder::new(

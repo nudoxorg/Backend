@@ -52,12 +52,17 @@ use std::{collections::HashMap, path::PathBuf};
 
 use nudox_ir::{
     build::{
-        Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, Param,
-        ParamAttribute, Primitive, Receiver, Record, RecordForm, Trait, Type, Variant, VariantForm,
+        Alias, Const, ConstExpr, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function,
+        Module, Param, ParamAttribute, Primitive, Receiver, Record, RecordForm, Trait, Type,
+        Variant, VariantForm,
     },
-    entry::{AttrTok, Deprecation, DocLink, Symbol, Visibility},
+    entry::{
+        AttrTok, ByteSpan, Deprecation, DocLink, LineCol, SourceFile, SourceLocation, Symbol,
+        Unlocated, Visibility,
+    },
     index::Ref,
     lower::Lowering,
+    vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
 use crate::csharp::{
@@ -92,9 +97,106 @@ pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
         .map(|t| (t.qualified_name.clone(), t.doc_id.clone()))
         .collect();
 
+    for ns in &extraction.namespaces {
+        lower_namespace(ns, out);
+    }
+    // Types may name a namespace the oracle listed only on the type (empty
+    // `namespaces` array in a fixture). Declare those modules before
+    // `parent_ref` refers them so `finish` does not see an undeclared id.
+    for decl in &extraction.types {
+        if decl.enclosing.is_none() && !decl.namespace.is_empty() {
+            declare_namespace_module(&decl.namespace, None, out);
+        }
+    }
+
     for decl in &extraction.types {
         lower_type_decl(decl, &name_to_doc_id, out);
     }
+
+    let mut method_starts = HashMap::new();
+    for decl in &extraction.types {
+        for method in &decl.members.methods {
+            if let Some(location) = &method.location {
+                method_starts.insert(
+                    method.doc_id.clone(),
+                    (location.file.clone(), location.start),
+                );
+            }
+        }
+    }
+    for reference in &extraction.references {
+        let Some((file, owner_start)) = method_starts.get(&reference.owner) else {
+            continue;
+        };
+        if file != &reference.file || reference.start < *owner_start {
+            continue;
+        }
+        let Ok(start) = u32::try_from(reference.start - owner_start) else {
+            continue;
+        };
+        let Ok(end) = u32::try_from(reference.end.saturating_sub(*owner_start)) else {
+            continue;
+        };
+        out.record_occurrence(
+            reference.owner.clone(),
+            reference.target.clone(),
+            ReferenceKind::FunctionCall,
+            Confidence::Oracle,
+            RelSpan::new(start, end),
+        );
+    }
+}
+
+/// Declare one oracle namespace as an IR [`Module`].
+fn lower_namespace(ns: &schema::Namespace, out: &mut Lowering<String>) {
+    if ns.name.is_empty() {
+        return;
+    }
+    declare_namespace_module(&ns.name, ns.doc.as_deref(), out);
+}
+
+/// Declare `N:{ns_name}` as a [`Module`], plus any undeclared ancestor prefixes
+/// so a nested name like `Nudox.Fixture` does not leave `N:Nudox` referred but
+/// never declared.
+fn declare_namespace_module(ns_name: &str, doc: Option<&str>, out: &mut Lowering<String>) {
+    if ns_name.is_empty() {
+        return;
+    }
+    let id = format!("N:{ns_name}");
+    if out.is_declared(&id) {
+        return;
+    }
+
+    let parent = ns_name.rsplit_once('.').map(|(parent_path, _)| {
+        declare_namespace_module(parent_path, None, out);
+        let parent_id = format!("N:{parent_path}");
+        let _: Ref<Module> = out.refer(parent_id.clone());
+        parent_id
+    });
+
+    let name = ns_name.rsplit('.').next().unwrap_or(ns_name).to_string();
+    let aliases = aliases_from_doc_id(&id);
+
+    let sym = Symbol {
+        name,
+        visibility: Visibility::Public,
+        documentation: doc.unwrap_or("").to_string(),
+        source: PathBuf::new(),
+        span: 0..0,
+        aliases,
+        deprecation: None,
+        doc_links: Box::new([]),
+        attrs: Box::new([]),
+        cfg: None,
+    };
+
+    out.declare_at(
+        id,
+        parent,
+        sym,
+        Module,
+        SourceLocation::Unlocated(Unlocated::Synthesized),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +227,64 @@ fn symbol_location(location: Option<&schema::Location>) -> (PathBuf, std::ops::R
         || (PathBuf::new(), 0..0),
         |loc| (PathBuf::from(&loc.file), loc.start..loc.end),
     )
+}
+
+fn typed_location(location: Option<&schema::Location>) -> SourceLocation {
+    let Some(location) = location else {
+        // Roslyn only returns `None` for metadata-only or implicitly generated
+        // symbols. There is no source span to recover from the documented
+        // package, so this is an irreducibly synthesized entry, not a producer
+        // that forgot to copy a known location.
+        return SourceLocation::Unlocated(Unlocated::Synthesized);
+    };
+    let Some(file) = SourceFile::new(&location.file) else {
+        return SourceLocation::Unlocated(Unlocated::OutsideDocumentedPackage);
+    };
+    let Some(bytes) = ByteSpan::new(
+        u32::try_from(location.start).unwrap_or(u32::MAX),
+        u32::try_from(location.end).unwrap_or(u32::MAX),
+    ) else {
+        return SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation);
+    };
+    SourceLocation::Declared {
+        file,
+        bytes,
+        start: LineCol::from_zero_based(location.start_line, location.start_column),
+        end: LineCol::from_zero_based(location.end_line, location.end_column),
+    }
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+
+    fn location(start: usize, end: usize) -> schema::Location {
+        schema::Location {
+            file: "/pkg/src/lib.cs".to_owned(),
+            start,
+            end,
+            start_line: 3,
+            start_column: 2,
+            end_line: 3,
+            end_column: 8,
+        }
+    }
+
+    #[test]
+    fn missing_roslyn_location_is_explicitly_synthesized() {
+        assert_eq!(
+            typed_location(None),
+            SourceLocation::Unlocated(Unlocated::Synthesized)
+        );
+    }
+
+    #[test]
+    fn empty_roslyn_span_is_an_invalid_recorded_location() {
+        assert_eq!(
+            typed_location(Some(&location(12, 12))),
+            SourceLocation::Unlocated(Unlocated::ProducerRecordsNoLocation)
+        );
+    }
 }
 
 /// Build the IR [`Symbol`] for a type-level entry.
@@ -164,6 +324,7 @@ fn member_symbol(
     attrs: &[schema::Attr],
     extra_sections: &[String],
     location: Option<&schema::Location>,
+    doc_id: &str,
 ) -> Symbol {
     let visibility = types::map_visibility(accessibility);
     let deprecation = deprecation_of(deprecated);
@@ -177,7 +338,7 @@ fn member_symbol(
         documentation,
         source,
         span,
-        aliases: Box::new([]),
+        aliases: aliases_from_doc_id(doc_id),
         deprecation,
         doc_links: Box::new([]),
         attrs: rendered_attrs,
@@ -207,6 +368,7 @@ fn doc_links_from_map(
             out.push(DocLink {
                 target: doc_id.clone(),
                 label: Some(cref.clone()),
+                source_span: None,
             });
         }
     }
@@ -217,6 +379,7 @@ fn doc_links_from_map(
             out.push(DocLink {
                 target: sa.clone(),
                 label: None,
+                source_span: None,
             });
         }
     }
@@ -364,14 +527,19 @@ fn lower_type_decl(
     }
 }
 
-/// Parent ref: `refer` the enclosing type's doc_id if present, else `None`
-/// (top-level type under the implicit root module).
+/// Parent ref: enclosing type if nested, else the namespace module, else the
+/// implicit root.
 fn parent_ref(decl: &TypeDecl, out: &mut Lowering<String>) -> Option<String> {
-    decl.enclosing.as_ref().map(|enc| {
-        // Ensure the parent slot exists (may be declared in the same pass later).
+    if let Some(enc) = &decl.enclosing {
         let _: Ref<Record> = out.refer(enc.clone());
-        enc.clone()
-    })
+        Some(enc.clone())
+    } else if !decl.namespace.is_empty() {
+        let ns_id = format!("N:{}", decl.namespace);
+        let _: Ref<Module> = out.refer(ns_id.clone());
+        Some(ns_id)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -488,7 +656,13 @@ fn lower_class_like(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent, sym, record);
+    out.declare_at(
+        type_doc_id.clone(),
+        parent,
+        sym,
+        record,
+        typed_location(decl.location.as_ref()),
+    );
 
     // Step 2: declare const fields as Const entries.
     for f in &decl.members.fields {
@@ -563,7 +737,13 @@ fn lower_interface(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent, sym, trait_kind);
+    out.declare_at(
+        type_doc_id.clone(),
+        parent,
+        sym,
+        trait_kind,
+        typed_location(decl.location.as_ref()),
+    );
 
     // Properties as Field children.
     for p in &decl.members.properties {
@@ -639,7 +819,13 @@ fn lower_enum(
         .wheres(wheres)
         .build();
 
-    out.declare(type_doc_id.clone(), parent, sym, enum_kind);
+    out.declare_at(
+        type_doc_id.clone(),
+        parent,
+        sym,
+        enum_kind,
+        typed_location(decl.location.as_ref()),
+    );
 
     // Declare each variant.
     for f in decl
@@ -729,7 +915,13 @@ fn lower_delegate(
         .build();
 
     let type_doc_id = decl.doc_id.clone();
-    out.declare(type_doc_id, parent, sym, alias_kind);
+    out.declare_at(
+        type_doc_id,
+        parent,
+        sym,
+        alias_kind,
+        typed_location(decl.location.as_ref()),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +962,7 @@ fn lower_field(
         &f.attributes,
         &extra,
         f.location.as_ref(),
+        &f.doc_id,
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -786,7 +979,13 @@ fn lower_field(
         .attributes(attrs)
         .build();
 
-    out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
+    out.declare_at(
+        field_id,
+        Some(parent_id.to_string()),
+        sym,
+        field_kind,
+        typed_location(f.location.as_ref()),
+    );
 }
 
 fn lower_const_field(
@@ -814,18 +1013,26 @@ fn lower_const_field(
         &f.attributes,
         &extra,
         f.location.as_ref(),
+        &f.doc_id,
     );
 
-    // The constant value is stored as a rendered display string (the oracle's
-    // `constant` field).  A structured const-expression representation is a
-    // Track B item: it would require a `ConstExpr` AST in the IR.  The
-    // rendered text is sufficient for display and basic search.
+    let ty = types::lower_type(&f.ty, name_to_doc_id, out);
     let const_kind = Const::builder()
-        .ty(types::lower_type(&f.ty, name_to_doc_id, out))
-        .maybe_value(f.constant.clone())
+        .ty(ty.clone())
+        .maybe_value(
+            f.constant
+                .clone()
+                .map(|source| ConstExpr::builder().ty(ty).source(source).build()),
+        )
         .build();
 
-    out.declare(const_id, Some(parent_id.to_string()), sym, const_kind);
+    out.declare_at(
+        const_id,
+        Some(parent_id.to_string()),
+        sym,
+        const_kind,
+        typed_location(f.location.as_ref()),
+    );
 }
 
 fn lower_property(
@@ -860,6 +1067,7 @@ fn lower_property(
         &p.attributes,
         &extra,
         p.location.as_ref(),
+        &p.doc_id,
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -877,7 +1085,13 @@ fn lower_property(
         .attributes(attrs)
         .build();
 
-    out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
+    out.declare_at(
+        field_id,
+        Some(parent_id.to_string()),
+        sym,
+        field_kind,
+        typed_location(p.location.as_ref()),
+    );
 }
 
 fn lower_indexer(
@@ -919,6 +1133,7 @@ fn lower_indexer(
         &p.attributes,
         &extra,
         p.location.as_ref(),
+        &p.doc_id,
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -935,7 +1150,13 @@ fn lower_indexer(
         .attributes(attrs)
         .build();
 
-    out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
+    out.declare_at(
+        field_id,
+        Some(parent_id.to_string()),
+        sym,
+        field_kind,
+        typed_location(p.location.as_ref()),
+    );
 }
 
 fn lower_event(
@@ -979,6 +1200,7 @@ fn lower_event(
         &e.attributes,
         &extra,
         e.location.as_ref(),
+        &e.doc_id,
     );
 
     let mut attrs: Vec<FieldAttribute> = Vec::new();
@@ -993,7 +1215,13 @@ fn lower_event(
         .attributes(attrs)
         .build();
 
-    out.declare(field_id, Some(parent_id.to_string()), sym, field_kind);
+    out.declare_at(
+        field_id,
+        Some(parent_id.to_string()),
+        sym,
+        field_kind,
+        typed_location(e.location.as_ref()),
+    );
 }
 
 /// The accessor decorator string for a property.
@@ -1094,16 +1322,16 @@ fn lower_method(
             // and a `<exception cref="IOException">` produced the same throws
             // entry — the whole point of the `throws` list is to say *which*.
             let fqn = cref.strip_prefix("T:").unwrap_or(cref.as_str());
-            let throws_ty = name_to_doc_id
-                .get(fqn)
-                .map_or_else(|| Type::unresolved_external(fqn), |doc_id| {
-                    out.nominal::<Record>(doc_id.clone())
-                });
+            let throws_ty = name_to_doc_id.get(fqn).map_or_else(
+                || Type::unresolved_external(fqn),
+                |doc_id| out.nominal::<Record>(doc_id.clone()),
+            );
             throws_types.push(throws_ty);
 
             exception_doc_links.push(DocLink {
                 target: cref.clone(),
                 label: Some("throws".to_string()),
+                source_span: None,
             });
             // For prose use the stripped display name (simple name without prefix).
             let display = strip_doc_id_prefix(cref);
@@ -1163,6 +1391,7 @@ fn lower_method(
             method_doc_links.push(DocLink {
                 target: doc_id.clone(),
                 label: Some(cref.clone()),
+                source_span: None,
             });
         }
     }
@@ -1180,14 +1409,20 @@ fn lower_method(
         documentation,
         source,
         span,
-        aliases: Box::new([]),
+        aliases: aliases_from_doc_id(&m.doc_id),
         deprecation,
         doc_links: method_doc_links.into_boxed_slice(),
         attrs: rendered_attrs,
         cfg: None,
     };
 
-    out.declare(method_id, Some(parent_id.to_string()), sym, fn_kind);
+    out.declare_at(
+        method_id,
+        Some(parent_id.to_string()),
+        sym,
+        fn_kind,
+        typed_location(m.location.as_ref()),
+    );
 }
 
 fn lower_param(
@@ -1202,7 +1437,8 @@ fn lower_param(
 
     let mut attrs: Vec<ParamAttribute> = Vec::new();
     match p.ref_kind.as_str() {
-        "ref" | "out" => attrs.push(ParamAttribute::Inout),
+        "ref" => attrs.push(ParamAttribute::Inout),
+        "out" => attrs.push(ParamAttribute::Out),
         "in" | "refReadonly" => attrs.push(ParamAttribute::Borrowing),
         _ => {}
     }
@@ -1226,17 +1462,6 @@ fn lower_param(
     if p.scoped {
         doc_parts.push("scoped".to_string());
     }
-    // Capture the default-value text when the oracle provides it.
-    // The IR has no structured `ConstExpr` slot for default values yet.
-    // KNOWN IR GAP: `Param` needs a `default: Option<String>` field (or a
-    // structured `default: Option<ConstExpr>` once the const-expression
-    // subsystem exists) to carry default-value text without encoding it in
-    // the doc string.  For now we append it as a documentation note; the
-    // `ParamAttribute::Optional` flag already signals that a default exists.
-    if let Some(default_text) = &p.default {
-        doc_parts.push(format!("default: `{default_text}`"));
-    }
-
     let (source, span) = symbol_location(p.location.as_ref());
     let sym = Symbol {
         name: p.name.clone(),
@@ -1251,16 +1476,23 @@ fn lower_param(
         cfg: None,
     };
 
+    let ty = types::lower_type(&p.ty, name_to_doc_id, out);
     let param_kind = Param::builder()
-        .ty(types::lower_type(&p.ty, name_to_doc_id, out))
+        .ty(ty.clone())
+        .maybe_default_value(
+            p.default
+                .clone()
+                .map(|source| ConstExpr::builder().ty(ty).source(source).build()),
+        )
         .attributes(attrs)
         .build();
 
-    out.declare(
+    out.declare_at(
         param_id,
         Some(parent_method_id.to_string()),
         sym,
         param_kind,
+        typed_location(p.location.as_ref()),
     );
 }
 
@@ -1306,7 +1538,13 @@ fn lower_return_param(
     };
 
     let param_kind = Param::builder().ty(ty).build();
-    out.declare(ret_id, Some(parent_method_id.to_string()), sym, param_kind);
+    out.declare_at(
+        ret_id,
+        Some(parent_method_id.to_string()),
+        sym,
+        param_kind,
+        typed_location(m.location.as_ref()),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1348,7 +1586,13 @@ fn lower_enum_variant(f: &schema::Field, parent_id: &str, out: &mut Lowering<Str
         .maybe_discr(f.constant.clone())
         .build();
 
-    out.declare(vid, Some(parent_id.to_string()), sym, variant_kind);
+    out.declare_at(
+        vid,
+        Some(parent_id.to_string()),
+        sym,
+        variant_kind,
+        typed_location(f.location.as_ref()),
+    );
 }
 
 // ---------------------------------------------------------------------------

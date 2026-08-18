@@ -1,11 +1,12 @@
-//! A pre-built resolution table from the producer's resolved intra-doc links.
+//! A pre-built resolution table from the producer's intra-doc link attempts.
 //!
 //! # Why a separate type?
 //!
-//! `Symbol::doc_links` carries entries that rust-analyzer already resolved
-//! with full name resolution in scope — far more accurate than any path-string
-//! heuristic the engine could compute on its own.  The table maps the link
-//! target string exactly as it appeared in the source (e.g. `"Router::with_state"`)
+//! `Symbol::doc_links` carries one entry for every path-shaped occurrence that
+//! the producer saw. Resolved entries carry the canonical target; unresolved
+//! entries retain their source spelling and span so rendering can decide each
+//! occurrence independently. Resolved entries are mapped from the link target
+//! string exactly as it appeared in the source (e.g. `"Router::with_state"`)
 //! to the `SymbolKey` that the producer determined it refers to.
 //!
 //! The table is built once per entry at the top of `walk_doc` and threaded
@@ -92,16 +93,16 @@
 
 use std::collections::HashMap;
 
-use nudox_ir::entry::Entry;
 use crate::store::package::PackageView;
+use nudox_ir::entry::Entry;
 
 use crate::wire::SymbolKey;
 
 pub(crate) struct DocLinkTable {
     pub(crate) inner: HashMap<String, SymbolKey>,
-    /// Whether the symbol *declared* any intra-doc links at all, regardless of
-    /// how many of them resolved inside this package.
+    /// Whether the symbol contained any path-shaped intra-doc link attempts.
     pub(crate) declared: bool,
+    pub(crate) inner_spans: Vec<std::ops::Range<usize>>,
 }
 
 impl DocLinkTable {
@@ -110,6 +111,13 @@ impl DocLinkTable {
         let mut inner: HashMap<String, SymbolKey> = HashMap::new();
         let declared = !entry.sym().doc_links.is_empty();
 
+        let inner_spans = entry
+            .sym()
+            .doc_links
+            .iter()
+            .filter_map(|link| link.source_span.clone())
+            .collect();
+
         for doc_link in &entry.sym().doc_links {
             let target = doc_link.target.as_str();
 
@@ -117,9 +125,10 @@ impl DocLinkTable {
             let stripped_tag = target.find('!').map_or(target, |idx| &target[..idx]);
 
             // Step 2: strip rustdoc anchor prefix.
-            let stripped_anchor: &str = stripped_tag.strip_prefix('#').map_or(stripped_tag, |rest| {
-                rest.find('.').map_or(rest, |dot| &rest[dot + 1..])
-            });
+            let stripped_anchor: &str =
+                stripped_tag.strip_prefix('#').map_or(stripped_tag, |rest| {
+                    rest.find('.').map_or(rest, |dot| &rest[dot + 1..])
+                });
 
             // Step 3: unify path separators.
             let normalised: String = stripped_anchor.replace("::", ".");
@@ -200,7 +209,9 @@ impl DocLinkTable {
             inner.insert(target.to_owned(), key.clone());
 
             if normalised != target {
-                inner.entry(normalised.clone()).or_insert_with(|| key.clone());
+                inner
+                    .entry(normalised.clone())
+                    .or_insert_with(|| key.clone());
             }
 
             inner.entry(leaf.to_owned()).or_insert_with(|| key.clone());
@@ -210,7 +221,11 @@ impl DocLinkTable {
             }
         }
 
-        Self { inner, declared }
+        Self {
+            inner,
+            declared,
+            inner_spans,
+        }
     }
 
     /// Resolve a link target string to a `SymbolKey`, if known.
@@ -254,5 +269,16 @@ impl DocLinkTable {
     /// the link attempts it saw, which it does not currently do.
     pub(crate) fn has_declared_links(&self) -> bool {
         self.declared
+    }
+
+    /// Return whether a producer-recorded link occupies this source range.
+    /// Missing spans remain supported for older producers and fixtures.
+    pub(crate) fn has_declared_link_at(&self, span: std::ops::Range<usize>) -> bool {
+        if self.inner_spans.is_empty() {
+            return self.declared;
+        }
+        self.inner_spans
+            .iter()
+            .any(|declared| declared.start <= span.start && span.end <= declared.end)
     }
 }

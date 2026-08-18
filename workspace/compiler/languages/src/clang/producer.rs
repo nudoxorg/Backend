@@ -1,9 +1,9 @@
 //! [`Producer`] implementation for the C/C++ clang tier.
 
+use crate::{PackageSource, Producer, ProducerError, ProducerId};
 use clang::{Clang, Index};
 use nudox_ir::body::Language;
 use nudox_ir::lower::Lowering;
-use crate::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::clang::{
     compile_commands::CompileCommands,
@@ -152,6 +152,7 @@ fn merge_oracle(acc: &mut ClangOracle, partial: ClangOracle) {
     acc.variants.extend(partial.variants);
     acc.aliases.extend(partial.aliases);
     acc.vars.extend(partial.vars);
+    acc.references.extend(partial.references);
 
     // Dedup by USR — multiple TUs may see the same header declaration.
     dedup_by_usr(&mut acc.namespaces, |n| &n.usr);

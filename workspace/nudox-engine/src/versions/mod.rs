@@ -62,8 +62,8 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use nudox_ir::change::PackageLineageId;
 use crate::store::package::PackageView;
+use nudox_ir::change::PackageLineageId;
 
 use crate::{
     runtime::EngineHandle,
@@ -167,10 +167,10 @@ impl VersionOrder {
                 PreOrder(
                     0,
                     p.split('.')
-                        .map(|seg| seg.parse::<u64>().map_or_else(
-                            |_| PreSeg::Alpha(seg.to_owned()),
-                            PreSeg::Num,
-                        ))
+                        .map(|seg| {
+                            seg.parse::<u64>()
+                                .map_or_else(|_| PreSeg::Alpha(seg.to_owned()), PreSeg::Num)
+                        })
                         .collect(),
                 )
             },
@@ -595,8 +595,10 @@ impl EngineHandle {
     /// **Whether a given key is affected is now answerable**, and this comment
     /// said the opposite until 2026-08-09: it read "not currently answerable at
     /// this layer: `SealReport::forced` … is dropped at the `nudox-store`
-    /// boundary before it reaches `PackageView`". `SealReport::forced_keys`
-    /// now names the escalated declarations by `IntroId`,
+    /// boundary before it reaches `PackageView`". `SealReport::non_structural_keys`
+    /// now names every non-content-derived declaration by `IntroId` (see
+    /// `KeyProvenance`'s doc for why this is `non_structural_keys` and not
+    /// `forced_keys`, which under-counts),
     /// `crate::store::package::PackageView::key_tier` answers for any one of
     /// them, and the graph publishes it as `Symbol.keyTier`. Ask before
     /// caching a key across a switch; after the lookup fails there is no

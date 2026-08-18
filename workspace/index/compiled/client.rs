@@ -223,8 +223,8 @@ pub fn verify_entry(
 
     let tip = ChangeId::new(tip_str.clone()).map_err(|_| VerificationFailure::BadTipHex)?;
 
-    let generation_stamp =
-        decode_hash(stamp_str, "generation_stamp").map_err(|()| VerificationFailure::BadStampHex)?;
+    let generation_stamp = decode_hash(stamp_str, "generation_stamp")
+        .map_err(|()| VerificationFailure::BadStampHex)?;
 
     let package_str = require(entry.package.as_ref(), "package")?;
     let package_uuid = uuid::Uuid::parse_str(package_str)

@@ -175,9 +175,7 @@ impl CachedAuthorization {
     /// about the account.
     pub fn from_state(state: &GateState) -> Option<Self> {
         match state {
-            GateState::Authorized {
-                account, quota, ..
-            } => Some(Self {
+            GateState::Authorized { account, quota, .. } => Some(Self {
                 version: FORMAT_VERSION,
                 fingerprint: account.fingerprint.clone(),
                 verdict: CachedVerdict::Allowed {
@@ -459,8 +457,11 @@ mod tests {
     #[test]
     fn a_corrupt_cache_reads_as_no_cache_rather_than_as_a_failure() {
         let scratch = Scratch::new("corrupt");
-        std::fs::write(scratch.path().join(AUTHORIZATION_FILE), b"{ this is not json")
-            .expect("write garbage");
+        std::fs::write(
+            scratch.path().join(AUTHORIZATION_FILE),
+            b"{ this is not json",
+        )
+        .expect("write garbage");
         assert!(
             CachedAuthorization::load(scratch.path()).is_none(),
             "a corrupt cache costs one round trip; treating it as an error would \

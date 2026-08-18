@@ -1,15 +1,15 @@
 //! The ONNX backend: `FastembedOrt` behind `crate::semantic::Embedder`.
 //!
-//! Compiled only under `--features onnx`. Everything `registry`-shaped is
-//! confined to this file so the crate's `lib.rs` — and therefore its public
-//! surface — never names it.
+//! Compiled unconditionally (there is no `onnx` cargo feature). Everything
+//! `registry`-shaped is confined to this file so the crate's `lib.rs` — and
+//! therefore its public surface — never names it.
 
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::semantic::{Error, EmbedRole, Embedder, EmbedderInfo, SharedEmbedder};
+use crate::semantic::{EmbedRole, Embedder, EmbedderInfo, Error, SharedEmbedder};
 use registry::vector::embed::runtime::{FastembedOrt, RuntimeConfig};
 use registry::vector::embed::weights::WeightsSpec;
 use registry::vector::{EmbedRole as RegistryRole, Embedder as _, EmbeddingModel as _, JinaCodeV2};
@@ -34,7 +34,7 @@ pub(crate) fn load_from_env() -> SharedEmbedder {
         tracing::info!(
             env = crate::embed::MODEL_DIR_ENV,
             "semantic: no model directory configured; the section will report \
-             Unavailable(NoEmbedder)"
+             Unavailable(NoModelConfigured)"
         );
         return None;
     };
@@ -90,12 +90,12 @@ impl OrtEmbedder {
     ///
     /// A load failure (missing weights, sha mismatch, ort init) surfaces as
     /// [`Error::Backend`], which the engine turns into
-    /// `Unavailable::ModelFailed` — distinct from `NoEmbedder`, because a
-    /// configured-but-broken model sends the reader somewhere a missing one
-    /// does not. The failure is *not* cached: `get_or_try_init` leaves the cell
-    /// empty on `Err`, so a transient failure (a model still being copied into
-    /// place) can succeed on a later query rather than wedging the section for
-    /// the life of the process.
+    /// `Unavailable::ModelFailed` — distinct from `NoModelConfigured`, because
+    /// a configured-but-broken model sends the reader somewhere a missing
+    /// directory does not. The failure is *not* cached: `get_or_try_init`
+    /// leaves the cell empty on `Err`, so a transient failure (a model still
+    /// being copied into place) can succeed on a later query rather than
+    /// wedging the section for the life of the process.
     async fn session(&self) -> Result<&FastembedOrt, Error> {
         self.session
             .get_or_try_init(|| async {
@@ -184,8 +184,7 @@ mod tests {
     /// This is the assertion that cannot pass against a stub (doctrine §4): it
     /// depends on the *content* of the vectors the model produces, not on a
     /// shape or a count. Ignored by default because it needs the ~641 MB model;
-    /// run with `--features onnx --ignored` after `NUDOX_EMBED_MODEL_DIR` points
-    /// at it.
+    /// run with `--ignored` after `NUDOX_EMBED_MODEL_DIR` points at it.
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "needs the pinned model weights; run with --ignored"]
     async fn the_real_model_embeds_text_and_ranks_related_above_unrelated() {

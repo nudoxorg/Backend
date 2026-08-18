@@ -43,13 +43,13 @@
 
 use std::path::PathBuf;
 
-use nudox_engine::{Engine, EngineConfig};
 use nudox_engine::mcp::key::PackageLineageDto;
 use nudox_engine::mcp::tools::{
     GetSymbolArgs, GraphQueryArgs, IndexPackageArgs, IndexPackageResult, ListVersionsArgs,
     SearchSymbolsArgs,
 };
 use nudox_engine::mcp::{McpError, NudoxTools, SymbolKeyDto};
+use nudox_engine::{Engine, EngineConfig};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -118,7 +118,7 @@ fn a_purl_indexed_through_index_package_is_searchable_openable_and_graph_reachab
                 assert!(
                     before.hits.is_empty(),
                     "NumToA must not be findable before the package is indexed; got {:?}",
-                    before.hits.iter().map(|h| h.display_name.to_string()).collect::<Vec<_>>()
+                    before.hits.iter().map(|h| h.hit.display_name.to_string()).collect::<Vec<_>>()
                 );
 
                 // --- index_package -------------------------------------------------
@@ -160,7 +160,7 @@ fn a_purl_indexed_through_index_package_is_searchable_openable_and_graph_reachab
                 let hit = search
                     .hits
                     .iter()
-                    .find(|h| &*h.display_name == "NumToA")
+                    .find(|h| &*h.hit.display_name == "NumToA")
                     .unwrap_or_else(|| {
                         panic!(
                             "numtoa's public trait `NumToA` must be searchable after indexing; \
@@ -168,11 +168,11 @@ fn a_purl_indexed_through_index_package_is_searchable_openable_and_graph_reachab
                             search
                                 .hits
                                 .iter()
-                                .map(|h| h.display_name.to_string())
+                                .map(|h| h.hit.display_name.to_string())
                                 .collect::<Vec<_>>()
                         )
                     });
-                let hit_key = hit.key.clone();
+                let hit_key = hit.hit.key.clone();
 
                 // --- get_symbol ------------------------------------------------------
                 // Open the *exact* key search_symbols returned, so this asserts get_symbol
@@ -327,7 +327,12 @@ fn indexing_the_same_purl_twice_joins_the_running_job_rather_than_duplicating_th
                     .await
                     .expect("list_versions must succeed for a package that is now resident");
 
-                (first_joined, second_joined, symbol_count, versions.versions.len())
+                (
+                    first_joined,
+                    second_joined,
+                    symbol_count,
+                    versions.versions.len(),
+                )
             })
         });
     eprintln!(
@@ -336,13 +341,19 @@ fn indexing_the_same_purl_twice_joins_the_running_job_rather_than_duplicating_th
         cost.peak_rss_bytes
     );
 
-    assert!(!first_joined, "the first caller must have started the job, not joined one");
+    assert!(
+        !first_joined,
+        "the first caller must have started the job, not joined one"
+    );
     assert!(
         second_joined,
         "the second caller, polling the same purl while it is still running, must join the \
          first call's job rather than starting a second producer run"
     );
-    assert!(final_symbol_count > 1, "numtoa declares a trait and its impls");
+    assert!(
+        final_symbol_count > 1,
+        "numtoa declares a trait and its impls"
+    );
     assert_eq!(
         version_count, 1,
         "one purl indexed three times (twice polling, once to completion) must still be one \
@@ -365,8 +376,10 @@ fn a_failed_index_leaves_the_corpus_unchanged_and_the_error_names_what_to_do() {
     let runtime = Runtime::new().expect("test runtime must build");
     let case_dir = scratch_cache("failure");
 
-    let ((kind, help, message, packages_before, packages_after), cost) =
-        heart::cost::measured("mcp_purl/unknown_package/failure_leaves_corpus_alone", &case_dir, || {
+    let ((kind, help, message, packages_before, packages_after), cost) = heart::cost::measured(
+        "mcp_purl/unknown_package/failure_leaves_corpus_alone",
+        &case_dir,
+        || {
             runtime.block_on(async {
                 let (tools, _cache) = make_tools("failure");
 
@@ -385,9 +398,11 @@ fn a_failed_index_leaves_the_corpus_unchanged_and_the_error_names_what_to_do() {
                     .expect_err("a package crates.io has never heard of must fail, not succeed");
 
                 let (kind, help, message) = match &err {
-                    McpError::Index { error } => {
-                        (error.kind().to_owned(), error.help().map(str::to_owned), error.to_string())
-                    }
+                    McpError::Index { error } => (
+                        error.kind().to_owned(),
+                        error.help().map(str::to_owned),
+                        error.to_string(),
+                    ),
                     other => panic!("expected McpError::Index, got {other:?}"),
                 };
 
@@ -399,24 +414,34 @@ fn a_failed_index_leaves_the_corpus_unchanged_and_the_error_names_what_to_do() {
 
                 (kind, help, message, packages_before, packages_after)
             })
-        });
+        },
+    );
     eprintln!(
         "mcp_purl/unknown_package/failure_leaves_corpus_alone: wall={:.1}s rss={:?}",
         cost.wall.as_secs_f64(),
         cost.peak_rss_bytes
     );
 
-    assert_eq!(kind, "unknown_package", "a typo is an unknown-package failure, not any other kind");
+    assert_eq!(
+        kind, "unknown_package",
+        "a typo is an unknown-package failure, not any other kind"
+    );
     assert!(
         help.as_deref().is_some_and(|h| h.len() > 20),
         "the error must name what to do next, not just that it failed; got {help:?}"
     );
-    assert!(message.contains("crates.io"), "the message must name the registry: {message}");
+    assert!(
+        message.contains("crates.io"),
+        "the message must name the registry: {message}"
+    );
     assert_eq!(
         packages_before, packages_after,
         "a failed index must not leave a phantom package behind: before={packages_before:?} \
          after={packages_after:?}"
     );
-    assert!(packages_after.is_empty(), "this engine started with an empty corpus and nothing indexed");
+    assert!(
+        packages_after.is_empty(),
+        "this engine started with an empty corpus and nothing indexed"
+    );
     drop(runtime);
 }

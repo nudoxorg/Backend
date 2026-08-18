@@ -33,8 +33,8 @@
 //! actually informative once you have internalised the rule.
 
 use gpui::{
-    Animation, AnimationExt, App, ElementId, Element as _, IntoElement, RenderOnce, Styled,
-    Window, div, pulsating_between,
+    Animation, AnimationExt, App, Element as _, ElementId, IntoElement, RenderOnce, Styled, Window,
+    div, pulsating_between,
 };
 
 use crate::motion::permits::LoopPermit;
@@ -80,11 +80,7 @@ impl ProvenanceDot {
     /// compiling). Requires a permit obtained from
     /// [`MotionTokens::acquire_loop_slot`](crate::motion::tokens::MotionTokens::acquire_loop_slot);
     /// hold it for as long as the dot is mounted and drop it when it unmounts.
-    pub fn breathing(
-        id: impl Into<ElementId>,
-        provenance: Provenance,
-        permit: LoopPermit,
-    ) -> Self {
+    pub fn breathing(id: impl Into<ElementId>, provenance: Provenance, permit: LoopPermit) -> Self {
         Self {
             id: id.into(),
             provenance,

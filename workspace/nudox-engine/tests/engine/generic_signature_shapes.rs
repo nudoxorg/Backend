@@ -103,13 +103,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
 use nudox_ir::kind::Kind;
 use nudox_ir::kinds::Type;
 use nudox_ir::view::IrView;
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
 
 use nudox_engine::chunk::signature;
 use nudox_engine::wire::SigToken;
@@ -253,7 +253,8 @@ fn lower_fixture(case: &str, root: &Path) -> Arc<PackageView> {
             }
             panic!("fixture must lower without error:\n{chain}");
         })
-    .table});
+        .table
+    });
     eprintln!("fixture lowered in {:.1}s", cost.wall.as_secs_f64());
     let view = IrView::with_package(descriptor.lineage, table);
     Arc::new(PackageView::build(view, Provenance::TrustedLocal))
@@ -341,7 +342,11 @@ fn apply_nesting_is_correct_not_collapsed_to_inner_arg() {
     // res_pair: Result<usize, String> -> Apply with exactly 2 args, in order.
     match output_type_of(view, "res_pair") {
         Some(Type::Apply { args, .. }) => {
-            assert_eq!(args.len(), 2, "Result<T, E> must have exactly two type args");
+            assert_eq!(
+                args.len(),
+                2,
+                "Result<T, E> must have exactly two type args"
+            );
             assert!(
                 matches!(&args[0], Type::Primitive(_)),
                 "Result<usize, String>'s first arg must be usize, got {:?}",
@@ -364,7 +369,11 @@ fn apply_nesting_is_correct_not_collapsed_to_inner_arg() {
     // even though the key type (String) is itself unresolvable to a name.
     match output_type_of(view, "map_of") {
         Some(Type::Apply { args, .. }) => {
-            assert_eq!(args.len(), 2, "HashMap<K, V> must have exactly two type args");
+            assert_eq!(
+                args.len(),
+                2,
+                "HashMap<K, V> must have exactly two type args"
+            );
             assert!(
                 matches!(&args[1], Type::Primitive(_)),
                 "HashMap<String, usize>'s second arg must be usize, got {:?}",
@@ -407,7 +416,9 @@ fn apply_nesting_is_correct_not_collapsed_to_inner_arg() {
                                 l3[0]
                             );
                         }
-                        other => panic!("middle level must itself be Apply (Result<..>), got {other:?}"),
+                        other => {
+                            panic!("middle level must itself be Apply (Result<..>), got {other:?}")
+                        }
                     }
                 }
                 other => panic!("second level must be Apply (Vec<..>), got {other:?}"),
@@ -460,14 +471,22 @@ fn text_rendering_of_foreign_generics_is_currently_broken() {
             &["HashMap", "String", "usize"],
         ),
         ("mut_ref", "&mut T param/return", &["&", "mut", "usize"]),
+        ("lifetime_slice", "&'a [T] param/return", &["&", "'a", "u8"]),
         (
-            "lifetime_slice",
-            "&'a [T] param/return",
-            &["&", "'a", "u8"],
+            "boxed_dyn",
+            "Box<dyn Trait> return",
+            &["Box", "dyn", "Thing"],
         ),
-        ("boxed_dyn", "Box<dyn Trait> return", &["Box", "dyn", "Thing"]),
-        ("impl_iter", "impl Iterator<..> return", &["impl", "Iterator"]),
-        ("fn_ptr", "fn(A) -> B param/return", &["fn", "usize", "bool"]),
+        (
+            "impl_iter",
+            "impl Iterator<..> return",
+            &["impl", "Iterator"],
+        ),
+        (
+            "fn_ptr",
+            "fn(A) -> B param/return",
+            &["fn", "usize", "bool"],
+        ),
         ("tuple_pair", "tuple return", &["usize", "String"]),
         ("array_of", "fixed-size array return", &["u8", "4"]),
         (

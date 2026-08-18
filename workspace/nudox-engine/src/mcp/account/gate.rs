@@ -45,8 +45,7 @@ use super::state::{
     Denial, GateState, Posture, ProbeFailure, ProbeStatus, QuotaKnowledge, QuotaSnapshot, Verdict,
 };
 use super::store::{
-    CredentialLookup, CredentialStore, Error, KeySource, StoredCredential,
-    resolve_credential,
+    CredentialLookup, CredentialStore, Error, KeySource, StoredCredential, resolve_credential,
 };
 use crate::mcp::error::McpError;
 
@@ -165,9 +164,7 @@ impl AccountGate {
             inner: Arc::new(Inner {
                 state: RwLock::new(GateState::SignedOut),
                 credential: RwLock::new(None),
-                ledger: RwLock::new(Arc::new(UsageLedger::in_memory(
-                    &no_account_fingerprint(),
-                ))),
+                ledger: RwLock::new(Arc::new(UsageLedger::in_memory(&no_account_fingerprint()))),
                 store: Box::new(super::store::MemoryStore::empty()),
                 service: None,
                 state_dir: None,
@@ -188,9 +185,7 @@ impl AccountGate {
             inner: Arc::new(Inner {
                 state: RwLock::new(state),
                 credential: RwLock::new(None),
-                ledger: RwLock::new(Arc::new(UsageLedger::in_memory(
-                    &no_account_fingerprint(),
-                ))),
+                ledger: RwLock::new(Arc::new(UsageLedger::in_memory(&no_account_fingerprint()))),
                 store: Box::new(super::store::MemoryStore::empty()),
                 service: None,
                 state_dir: None,
@@ -243,11 +238,9 @@ impl AccountGate {
         let StoredCredential { key, source } = credential.as_ref()?;
         let state = self.read_state();
         match &state {
-            GateState::Authorized { account, .. } => Some(AccountSummary::new(
-                account,
-                key.display_hint(),
-                *source,
-            )),
+            GateState::Authorized { account, .. } => {
+                Some(AccountSummary::new(account, key.display_hint(), *source))
+            }
             _ => None,
         }
     }
@@ -663,7 +656,11 @@ impl AccountGate {
             },
             // Never verified and still cannot verify. Stays denied, but now
             // says why rather than "waiting".
-            GateState::Unverified { fingerprint, source, .. } => GateState::Unverified {
+            GateState::Unverified {
+                fingerprint,
+                source,
+                ..
+            } => GateState::Unverified {
                 fingerprint,
                 source,
                 probe: ProbeStatus::Failed(failure),
@@ -682,8 +679,11 @@ impl AccountGate {
 
     /// Re-read the credential store, e.g. after the keychain was unlocked.
     fn reload_credential(&self, now: SystemTime) {
-        let (state, credential) =
-            initial_state(self.inner.store.as_ref(), self.inner.state_dir.as_deref(), now);
+        let (state, credential) = initial_state(
+            self.inner.store.as_ref(),
+            self.inner.state_dir.as_deref(),
+            now,
+        );
         if let Ok(mut slot) = self.inner.credential.write() {
             *slot = credential;
         }
@@ -908,10 +908,8 @@ mod tests {
 
     #[test]
     fn a_metered_gate_counts_every_admitted_call() {
-        let gate = AccountGate::in_state_for_tests(authorized(
-            SystemTime::now(),
-            QuotaKnowledge::Unknown,
-        ));
+        let gate =
+            AccountGate::in_state_for_tests(authorized(SystemTime::now(), QuotaKnowledge::Unknown));
         for _ in 0..3 {
             gate.admit().expect("an active gate admits");
         }
@@ -1054,10 +1052,8 @@ mod tests {
 
     #[test]
     fn the_gate_debug_carries_no_credential() {
-        let gate = AccountGate::in_state_for_tests(authorized(
-            SystemTime::now(),
-            QuotaKnowledge::Unknown,
-        ));
+        let gate =
+            AccountGate::in_state_for_tests(authorized(SystemTime::now(), QuotaKnowledge::Unknown));
         let rendered = format!("{gate:?}");
         assert!(rendered.contains("active"));
         assert!(!rendered.contains("ndx_"));

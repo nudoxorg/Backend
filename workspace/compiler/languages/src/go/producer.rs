@@ -34,13 +34,13 @@
 //! variable if set, else the bare name `nudox-go-oracle` resolved against
 //! `PATH`.
 
+use crate::{PackageSource, Producer, ProducerError, ProducerId};
 use nudox_ir::{
     body::Language,
     change::PackageLineageId,
     lower::Lowering,
     package::{IrPackage, PackageId},
 };
-use crate::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::go::{
     error::{self, Result},
@@ -48,11 +48,18 @@ use crate::go::{
     oracle,
 };
 
-/// Resolve the oracle binary: `$NUDOX_GO_ORACLE_BIN` if set, else the bare
+/// The environment variable that points at the Go oracle binary.
+///
+/// Named once and used both to *read* the override and to *report* it in a
+/// spawn failure, so the message can never name a variable the lookup does not
+/// actually consult — which would be worse than naming none.
+pub const ORACLE_BIN_ENV: &str = "NUDOX_GO_ORACLE_BIN";
+
+/// Resolve the oracle binary: [`ORACLE_BIN_ENV`] if set, else the bare
 /// name `nudox-go-oracle` resolved against `PATH`. Shared by `Producer::invoke`
 /// and the inherent `invoke_oracle` so the two paths cannot drift apart.
 fn oracle_binary() -> String {
-    std::env::var("NUDOX_GO_ORACLE_BIN").unwrap_or_else(|_| "nudox-go-oracle".to_string())
+    std::env::var(ORACLE_BIN_ENV).unwrap_or_else(|_| "nudox-go-oracle".to_string())
 }
 
 /// Identifies the Go oracle producer in the registry.
@@ -137,7 +144,32 @@ impl Producer for GoProducer {
 
     fn invoke(&self, src: &PackageSource) -> std::result::Result<oracle::Output, ProducerError> {
         let oracle_bin = oracle_binary();
-        crate::oracle::run_json(Self::ID.0, oracle_bin, [src.root()])
+        // `ORACLE_BIN_ENV` is passed so a host that does not have the oracle —
+        // the normal state of a packaged `lindsey.app`, which does not ship it
+        // — is told which variable points at one, instead of only that a
+        // spawn failed.
+        let output: oracle::Output = crate::oracle::run_json_with_override(
+            Self::ID.0,
+            oracle_bin,
+            [src.root()],
+            Some(ORACLE_BIN_ENV),
+        )?;
+
+        // A binary older than this build under-reports silently: every field
+        // is `#[serde(default)]`, so its missing `references`/`implements`
+        // arrive as empty lists and `refs`/`subtypes` answer "nothing here"
+        // for the whole language. Failing loudly is the only way that reads as
+        // a stale binary rather than an empty package — see
+        // `oracle::Output::staleness`.
+        if let Some(stale) = output.staleness() {
+            return Err(ProducerError::OracleExit {
+                command: format!("{} {}", Self::ID.0, oracle_binary()),
+                code: "stale".to_owned(),
+                stderr: stale.to_string(),
+            });
+        }
+
+        Ok(output)
     }
 
     fn lower(

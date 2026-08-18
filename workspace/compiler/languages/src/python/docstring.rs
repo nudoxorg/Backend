@@ -187,9 +187,8 @@ fn normalize(raw: &str) -> Vec<String> {
 /// surrounding quote markers from a string literal. A no-op for plain text.
 fn strip_quotes(text: &str) -> &str {
     let trimmed = text.trim();
-    let after_prefix = trimmed.trim_start_matches(|c: char| {
-        matches!(c, 'r' | 'R' | 'b' | 'B' | 'u' | 'U' | 'f' | 'F')
-    });
+    let after_prefix = trimmed
+        .trim_start_matches(|c: char| matches!(c, 'r' | 'R' | 'b' | 'B' | 'u' | 'U' | 'f' | 'F'));
     for q in ["\"\"\"", "'''", "\"", "'"] {
         if let Some(inner) = after_prefix.strip_prefix(q)
             && let Some(inner) = inner.strip_suffix(q)
@@ -294,7 +293,10 @@ fn section_kind(lines: &[String], idx: usize) -> Option<SectionKind> {
     if trimmed.starts_with(":param") || trimmed.starts_with(":parameter") {
         return Some(SectionKind::Params);
     }
-    if trimmed.starts_with(":return") || trimmed.starts_with(":rtype") || trimmed.starts_with(":yield") {
+    if trimmed.starts_with(":return")
+        || trimmed.starts_with(":rtype")
+        || trimmed.starts_with(":yield")
+    {
         return Some(SectionKind::Returns);
     }
     if trimmed.starts_with(":raises") || trimmed.starts_with(":raise") {
@@ -307,10 +309,7 @@ fn section_kind(lines: &[String], idx: usize) -> Option<SectionKind> {
         return Some(kind);
     }
 
-    if header_kind(trimmed).is_some()
-        && idx + 1 < lines.len()
-        && is_dashes(lines[idx + 1].trim())
-    {
+    if header_kind(trimmed).is_some() && idx + 1 < lines.len() && is_dashes(lines[idx + 1].trim()) {
         return header_kind(trimmed);
     }
 
@@ -521,11 +520,7 @@ fn parse_returns_block(
 // Sphinx field parsing
 // ---------------------------------------------------------------------------
 
-fn parse_sphinx_param(
-    lines: &[String],
-    idx: usize,
-    params: &mut HashMap<String, String>,
-) -> usize {
+fn parse_sphinx_param(lines: &[String], idx: usize, params: &mut HashMap<String, String>) -> usize {
     let base_indent = leading_spaces(&lines[idx]);
     let trimmed = lines[idx].trim();
     let after = trimmed
@@ -571,11 +566,7 @@ fn parse_sphinx_param(
     i
 }
 
-fn parse_sphinx_returns(
-    lines: &[String],
-    idx: usize,
-    returns: &mut Option<String>,
-) -> usize {
+fn parse_sphinx_returns(lines: &[String], idx: usize, returns: &mut Option<String>) -> usize {
     let base_indent = leading_spaces(&lines[idx]);
     let trimmed = lines[idx].trim();
     let after = trimmed

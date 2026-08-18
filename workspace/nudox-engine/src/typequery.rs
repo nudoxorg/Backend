@@ -128,7 +128,10 @@ pub const FACETS: &[(&str, &[TypePosition])] = &[
         "extends",
         &[TypePosition::Supertrait, TypePosition::SuperType],
     ),
-    ("super", &[TypePosition::Supertrait, TypePosition::SuperType]),
+    (
+        "super",
+        &[TypePosition::Supertrait, TypePosition::SuperType],
+    ),
     ("for", &[TypePosition::ImplSelf]),
     ("self", &[TypePosition::ImplSelf]),
     ("throws", &[TypePosition::Throws]),
@@ -175,11 +178,15 @@ impl TypeQuery {
                 // A new facet starts here; everything after it belongs to it
                 // until the next one.
                 Some((canonical, positions, rest)) => {
-                    pending.push((canonical, positions, if rest.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![rest]
-                    }));
+                    pending.push((
+                        canonical,
+                        positions,
+                        if rest.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![rest]
+                        },
+                    ));
                 }
                 // Continuation of the facet in progress. A token before any
                 // facet keyword — free text like `Point` in `Point param:Path`
@@ -327,7 +334,9 @@ mod tests {
         assert_eq!(q.facets[0].type_name, "result");
         assert_eq!(q.facets[1].type_name, "error");
         assert!(
-            q.facets.iter().all(|f| f.positions == [TypePosition::Return]),
+            q.facets
+                .iter()
+                .all(|f| f.positions == [TypePosition::Return]),
             "both terms constrain the return position"
         );
     }

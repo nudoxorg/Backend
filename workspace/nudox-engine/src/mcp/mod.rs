@@ -59,10 +59,15 @@
 //!   [`key::SymbolKeyDto`].
 //! * **LR-2** — no `serde_json::Value` in any tool signature. Every schema is
 //!   `schemars`-derived from named types in [`tools`] and the wire vocabulary.
-//! * **LR-7** — one schema. [`SCHEMA_SDL`] is served to agents verbatim, both
-//!   as the `graph_schema` tool and as the `nudox://schema` resource.  It is
+//! * **LR-7** — one schema. [`SCHEMA_SDL`] is the only thing ever parsed by
+//!   the graph plane or asserted byte-identical to `schema.graphql`; it is
 //!   re-exported from `crate::graph::SCHEMA_SDL` so there is exactly one
-//!   `include_str!` in the whole workspace.
+//!   `include_str!` in the whole workspace, and it is what `nudox://schema`
+//!   and `schema(full: true)` serve verbatim. [`schema_card::SCHEMA_CARD`]
+//!   is a separate, DERIVED, hand-maintained summary of the same file — the
+//!   `schema` default — that carries no such guarantee: it is
+//!   token-frugal prose, not the schema, and `schema.graphql` wins on any
+//!   disagreement.
 //! * **LR-8** — this crate reads no `nudox-ir` type directly.  `SymbolKey` is
 //!   constructed through the `EcosystemId`/`PackageName` re-exports on
 //!   `crate::wire` (which itself re-exports them from `nudox-ir`).
@@ -74,19 +79,28 @@
 #![warn(missing_docs)]
 
 pub mod account;
+/// The symbol ADDRESS scheme: a readable, resolvable alternative to a bare
+/// `ecosystem:name#introhex` key (docs/MCP-SURFACE-PLAN.md §4). See the
+/// module docs for the grammar and the four-stage resolver.
+pub mod address;
 pub mod endpoint;
 pub mod error;
 pub mod host;
-/// The job registry behind `index_package`. Private: it is machinery, not
+/// Persisting the endpoint's port and token across restarts. See the module
+/// doc for why this is not folded into `account::cache`.
+pub mod identity;
+/// The job registry behind `index`. Private: it is machinery, not
 /// vocabulary — nothing outside this crate needs to name a job.
 mod index;
 pub mod key;
-/// Markdown primitives and compact MCP projections.
-pub(crate) mod markdown;
 /// Occurrence-specific Markdown projection.
 pub(crate) mod occurrence_format;
 /// Typed-result Markdown projections.
 pub(crate) mod result_format;
+/// The compact `schema` reference card — a derived, token-frugal
+/// summary of [`SCHEMA_SDL`]. See the module docs for why it exists and
+/// what keeps it honest.
+pub mod schema_card;
 /// Semantic-search Markdown projection.
 pub(crate) mod semantic_format;
 pub mod server;
@@ -97,11 +111,17 @@ pub use account::{
     AccountGate, AccountHost, AccountSummary, ApiKey, ApiKeyError, KeySource, Posture,
     SignInFailure,
 };
-pub use endpoint::{LOOPBACK_BIND, MCP_PATH, McpEndpoint};
+pub use address::{
+    Address, AddressParseError, AddressSegment, AutoResolveHeuristic, Candidate, PackageCoord,
+    Qualifier, ResolveOutcome, render_address, resolve_in_package,
+};
+pub use endpoint::{LOOPBACK_BIND, MCP_PATH, McpEndpoint, PortPreference, preferred_bind};
 pub use error::McpError;
 pub use host::{DRAIN_TIMEOUT, McpHost, ShutdownOutcome};
+pub use identity::EndpointIdentity;
 pub use key::SymbolKeyDto;
 pub use result_format::MarkdownResult;
+pub use schema_card::SCHEMA_CARD;
 pub use server::{NudoxMcpServer, PACKAGE_URI_PREFIX, SCHEMA_URI};
 pub use session::{Session, SessionToken, Unauthenticated};
 pub use tools::NudoxTools;

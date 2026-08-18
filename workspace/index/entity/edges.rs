@@ -2,10 +2,10 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::EdgeKind;
 use crate::enums::EdgeSource;
 use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -46,4 +46,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type EdgeRow = Model;
 
 pub const TABLE: &str = "edges";
-

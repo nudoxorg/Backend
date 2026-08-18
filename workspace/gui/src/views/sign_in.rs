@@ -403,7 +403,10 @@ impl Focusable for SignInView {
     /// after construction, so the answer has to be correct for whichever
     /// phase is current, not fixed at construction.
     fn focus_handle(&self, cx: &App) -> FocusHandle {
-        if matches!(self.phase, SignInPhase::Editing { .. } | SignInPhase::Checking) {
+        if matches!(
+            self.phase,
+            SignInPhase::Editing { .. } | SignInPhase::Checking
+        ) {
             self.input.read(cx).focus_handle(cx)
         } else {
             self.focus.clone()
@@ -740,7 +743,8 @@ impl SignInView {
     /// The key field. Caret, selection, IME and masking are `InputState`'s
     /// own — nothing here paints any of them.
     fn field(&self, dimmed: bool) -> impl IntoElement {
-        div().w_full().child(Input::new(&self.input).disabled(dimmed))
+        div()
+            .w_full()
+            .child(Input::new(&self.input).disabled(dimmed))
     }
 }
-

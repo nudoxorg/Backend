@@ -37,7 +37,12 @@ pub enum CppVersion {
     /// A Go-grammar pseudo-version for an untagged commit (three forms).
     Pseudo {
         /// The nearest-ancestor tag this pseudo-version derives from, when one
-        /// exists (Go forms 2 and 3). `None` is Go form 1 (`v0.0.0-…`).
+        /// exists (Go forms 2 and 3). `None` is Go form 1 (`vX.0.0-…`, no
+        /// earlier tag; the major is not retained — see [`parse_pseudo`]).
+        /// When `Some`, form 3's prerelease label (the `<pre>` in
+        /// `vX.Y.Z-pre.0.<ts>-<hash>`) is folded into the tag's own `pre`
+        /// field so it participates in ordering and round-trips through
+        /// [`CppVersion::canonical`].
         base: Option<Box<TagVersion>>,
         /// Commit timestamp, UTC, as a 14-digit `YYYYMMDDHHMMSS` value.
         timestamp: u64,
@@ -101,11 +106,17 @@ impl CppVersion {
                 // they were parsed (NOT via `synthesize_pseudo_version`, which
                 // *bumps* an ancestor release — that is the id-derivation direction,
                 // not the inverse of parsing). `base` holds the displayed numeric
-                // core; `None` is Go form 1 (`v0.0.0-<ts>-<hash>`), `Some(core)` is
-                // form 2 (`v<core>-0.<ts>-<hash>`).
+                // core; `None` is Go form 1 (`v0.0.0-<ts>-<hash>`). `Some(core)` is
+                // form 2 (`v<core>-0.<ts>-<hash>`) when `core` carries no
+                // prerelease, or form 3 (`v<core>.0.<ts>-<hash>`, i.e. the `0.<ts>`
+                // continues the tag's own `-pre` dot-list with `.` rather than
+                // opening a new `-`-separated segment) when it does.
                 base.as_ref().map_or_else(
                     || format!("v0.0.0-{timestamp}-{hash12}"),
-                    |core| format!("{}-0.{timestamp}-{hash12}", core.canonical()),
+                    |core| {
+                        let separator = if core.has_prerelease() { "." } else { "-" };
+                        format!("{}{separator}0.{timestamp}-{hash12}", core.canonical())
+                    },
                 )
             }
             CppVersion::Raw(raw) => raw.to_string(),
@@ -443,10 +454,19 @@ fn parse_version_date(raw: &str) -> Option<CppVersion> {
 
 /// Parse a Go-grammar pseudo-version into [`CppVersion::Pseudo`], or `None`.
 ///
-/// Accepts the three Go forms:
-///   `vX.Y.Z-YYYYMMDDHHMMSS-hash12`            (form 1, no ancestor tag)
+/// Accepts the three Go forms (matching `golang.org/x/mod/module.PseudoVersion`):
+///   `vX.0.0-YYYYMMDDHHMMSS-hash12`            (form 1, no ancestor tag; minor
+///                                              and patch MUST be `0`)
 ///   `vX.Y.Z-0.YYYYMMDDHHMMSS-hash12`          (form 2, ancestor is a release)
-///   `vX.Y.Z-pre.0.YYYYMMDDHHMMSS-hash12`      (form 3, ancestor is a prerelease)
+///   `vX.Y.Z-pre.0.YYYYMMDDHHMMSS-hash12`      (form 3, ancestor is a prerelease
+///                                              `vX.Y.Z-pre`; the `pre` label is
+///                                              folded into the returned tag)
+///
+/// Strings that merely *look* like a pseudo-version but don't match one of
+/// these three exact shapes (e.g. `v1.2.3-20200828120000-abcdefabcdef`, whose
+/// nonzero minor/patch rules out form 1, and which is also missing form 2/3's
+/// `0.` infix) are rejected here so the caller falls back to [`TagVersion`] or
+/// [`CppVersion::Raw`] instead of silently discarding the numeric core.
 fn parse_pseudo(raw: &str) -> Option<CppVersion> {
     let body = raw.strip_prefix('v').or_else(|| raw.strip_prefix('V'))?;
     let (numeric, pre) = body.split_once('-')?;
@@ -459,8 +479,15 @@ fn parse_pseudo(raw: &str) -> Option<CppVersion> {
         return None;
     }
     let before_hash = &pre[..dash];
-    // Form 1: the whole `before_hash` is the timestamp.
+    // Form 1: the whole `before_hash` is the timestamp, and the numeric core
+    // must be exactly `X.0.0` (minor/patch/extra all zero, no prerelease —
+    // the latter holds automatically since `numeric` is dash-free by
+    // construction). A tag like `1.2.3` here is NOT a valid Go pseudo-version
+    // core for form 1; reject so the caller reclassifies the whole string.
     if is_timestamp(before_hash) {
+        if base_tag.minor != 0 || base_tag.patch != 0 || base_tag.extra != 0 {
+            return None;
+        }
         let timestamp = before_hash.parse::<u64>().ok()?;
         return Some(CppVersion::Pseudo {
             base: None,
@@ -468,7 +495,10 @@ fn parse_pseudo(raw: &str) -> Option<CppVersion> {
             hash12: SmolStr::from(hash),
         });
     }
-    // Forms 2/3: `<base>.<timestamp>`.
+    // Forms 2/3: `<base_label>.<timestamp>`, where `base_label` is exactly
+    // `0` (form 2, release ancestor) or `<pre>.0` (form 3, prerelease
+    // ancestor `vX.Y.Z-pre`). Anything else is not a real Go pseudo-version
+    // shape and is rejected rather than guessed at.
     let dot = before_hash.rfind('.')?;
     let timestamp_str = &before_hash[dot + 1..];
     if !is_timestamp(timestamp_str) {
@@ -476,14 +506,22 @@ fn parse_pseudo(raw: &str) -> Option<CppVersion> {
     }
     let timestamp = timestamp_str.parse::<u64>().ok()?;
     let base_label = &before_hash[..dot];
-    // Reject a malformed base (must be `0` or `<prelabel>.0`); we don't
-    // re-validate the label shape beyond non-emptiness — the numeric core came
-    // from `base_tag` above.
-    if base_label.is_empty() {
-        return None;
-    }
+    let resolved_base = if base_label == "0" {
+        // Form 2: release ancestor, no prerelease label to fold in.
+        base_tag
+    } else {
+        // Form 3: prerelease ancestor. Fold the label back into the tag so it
+        // participates in ordering and round-trips via `canonical()`.
+        let pre_label = base_label.strip_suffix(".0")?;
+        if pre_label.is_empty() {
+            return None;
+        }
+        let mut tag = base_tag;
+        tag.pre = pre_label.to_ascii_lowercase();
+        tag
+    };
     Some(CppVersion::Pseudo {
-        base: Some(Box::new(base_tag)),
+        base: Some(Box::new(resolved_base)),
         timestamp,
         hash12: SmolStr::from(hash),
     })

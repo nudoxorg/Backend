@@ -49,16 +49,16 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    AnyView, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Window, div, px,
-    prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, Styled, Subscription, Task, Window, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::dock::{
-    DockArea, DockEvent, DockItem, DockPlacement, DockAreaState, PanelView, register_panel,
+    DockArea, DockAreaState, DockEvent, DockItem, DockPlacement, PanelView, register_panel,
 };
 
 use crate::app::account::{AccountService, AccountStatus};
@@ -67,24 +67,24 @@ use crate::app::actions::{
     ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
 };
 use crate::app::lifecycle;
-use crate::views::settings::{SettingsEvent, SettingsView};
-use crate::views::sign_in::{SignInEvent, SignInView};
+use crate::app::mcp::McpStatus;
 use crate::motion::spring::{Motion, Spring};
 use crate::stores::events::{OpenDisposition, TabActivated};
-use crate::stores::symbol::TabId as DocTabId;
 use crate::stores::events::{PackageActivated, PackagesChanged};
 use crate::stores::index_jobs::IndexJobStore;
+use crate::stores::symbol::TabId as DocTabId;
 use crate::stores::{PackageStore, SearchStore, SymbolStore};
-use crate::views::project_panel::ProjectPanel;
-use crate::app::mcp::McpStatus;
 use crate::theme::ext::ThemeExtAccessor as _;
 use crate::views::command_overlay::{CommandOverlay, CommandOverlayEvent, CommandOverlayMode};
 use crate::views::omni_search::{OmniSearch, OmniSearchEvent};
+use crate::views::project_panel::ProjectPanel;
+use crate::views::settings::{SettingsEvent, SettingsView};
+use crate::views::sign_in::{SignInEvent, SignInView};
 use crate::views::symbol_page::SymbolPage;
-use crate::workspace::overlays::{OverlayKind, OverlayStack};
 use crate::workspace::dock::{Banner, DockLayout, DockState};
-use crate::workspace::panels::{CenterPanel, JobsPanel, LogsPanel, OutlinePanel, SearchPanel};
+use crate::workspace::overlays::{OverlayKind, OverlayStack};
 use crate::workspace::pane::{Activation, Pane, PaneEvent, TabId as PaneTabId};
+use crate::workspace::panels::{CenterPanel, JobsPanel, LogsPanel, OutlinePanel, SearchPanel};
 use crate::workspace::status_bar::StatusBar;
 use gpui::prelude::*;
 
@@ -205,6 +205,12 @@ pub struct Shell {
     /// `Unavailable` phase is what a reader would see if they asked for it,
     /// not this field.
     gate: Option<Entity<SignInView>>,
+    /// Periodic posture re-check while the window stays open (L56). Held —
+    /// not `.detach()`ed — because dropping it cancels the loop, the same
+    /// LD-18 reason `packages` is held: a detached timer would keep firing
+    /// after this shell is gone, and a missing one would leave grace expiry
+    /// mid-session invisible until the next sign-in, sign-out, or rebuild.
+    _account_recheck: Option<Task<()>>,
 
     // ── Overlays (§13.5) ─────────────────────────────────────────────────────
     /// Which overlays are open, innermost last.
@@ -269,7 +275,6 @@ pub struct Shell {
     _subs: Vec<Subscription>,
 }
 
-
 /// Give a freshly-built pane a tab for every document the store still holds.
 ///
 /// # Why a window rebuild has to do this
@@ -330,6 +335,13 @@ fn rehydrate_tabs(
 
     tabs
 }
+
+/// How often [`Shell`] re-derives account posture while the window stays open.
+///
+/// Construction already judged the gate from `AccountService::refresh()`;
+/// this interval is the *next* look. Tests only assert that a task is armed,
+/// not the duration.
+const ACCOUNT_GATE_RECHECK: Duration = Duration::from_secs(60);
 
 impl Shell {
     /// Construct the shell, wiring up the `DockArea` and all placeholder panels.
@@ -485,11 +497,11 @@ impl Shell {
         // no network — [`nudox_engine::mcp::AccountGate::posture`] is pure — so there is
         // no reason to prefer the stale value.
         //
-        // This still does not make the gate live *while a window stays open*:
-        // nothing here re-derives the posture on a timer, so a grace window
-        // that expires mid-session is not caught until the next sign-in,
-        // sign-out, or rebuild. The tool-call boundary is unaffected either
-        // way — `AccountGate::admit` re-derives the posture from the clock on
+        // The gate at construction is still a snapshot: a grace window that
+        // expires *while this window stays open* is caught by the timer
+        // armed just before we return (`_account_recheck`), not by this
+        // read. The tool-call boundary is unaffected either way —
+        // `AccountGate::admit` re-derives the posture from the clock on
         // every call, in `nudox-mcp`, independent of anything this view caches.
         // A stale GUI gate can only be *too permissive about what the human
         // sees*, never about what an agent's tool call is allowed to do.
@@ -569,7 +581,9 @@ impl Shell {
                         .find(|(_, mapped)| **mapped == *pane_id)
                         .map(|(doc, _)| *doc);
                     if let Some(doc) = doc {
-                        shell.symbols.update(cx, |store, cx| store.activate(doc, cx));
+                        shell
+                            .symbols
+                            .update(cx, |store, cx| store.activate(doc, cx));
                     }
                 }
                 PaneEvent::TabClosed { id } => {
@@ -595,7 +609,9 @@ impl Shell {
                             .map(|(doc, _)| *doc)
                     });
                     if let Some(doc) = active_doc {
-                        shell.symbols.update(cx, |store, cx| store.activate(doc, cx));
+                        shell
+                            .symbols
+                            .update(cx, |store, cx| store.activate(doc, cx));
                     }
                 }
                 PaneEvent::ActiveTabChanged { id: None } => {}
@@ -603,12 +619,14 @@ impl Shell {
         }));
         {
             let _entity = cx.entity();
-            subs.push(cx.subscribe(&dock_area, move |shell, _, evt: &DockEvent, cx| {
-                if matches!(evt, DockEvent::LayoutChanged) {
-                    shell.saved_state = Some(shell.dock_area.read(cx).dump(cx));
-                    cx.emit(ShellEvent::DockLayoutChanged);
-                }
-            }));
+            subs.push(
+                cx.subscribe(&dock_area, move |shell, _, evt: &DockEvent, cx| {
+                    if matches!(evt, DockEvent::LayoutChanged) {
+                        shell.saved_state = Some(shell.dock_area.read(cx).dump(cx));
+                        cx.emit(ShellEvent::DockLayoutChanged);
+                    }
+                }),
+            );
         }
 
         // ── The one store→shell edge (§12.10): a document wants a tab ─────────
@@ -631,13 +649,14 @@ impl Shell {
         // knows *where* documents go. Neither has to learn the other's job —
         // the same seam the omni-search overlay uses, which is why
         // `reveal_document` is written once and both paths funnel through it.
-        subs.push(
-            cx.subscribe(&panel_for_subs, |shell, _panel, event: &PackageActivated, cx| {
+        subs.push(cx.subscribe(
+            &panel_for_subs,
+            |shell, _panel, event: &PackageActivated, cx| {
                 shell.symbols.update(cx, |store, cx| {
                     store.open(event.root.clone(), OpenDisposition::Replace, cx);
                 });
-            }),
-        );
+            },
+        ));
 
         // ── Corpus contents → status bar ─────────────────────────────────────
         //
@@ -692,6 +711,23 @@ impl Shell {
             window.focus(&pane_focus, cx);
         }
 
+        // L56: re-derive posture while the window stays open. Owned, not
+        // detached — dropping the shell must cancel this, or a dismissed
+        // window's timer would keep firing against a dead entity.
+        let _account_recheck = Some(cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(ACCOUNT_GATE_RECHECK).await;
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.recheck_account_gate(window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+
         Self {
             dock_area,
             pane,
@@ -703,6 +739,7 @@ impl Shell {
             index_jobs,
 
             gate,
+            _account_recheck,
 
             overlays: OverlayStack::new(),
             presented: None,
@@ -714,17 +751,17 @@ impl Shell {
             // animating in: a rebuilt window has to be the frame the reader
             // dismissed, and a dock sliding open on restore would both look
             // wrong and make the restored frame differ from the dismissed one.
-            left_w:   Motion::new(layout.left.rendered_size(),   Spring::DEFAULT),
+            left_w: Motion::new(layout.left.rendered_size(), Spring::DEFAULT),
             bottom_h: Motion::new(layout.bottom.rendered_size(), Spring::DEFAULT),
-            right_w:  Motion::new(layout.right.rendered_size(),  Spring::DEFAULT),
+            right_w: Motion::new(layout.right.rendered_size(), Spring::DEFAULT),
 
-            left_w_open:   layout.left.size,
+            left_w_open: layout.left.size,
             bottom_h_open: layout.bottom.size,
-            right_w_open:  layout.right.size,
+            right_w_open: layout.right.size,
 
-            left_open:   layout.left.open,
+            left_open: layout.left.open,
             bottom_open: layout.bottom.open,
-            right_open:  layout.right.open,
+            right_open: layout.right.open,
 
             banner_h: Motion::new(0.0, Spring::SNAPPY),
             current_banner: None,
@@ -801,7 +838,12 @@ impl Shell {
     ///
     /// Returns `true` if there was one, so callers can early-return. Pressing
     /// the same shortcut twice must not build a second view.
-    fn refocus_presented(&mut self, kind: &OverlayKind, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn refocus_presented(
+        &mut self,
+        kind: &OverlayKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(presented) = self.presented.as_ref() else {
             return false;
         };
@@ -1089,9 +1131,7 @@ impl Shell {
     pub fn presented_sign_in(&self) -> Option<Entity<SignInView>> {
         match self.presented.as_ref()?.view {
             OverlayView::SignIn(ref view) => Some(view.clone()),
-            OverlayView::OmniSearch(_) | OverlayView::Command(_) | OverlayView::Settings(_) => {
-                None
-            }
+            OverlayView::OmniSearch(_) | OverlayView::Command(_) | OverlayView::Settings(_) => None,
         }
     }
 
@@ -1135,6 +1175,14 @@ impl Shell {
         self.gate.is_some()
     }
 
+    /// Whether [`Shell::new`] armed the L56 posture re-check.
+    ///
+    /// The task is `Some` for the shell's whole life; dropping the shell
+    /// drops it. Tests assert this rather than waiting out the interval.
+    pub(crate) fn account_recheck_armed(&self) -> bool {
+        self._account_recheck.is_some()
+    }
+
     /// The gate's own `SignInView`, when the gate is up.
     ///
     /// Distinct from [`Self::presented_sign_in`]: that one is the dismissable
@@ -1156,7 +1204,12 @@ impl Shell {
     /// the scrim — reveals the shell behind it to a reader who is no longer
     /// signed in, which is exactly the "screen you must pass" the gate exists
     /// to be.
-    fn engage_gate(&mut self, view: Entity<SignInView>, window: &mut Window, cx: &mut Context<Self>) {
+    fn engage_gate(
+        &mut self,
+        view: Entity<SignInView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(presented) = self.presented.take() {
             self.overlays.pop();
             self.scrim.snap_to(0.0);
@@ -1261,6 +1314,51 @@ impl Shell {
         window.focus(&focus, cx);
     }
 
+    /// Re-derive account posture and engage or settle the gate if it changed.
+    ///
+    /// Called from the timer armed in [`Self::new`]. Does **not** rebuild a
+    /// gate that is already up — that would steal focus every tick. The only
+    /// engage is the ungated → cannot-work transition (grace expired while
+    /// the window stayed open). [`AccountStatus::Absent`] is a no-op on the
+    /// gate: test apps have no account service, and there is nothing to
+    /// gate against.
+    fn recheck_account_gate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_account(cx);
+
+        // No process-wide gate in this app (every `#[gpui::test]` without an
+        // `AccountService`). The chip already shows Absent; leave `self.gate`
+        // alone.
+        if matches!(AccountStatus::from_app(cx), AccountStatus::Absent) {
+            return;
+        }
+
+        // Same derivation `settle_gate_if_ready` uses: the account service's
+        // own status, not the view's phase.
+        let can_work = cx
+            .try_global::<AccountService>()
+            .map(AccountService::status)
+            .and_then(AccountStatus::presentation)
+            .is_some_and(|p| p.can_work);
+
+        if self.gate.is_none() && !can_work {
+            let Some(presentation) = AccountStatus::from_app(cx).presentation().cloned() else {
+                return;
+            };
+            let view = cx.new(|cx| SignInView::new(Some(presentation), window, cx));
+            self._subs.push(cx.subscribe_in(
+                &view,
+                window,
+                |shell, view, event: &SignInEvent, window, cx| {
+                    shell.on_sign_in_event(view.clone(), event, window, cx);
+                },
+            ));
+            lifecycle::refresh_menus(cx);
+            self.engage_gate(view, window, cx);
+        } else if self.gate.is_some() && can_work {
+            self.settle_gate_if_ready(window, cx);
+        }
+    }
+
     /// What the overlay reports upward (§15 — the view never closes itself).
     fn on_omni_event(
         &mut self,
@@ -1292,7 +1390,8 @@ impl Shell {
                 // be looking at where it is reported rather than at a panel
                 // that will sit empty.
                 let purl = purl.clone();
-                self.index_jobs.update(cx, |store, cx| store.start(purl, cx));
+                self.index_jobs
+                    .update(cx, |store, cx| store.start(purl, cx));
                 self.close_overlay(window, cx);
                 // Only *open* it — never toggle. A user who already had Jobs
                 // open and pressed enter would otherwise have it close on them
@@ -1449,7 +1548,11 @@ impl Shell {
     /// Toggle goes through the spring so the open/close is animated (LD-5).
     pub fn toggle_left_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.left_open = !self.left_open;
-        let target = if self.left_open { self.left_w_open } else { 0.0 };
+        let target = if self.left_open {
+            self.left_w_open
+        } else {
+            0.0
+        };
         let reduced = cx.theme_ext().reduced_motion();
         if reduced {
             self.left_w.snap_to(target);
@@ -1491,7 +1594,11 @@ impl Shell {
     /// Toggle the bottom dock.
     pub fn toggle_bottom_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.bottom_open = !self.bottom_open;
-        let target = if self.bottom_open { self.bottom_h_open } else { 0.0 };
+        let target = if self.bottom_open {
+            self.bottom_h_open
+        } else {
+            0.0
+        };
         let reduced = cx.theme_ext().reduced_motion();
         if reduced {
             self.bottom_h.snap_to(target);
@@ -1508,7 +1615,11 @@ impl Shell {
     /// Toggle the right dock.
     pub fn toggle_right_dock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.right_open = !self.right_open;
-        let target = if self.right_open { self.right_w_open } else { 0.0 };
+        let target = if self.right_open {
+            self.right_w_open
+        } else {
+            0.0
+        };
         let reduced = cx.theme_ext().reduced_motion();
         if reduced {
             self.right_w.snap_to(target);
@@ -1582,7 +1693,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let _ = self.dock_area.update(cx, |da, cx| da.load(state, window, cx));
+        let _ = self
+            .dock_area
+            .update(cx, |da, cx| da.load(state, window, cx));
         cx.notify();
     }
 
@@ -1746,8 +1859,7 @@ impl Render for Shell {
         let scrim_colour = theme.colours.scrim;
         // One field, so there is no priority order to get wrong between two
         // live views — see `PresentedOverlay`.
-        let overlay_view: Option<AnyView> =
-            self.presented.as_ref().map(|p| p.view.any_view());
+        let overlay_view: Option<AnyView> = self.presented.as_ref().map(|p| p.view.any_view());
         let overlay = overlay_view.map(|view| {
             let dismissable = self
                 .overlays
@@ -1797,14 +1909,7 @@ impl Render for Shell {
                             }),
                     )
                 })
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .size_full()
-                        .child(view),
-                )
+                .child(div().absolute().top_0().left_0().size_full().child(view))
         });
 
         // ── Full shell layout ─────────────────────────────────────────────────
@@ -1871,6 +1976,58 @@ mod tests {
     use super::*;
     use crate::workspace::dock::{BannerKind, LEFT_DOCK_DEFAULT_W};
 
+    /// docs/LIMITATIONS.md L56: `Shell::gate` is judged at construction and
+    /// after sign-in/sign-out, but nothing re-derives posture while the window
+    /// stays open. Grace expiry mid-session would leave an ungated shell.
+    #[gpui::test]
+    async fn shell_arms_an_account_posture_recheck_while_the_window_stays_open(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.executor().allow_parking();
+        cx.update(|cx: &mut App| {
+            gpui_component::init(cx);
+            crate::theme::ext::NudoxThemeExt::init(cx).expect("bundled themes parse and install");
+            cx.set_global(crate::motion::tokens::MotionTokens::new(1.0));
+            cx.bind_keys(crate::app::keymaps::all_bindings());
+        });
+
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(
+            nudox_engine::runtime::EngineConfig::default(),
+        );
+        let search = cx.new(|_cx| SearchStore::new(engine.clone()));
+        let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
+        let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
+        let index_jobs = cx.new(|_c| IndexJobStore::new(engine.clone()));
+
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
+        let shell_cell_w = shell_cell.clone();
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
+        let window = cx
+            .update(|cx: &mut App| {
+                cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
+                    let entity = cx.new(|cx| {
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
+                    });
+                    *shell_cell_w.lock().unwrap() = Some(entity.clone());
+                    cx.new(|cx| gpui_component::Root::new(entity, window, cx))
+                })
+            })
+            .expect("window must open");
+        let shell = shell_cell.lock().unwrap().take().expect("shell set");
+        let mut vcx = gpui::VisualTestContext::from_window(window.into(), cx);
+        assert!(
+            shell.read_with(&mut vcx, |s, _| s.account_recheck_armed()),
+            "L56: Shell::new must keep a timer that re-derives account posture \
+             while the window stays open; without it a grace expiry mid-session \
+             is invisible until the next sign-in, sign-out, or rebuild"
+        );
+    }
+
     /// Opening a tab and closing a *different* one in the same synchronous
     /// batch must leave `cmd-W` working.
     ///
@@ -1885,9 +2042,7 @@ mod tests {
     /// throughout is what ruled the batching out. Kept, because holding that
     /// still is worth a test on its own.
     #[gpui::test]
-    async fn open_then_close_in_one_batch_keeps_close_tab_working(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    async fn open_then_close_in_one_batch_keeps_close_tab_working(cx: &mut gpui::TestAppContext) {
         cx.executor().allow_parking();
         cx.update(|cx: &mut App| {
             gpui_component::init(cx);
@@ -1896,7 +2051,9 @@ mod tests {
             cx.bind_keys(crate::app::keymaps::all_bindings());
         });
 
-        let engine = nudox_engine::runtime::Engine::start_with_fixtures(nudox_engine::runtime::EngineConfig::default());
+        let engine = nudox_engine::runtime::Engine::start_with_fixtures(
+            nudox_engine::runtime::EngineConfig::default(),
+        );
         let search = cx.new(|_cx| SearchStore::new(engine.clone()));
         let symbols = cx.new(|_cx| SymbolStore::new(engine.clone()));
         let packages = cx.new(|c| PackageStore::new(engine.clone(), &[], c));
@@ -1904,11 +2061,18 @@ mod tests {
 
         let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
-        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
         let window = cx
             .update(|cx: &mut App| {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-                    let entity = cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    let entity = cx.new(|cx| {
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
+                    });
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     // `Input` (`SignInView`'s field) requires a `Root`-rooted
                     // window; see the identical comment in `main.rs`.
@@ -1935,7 +2099,9 @@ mod tests {
             if ready {
                 break;
             }
-            cx.background_executor.timer(std::time::Duration::from_millis(50)).await;
+            cx.background_executor
+                .timer(std::time::Duration::from_millis(50))
+                .await;
         }
 
         let rows = search.read_with(&mut vcx, |s, _| {
@@ -1989,7 +2155,10 @@ mod tests {
         vcx.simulate_keystrokes("cmd-w");
         vcx.run_until_parked();
         let len_after_first_close = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
-        assert_eq!(len_after_first_close, 1, "cmd-w must close the newly-active tab");
+        assert_eq!(
+            len_after_first_close, 1,
+            "cmd-w must close the newly-active tab"
+        );
     }
 
     /// A pre-rendered presentation for a posture, built the same way
@@ -2027,9 +2196,11 @@ mod tests {
             >,
         > {
             Box::pin(async {
-                Ok(nudox_engine::mcp::account::service::AuthorizeOutcome::Allowed {
-                    user: nudox_engine::mcp::account::state::UserId(24),
-                })
+                Ok(
+                    nudox_engine::mcp::account::service::AuthorizeOutcome::Allowed {
+                        user: nudox_engine::mcp::account::state::UserId(24),
+                    },
+                )
             })
         }
 
@@ -2052,7 +2223,10 @@ mod tests {
             _key: &'a nudox_engine::mcp::ApiKey,
         ) -> nudox_engine::mcp::account::service::ServiceFuture<
             'a,
-            Result<nudox_engine::mcp::account::state::QuotaSnapshot, nudox_engine::mcp::account::state::ProbeFailure>,
+            Result<
+                nudox_engine::mcp::account::state::QuotaSnapshot,
+                nudox_engine::mcp::account::state::ProbeFailure,
+            >,
         > {
             Box::pin(async {
                 Ok(nudox_engine::mcp::account::state::QuotaSnapshot {
@@ -2181,12 +2355,18 @@ mod tests {
 
         let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
-        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
         let window = cx
             .update(|cx: &mut App| {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-                    let entity =
-                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    let entity = cx.new(|cx| {
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
+                    });
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     // `Input` (`SignInView`'s field) requires a `Root`-rooted
                     // window; see the identical comment in `main.rs`.
@@ -2219,9 +2399,8 @@ mod tests {
             can_sign_out: true,
             urgent: true,
         };
-        let poisoned_view = vcx.update(|window, cx| {
-            cx.new(|cx| SignInView::new(Some(poisoned), window, cx))
-        });
+        let poisoned_view =
+            vcx.update(|window, cx| cx.new(|cx| SignInView::new(Some(poisoned), window, cx)));
 
         // The precondition the whole test is about: this hand-built view
         // really is already showing settled `Accepted` — the panel, key
@@ -2330,12 +2509,18 @@ mod tests {
 
         let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
-        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
         let window = cx
             .update(|cx: &mut App| {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-                    let entity =
-                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    let entity = cx.new(|cx| {
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
+                    });
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     // `Input` (`SignInView`'s field) requires a `Root`-rooted
                     // window; see the identical comment in `main.rs`.
@@ -2380,7 +2565,10 @@ mod tests {
                 .timer(std::time::Duration::from_millis(10))
                 .await;
         }
-        assert!(cleared, "the gate must clear once sign-in settles and the acceptance spring is settled");
+        assert!(
+            cleared,
+            "the gate must clear once sign-in settles and the acceptance spring is settled"
+        );
 
         vcx.dispatch_action(OpenOmniSearch);
         vcx.run_until_parked();
@@ -2528,12 +2716,18 @@ mod tests {
 
         let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
-        let (s2, y2, p2, j2) = (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
         let window = cx
             .update(|cx: &mut App| {
                 cx.open_window(gpui::WindowOptions::default(), move |window, cx| {
-                    let entity =
-                        cx.new(|cx| Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx));
+                    let entity = cx.new(|cx| {
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
+                    });
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     // `Input` (`SignInView`'s field) requires a `Root`-rooted
                     // window; see the identical comment in `main.rs`.
@@ -2549,7 +2743,11 @@ mod tests {
             .read_with(&mut vcx, |s, _| s.gate.clone())
             .expect("a SignedOut launch must construct the shell already gated");
         assert_eq!(
-            gate_view.read_with(&mut vcx, |v, cx| v.input_state().read(cx).value().to_string()),
+            gate_view.read_with(&mut vcx, |v, cx| v
+                .input_state()
+                .read(cx)
+                .value()
+                .to_string()),
             "",
             "precondition: nothing has been typed yet",
         );
@@ -2562,7 +2760,11 @@ mod tests {
         vcx.run_until_parked();
 
         assert_ne!(
-            gate_view.read_with(&mut vcx, |v, cx| v.input_state().read(cx).value().to_string()),
+            gate_view.read_with(&mut vcx, |v, cx| v
+                .input_state()
+                .read(cx)
+                .value()
+                .to_string()),
             "",
             "a keystroke dispatched through the window must reach the launch-time gate's \
              field — if this is empty, window focus never landed on the gate when \

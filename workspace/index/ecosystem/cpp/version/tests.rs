@@ -39,15 +39,15 @@ fn version_date_classifies_as_date() {
 #[test]
 fn pseudo_versions_classify_as_pseudo() {
     assert!(matches!(
-        parse("v0.0.0-20_200_828_120_000-abcdefabcdef"),
+        parse("v0.0.0-20200828120000-abcdefabcdef"),
         CppVersion::Pseudo { base: None, .. }
     ));
     assert!(matches!(
-        parse("v1.2.3-0.20_200_828_120_000-abcdefabcdef"),
+        parse("v1.2.3-0.20200828120000-abcdefabcdef"),
         CppVersion::Pseudo { base: Some(_), .. }
     ));
     assert!(matches!(
-        parse("v1.2.3-pre.0.20_200_828_120_000-abcdefabcdef"),
+        parse("v1.2.3-pre.0.20200828120000-abcdefabcdef"),
         CppVersion::Pseudo { base: Some(_), .. }
     ));
 }
@@ -65,7 +65,7 @@ fn raw_fallback_for_unstructured() {
 fn cross_kind_total_order() {
     let tag = parse("1.0.0");
     let date = parse("2021-01-01");
-    let pseudo = parse("v0.0.0-20_200_828_120_000-abcdefabcdef");
+    let pseudo = parse("v0.0.0-20200828120000-abcdefabcdef");
     let raw = parse("main");
     assert!(tag > date);
     assert!(date > pseudo);
@@ -94,15 +94,15 @@ fn date_natural_order() {
 #[test]
 fn pseudo_natural_order() {
     assert!(
-        parse("v0.0.0-20_200_828_120_000-abcdefabcdef") > parse("v0.0.0-20200101000000-abcdefabcdef")
+        parse("v0.0.0-20200828120000-abcdefabcdef") > parse("v0.0.0-20200101000000-abcdefabcdef")
     );
     // Same timestamp, hash lexical tiebreak.
     assert!(
-        parse("v0.0.0-20_200_828_120_000-ffffffffffff") > parse("v0.0.0-20_200_828_120_000-000000000000")
+        parse("v0.0.0-20200828120000-ffffffffffff") > parse("v0.0.0-20200828120000-000000000000")
     );
     // No-base (form 1) sorts before a based pseudo of the same ts+hash.
-    let form1 = parse("v0.0.0-20_200_828_120_000-abcdefabcdef");
-    let form2 = parse("v1.0.0-0.20_200_828_120_000-abcdefabcdef");
+    let form1 = parse("v0.0.0-20200828120000-abcdefabcdef");
+    let form2 = parse("v1.0.0-0.20200828120000-abcdefabcdef");
     assert!(form2 > form1);
 }
 
@@ -110,7 +110,7 @@ fn pseudo_natural_order() {
 
 #[test]
 fn is_prerelease_rules() {
-    assert!(parse("v0.0.0-20_200_828_120_000-abcdefabcdef").is_prerelease());
+    assert!(parse("v0.0.0-20200828120000-abcdefabcdef").is_prerelease());
     assert!(parse("1.0.0-rc1").is_prerelease());
     assert!(!parse("1.0.0").is_prerelease());
     assert!(!parse("2021-05-12").is_prerelease());
@@ -148,7 +148,7 @@ fn range_caret_semantics_tag_only() {
 #[test]
 fn synthesize_form1_no_ancestor() {
     let v = synthesize_pseudo_version(None, 20_200_828_120_000, "abcdefabcdef").unwrap();
-    assert_eq!(v, "v0.0.0-20_200_828_120_000-abcdefabcdef");
+    assert_eq!(v, "v0.0.0-20200828120000-abcdefabcdef");
     // Roundtrips back to a Pseudo with no base.
     assert!(matches!(parse(&v), CppVersion::Pseudo { base: None, .. }));
 }
@@ -158,7 +158,7 @@ fn synthesize_form2_release_ancestor() {
     let ancestor = TagVersion::parse("v1.2.3").unwrap();
     let v = synthesize_pseudo_version(Some(&ancestor), 20_200_828_120_000, "abcdefabcdef").unwrap();
     // Patch is bumped and `-0.` prefix inserted (Go form 2).
-    assert_eq!(v, "v1.2.4-0.20_200_828_120_000-abcdefabcdef");
+    assert_eq!(v, "v1.2.4-0.20200828120000-abcdefabcdef");
     assert!(matches!(
         parse(&v),
         CppVersion::Pseudo { base: Some(_), .. }
@@ -169,7 +169,7 @@ fn synthesize_form2_release_ancestor() {
 fn synthesize_form3_prerelease_ancestor() {
     let ancestor = TagVersion::parse("v1.2.3-pre").unwrap();
     let v = synthesize_pseudo_version(Some(&ancestor), 20_200_828_120_000, "abcdefabcdef").unwrap();
-    assert_eq!(v, "v1.2.3-pre.0.20_200_828_120_000-abcdefabcdef");
+    assert_eq!(v, "v1.2.3-pre.0.20200828120000-abcdefabcdef");
     assert!(matches!(
         parse(&v),
         CppVersion::Pseudo { base: Some(_), .. }
@@ -192,7 +192,7 @@ fn synthesize_rejects_malformed() {
 fn parse_rejects_malformed_pseudo() {
     // 13-hex hash → not a pseudo (falls back).
     assert!(!matches!(
-        parse("v0.0.0-20_200_828_120_000-abcdefabcdef0"),
+        parse("v0.0.0-20200828120000-abcdefabcdef0"),
         CppVersion::Pseudo { .. }
     ));
     // Bad timestamp width → not a pseudo.
@@ -200,6 +200,106 @@ fn parse_rejects_malformed_pseudo() {
         parse("v0.0.0-2020082812000-abcdefabcdef"),
         CppVersion::Pseudo { .. }
     ));
+}
+
+// ── Regression: form-1/2/3 grammar over-acceptance (P6 audit) ───────────────
+//
+// `parse_pseudo` used to accept ANY numeric core in front of a bare
+// `<timestamp>-<hash12>` tail as Go form 1, discarding the core entirely
+// (`base: None` unconditionally renders `v0.0.0-...`). A tag like `v1.2.3`
+// is not a valid form-1 core (form 1 requires `X.0.0` — zero minor/patch),
+// so two structurally different inputs used to collapse to the SAME
+// `CppVersion` value, which breaks both injectivity and the documented
+// canonical() round-trip contract.
+
+#[test]
+fn nonzero_minor_patch_pseudo_shaped_string_is_not_pseudo() {
+    // Looks like form 1 (`<core>-<14digits>-<hash12>`) but the core has a
+    // nonzero minor/patch, which form 1 forbids. Must NOT be swallowed into
+    // Pseudo{base: None} (that would silently discard "1.2.3" and collide
+    // with a genuine "v0.0.0-...-..." pseudo-version of the same ts+hash).
+    let v = parse("v1.2.3-20200828120000-abcdefabcdef");
+    assert!(
+        !matches!(v, CppVersion::Pseudo { .. }),
+        "nonzero minor/patch core must not classify as a pseudo-version, got {v:?}"
+    );
+    // It must not silently collide with the real v0.0.0 form of the same
+    // timestamp+hash.
+    let real_form1 = parse("v0.0.0-20200828120000-abcdefabcdef");
+    assert_ne!(v, real_form1);
+    // Falls back to Tag (the whole string re-parses as a loose tag with an
+    // unusual prerelease label) rather than Raw, since TagVersion::parse
+    // accepts it.
+    assert!(matches!(v, CppVersion::Tag(_)));
+}
+
+#[test]
+fn major_only_zero_minor_patch_pseudo_is_still_accepted_as_form1() {
+    // `vX.0.0-<ts>-<hash>` (nonzero major, zero minor/patch) IS a valid Go
+    // form-1 core (untagged module under major version X). It's still
+    // classified as Pseudo (the major itself is not retained in `base`,
+    // a known, narrower limitation — see the version.rs module docs).
+    assert!(matches!(
+        parse("v2.0.0-20200828120000-abcdefabcdef"),
+        CppVersion::Pseudo { base: None, .. }
+    ));
+}
+
+#[test]
+fn garbage_base_label_before_dot_zero_is_rejected() {
+    // Not "0" and not "<label>.0" — must not be accepted as form 2/3.
+    let v = parse("v1.2.3-garbage.20200828120000-abcdefabcdef");
+    assert!(
+        !matches!(v, CppVersion::Pseudo { .. }),
+        "malformed base label must not classify as pseudo, got {v:?}"
+    );
+}
+
+#[test]
+fn form3_prerelease_label_is_folded_into_base_and_orders_correctly() {
+    let a = parse("v1.2.3-alpha.0.20200828120000-abcdefabcdef");
+    let b = parse("v1.2.3-beta.0.20200828120000-abcdefabcdef");
+    match (&a, &b) {
+        (
+            CppVersion::Pseudo {
+                base: Some(base_a), ..
+            },
+            CppVersion::Pseudo {
+                base: Some(base_b), ..
+            },
+        ) => {
+            assert_eq!(base_a.canonical(), "v1.2.3-alpha");
+            assert_eq!(base_b.canonical(), "v1.2.3-beta");
+        }
+        _ => panic!("expected both to parse as Pseudo{{base: Some(_)}}, got {a:?} / {b:?}"),
+    }
+    // Different prerelease ancestors at the same timestamp+hash must NOT
+    // compare equal (they used to, when the label was discarded).
+    assert_ne!(a, b);
+    // `alpha` < `beta` lexically, so the pseudo-version built on `alpha`
+    // orders before the one built on `beta` (base_cmp delegates to
+    // TagVersion::cmp, which compares prerelease labels).
+    assert!(a < b);
+}
+
+#[test]
+fn form3_canonical_round_trips_exactly() {
+    // This is the concrete bug: canonical() used to render every `Some`
+    // base with a `-0.` separator, even when the base carried its own
+    // prerelease — collapsing form 3 into form 2's shape and losing the
+    // "pre" label on round-trip.
+    let raw = "v1.2.3-pre.0.20200828120000-abcdefabcdef";
+    let v = parse(raw);
+    assert!(matches!(v, CppVersion::Pseudo { base: Some(_), .. }));
+    assert_eq!(v.canonical(), raw, "form 3 must round-trip exactly");
+}
+
+#[test]
+fn form2_canonical_still_round_trips_exactly() {
+    let raw = "v1.2.4-0.20200828120000-abcdefabcdef";
+    let v = parse(raw);
+    assert!(matches!(v, CppVersion::Pseudo { base: Some(_), .. }));
+    assert_eq!(v.canonical(), raw);
 }
 
 // ── Property tests: total-order laws ─────────────────────────────────────────
@@ -210,8 +310,8 @@ fn pool() -> Vec<&'static str> {
         "main",
         "develop",
         "v0.0.0-20190101000000-aaaaaaaaaaaa",
-        "v0.0.0-20_200_828_120_000-cccccccccccc",
-        "v1.0.0-0.20_200_828_120_000-abcdefabcdef",
+        "v0.0.0-20200828120000-cccccccccccc",
+        "v1.0.0-0.20200828120000-abcdefabcdef",
         "2019-01-01",
         "2021-05-12",
         "2021-05-12#3",
@@ -325,9 +425,9 @@ fn canonical_date_normalizes() {
 
 #[test]
 fn canonical_pseudo_is_exact_go_string() {
-    let raw = "v0.0.0-20_200_828_120_000-cccccccccccc";
+    let raw = "v0.0.0-20200828120000-cccccccccccc";
     assert_eq!(parse(raw).canonical(), raw);
-    let form2 = "v1.0.1-0.20_200_828_120_000-abcdefabcdef";
+    let form2 = "v1.0.1-0.20200828120000-abcdefabcdef";
     assert_eq!(parse(form2).canonical(), form2);
 }
 

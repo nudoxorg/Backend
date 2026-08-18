@@ -23,7 +23,7 @@
 //! defined inside their store files where they are emitted; they do NOT belong
 //! here because they do not create store→store dependencies.
 
-use nudox_engine::wire::{SymbolKey, SectionId};
+use nudox_engine::wire::{SectionId, SymbolKey};
 
 use crate::stores::nav::NavEntry;
 use crate::stores::symbol::TabId;

@@ -12,13 +12,13 @@ use heart::query::{AsOf, CatalogCommitHash};
 
 use crate::codec::CodecError;
 use crate::engine::{self, CatalogEngine, Row, VersioningEngine};
-use crate::entity::{outbox, packages, sink_watermarks};
+use crate::entity::{outbox, packages, sink_watermarks, versions};
 use crate::enums::{OutboxOperation, SinkKind, TextEnum};
-use crate::ids::{version_id, GenerationStamp, PackageStemId};
+use crate::ids::{GenerationStamp, PackageId, PackageStemId, version_id};
 use crate::tables::outbox::OutboxRow;
 use crate::tables::packages::PackageRow;
 
-use super::{CatalogCursor, ChangedPage, MetaError};
+use super::{CatalogCursor, ChangedPage, MetaError, VersionSnapshot};
 
 /// A read view pinned to a point in catalog history (INDEX-PLAN §9).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +72,33 @@ pub fn changed_since<E: CatalogEngine>(
         after_seq: last.seq,
     });
     Ok(ChangedPage { rows, next })
+}
+
+/// Read the durable version set for one stem without loading unrelated packages.
+pub fn version_snapshots<E: CatalogEngine>(
+    engine: &E,
+    stem: PackageStemId,
+) -> Result<Vec<VersionSnapshot>, MetaError> {
+    let stmt = versions::Entity::find()
+        .filter(versions::Column::StemId.eq(stem))
+        .select_only()
+        .column(versions::Column::Id)
+        .column(versions::Column::VersionCanonical)
+        .column(versions::Column::SourceRev)
+        .order_by_asc(versions::Column::VersionCanonical)
+        .build(DbBackend::Sqlite);
+    engine::query(engine, stmt, &mut |row| {
+        Ok(VersionSnapshot {
+            version_id: PackageId::from_uuid(
+                *version_id::from_blob(&row.get_blob(0)?)
+                    .map_err(crate::codec::CodecError::from)?
+                    .as_uuid(),
+            ),
+            version_canonical: row.get_text(1)?,
+            source_rev: row.get_optional_text(2)?,
+        })
+    })
+    .map_err(Into::into)
 }
 
 fn outbox_from_row(row: &dyn Row) -> Result<OutboxRow, CodecError> {
@@ -140,10 +167,7 @@ pub fn outbox_gc<E: CatalogEngine>(engine: &E) -> Result<u64, MetaError> {
 }
 
 /// The current watermark `last_seq` for a sink, or `0` when unseen.
-pub fn current_watermark<E: CatalogEngine>(
-    engine: &E,
-    sink: SinkKind,
-) -> Result<i64, MetaError> {
+pub fn current_watermark<E: CatalogEngine>(engine: &E, sink: SinkKind) -> Result<i64, MetaError> {
     let stmt = sink_watermarks::Entity::find()
         .filter(sink_watermarks::Column::SinkKind.eq(sink))
         .select_only()

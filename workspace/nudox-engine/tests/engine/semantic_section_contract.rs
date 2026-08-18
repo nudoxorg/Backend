@@ -114,8 +114,12 @@ async fn observe(
     let mut states = BTreeMap::new();
     while let Ok(event) = rx.recv_async().await {
         match event {
-            SearchEvent::Section { section, rows: r, .. }
-            | SearchEvent::Merge { section, rows: r, .. } => {
+            SearchEvent::Section {
+                section, rows: r, ..
+            }
+            | SearchEvent::Merge {
+                section, rows: r, ..
+            } => {
                 *rows.entry(section.0).or_insert(0) += r.len();
             }
             SearchEvent::SectionState { section, state, .. } => {
@@ -144,7 +148,7 @@ async fn observe(
 /// The conjunction is what makes this a test rather than a tautology, and the
 /// third conjunct is the one that changed: it is no longer "section 2 is
 /// empty", which a broken engine also satisfies, but "section 2 reports
-/// `Unavailable { NoEmbedder }`", which only a section that ran its
+/// `Unavailable { NoModelConfigured }`", which only a section that ran its
 /// availability check and found no model can produce.
 #[tokio::test]
 async fn a_build_with_no_model_reports_unavailable_rather_than_no_results() {
@@ -195,13 +199,28 @@ async fn a_build_with_no_model_reports_unavailable_rather_than_no_results() {
     assert_eq!(
         seen.states.get(&SECTION_SEMANTIC.0),
         Some(&SectionState::Unavailable {
-            reason: Unavailable::NoEmbedder
+            reason: Unavailable::NoModelConfigured
         }),
         "with no embedder the semantic section must report why it is empty. \
          `Complete` would assert that we searched and found nothing — a claim \
          about the corpus that an engine with no model cannot make, and one the \
          name section contradicts. States: {:?}",
         seen.states
+    );
+}
+
+#[tokio::test]
+async fn default_semantic_search_reports_typed_unavailable_state() {
+    let engine = make_engine();
+    wait_for_corpus(&engine).await;
+    let seen = observe(&engine, "point", Vec::new(), Gen(4)).await;
+
+    assert_eq!(
+        seen.states.get(&SECTION_SEMANTIC.0),
+        Some(&SectionState::Unavailable {
+            reason: Unavailable::NoModelConfigured
+        }),
+        "default configuration must surface typed unavailability"
     );
 }
 

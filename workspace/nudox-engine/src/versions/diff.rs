@@ -65,8 +65,8 @@
 
 use std::collections::HashMap;
 
-use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 use crate::store::package::PackageView;
+use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 
 use crate::{
     chunk::signature,
@@ -111,8 +111,7 @@ pub(crate) fn build(
     let from_decls = declarations(&from.package);
     let to_decls = declarations(&to.package);
 
-    let from_by_intro: HashMap<IntroId, &Decl> =
-        from_decls.iter().map(|d| (d.intro, d)).collect();
+    let from_by_intro: HashMap<IntroId, &Decl> = from_decls.iter().map(|d| (d.intro, d)).collect();
     let to_by_intro: HashMap<IntroId, &Decl> = to_decls.iter().map(|d| (d.intro, d)).collect();
 
     let mut rows: Vec<DiffRow> = Vec::new();
@@ -384,16 +383,16 @@ fn tier_label(package: &PackageView, intro: IntroId) -> KeyTierLabel {
 mod tests {
     use std::sync::Arc;
 
+    use crate::store::package::{PackageView, Provenance};
     use nudox_ir::{
         apply::PristineIntroTable,
         change::PackageLineageId,
         entry::{Node, Symbol, Visibility},
         kind::Kind,
         kinds::{Function, Module},
-        package::{Escalation, SealReport},
+        package::{Escalation, KeyTier, SealReport},
         view::IrView,
     };
-    use crate::store::package::{PackageView, Provenance};
 
     use super::*;
     use crate::test_support::{intro, lineage};
@@ -447,8 +446,15 @@ mod tests {
                 Some(intro(200)),
             );
         }
+        // `KeyProvenance::from_seal_report` reads `non_structural_keys`, not
+        // `forced_keys` (MCP-SURFACE-PLAN §4.14) — a hand-built report has to
+        // populate the field production actually consumes, or every tier
+        // this fixture claims to grant would silently come back `Structural`.
         let report = SealReport {
-            forced_keys: forced.iter().map(|(n, e)| (intro(*n), *e)).collect(),
+            non_structural_keys: forced
+                .iter()
+                .map(|(n, e)| (intro(*n), KeyTier::from(*e)))
+                .collect(),
             ..SealReport::default()
         };
         Arc::new(PackageView::build_sealed(

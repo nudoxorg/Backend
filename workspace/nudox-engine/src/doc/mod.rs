@@ -24,7 +24,7 @@ use tracing::debug;
 use crate::{
     chunk,
     runtime::{EngineHandle, StreamHandle},
-    versions::{timeline, VersionRegistry, VersionSlice},
+    versions::{VersionRegistry, VersionSlice, timeline},
     wire::{
         DocEvent, EngineError, Gen, HighlightSpan, KeyStaleness, KeyTierName, SharedStr, SymbolKey,
     },
@@ -105,10 +105,13 @@ impl EngineHandle {
     /// 1835 → 1794 entries with escalation disabled, i.e. 41 declarations in
     /// one crate whose identity is not content-derived.
     ///
-    /// So a stale link is possible. `SealReport::forced_keys` is projected into
-    /// `PackageView`, allowing the failure below to report which tier minted a
-    /// key that still resolves in another generation. Treat "the key still
-    /// resolves" as the common case, not a guarantee.
+    /// So a stale link is possible. `SealReport::non_structural_keys` is
+    /// projected into `PackageView` (not `forced_keys`, which only names
+    /// pass-2.5 escalations and misses collisions pass 2 resolves directly
+    /// with `Span` — see `KeyProvenance`'s doc), allowing the failure below
+    /// to report which tier minted a key that still resolves in another
+    /// generation. Treat "the key still resolves" as the common case, not a
+    /// guarantee.
     pub fn open_symbol(
         &self,
         key: SymbolKey,

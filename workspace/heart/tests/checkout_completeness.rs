@@ -153,7 +153,10 @@ fn candidate_paths(source: &Path, module: &str) -> [PathBuf; 2] {
         parent.join(stem)
     };
 
-    [base.join(format!("{module}.rs")), base.join(module).join("mod.rs")]
+    [
+        base.join(format!("{module}.rs")),
+        base.join(module).join("mod.rs"),
+    ]
 }
 
 #[test]
@@ -259,7 +262,9 @@ fn every_compile_time_include_is_tracked() {
         let Ok(text) = std::fs::read_to_string(root.join(relative)) else {
             continue;
         };
-        let dir = Path::new(relative).parent().unwrap_or_else(|| Path::new(""));
+        let dir = Path::new(relative)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
 
         for macro_name in ["include_str!", "include_bytes!"] {
             for (offset, _) in text.match_indices(macro_name) {
@@ -268,7 +273,9 @@ fn every_compile_time_include_is_tracked() {
                 // non-literal argument (a `concat!`, an env expansion) is skipped
                 // rather than guessed at; guessing would produce false positives
                 // that get this test deleted.
-                let Some(open) = after.find('"') else { continue };
+                let Some(open) = after.find('"') else {
+                    continue;
+                };
                 if after[..open].chars().any(|c| !"( \t\r\n".contains(c)) {
                     continue;
                 }
@@ -383,7 +390,9 @@ fn every_build_script_is_tracked() {
     let mut missing = Vec::new();
 
     for manifest in &manifests {
-        let dir = Path::new(manifest).parent().unwrap_or_else(|| Path::new(""));
+        let dir = Path::new(manifest)
+            .parent()
+            .unwrap_or_else(|| Path::new(""));
         let script = dir.join("build.rs");
         if root.join(&script).is_file() && !known.contains(script.to_string_lossy().as_ref()) {
             missing.push(format!("  {}", script.display()));

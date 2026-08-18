@@ -484,7 +484,12 @@ impl UsageLedger {
             return Some(Reconciliation::Indeterminate);
         };
 
-        let verdict = reconcile(anchor.tool_calls, anchor.acked_since, count, observed_tool_calls);
+        let verdict = reconcile(
+            anchor.tool_calls,
+            anchor.acked_since,
+            count,
+            observed_tool_calls,
+        );
         match verdict {
             Reconciliation::Landed => self.settle_accepted(SealedBatch { count }),
             Reconciliation::NotLanded => self.requeue(SealedBatch { count }),
@@ -519,8 +524,8 @@ impl UsageLedger {
     /// discarded — the same rule as an orphaned ledger in [`Self::open`].
     pub fn reset_for_sign_out(&self) {
         let mut guard = self.lock();
-        let losing = u64::from(guard.pending)
-            + guard.inflight.as_ref().map_or(0, |b| u64::from(b.count));
+        let losing =
+            u64::from(guard.pending) + guard.inflight.as_ref().map_or(0, |b| u64::from(b.count));
         if losing > 0 {
             guard.dropped.batches += 1;
             guard.dropped.calls += losing;
@@ -536,7 +541,9 @@ impl UsageLedger {
         // A panic elsewhere cannot have left these integers torn; propagating
         // the poison would turn one unrelated failure into a permanently
         // unusable ledger, which for a billing counter is the worse outcome.
-        self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn persist_locked(&self, file: &LedgerFile, durability: Durability) {
@@ -814,7 +821,9 @@ mod tests {
         }
 
         let reopened = UsageLedger::open(Some(scratch.path()), &fp_a());
-        let orphan = reopened.orphaned_batch().expect("the batch survived the crash");
+        let orphan = reopened
+            .orphaned_batch()
+            .expect("the batch survived the crash");
         assert_eq!(orphan.count, 25);
 
         // The service's total already includes them.
@@ -840,7 +849,10 @@ mod tests {
             let _ = ledger.seal(t0()).expect("seal");
         }
         let reopened = UsageLedger::open(Some(scratch.path()), &fp_a());
-        assert_eq!(reopened.resolve_orphan(700), Some(Reconciliation::NotLanded));
+        assert_eq!(
+            reopened.resolve_orphan(700),
+            Some(Reconciliation::NotLanded)
+        );
         assert_eq!(
             reopened.pending(),
             25,

@@ -40,7 +40,12 @@ pub use nudox_ir::change::{
     EcosystemId, IntroId, PackageLineageId, PackageName, StableRef as SymbolKey,
 };
 pub use nudox_ir::entry::Visibility;
+// `PathStyle` is the one decision both path producers (MCP's compact symbol
+// path and the address scheme's `physical_path`/`public_path`) defer to for
+// which separator an ecosystem's own syntax uses — see `nudox_ir::reflect`'s
+// module docs for why that used to be two disagreeing hardcoded choices.
 pub use nudox_ir::kind::KindDiscriminant;
+pub use nudox_ir::reflect::PathStyle;
 
 // The typed record of an intra-doc link whose spelling we corrected. It lives
 // in its own file because it is a *closed* vocabulary that several unrelated
@@ -643,6 +648,8 @@ pub struct MemberRow {
     /// Visibility badge.
     #[schemars(with = "String")]
     pub visibility: Visibility,
+    /// Where this member was declared, when the producer recorded it.
+    pub source: SourceLocation,
 }
 
 /// A summary row for one field inside a `Fields` section.

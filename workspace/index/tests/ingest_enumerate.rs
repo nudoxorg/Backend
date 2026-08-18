@@ -134,7 +134,7 @@ fn assert_untagged_repo_yields_one_pseudo_version(adapter: &impl GitRepository) 
         assert!(
             coordinates
                 .version_canonical
-                .starts_with("v0.0.0-20_250_101_000_000-"),
+                .starts_with("v0.0.0-20250101000000-"),
             "pseudo-version form 1: {}",
             coordinates.version_canonical
         );
@@ -287,7 +287,14 @@ fn monitor_reports_unchanged_when_ref_digest_matches() {
 
     // First tick with no watermark → Moved (records the digest).
     let first = monitor
-        .tick(stem, "example.test/repo", url, None, 1000, 20_250_101_000_000)
+        .tick(
+            stem,
+            "example.test/repo",
+            url,
+            None,
+            1000,
+            20_250_101_000_000,
+        )
         .unwrap();
     let digest = match first {
         TickOutcome::Moved { rev, ops } => {
@@ -358,7 +365,14 @@ fn monitor_git_failure_is_typed_error() {
     let fake = FakeGitRepository::new().with_ls_remote_error(url, "repository not found");
     let monitor = GitMonitor::new(fake);
     let stem = cpp_stem_id("example.test/gone");
-    let result = monitor.tick(stem, "example.test/gone", url, None, 4000, 20_250_101_000_000);
+    let result = monitor.tick(
+        stem,
+        "example.test/gone",
+        url,
+        None,
+        4000,
+        20_250_101_000_000,
+    );
     assert!(
         result.is_err(),
         "adapter failure surfaces as a typed MonitorError"

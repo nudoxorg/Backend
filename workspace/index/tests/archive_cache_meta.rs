@@ -8,7 +8,7 @@ mod common;
 use common::{migrated_writer, stem_id, version_id};
 
 use index::protocol::{CatalogOp, FacetWire, PackageStemWire, VersionCoordinates};
-use index::store::lifecycle::{get_archive_cache_meta, set_archive_cache_meta, ArchiveCacheMeta};
+use index::store::lifecycle::{ArchiveCacheMeta, get_archive_cache_meta, set_archive_cache_meta};
 use index::store::{MetaError, MetaStore};
 
 fn upsert_package(seed: u8) -> CatalogOp {

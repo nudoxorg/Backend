@@ -20,9 +20,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::Path;
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, EngineHandle};
 use nudox_engine::mcp::{AccountGate, McpHost, SessionToken, ShutdownOutcome};
 use nudox_engine::store::source::fixtures::FixtureSource;
+use nudox_engine::{Engine, EngineConfig, EngineHandle};
 
 /// A JSON-RPC `initialize` call — the first thing any MCP client sends.
 const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"host-lifecycle-test","version":"0"}}}"#;
@@ -208,7 +208,10 @@ fn stopping_closes_the_socket_and_retracts_the_advertised_address() {
         std::thread::sleep(Duration::from_millis(20));
         false
     });
-    assert!(refused, "the socket at {addr} must stop accepting after stop");
+    assert!(
+        refused,
+        "the socket at {addr} must stop accepting after stop"
+    );
 
     drop(engine);
 }

@@ -363,7 +363,9 @@ impl MemoryStore {
     /// carries no information here and propagating it would turn an unrelated
     /// test failure into a cascade.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<ApiKey>> {
-        self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -700,7 +702,10 @@ mod tests {
         );
 
         store.store(&sample_key()).expect("store succeeds");
-        let loaded = store.load().expect("load succeeds").expect("a key is there");
+        let loaded = store
+            .load()
+            .expect("load succeeds")
+            .expect("a key is there");
         assert_eq!(
             loaded.expose(),
             sample_key().expose(),
@@ -729,9 +734,7 @@ mod tests {
             "an empty store means not signed in, got {absent:?}"
         );
         match broken {
-            CredentialLookup::Unavailable(Error::AccessDenied {
-                detail, ..
-            }) => {
+            CredentialLookup::Unavailable(Error::AccessDenied { detail, .. }) => {
                 assert!(
                     detail.contains("locked"),
                     "the platform's own text is the only thing that says *why*, got {detail:?}"
@@ -794,7 +797,11 @@ mod tests {
 
         // An unset or blank variable falls through to the store rather than
         // signing the user out.
-        for env in [Err(std::env::VarError::NotPresent), Ok(String::new()), Ok("  ".to_owned())] {
+        for env in [
+            Err(std::env::VarError::NotPresent),
+            Ok(String::new()),
+            Ok("  ".to_owned()),
+        ] {
             match resolve_credential_with_env(env, &store) {
                 CredentialLookup::Found(found) => assert_eq!(found.source, KeySource::Keychain),
                 other => panic!("must fall through to the store, got {other:?}"),
@@ -809,7 +816,10 @@ mod tests {
         let store = MemoryStore::holding(sample_key());
         match resolve_credential_with_env(Ok("not-a-nudox-key".to_owned()), &store) {
             CredentialLookup::Unavailable(Error::Corrupt { reason }) => {
-                assert!(reason.contains(API_KEY_ENV), "the message must name the variable");
+                assert!(
+                    reason.contains(API_KEY_ENV),
+                    "the message must name the variable"
+                );
             }
             other => panic!("a bad environment key must be reported, got {other:?}"),
         }

@@ -31,11 +31,11 @@
 //! overlays) and contribute no remote target. See
 //! [`FederationSync::from_config`].
 
-use heart::SourceId;
-use heart::sync::{ContentIo, SyncError, VerifyError};
 use crate::transport::EndpointId;
 use crate::transport::announce::{Announcement, send_announcement};
 use crate::transport::blob::{Fetcher, Provider, TransportHash};
+use heart::SourceId;
+use heart::sync::{ContentIo, SyncError, VerifyError};
 
 use crate::server::config::{ServerConfiguration, SourceConfig};
 
@@ -62,10 +62,12 @@ impl RemoteTarget {
         let Some(hex) = config.sync_endpoint.as_ref() else {
             return Ok(None);
         };
-        let endpoint: EndpointId = hex.parse::<EndpointId>().map_err(|err| SyncError::InvalidEndpoint {
-            value: hex.to_string(),
-            reason: err.to_string(),
-        })?;
+        let endpoint: EndpointId =
+            hex.parse::<EndpointId>()
+                .map_err(|err| SyncError::InvalidEndpoint {
+                    value: hex.to_string(),
+                    reason: err.to_string(),
+                })?;
         Ok(Some(Self {
             source: config.source_id(),
             endpoint,

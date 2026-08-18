@@ -99,7 +99,12 @@ impl PackHeader {
         length_bytes.copy_from_slice(&bytes[16..24]);
         let toc_length = u64::from_le_bytes(length_bytes);
 
-        Ok(PackHeader { version, flags: flag_bits, toc_offset, toc_length })
+        Ok(PackHeader {
+            version,
+            flags: flag_bits,
+            toc_offset,
+            toc_length,
+        })
     }
 }
 

@@ -49,6 +49,8 @@
 
 use std::path::PathBuf;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -60,8 +62,6 @@ use nudox_ir::{
 };
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
 
 use nudox_engine::chunk;
 
@@ -119,10 +119,8 @@ fn cfg_on_symbol_reaches_symbol_head_populated() {
     ));
     std::fs::create_dir_all(&directory).expect("create measurement directory");
 
-    let (head, cost) = heart::cost::measured(
-        "engine.symbol_head.cfg_populated",
-        &directory,
-        || {
+    let (head, cost) =
+        heart::cost::measured("engine.symbol_head.cfg_populated", &directory, || {
             let (pkg, root_id) = single_entry_pkg(Some(CfgExpr::Any(Box::new([
                 CfgExpr::Feature("std".to_owned()),
                 CfgExpr::TargetArch("wasm32".to_owned()),
@@ -130,8 +128,7 @@ fn cfg_on_symbol_reaches_symbol_head_populated() {
             let (head, _sections) =
                 chunk::chunk(root_id, pkg.view(), &pkg).expect("chunk must succeed");
             head
-        },
-    );
+        });
 
     assert_eq!(
         head.cfg.as_deref(),
@@ -165,12 +162,15 @@ fn cfg_absent_on_symbol_stays_none_on_symbol_head() {
 /// Path to the memchr checkout, mirroring `axum_root()` in
 /// `real_producer_links.rs`: same env override, same default location.
 fn memchr_root() -> PathBuf {
-    std::env::var("NUDOX_PKG_ROOT").map_or_else(|_| {
+    std::env::var("NUDOX_PKG_ROOT").map_or_else(
+        |_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/memchr-2.8.3")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        }, PathBuf::from)
+        },
+        PathBuf::from,
+    )
 }
 
 /// A genuinely `target_arch`-gated public item from real memchr
@@ -228,7 +228,8 @@ fn real_memchr_arch_module_cfg_reaches_symbol_head() {
                 cursor = source;
             }
             panic!("memchr must lower without error:\n{chain}");
-        }).table;
+        })
+        .table;
         let view = IrView::with_package(descriptor.lineage.clone(), table);
         PackageView::build(view, Provenance::TrustedLocal)
     });
@@ -260,7 +261,10 @@ fn real_memchr_arch_module_cfg_reaches_symbol_head() {
     };
 
     assert!(
-        matches!(entry.kind(), nudox_ir::entry::EntryInner::Owned(nudox_ir::kind::Kind::Module(_))),
+        matches!(
+            entry.kind(),
+            nudox_ir::entry::EntryInner::Owned(nudox_ir::kind::Kind::Module(_))
+        ),
         "the `{mod_name}` entry carrying this cfg must be the arch submodule (a \
          Module), not some other same-named item"
     );

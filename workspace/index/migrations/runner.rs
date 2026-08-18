@@ -10,9 +10,9 @@
 use sea_orm::sea_query::{Query, SqliteQueryBuilder};
 use sea_orm::{ActiveValue::Set, DbBackend, EntityTrait, QuerySelect, QueryTrait};
 
+use crate::SCHEMA_VERSION;
 use crate::engine::{self, BranchName, CatalogEngine, EngineError, VersioningEngine};
 use crate::entity::schema_meta;
-use crate::SCHEMA_VERSION;
 
 use super::ddl;
 
@@ -49,14 +49,9 @@ pub fn current_user_version<E: CatalogEngine>(engine: &E) -> Result<u32, Migrati
 
 /// Overwrite `schema_meta.user_version` with `version` (single-row invariant).
 pub fn set_user_version<E: CatalogEngine>(engine: &E, version: u32) -> Result<(), MigrationError> {
-    let delete = Query::delete()
-        .from_table(schema_meta::Entity)
-        .to_owned();
+    let delete = Query::delete().from_table(schema_meta::Entity).to_owned();
     let (delete_sql, delete_values) = delete.build(SqliteQueryBuilder);
-    engine.execute(
-        &delete_sql,
-        &engine::stmt::values_to_engine(&delete_values),
-    )?;
+    engine.execute(&delete_sql, &engine::stmt::values_to_engine(&delete_values))?;
 
     let am = schema_meta::ActiveModel {
         user_version: Set(version as i32),

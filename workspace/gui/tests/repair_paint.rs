@@ -49,10 +49,10 @@ use image::RgbaImage;
 
 use lindsey::theme::ext::{NudoxThemeExt, ThemeExtAccessor as _};
 use lindsey::views::symbol_page::docs::{RichText, run_highlight_style};
+use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use nudox_engine::wire::{
     InlineRun, LinkOrigin, LinkRepair, LinkRepairKind, LinkTarget, SymbolKey,
 };
-use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
 
 /// A paragraph rendered exactly the way the Docs tab renders one: a single
 /// `StyledText` plus `(byte range, HighlightStyle)` pairs.
@@ -78,19 +78,16 @@ impl Render for Paragraph {
             })
             .collect();
 
-        div()
-            .size_full()
-            .bg(colours.bg_base)
-            .child(
-                div()
-                    .m(px(40.))
-                    .p(px(24.))
-                    // A large type size so the hairline underline is several
-                    // pixels of ink rather than one anti-aliased row that a
-                    // difference threshold could plausibly dismiss as noise.
-                    .text_size(px(32.))
-                    .child(StyledText::new(rich.text().clone()).with_highlights(styles)),
-            )
+        div().size_full().bg(colours.bg_base).child(
+            div()
+                .m(px(40.))
+                .p(px(24.))
+                // A large type size so the hairline underline is several
+                // pixels of ink rather than one anti-aliased row that a
+                // difference threshold could plausibly dismiss as noise.
+                .text_size(px(32.))
+                .child(StyledText::new(rich.text().clone()).with_highlights(styles)),
+        )
     }
 }
 
@@ -205,7 +202,12 @@ fn main() {
             .expect("capture_screenshot must work");
         let path = out.join(format!("repair-paint-{slug}.png"));
         image.save(&path).expect("save png");
-        println!("SHOT {slug} {}x{} -> {}", image.width(), image.height(), path.display());
+        println!(
+            "SHOT {slug} {}x{} -> {}",
+            image.width(),
+            image.height(),
+            path.display()
+        );
         image
     };
 

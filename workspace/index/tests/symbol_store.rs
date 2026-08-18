@@ -21,11 +21,9 @@ fn kind_admits(kinds: &[SymbolKind], kind: SymbolKind) -> bool {
 ///   error.
 #[tokio::test]
 async fn related_hits_walks_and_scores_relationships() {
-    let Some((server, _data)) =
-        server_common::assembled_server("related_hits_walks_and_scores_relationships").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("related_hits_walks_and_scores_relationships")
+            .await;
     let package = server_common::package_id("serde");
     let symbol = server_common::rust_symbol(
         package,

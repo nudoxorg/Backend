@@ -35,14 +35,27 @@ telemetry = [
 # The connecting HTTP client (`heart::client::http::NudoxClient`). OFF by default
 # so pure-vocabulary consumers (index, the server itself) never link reqwest;
 # GUI/CLI callers that need to reach a running `nudox-serve` opt in.
-client = ["dep:reqwest", "dep:serde_json"]
+client = ["dep:reqwest"]
 
 [dependencies]
 anyhow = "1.0"
 
+# ── Surface answer channel (heart::surface) ───────────────────────────────────
+# `flume` backs `Answer`/`Emitter` (see `surface.rs`'s doc comment on why a
+# receiver, not a bare `impl Stream`); `futures` supplies the `Stream` trait
+# `Answer::into_stream` returns, for the axum server side. `serde_json` backs
+# `surface::decode_frames` — the NDJSON line decoder both the server (`index`,
+# which does not enable `client`) and the client need, so it is a base
+# dependency rather than gated behind `client` alongside `reqwest`.
+flume = { workspace = true }
+futures = { workspace = true }
+serde_json = "1"
+
 # ── Connecting client (optional; enabled by the `client` feature) ─────────────
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
-serde_json = { version = "1", optional = true }
+# `stream` is what makes `Response::bytes_stream()` exist at all — the whole
+# point of `RemoteClient` (`client::remote`) is to pipe that straight into
+# `surface::decode_frames` instead of buffering with `.text()`.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"], optional = true }
 
 # `tracing` is a base dependency (the `cache` module logs unconditionally); the
 # heavy subscriber/OTLP stack below stays behind the `telemetry` feature.
@@ -99,3 +112,8 @@ tokio = { version = "1.52", features = ["full"] }
 bytes = "1"
 tempfile = "3"
 serde_json = "1"
+# `tests/surface.rs` drains an `Answer` as a `Stream` and mints `SourceId`s
+# from raw UUID bytes; integration test binaries do not inherit the lib's own
+# [dependencies], so both need restating here.
+futures = { workspace = true }
+uuid = { version = "1.23", features = ["v4", "v5", "serde"] }

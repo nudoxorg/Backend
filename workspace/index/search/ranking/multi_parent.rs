@@ -19,8 +19,8 @@ use crate::GlobalPackage;
 /// package after de-duplicating multi-parent reachability.
 #[derive(Debug, Clone)]
 pub struct Merged {
-	/// The highest-scored representative of the logical package.
-	pub representative: Scored<GlobalPackage>,
+    /// The highest-scored representative of the logical package.
+    pub representative: Scored<GlobalPackage>,
 }
 
 /// Collapse a scored, possibly-duplicated result set into de-duplicated
@@ -30,37 +30,39 @@ pub struct Merged {
 /// best-scored record as representative.
 /// Stable: input order breaks ties so pagination stays deterministic.
 pub fn merge(results: Vec<Scored<GlobalPackage>>) -> Vec<Merged> {
-	use std::collections::{HashMap, hash_map::Entry};
+    use std::collections::{HashMap, hash_map::Entry};
 
-	// The logical-package key: origin-independent, so federated copies of the
-	// same (name, version) fold together.
-	let key = |package: &GlobalPackage| {
-		let coordinates = &package.package.coordinates;
-		(
-			coordinates.ecosystem(),
-			coordinates.name.canonical().to_owned(),
-			coordinates.version.canonical(),
-		)
-	};
+    // The logical-package key: origin-independent, so federated copies of the
+    // same (name, version) fold together.
+    let key = |package: &GlobalPackage| {
+        let coordinates = &package.package.coordinates;
+        (
+            coordinates.ecosystem(),
+            coordinates.name.canonical().to_owned(),
+            coordinates.version.canonical(),
+        )
+    };
 
-	let mut merged: Vec<Merged> = Vec::new();
-	let mut groups: HashMap<_, usize> = HashMap::new();
+    let mut merged: Vec<Merged> = Vec::new();
+    let mut groups: HashMap<_, usize> = HashMap::new();
 
-	for scored in results {
-		match groups.entry(key(&scored.value)) {
-			Entry::Vacant(slot) => {
-				slot.insert(merged.len());
-				merged.push(Merged { representative: scored });
-			}
-			Entry::Occupied(slot) => {
-				let group = &mut merged[*slot.get()];
-				// A strictly better score dethrones the representative; ties
-				// keep the earlier arrival so pagination stays deterministic.
-				if scored.score > group.representative.score {
-					group.representative = scored;
-				}
-			}
-		}
-	}
-	merged
+    for scored in results {
+        match groups.entry(key(&scored.value)) {
+            Entry::Vacant(slot) => {
+                slot.insert(merged.len());
+                merged.push(Merged {
+                    representative: scored,
+                });
+            }
+            Entry::Occupied(slot) => {
+                let group = &mut merged[*slot.get()];
+                // A strictly better score dethrones the representative; ties
+                // keep the earlier arrival so pagination stays deterministic.
+                if scored.score > group.representative.score {
+                    group.representative = scored;
+                }
+            }
+        }
+    }
+    merged
 }

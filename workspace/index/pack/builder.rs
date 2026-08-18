@@ -282,9 +282,9 @@ impl ObjectPackBuilder {
                     compressed_frame_len
                         .try_into()
                         .map_err(|_| PackError::TooLarge {
-                        detail: format!(
-                            "compressed frame length {compressed_frame_len} overflows u64"
-                        ),
+                            detail: format!(
+                                "compressed frame length {compressed_frame_len} overflows u64"
+                            ),
                         })?;
 
                 let chunk_entry = ChunkEntry {

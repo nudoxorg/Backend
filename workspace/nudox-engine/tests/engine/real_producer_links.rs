@@ -36,11 +36,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
 use nudox_ir::view::IrView;
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
 
 use nudox_engine::chunk;
 use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
@@ -55,12 +55,15 @@ use nudox_engine::wire::{InlineRun, LinkTarget, ProseBlock, RenderSection};
 /// files honour the same `NUDOX_REAL_CRATE_ROOT` override and the same default
 /// location `../../result/axum`.
 fn axum_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(
+        |_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../../result/axum")
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        }, PathBuf::from)
+        },
+        PathBuf::from,
+    )
 }
 
 /// Lower the axum crate at `root` via the Rust producer.
@@ -85,7 +88,8 @@ fn try_lower_axum(root: &PathBuf) -> Option<Arc<PackageView>> {
         &descriptor.lineage,
         &nudox_ir::foreign::Unlinked,
     )
-    .expect("axum must lower without error for a well-formed checkout").table;
+    .expect("axum must lower without error for a well-formed checkout")
+    .table;
 
     eprintln!(
         "lowered {} entries from axum in {:.1}s",
@@ -178,8 +182,7 @@ fn real_axum_router_doc_links_resolve_to_symbol_links() {
     eprintln!(
         "Router entry found: id={}…, doc_links count={}",
         &router_id.to_hex()[..12],
-        view.entry(router_id)
-            .map_or(0, |e| e.sym().doc_links.len())
+        view.entry(router_id).map_or(0, |e| e.sym().doc_links.len())
     );
 
     // Run the full chunk pipeline — this is the real code path the app uses.

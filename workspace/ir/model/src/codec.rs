@@ -396,6 +396,7 @@ mod tests {
             doc_links: Box::new([DocLink {
                 target: "crate::new_module".to_owned(),
                 label: Some("new_module".to_owned()),
+                source_span: None,
             }]),
             attrs: Box::new([AttrTok {
                 token: "must_use".to_owned(),
@@ -556,10 +557,7 @@ mod tests {
         // A subdirectory path is not an IR path.
         let intro = make_intro(0xff);
         let good = ir_path(intro, Plane::Declaration);
-        assert!(!is_ir_path(
-            &format!("symbols/{good}"),
-            Plane::Declaration
-        ));
+        assert!(!is_ir_path(&format!("symbols/{good}"), Plane::Declaration));
         // Wrong extension.
         assert!(!is_ir_path(
             &format!("{}.txt", intro.to_hex()),

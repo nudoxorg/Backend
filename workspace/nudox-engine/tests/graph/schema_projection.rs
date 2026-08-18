@@ -19,6 +19,11 @@ use std::sync::Arc;
 
 use futures::StreamExt as _;
 use nudox_engine::graph::adapter::CorpusAdapter;
+use nudox_engine::store::{
+    corpus::Corpus,
+    package::{PackageView, Provenance},
+    source::fixtures::{build_rich_view, rich_lineage},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -28,11 +33,6 @@ use nudox_ir::{
     kind::Kind,
     kinds::Function,
     view::IrView,
-};
-use nudox_engine::store::{
-    corpus::Corpus,
-    package::{PackageView, Provenance},
-    source::fixtures::{build_rich_view, rich_lineage},
 };
 use serde::Deserialize;
 use trustfall::{Schema, TryIntoStruct, execute_query_async};
@@ -297,10 +297,8 @@ async fn every_source_location_variant_survives_the_projection() {
     // Stated as an invariant rather than left implicit: the four reasons are
     // four values, and a projection that collapsed them would still pass every
     // `kind == "Unlocated"` assertion above.
-    let reasons: std::collections::BTreeSet<&str> = results
-        .iter()
-        .filter_map(|r| r.reason.as_deref())
-        .collect();
+    let reasons: std::collections::BTreeSet<&str> =
+        results.iter().filter_map(|r| r.reason.as_deref()).collect();
     assert_eq!(
         reasons.len(),
         4,
@@ -695,10 +693,7 @@ async fn type_text(query: &str) -> std::collections::HashMap<String, Option<Stri
         "the rich fixture must yield rows for this query, or every assertion \
          below is vacuous"
     );
-    results
-        .into_iter()
-        .map(|r| (r.name, r.rendered))
-        .collect()
+    results.into_iter().map(|r| (r.name, r.rendered)).collect()
 }
 
 /// A primitive must render as its written spelling, not as its IR shape.

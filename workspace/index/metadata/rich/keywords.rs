@@ -264,9 +264,10 @@ pub(crate) fn apply_synonyms_and_specifics(
         }
 
         if let Some(sp) = specifics
-            && sp.is_bland(current.as_str()).is_some() {
-                current_w *= 0.3;
-            }
+            && sp.is_bland(current.as_str()).is_some()
+        {
+            current_w *= 0.3;
+        }
 
         if current != *kw || (current_w - w).abs() > 1e-6 {
             remap.push((kw.clone(), current, current_w));

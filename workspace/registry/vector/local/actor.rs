@@ -21,6 +21,8 @@
 //!   is flushed and dropped (Edge flushes again on `Drop`).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::vector::core::StoreError;
@@ -30,6 +32,49 @@ use qdrant_edge::{
 use tokio::sync::{mpsc, oneshot};
 
 use super::backend_error;
+
+struct ActorCompletion {
+    done: AtomicBool,
+    notify: tokio::sync::Notify,
+    error: Mutex<Option<String>>,
+}
+
+impl ActorCompletion {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            done: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+            error: Mutex::new(None),
+        })
+    }
+
+    fn finish(&self, error: Option<String>) {
+        if let Some(error) = error {
+            *self.error.lock().expect("actor completion mutex poisoned") = Some(error);
+        }
+        self.done.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) -> Result<(), StoreError> {
+        loop {
+            let notified = self.notify.notified();
+            if self.done.load(Ordering::Acquire) {
+                break;
+            }
+            notified.await;
+        }
+        match self
+            .error
+            .lock()
+            .expect("actor completion mutex poisoned")
+            .take()
+        {
+            Some(error) => Err(backend_error(error)),
+            None => Ok(()),
+        }
+    }
+}
 
 /// Depth of the command queue; enough to absorb an ingest burst without
 /// unbounded memory.
@@ -72,6 +117,7 @@ enum Command {
 #[derive(Clone)]
 pub struct StoreHandle {
     tx: mpsc::Sender<Command>,
+    completion: Arc<ActorCompletion>,
 }
 
 impl StoreHandle {
@@ -86,15 +132,17 @@ impl StoreHandle {
     {
         let (tx, rx) = mpsc::channel(COMMAND_QUEUE_DEPTH);
         let (ready_tx, ready_rx) = oneshot::channel();
+        let completion = ActorCompletion::new();
+        let actor_completion = Arc::clone(&completion);
 
         thread::Builder::new()
             .name(format!("vector-local-store:{name}"))
-            .spawn(move || run(open, rx, ready_tx))
+            .spawn(move || run(open, rx, ready_tx, actor_completion))
             .map_err(backend_error)?;
 
         // The thread reports Ok(()) once the shard is open, or the open error.
         ready_rx.await.map_err(|_| StoreError::Closed)??;
-        Ok(Self { tx })
+        Ok(Self { tx, completion })
     }
 
     pub async fn update(&self, op: UpdateOperation) -> Result<(), StoreError> {
@@ -113,6 +161,16 @@ impl StoreHandle {
 
     pub async fn flush(&self) -> Result<(), StoreError> {
         self.request(|reply| Command::Flush { reply }).await
+    }
+
+    /// Flush and wait until the actor has dropped the Edge shard. Edge flushes
+    /// again from `Drop`, so callers that remove the shard directory must not
+    /// proceed after the explicit flush reply alone.
+    pub async fn close(self) -> Result<(), StoreError> {
+        self.flush().await?;
+        let completion = Arc::clone(&self.completion);
+        drop(self);
+        completion.wait().await
     }
 
     /// One optimizer pass; returns whether anything was optimized.
@@ -146,6 +204,7 @@ fn run<F>(
     open: F,
     mut rx: mpsc::Receiver<Command>,
     ready_tx: oneshot::Sender<Result<(), StoreError>>,
+    completion: Arc<ActorCompletion>,
 ) where
     F: FnOnce() -> Result<EdgeShard, StoreError>,
 {
@@ -156,6 +215,7 @@ fn run<F>(
         }
         Err(err) => {
             let _ = ready_tx.send(Err(err));
+            completion.finish(None);
             return;
         }
     };
@@ -173,17 +233,20 @@ fn run<F>(
             // are dropped with their reply senders → Closed for callers.
             rx.close();
             std::mem::forget(shard);
+            completion.finish(Some("edge shard command panicked".to_owned()));
             return;
         }
     }
 
     // Graceful close: all handles dropped. Flush + drop; both are wrapped
     // because Edge's flush path panics (rather than returns) on IO failure.
-    if catch_unwind(AssertUnwindSafe(|| drop(shard))).is_err() {
+    let drop_error = catch_unwind(AssertUnwindSafe(|| drop(shard))).err();
+    if drop_error.is_some() {
         tracing::error!(
             "edge shard flush-on-close panicked; shard directory may need WAL recovery on next open"
         );
     }
+    completion.finish(drop_error.map(|_| "edge shard flush-on-close panicked".to_owned()));
 }
 
 fn handle(shard: &EdgeShard, command: Command) {

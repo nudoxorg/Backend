@@ -17,7 +17,9 @@ use std::{
 };
 
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Argument, Expression, Program, Statement};
+use oxc_ast::AstKind;
+use oxc_ast::ast::{Argument, CallExpression, Expression, Program};
+use oxc_ast_visit::Visit;
 use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
@@ -90,7 +92,24 @@ pub fn build_and_extract(
             // correct method name.
             // Note: JSDoc parsing is automatic when the `jsdoc` feature is enabled.
             // `SemanticBuilder` in 0.139.0 has no `with_jsdoc` method.
+            // `with_build_nodes(true)` is load-bearing, not a tuning knob.
+            //
+            // `SemanticBuilder::new()` defaults to OXC's compiler-pipeline
+            // mode, which maintains only a lightweight ancestry stack and
+            // never builds the full `AstNodes` store (see
+            // `AstNodeStoreKind`'s docs: the two modes are mutually exclusive
+            // by construction). In that mode `semantic.nodes()` is not
+            // *absent*, it is **empty** — and `AstNodes::get_node` indexes
+            // straight into it, so the first lookup panics with an
+            // out-of-bounds rather than returning `None`.
+            //
+            // `record_occurrences` resolves each reference's span through
+            // `nodes().get_node(reference.node_id())`, because a `Reference`
+            // carries only a `NodeId` and no span of its own. Without the full
+            // store, every TypeScript package with a single resolved reference
+            // aborts its producer run.
             let semantic_result = SemanticBuilder::new()
+                .with_build_nodes(true)
                 .with_check_syntax_error(false)
                 .build(&parse.program);
 
@@ -138,11 +157,12 @@ pub fn build_and_extract(
             // module.exports = require('./node.js'); }`) is otherwise a dead
             // end for graph walking even though the real target is one
             // `require()` call away. Only top-level call sites are scanned —
-            // `require()` calls inside a nested function body are as
-            // unreachable to this walker as any other nested declaration
-            // (see `CommonJsExports`'s doc comment in `extract/decl.rs` for
-            // the same boundary applied to export recognition).
-            for spec_str in top_level_require_targets(&parse.program) {
+            // Runtime-assigned CommonJS exports often live inside a function
+            // body, so their dependencies do too (`setup()` in debug
+            // requires `ms`). Walk the complete AST: a require call is a real
+            // graph edge regardless of where the returned runtime object is
+            // assembled.
+            for spec_str in require_targets(&parse.program) {
                 if is_node_builtin(&spec_str) {
                     continue;
                 }
@@ -236,7 +256,10 @@ fn source_type_for(path: &Path) -> SourceType {
     {
         // Declaration files are TypeScript but never JSX; flag them as module.
         SourceType::ts()
-    } else if has_extension(name, ".ts") || has_extension(name, ".mts") || has_extension(name, ".cts") {
+    } else if has_extension(name, ".ts")
+        || has_extension(name, ".mts")
+        || has_extension(name, ".cts")
+    {
         SourceType::ts()
     } else {
         SourceType::mjs()
@@ -284,41 +307,28 @@ fn reference_attr(directive_text: &str, name: &str) -> Option<String> {
     Some(directive_text[start..start + end].to_string())
 }
 
-/// Every specifier passed to a top-level `require(...)` call in `program`:
-/// a `VariableDeclaration` initializer (`const x = require('./y');`) or an
-/// `ExpressionStatement`'s assignment RHS / bare call
-/// (`module.exports = require('./y');`, `require('./y');`). Nested (inside a
-/// function body) `require()` calls are not scanned — see the call site's
-/// doc comment.
-fn top_level_require_targets<'a>(program: &'a Program<'a>) -> Vec<String> {
-    let mut out = Vec::new();
-    for stmt in &program.body {
-        match stmt {
-            Statement::VariableDeclaration(v) => {
-                for d in &v.declarations {
-                    if let Some(init) = &d.init
-                        && let Some(spec) = as_require_call(init)
-                    {
-                        out.push(spec.to_string());
-                    }
-                }
+/// Every specifier passed to a `require("…")` call anywhere in `program`,
+/// including nested function bodies. Runtime-assigned CommonJS exports often
+/// require their dependencies while assembling a returned object, so limiting
+/// this to module statements loses real graph edges.
+fn require_targets<'a>(program: &'a Program<'a>) -> Vec<String> {
+    struct Visitor {
+        out: Vec<String>,
+    }
+    impl<'a> Visit<'a> for Visitor {
+        fn enter_node(&mut self, kind: AstKind<'a>) {
+            let AstKind::CallExpression(call) = kind else {
+                return;
+            };
+            if let Some(spec) = as_require_call(call) {
+                self.out.push(spec.to_string());
             }
-            Statement::ExpressionStatement(expr_stmt) => match &expr_stmt.expression {
-                Expression::AssignmentExpression(assign) => {
-                    if let Some(spec) = as_require_call(&assign.right) {
-                        out.push(spec.to_string());
-                    }
-                }
-                other => {
-                    if let Some(spec) = as_require_call(other) {
-                        out.push(spec.to_string());
-                    }
-                }
-            },
-            _ => {}
         }
     }
-    out
+
+    let mut visitor = Visitor { out: Vec::new() };
+    visitor.visit_program(program);
+    visitor.out
 }
 
 /// `expr` reduced to `Some(specifier)` when it is exactly a call
@@ -326,10 +336,7 @@ fn top_level_require_targets<'a>(program: &'a Program<'a>) -> Vec<String> {
 /// string-literal argument. Anything else (a computed specifier, a renamed
 /// `require`, `require.resolve(...)`) is `None`; a specifier this crate
 /// cannot read is not one it should guess at.
-fn as_require_call<'a>(expr: &'a Expression<'a>) -> Option<&'a str> {
-    let Expression::CallExpression(call) = expr else {
-        return None;
-    };
+fn as_require_call<'a>(call: &'a CallExpression<'a>) -> Option<&'a str> {
     let Expression::Identifier(callee) = &call.callee else {
         return None;
     };

@@ -28,20 +28,24 @@ fixtures = []
 # Forwards to `nudox-languages`'s own `pyrefly` feature (off by default there).
 # Without it `PythonProducer::invoke` always returns `Ok(PythonOracle::default())`.
 pyrefly = ["nudox-languages/pyrefly"]
-# The production ONNX embedder adapter (`embed::onnx`) behind `semantic::Embedder`.
-# OFF by default on purpose: `registry` + `onnx` resolves to a ~483-crate graph
-# whose `ort-sys` build fetches a prebuilt runtime at build time. With it off,
-# `embed::load_from_env()` is a compile-time `None`. (`tokio` and `tracing` are
-# non-optional here — the engine core always needs them — so unlike the old
-# embedder plane they need no `dep:` entry in this feature.)
-onnx = ["dep:registry"]
+# Forwards to `nudox-languages`'s own `seal-census` feature, which forwards to
+# `nudox-ir`'s: test-only per-declaration disambiguator-tier instrumentation
+# used by the `store_disambiguator_census` corpus measurement (`tests/store/
+# disambiguator_census.rs`). Off by default; changes no production behaviour.
+seal-census = ["nudox-languages/seal-census"]
 
 [dependencies]
 nudox-ir = { path = "../ir/model" }
 nudox-languages = { path = "../compiler/languages" }
-# The ONNX runtime behind the `onnx` feature (`embed::onnx`). `features = ["onnx"]`
-# is what turns on `FastembedOrt`.
-registry = { path = "../registry", features = ["onnx"], optional = true }
+heart = { path = "../heart" }
+bytes = "1"
+# The ONNX embedder runtime (`embed::onnx`), compiled in unconditionally —
+# there is no `onnx` cargo feature. `features = ["onnx"]` is what turns on
+# `registry`'s `FastembedOrt`. This is a ~483-crate addition to the graph
+# whose `ort-sys` build fetches a prebuilt runtime at build time on every
+# build of this crate, including a bare `cargo check`; see `embed/mod.rs`'s
+# module docs for what that means for a build with no network access.
+registry = { path = "../registry", features = ["onnx"] }
 
 flume = { workspace = true }
 futures = { workspace = true }
@@ -55,6 +59,7 @@ schemars = { workspace = true }
 serde = { workspace = true }
 # Used only by `query.rs`'s `find_line_column` to walk a serialized `ParseError`.
 serde_json = { workspace = true }
+toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
 # No `sync` feature: `tokio_util::sync::CancellationToken` is unconditional in 0.7.
@@ -157,6 +162,14 @@ name = "engine_purl_url_parity"
 path = "tests/engine/purl_url_parity.rs"
 
 [[test]]
+name = "archive_cache"
+path = "tests/archive_cache.rs"
+
+[[test]]
+name = "remote_store"
+path = "tests/remote_store.rs"
+
+[[test]]
 name = "engine_real_lineage"
 path = "tests/engine/real_lineage.rs"
 
@@ -185,6 +198,14 @@ name = "engine_real_source_locations"
 path = "tests/engine/real_source_locations.rs"
 
 [[test]]
+name = "engine_non_rust_producer"
+path = "tests/engine/non_rust_producer.rs"
+
+[[test]]
+name = "mcp_diagnose_source_format"
+path = "tests/mcp/diagnose_source_format.rs"
+
+[[test]]
 name = "mcp_universal_producer_pipeline"
 path = "tests/mcp/universal_producer_pipeline.rs"
 
@@ -208,6 +229,11 @@ path = "tests/engine/semantic_local_mode.rs"
 [[test]]
 name = "engine_semantic_section_contract"
 path = "tests/engine/semantic_section_contract.rs"
+required-features = ["fixtures"]
+
+[[test]]
+name = "engine_semantic_real_model"
+path = "tests/engine/semantic_real_model.rs"
 required-features = ["fixtures"]
 
 [[test]]
@@ -288,6 +314,54 @@ required-features = ["fixtures"]
 
 # ── mcp plane ───────────────────────────────────────────────
 [[test]]
+name = "mcp_address_resolution"
+path = "tests/mcp/address_resolution.rs"
+
+# Cross-tool composition: the address `search` emits must open in `read`.
+# `fixtures` because the whole file runs against the rich fixture corpus.
+[[test]]
+name = "mcp_compose_search_read"
+path = "tests/mcp/compose_search_read.rs"
+required-features = ["fixtures"]
+
+# `refs` over a non-Rust producer: only the Rust producer records occurrences,
+# so every other language's reference graph is empty by construction and
+# `refs` reports that emptiness as a result. Runs the live TypeScript
+# producer, which is in-process (OXC) and needs no npm.
+[[test]]
+name = "mcp_refs_non_rust_languages"
+path = "tests/mcp/refs_non_rust_languages.rs"
+
+# Real corpus/package occurrence regressions for every non-Rust producer.
+[[test]]
+name = "mcp_real_package_references"
+path = "tests/mcp/real_package_references.rs"
+required-features = ["pyrefly"]
+
+# `index` over local roots, several targets at once, and opt-in dependency
+# following. Runs the real Rust producer over a temporary two-crate workspace.
+[[test]]
+name = "mcp_index_locals_and_dependencies"
+path = "tests/mcp/index_locals_and_dependencies.rs"
+
+# An unfiltered `search` must return API, not the parameter names that
+# outnumber it. Runs the real Rust producer over a temporary crate.
+[[test]]
+name = "mcp_search_member_noise"
+path = "tests/mcp/search_member_noise.rs"
+
+# The port and token an agent was configured against must survive a restart.
+[[test]]
+name = "mcp_endpoint_stability"
+path = "tests/mcp/endpoint_stability.rs"
+
+# `NoEmbedder` collapses "no runtime compiled in" with "no model directory
+# configured" — two states whose remedies share nothing.
+[[test]]
+name = "engine_semantic_unconfigured_is_actionable"
+path = "tests/engine/semantic_unconfigured_is_actionable.rs"
+
+[[test]]
 name = "mcp_account_against_a_fake_service"
 path = "tests/mcp/account_against_a_fake_service.rs"
 
@@ -311,6 +385,11 @@ path = "tests/mcp/host_lifecycle.rs"
 required-features = ["fixtures"]
 
 [[test]]
+name = "mcp_project_watch"
+path = "tests/mcp/project_watch.rs"
+required-features = ["fixtures"]
+
+[[test]]
 name = "mcp_purl_index_end_to_end"
 path = "tests/mcp/purl_index_end_to_end.rs"
 
@@ -329,6 +408,14 @@ path = "tests/mcp/real_crate_memchr_versions.rs"
 [[test]]
 name = "mcp_real_crate_tokio"
 path = "tests/mcp/real_crate_tokio.rs"
+
+[[test]]
+name = "mcp_address_adversarial"
+path = "tests/mcp/address_adversarial.rs"
+
+[[test]]
+name = "mcp_schema_card_queries"
+path = "tests/mcp/schema_card_queries.rs"
 
 [[test]]
 name = "mcp_schema_source"
@@ -350,3 +437,11 @@ required-features = ["fixtures"]
 
 [lints]
 workspace = true
+
+# A graph edge that is empty by construction for a package's language must say
+# so and name the edge that does carry the relationship — the "two wrong graph
+# queries" a field report burned before landing on `members`.
+[[test]]
+name = "mcp_graph_edge_language_fit"
+path = "tests/mcp/graph_edge_language_fit.rs"
+required-features = ["fixtures"]

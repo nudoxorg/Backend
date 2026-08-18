@@ -105,9 +105,6 @@ pub(super) fn provisional_toolchain(ecosystem: Language) -> Toolchain {
         Language::CSharp => Toolchain::CSharp {
             sdk: semver::Version::new(10, 0, 0),
         },
-        Language::Nix => Toolchain::Nix {
-            evaluator: semver::Version::new(0, 1, 0),
-        },
         // C/C++ analyzed via a clang/libclang oracle (IR plane, RL-15).
         Language::Cpp => Toolchain::Cpp {
             compiler: semver::Version::new(18, 0, 0),
@@ -140,7 +137,29 @@ impl<M: EmbeddingModel> Server<M> {
         metrics::counter!("packages_ensure_initialized", "decision" => format!("{decision:?}"))
             .increment(1);
 
-        let enqueued = matches!(decision, InitializationDecision::Enqueue);
+        // `initialization_decision` stays pure and stateless — `Unindexed`
+        // always *decides* `Enqueue`, deliberately, so it can't (and doesn't)
+        // know whether that package is genuinely unseen or already has a live
+        // job outstanding (see `initialization_decision`'s doc + the
+        // `first_use_triggers_indexing` test, which pins exactly this: a
+        // known-but-unindexed package still *decides* Enqueue). This call site
+        // is the one place that also has `state`, so it is where "does this
+        // decision need to be *acted on*" is decided: a package already
+        // sitting at `Unindexed { needed: true }` was written by a *previous*
+        // `ensure_initialized` call's Enqueue branch — a live job already
+        // exists for it (the queue's `job_key` is the package uuid, so
+        // `queue.enqueue` would silently no-op), so acting again would only
+        // re-run `global_store.upsert`, which is not a no-op: it re-emits a
+        // Text outbox intent for a record that has not actually changed.
+        // Without this guard, every repeat "add"/"ensure" of an already-tracked-
+        // but-not-yet-started package both mis-reports `enqueued: true` (see
+        // `tests/api_add_package.rs::duplicate_add_returns_existing`,
+        // `tests/initialization_flow.rs::ensure_init_returns_or_requests` /
+        // `usage_is_tracked_for_tiering`) and piles up redundant outbox rows.
+        let already_pending = matches!(state, Some(ResolutionState::Unindexed { needed: true }));
+        let enqueued = matches!(decision, InitializationDecision::Enqueue) && !already_pending;
+        let wants_work = matches!(decision, InitializationDecision::Enqueue);
+
         if enqueued {
             // Publishing the record and enqueueing the job are each idempotent
             // (identity upsert; unique live job per package), so this pair
@@ -151,11 +170,51 @@ impl<M: EmbeddingModel> Server<M> {
                 .upsert(&record)
                 .await
                 .map_err(RegistryError::from)?;
+        }
+
+        // Enqueue on EVERY call that wants work, not only the first.
+        //
+        // # Why the `already_pending` guard must not cover this
+        //
+        // The guard above infers "a live job already exists" from the catalog
+        // saying `Unindexed { needed: true }`. That inference is not sound: the
+        // two writes are separate, and the comment above says so itself — the
+        // pair "converges even if the process dies between them" only if a
+        // *later* call re-enqueues. Guarding the enqueue is what stopped it.
+        //
+        // So any way of losing the job while keeping the catalog row — a crash
+        // between the two writes, a scratch queue that did not survive, a job
+        // dropped by an operator — left the package pinned at
+        // `Unindexed { needed: true }` with nothing to run it, and every retry
+        // answered `enqueued: false` and did nothing. There was no API path
+        // back: the package could never be indexed again.
+        //
+        // Observed 2026-08-16 on macOS against a live `nudox-serve`:
+        // `rust/ryu@1.0.18` sat at `Unindexed { needed: true }` across repeated
+        // `POST /packages` *and a full server restart*, never compiling.
+        //
+        // Doing this unconditionally is safe by the queue's own contract:
+        // `Queue::enqueue` keys on the package uuid, so a second enqueue hits
+        // the primary key and is "a silent no-op that preserves the original
+        // job (and thus its priority)". It cannot double-enqueue, cannot
+        // reprioritize, and cannot disturb a job a worker has already claimed.
+        // The only case it changes is the one that was previously terminal.
+        if wants_work {
             stores
                 .queue
                 .enqueue(package)
                 .await
                 .map_err(RegistryError::from)?;
+            if already_pending {
+                // Not the same event as a first enqueue: this one either found
+                // a live job (no-op) or repaired a lost one. Logged so the
+                // repair is visible rather than silent — a package that needed
+                // it was, by definition, stuck until now.
+                tracing::info!(
+                    %package,
+                    "re-enqueued an already-pending package; a lost job would otherwise never run"
+                );
+            }
         }
 
         let state = match (enqueued, state) {

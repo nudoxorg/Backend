@@ -27,6 +27,10 @@ use nudox_engine::{
 // We cannot import `test_support` (it is `pub(crate)` behind `#[cfg(test)]`),
 // so we rebuild the minimal helpers here.
 
+use nudox_engine::store::{
+    package::{PackageView, Provenance},
+    source::{Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -35,10 +39,6 @@ use nudox_ir::{
     kind::Kind,
     kinds::{Module, Reexport},
     view::IrView,
-};
-use nudox_engine::store::{
-    package::{PackageView, Provenance},
-    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error},
 };
 
 // ---------------------------------------------------------------------------
@@ -334,23 +334,9 @@ async fn symbol_added_in_later_version_is_introduced() {
 
 /// Symbol present in v1, absent in v2 → `Removed` row in v2.
 ///
-/// # Ignored: the capability does not exist yet
-///
-/// This asserts real product behaviour — docs.rs lets you read a symbol a later
-/// release deleted — but nothing implements it. `open_symbol` resolves against
-/// the *resident* generation only, and the resident generation is the newest,
-/// which by construction no longer holds this symbol. The stream therefore
-/// fails before any `DocEvent::Timeline` is emitted.
-///
-/// The consequence worth recording: **`TimelineChange::Removed` is currently
-/// unreachable in production.** The variant exists and `timeline::build` can
-/// produce it, but no caller can reach a state where it would.
-///
-/// Un-ignoring this needs a doc path that, on a miss in the resident
-/// generation, falls back to the newest generation that *does* contain the
-/// `IntroId` and renders it as historical. That is a design decision about what
-/// a symbol page shows for a deleted symbol, not a bug fix.
-#[ignore = "needs open_symbol fallback to an older generation; see doc comment"]
+/// Historical document fallback is not part of the current engine surface, so
+/// this remains a direct timeline contract rather than an `open_symbol` test.
+#[ignore = "needs open_symbol fallback to an older generation"]
 #[tokio::test]
 async fn symbol_removed_in_later_version_gets_removed_row() {
     let lid = lineage("axum");
@@ -623,6 +609,53 @@ async fn symbol_reintroduced_after_removal() {
             TimelineChange::Present
         ],
         "a reintroduced symbol must show Introduced(v3), Removed(v2), Present(v1)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Version selection must change package contents, not only metadata
+// ---------------------------------------------------------------------------
+
+/// Selecting a loaded generation must make subsequent document reads come
+/// from that generation. Checking the selected version or the switch event is
+/// insufficient: both can be correct while the corpus still serves the old
+/// package.
+#[tokio::test]
+async fn selecting_a_version_changes_the_resident_symbol_content() {
+    let lid = lineage("content-switch");
+    let engine = start_and_settle(
+        &lid,
+        vec![
+            ("1.0.0", PackageBuilder::new(&lid).add(1, "OldName").build()),
+            ("2.0.0", PackageBuilder::new(&lid).add(1, "NewName").build()),
+        ],
+    )
+    .await;
+
+    async fn head_name(engine: &nudox_engine::EngineHandle, lid: &PackageLineageId) -> String {
+        let events = open_and_drain(engine, lid, 1).await;
+        match events.first() {
+            Some(DocEvent::Head(head)) => head.name.to_string(),
+            other => panic!("expected a document head, got {other:?}"),
+        }
+    }
+
+    assert_eq!(head_name(&engine, &lid).await, "NewName");
+
+    let rx = engine.select_version(lid.clone(), "1.0.0", Gen(2));
+    let event = rx
+        .recv_async()
+        .await
+        .expect("select_version must emit an event");
+    assert!(
+        matches!(event, VersionEvent::Switched { .. }),
+        "loaded selection must switch successfully, got {event:?}"
+    );
+
+    assert_eq!(
+        head_name(&engine, &lid).await,
+        "OldName",
+        "after selecting 1.0.0, open_symbol must read that generation's content"
     );
 }
 

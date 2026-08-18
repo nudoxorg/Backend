@@ -37,8 +37,8 @@
 use crate::ecosystem::Language;
 use serde::Deserialize;
 
-use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 use super::catalog::{CatalogBatch, CatalogCursor, CatalogEvent};
+use crate::upstream::{CatalogFollower, PollFuture, UpstreamClient, UpstreamError};
 
 /// crates.io new-crates endpoint.
 const DEFAULT_API_BASE: &str = "https://crates.io/api/v1";
@@ -52,22 +52,22 @@ const PAGE_SIZE: u32 = 100;
 /// `/api/v1/crates?sort=newest` response.
 #[derive(Deserialize)]
 struct NewestResponse {
-	crates: Vec<CrateEntry>,
+    crates: Vec<CrateEntry>,
 }
 
 /// One entry in the newest-crates feed.
 #[derive(Deserialize)]
 struct CrateEntry {
-	/// Crate name.
-	name: String,
-	/// Newest version string as returned by the feed.
-	#[serde(rename = "newest_version")]
-	version: String,
-	/// RFC 3339 update timestamp — our cursor key.
-	updated_at: String,
-	/// `true` when the most recent version is yanked.
-	#[serde(default)]
-	yanked: bool,
+    /// Crate name.
+    name: String,
+    /// Newest version string as returned by the feed.
+    #[serde(rename = "newest_version")]
+    version: String,
+    /// RFC 3339 update timestamp — our cursor key.
+    updated_at: String,
+    /// `true` when the most recent version is yanked.
+    #[serde(default)]
+    yanked: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -80,93 +80,98 @@ struct CrateEntry {
 /// `Withdrawn` events for all entries strictly newer than the cursor. The
 /// cursor advances to the maximum `updated_at` seen in the batch.
 pub struct CratesCatalogFollower {
-	api_base: String,
+    api_base: String,
 }
 
 impl CratesCatalogFollower {
-	/// Construct with a custom API base URL (for tests).
-	pub fn new(api_base: impl Into<String>) -> Self {
-		Self { api_base: api_base.into() }
-	}
+    /// Construct with a custom API base URL (for tests).
+    pub fn new(api_base: impl Into<String>) -> Self {
+        Self {
+            api_base: api_base.into(),
+        }
+    }
 
-	/// Convenience constructor using the production crates.io endpoint.
-	pub fn production() -> Self { Self::new(DEFAULT_API_BASE) }
+    /// Convenience constructor using the production crates.io endpoint.
+    pub fn production() -> Self {
+        Self::new(DEFAULT_API_BASE)
+    }
 
-	async fn poll_inner(
-		&self,
-		client: &UpstreamClient,
-		cursor: &CatalogCursor,
-	) -> Result<CatalogBatch, UpstreamError> {
-		// ── Step 1: current cursor as comparable timestamp string ─────────────
-		let after: &str = match &cursor.0 {
-			serde_json::Value::String(ts) => ts.as_str(),
-			_ => "",
-		};
+    async fn poll_inner(
+        &self,
+        client: &UpstreamClient,
+        cursor: &CatalogCursor,
+    ) -> Result<CatalogBatch, UpstreamError> {
+        // ── Step 1: current cursor as comparable timestamp string ─────────────
+        let after: &str = match &cursor.0 {
+            serde_json::Value::String(ts) => ts.as_str(),
+            _ => "",
+        };
 
-		// ── Step 2: fetch the newest-crates page ──────────────────────────────
-		let url = format!(
-			"{}/crates?sort=newest&per_page={}",
-			self.api_base, PAGE_SIZE
-		);
-		let bytes = client.get(Language::Rust, &url).await?;
-		let resp: NewestResponse = serde_json::from_slice(&bytes)
-			.map_err(|e| UpstreamError::Parse(format!("crates.io newest: {e}")))?;
+        // ── Step 2: fetch the newest-crates page ──────────────────────────────
+        let url = format!(
+            "{}/crates?sort=newest&per_page={}",
+            self.api_base, PAGE_SIZE
+        );
+        let bytes = client.get(Language::Rust, &url).await?;
+        let resp: NewestResponse = serde_json::from_slice(&bytes)
+            .map_err(|e| UpstreamError::Parse(format!("crates.io newest: {e}")))?;
 
-		// ── Step 3: collect events strictly newer than cursor ─────────────────
-		let mut events = Vec::new();
-		let mut max_ts = after.to_owned();
+        // ── Step 3: collect events strictly newer than cursor ─────────────────
+        let mut events = Vec::new();
+        let mut max_ts = after.to_owned();
 
-		for entry in &resp.crates {
-			// Skip entries not newer than the cursor.
-			if entry.updated_at.as_str() <= after {
-				continue;
-			}
-			if entry.updated_at > max_ts {
-				max_ts.clone_from(&entry.updated_at);
-			}
-			let event = if entry.yanked {
-				CatalogEvent::Withdrawn {
-					name: entry.name.clone(),
-					version: entry.version.clone(),
-				}
-			} else {
-				CatalogEvent::Published {
-					name: entry.name.clone(),
-					version: entry.version.clone(),
-				}
-			};
-			events.push(event);
-		}
+        for entry in &resp.crates {
+            // Skip entries not newer than the cursor.
+            if entry.updated_at.as_str() <= after {
+                continue;
+            }
+            if entry.updated_at > max_ts {
+                max_ts.clone_from(&entry.updated_at);
+            }
+            let event = if entry.yanked {
+                CatalogEvent::Withdrawn {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                }
+            } else {
+                CatalogEvent::Published {
+                    name: entry.name.clone(),
+                    version: entry.version.clone(),
+                }
+            };
+            events.push(event);
+        }
 
-		// ── Step 4: determine exhaustion ──────────────────────────────────────
-		// If every item in the feed was at or before the cursor (no new events),
-		// we are caught up.
-		let exhausted = events.is_empty();
+        // ── Step 4: determine exhaustion ──────────────────────────────────────
+        // If every item in the feed was at or before the cursor (no new events),
+        // we are caught up.
+        let exhausted = events.is_empty();
 
-		// If nothing changed, keep the old cursor; otherwise advance.
-		let next = if max_ts.is_empty() || max_ts == after {
-			cursor.clone()
-		} else {
-			CatalogCursor(serde_json::Value::String(max_ts))
-		};
+        // If nothing changed, keep the old cursor; otherwise advance.
+        let next = if max_ts.is_empty() || max_ts == after {
+            cursor.clone()
+        } else {
+            CatalogCursor(serde_json::Value::String(max_ts))
+        };
 
-		Ok(CatalogBatch { events, next, exhausted })
-	}
+        Ok(CatalogBatch {
+            events,
+            next,
+            exhausted,
+        })
+    }
 }
 
 impl CatalogFollower for CratesCatalogFollower {
-	fn language(&self) -> Language { Language::Rust }
+    fn language(&self) -> Language {
+        Language::Rust
+    }
 
-	fn poll<'a>(
-		&'a self,
-		client: &'a UpstreamClient,
-		cursor: &'a CatalogCursor,
-	) -> PollFuture<'a> {
-		Box::pin(self.poll_inner(client, cursor))
-	}
+    fn poll<'a>(&'a self, client: &'a UpstreamClient, cursor: &'a CatalogCursor) -> PollFuture<'a> {
+        Box::pin(self.poll_inner(client, cursor))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests (offline)
 // ─────────────────────────────────────────────────────────────────────────────
-

@@ -432,7 +432,10 @@ mod tests {
         });
         assert_eq!(s.banners.len(), 2);
         s.banners.pop_front();
-        assert_eq!(s.banners.front().unwrap().message, SharedString::from("second"));
+        assert_eq!(
+            s.banners.front().unwrap().message,
+            SharedString::from("second")
+        );
     }
 
     #[test]

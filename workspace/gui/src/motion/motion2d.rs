@@ -113,7 +113,10 @@ mod tests {
             }
         }
 
-        assert!(settled, "Motion2d with GENTLE spring should settle within ~1.6 s at 120 Hz");
+        assert!(
+            settled,
+            "Motion2d with GENTLE spring should settle within ~1.6 s at 120 Hz"
+        );
         assert!((m.x.value() - 100.0).abs() < 0.01);
         assert!((m.y.value() - 200.0).abs() < 0.01);
     }

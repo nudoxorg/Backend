@@ -7,13 +7,13 @@
 
 mod server_common;
 
-use index::server::search::SearchPlanner;
-use index::server::search::planner::Plan;
 use heart::SymbolKind;
 use heart::client::query::{
     AbstractQuery, ExecutionQuery as Query, Filter, PackageSelector, Search,
 };
 use index::ecosystem::{FilterExt as _, PackageNameExt as _, PackageSelectorExt as _};
+use index::server::search::SearchPlanner;
+use index::server::search::planner::Plan;
 
 /// A literal query plans to the precise surface (no semantic gate).
 ///
@@ -83,8 +83,11 @@ async fn scope_filter_restricts_results() {
     let filter = Filter {
         ecosystems: nonempty::NonEmpty::from_vec(vec![heart::Language::Rust]),
         packages: nonempty::NonEmpty::from_vec(vec![PackageSelector {
-            name: index::server::registry::package::PackageName::new(heart::Language::Rust, "serde")
-                .expect("fixture names are valid"),
+            name: index::server::registry::package::PackageName::new(
+                heart::Language::Rust,
+                "serde",
+            )
+            .expect("fixture names are valid"),
             version: None,
         }]),
     };

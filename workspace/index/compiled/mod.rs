@@ -211,11 +211,7 @@ impl ObjectCompiledStore {
     /// Called by the server-side VCS sync ingest (the iroh SyncService
     /// apply-hook) AFTER a merged change-set is verified and applied.
     /// Fleet-only — there is no HTTP write surface for this (SV-6).
-    pub async fn record(
-        &self,
-        job_key: JobKey,
-        record: CompiledRecord,
-    ) -> Result<(), Error> {
+    pub async fn record(&self, job_key: JobKey, record: CompiledRecord) -> Result<(), Error> {
         let path = compiled_path(job_key.as_bytes());
         let bytes = postcard::to_allocvec(&record).map_err(Error::Codec)?;
         self.backend
@@ -259,8 +255,7 @@ impl CompiledStore for ObjectCompiledStore {
         };
 
         let record_bytes = result.bytes().await.map_err(Error::from)?;
-        let record: CompiledRecord =
-            postcard::from_bytes(&record_bytes).map_err(Error::Codec)?;
+        let record: CompiledRecord = postcard::from_bytes(&record_bytes).map_err(Error::Codec)?;
 
         Ok(LookupResult::Hit(Box::new(CompiledHit {
             package: record.package,

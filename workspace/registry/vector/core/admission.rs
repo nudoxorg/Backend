@@ -37,7 +37,8 @@ pub struct DepCandidate {
 impl DepCandidate {
     /// The §20.4 admission score: `3·direct + 2·ref_density + 1·ema`.
     fn score(&self) -> f32 {
-        2.0f32.mul_add(self.ref_density, 3.0 * f32::from(u8::from(self.is_direct))) + self.query_hit_ema
+        2.0f32.mul_add(self.ref_density, 3.0 * f32::from(u8::from(self.is_direct)))
+            + self.query_hit_ema
     }
 
     /// Value-per-byte for the greedy knapsack (score / cost).
@@ -278,10 +279,7 @@ mod tests {
         let mut p2 = cand("p2", 40, false, 0.0, 0.0);
         p1.pinned = true;
         p2.pinned = true;
-        let out = admit(
-            budget,
-            vec![p2, p1, cand("x", 10, true, 1.0, 1.0)],
-        );
+        let out = admit(budget, vec![p2, p1, cand("x", 10, true, 1.0, 1.0)]);
         // Both pins admitted (80 > 50), deterministic PackageId order.
         let mut pins = vec![pkg("p1"), pkg("p2")];
         pins.sort();
@@ -591,7 +589,11 @@ mod tests {
     fn hit_ema_halves_at_half_life() {
         let mut ema = HitEma::new(0);
         ema.update(0, true);
-        assert!((ema.value_at(0) - 1.0).abs() < 1e-6, "fresh hit: {}", ema.value_at(0));
+        assert!(
+            (ema.value_at(0) - 1.0).abs() < 1e-6,
+            "fresh hit: {}",
+            ema.value_at(0)
+        );
         let half = ema.value_at(HIT_EMA_HALF_LIFE_SECS);
         assert!((half - 0.5).abs() < 1e-6, "14-day half-life: {half}");
         // Two hits then a full half-life: (1·d + 1) halves.

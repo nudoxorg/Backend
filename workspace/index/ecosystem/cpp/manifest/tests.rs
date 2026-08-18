@@ -24,8 +24,72 @@ fn candidate_order_is_stable() {
             ".gitmodules",
             ".pc.in",
             ".pc",
+            "LICENSE",
+            "LICENSE.txt",
+            "LICENSE.md",
+            "LICENCE",
+            "LICENCE.txt",
+            "LICENCE.md",
+            "COPYING",
+            "COPYING.txt",
         ]
     );
+}
+
+#[test]
+fn license_candidates_match_shared_list() {
+    // The literal `LICENSE`/… entries appended to `manifest_candidates()`
+    // must stay byte-for-byte in sync with `license::LICENSE_FILENAMES` (the
+    // list `parse_manifest`'s dispatch checks against) — this test is the
+    // drift guard for that duplication.
+    use crate::ecosystem::license;
+    let candidates = manifest_candidates();
+    let tail: Vec<&str> = candidates
+        .iter()
+        .rev()
+        .take(license::LICENSE_FILENAMES.len())
+        .map(|c| c.path_suffix)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    assert_eq!(tail, license::LICENSE_FILENAMES);
+}
+
+#[test]
+fn dispatch_license_file_sets_has_license_file_and_sniffs_spdx() {
+    let manifest = parse(
+        "LICENSE",
+        b"MIT License\n\nPermission is hereby granted, free of charge, to any person obtaining \
+a copy of this software and associated documentation files (the \"Software\")...",
+    )
+    .unwrap();
+    assert!(manifest.facts.has_license_file);
+    assert_eq!(manifest.facts.license.as_deref(), Some("MIT"));
+    assert!(manifest.dependencies.is_empty());
+}
+
+#[test]
+fn dispatch_license_file_unrecognized_content_still_sets_has_license_file() {
+    let manifest = parse(
+        "LICENCE",
+        b"All rights reserved. Contact legal@example.com.",
+    )
+    .unwrap();
+    assert!(manifest.facts.has_license_file);
+    assert!(
+        manifest.facts.license.is_none(),
+        "unrecognized content must not fabricate an SPDX id"
+    );
+}
+
+#[test]
+fn dispatch_copying_file_matched_case_insensitively() {
+    // `parse_manifest` dispatches on the candidate's own suffix string
+    // (defensively case-insensitive); the archive-path-vs-candidate-suffix
+    // matching itself is `facets::matches_candidate`'s job, exercised there.
+    let manifest = parse("copying.txt", b"some license text").unwrap();
+    assert!(manifest.facts.has_license_file);
 }
 
 #[test]
@@ -97,4 +161,76 @@ fn deeply_nested_cmake_parens() {
     source.push(')');
     let manifest = parse("CMakeLists.txt", source.as_bytes()).unwrap();
     assert!(manifest.dependencies.iter().any(|d| d.token == "ZLIB"));
+}
+
+// ── BOM handling (dispatch-level, benefits every parser) ────────────────────
+
+#[test]
+fn utf8_bom_stripped_before_vcpkg_json_dispatch() {
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(br#"{"description":"has a bom","license":"MIT"}"#);
+    let manifest = parse("vcpkg.json", &bytes).unwrap();
+    assert_eq!(manifest.facts.description.as_deref(), Some("has a bom"));
+    assert_eq!(manifest.facts.license.as_deref(), Some("MIT"));
+}
+
+#[test]
+fn utf8_bom_stripped_before_cmake_dispatch() {
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(b"find_package(ZLIB REQUIRED)\n");
+    let manifest = parse("CMakeLists.txt", &bytes).unwrap();
+    assert!(manifest.dependencies.iter().any(|d| d.token == "ZLIB"));
+}
+
+#[test]
+fn bom_only_input_is_empty_manifest_not_panic() {
+    let bytes = [0xEF, 0xBB, 0xBF];
+    let manifest = parse("CMakeLists.txt", &bytes).unwrap();
+    assert_eq!(manifest, CppManifest::default());
+}
+
+// ── Cross-parser hostile-input sweep ─────────────────────────────────────────
+
+/// Every candidate suffix, fed the same battery of adversarial byte strings,
+/// must return without panicking. `parse_manifest` is the single dispatch
+/// point every one of the 9 parsers funnels through, so this is a cheap way
+/// to sweep all of them at once for crash-freedom (field correctness is
+/// covered per-parser in each module's own tests).
+#[test]
+fn adversarial_battery_never_panics_across_all_candidates() {
+    let battery: &[&[u8]] = &[
+        b"",
+        b"\0\0\0\0",
+        b"# just a comment\n",
+        b"\r\n\r\n\r\n",
+        b"\n\r\n\r",
+        b"{{{{{{{{{{{{{{{{{{{{",
+        b"[[[[[[[[[[[[[[[[[[[[",
+        b"''''''''''''''''''''",
+        b"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"\"",
+        b"(((((((((((((((((((((((((((((",
+        b")))))))))))))))))))))))))))))",
+        "unicode 名前 \u{1F600} \u{0}".as_bytes(),
+        b"key = \"unterminated",
+        b"[section \"unterminated",
+        &[0xC0, 0x80],                   // overlong/invalid UTF-8
+        &[0xFF, 0xFE, b'a', 0, b'b', 0], // UTF-16-ish garbage
+    ];
+    for candidate in manifest_candidates() {
+        for input in battery {
+            // Must not panic; `None` (invalid UTF-8) or `Some(_)` both fine.
+            let _ = parse_manifest(candidate, input);
+        }
+    }
+}
+
+/// A single-line file with a pathologically long unbroken token (no
+/// whitespace at all) must not hang or blow memory disproportionately for
+/// every text-scanning parser, not just CMake (covered separately above).
+#[test]
+fn one_megabyte_unbroken_token_across_all_candidates() {
+    let giant = "a".repeat(1024 * 1024);
+    for candidate in manifest_candidates() {
+        let _ = parse_manifest(candidate, giant.as_bytes());
+    }
 }

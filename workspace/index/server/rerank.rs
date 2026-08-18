@@ -160,17 +160,14 @@ impl HttpProxyReranker {
         }
 
         let bytes = response.bytes().await.map_err(Error::Transport)?;
-        let decoded: WireResponse =
-            serde_json::from_slice(&bytes).map_err(Error::Malformed)?;
+        let decoded: WireResponse = serde_json::from_slice(&bytes).map_err(Error::Malformed)?;
 
         let mut scores = Vec::with_capacity(decoded.results.len().min(top_k));
         for row in decoded.results.into_iter().take(top_k) {
-            let document = documents
-                .get(row.index)
-                .ok_or(Error::IndexOutOfBounds {
-                    index: row.index,
-                    count: documents.len(),
-                })?;
+            let document = documents.get(row.index).ok_or(Error::IndexOutOfBounds {
+                index: row.index,
+                count: documents.len(),
+            })?;
             scores.push(RerankScore {
                 id: document.id.clone(),
                 score: row.relevance_score,

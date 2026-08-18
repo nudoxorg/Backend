@@ -110,21 +110,6 @@ pub fn producer_command(language: crate::ecosystem::Language) -> ProducerInvocat
             ],
         },
 
-        // Nix: nudox-nix-producer (snix-eval-backed) — evaluates the Nix
-        // flake at GUEST_SOURCE_MOUNT and emits IR for derivation symbols.
-        // `--flake` instructs the producer to look for a `flake.nix` at the
-        // source root and evaluate the default package set.
-        Language::Nix => ProducerInvocation {
-            entrypoint: "/opt/nudox/nix/bin/nudox-nix-producer",
-            args: &[
-                "--source",
-                GUEST_SOURCE_MOUNT,
-                "--emit",
-                "ndirf1",
-                "--flake",
-            ],
-        },
-
         // TypeScript: nudox-ts-producer (OXC-backed static parser, LOW tier).
         // OXC operates on the source tree directly; no separate oracle binary.
         Language::Typescript => ProducerInvocation {
@@ -157,7 +142,6 @@ pub(super) fn producer_profile(language: crate::ecosystem::Language) -> sandbox:
         Language::Java => ProducerProfile::Java,
         Language::Go => ProducerProfile::Go,
         Language::CSharp => ProducerProfile::CSharp,
-        Language::Nix => ProducerProfile::Nix,
         // deno_doc (TS) / pyrefly (Python) are LOW static parsers; C/C++ has no
         // dedicated profile yet and reads as a static parse over source.
         Language::Typescript | Language::Python | Language::Cpp => ProducerProfile::StaticParser,

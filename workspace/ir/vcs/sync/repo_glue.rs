@@ -61,12 +61,14 @@ fn change_id_to_pijul_hash(id: &ChangeId) -> Result<libpijul::pristine::Hash, Er
     }
     let mut bytes = [0u8; 32];
     for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let hi = (chunk[0] as char).to_digit(16).ok_or_else(|| {
-            Error::InvalidChangeId(VerifyError::InvalidChar(chunk[0] as char))
-        })? as u8;
-        let lo = (chunk[1] as char).to_digit(16).ok_or_else(|| {
-            Error::InvalidChangeId(VerifyError::InvalidChar(chunk[1] as char))
-        })? as u8;
+        let hi = (chunk[0] as char)
+            .to_digit(16)
+            .ok_or_else(|| Error::InvalidChangeId(VerifyError::InvalidChar(chunk[0] as char)))?
+            as u8;
+        let lo = (chunk[1] as char)
+            .to_digit(16)
+            .ok_or_else(|| Error::InvalidChangeId(VerifyError::InvalidChar(chunk[1] as char)))?
+            as u8;
         bytes[i] = (hi << 4) | lo;
     }
     Ok(libpijul::pristine::Hash::Blake3(bytes))
@@ -237,10 +239,7 @@ pub fn merge_event(
             .map_err(Error::InvalidChangeId)?
     };
 
-    let tip = new_changes
-        .last()
-        .cloned()
-        .ok_or(Error::NothingToSync)?;
+    let tip = new_changes.last().cloned().ok_or(Error::NothingToSync)?;
 
     Ok(MergeEvent {
         channel,

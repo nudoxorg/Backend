@@ -276,7 +276,7 @@ pub async fn evict(
         // actor before the directory goes away. Otherwise the actor closes
         // when the last in-flight search drops its clone.
         if let Ok(store) = Arc::try_unwrap(store) {
-            let _ = store.close().await;
+            store.close().await?;
         }
     }
     remove_dir_if_present(&dep_root.join(package.to_string()))?;

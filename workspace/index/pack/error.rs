@@ -116,7 +116,9 @@ pub enum PackError {
     /// what made `format_args!` reachable here at all: the variant could carry an
     /// `io::Error` but not the two numbers that *are* the evidence. They are
     /// fields now, so the condition is inspectable without parsing a string.
-    #[error("frame length mismatch at offset {offset}: TOC declares {expected} bytes, frame decoded to {actual}")]
+    #[error(
+        "frame length mismatch at offset {offset}: TOC declares {expected} bytes, frame decoded to {actual}"
+    )]
     FrameLengthMismatch {
         /// Byte offset of the offending frame.
         offset: u64,

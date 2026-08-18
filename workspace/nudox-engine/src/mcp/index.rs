@@ -32,12 +32,84 @@
 //! the *next* caller and the expensive half is already paid.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::packages::acquire::Error;
 use crate::wire::{Gen, SymbolKey};
 use crate::{EngineHandle, IndexEvent, IndexStage, Integrity, Purl, StreamHandle};
+
+/// Something the `index` tool can be pointed at.
+///
+/// # Why one type rather than two registries
+///
+/// The job registry's entire reason to exist is that calling twice must
+/// *join* rather than start a second producer run
+/// ([module docs](self)). That property is about the work, not about how the
+/// work was named — a caller polling a local path needs it exactly as much as
+/// one polling a PURL, and two registries would give each half the guarantee.
+///
+/// So the kinds differ only in how a target is spelled and which engine entry
+/// point runs it; everything downstream — joining, retention, the bounded
+/// wait, cancellation — is shared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum IndexTarget {
+    /// A registry coordinate: resolve, download, verify, extract, produce.
+    Registry(Purl),
+    /// A directory on this machine: produce, and nothing before it.
+    Local {
+        /// The package root.
+        root: PathBuf,
+        /// The producer to run, detected from the manifest present.
+        language: crate::ProducerLanguage,
+        /// The name to show before the oracle reports the authoritative one.
+        name: String,
+    },
+}
+
+impl IndexTarget {
+    /// The registry key, and the string the caller gets back.
+    ///
+    /// Canonical for a PURL (so `pkg:CARGO/serde@1` and `pkg:cargo/serde@1`
+    /// join one job) and the path for a local root. The two cannot collide: a
+    /// PURL always starts `pkg:` and a path never does.
+    pub(crate) fn key(&self) -> String {
+        match self {
+            Self::Registry(purl) => purl.render(),
+            Self::Local { root, .. } => root.display().to_string(),
+        }
+    }
+
+    /// Start the engine-side work for this target.
+    fn start(
+        &self,
+        engine: &EngineHandle,
+        generation: Gen,
+    ) -> (StreamHandle, flume::Receiver<IndexEvent>) {
+        match self {
+            Self::Registry(purl) => engine.index_purl(purl.clone(), generation),
+            Self::Local {
+                root,
+                language,
+                name,
+            } => engine.index_path(
+                crate::PackageSpec {
+                    root: root.clone(),
+                    name: name.clone(),
+                    // A checkout has no released version. `0.0.0` is what
+                    // `app::corpus` already uses for the same situation, so a
+                    // package indexed here and one loaded at start-up from
+                    // `NUDOX_PACKAGE_ROOT` land in the corpus identically
+                    // rather than as two generations of one lineage.
+                    version: "0.0.0".to_owned(),
+                    language: *language,
+                },
+                generation,
+            ),
+        }
+    }
+}
 
 /// How long a terminal job stays in the registry.
 ///
@@ -114,12 +186,12 @@ impl IndexJobs {
     pub(crate) async fn run(
         &self,
         engine: &EngineHandle,
-        purl: Purl,
+        target: IndexTarget,
         generation: Gen,
         deadline: Duration,
     ) -> (JobProgress, bool) {
-        let key = purl.render();
-        let (job, joined) = self.start_or_join(engine, purl, generation, &key);
+        let key = target.key();
+        let (job, joined) = self.start_or_join(engine, target, generation, &key);
 
         let mut progress = job.progress.clone();
         let outcome = tokio::time::timeout(deadline, async {
@@ -165,7 +237,7 @@ impl IndexJobs {
     fn start_or_join(
         &self,
         engine: &EngineHandle,
-        purl: Purl,
+        target: IndexTarget,
         generation: Gen,
         key: &str,
     ) -> (Arc<Job>, bool) {
@@ -180,7 +252,7 @@ impl IndexJobs {
             return (Arc::clone(existing), true);
         }
 
-        let (stream, rx) = engine.index_purl(purl, generation);
+        let (stream, rx) = target.start(engine, generation);
         let (tx, progress) = tokio::sync::watch::channel(JobProgress::Running {
             stage: IndexStage::Resolving,
             received: 0,
@@ -278,18 +350,31 @@ mod tests {
         let jobs = IndexJobs::default();
         // A package URL that resolves to nothing reachable: the job fails, but
         // it fails *once*, and the second caller observes the same job.
-        let purl = Purl::parse("pkg:cargo/nudox-package-that-does-not-exist@0.0.1")
-            .expect("valid purl");
+        let purl =
+            Purl::parse("pkg:cargo/nudox-package-that-does-not-exist@0.0.1").expect("valid purl");
 
         let (_first, joined_first) = jobs
-            .run(&engine, purl.clone(), Gen(1), Duration::from_millis(1))
+            .run(
+                &engine,
+                IndexTarget::Registry(purl.clone()),
+                Gen(1),
+                Duration::from_millis(1),
+            )
             .await;
         let (_second, joined_second) = jobs
-            .run(&engine, purl, Gen(2), Duration::from_millis(1))
+            .run(
+                &engine,
+                IndexTarget::Registry(purl),
+                Gen(2),
+                Duration::from_millis(1),
+            )
             .await;
 
         assert!(!joined_first, "the first call must start the job");
-        assert!(joined_second, "the second call must join it, not start another");
+        assert!(
+            joined_second,
+            "the second call must join it, not start another"
+        );
         drop(engine);
     }
 
@@ -305,7 +390,12 @@ mod tests {
         let purl = Purl::parse("pkg:cargo/serde@1.0.196").expect("valid purl");
 
         let (progress, _) = jobs
-            .run(&engine, purl, Gen(1), Duration::from_nanos(1))
+            .run(
+                &engine,
+                IndexTarget::Registry(purl),
+                Gen(1),
+                Duration::from_nanos(1),
+            )
             .await;
         assert!(
             matches!(progress, JobProgress::Running { .. }),

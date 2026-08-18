@@ -9,6 +9,16 @@ keywords.workspace = true
 categories.workspace = true
 readme = "README.md"
 
+[features]
+default = []
+# Test-only instrumentation: `SealReport::disambiguator_census` and
+# `SealReport::escalation_rounds` (`package/seal.rs`). Records the exact
+# `Disambiguator` variant that minted each declaration's `IntroId`, for
+# corpus census/measurement callers outside this crate's own `cfg(test)`.
+# Off by default; adds no cost and changes no production behaviour when
+# disabled.
+seal-census = []
+
 [dependencies]
 blake3 = "1"
 bon = { workspace = true }

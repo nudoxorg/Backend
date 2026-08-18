@@ -20,7 +20,7 @@ struct NonCloneErr(#[allow(dead_code)] String);
 
 #[tokio::test]
 async fn coalesces_concurrent_misses_to_one_compute() {
-    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_secs(60));
+    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_mins(1));
     let calls = Arc::new(AtomicUsize::new(0));
 
     // Fire many concurrent loads on the *same* key. Exactly one should compute.
@@ -56,7 +56,7 @@ async fn coalesces_concurrent_misses_to_one_compute() {
 
 #[tokio::test]
 async fn distinct_keys_compute_independently() {
-    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_secs(60));
+    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_mins(1));
     let calls = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::new();
@@ -84,7 +84,7 @@ async fn distinct_keys_compute_independently() {
 
 #[tokio::test]
 async fn hit_serves_without_recompute() {
-    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_secs(3600));
+    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_hours(1));
     let calls = Arc::new(AtomicUsize::new(0));
     let compute = {
         let calls = calls.clone();
@@ -105,7 +105,7 @@ async fn hit_serves_without_recompute() {
 
 #[tokio::test]
 async fn leader_failure_lets_a_waiter_retry() {
-    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_secs(60));
+    let cache: StampedeCache<u64, u64> = StampedeCache::new(1_000, Duration::from_mins(1));
     let attempt = Arc::new(AtomicUsize::new(0));
 
     // First compute fails, later ones succeed. A failed leader must not poison
@@ -154,7 +154,7 @@ fn jitter_stays_in_bounds() {
     let base = Duration::from_secs(100);
     for _ in 0..1_000 {
         let j = jittered(base, 0.2);
-        assert!(j >= Duration::from_secs(80) && j <= Duration::from_secs(120));
+        assert!(j >= Duration::from_secs(80) && j <= Duration::from_mins(2));
     }
     assert_eq!(jittered(base, 0.0), base);
 }

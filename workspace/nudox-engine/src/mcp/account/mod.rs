@@ -53,9 +53,7 @@ pub use service::{
     AccountService, AuthorizeOutcome, DEFAULT_BASE_URL, HttpAccountService, RecordOutcome,
 };
 pub use state::{
-    Denial, GRACE_WARNING_AT, GRACE_WINDOW, FRESH_FOR, GateState, Posture, ProbeFailure,
+    Denial, FRESH_FOR, GRACE_WARNING_AT, GRACE_WINDOW, GateState, Posture, ProbeFailure,
     QuotaKnowledge, QuotaSnapshot, UserId, Verdict,
 };
-pub use store::{
-    API_KEY_ENV, CredentialStore, Error, KeySource, MemoryStore, platform_store,
-};
+pub use store::{API_KEY_ENV, CredentialStore, Error, KeySource, MemoryStore, platform_store};

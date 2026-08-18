@@ -52,8 +52,7 @@ use std::process::Command;
 ///
 /// These are passed *before* the subcommand (git only honors `-c` there) and
 /// cannot be overridden by the repository URL, which is a positional argument.
-const HARDENING_CONFIG: &[&str] =
-    &["protocol.ext.allow=never", "protocol.fd.allow=never"];
+const HARDENING_CONFIG: &[&str] = &["protocol.ext.allow=never", "protocol.fd.allow=never"];
 
 /// One raw ref line from `git ls-remote`: an object id and its full ref name.
 ///
@@ -151,14 +150,18 @@ pub struct GitCommandAdapter {
 
 impl Default for GitCommandAdapter {
     fn default() -> Self {
-        Self { git_binary: "git".to_owned() }
+        Self {
+            git_binary: "git".to_owned(),
+        }
     }
 }
 
 impl GitCommandAdapter {
     /// An adapter invoking the given `git` executable.
     pub fn new(git_binary: impl Into<String>) -> Self {
-        Self { git_binary: git_binary.into() }
+        Self {
+            git_binary: git_binary.into(),
+        }
     }
 
     /// Run `git ls-remote <flags> -- <url> <patterns...>` and return stdout

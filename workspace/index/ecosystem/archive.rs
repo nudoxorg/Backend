@@ -4,7 +4,7 @@
 /// The compression framing of an ecosystem's source archives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ArchiveKind {
-    /// A `.tar.gz` (crates.io, npm tarballs, PyPI sdists, FlakeHub).
+    /// A `.tar.gz` (crates.io, npm tarballs, PyPI sdists).
     TarGz,
     /// A `.tar.zst`.
     TarZst,

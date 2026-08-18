@@ -211,9 +211,10 @@ impl AccountHost {
             return;
         }
 
-        let _ = self.engine.runtime_handle().block_on(async move {
-            tokio::time::timeout(FLUSH_ON_QUIT_TIMEOUT, task).await
-        });
+        let _ = self
+            .engine
+            .runtime_handle()
+            .block_on(async move { tokio::time::timeout(FLUSH_ON_QUIT_TIMEOUT, task).await });
     }
 }
 

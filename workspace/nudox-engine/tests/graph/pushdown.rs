@@ -15,6 +15,11 @@ use std::sync::Arc;
 use futures::StreamExt as _;
 use nudox_engine::graph::adapter::CorpusAdapter;
 use nudox_engine::graph::probe::{AdapterProbe, StoreProbe};
+use nudox_engine::store::{
+    corpus::Corpus,
+    package::{PackageView, Provenance},
+    source::fixtures::{build_rich_view, rich_lineage},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -22,11 +27,6 @@ use nudox_ir::{
     kind::Kind,
     kinds::{Function, Record},
     view::IrView,
-};
-use nudox_engine::store::{
-    corpus::Corpus,
-    package::{PackageView, Provenance},
-    source::fixtures::{build_rich_view, rich_lineage},
 };
 use trustfall::{FieldValue, Schema, execute_query_async};
 
@@ -108,7 +108,8 @@ async fn drain(
         &schema,
         adapter,
         query,
-        vars.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+        vars.into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>(),
     )
     .expect("query must parse")
     .collect()
@@ -394,7 +395,12 @@ async fn package_lineage_equality_probes_one_package_and_never_lists() {
         0,
         "a lineage is the corpus map's own key; listing the map to find it is the regression",
     );
-    assert_probe(&probe, StoreProbe::CorpusLookup, 1, "one lineage, one probe");
+    assert_probe(
+        &probe,
+        StoreProbe::CorpusLookup,
+        1,
+        "one lineage, one probe",
+    );
 }
 
 /// The claim above, made against the *shipped* query text rather than a query
@@ -432,7 +438,12 @@ async fn the_shipped_list_package_functions_query_takes_the_pushdown() {
         0,
         "the shipped query names its package; it must not list the corpus to find it",
     );
-    assert_probe(&probe, StoreProbe::CorpusLookup, 1, "one package, one probe");
+    assert_probe(
+        &probe,
+        StoreProbe::CorpusLookup,
+        1,
+        "one package, one probe",
+    );
 }
 
 /// An unloaded lineage yields no row and no error — `Packages` enumerates what

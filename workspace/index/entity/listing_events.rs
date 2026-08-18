@@ -2,8 +2,8 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::ListingStatus;
+use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -28,4 +28,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type ListingEventRow = Model;
 
 pub const TABLE: &str = "listing_events";
-

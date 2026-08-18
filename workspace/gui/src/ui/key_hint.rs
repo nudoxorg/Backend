@@ -253,7 +253,11 @@ mod tests {
     /// is printed on the key.
     #[test]
     fn word_keys_are_lower_case_and_letter_keys_are_upper_case() {
-        let cases = [("tab", "tab"), ("space", "space"), ("pagedown", "page down")];
+        let cases = [
+            ("tab", "tab"),
+            ("space", "space"),
+            ("pagedown", "page down"),
+        ];
         for (input, expected) in cases {
             let k = Keystroke::parse(input).expect("keystroke parses");
             assert_eq!(format_key(&k), expected, "for `{input}`");

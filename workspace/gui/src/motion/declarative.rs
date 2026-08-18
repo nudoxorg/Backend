@@ -43,8 +43,8 @@ use std::time::Duration;
 use gpui::{Animation, AnimationExt, Element, ElementId, IntoElement, Styled, px};
 
 use crate::motion::tokens::{
-    MotionTokens, EMPTY_STATE, OVERLAY_OUT, ROW_CASCADE, SECTION_ARRIVE, SKELETON_SHIMMER,
-    STAGGER_STEP, MAX_STAGGER_ROWS,
+    EMPTY_STATE, MAX_STAGGER_ROWS, MotionTokens, OVERLAY_OUT, ROW_CASCADE, SECTION_ARRIVE,
+    SKELETON_SHIMMER, STAGGER_STEP,
 };
 
 // ── Core helpers ─────────────────────────────────────────────────────────────
@@ -81,11 +81,9 @@ pub fn rise_in<E: IntoElement + Styled + 'static>(
         // stay off the `AlphaTokens` ladder deliberately.
         return el
             .opacity(1.0)
-            .with_animation(
-                id,
-                Animation::new(Duration::from_millis(1)),
-                |el, _t| el.opacity(1.0),
-            )
+            .with_animation(id, Animation::new(Duration::from_millis(1)), |el, _t| {
+                el.opacity(1.0)
+            })
             .into_any();
     }
 
@@ -118,11 +116,12 @@ pub fn fade_in<E: IntoElement + Styled + 'static>(
     let dur = tokens.scaled(duration);
 
     if dur == Duration::ZERO {
-        return el.opacity(1.0).with_animation(
-            id,
-            Animation::new(Duration::from_millis(1)),
-            |el, _t| el.opacity(1.0),
-        ).into_any();
+        return el
+            .opacity(1.0)
+            .with_animation(id, Animation::new(Duration::from_millis(1)), |el, _t| {
+                el.opacity(1.0)
+            })
+            .into_any();
     }
 
     el.with_animation(
@@ -149,11 +148,12 @@ pub fn fade_out<E: IntoElement + Styled + 'static>(
     let dur = tokens.scaled(duration);
 
     if dur == Duration::ZERO {
-        return el.opacity(0.0).with_animation(
-            id,
-            Animation::new(Duration::from_millis(1)),
-            |el, _t| el.opacity(0.0),
-        ).into_any();
+        return el
+            .opacity(0.0)
+            .with_animation(id, Animation::new(Duration::from_millis(1)), |el, _t| {
+                el.opacity(0.0)
+            })
+            .into_any();
     }
 
     // ease_in_cubic from gpui-component (animation.rs:38): slow start, fast end
@@ -211,11 +211,12 @@ pub fn row_enter<E: IntoElement + Styled + 'static>(
     let dur = tokens.scaled(ROW_CASCADE);
 
     if dur == Duration::ZERO {
-        return el.opacity(1.0).with_animation(
-            id,
-            Animation::new(Duration::from_millis(1)),
-            |el, _t| el.opacity(1.0),
-        ).into_any();
+        return el
+            .opacity(1.0)
+            .with_animation(id, Animation::new(Duration::from_millis(1)), |el, _t| {
+                el.opacity(1.0)
+            })
+            .into_any();
     }
 
     // Stagger delay as a fraction of the animation duration.
@@ -255,11 +256,12 @@ pub fn empty_state_enter<E: IntoElement + Styled + 'static>(
     let dur = tokens.scaled(EMPTY_STATE);
 
     if dur == Duration::ZERO {
-        return el.opacity(1.0).with_animation(
-            id,
-            Animation::new(Duration::from_millis(1)),
-            |el, _t| el.opacity(1.0),
-        ).into_any();
+        return el
+            .opacity(1.0)
+            .with_animation(id, Animation::new(Duration::from_millis(1)), |el, _t| {
+                el.opacity(1.0)
+            })
+            .into_any();
     }
 
     el.with_animation(
@@ -383,7 +385,10 @@ mod tests {
         let ease = delayed(0.25, gpui::ease_out_quint());
         // At t=1.0, should equal ease_out_quint()(1.0) = 1.0.
         let at_end = ease(1.0);
-        assert!((at_end - 1.0).abs() < 1e-5, "delayed at t=1 should be 1.0, got {at_end}");
+        assert!(
+            (at_end - 1.0).abs() < 1e-5,
+            "delayed at t=1 should be 1.0, got {at_end}"
+        );
 
         // At t=0.625 (halfway through the active portion), should be ~ease(0.5).
         let reference = gpui::ease_out_quint()(0.5);

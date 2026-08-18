@@ -34,7 +34,12 @@ impl Score {
 
     /// Add `n` points (clamped to `max_score`).
     #[inline]
-    pub fn n(&mut self, for_what: &'static str, max_score: u32, n: impl Into<i64>) -> ScoreAdjustment<'_> {
+    pub fn n(
+        &mut self,
+        for_what: &'static str,
+        max_score: u32,
+        n: impl Into<i64>,
+    ) -> ScoreAdjustment<'_> {
         self.score_f(for_what, f64::from(max_score), n.into() as f64)
     }
 

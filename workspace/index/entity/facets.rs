@@ -37,4 +37,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type FacetRow = Model;
 
 pub const TABLE: &str = "facets";
-

@@ -269,9 +269,10 @@ pub(crate) async fn run_query(
                     // is ambiguous between `Borrow<str>` and the reflexive
                     // `Borrow<Arc<str>>`, so name the lookup type explicitly.
                     .get::<str>(col.as_ref())
-                    .map_or_else(|| SharedStr::from(""), |fv| {
-                        SharedStr::from(field_value_to_string(fv).as_str())
-                    })
+                    .map_or_else(
+                        || SharedStr::from(""),
+                        |fv| SharedStr::from(field_value_to_string(fv).as_str()),
+                    )
             })
             .collect();
 
@@ -610,7 +611,11 @@ mod tests {
                     let pos = position
                         .unwrap_or_else(|| panic!("expected a position, message was {message:?}"));
                     assert_eq!(pos.line, 2, "the syntax error is on line 2: {message:?}");
-                    assert!(pos.column >= 1, "column must be 1-based, got {}", pos.column);
+                    assert!(
+                        pos.column >= 1,
+                        "column must be 1-based, got {}",
+                        pos.column
+                    );
                 }
                 other => panic!("expected GraphQueryFailed, got {other:?}"),
             },
@@ -631,8 +636,9 @@ mod tests {
         let mut args = BTreeMap::new();
         args.insert("flag".to_owned(), "false".to_owned());
         let q = GraphQuery {
-            query: "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
-                .to_owned(),
+            query:
+                "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
+                    .to_owned(),
             args,
         };
 
@@ -666,8 +672,9 @@ mod tests {
         let mut args = BTreeMap::new();
         args.insert("flag".to_owned(), "yes".to_owned()); // not "true"/"false"
         let q = GraphQuery {
-            query: "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
-                .to_owned(),
+            query:
+                "{ Symbols { isDeprecated @filter(op: \"=\", value: [\"$flag\"]) name @output } }"
+                    .to_owned(),
             args,
         };
 
@@ -677,7 +684,10 @@ mod tests {
         match events.last() {
             Some(QueryEvent::Failed { error, .. }) => match error {
                 EngineError::GraphQueryFailed { message, .. } => {
-                    assert!(message.contains("flag"), "message must name the variable: {message:?}");
+                    assert!(
+                        message.contains("flag"),
+                        "message must name the variable: {message:?}"
+                    );
                     assert!(
                         message.contains("Boolean"),
                         "message must name the declared type: {message:?}"

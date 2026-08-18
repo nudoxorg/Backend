@@ -2,11 +2,11 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::CompileCacheKind;
 use crate::ids::GenerationStamp;
 use crate::ids::JobKeyHash;
 use crate::ids::ObjectPackHash;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "compile_cache")]
@@ -29,4 +29,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type CompileCacheRow = Model;
 
 pub const TABLE: &str = "compile_cache";
-

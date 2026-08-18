@@ -41,63 +41,67 @@ use crate::upstream::UpstreamError;
 pub struct CatalogCursor(pub serde_json::Value);
 
 impl CatalogCursor {
-	/// The initial cursor — restart from the beginning of the feed.
-	pub fn zero() -> Self { Self(serde_json::Value::Null) }
+    /// The initial cursor — restart from the beginning of the feed.
+    pub fn zero() -> Self {
+        Self(serde_json::Value::Null)
+    }
 
-	/// Whether this is the zero (restart) cursor.
-	pub fn is_zero(&self) -> bool { self.0.is_null() }
+    /// Whether this is the zero (restart) cursor.
+    pub fn is_zero(&self) -> bool {
+        self.0.is_null()
+    }
 }
 
 /// One registry event from a catalog page.
 #[derive(Debug, Clone)]
 pub enum CatalogEvent {
-	/// A new version was published.
-	Published {
-		/// Package name, exactly as the registry records it.
-		name: String,
-		/// Version string, exactly as the registry records it.
-		version: String,
-	},
-	/// A version was withdrawn (yanked/unlisted/deprecated).
-	Withdrawn {
-		/// Package name.
-		name: String,
-		/// Version string.
-		version: String,
-	},
+    /// A new version was published.
+    Published {
+        /// Package name, exactly as the registry records it.
+        name: String,
+        /// Version string, exactly as the registry records it.
+        version: String,
+    },
+    /// A version was withdrawn (yanked/unlisted/deprecated).
+    Withdrawn {
+        /// Package name.
+        name: String,
+        /// Version string.
+        version: String,
+    },
 }
 
 impl CatalogEvent {
-	/// The package name for this event.
-	pub fn name(&self) -> &str {
-		match self {
-			CatalogEvent::Published { name, .. } | CatalogEvent::Withdrawn { name, .. } => name,
-		}
-	}
+    /// The package name for this event.
+    pub fn name(&self) -> &str {
+        match self {
+            CatalogEvent::Published { name, .. } | CatalogEvent::Withdrawn { name, .. } => name,
+        }
+    }
 
-	/// The version string for this event.
-	pub fn version(&self) -> &str {
-		match self {
-			CatalogEvent::Published { version, .. } | CatalogEvent::Withdrawn { version, .. } => {
-				version
-			}
-		}
-	}
+    /// The version string for this event.
+    pub fn version(&self) -> &str {
+        match self {
+            CatalogEvent::Published { version, .. } | CatalogEvent::Withdrawn { version, .. } => {
+                version
+            }
+        }
+    }
 }
 
 /// A batch of events from one `poll` call.
 #[derive(Debug)]
 pub struct CatalogBatch {
-	/// The events observed in this batch, in feed order.
-	pub events: Vec<CatalogEvent>,
-	/// The cursor to pass on the next `poll` call. The driver commits this
-	/// cursor to disk **only after all events in the batch have been
-	/// registered**, so a crash mid-batch re-delivers the whole batch on
-	/// restart. The registration call is idempotent so re-delivery is safe.
-	pub next: CatalogCursor,
-	/// `true` when the feed is fully caught up and there is nothing more to
-	/// read right now. The driver sleeps `poll_interval` before the next call.
-	pub exhausted: bool,
+    /// The events observed in this batch, in feed order.
+    pub events: Vec<CatalogEvent>,
+    /// The cursor to pass on the next `poll` call. The driver commits this
+    /// cursor to disk **only after all events in the batch have been
+    /// registered**, so a crash mid-batch re-delivers the whole batch on
+    /// restart. The registration call is idempotent so re-delivery is safe.
+    pub next: CatalogCursor,
+    /// `true` when the feed is fully caught up and there is nothing more to
+    /// read right now. The driver sleeps `poll_interval` before the next call.
+    pub exhausted: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,7 +110,7 @@ pub struct CatalogBatch {
 
 /// A boxed, object-safe future that drives one `poll` call.
 pub type PollFuture<'a> =
-	Pin<Box<dyn Future<Output = Result<CatalogBatch, UpstreamError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<CatalogBatch, UpstreamError>> + Send + 'a>>;
 
 /// An incremental feed follower for one ecosystem's upstream registry.
 ///
@@ -116,22 +120,22 @@ pub type PollFuture<'a> =
 /// pattern that guards outbox consumers is *not* needed here because cursors
 /// are local files, not shared postgres rows.
 pub trait CatalogFollower: Send + Sync + 'static {
-	/// The ecosystem this follower covers. Used to route events to the correct
-	/// idempotent registration entry point.
-	fn language(&self) -> Language;
+    /// The ecosystem this follower covers. Used to route events to the correct
+    /// idempotent registration entry point.
+    fn language(&self) -> Language;
 
-	/// Fetch the next batch of events after `cursor` from the upstream registry.
-	///
-	/// The returned [`CatalogBatch`] carries a `next` cursor the driver should
-	/// pass on the subsequent call. The driver **does not commit the cursor until
-	/// all events in the batch have been registered**, so a `poll` that returns
-	/// `Ok` but is followed by a crash still re-delivers the batch.
-	///
-	/// When the feed is fully caught up, return `CatalogBatch::exhausted = true`
-	/// and the driver will sleep before calling again.
-	fn poll<'a>(
-		&'a self,
-		client: &'a crate::upstream::UpstreamClient,
-		cursor: &'a CatalogCursor,
-	) -> PollFuture<'a>;
+    /// Fetch the next batch of events after `cursor` from the upstream registry.
+    ///
+    /// The returned [`CatalogBatch`] carries a `next` cursor the driver should
+    /// pass on the subsequent call. The driver **does not commit the cursor until
+    /// all events in the batch have been registered**, so a `poll` that returns
+    /// `Ok` but is followed by a crash still re-delivers the batch.
+    ///
+    /// When the feed is fully caught up, return `CatalogBatch::exhausted = true`
+    /// and the driver will sleep before calling again.
+    fn poll<'a>(
+        &'a self,
+        client: &'a crate::upstream::UpstreamClient,
+        cursor: &'a CatalogCursor,
+    ) -> PollFuture<'a>;
 }

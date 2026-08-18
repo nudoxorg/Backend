@@ -79,7 +79,10 @@ fn round_trip(payload: &OwnedEntryPayload, parent: Option<IntroId>, links: &[Lin
 /// so no ESC/NUL/etc. can appear raw, which keeps libpijul on the text path.
 fn assert_no_bad_controls(bytes: &[u8]) {
     for (i, &b) in bytes.iter().enumerate() {
-        assert!(!(b < 0x20 && b != b'\n' && b != b'\t'), "control byte 0x{b:02x} at position {i} in F1 output");
+        assert!(
+            !(b < 0x20 && b != b'\n' && b != b'\t'),
+            "control byte 0x{b:02x} at position {i} in F1 output"
+        );
     }
 }
 

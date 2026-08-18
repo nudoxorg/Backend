@@ -59,11 +59,9 @@ fn apply_ops_persists_package_and_fans_out_outbox() {
     // walks the directory recursively, and pointing it at `.` would stat the
     // whole `target/` tree and report build output as this test's cost.
     let scratch = tempfile::tempdir().expect("tempdir");
-    let (report, _cost) = heart::cost::measured(
-        "store/apply_ops_batch",
-        scratch.path(),
-        || writer.apply_ops(&[upsert_package(1), upsert_version(1, 1)]),
-    );
+    let (report, _cost) = heart::cost::measured("store/apply_ops_batch", scratch.path(), || {
+        writer.apply_ops(&[upsert_package(1), upsert_version(1, 1)])
+    });
     let report = report.expect("batch applies");
     assert_eq!(report.applied, 2);
     // Only the version upsert fans out to the text sink.
@@ -78,6 +76,66 @@ fn apply_ops_persists_package_and_fans_out_outbox() {
     let claimed = writer.outbox_claim(SinkKind::Text, 10).expect("claim");
     assert_eq!(claimed.len(), 1);
     assert!(claimed[0].version_id.is_some());
+}
+
+#[test]
+fn reapplying_identical_package_and_version_emits_no_duplicate_outbox() {
+    let writer = migrated_writer();
+    let ops = [upsert_package(1), upsert_version(1, 1)];
+
+    let first = writer.apply_ops(&ops).expect("first application");
+    assert_eq!(first.outbox_rows, 1);
+
+    let second = writer.apply_ops(&ops).expect("identical reapplication");
+    assert_eq!(
+        second.outbox_rows, 0,
+        "an unchanged package/version must not enqueue another upsert"
+    );
+
+    let claimed = writer.outbox_claim(SinkKind::Text, 10).expect("claim");
+    assert_eq!(
+        claimed.len(),
+        1,
+        "only the first application should enqueue"
+    );
+}
+
+#[test]
+fn changing_version_facets_emits_one_delta_outbox_without_duplicates() {
+    let writer = migrated_writer();
+    writer
+        .apply_ops(&[upsert_package(1), upsert_version(1, 1)])
+        .expect("seed");
+
+    let mut changed = upsert_version(1, 1);
+    if let CatalogOp::UpsertVersion { facets, .. } = &mut changed {
+        facets.keywords = Some("changed keyword".to_owned());
+    }
+
+    let report = writer
+        .apply_ops(&[changed.clone()])
+        .expect("facet delta application");
+    assert_eq!(
+        report.outbox_rows, 1,
+        "a facet-only change must notify the text projection"
+    );
+    assert_eq!(
+        writer
+            .apply_ops(&[changed])
+            .expect("identical facet reapplication")
+            .outbox_rows,
+        0,
+        "reapplying unchanged facets must not enqueue a duplicate"
+    );
+
+    assert_eq!(
+        writer
+            .outbox_claim(SinkKind::Text, 10)
+            .expect("claim")
+            .len(),
+        2,
+        "the seed and the one real facet delta should be queued"
+    );
 }
 
 #[test]

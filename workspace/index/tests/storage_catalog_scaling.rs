@@ -66,11 +66,13 @@
 
 mod common;
 
-use common::{available_corpus_fixtures, language_for_ecosystem, migrated_disk_writer, CorpusFixture};
-use heart::identity::derive::package_id_from_parts;
+use common::{
+    CorpusFixture, available_corpus_fixtures, language_for_ecosystem, migrated_disk_writer,
+};
 use heart::Language;
-use index::enums::{EdgeKind, EdgeSource};
+use heart::identity::derive::package_id_from_parts;
 use index::entity::edges;
+use index::enums::{EdgeKind, EdgeSource};
 use index::ids::{PackageId, PackageStemId};
 use index::protocol::{CatalogOp, EdgeWire, FacetWire, PackageStemWire, VersionCoordinates};
 use index::store::{Catalog, MetaStore};
@@ -196,11 +198,9 @@ fn migration_ddl_cost_on_disk() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let db_path = scratch.path().join("catalog.sqlite");
 
-    let (_writer, cost) = heart::cost::measured(
-        "index/migration_ddl_only",
-        scratch.path(),
-        || common::migrated_disk_writer(&db_path),
-    );
+    let (_writer, cost) = heart::cost::measured("index/migration_ddl_only", scratch.path(), || {
+        common::migrated_disk_writer(&db_path)
+    });
 
     assert!(
         db_path.exists(),
@@ -235,15 +235,17 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     assert!(
         fixtures.len() >= 100,
         "expected a meaningful real corpus (>=100 fetched fixtures out of \
-         {manifest_total} manifest-listed); found {}. Run nix build .#checks.corpus first.",
+         {manifest_total} manifest-listed); found {}. From the repo root, \
+         run `nix build '.#checks.<system>.corpus'` (the attribute is \
+         system-keyed, e.g. `.#checks.aarch64-darwin.corpus` — there is no \
+         plain `.#checks.corpus`), which materializes the `result` symlink \
+         this test reads fixtures from.",
         fixtures.len()
     );
 
     let ops: Vec<(CorpusFixture, CatalogOp, CatalogOp)> = fixtures
         .into_iter()
-        .filter_map(|fixture| {
-            ops_for_fixture(&fixture).map(|(pkg, ver)| (fixture, pkg, ver))
-        })
+        .filter_map(|fixture| ops_for_fixture(&fixture).map(|(pkg, ver)| (fixture, pkg, ver)))
         .collect();
     assert!(
         ops.len() >= 100,
@@ -254,9 +256,9 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     let scratch = tempfile::tempdir().expect("tempdir");
     let db_path = scratch.path().join("catalog.sqlite");
     let writer = migrated_disk_writer(&db_path); // unmeasured: this test is
-                                                  // about package growth, not
-                                                  // migration cost (see the
-                                                  // dedicated test above).
+    // about package growth, not
+    // migration cost (see the
+    // dedicated test above).
 
     // Checkpoint at growing fractions of the real corpus so the *shape* of
     // growth (not just its endpoint) is visible: is each new package's byte
@@ -272,8 +274,8 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
     let mut applied_so_far = 0usize;
     let mut cumulative_bytes: i64 = 0;
     let mut per_checkpoint: Vec<(usize, i64)> = Vec::new(); // (packages in this
-                                                             // batch, bytes this
-                                                             // batch cost)
+    // batch, bytes this
+    // batch cost)
 
     for &checkpoint in &checkpoints {
         let batch: Vec<CatalogOp> = ops[applied_so_far..checkpoint]
@@ -295,7 +297,10 @@ fn catalog_bytes_scale_with_real_corpus_ingestion() {
         applied_so_far = checkpoint;
     }
 
-    assert_eq!(applied_so_far, total, "every real fixture must be applied exactly once");
+    assert_eq!(
+        applied_so_far, total,
+        "every real fixture must be applied exactly once"
+    );
     assert!(
         cumulative_bytes > 0,
         "ingesting {total} real packages must grow the sqlite file; got cumulative delta {cumulative_bytes}"

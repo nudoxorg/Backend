@@ -1,4 +1,4 @@
-//! SemVer grammar (crates.io / npm / FlakeHub).
+//! SemVer grammar (crates.io / npm).
 
 use super::{AnyVersion, VersionGrammar};
 

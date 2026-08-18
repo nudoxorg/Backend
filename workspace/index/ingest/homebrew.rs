@@ -21,12 +21,12 @@
 
 use crate::ecosystem::Language;
 use crate::ecosystem::repo::normalize_repo_url;
+use crate::enums::SourceKind;
 use crate::enums::{AliasConfidence, EdgeKind, EdgeSource};
 use crate::ids::PackageStemId;
 use crate::protocol::{
     CatalogOp, EdgeWire, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates,
 };
-use crate::enums::SourceKind;
 
 use crate::ingest::enumerate::{cpp_stem_id, cpp_version_id};
 use crate::ingest::follower::{Follower, FollowerBatch, FollowerError, PollCadence};
@@ -59,7 +59,11 @@ impl<Transport: FeedTransport> HomebrewFollower<Transport> {
 
     /// A follower against a custom endpoint (tests, enterprise mirror).
     pub fn with_url(transport: Transport, formula_url: impl Into<String>) -> Self {
-        Self { transport, formula_url: formula_url.into(), cadence_seconds: 6 * 60 * 60 }
+        Self {
+            transport,
+            formula_url: formula_url.into(),
+            cadence_seconds: 6 * 60 * 60,
+        }
     }
 }
 
@@ -196,7 +200,10 @@ fn resolve_stem(formula: &Formula) -> StemResolution {
     }
 
     // 2. Heuristic: normalize the stable URL, then the homepage.
-    for candidate in [stable_url, formula.homepage.as_deref()].into_iter().flatten() {
+    for candidate in [stable_url, formula.homepage.as_deref()]
+        .into_iter()
+        .flatten()
+    {
         if let Some(slug) = normalize_repo_url(candidate) {
             let slug = slug.as_str().to_owned();
             return StemResolution {
@@ -222,7 +229,8 @@ fn resolve_stem(formula: &Formula) -> StemResolution {
 /// Build the recipe edges for a formula from its runtime + build dependencies
 /// (REGISTRYLESS-PLAN §7.1 step 4; recorded literally per RL-5, resolved later).
 fn recipe_edges(formula: &Formula) -> Vec<EdgeWire> {
-    let mut edges = Vec::with_capacity(formula.dependencies.len() + formula.build_dependencies.len());
+    let mut edges =
+        Vec::with_capacity(formula.dependencies.len() + formula.build_dependencies.len());
     for dependency in &formula.dependencies {
         edges.push(EdgeWire {
             dep_ecosystem: Language::Cpp,
@@ -284,8 +292,11 @@ pub fn parse_formulae(body: &[u8]) -> Result<Vec<CatalogOp>, FollowerError> {
 
         // ── Version (checksum kept; source None — brew is fallback) ──────────
         if let Some(stable) = &formula.versions.stable {
-            let checksum =
-                formula.urls.stable.as_ref().and_then(|s| s.checksum.clone());
+            let checksum = formula
+                .urls
+                .stable
+                .as_ref()
+                .and_then(|s| s.checksum.clone());
             let version_id = cpp_version_id(resolution.stem_id, stable);
             ops.push(CatalogOp::UpsertVersion {
                 coordinates: VersionCoordinates {
@@ -312,11 +323,7 @@ pub fn parse_formulae(body: &[u8]) -> Result<Vec<CatalogOp>, FollowerError> {
                     source_pack: None,
                     source_rev: None,
                     registry_checksum: checksum,
-                    registry_package_uri: formula
-                        .urls
-                        .stable
-                        .as_ref()
-                        .and_then(|s| s.url.clone()),
+                    registry_package_uri: formula.urls.stable.as_ref().and_then(|s| s.url.clone()),
                 }),
             });
         }

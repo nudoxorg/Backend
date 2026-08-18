@@ -67,10 +67,7 @@ impl TreeIngest {
     /// allowing multiple directory roots to be merged into a single pack.
     ///
     /// [`ingest_directory`]: TreeIngest::ingest_directory
-    pub fn ingest_directory_into(
-        root: &Path,
-        builder: &mut ObjectPackBuilder,
-    ) -> PackResult<()> {
+    pub fn ingest_directory_into(root: &Path, builder: &mut ObjectPackBuilder) -> PackResult<()> {
         // Resolve the root to an absolute path so our recursive helper can
         // strip it cleanly when building relative paths.
         let absolute_root = root.canonicalize().map_err(PackError::Io)?;
@@ -152,13 +149,15 @@ fn visit_directory(
 /// Always uses `/` as the separator, even on Windows, so packs are
 /// cross-platform compatible.
 fn build_relative_path(root: &Path, absolute_entry: &Path) -> PackResult<RelativePath> {
-    let stripped = absolute_entry.strip_prefix(root).map_err(|_| PackError::BadStructure {
-        detail: format!(
-            "entry {} is not under root {}",
-            absolute_entry.display(),
-            root.display()
-        ),
-    })?;
+    let stripped = absolute_entry
+        .strip_prefix(root)
+        .map_err(|_| PackError::BadStructure {
+            detail: format!(
+                "entry {} is not under root {}",
+                absolute_entry.display(),
+                root.display()
+            ),
+        })?;
 
     // Join components with '/' regardless of the host OS separator.
     let relative_string: String = stripped
@@ -226,13 +225,20 @@ mod tests {
         std::fs::write(root.join("alpha/b.txt"), b"bbbb").unwrap();
         std::fs::write(root.join("top.txt"), b"top level").unwrap();
 
-        let (bytes_first, id_first) =
-            TreeIngest::ingest_directory(root).unwrap().seal_to_bytes().unwrap();
+        let (bytes_first, id_first) = TreeIngest::ingest_directory(root)
+            .unwrap()
+            .seal_to_bytes()
+            .unwrap();
 
-        let (bytes_second, id_second) =
-            TreeIngest::ingest_directory(root).unwrap().seal_to_bytes().unwrap();
+        let (bytes_second, id_second) = TreeIngest::ingest_directory(root)
+            .unwrap()
+            .seal_to_bytes()
+            .unwrap();
 
-        assert_eq!(id_first, id_second, "ObjectPackId must match across two ingests");
+        assert_eq!(
+            id_first, id_second,
+            "ObjectPackId must match across two ingests"
+        );
         assert_eq!(
             bytes_first, bytes_second,
             "pack bytes must be byte-identical across two ingests"

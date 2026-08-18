@@ -6,8 +6,8 @@
 mod common;
 
 use common::*;
-use registry::vector::{StoreError, VectorStore};
 use registry::vector::local::{LocalShardStore, SCHEMA_FILE, open_or_create, upsert_raw};
+use registry::vector::{StoreError, VectorStore};
 
 // ─── Area 1: Kill-9 shaped durability ────────────────────────────────────────
 
@@ -152,7 +152,9 @@ async fn schema_tampered_model_id_rejected_as_corrupt() {
     };
     std::fs::write(&schema_path, tampered).unwrap();
 
-    let err = LocalShardStore::open_read_only(dir.path(), f32_schema()).await.unwrap_err();
+    let err = LocalShardStore::open_read_only(dir.path(), f32_schema())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, StoreError::Corrupt(_)),
         "tampered model_id must yield Corrupt, got {err:?}"
@@ -176,7 +178,9 @@ async fn schema_tampered_dim_rejected_as_corrupt() {
     v["dim"] = serde_json::json!(384u64);
     std::fs::write(&schema_path, serde_json::to_string_pretty(&v).unwrap()).unwrap();
 
-    let err = LocalShardStore::open_read_only(dir.path(), f32_schema()).await.unwrap_err();
+    let err = LocalShardStore::open_read_only(dir.path(), f32_schema())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, StoreError::Corrupt(_)),
         "tampered dim must yield Corrupt, got {err:?}"
@@ -231,7 +235,9 @@ async fn schema_invalid_json_rejected_as_corrupt() {
     let schema_path = dir.path().join(SCHEMA_FILE);
     std::fs::write(&schema_path, b"{ this is not valid JSON }}}").unwrap();
 
-    let err = LocalShardStore::open_read_only(dir.path(), f32_schema()).await.unwrap_err();
+    let err = LocalShardStore::open_read_only(dir.path(), f32_schema())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, StoreError::Corrupt(_)),
         "invalid JSON schema.json must yield Corrupt, got {err:?}"
@@ -284,8 +290,6 @@ async fn schema_deleted_with_edge_data_present_recovers() {
 /// Search results must be identical: same ids, same order, exact f32 scores.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn upsert_raw_and_upsert_give_identical_search_results() {
-    
-
     let dir_actor = tempfile::tempdir().unwrap();
     let dir_raw = tempfile::tempdir().unwrap();
     const N: usize = 30;
@@ -380,7 +384,11 @@ async fn upsert_raw_dim_767_rejected_shard_remains_usable() {
         let results = shard
             .search(vector_local_edge_search_request_dim768())
             .expect("search after dim attack must succeed");
-        assert_eq!(results.len(), 1, "one valid point must be searchable after dim attack");
+        assert_eq!(
+            results.len(),
+            1,
+            "one valid point must be searchable after dim attack"
+        );
     })
     .await
     .unwrap();
@@ -428,7 +436,9 @@ async fn upsert_raw_dim_4096_rejected_shard_remains_usable() {
 /// Build a minimal Edge search request for a 768-dim shard (basis vector e0).
 /// Used by the blocking-thread dim-attack tests to verify the shard is still usable.
 fn vector_local_edge_search_request_dim768() -> qdrant_edge::SearchRequest {
-    use qdrant_edge::{NamedQuery, QueryEnum, SearchParams, VectorInternal, WithPayloadInterface, WithVector};
+    use qdrant_edge::{
+        NamedQuery, QueryEnum, SearchParams, VectorInternal, WithPayloadInterface, WithVector,
+    };
     let mut v = vec![0.0f32; 768];
     v[0] = 1.0;
     qdrant_edge::SearchRequest {

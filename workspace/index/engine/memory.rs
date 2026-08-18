@@ -24,11 +24,11 @@
 //! Gated on `feature = "test-engine"`, which is **opt-in**.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, Ordering};
 
-use rusqlite::types::{Value as SqliteValue, ValueRef};
 use rusqlite::Connection as SqliteConnection;
+use rusqlite::types::{Value as SqliteValue, ValueRef};
 
 use sea_orm::sea_query::Query;
 
@@ -218,11 +218,12 @@ impl<'a, 'stmt> Row for SqliteRow<'a, 'stmt> {
 
     fn get_text(&self, index: usize) -> Result<String, EngineError> {
         match self.inner.get_ref(index) {
-            Ok(ValueRef::Text(bytes)) => String::from_utf8(bytes.to_vec())
-                .map_err(|error| EngineError::UnexpectedColumnType {
+            Ok(ValueRef::Text(bytes)) => String::from_utf8(bytes.to_vec()).map_err(|error| {
+                EngineError::UnexpectedColumnType {
                     index,
                     detail: format!("TEXT was not valid UTF-8: {error}"),
-                }),
+                }
+            }),
             Ok(ValueRef::Null) => Err(EngineError::UnexpectedNull { index }),
             Ok(other) => Err(EngineError::UnexpectedColumnType {
                 index,
@@ -280,8 +281,10 @@ impl CatalogEngine for MemoryEngine {
             .lock()
             .map_err(|_| EngineError::Statement("connection mutex poisoned".to_owned()))?;
         let bound: Vec<SqliteValue> = params.iter().map(to_sqlite).collect();
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            bound.iter().map(|value| value as &dyn rusqlite::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> = bound
+            .iter()
+            .map(|value| value as &dyn rusqlite::ToSql)
+            .collect();
         connection
             .execute(sql, param_refs.as_slice())
             .map_err(|error| EngineError::Statement(error.to_string()))
@@ -301,8 +304,10 @@ impl CatalogEngine for MemoryEngine {
             .prepare(sql)
             .map_err(|error| EngineError::Statement(error.to_string()))?;
         let bound: Vec<SqliteValue> = params.iter().map(to_sqlite).collect();
-        let param_refs: Vec<&dyn rusqlite::ToSql> =
-            bound.iter().map(|value| value as &dyn rusqlite::ToSql).collect();
+        let param_refs: Vec<&dyn rusqlite::ToSql> = bound
+            .iter()
+            .map(|value| value as &dyn rusqlite::ToSql)
+            .collect();
         let mut rows = statement
             .query(param_refs.as_slice())
             .map_err(|error| EngineError::Statement(error.to_string()))?;
@@ -349,13 +354,10 @@ impl VersioningEngine for MemoryEngine {
         let branch_name = self.current_branch_name();
         let logical = self.next_logical();
         let at = now_unix_milliseconds();
-        let mut branches = self
-            .branches
-            .lock()
-            .map_err(|_| EngineError::Versioning {
-                operation: "dolt_commit",
-                detail: "branches mutex poisoned".to_owned(),
-            })?;
+        let mut branches = self.branches.lock().map_err(|_| EngineError::Versioning {
+            operation: "dolt_commit",
+            detail: "branches mutex poisoned".to_owned(),
+        })?;
         let history = branches.entry(branch_name.clone()).or_default();
         let parent = history.commits.last().map(|commit| commit.hash.0.clone());
         let mut hasher = blake3::Hasher::new();

@@ -23,4 +23,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type FeedWatermarkRow = Model;
 
 pub const TABLE: &str = "feed_watermarks";
-

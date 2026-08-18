@@ -156,7 +156,9 @@ use gpui::{
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, skeleton::Skeleton};
 use nudox_engine::wire::{SourceLocation as WireSourceLocation, SymbolKey, TimelineChange};
 
-use crate::app::actions::{CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, OpenVersionPicker};
+use crate::app::actions::{
+    CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, OpenVersionPicker,
+};
 use crate::bridge::slot::{Display as SlotDisplay, Error};
 use crate::motion::tokens::MotionTokens;
 use crate::stores::events::OpenDisposition;
@@ -199,6 +201,8 @@ const COPY_FEEDBACK_DURATION: Duration = Duration::from_millis(1600);
 /// References and Source off the bottom" — the reader should still be able to
 /// see that the sections below exist.
 const IMPLS_AUTO_EXPAND_MAX: u64 = 12;
+/// Small reference tables are part of the page, not a second destination.
+const REFS_AUTO_EXPAND_MAX: u64 = 12;
 
 /// Whether a disclosure section is open, and whether the *reader* decided that.
 ///
@@ -523,6 +527,16 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 });
             });
         }
+        {
+            let page = cx.entity().downgrade();
+            docs.on_source(move |location, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(location.to_string()));
+                let _ = page.update(cx, |page, cx| {
+                    page.copied_at = Some(Instant::now());
+                    cx.notify();
+                });
+            });
+        }
 
         // Scroll sync: the body's visible range drives both the outline
         // highlight and the engine's highlight priority.
@@ -532,10 +546,11 @@ impl<E: SymbolEngine> SymbolPage<E> {
         // It only reads view state and notifies.
         {
             let weak = cx.entity().downgrade();
-            docs.list_state().set_scroll_handler(move |event, _window, cx| {
-                let range = event.visible_range.clone();
-                let _ = weak.update(cx, |page, cx| page.on_body_scroll(range, cx));
-            });
+            docs.list_state()
+                .set_scroll_handler(move |event, _window, cx| {
+                    let range = event.visible_range.clone();
+                    let _ = weak.update(cx, |page, cx| page.on_body_scroll(range, cx));
+                });
         }
 
         let subs = vec![cx.observe(&store, |page, _store, cx| {
@@ -712,11 +727,8 @@ impl<E: SymbolEngine> SymbolPage<E> {
             // don't, project it.
             if let Some(tl) = doc.timeline.as_ref() {
                 if self.timeline_rows.is_none() {
-                    let rows: Arc<[TimelineRowView]> = tl
-                        .rows
-                        .iter()
-                        .map(TimelineRowView::from_wire)
-                        .collect();
+                    let rows: Arc<[TimelineRowView]> =
+                        tl.rows.iter().map(TimelineRowView::from_wire).collect();
 
                     // The version picker's contents *are* the timeline.
                     //
@@ -747,8 +759,7 @@ impl<E: SymbolEngine> SymbolPage<E> {
                             provenance: self.header.provenance,
                         })
                         .collect();
-                    self.active_version =
-                        rows.iter().position(|r| r.is_current).unwrap_or(0);
+                    self.active_version = rows.iter().position(|r| r.is_current).unwrap_or(0);
                     self.header.versions = self.versions.clone();
                     self.header.active_version = self.active_version;
 
@@ -819,6 +830,23 @@ impl<E: SymbolEngine> SymbolPage<E> {
                 .suggest(self.impls.total() <= IMPLS_AUTO_EXPAND_MAX);
             if next != self.collapse.impls {
                 self.collapse.impls = next;
+                dirty = true;
+            }
+        }
+        if self.refs.total() > 0 {
+            let next = self
+                .collapse
+                .refs
+                .suggest(self.refs.total() <= REFS_AUTO_EXPAND_MAX);
+            if next != self.collapse.refs {
+                self.collapse.refs = next;
+                dirty = true;
+            }
+        }
+        if self.source_path_text.is_some() {
+            let next = self.collapse.source.suggest(true);
+            if next != self.collapse.source {
+                self.collapse.source = next;
                 dirty = true;
             }
         }
@@ -1182,12 +1210,20 @@ impl<E: SymbolEngine> SymbolPage<E> {
         let streaming = self.impls_streaming;
         let store = self.store.downgrade();
         let entity = cx.entity().downgrade();
+        let source_entity = entity.clone();
         self.impls.render(
             streaming,
             move |key, _window, cx| {
                 let key = key.clone();
                 let _ = store.update(cx, |store, cx| {
                     store.open(key, OpenDisposition::Replace, cx);
+                });
+            },
+            move |location, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(location.to_string()));
+                let _ = source_entity.update(cx, |page, cx| {
+                    page.copied_at = Some(Instant::now());
+                    cx.notify();
                 });
             },
             move |_window, cx| {
@@ -1378,14 +1414,14 @@ impl<E: SymbolEngine> SymbolPage<E> {
                                     colours.fg_muted
                                 })
                                 // 600 = semibold for the current version, 400 = regular.
-                                .font_weight(gpui::FontWeight(if is_current { 600.0 } else { 400.0 }))
+                                .font_weight(gpui::FontWeight(if is_current {
+                                    600.0
+                                } else {
+                                    400.0
+                                }))
                                 .child(version),
                         )
-                        .child(
-                            div()
-                                .text_color(colours.fg_faint)
-                                .child(change_label),
-                        )
+                        .child(div().text_color(colours.fg_faint).child(change_label))
                 }))
                 .into_any_element(),
         )
@@ -2218,6 +2254,25 @@ mod tests {
         assert!(!d.suggest(true).suggest(false).is_open());
     }
 
+    /// Small tables and a known source location are visible page content, not
+    /// three collapsed affordances stranded below an otherwise short document.
+    #[test]
+    fn compact_page_sections_claim_the_available_viewport() {
+        assert!(Disclosure::Auto(false)
+            .suggest(12 <= IMPLS_AUTO_EXPAND_MAX)
+            .is_open());
+        assert!(Disclosure::Auto(false)
+            .suggest(12 <= REFS_AUTO_EXPAND_MAX)
+            .is_open());
+        assert!(Disclosure::Auto(false).suggest(true).is_open());
+        assert!(
+            !Disclosure::Auto(false)
+                .suggest(13 <= REFS_AUTO_EXPAND_MAX)
+                .is_open(),
+            "large reference tables remain bounded scrollable sections"
+        );
+    }
+
     /// Once the reader has decided, no arriving page may undo it. This is the
     /// whole reason `Disclosure` is not a `bool`: impl counts arrive
     /// asynchronously, so the auto-open rule is re-evaluated on every page, and
@@ -2322,8 +2377,8 @@ mod tests {
     /// `is_current` correctly.
     #[test]
     fn timeline_row_view_from_wire_roundtrips() {
-        use nudox_engine::wire::TimelineRow;
         use nudox_engine::wire::SharedStr;
+        use nudox_engine::wire::TimelineRow;
 
         let row = TimelineRow {
             version: SharedStr::from("0.8.9"),
@@ -2345,12 +2400,12 @@ mod tests {
     /// but `is_current = true`, so the label is "current".
     #[test]
     fn single_version_strip_labels_current_not_present() {
-        use nudox_engine::wire::TimelineRow;
         use nudox_engine::wire::SharedStr;
+        use nudox_engine::wire::TimelineRow;
 
         let row = TimelineRow {
             version: SharedStr::from("0.8.9"),
-            change: TimelineChange::Present,   // ← honest: only one version loaded
+            change: TimelineChange::Present, // ← honest: only one version loaded
             name: SharedStr::from("Router"),
             sig: Vec::new(),
             deprecated: false,
@@ -2399,8 +2454,17 @@ mod tests {
         // is therefore no height to reason about here — the absence of the child
         // is the height guarantee. This test asserts the intent.
         let cs = CollapseState::default_open();
-        assert!(!cs.impls.is_open(), "impls is collapsed by default → zero height contribution");
-        assert!(!cs.refs.is_open(), "refs is collapsed by default → zero height contribution");
-        assert!(!cs.source.is_open(), "source is collapsed by default → zero height contribution");
+        assert!(
+            !cs.impls.is_open(),
+            "impls is collapsed by default → zero height contribution"
+        );
+        assert!(
+            !cs.refs.is_open(),
+            "refs is collapsed by default → zero height contribution"
+        );
+        assert!(
+            !cs.source.is_open(),
+            "source is collapsed by default → zero height contribution"
+        );
     }
 }

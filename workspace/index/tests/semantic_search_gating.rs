@@ -14,9 +14,9 @@ mod server_common;
 
 use std::time::Duration;
 
+use heart::client::query::{AbstractQuery, ExecutionQuery as Query, Filter, Search};
 use index::server::search::SearchPlanner;
 use index::server::search::planner::Plan;
-use heart::client::query::{AbstractQuery, ExecutionQuery as Query, Filter, Search};
 
 /// A plain search request uses the precise surface, not qdrant.
 ///
@@ -68,21 +68,16 @@ async fn semantic_search_with_gate_runs() {
     );
 
     // The spend half needs live qdrant + an embedder — opt-in only.
-    let Some((server, _data)) = server_common::assembled_server("semantic_search_with_gate_runs").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("semantic_search_with_gate_runs").await;
     let cap = server_common::read_cap(&server);
-    let hits: Vec<_> = {
-        use futures::StreamExt;
-        let stream = server
-            .search_symbols(&cap, &request)
-            .await
-            .expect("a gated semantic search over an empty corpus answers cleanly");
-        stream.collect().await
-    };
+    let answer = server
+        .search_symbols(&cap, &request)
+        .await
+        .expect("a gated semantic search over an empty corpus answers cleanly");
+    let hits = server_common::collect_symbol_answer(answer).await;
     assert!(
-        hits.into_iter().all(|hit| hit.is_ok()),
+        hits.is_ok(),
         "an empty corpus yields no errors, only an empty page"
     );
 }

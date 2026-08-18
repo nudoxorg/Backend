@@ -29,7 +29,11 @@ struct StubFetcher {
 
 impl StubFetcher {
     fn serving(response: Vec<u8>, hash: ContentHash) -> Self {
-        Self { response, hash, calls: AtomicUsize::new(0) }
+        Self {
+            response,
+            hash,
+            calls: AtomicUsize::new(0),
+        }
     }
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
@@ -91,26 +95,28 @@ async fn install_with_stale_dest_and_stale_tmp_converges() {
     let dep_root = tempfile::tempdir().unwrap();
     let working_set = empty_working_set(project_dir.path()).await;
 
-    let shard_dir = dep_root.path()
-        .join(package.to_string())
-        .join("1.0.0");
+    let shard_dir = dep_root.path().join(package.to_string()).join("1.0.0");
 
     // Simulate a crashed prior install: create both the stale final dir and stale .tmp.
     std::fs::create_dir_all(&shard_dir).unwrap();
     std::fs::write(shard_dir.join("stale_marker.txt"), b"crashed").unwrap();
 
-    let tmp_dir = dep_root.path()
-        .join(package.to_string())
-        .join("1.0.0.tmp");
+    let tmp_dir = dep_root.path().join(package.to_string()).join("1.0.0.tmp");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     std::fs::write(tmp_dir.join("stale_tmp_marker.txt"), b"crashed_tmp").unwrap();
 
     let fetcher = StubFetcher::serving(artifact, hash);
     let entry = entry_with_ram(package, fetcher.hash, "1.0.0", 10 * 922);
 
-    let outcome = install(&fetcher, &entry, dep_root.path(), &f32_schema(), &working_set)
-        .await
-        .unwrap();
+    let outcome = install(
+        &fetcher,
+        &entry,
+        dep_root.path(),
+        &f32_schema(),
+        &working_set,
+    )
+    .await
+    .unwrap();
 
     // Install must succeed despite both leftovers.
     assert_eq!(
@@ -134,9 +140,16 @@ async fn install_with_stale_dest_and_stale_tmp_converges() {
         let ws = working_set.read().await;
         assert!(ws.resident_packages().contains(&package));
         let hits = ws.search_all(request(basis(0), 15)).await.unwrap();
-        assert!(hits.iter().any(|h| h.id == pid(0)), "dep points must be searchable after recovery");
+        assert!(
+            hits.iter().any(|h| h.id == pid(0)),
+            "dep points must be searchable after recovery"
+        );
     }
-    assert_eq!(fetcher.calls(), 1, "exactly one fetch for a clean install despite stale dirs");
+    assert_eq!(
+        fetcher.calls(),
+        1,
+        "exactly one fetch for a clean install despite stale dirs"
+    );
 }
 
 // ─── Area 8b: ram_estimate extremes ──────────────────────────────────────────
@@ -153,10 +166,20 @@ async fn install_with_ram_estimate_zero_does_not_panic() {
     let fetcher = StubFetcher::serving(artifact, hash);
     let entry = entry_with_ram(package, fetcher.hash, "1.0.0", 0);
 
-    let outcome = install(&fetcher, &entry, dep_root.path(), &f32_schema(), &working_set)
-        .await
-        .unwrap();
-    assert_eq!(outcome, InstallOutcome::Installed, "ram_estimate=0 must install without panic");
+    let outcome = install(
+        &fetcher,
+        &entry,
+        dep_root.path(),
+        &f32_schema(),
+        &working_set,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome,
+        InstallOutcome::Installed,
+        "ram_estimate=0 must install without panic"
+    );
 
     let ws = working_set.read().await;
     assert!(ws.resident_packages().contains(&package));
@@ -176,9 +199,15 @@ async fn install_with_ram_estimate_max_does_not_panic() {
     let fetcher = StubFetcher::serving(artifact, hash);
     let entry = entry_with_ram(package, fetcher.hash, "1.0.0", u64::MAX);
 
-    let outcome = install(&fetcher, &entry, dep_root.path(), &f32_schema(), &working_set)
-        .await
-        .unwrap();
+    let outcome = install(
+        &fetcher,
+        &entry,
+        dep_root.path(),
+        &f32_schema(),
+        &working_set,
+    )
+    .await
+    .unwrap();
     // Install itself doesn't check the budget — that's the admission layer's job.
     assert_eq!(
         outcome,
@@ -203,9 +232,15 @@ async fn evict_no_search_dir_gone_registry_updated() {
     let entry = entry_with_ram(package, fetcher.hash, "1.0.0", 10 * 922);
 
     // Install first.
-    let outcome = install(&fetcher, &entry, dep_root.path(), &f32_schema(), &working_set)
-        .await
-        .unwrap();
+    let outcome = install(
+        &fetcher,
+        &entry,
+        dep_root.path(),
+        &f32_schema(),
+        &working_set,
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome, InstallOutcome::Installed);
 
     let shard_dir = dep_root.path().join(package.to_string()).join("1.0.0");
@@ -221,16 +256,36 @@ async fn evict_no_search_dir_gone_registry_updated() {
     );
     // Registry must no longer contain the package.
     assert!(
-        !working_set.read().await.resident_packages().contains(&package),
+        !working_set
+            .read()
+            .await
+            .resident_packages()
+            .contains(&package),
         "evicted package must not be in resident_packages"
     );
 
     // Re-install must work (the state is clean after eviction).
-    let outcome2 = install(&fetcher, &entry, dep_root.path(), &f32_schema(), &working_set)
-        .await
-        .unwrap();
-    assert_eq!(outcome2, InstallOutcome::Installed, "re-install after eviction must succeed");
-    assert!(working_set.read().await.resident_packages().contains(&package));
+    let outcome2 = install(
+        &fetcher,
+        &entry,
+        dep_root.path(),
+        &f32_schema(),
+        &working_set,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome2,
+        InstallOutcome::Installed,
+        "re-install after eviction must succeed"
+    );
+    assert!(
+        working_set
+            .read()
+            .await
+            .resident_packages()
+            .contains(&package)
+    );
 }
 
 /// Evict a package that was never installed (not in working set, no dir).
@@ -244,5 +299,11 @@ async fn evict_nonexistent_package_is_idempotent() {
     let package = pkg("never-installed");
     // Must not panic or error.
     evict(package, dep_root.path(), &working_set).await.unwrap();
-    assert!(!working_set.read().await.resident_packages().contains(&package));
+    assert!(
+        !working_set
+            .read()
+            .await
+            .resident_packages()
+            .contains(&package)
+    );
 }

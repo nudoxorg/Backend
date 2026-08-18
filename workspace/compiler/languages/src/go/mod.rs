@@ -20,11 +20,11 @@
 //! | [`producer`]| `GoProducer` struct: oracle invocation + lowering pipeline, and the `Producer` impl. |
 //! | [`error`]   | `Error` and `Result<T>`. |
 
-pub mod oracle;
-pub mod types;
-pub mod lower;
-pub mod producer;
 pub mod error;
+pub mod lower;
+pub mod oracle;
+pub mod producer;
+pub mod types;
 
 pub use producer::GoProducer;
 

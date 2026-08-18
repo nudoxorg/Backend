@@ -88,6 +88,19 @@ pub struct ModuleData {
     /// narrower "declaration" in the source than the file itself. See
     /// `ItemData::span`.
     pub span: std::ops::Range<usize>,
+    /// The source file containing this module and all declarations walked
+    /// beneath it.
+    pub source: std::path::PathBuf,
+    /// Lexically resolved direct calls whose target is a declaration in this
+    /// package. Unresolved/dynamic calls are intentionally omitted.
+    pub references: Vec<ReferenceData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceData {
+    pub owner: PythonId,
+    pub target: PythonId,
+    pub span: std::ops::Range<usize>,
 }
 
 /// One top-level or nested item.

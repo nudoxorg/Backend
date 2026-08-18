@@ -2,9 +2,9 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
-use crate::ids::StoreId;
 use crate::enums::StoreKind;
+use crate::ids::StoreId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "stores")]
@@ -26,4 +26,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type StoreRow = Model;
 
 pub const TABLE: &str = "stores";
-

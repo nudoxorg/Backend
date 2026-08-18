@@ -14,6 +14,7 @@
 use crate::server::registry;
 use std::sync::Arc;
 
+use crate::ecosystem::PackageNameExt as _;
 use axum::{
     Json,
     body::Body,
@@ -21,11 +22,10 @@ use axum::{
     http::{HeaderName, header},
     response::{IntoResponse, Response},
 };
-use futures::TryStreamExt;
+use futures::StreamExt as _;
 use heart::query::{Query, QueryMode, Target};
-use heart::stream::{StreamFrame, StreamSummary};
-use heart::{Page, PackageHit, Score, Scored, Sourced, Symbol, SymbolId};
-use crate::ecosystem::PackageNameExt as _;
+use heart::surface::{Answer, Frame, GenerationId, Located, Residence, Symbols};
+use heart::{PackageHit, Page, Score, Scored, SymbolId};
 use registry::runtime::session::{SessionGraph, SessionId, SessionStore};
 use serde::Deserialize;
 
@@ -109,14 +109,15 @@ pub async fn search<M: EmbeddingModel>(
     }
     let query_id = ensure_query_id(&mut query);
     let request = lower_to_symbol_search(&server, query)?;
-    let hits: Vec<Scored<Symbol>> = server
-        .search_symbols(&cap, &request)
-        .await?
-        .try_collect()
-        .await?;
-    tracing::debug!(%query_id, hits = hits.len(), "symbol search served");
-    record_search_metrics(query_id, hits.len(), "symbols");
-    Ok(with_query_id(hit_stream(hits), query_id))
+    // No `.try_collect()` here — that call used to drain this exact stream
+    // into a `Vec` before a single byte reached the client (the buffer point
+    // `LOCAL-REMOTE-CONTRACT.md` §0.2/§3(a) names explicitly). `search_symbols`
+    // now returns an `Answer<Symbols>` whose frames are written to the
+    // response body as `coordination::search`'s federated sources (and
+    // `heart::surface::merge`) actually produce them.
+    let answer = server.search_symbols(&cap, &request).await?;
+    tracing::debug!(%query_id, "symbol search streaming");
+    Ok(with_query_id(symbol_answer_response(answer, query_id), query_id))
 }
 
 /// `POST /search/semantic` — the explicit semantic opt-in surface. The same
@@ -330,7 +331,9 @@ fn lower_to_symbol_search<M: EmbeddingModel>(
     let mut selectors = Vec::new();
     for raw in &query.scope.packages {
         for &ecosystem in &candidates {
-            if let Ok(name) = crate::server::registry::package::PackageName::new(ecosystem, raw.as_str()) {
+            if let Ok(name) =
+                crate::server::registry::package::PackageName::new(ecosystem, raw.as_str())
+            {
                 selectors.push(PackageSelector {
                     name,
                     version: None,
@@ -358,9 +361,84 @@ fn seed_relevance() -> Score {
     Score::try_new(1.0).expect("one is finite")
 }
 
+/// The remote-corpus generation this handler stamps onto every outgoing item.
+///
+/// No real corpus-generation identifier (`heart::query::AsOf`/
+/// `CatalogCommitHash`, or a future catalog watermark) is threaded through to
+/// this handler yet — [`heart::surface::Residence::Remote`]'s `generation`
+/// exists to let a client tell "these two items are the same underlying data,
+/// fetched at different times" from "these are from different corpus
+/// snapshots entirely" (contract §1.3), and this handler cannot make that
+/// distinction today. `0` is a deliberately inert placeholder, not a derived
+/// one: synthesizing something that merely *looks* meaningful (hashing the
+/// query id, say) would be worse, because a future reader would have to
+/// discover by inspection that it carries no real information instead of
+/// being told so here. Wiring a real generation through is follow-up work
+/// (`LOCAL-REMOTE-CONTRACT.md` S3/S4), not part of this change.
+const PLACEHOLDER_REMOTE_GENERATION: GenerationId = GenerationId(0);
+
+/// Stream a symbol [`Answer`] onto the wire as NDJSON [`Frame<Symbols>`]
+/// lines, writing each frame to the response body **the moment it is
+/// produced** rather than after the whole answer is known.
+///
+/// This is the buffer point `LOCAL-REMOTE-CONTRACT.md` §0.2/§3(a) names
+/// explicitly: the old `hit_stream(hits: Vec<H>)` wrapped an
+/// already-fully-materialized `Vec` in `futures::stream::iter`, so the bytes
+/// chunked but nothing ever arrived earlier than the last one. Piping
+/// [`Answer::into_stream`] straight into [`Body::from_stream`] means a hit
+/// [`coordination::search`](crate::server::coordination) already emitted can
+/// reach the client while a slower federated source is still being awaited —
+/// the property `search_symbols` now exists to provide.
+///
+/// Every [`Frame::Item`] is re-tagged [`Residence::Remote`] here, regardless
+/// of what `coordination::search` set it to (`Residence::Local` — correct
+/// from *that* code's point of view, since every federated source it reads is
+/// queried in-process by this very server). A caller reaching this handler
+/// over HTTP is, by definition, not this process: every row it receives needs
+/// the network to be re-served, and [`Residence`] exists precisely so a
+/// client can tell that apart from data it already has on disk (contract
+/// §1.3). The terminal frame's completeness/count is unaffected by the
+/// retag — only [`Frame::Item`] carries a residence to rewrite.
+///
+/// Also where `search`'s observability hangers move to: the old handler
+/// called [`record_search_metrics`] once, synchronously, with the final `Vec`
+/// length. There is no such synchronous count anymore — the hit total is only
+/// known once [`Frame::End`] itself arrives — so metrics are recorded from
+/// *inside* the frame-mapping closure, the moment that terminal frame is
+/// observed.
+fn symbol_answer_response(answer: Answer<Symbols>, query_id: uuid::Uuid) -> Response {
+    let lines = answer.into_stream().map(move |frame| {
+        let frame = match frame {
+            Frame::Item(located) => Frame::Item(Located::new(
+                located.value,
+                Residence::Remote {
+                    generation: PLACEHOLDER_REMOTE_GENERATION,
+                },
+            )),
+            other => other,
+        };
+        if let Frame::End(summary) = &frame {
+            record_search_metrics(query_id, summary.items as usize, "symbols");
+        }
+        serde_json::to_vec(&frame).map(|mut line| {
+            line.push(b'\n');
+            bytes::Bytes::from(line)
+        })
+    });
+    (
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(lines),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::rank_bucket;
+    use super::{rank_bucket, symbol_answer_response};
+    use heart::surface::{Gen, Residence, Summary, answer_channel};
+    use heart::symbol::Name;
+    use heart::{Scored, Score, Symbol, SymbolKind};
+    use http_body_util::BodyExt;
 
     #[test]
     fn rank_buckets_are_bounded() {
@@ -370,35 +448,93 @@ mod tests {
         assert_eq!(rank_bucket(20), "top_20");
         assert_eq!(rank_bucket(21), "beyond");
     }
-}
 
-/// Serialize a ranked result set as the typed streaming envelope: one
-/// [`StreamFrame::Hit`] per line, terminated by a single [`StreamFrame::End`],
-/// streamed under `application/x-ndjson`.
-///
-/// The terminal `End` frame is the load-bearing part. It is what lets a reader
-/// tell a *complete* answer (ends with `End`) from a *truncated* one (the
-/// connection dropped, so no `End` arrives) — the latter is a distinguishable,
-/// typed error client-side rather than a silent empty success. Because hits are
-/// already collected before this is called, a failure surfaces as an HTTP error
-/// status *before* the stream begins; once the stream begins it always ends with
-/// `End`. (The envelope also admits a mid-stream `Error` frame for a future
-/// truly-streaming writer that fails after its first byte.)
-fn hit_stream<H: serde::Serialize + Send + 'static>(hits: Vec<H>) -> Response {
-    let summary = StreamSummary::new(hits.len() as u64);
-    let frames = hits
-        .into_iter()
-        .map(StreamFrame::Hit)
-        .chain(std::iter::once(StreamFrame::End(summary)));
-    let lines = futures::stream::iter(frames.map(|frame| {
-        serde_json::to_vec(&frame).map(|mut line| {
-            line.push(b'\n');
-            bytes::Bytes::from(line)
-        })
-    }));
-    (
-        [(header::CONTENT_TYPE, "application/x-ndjson")],
-        Body::from_stream(lines),
-    )
-        .into_response()
+    fn sample_symbol(tag: u8) -> Symbol {
+        Symbol {
+            id: heart::identity::SymbolId::from_uuid(uuid::Uuid::from_bytes([tag; 16])),
+            package: heart::identity::PackageId::from_uuid(uuid::Uuid::from_bytes([tag; 16])),
+            ecosystem: heart::Language::Rust,
+            name: Name {
+                plain: format!("sym{tag}").into(),
+                fully_qualified: format!("crate::sym{tag}").into(),
+            },
+            kind: SymbolKind::Function,
+        }
+    }
+
+    /// The direct successor of the old `hit_stream_emits_incremental_ndjson_
+    /// frames_not_one_static_body` — same property (the response body arrives
+    /// as several distinct chunks, not one static blob), now pinned against
+    /// `symbol_answer_response`/`Answer<Symbols>` instead of a `Vec` wrapped in
+    /// `futures::stream::iter`. This is the test that would fail if a future
+    /// change reintroduced a `.try_collect()` before this function: collecting
+    /// the whole answer first would still produce a well-formed body, but as a
+    /// single chunk arriving only once every frame was already known.
+    #[tokio::test]
+    async fn symbol_answer_response_emits_incremental_ndjson_frames_not_one_static_body() {
+        let (tx, answer) = answer_channel::<heart::surface::Symbols>(8, Gen(1));
+        tx.item(
+            Scored::new(sample_symbol(1), Score::try_new(0.9).unwrap()),
+            Residence::Local,
+        )
+        .expect("emit");
+        tx.item(
+            Scored::new(sample_symbol(2), Score::try_new(0.5).unwrap()),
+            Residence::Local,
+        )
+        .expect("emit");
+        tx.end(Summary::complete(2)).expect("end");
+
+        let response = symbol_answer_response(answer, uuid::Uuid::new_v4());
+        assert_eq!(
+            response.headers().get("content-type").unwrap(),
+            "application/x-ndjson"
+        );
+
+        let mut body = response.into_body();
+        let mut chunks = Vec::new();
+        while let Some(frame) = body.frame().await {
+            let frame = frame.expect("stream body must not fail");
+            if let Ok(data) = frame.into_data() {
+                chunks.push(data);
+            }
+        }
+
+        assert!(
+            chunks.len() >= 3,
+            "two items plus the terminal frame must be delivered as incremental body chunks, \
+             not one static response"
+        );
+        let joined = chunks
+            .iter()
+            .flat_map(|chunk| chunk.iter().copied())
+            .collect::<Vec<_>>();
+        // `bytecount::count` is the clippy-preferred way to do this over a
+        // large buffer; this one is a few dozen bytes of test fixture, so a
+        // manual `fold` (rather than pulling in a new dependency for a single
+        // assertion) is the right amount of ceremony.
+        let newlines = joined.iter().fold(0u32, |count, &byte| {
+            count + u32::from(byte == b'\n')
+        });
+        assert_eq!(
+            newlines, 3,
+            "the streaming body must contain one NDJSON line per item plus End"
+        );
+
+        // Every item frame must be re-tagged Remote (never the Local residence
+        // the answer was built with) — see `symbol_answer_response`'s own doc
+        // comment on why the retag happens at this layer.
+        let text = String::from_utf8(joined).expect("ndjson body is utf8");
+        let item_lines: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with(r#"{"item":"#))
+            .collect();
+        assert_eq!(item_lines.len(), 2, "both items must round-trip as item frames");
+        for line in item_lines {
+            assert!(
+                line.contains(r#""residence":{"remote":{"generation":0}}"#),
+                "item frame must carry the placeholder Remote residence, got {line}"
+            );
+        }
+    }
 }

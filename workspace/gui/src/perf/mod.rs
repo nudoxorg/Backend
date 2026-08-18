@@ -580,7 +580,10 @@ mod tests {
             let _span = scope(Region::DocsSection);
         }
         assert_eq!(drain().len(), 1);
-        assert!(drain().is_empty(), "a second drain must see an empty ledger");
+        assert!(
+            drain().is_empty(),
+            "a second drain must see an empty ledger"
+        );
         set_enabled(false);
     }
 

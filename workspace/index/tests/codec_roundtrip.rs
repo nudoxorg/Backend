@@ -93,7 +93,10 @@ fn wrong_length_blob_is_typed_error_not_panic() {
 fn tokens_are_distinct_within_each_enum() {
     // A duplicated token would silently break decoding; guard it.
     fn all_distinct<E: TextEnum>() {
-        let tokens: Vec<&str> = E::all_variants().iter().map(index::TextEnum::as_token).collect();
+        let tokens: Vec<&str> = E::all_variants()
+            .iter()
+            .map(index::TextEnum::as_token)
+            .collect();
         let mut sorted = tokens.clone();
         sorted.sort_unstable();
         sorted.dedup();

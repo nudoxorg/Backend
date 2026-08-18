@@ -34,11 +34,19 @@ pub fn parse(text: &str) -> CppManifest {
     let description = extract_description(&value);
     let license = value["license"].as_str().map(str::to_owned);
     let repository = value["homepage"].as_str().map(str::to_owned);
+    // vcpkg.json's own `documentation` key is a dedicated docs URL (distinct
+    // from `homepage`, which usually IS the upstream repo) — a precise,
+    // one-to-one signal, unlike ecosystems that fall back to "homepage is
+    // present" as a documentation proxy.
+    let documentation = value["documentation"]
+        .as_str()
+        .is_some_and(|s| !s.trim().is_empty());
 
     let mut manifest = CppManifest {
         facts: ExtractedFacts {
             description,
             repository,
+            documentation,
             license,
             ..ExtractedFacts::default()
         },
@@ -207,5 +215,120 @@ mod tests {
         let manifest = parse(text);
         assert_eq!(manifest.facts.dependencies, vec!["zlib", "libpng"]);
         assert_eq!(manifest.dependencies.len(), 2);
+    }
+
+    // ── `documentation` field (P6 gap fill) ─────────────────────────────────
+
+    #[test]
+    fn parse_vcpkg_documentation_url_present() {
+        let text = r#"{"name": "mylib", "documentation": "https://mylib.dev/docs"}"#;
+        let manifest = parse(text);
+        assert!(manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_vcpkg_documentation_absent_is_false() {
+        let text = r#"{"name": "mylib", "homepage": "https://mylib.dev"}"#;
+        let manifest = parse(text);
+        // `homepage` alone is not treated as a documentation signal for
+        // vcpkg — the manifest has its own dedicated `documentation` key.
+        assert!(!manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_vcpkg_documentation_blank_string_is_false() {
+        let text = r#"{"documentation": "   "}"#;
+        let manifest = parse(text);
+        assert!(!manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_vcpkg_full_manifest_real_world_shape() {
+        // Shaped after a real vcpkg.json (fmt-style port).
+        let text = r#"{
+            "name": "fmt",
+            "version": "10.2.1",
+            "description": "A modern formatting library",
+            "homepage": "https://github.com/fmtlib/fmt",
+            "documentation": "https://fmt.dev",
+            "license": "MIT",
+            "dependencies": [
+                {
+                    "name": "vcpkg-cmake",
+                    "host": true
+                },
+                {
+                    "name": "vcpkg-cmake-config",
+                    "host": true
+                }
+            ]
+        }"#;
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("A modern formatting library")
+        );
+        assert_eq!(manifest.facts.license.as_deref(), Some("MIT"));
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://github.com/fmtlib/fmt")
+        );
+        assert!(manifest.facts.documentation);
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(manifest.dependencies[0].token, "vcpkg-cmake");
+    }
+
+    // ── Hostile-input hardening ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_vcpkg_duplicate_keys_last_wins_no_panic() {
+        // JSON with a duplicate top-level key: serde_json's Value map keeps
+        // the last occurrence. Must not panic either way.
+        let text = r#"{"description": "first", "description": "second"}"#;
+        let manifest = parse(text);
+        assert_eq!(manifest.facts.description.as_deref(), Some("second"));
+    }
+
+    #[test]
+    fn parse_vcpkg_deeply_nested_description_value_no_panic() {
+        // `description` is normally a string or array of strings; feeding it
+        // a pathologically deep array nest must not panic or hang — it's
+        // simply not a string/array-of-strings shape `extract_description`
+        // recognises, so it degrades to `None`.
+        let mut text = String::from(r#"{"description":"#);
+        for _ in 0..20_000 {
+            text.push('[');
+        }
+        for _ in 0..20_000 {
+            text.push(']');
+        }
+        text.push('}');
+        let manifest = parse(&text);
+        assert!(manifest.facts.description.is_none());
+    }
+
+    #[test]
+    fn parse_vcpkg_unicode_and_control_chars_in_description() {
+        let text = r#"{"description": "日本語 emoji 😀 tab\tnewline\n"}"#;
+        let manifest = parse(text);
+        assert!(manifest.facts.description.is_some());
+    }
+
+    #[test]
+    fn parse_vcpkg_enormous_description_string_no_panic() {
+        let huge = "x".repeat(2 * 1024 * 1024);
+        let text = format!(r#"{{"description": "{huge}"}}"#);
+        let manifest = parse(&text);
+        assert_eq!(
+            manifest.facts.description.as_deref().map(str::len),
+            Some(huge.len())
+        );
+    }
+
+    #[test]
+    fn parse_vcpkg_non_string_documentation_field_ignored() {
+        let text = r#"{"documentation": 12345}"#;
+        let manifest = parse(text);
+        assert!(!manifest.facts.documentation);
     }
 }

@@ -40,11 +40,10 @@ use image::RgbaImage;
 
 use lindsey::app::actions::{
     ActivateTab2, ConfirmOverlay, CopySymbolUri, CycleTheme, DismissOverlay, DismissWindow,
-    FilterAuto,
-    FilterName, FilterSemantic, GoToDocsTab,
-    GoToRefsTab, GoToSourceTab, GoToTimelineTab, MoveSelectionDown, MoveSelectionUp,
-    OpenAccount, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenVersionPicker, ShowWindow,
-    ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay,
+    FilterAuto, FilterName, FilterSemantic, GoToDocsTab, GoToRefsTab, GoToSourceTab,
+    GoToTimelineTab, MoveSelectionDown, MoveSelectionUp, OpenAccount, OpenCommandPalette,
+    OpenInBackgroundTab, OpenOmniSearch, OpenVersionPicker, ShowWindow, ToggleBottomDock,
+    ToggleLeftDock, ToggleShortcutsOverlay,
 };
 use lindsey::app::keymaps;
 use lindsey::app::mcp::McpService;
@@ -198,7 +197,10 @@ enum Change {
     /// names the region expected to move — this is the record of *why* the
     /// bar is lower than [`Change::Major`], not a bare tolerance nobody can
     /// audit later.
-    Minor { min_fraction: f64, reason: &'static str },
+    Minor {
+        min_fraction: f64,
+        reason: &'static str,
+    },
     /// The action was dispatched but is known, for the stated reason, not to
     /// visibly change this screen right now. `max_fraction` bounds how much
     /// incidental noise (antialiasing, an unrelated counter ticking) is
@@ -298,9 +300,7 @@ impl Corpus {
                 .split(',')
                 .map(|entry| {
                     let (path, version) = entry.trim().split_once('=').unwrap_or_else(|| {
-                        panic!(
-                            "NUDOX_SHOT_PKG_ROOTS entries are `path=version`; got {entry:?}"
-                        )
+                        panic!("NUDOX_SHOT_PKG_ROOTS entries are `path=version`; got {entry:?}")
                     });
                     (repo_path(path), version.to_owned())
                 })
@@ -460,9 +460,7 @@ impl FakeApi {
                         ),
                         // 204, exactly as `docs/auth.md` specifies for a recorded
                         // batch: no body, and therefore no `Content-Length`.
-                        None => {
-                            "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_owned()
-                        }
+                        None => "HTTP/1.1 204 No Content\r\nConnection: close\r\n\r\n".to_owned(),
                     };
                     let _ = stream.write_all(response.as_bytes());
                     let _ = stream.flush();
@@ -721,7 +719,9 @@ impl Stage {
     fn is_gated(&mut self) -> bool {
         let window = self.window;
         self.cx
-            .update_window(window, |root, _window, cx| shell_of(root, cx).read(cx).is_gated())
+            .update_window(window, |root, _window, cx| {
+                shell_of(root, cx).read(cx).is_gated()
+            })
             .expect("update window")
     }
 
@@ -1055,7 +1055,12 @@ impl Stage {
     /// `run_until_parked` drains GPUI's own queues but knows nothing about the
     /// Tokio threads the engine runs on, so a real sleep between polls is the
     /// only thing that lets corpus loading actually progress.
-    fn wait_until(&mut self, what: &str, budget: Duration, mut ready: impl FnMut(&mut Self) -> bool) {
+    fn wait_until(
+        &mut self,
+        what: &str,
+        budget: Duration,
+        mut ready: impl FnMut(&mut Self) -> bool,
+    ) {
         let deadline = Instant::now() + budget;
         loop {
             self.settle();
@@ -1063,10 +1068,7 @@ impl Stage {
                 return;
             }
             if Instant::now() >= deadline {
-                panic!(
-                    "timed out after {:?} waiting for: {what}",
-                    budget
-                );
+                panic!("timed out after {:?} waiting for: {what}", budget);
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -1103,9 +1105,7 @@ impl Stage {
                     data.rows
                         .iter()
                         .enumerate()
-                        .map(move |(row, prepared)| {
-                            (section, row, prepared.render_identity())
-                        })
+                        .map(move |(row, prepared)| (section, row, prepared.render_identity()))
                         .collect::<Vec<_>>()
                 })
                 .collect()
@@ -1127,10 +1127,7 @@ impl Stage {
                      same text — {readable:?}. A user has no way to choose \
                      between them (F1). Every row's full text:\n{}",
                     rows.iter()
-                        .map(|(s, r, id)| format!(
-                            "  ({s},{r}) {}",
-                            id.replace('\u{1}', " | ")
-                        ))
+                        .map(|(s, r, id)| format!("  ({s},{r}) {}", id.replace('\u{1}', " | ")))
                         .collect::<Vec<_>>()
                         .join("\n"),
                 );
@@ -1293,7 +1290,11 @@ impl Stage {
     /// rather than returning `None` when there is no document: every caller is
     /// asserting about a page it has just opened, and "there was no page" is a
     /// failure of that scene, not a state to tolerate.
-    fn with_symbol_page<R>(&mut self, what: &str, f: impl FnOnce(&SymbolPage<PageEngine>) -> R) -> R {
+    fn with_symbol_page<R>(
+        &mut self,
+        what: &str,
+        f: impl FnOnce(&SymbolPage<PageEngine>) -> R,
+    ) -> R {
         self.cx
             .update_window(self.window, |root_view, _window, cx| {
                 let shell = shell_of(root_view, cx);
@@ -1420,7 +1421,10 @@ impl Stage {
                         MAJOR_MIN_FRACTION * 100.0,
                     );
                 }
-                Change::Minor { min_fraction, reason } => {
+                Change::Minor {
+                    min_fraction,
+                    reason,
+                } => {
                     let need = (total_pixels as f64 * min_fraction).ceil() as u64;
                     assert!(
                         changed_px >= need,
@@ -1430,7 +1434,10 @@ impl Stage {
                         min_fraction * 100.0,
                     );
                 }
-                Change::KnownNoOp { max_fraction, reason } => {
+                Change::KnownNoOp {
+                    max_fraction,
+                    reason,
+                } => {
                     let ceiling = (total_pixels as f64 * max_fraction).ceil() as u64;
                     assert!(
                         changed_px <= ceiling,
@@ -1446,7 +1453,9 @@ impl Stage {
         }
 
         let path = self.out_dir.join(format!("{slug}.png"));
-        image.save(&path).unwrap_or_else(|e| panic!("save {slug}: {e}"));
+        image
+            .save(&path)
+            .unwrap_or_else(|e| panic!("save {slug}: {e}"));
 
         let elapsed = started.elapsed();
         println!(
@@ -1535,16 +1544,18 @@ fn main() {
 
     // ── 01 — the shell, corpus still arriving ────────────────────────────────
     stage.settle();
-    stage.shoot("01-shell-boot", "The shell at boot, before the corpus lands", Change::First);
+    stage.shoot(
+        "01-shell-boot",
+        "The shell at boot, before the corpus lands",
+        Change::First,
+    );
 
     // ── 02 — corpus loaded ───────────────────────────────────────────────────
     // Package mode drives in-process rust-analyzer, which needs tens of seconds.
     let budget = match &corpus {
         Corpus::Fixtures => Duration::from_secs(20),
         // One in-process rust-analyzer load per generation, serialised.
-        Corpus::Package { versions, .. } => {
-            Duration::from_secs(240) * versions.len().max(1) as u32
-        }
+        Corpus::Package { versions, .. } => Duration::from_secs(240) * versions.len().max(1) as u32,
     };
     {
         let probe = query.clone();
@@ -1560,7 +1571,10 @@ fn main() {
             let search = s.search.clone();
             s.cx.update(|cx| {
                 let snapshot = search.read(cx).snapshot();
-                snapshot.sections.iter().any(|section| !section.rows.is_empty())
+                snapshot
+                    .sections
+                    .iter()
+                    .any(|section| !section.rows.is_empty())
             })
         });
     }
@@ -1622,11 +1636,9 @@ fn main() {
 
     // A second, distinct query so tab #2 (scenes 20+) opens something other
     // than what tab #1 already shows.
-    let query2 = std::env::var("NUDOX_SHOT_QUERY_2").unwrap_or_else(|_| {
-        match &corpus {
-            Corpus::Fixtures => "Color".to_owned(),
-            Corpus::Package { .. } => "new".to_owned(),
-        }
+    let query2 = std::env::var("NUDOX_SHOT_QUERY_2").unwrap_or_else(|_| match &corpus {
+        Corpus::Fixtures => "Color".to_owned(),
+        Corpus::Package { .. } => "new".to_owned(),
     });
 
     // Fixtures answer in milliseconds; give package mode (real background
@@ -1641,7 +1653,11 @@ fn main() {
     // really does show "just opened" rather than "opened with the answer
     // already typed in".
     stage.act(&OpenOmniSearch);
-    stage.shoot("03-omni-search-open", "cmd-K opens the omni-search overlay, empty", Change::Major);
+    stage.shoot(
+        "03-omni-search-open",
+        "cmd-K opens the omni-search overlay, empty",
+        Change::Major,
+    );
 
     // ── 04 — a real query with real hits ─────────────────────────────────────
     //
@@ -2067,16 +2083,12 @@ fn main() {
     // ── 16-17 — dock toggles, which live on Shell's own root and always work ─
     let dock_caption = {
         let packages = stage.packages.clone();
-        stage
-            .cx
-            .update(|cx| packages.read(cx).rows().len())
+        stage.cx.update(|cx| packages.read(cx).rows().len())
     };
     stage.act(&ToggleLeftDock);
     stage.shoot(
         "16-left-dock-hidden",
-        &format!(
-            "cmd-B hides the left dock (was showing {dock_caption} loaded package(s))"
-        ),
+        &format!("cmd-B hides the left dock (was showing {dock_caption} loaded package(s))"),
         Change::Major,
     );
 
@@ -2132,7 +2144,15 @@ fn main() {
     {
         let window = stage.window;
         let still_open = stage.cx.update(|cx| {
-            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
+            let shell = shell_of(
+                window
+                    .downcast::<gpui_component::Root>()
+                    .unwrap()
+                    .root(cx)
+                    .unwrap()
+                    .into(),
+                cx,
+            );
             shell.read(cx).overlay_kind_on_top().cloned()
         });
         assert_eq!(
@@ -2224,7 +2244,15 @@ fn main() {
     let (pane_len, active_after_reveal) = {
         let window = stage.window;
         stage.cx.update(|cx| {
-            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
+            let shell = shell_of(
+                window
+                    .downcast::<gpui_component::Root>()
+                    .unwrap()
+                    .root(cx)
+                    .unwrap()
+                    .into(),
+                cx,
+            );
             let pane = shell.read(cx).pane().read(cx);
             (pane.len(), pane.active_id())
         })
@@ -2252,7 +2280,15 @@ fn main() {
     let active_after_activate = {
         let window = stage.window;
         stage.cx.update(|cx| {
-            let shell = shell_of(window.downcast::<gpui_component::Root>().unwrap().root(cx).unwrap().into(), cx);
+            let shell = shell_of(
+                window
+                    .downcast::<gpui_component::Root>()
+                    .unwrap()
+                    .root(cx)
+                    .unwrap()
+                    .into(),
+                cx,
+            );
             shell.read(cx).pane().read(cx).active_id()
         })
     };

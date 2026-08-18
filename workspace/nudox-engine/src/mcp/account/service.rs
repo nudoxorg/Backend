@@ -150,8 +150,10 @@ pub trait AccountService: Send + Sync + 'static {
     ) -> ServiceFuture<'a, Result<RecordOutcome, ProbeFailure>>;
 
     /// Read the authoritative usage for the current period.
-    fn usage<'a>(&'a self, key: &'a ApiKey)
-    -> ServiceFuture<'a, Result<QuotaSnapshot, ProbeFailure>>;
+    fn usage<'a>(
+        &'a self,
+        key: &'a ApiKey,
+    ) -> ServiceFuture<'a, Result<QuotaSnapshot, ProbeFailure>>;
 
     /// The base URL this implementation talks to, for diagnostics and for the
     /// test that asserts the suite never points at production.
@@ -421,8 +423,7 @@ impl AccountService for HttpAccountService {
             // session attributed to nobody.
             let Some(user_id) = body.user_id else {
                 return Err(ProbeFailure::MalformedResponse {
-                    detail: "POST /v1/authorize allowed the key but returned no user_id"
-                        .to_owned(),
+                    detail: "POST /v1/authorize allowed the key but returned no user_id".to_owned(),
                 });
             };
 

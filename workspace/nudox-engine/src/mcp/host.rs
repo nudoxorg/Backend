@@ -26,6 +26,18 @@
 //! nothing else. That asymmetry is deliberate — a lifecycle that only works
 //! when someone remembers a call is the same class of defect as the dead setter
 //! this module exists to revive.
+//!
+//! # Restart stability
+//!
+//! [`McpHost::start`] is also where `crate::mcp::identity::EndpointIdentity`
+//! gets loaded and saved (`tests/mcp/endpoint_stability.rs`). It is the right
+//! layer for that: [`McpEndpoint`] only knows how to bind a
+//! [`crate::mcp::endpoint::PortPreference`] and start a caller-supplied
+//! token, and has no opinion about where either comes from. [`McpHost::start`]
+//! is the one caller `lindsey` actually uses in production, so it is the one
+//! place "remember what happened last launch" belongs — [`McpHost::start_with_token`]
+//! stays deliberately ignorant of it, because a test or caller that hands in
+//! its own token wants that exact token, not one a state file might override.
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -33,8 +45,9 @@ use std::time::Duration;
 use crate::EngineHandle;
 
 use crate::mcp::account::AccountGate;
-use crate::mcp::endpoint::McpEndpoint;
+use crate::mcp::endpoint::{McpEndpoint, PortPreference};
 use crate::mcp::error::McpError;
+use crate::mcp::identity::EndpointIdentity;
 use crate::mcp::server::NudoxMcpServer;
 use crate::mcp::session::SessionToken;
 
@@ -98,18 +111,86 @@ impl McpHost {
     /// same gate is also what `lindsey`'s account view renders and what its
     /// sign-in flow drives — one gate, several readers, exactly as one
     /// `EngineHandle` has several.
+    ///
+    /// # Restart stability
+    ///
+    /// Loads whatever [`EndpointIdentity`] a previous launch left in
+    /// `crate::mcp::account::state_dir` and, if there is one, asks
+    /// [`McpEndpoint::start_with_preference`] to reuse its port and starts
+    /// with its token rather than a fresh [`SessionToken::generate`] — that is
+    /// the whole fix `tests/mcp/endpoint_stability.rs` is written against: the
+    /// `mcpServers` snippet a user pasted last time keeps working. Once the
+    /// bind succeeds — whether it got the remembered port or fell back to an
+    /// ephemeral one — the port actually bound and the token actually used are
+    /// saved back, so the *next* launch has something to remember even on a
+    /// fresh install. A state directory that cannot be resolved or written to
+    /// is not fatal: this degrades to exactly today's behaviour, a fresh port
+    /// and token every launch.
     pub fn start(engine: &EngineHandle, gate: AccountGate) -> Result<Self, McpError> {
-        Self::start_with_token(engine, gate, SessionToken::generate())
+        let state_dir = crate::mcp::account::state_dir();
+        let remembered = state_dir.as_deref().and_then(EndpointIdentity::load);
+
+        let (token, preference) = match &remembered {
+            Some(identity) => (
+                SessionToken::from_secret(identity.token.clone()),
+                PortPreference::Remembered(identity.port),
+            ),
+            None => (SessionToken::generate(), PortPreference::Any),
+        };
+        // Captured before `token` moves into `start_inner`: it is the secret
+        // this launch is actually using regardless of what the bind below
+        // does with the port, so there is no need to read it back out of the
+        // endpoint afterwards.
+        let secret = token.expose().to_owned();
+
+        let host = Self::start_inner(engine, gate, token, preference)?;
+
+        if let (Some(dir), Some(addr)) = (state_dir.as_deref(), host.addr()) {
+            let identity = EndpointIdentity {
+                port: addr.port(),
+                token: secret,
+            };
+            if let Err(error) = identity.save(dir) {
+                // Not fatal: the server is already up and serving. The only
+                // cost of a failed save is that the *next* launch gets a
+                // fresh port and token instead of this one's — the same
+                // outcome every launch had before this feature existed — so
+                // this is worth knowing about, not worth failing over.
+                tracing::warn!(
+                    %error,
+                    dir = %dir.display(),
+                    "could not persist the mcp endpoint identity; the next launch will get a \
+                     fresh port and token",
+                );
+            }
+        }
+
+        Ok(host)
     }
 
-    /// Bind with a caller-supplied token.
+    /// Bind with a caller-supplied token, on an ephemeral port.
     ///
-    /// Used by tests, which need the secret before the server exists — the same
-    /// reason [`McpEndpoint::start_with_token`] exists.
+    /// Used by tests, which need the secret before the server exists — the
+    /// same reason [`McpEndpoint::start_with_token`] exists. Deliberately does
+    /// not consult or write [`EndpointIdentity`]: a caller that supplies its
+    /// own token wants exactly that token in use, not one silently swapped
+    /// for whatever a state file remembers.
     pub fn start_with_token(
         engine: &EngineHandle,
         gate: AccountGate,
         token: SessionToken,
+    ) -> Result<Self, McpError> {
+        Self::start_inner(engine, gate, token, PortPreference::Any)
+    }
+
+    /// Shared bind path for [`start`](Self::start) and
+    /// [`start_with_token`](Self::start_with_token) — the only difference
+    /// between them is where `token` and `preference` come from.
+    fn start_inner(
+        engine: &EngineHandle,
+        gate: AccountGate,
+        token: SessionToken,
+        preference: PortPreference,
     ) -> Result<Self, McpError> {
         let server = NudoxMcpServer::new(engine.clone(), gate);
         // `block_on` puts us inside the engine's runtime for the duration, so
@@ -120,7 +201,9 @@ impl McpHost {
         // make (LR-9).
         let endpoint = engine
             .runtime_handle()
-            .block_on(McpEndpoint::start_with_token(server, token))?;
+            .block_on(McpEndpoint::start_with_preference(
+                server, token, preference,
+            ))?;
         Ok(Self {
             engine: engine.clone(),
             endpoint: Some(endpoint),

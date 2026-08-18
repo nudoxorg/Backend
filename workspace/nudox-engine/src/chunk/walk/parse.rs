@@ -4,6 +4,7 @@
 //! sections, and detects callout blockquotes.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::ops::Range;
 
 use crate::wire::{
     CalloutLevel, LangId, ProseBlock, RenderSection, SectionId, SectionKind, SectionPlan,
@@ -45,27 +46,27 @@ pub(crate) fn parse_markdown(
     sections: &mut Vec<RenderSection>,
     plan: &mut Vec<SectionPlan>,
 ) {
-    let parser = Parser::new_ext(doc, Options::ENABLE_STRIKETHROUGH);
+    let parser = Parser::new_ext(doc, Options::ENABLE_STRIKETHROUGH).into_offset_iter();
 
     // Accumulate raw events into logical sections.
     // Each logical section is: (heading_text: Option<String>, events)
     // where heading_text is the H2 that started this section.
     let mut current_heading: Option<String> = None;
-    let mut current_events: Vec<Event<'_>> = Vec::new();
-    let mut logical_sections: Vec<(Option<String>, Vec<Event<'_>>)> = Vec::new();
+    let mut current_events: Vec<(Event<'_>, Range<usize>)> = Vec::new();
+    let mut logical_sections: Vec<(Option<String>, Vec<(Event<'_>, Range<usize>)>)> = Vec::new();
 
     // Collect a heading text from a run of Text events until EndTag.
     let mut in_heading: Option<HeadingLevel> = None;
     let mut heading_buf = String::new();
 
-    for event in parser {
+    for (event, range) in parser {
         match &event {
             Event::Start(Tag::Heading { level, .. }) => {
                 let lvl = *level;
                 in_heading = Some(lvl);
                 heading_buf.clear();
                 if lvl != HeadingLevel::H2 {
-                    current_events.push(event);
+                    current_events.push((event, range));
                 }
             }
             Event::End(TagEnd::Heading(level)) => {
@@ -80,20 +81,20 @@ pub(crate) fn parse_markdown(
                 } else {
                     in_heading = None;
                     heading_buf.clear();
-                    current_events.push(event);
+                    current_events.push((event, range));
                 }
             }
             Event::Text(text) | Event::Code(text) if in_heading.is_some() => {
                 heading_buf.push_str(text);
                 if in_heading != Some(HeadingLevel::H2) {
-                    current_events.push(event);
+                    current_events.push((event, range));
                 }
             }
             Event::Text(_) | Event::Code(_) => {
-                current_events.push(event);
+                current_events.push((event, range));
             }
             _ => {
-                current_events.push(event);
+                current_events.push((event, range));
             }
         }
     }
@@ -106,7 +107,7 @@ pub(crate) fn parse_markdown(
     for (heading, events) in logical_sections {
         let heading_text = heading.as_deref().unwrap_or("");
 
-        let slices: Vec<(Vec<Event<'_>>, bool)> = split_at_code_blocks(events);
+        let slices = split_at_code_blocks(events);
 
         let mut heading_used = false;
 
@@ -161,8 +162,11 @@ pub(crate) fn parse_markdown(
                 *id_counter += 1;
                 let id = SectionId(*id_counter);
 
+                let spans = slice_events.iter().map(|(_, span)| span.clone()).collect();
+                let events = slice_events.into_iter().map(|(event, _)| event).collect();
                 let blocks = super::prose::build_prose_blocks(
-                    slice_events,
+                    events,
+                    spans,
                     effective_heading,
                     doc_link_table,
                 );
@@ -192,24 +196,29 @@ pub(crate) fn parse_markdown(
 
 /// Split a flat pulldown-cmark event stream at **fenced** code block
 /// boundaries.
-fn split_at_code_blocks(events: Vec<Event<'_>>) -> Vec<(Vec<Event<'_>>, bool)> {
-    let mut slices: Vec<(Vec<Event<'_>>, bool)> = Vec::new();
-    let mut prose_buf: Vec<Event<'_>> = Vec::new();
+fn split_at_code_blocks(
+    events: Vec<(Event<'_>, Range<usize>)>,
+) -> Vec<(Vec<(Event<'_>, Range<usize>)>, bool)> {
+    let mut slices = Vec::new();
+    let mut prose_buf = Vec::new();
 
     let mut iter = events.into_iter();
 
     while let Some(ev) = iter.next() {
-        let is_fenced_start = matches!(&ev, Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))));
+        let is_fenced_start = matches!(
+            &ev.0,
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_)))
+        );
 
         if is_fenced_start {
             if !prose_buf.is_empty() {
                 slices.push((std::mem::take(&mut prose_buf), false));
             }
 
-            let mut fence_events: Vec<Event<'_>> = vec![ev];
+            let mut fence_events = vec![ev];
 
             for fence_ev in iter.by_ref() {
-                let is_end = matches!(&fence_ev, Event::End(TagEnd::CodeBlock));
+                let is_end = matches!(&fence_ev.0, Event::End(TagEnd::CodeBlock));
                 fence_events.push(fence_ev);
                 if is_end {
                     break;
@@ -230,11 +239,11 @@ fn split_at_code_blocks(events: Vec<Event<'_>>) -> Vec<(Vec<Event<'_>>, bool)> {
 }
 
 /// Extract `(lang_str, text_str)` from a fence event slice.
-fn extract_code_block_content(events: &[Event<'_>]) -> (String, String) {
+fn extract_code_block_content(events: &[(Event<'_>, Range<usize>)]) -> (String, String) {
     let mut lang_str = String::new();
     let mut text_str = String::new();
 
-    for ev in events {
+    for (ev, _) in events {
         match ev {
             Event::Start(Tag::CodeBlock(kind)) => {
                 lang_str = match kind {
@@ -253,12 +262,12 @@ fn extract_code_block_content(events: &[Event<'_>]) -> (String, String) {
 }
 
 /// Detect whether a list of events represents a callout blockquote.
-fn detect_callout_level(events: &[Event<'_>]) -> Option<CalloutLevel> {
+fn detect_callout_level(events: &[(Event<'_>, Range<usize>)]) -> Option<CalloutLevel> {
     let mut in_blockquote = false;
     let mut collected_text = String::new();
 
     for ev in events {
-        match ev {
+        match &ev.0 {
             Event::Start(Tag::BlockQuote(_)) => {
                 in_blockquote = true;
             }

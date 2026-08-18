@@ -50,16 +50,9 @@ build = "build.rs"
 libc = "0.2"
 thiserror = "1.0"
 threadpool = "1.8"
-# Not used from Rust (this crate's FFI bindings are hand-written in
-# src/bindings.rs, not generated from zstd-sys's types). Depended on so cargo
-# unifies this crate's libzstd requirement with `index::pack`'s
-# (zstd -> zstd-safe -> zstd-sys) into a single compiled unit, and so this
-# crate's own build.rs can read that unit's `DEP_ZSTD_INCLUDE` (see build.rs).
-# `default-features = false` matches how `zstd-safe` (index::pack's own path
-# to zstd-sys) already depends on it: zstd-sys's default features include
-# "bindgen" (regenerates its pregenerated bindings via `bindgen`/`clang-sys`
-# at build time), which neither path needs and which requesting here would
-# pull into the shared unit for both, unnecessarily, via feature unification.
+# Used only by the build script's wrapper compilation. This gives the
+# build script the exact headers and native search path for the zstd archive
+# already used by the workspace's zstd dependency.
 zstd-sys = { version = "2.0", default-features = false }
 
 [build-dependencies]

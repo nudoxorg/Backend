@@ -25,6 +25,9 @@ pub mod sink;
 /// The typed NDJSON streaming envelope ([`stream::StreamFrame`]) shared by the
 /// `index` server's search writer and the `heart::client::http` reader.
 pub mod stream;
+/// The one local/remote contract: `Surface` + `Frame<S>` + `Answer<S>` +
+/// `Serve<S>`, per `docs/LOCAL-REMOTE-CONTRACT.md`.
+pub mod surface;
 pub mod symbol;
 /// The generic content-addressed sync seam (`ContentIo`/`ApplyHook`), shared by
 /// the IR VCS change-sync and the object-pack member-sync planes.
@@ -34,12 +37,12 @@ pub mod version;
 
 /// The content-addressed storage cluster: `ContentHash` + the ObjectPack
 /// container vocabulary + the dual-plane availability enums.
-pub use content::availability as availability;
-pub use content::object_pack as object_pack;
-pub use query::cursor as cursor;
-pub use query::page as page;
-pub use query::score as score;
-pub use query::search as search;
+pub use content::availability;
+pub use content::object_pack;
+pub use query::cursor;
+pub use query::page;
+pub use query::score;
+pub use query::search;
 
 /// Unified observability (OTLP traces/logs/metrics + Pyroscope profiling).
 ///
@@ -57,24 +60,24 @@ pub use cursor::{Advisory, Cursor, CursorError, Enforced, PolicyTag, SnapshotPol
 pub use deployment::{DeploymentKind, DeploymentProfile, TrustedRemote};
 pub use ecosystem::{Edition, Language, Toolchain};
 pub use egress::{EgressDenied, EgressPolicy, EgressRequest, HostGlob};
+pub use error::Error as StoreError;
 pub use error::{
     BackendKind, ConnectError, ConnectFailure, ErrorDetails, Failure, FailureKind, Phase,
     ResolutionState, Retryable,
 };
-pub use error::Error as StoreError;
 pub use health::{Probe, Probeable, assert_probe_future_send, timed as timed_probe};
 pub use identity::{
     CargoVersionError, EntryUri, Id, NameError, NpmVersionError, Package, PackageCoordinates,
     PackageId, PackageVersion, PythonVersionError, RegistryOrigin, SymbolId, VersionError,
 };
 pub use object_pack::{MemberKey, MemberRecord, ObjectPackId};
+pub use package::{Coordinates, PackageHit, PackageName};
 pub use progress::{JobProgress, Percent, Progressive};
 pub use query::{
     AsOf, CatalogCommitHash, PageSpecification, QualityMode, Query, QueryEngine, QueryMode,
     QueryReach, RankSpecification, Routing, Scope, StableReference, StableReferenceError, Target,
     UnixMilliseconds,
 };
-pub use package::{Coordinates, PackageHit, PackageName};
 pub use score::{RankKey, Score, Scored};
 pub use search::Page;
 pub use sink::DerivedStore;

@@ -305,9 +305,7 @@ where
     where
         T: libpijul::pristine::MutTxnT + Send + Sync + 'static,
     {
-        txn.write()
-            .open_or_create_channel(name)
-            .map_err(pijul_err)
+        txn.write().open_or_create_channel(name).map_err(pijul_err)
     }
 
     /// Output the current channel state into the working copy so that
@@ -856,11 +854,10 @@ where
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                v.to_owned_payload()
-                    .map_err(|e| Error::CorruptSymbolFile {
-                        path: symbol_path(intros[i]),
-                        reason: e.to_string(),
-                    })
+                v.to_owned_payload().map_err(|e| Error::CorruptSymbolFile {
+                    path: symbol_path(intros[i]),
+                    reason: e.to_string(),
+                })
             })
             .collect::<Result<_, _>>()?;
 
@@ -1158,10 +1155,7 @@ where
         {
             let txn_read = txn.read();
             let graph = channel.read();
-            for entry in txn_read
-                .reverse_log(&graph, None)
-                .map_err(pijul_err)?
-            {
+            for entry in txn_read.reverse_log(&graph, None).map_err(pijul_err)? {
                 let (_n, (ser_hash, ser_merkle)) = entry.map_err(pijul_err)?;
                 let merkle: Merkle = ser_merkle.into();
                 if merkle.to_bytes() == prev.tip {
@@ -1272,10 +1266,7 @@ where
     /// Uses `output_repository_no_pending` with `prefix = symbol_path(intro)`,
     /// which selects exactly that flat root file (verified: a bare filename
     /// prefix suffices for the flat `{hex}.nir` layout).
-    pub fn checkout_symbol(
-        &self,
-        intro: IntroId,
-    ) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
+    pub fn checkout_symbol(&self, intro: IntroId) -> Result<Option<std::sync::Arc<[u8]>>, Error> {
         let txn = self.arc_txn()?;
         let channel = Self::open_or_create_channel(&txn, &self.channel_name)?;
         let out = self.checkout_symbol_from_channel(&txn, &channel, intro)?;
@@ -1437,9 +1428,7 @@ where
                 .map_err(pijul_err)?
                 .to_bytes()
         };
-        txn.write()
-            .fork(&src, new_channel)
-            .map_err(pijul_err)?;
+        txn.write().fork(&src, new_channel).map_err(pijul_err)?;
         txn.commit().map_err(pijul_err)?;
         Ok(VersionState::from_bytes(state))
     }
@@ -1469,10 +1458,7 @@ where
     /// exist.
     fn drop_channel_strict(&self, channel_name: &str, label: &str) -> Result<(), Error> {
         let txn = self.arc_txn()?;
-        let existed = txn
-            .write()
-            .drop_channel(channel_name)
-            .map_err(pijul_err)?;
+        let existed = txn.write().drop_channel(channel_name).map_err(pijul_err)?;
         txn.commit().map_err(pijul_err)?;
         if existed {
             Ok(())
@@ -1727,10 +1713,7 @@ where
         }
 
         if let Some(pos) = position {
-            for item in reader
-                .log_for_path(&graph, pos, 0)
-                .map_err(pijul_err)?
-            {
+            for item in reader.log_for_path(&graph, pos, 0).map_err(pijul_err)? {
                 let hash = item.map_err(pijul_err)?;
                 hashes.push(ChangeHashHex(hash_to_hex(&hash)));
             }
@@ -1786,11 +1769,7 @@ where
 
     /// The change hashes present in `to`'s channel but not in `from`'s — the
     /// **native pijul change delta** between two references, in recorded order.
-    pub fn changes_between_refs(
-        &self,
-        from: &Ref,
-        to: &Ref,
-    ) -> Result<Vec<ChangeHashHex>, Error> {
+    pub fn changes_between_refs(&self, from: &Ref, to: &Ref) -> Result<Vec<ChangeHashHex>, Error> {
         let txn = self.arc_txn()?;
         let from_channel = self.require_ref_channel(&txn, from)?;
         let to_channel = self.require_ref_channel(&txn, to)?;
@@ -2008,8 +1987,7 @@ where
     pub(crate) fn open_or_create_channel_pub(
         txn: &libpijul::pristine::ArcTxn<libpijul::pristine::sanakirja::MutTxn0>,
         name: &str,
-    ) -> Result<libpijul::pristine::ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, Error>
-    {
+    ) -> Result<libpijul::pristine::ChannelRef<libpijul::pristine::sanakirja::MutTxn0>, Error> {
         Self::open_or_create_channel(txn, name)
     }
 

@@ -160,7 +160,12 @@ impl PackageLineageDto {
 /// Accepts either case on input.  Rejects any length other than 64 and any
 /// non-hex byte, returning `None` rather than a partially-decoded id — a
 /// truncated key must never resolve to a *different* symbol.
-fn parse_intro_hex(s: &str) -> Option<IntroId> {
+///
+/// `pub(crate)` rather than private: `mcp::address`'s parser needs the exact
+/// same decode this module already has for the legacy `#introhex` key half —
+/// duplicating it would risk the two silently drifting on what counts as a
+/// valid key.
+pub(crate) fn parse_intro_hex(s: &str) -> Option<IntroId> {
     if s.len() != 64 {
         return None;
     }
@@ -215,8 +220,14 @@ mod tests {
             ("serde#abcd", "no ':' found"),
             (":serde#abcd", "ecosystem segment is empty"),
             ("cargo:#abcd", "package name segment is empty"),
-            ("cargo:serde#", "intro segment must be exactly 64 hex characters"),
-            ("cargo:serde#zz", "intro segment must be exactly 64 hex characters"),
+            (
+                "cargo:serde#",
+                "intro segment must be exactly 64 hex characters",
+            ),
+            (
+                "cargo:serde#zz",
+                "intro segment must be exactly 64 hex characters",
+            ),
         ];
         for (input, expected_reason_substring) in cases {
             let err = SymbolKeyDto(input.to_owned())
@@ -224,7 +235,10 @@ mod tests {
                 .expect_err(&format!("should have rejected {input:?}"));
             match err {
                 McpError::MalformedKey { key, reason } => {
-                    assert_eq!(key, input, "the rejected input must be echoed back verbatim");
+                    assert_eq!(
+                        key, input,
+                        "the rejected input must be echoed back verbatim"
+                    );
                     assert!(
                         reason.contains(expected_reason_substring),
                         "input {input:?}: expected reason to mention {expected_reason_substring:?}, \

@@ -64,13 +64,10 @@ impl LinkRepairKind {
 
     /// Dense index for tally storage.
     pub(crate) fn index(self) -> usize {
-        Self::ALL
-            .iter()
-            .position(|k| *k == self)
-            .expect(
-                "LinkRepairKind::ALL must list every variant — pinned by \
+        Self::ALL.iter().position(|k| *k == self).expect(
+            "LinkRepairKind::ALL must list every variant — pinned by \
                  `all_lists_every_link_repair_kind`",
-            )
+        )
     }
 
     /// The reader-facing name of this repair, used by the GUI legend and by

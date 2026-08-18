@@ -1,8 +1,9 @@
 //! `Param` kind plus the `ParamAttribute` modifier enum.
-use crate::{List, kinds::Type, visitor::Visitor};
-
-// FIXME: `default_value` (a `ConstExpr`) is not yet ported — it depends on
-// the const-expression subsystem, which is intentionally deferred.
+use crate::{
+    List,
+    kinds::{ConstExpr, Type},
+    visitor::Visitor,
+};
 
 /// A single parameter of a [`Function`](crate::kinds::Function).
 #[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
@@ -11,6 +12,9 @@ pub struct Param {
     ///
     /// Dynamically-typed languages (and inferred bindings) may omit this.
     pub ty: Option<Type>,
+
+    /// The argument value used when this parameter is omitted.
+    pub default_value: Option<ConstExpr>,
 
     /// Calling-convention and modifier attributes that cannot be inferred from
     /// the type alone.
@@ -22,9 +26,14 @@ impl Param {
     #[builder]
     pub fn new(
         ty: Option<Type>,
+        default_value: Option<ConstExpr>,
         #[builder(default, with = FromIterator::from_iter)] attributes: List<ParamAttribute>,
     ) -> Self {
-        Param { ty, attributes }
+        Param {
+            ty,
+            default_value,
+            attributes,
+        }
     }
 }
 
@@ -51,6 +60,21 @@ pub enum ParamAttribute {
 
     /// Accepts zero or more trailing arguments of the same type.
     Variadic,
+
+    /// Accepts zero or more trailing *keyword* arguments (`**kwargs`).
+    ///
+    /// Distinct from [`Self::Variadic`]: a positional rest parameter (`*args`)
+    /// and a keyword rest parameter (`**kwargs`) are different calling
+    /// conventions, and collapsing them makes the two unrepresentable as
+    /// distinct API (docs/ISSUES.md L49-cs).
+    Kwargs,
+
+    /// Write-only output slot (C# `out`, no definite-assignment at the call site).
+    ///
+    /// Distinct from [`Self::Inout`]: `ref` requires the argument to be
+    /// definitely assigned before the call; `out` does not. Mapping both to
+    /// `Inout` loses that contract (docs/ISSUES.md L49-cs).
+    Out,
 
     /// May be omitted entirely at call-sites.
     Optional,

@@ -34,10 +34,10 @@
 
 use std::path::{Path, PathBuf};
 
+use heart::cost::measured;
 use nudox_engine::acquire::{Error, IndexEvent, IndexStage, Integrity};
 use nudox_engine::wire::Gen;
 use nudox_engine::{Engine, EngineConfig, EngineHandle, Purl};
-use heart::cost::measured;
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -111,7 +111,12 @@ fn expect_indexed(engine: &EngineHandle, purl: &str) -> (Integrity, u64, String,
                 stages.contains(&IndexStage::Resolving),
                 "{purl}: every job must report resolving, got {stages:?}",
             );
-            (integrity, symbol_count, name.to_string(), version.to_string())
+            (
+                integrity,
+                symbol_count,
+                name.to_string(),
+                version.to_string(),
+            )
         }
         IndexEvent::Failed { error, .. } => {
             panic!("{purl} failed to index: {error}\nstages reached: {stages:?}")
@@ -170,19 +175,16 @@ fn acquire_only(cache: &Path, purl: &str) -> (Integrity, PathBuf) {
     drop(handle);
     drop(runtime);
 
-    let root = cache
-        .join(parsed.ecosystem())
-        .join(parsed.cache_dir_name());
+    let root = cache.join(parsed.ecosystem()).join(parsed.cache_dir_name());
     assert!(
         root.is_dir(),
         "{purl}: the package root {} must exist once acquisition has finished",
         root.display()
     );
     let integrity = integrity.unwrap_or_else(|| {
-        let sidecar = cache.join(parsed.ecosystem()).join(format!(
-            "{}.integrity.json",
-            parsed.cache_dir_name()
-        ));
+        let sidecar = cache
+            .join(parsed.ecosystem())
+            .join(format!("{}.integrity.json", parsed.cache_dir_name()));
         let body = std::fs::read_to_string(&sidecar).unwrap_or_else(|e| {
             panic!(
                 "{purl}: an acquired package must leave an integrity record at {}: {e}",
@@ -220,8 +222,18 @@ fn a_fetch_is_verified_against_a_published_digest_or_says_it_was_not() {
         ] {
             let (integrity, _root) = acquire_only(&cache, purl);
             match (&integrity, expect_verified) {
-                (Integrity::RegistryDigest { algorithm, digest, published_by }, true) => {
-                    assert!(!digest.is_empty(), "{purl}: a verified fetch must carry the digest");
+                (
+                    Integrity::RegistryDigest {
+                        algorithm,
+                        digest,
+                        published_by,
+                    },
+                    true,
+                ) => {
+                    assert!(
+                        !digest.is_empty(),
+                        "{purl}: a verified fetch must carry the digest"
+                    );
                     assert!(
                         matches!(algorithm.as_str(), "sha256" | "sha512" | "sha1"),
                         "{purl}: unexpected algorithm {algorithm}",
@@ -323,10 +335,15 @@ fn a_go_module_zip_is_unwrapped_all_the_way_to_the_module_root() {
             root.join("errors.go").is_file(),
             "errors.go must be at the package root, not under github.com/pkg/errors@v0.9.1/; \
              got {:?}",
-            std::fs::read_dir(&root)
-                .map(|d| d.filter_map(Result::ok).map(|e| e.file_name()).collect::<Vec<_>>()),
+            std::fs::read_dir(&root).map(|d| d
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()),
         );
-        assert!(root.join("go.mod").is_file(), "the module manifest must be present");
+        assert!(
+            root.join("go.mod").is_file(),
+            "the module manifest must be present"
+        );
     });
 }
 
@@ -468,12 +485,18 @@ fn a_typo_in_the_name_is_reported_as_an_unknown_package_and_not_as_a_version_pro
     let cache = scratch_cache("unknown-package");
     let ((), _cost) = measured("purl_unknown_package", &cache, || {
         let (engine, _cache) = engine_for("unknown-package");
-        let err = expect_failure(&engine, "pkg:cargo/numtoa-with-a-typo-nobody-published@0.2.5");
+        let err = expect_failure(
+            &engine,
+            "pkg:cargo/numtoa-with-a-typo-nobody-published@0.2.5",
+        );
         assert_eq!(err.kind(), "unknown_package");
         assert!(!err.is_transient(), "a typo is not fixed by retrying");
         let text = err.to_string();
         assert!(text.contains("crates.io"), "{text}");
-        assert!(text.contains("index.crates.io"), "the endpoint must be named: {text}");
+        assert!(
+            text.contains("index.crates.io"),
+            "the endpoint must be named: {text}"
+        );
     });
 }
 
@@ -523,7 +546,10 @@ fn a_versionless_purl_is_refused_with_the_list_rather_than_guessing_latest() {
         let Error::VersionMissing { available, .. } = &err else {
             panic!("expected VersionMissing, got {err:?}");
         };
-        assert!(!available.is_empty(), "the list is the whole point of this variant");
+        assert!(
+            !available.is_empty(),
+            "the list is the whole point of this variant"
+        );
         assert_ne!(
             err.kind(),
             Error::VersionNotFound {

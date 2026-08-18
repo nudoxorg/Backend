@@ -280,12 +280,13 @@ impl ObjectPackReader {
         let frame_bytes = &slice[frame_offset..frame_end];
         let expected_uncompressed = chunk.uncompressed_length.get() as usize;
 
-        let decompressed = zstd::bulk::decompress(frame_bytes, expected_uncompressed).map_err(
-            |source| PackError::FrameDecode {
-                offset: frame_offset as u64,
-                source,
-            },
-        )?;
+        let decompressed =
+            zstd::bulk::decompress(frame_bytes, expected_uncompressed).map_err(|source| {
+                PackError::FrameDecode {
+                    offset: frame_offset as u64,
+                    source,
+                }
+            })?;
 
         if decompressed.len() != expected_uncompressed {
             return Err(PackError::FrameLengthMismatch {
@@ -683,7 +684,9 @@ mod tests {
         // `start > end` is a reversed (empty) range and must be rejected.
         let start = 8_u64;
         let end = 3_u64;
-        let err = reader.get_member_range(&key("x.txt"), start..end).unwrap_err();
+        let err = reader
+            .get_member_range(&key("x.txt"), start..end)
+            .unwrap_err();
         assert!(
             matches!(
                 err,

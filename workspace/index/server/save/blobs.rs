@@ -38,6 +38,7 @@ use crate::server::registry;
 use crate::server::registry::blob::ReferenceSet;
 use crate::server::registry::coordination::OutboxSeq;
 use crate::server::registry::{RegistryError, StoreError};
+use futures::stream::{self, StreamExt as _};
 use heart::{ContentHash, PackageId, ResolutionState};
 
 use crate::server::Server;
@@ -157,8 +158,30 @@ impl<M: EmbeddingModel> Server<M> {
         // Every source file: the read path re-hashes the bytes against the key,
         // so an `Ok` is a proof of integrity; the manifest's declared size is
         // cross-checked on top.
-        for entry in manifest.files.iter() {
-            match stores.blobs.get_section(entry.hash).await {
+        //
+        // Fanned out with the same bounded-concurrency shape as
+        // `blob::emit::emit`'s write side (see that module's
+        // `SECTION_EMIT_CONCURRENCY` doc comment for the full reasoning — a
+        // multi-thousand-file package must not either serialize every
+        // `get_section` round trip or open one connection per file). Each
+        // task is handed an owned `Store` clone (cheap — just an `Arc` bump)
+        // and an owned `FileEntry` rather than borrowing across the
+        // `.await`, for the same reason `emit`'s fan-out does: this audit
+        // path is reachable from the same generic, deeply-nested server call
+        // graph, and owned data sidesteps rustc's higher-ranked
+        // `Send`-generality checker entirely rather than risking it.
+        let mut file_checks = stream::iter(manifest.files.iter().cloned())
+            .map(|entry| {
+                let blobs = stores.blobs.clone();
+                async move {
+                    let result = blobs.get_section(entry.hash).await;
+                    (entry, result)
+                }
+            })
+            .buffer_unordered(crate::blob::emit::SECTION_EMIT_CONCURRENCY);
+
+        while let Some((entry, result)) = file_checks.next().await {
+            match result {
                 Ok(bytes) => {
                     audit.files_verified += 1;
                     audit.bytes_verified += bytes.len() as u64;
@@ -248,15 +271,24 @@ impl<M: EmbeddingModel> Server<M> {
         Ok(recorded)
     }
 
-    /// The recorded `Stored { hash }` snapshot for a package, or a bad-request
-    /// error when the package has never completed a store.
+    /// The recorded `Stored { hash }` snapshot for a package: `404` when the
+    /// package id is not tracked at all, `400` (`NoRecordedSnapshot`) when it
+    /// is tracked but has never completed a store.
+    ///
+    /// This used to `map_err(RegistryError::from)?` straight through, so a
+    /// never-tracked package's `IndexError::NotFound` rode `RegistryError`'s
+    /// blanket `Registry(_) => 503 Service Unavailable` projection
+    /// (`server::error::ServerError::status`) — signaling "retryable" to
+    /// callers/proxies for a request that can never succeed no matter how many
+    /// times it's retried. Distinguishing "unknown package" here, the same way
+    /// `coordination::health::parse_status` already does for the read path,
+    /// gives it the honest terminal status instead.
     pub(crate) async fn recorded_snapshot(&self, package: PackageId) -> ServerResult<ContentHash> {
-        let state = self
-            .base()
-            .global_store
-            .get_state(package)
-            .await
-            .map_err(RegistryError::from)?;
+        let state = match self.base().global_store.get_state(package).await {
+            Ok(state) => state,
+            Err(crate::error::IndexError::NotFound { .. }) => return Err(ServerError::NotFound),
+            Err(error) => return Err(RegistryError::from(error).into()),
+        };
         let ResolutionState::Stored { hash } = state else {
             return Err(ServerError::BadRequest(
                 BadRequestReason::NoRecordedSnapshot { package },

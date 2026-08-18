@@ -188,7 +188,8 @@ fn catalog_and_scratch_store_are_two_distinct_engines_in_the_same_binary() {
     let scratch_sqlite_version: String = scratch
         .query_row("SELECT sqlite_version()", [], |row| row.get(0))
         .expect("stock SQLite answers sqlite_version()");
-    let scratch_dolt = scratch.query_row("SELECT dolt_version()", [], |row| row.get::<_, String>(0));
+    let scratch_dolt =
+        scratch.query_row("SELECT dolt_version()", [], |row| row.get::<_, String>(0));
     assert!(
         scratch_dolt.is_err(),
         "the scratch store must be plain SQLite; it answered dolt_version() with {scratch_dolt:?}, \

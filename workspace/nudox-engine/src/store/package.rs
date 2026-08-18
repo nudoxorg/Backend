@@ -33,7 +33,7 @@ use nudox_ir::{
     vocab::Confidence,
 };
 
-use crate::store::index::{NameIndex, PostingList, posting::PostingListBuilder};
+use crate::store::index::{AliasIndex, NameIndex, PostingList, posting::PostingListBuilder};
 
 pub use self::typerefs::{TypePosition, TypeRef, typerefs_of_entry};
 
@@ -325,7 +325,11 @@ mod typerefs {
             Reach::Head => targets.extend(head_stable_ref(ty, package)),
             Reach::Whole => collect_stable_refs(ty, package, &mut targets),
         }
-        out.extend(targets.into_iter().map(|target| TypeRef { position, target }));
+        out.extend(
+            targets
+                .into_iter()
+                .map(|target| TypeRef { position, target }),
+        );
     }
 
     /// Record the type of the `Param` entry `param` names.
@@ -442,16 +446,31 @@ mod typerefs {
 /// `IntroId` is minted through a disambiguator ladder, and two of its rungs
 /// (`Span`, `Ordinal`) are not functions of the declaration's content. Sealing
 /// already recorded exactly which declarations took them —
-/// [`SealReport::forced_keys`] — and `nudox-store` then **dropped the whole
-/// report on the floor**, so a `PackageView` could not answer "is this key
-/// fragile" and no layer above it could either. The user-visible consequence:
-/// a key that stops resolving after `select_version` is indistinguishable from
-/// a deleted symbol, and MCP's `select_version` schema had to say so in prose
-/// because it had nothing better.
+/// [`SealReport::non_structural_keys`] — and `nudox-store` then **dropped the
+/// whole report on the floor**, so a `PackageView` could not answer "is this
+/// key fragile" and no layer above it could either. The user-visible
+/// consequence: a key that stops resolving after `select_version` is
+/// indistinguishable from a deleted symbol, and MCP's `select_version` schema
+/// had to say so in prose because it had nothing better.
 ///
 /// Measured on the provisioned corpus: 32,339 order-dependent groups across 49
 /// of 79 packages, and 24 declarations across log/memchr/jackson-databind/
 /// lodash that provably changed their published key between real releases.
+///
+/// # MCP-SURFACE-PLAN §4.14: `forced_keys` was the wrong source
+///
+/// This type used to project [`SealReport::forced_keys`] instead of
+/// `non_structural_keys`. `forced_keys` only names declarations that pass
+/// 2.5 **escalated**; sealing's pass 2 can also mint `Disambiguator::Span`
+/// directly for a same-key collision on a non-function, non-impl kind
+/// (`seal.rs`'s "other collision" arm), and when the colliding spans already
+/// differ that id is already unique, so pass 2.5 never runs and the
+/// declaration never enters `forced_keys`. Measured over 22 crates.io
+/// packages / 77,873 declarations: 1,085 declarations were truly `Span`-keyed,
+/// and `forced_keys` named only 41 of them — the other 1,044 were reported
+/// `Structural` ("content-derived, safe to cache") to every MCP caller.
+/// `non_structural_keys` is read off the actual `Disambiguator` variant that
+/// minted each id, so it has no such blind spot.
 ///
 /// # Why `Unrecorded` is a variant and not a default
 ///
@@ -485,19 +504,16 @@ pub enum KeyProvenance {
 impl KeyProvenance {
     /// Project a [`SealReport`] into the half a *consumer of keys* needs.
     ///
-    /// Takes the report by reference and copies only `forced_keys`: the rest
-    /// of the report (`linked`, `unlinked`, `collisions`) is producer-quality
-    /// telemetry with no bearing on whether a caller's key is trustworthy, and
-    /// keeping it alive in every resident `PackageView` would hold a `Vec` of
-    /// every foreign key the package names for the life of the process.
+    /// Takes the report by reference and copies only `non_structural_keys`:
+    /// the rest of the report (`linked`, `unlinked`, `collisions`,
+    /// `forced_keys`) is producer-quality telemetry with no bearing on
+    /// whether a caller's key is trustworthy, and keeping it alive in every
+    /// resident `PackageView` would hold a `Vec` of every foreign key the
+    /// package names for the life of the process. See the type docs for why
+    /// `non_structural_keys` and not `forced_keys` — reading `forced_keys`
+    /// here was the defect.
     pub fn from_seal_report(report: &SealReport) -> Self {
-        KeyProvenance::Sealed(
-            report
-                .forced_keys
-                .iter()
-                .map(|(intro, escalation)| (*intro, KeyTier::from(*escalation)))
-                .collect(),
-        )
+        KeyProvenance::Sealed(report.non_structural_keys.iter().copied().collect())
     }
 
     /// The tier that minted `intro`, or `None` when this view has no record.
@@ -506,9 +522,12 @@ impl KeyProvenance {
     /// type docs for why those must stay distinguishable.
     pub fn tier_of(&self, intro: IntroId) -> Option<KeyTier> {
         match self {
-            KeyProvenance::Sealed(escalated) => {
-                Some(escalated.get(&intro).copied().unwrap_or(KeyTier::Structural))
-            }
+            KeyProvenance::Sealed(escalated) => Some(
+                escalated
+                    .get(&intro)
+                    .copied()
+                    .unwrap_or(KeyTier::Structural),
+            ),
             KeyProvenance::Unrecorded => None,
         }
     }
@@ -608,6 +627,54 @@ pub struct PackageIndexes {
     /// symbol names. Precomputed so that search result rendering never
     /// re-walks the parent chain per query.
     pub paths: HashMap<IntroId, Arc<str>>,
+    /// Exact re-export alias path → declaration(s), inverted from every
+    /// entry's `Symbol.aliases` (address scheme Stage 2, §4.10). See
+    /// [`crate::store::index::AliasIndex`]'s module docs for why this maps
+    /// straight to definitions and needs no `Reexport` vertex.
+    pub by_alias: AliasIndex,
+    /// Whether this package's producer ever called `record_occurrence` /
+    /// `record_foreign_occurrence` — i.e. whether `usages` (and the raw
+    /// per-entry occurrence lists behind it) can be trusted as an answer at
+    /// all, as opposed to an unasked question.
+    ///
+    /// # Why this has to be a package-wide fact, not a per-query one
+    ///
+    /// `usages_of` returning `&[]` is structurally identical whether nothing
+    /// in the package ever calls `target`, or nothing in the package was ever
+    /// looked at. Only one language frontend (Rust, as of this writing) calls
+    /// `record_occurrence`; every other producer lowers declarations and
+    /// stops, so for six of the seven supported languages *every* `usages_of`
+    /// answer is the second case wearing the first case's clothes. A caller
+    /// one function away from `usages_of` has no way to tell them apart
+    /// unless the package itself remembers whether it was ever asked.
+    ///
+    /// # The genuinely-empty package, and why it is folded into `false`
+    ///
+    /// A real package can legitimately contain zero graph-worthy occurrences
+    /// — a types-only crate, a single free function with no internal calls.
+    /// That case is indistinguishable, from inside `build()`, from a producer
+    /// that never records anything: both leave `view.all_occurrences()`
+    /// empty. Reporting `false` (not recorded) for both is the safe
+    /// direction: it under-claims — a genuinely reference-free package's
+    /// `refs` answer carries a coverage note it did not strictly need — never
+    /// over-claims. The alternative, reporting `true` whenever the count is
+    /// merely zero, is exactly the defect this field exists to close.
+    pub occurrences_recorded: bool,
+    /// Which [`TypePosition`]s this package's producer ever wrote at least
+    /// one [`TypeRef`] at, across every declaration.
+    ///
+    /// Same discipline as [`Self::occurrences_recorded`], applied to the
+    /// structural-typed edges instead of the occurrence graph: a producer
+    /// that never emits `TypePosition::ImplementedTrait` (every non-Rust
+    /// language — `impl` blocks are a Rust-only construct) makes
+    /// `Trait.implementors` empty *by construction* for that language, which
+    /// looks identical, from an empty result alone, to a trait that
+    /// genuinely has no implementors. `NudoxTools::edge_coverage_note` reads
+    /// this — across every package currently loaded, not one at a time — to
+    /// tell a `graph_query` caller which of the two it is looking at, naming
+    /// the edge that *does* carry the relationship for these languages (see
+    /// `schema.graphql`'s notes on `Trait.implementors` / `subtypes`).
+    pub type_positions_recorded: std::collections::BTreeSet<TypePosition>,
 }
 
 impl PackageIndexes {
@@ -633,6 +700,9 @@ impl PackageIndexes {
         let mut type_refs_builder: PostingListBuilder<StableRef, (TypePosition, IntroId)> =
             PostingListBuilder::new();
         let mut paths: HashMap<IntroId, Arc<str>> = HashMap::new();
+        let mut by_alias = AliasIndex::new();
+        let mut type_positions_recorded: std::collections::BTreeSet<TypePosition> =
+            std::collections::BTreeSet::new();
 
         // Single pass over the declaration table, in IntroId order.
         for (intro, entry) in view.entries_sorted() {
@@ -649,19 +719,49 @@ impl PackageIndexes {
                 paths.insert(intro, Arc::from(path.as_str()));
             }
 
+            // -- by_alias (address scheme Stage 2, §4.10) --------------------
+            // `Symbol.aliases` is already populated by all seven producers
+            // and already read by `chunk::head::shortest_alias_module_path`
+            // one entry at a time; inverting it here at load time is the
+            // "escape hatch that is already paid for" (§4.4).
+            for alias in entry.sym().aliases.iter() {
+                by_alias.insert(alias.clone(), intro);
+                // Name search is intentionally leaf-oriented. Keep the full
+                // public path in the exact alias index above, while also
+                // making its final binding visible to ordinary prefix search:
+                // `serde::de::Deserializer` must be discoverable by
+                // searching for `Deserializer`.
+                if let Some(leaf) = alias.rsplit("::").next() {
+                    if !leaf.is_empty() {
+                        by_name.insert(leaf, intro);
+                    }
+                }
+            }
+
             // -- type_refs ---------------------------------------------------
             // Every type this declaration names, tagged with the position it
             // was written in. `typerefs_of_entry` takes the view rather than
             // `entry` because a function's parameter and return types live on
             // its `Param` entries, not on the function.
             for TypeRef { position, target } in typerefs_of_entry(view, intro) {
+                type_positions_recorded.insert(position);
                 type_refs_builder.push(target.clone(), (position, intro));
             }
         }
 
         // -- usages (occurrence postings, graph-worthy only) -----------------
         // Mirrors the prior art: filter to confidence >= Index.
+        //
+        // `occurrences_recorded` is read from the *unfiltered* iterator
+        // deliberately: the question it answers is "did the producer ever
+        // call `record_occurrence`", not "did any of those calls clear the
+        // graph-worthy confidence floor". Collapsing the two would report
+        // `false` for a package whose producer runs but only ever emits
+        // syntax-tier facts, which is a confidence problem, not a coverage
+        // one — the wrong field to blame it on.
+        let mut occurrences_recorded = false;
         for (owner, occ) in view.all_occurrences() {
+            occurrences_recorded = true;
             if occ.confidence >= Confidence::Index {
                 usages_builder.push(occ.target.clone(), owner);
             }
@@ -679,6 +779,9 @@ impl PackageIndexes {
             usages: usages_builder.finish(),
             type_refs: type_refs_builder.finish(),
             paths,
+            by_alias,
+            occurrences_recorded,
+            type_positions_recorded,
         }
     }
 
@@ -705,6 +808,14 @@ impl PackageIndexes {
             .filter(|(p, _)| *p == position)
             .map(|(_, intro)| *intro)
             .collect()
+    }
+
+    /// Whether this package's producer ever wrote a [`TypeRef`] at `position`
+    /// — see [`Self::type_positions_recorded`]'s doc comment for what that
+    /// distinguishes it from ("nothing here" vs. "this language cannot say
+    /// this").
+    pub fn records_type_position(&self, position: TypePosition) -> bool {
+        self.type_positions_recorded.contains(&position)
     }
 
     /// The entries that name `ty` in a *relational* position — the trait an
@@ -755,6 +866,8 @@ pub struct PackageView {
     view: IrView,
     /// How this package's IR was obtained.
     provenance: Provenance,
+    /// Source and producer metadata retained with the immutable snapshot.
+    metadata: crate::PackageMetadata,
     /// How this package's `IntroId`s were minted, when sealing told us.
     keys: KeyProvenance,
     /// All derived indexes, built once from `view` at construction time.
@@ -792,7 +905,12 @@ impl PackageView {
     /// hand-built tables in tests and for `IrView`s reconstituted from a
     /// snapshot, neither of which ever ran `seal` in this process.
     pub fn build(view: IrView, provenance: Provenance) -> Self {
-        Self::with_keys(view, provenance, KeyProvenance::Unrecorded)
+        Self::with_keys(
+            view,
+            provenance,
+            KeyProvenance::Unrecorded,
+            crate::PackageMetadata::default(),
+        )
     }
 
     /// Build a `PackageView` from a table this process just sealed, carrying
@@ -804,20 +922,42 @@ impl PackageView {
     /// [`KeyProvenance::from_seal_report`], next to the reasoning, instead of
     /// being re-made at each call site.
     pub fn build_sealed(view: IrView, provenance: Provenance, report: &SealReport) -> Self {
+        Self::build_sealed_with_metadata(
+            view,
+            provenance,
+            report,
+            crate::PackageMetadata::default(),
+        )
+    }
+
+    /// Build a sealed package while retaining its source metadata.
+    pub fn build_sealed_with_metadata(
+        view: IrView,
+        provenance: Provenance,
+        report: &SealReport,
+        metadata: crate::PackageMetadata,
+    ) -> Self {
         Self::with_keys(
             view,
             provenance,
             KeyProvenance::from_seal_report(report),
+            metadata,
         )
     }
 
     /// The shared constructor. After this call the view and its indexes are
     /// frozen; wrap the result in `Arc::new` before sharing.
-    fn with_keys(view: IrView, provenance: Provenance, keys: KeyProvenance) -> Self {
+    fn with_keys(
+        view: IrView,
+        provenance: Provenance,
+        keys: KeyProvenance,
+        metadata: crate::PackageMetadata,
+    ) -> Self {
         let indexes = PackageIndexes::build(&view);
         Self {
             view,
             provenance,
+            metadata,
             keys,
             indexes,
         }
@@ -839,6 +979,11 @@ impl PackageView {
     /// The provenance of this package's IR.
     pub fn provenance(&self) -> Provenance {
         self.provenance
+    }
+
+    /// Optional metadata extracted from the package source.
+    pub fn metadata(&self) -> &crate::PackageMetadata {
+        &self.metadata
     }
 
     /// What sealing recorded about how this package's keys were minted.
@@ -1557,5 +1702,127 @@ mod tests {
         // intro(2) = "my_fn" whose parent is intro(1) = "root".
         let path = indexes.path_of(intro(2)).expect("path must be present");
         assert_eq!(path.as_ref(), "root.my_fn");
+    }
+
+    /// **Guard for MCP-SURFACE-PLAN §4.14.** `seal()`'s pass 2 has a branch
+    /// (`seal.rs`'s "other collision" arm) that mints `Disambiguator::Span`
+    /// directly for any same-key collision that is neither `Function` nor
+    /// `Impl` — no signature or trait-impl skeleton to try first, so nothing
+    /// routes it through pass 2.5's escalation loop. If the colliding
+    /// declarations' spans already differ (true here: `LIMIT_A` and
+    /// `LIMIT_B` occupy different byte ranges), the resulting ids are
+    /// already distinct and pass 2.5 never touches this group at all — so it
+    /// never appears in `SealReport::forced_keys`.
+    ///
+    /// This is exactly the shape that made `KeyProvenance::from_seal_report`
+    /// (when it read `forced_keys`) lie: both declarations are genuinely
+    /// `Span`-keyed, but `forced_keys` never named them, so their reported
+    /// tier was `Structural` — "content-derived, safe to cache" — for a key
+    /// that is neither. An agent trusting that would cache the key across a
+    /// version bump and have it silently stop resolving.
+    ///
+    /// Two `Const`s (not `Function`, not `Impl`) sharing a name under one
+    /// module reproduce the shape without needing a real producer: `seal()`
+    /// itself does not care whether the input came from a language producer
+    /// or was hand-built, so this exercises the real `seal()` code path, not
+    /// a stand-in for it.
+    #[test]
+    fn key_tier_reports_span_for_a_non_function_non_impl_collision_pass_2_mints_directly() {
+        use nudox_ir::{
+            build::{Const, IrPackage, PackageId, Type},
+            change::{EcosystemId, PackageName},
+            entry::{Symbol, Visibility},
+            foreign::Unlinked,
+        };
+
+        fn sym_at(name: &str, start: usize, end: usize) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::new(),
+                span: start..end,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let mut next = 0usize;
+        let mut next_id = move || {
+            next += 1;
+            next
+        };
+
+        // Two top-level `Const`s, same name ⇒ same `(kind, ancestor-path,
+        // leaf-name)` base key, but DIFFERENT spans — the premise that lets
+        // pass 2 resolve the collision with `Span` alone, with no repeat
+        // collision for pass 2.5 to ever see.
+        let pkg: IrPackage<usize> = IrPackage::build(
+            PackageId::path("colliding-consts"),
+            sym_at("root", 0, 0),
+            |mut root| {
+                root.create(next_id(), sym_at("LIMIT", 10, 20), |_| {
+                    Const::builder().ty(Type::I32).build()
+                });
+                root.create(next_id(), sym_at("LIMIT", 30, 40), |_| {
+                    Const::builder().ty(Type::I32).build()
+                });
+            },
+        );
+
+        let lineage = PackageLineageId::new(
+            EcosystemId::new("test"),
+            PackageName::new("colliding-consts"),
+        );
+        let outcome = pkg.seal(&lineage, &Unlinked);
+
+        assert!(
+            outcome.report.collisions.is_empty(),
+            "the escalation ladder must resolve this collision, not drop a \
+             declaration: {:?}",
+            outcome.report.collisions
+        );
+
+        let limits: Vec<IntroId> = outcome
+            .table
+            .iter()
+            .filter(|(_, e)| e.sym().name == "LIMIT")
+            .map(|(intro, _)| intro)
+            .collect();
+        assert_eq!(
+            limits.len(),
+            2,
+            "both consts must seal to distinct, live IntroIds"
+        );
+
+        // Sanity check on the test's own premise: this collision must
+        // resolve inside pass 2, with pass 2.5 never running for it — or
+        // this test is not exercising the blind spot §4.14 describes.
+        assert!(
+            outcome.report.forced_keys.is_empty(),
+            "test premise violated: pass 2.5 ran for this group (forced_keys \
+             = {:?}); the collision must resolve directly in pass 2 via \
+             differing spans for this guard to mean anything",
+            outcome.report.forced_keys
+        );
+
+        let view = IrView::with_package(lineage, outcome.table);
+        let pkg_view = PackageView::build_sealed(view, Provenance::TrustedLocal, &outcome.report);
+
+        for limit in limits {
+            assert_eq!(
+                pkg_view.key_tier(limit),
+                Some(KeyTier::Span),
+                "declaration {limit:?} was minted with Disambiguator::Span by \
+                 pass 2's direct fallback (never touched by pass 2.5), but \
+                 KeyProvenance reports its tier as {:?} — an agent reading \
+                 `keyTier` would wrongly believe this key is safe to cache \
+                 across a version switch",
+                pkg_view.key_tier(limit)
+            );
+        }
     }
 }

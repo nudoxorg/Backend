@@ -184,62 +184,62 @@ fn capture_class(capture_name: &str) -> &str {
     // unchanged via the final arm.
     match capture_name {
         // Grammar convention                 → GUI class_colour arm
-        "keyword"                             => "keyword",
-        "keyword.control"                     => "keyword",
-        "keyword.operator"                    => "keyword",
-        "keyword.function"                    => "keyword",
-        "keyword.storage"                     => "keyword",
-        "keyword.other"                       => "keyword",
-        "storage"                             => "keyword",
-        "storage.type"                        => "keyword",
-        "storage.modifier"                    => "keyword",
-        "type"                                => "type",
-        "type.builtin"                        => "type.builtin",
-        "type.definition"                     => "type",
-        "class"                               => "type",
-        "struct"                              => "type",
-        "interface"                           => "type",
-        "function"                            => "function",
-        "function.method"                     => "function.method",
-        "function.builtin"                    => "function",
-        "function.macro"                      => "macro",
-        "method"                              => "function.method",
-        "method.call"                         => "function.method",
-        "constructor"                         => "function",
-        "comment"                             => "comment",
-        "comment.documentation"               => "comment.doc",
-        "comment.line"                        => "comment",
-        "comment.block"                       => "comment",
-        "string"                              => "string",
-        "string.special"                      => "string.special",
-        "string.escape"                       => "string",
-        "char_literal" | "char"               => "char",
-        "escape_sequence"                     => "string",
-        "number"                              => "number",
-        "integer_literal" | "float_literal"   => "number",
-        "constant"                            => "constant",
-        "constant.builtin"                    => "constant",
-        "boolean"                             => "boolean",
-        "boolean_literal"                     => "boolean",
-        "variable"                            => "variable",
-        "variable.builtin"                    => "variable",
-        "variable.parameter"                  => "variable",
-        "property"                            => "property",
-        "field"                               => "field",
-        "field_identifier"                    => "field",
-        "attribute"                           => "attribute",
-        "attribute_item"                      => "attribute",
-        "inner_attribute_item"                => "attribute",
-        "label"                               => "variable",
-        "lifetime"                            => "variable",
-        "operator"                            => "operator",
-        "punctuation"                         => "punctuation",
-        "punctuation.bracket"                 => "punctuation",
-        "punctuation.delimiter"               => "punctuation",
-        "macro"                               => "macro",
-        "macro_invocation"                    => "macro",
+        "keyword" => "keyword",
+        "keyword.control" => "keyword",
+        "keyword.operator" => "keyword",
+        "keyword.function" => "keyword",
+        "keyword.storage" => "keyword",
+        "keyword.other" => "keyword",
+        "storage" => "keyword",
+        "storage.type" => "keyword",
+        "storage.modifier" => "keyword",
+        "type" => "type",
+        "type.builtin" => "type.builtin",
+        "type.definition" => "type",
+        "class" => "type",
+        "struct" => "type",
+        "interface" => "type",
+        "function" => "function",
+        "function.method" => "function.method",
+        "function.builtin" => "function",
+        "function.macro" => "macro",
+        "method" => "function.method",
+        "method.call" => "function.method",
+        "constructor" => "function",
+        "comment" => "comment",
+        "comment.documentation" => "comment.doc",
+        "comment.line" => "comment",
+        "comment.block" => "comment",
+        "string" => "string",
+        "string.special" => "string.special",
+        "string.escape" => "string",
+        "char_literal" | "char" => "char",
+        "escape_sequence" => "string",
+        "number" => "number",
+        "integer_literal" | "float_literal" => "number",
+        "constant" => "constant",
+        "constant.builtin" => "constant",
+        "boolean" => "boolean",
+        "boolean_literal" => "boolean",
+        "variable" => "variable",
+        "variable.builtin" => "variable",
+        "variable.parameter" => "variable",
+        "property" => "property",
+        "field" => "field",
+        "field_identifier" => "field",
+        "attribute" => "attribute",
+        "attribute_item" => "attribute",
+        "inner_attribute_item" => "attribute",
+        "label" => "variable",
+        "lifetime" => "variable",
+        "operator" => "operator",
+        "punctuation" => "punctuation",
+        "punctuation.bracket" => "punctuation",
+        "punctuation.delimiter" => "punctuation",
+        "macro" => "macro",
+        "macro_invocation" => "macro",
         // Pass-through: the GUI will apply the `_` arm (fg_default).
-        other                                 => other,
+        other => other,
     }
 }
 
@@ -375,7 +375,9 @@ pub fn highlight(source: &str, lang_tag: &str) -> Vec<HighlightSpan> {
 ///
 /// For standalone `CodeBlock` sections there is always exactly one code
 /// source, which keeps the common case simple.
-pub fn code_sources(section: &nudox_engine::wire::RenderSection) -> Vec<(nudox_engine::wire::SectionId, &str, &str)> {
+pub fn code_sources(
+    section: &nudox_engine::wire::RenderSection,
+) -> Vec<(nudox_engine::wire::SectionId, &str, &str)> {
     use nudox_engine::wire::{ProseBlock, RenderSection};
 
     match section {
@@ -426,12 +428,16 @@ mod tests {
             assert!(
                 a.start < a.end,
                 "span {:?}..{:?} is empty or inverted",
-                a.start, a.end
+                a.start,
+                a.end
             );
             assert!(
                 b.start >= a.end,
                 "spans overlap: {:?}..{:?} vs {:?}..{:?}",
-                a.start, a.end, b.start, b.end
+                a.start,
+                a.end,
+                b.start,
+                b.end
             );
         }
     }
@@ -483,8 +489,7 @@ mod tests {
             "`u32` at byte {u32_start} has no highlight span; got: {spans:?}"
         );
         assert!(
-            &*u32_span.unwrap().class == "type"
-                || &*u32_span.unwrap().class == "type.builtin",
+            &*u32_span.unwrap().class == "type" || &*u32_span.unwrap().class == "type.builtin",
             "`u32` must be classified as `type` or `type.builtin`, got `{}`",
             u32_span.unwrap().class
         );

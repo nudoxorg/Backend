@@ -164,8 +164,8 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             }
             None => FacetWire::default(),
         };
-        let toolchain_json = serde_json::to_string(&package.package.toolchain)
-            .map_err(IndexError::ToolchainJson)?;
+        let toolchain_json =
+            serde_json::to_string(&package.package.toolchain).map_err(IndexError::ToolchainJson)?;
         self.writer.apply_ops(&[
             CatalogOp::UpsertPackage {
                 stem: Self::stem_wire(coordinates),
@@ -223,7 +223,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             .ok_or(IndexError::NotFound { package })?;
         let stored_hash = lifecycle::latest_generation(self.engine(), package)?
             .map(|stamp| ContentHash::from_bytes(stamp.to_blob()));
-        Ok(catalog_map::state_from_columns(&lifecycle_row, stored_hash)?)
+        Ok(catalog_map::state_from_columns(
+            &lifecycle_row,
+            stored_hash,
+        )?)
     }
 
     /// Persist the last-observed registry listing status for a package.
@@ -389,7 +392,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
     /// step, `SourceStores::symbol_by_id`, was stubbed to always return
     /// `None` because "catalog `symbols_proj` lookup is the intended
     /// replacement and is not wired yet"; this is that wiring).
-    pub async fn symbol_by_id(&self, identifier: SymbolId) -> Result<Option<heart::Symbol>, IndexError> {
+    pub async fn symbol_by_id(
+        &self,
+        identifier: SymbolId,
+    ) -> Result<Option<heart::Symbol>, IndexError> {
         let slot = symbol_slot(identifier);
         let Some((version_id, moniker, kind_token)) =
             lifecycle::symbol_by_intro_id(self.engine(), &slot)?
@@ -435,7 +441,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             .collect();
         let counts = count_dependents(rows);
 
-        let mut updated = 0u64;
+        let mut changed = Vec::new();
         for (package, ecosystem, name, facets) in pages {
             let counted = counts.get(&(ecosystem, name)).copied().unwrap_or(0);
             let Some(mut facets) = facets else {
@@ -445,9 +451,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
                 continue;
             }
             facets.dependents = Some(counted);
-            self.persist_facets(package, &facets)?;
-            updated += 1;
+            changed.push((package, facets));
         }
+        let updated = changed.len() as u64;
+        self.persist_facets_batch(&changed)?;
         Ok(updated)
     }
 
@@ -486,7 +493,7 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
             }
         }
 
-        let mut updated = 0u64;
+        let mut changed = Vec::new();
         for (package, _, _, facets) in pages {
             let Some(mut facets) = facets else { continue };
             let Some(new_pct) = target.get(&package).copied() else {
@@ -496,9 +503,10 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
                 continue;
             }
             facets.popularity_pct = Some(new_pct);
-            self.persist_facets(package, &facets)?;
-            updated += 1;
+            changed.push((package, facets));
         }
+        let updated = changed.len() as u64;
+        self.persist_facets_batch(&changed)?;
         Ok(updated)
     }
 
@@ -539,19 +547,27 @@ impl<Engine: VersioningEngine + Send + Sync> GlobalStore<Engine> {
         Ok(collected)
     }
 
-    fn persist_facets(
+    /// Batch-persist facets for many versions, used by
+    /// `refresh_dependents`/`refresh_popularity_percentiles`. Those can touch
+    /// the whole corpus, so writing one row (and one outbox emission) at a
+    /// time meant one SQLite autocommit per version; this converts each
+    /// facets value to its row form and writes bounded chunks through
+    /// [`lifecycle::set_facets_batch`], one transaction per chunk.
+    fn persist_facets_batch(
         &self,
-        package: PackageId,
-        facets: &crate::metadata::SearchFacets,
+        changed: &[(PackageId, crate::metadata::SearchFacets)],
     ) -> Result<(), IndexError> {
-        let (keywords, quality_ppm, extras) = catalog_map::facets_to_row(facets)?;
-        lifecycle::set_facets(
-            self.engine(),
-            package,
-            keywords.as_deref(),
-            quality_ppm,
-            extras.as_deref(),
-        )?;
+        // Matches `collect_facet_pages`'s read-side page size, bounding how
+        // much a single transaction holds open at once.
+        const WRITE_CHUNK: usize = 1_000;
+        for chunk in changed.chunks(WRITE_CHUNK) {
+            let mut rows = Vec::with_capacity(chunk.len());
+            for (package, facets) in chunk {
+                let (keywords, quality_ppm, extras) = catalog_map::facets_to_row(facets)?;
+                rows.push((*package, keywords, quality_ppm, extras));
+            }
+            lifecycle::set_facets_batch(self.engine(), &rows)?;
+        }
         Ok(())
     }
 }

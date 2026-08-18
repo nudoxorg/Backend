@@ -1,7 +1,13 @@
 //! `Kind` enum and frozen `KindDiscriminant` wire tags for every kind.
 use std::any::Any;
 
-use crate::{kinds::{Module, Record, Field, Function, Alias, Trait, Impl, Enum, Variant, Const, Static, Reexport, Param}, visitor::Visitor};
+use crate::{
+    kinds::{
+        Alias, Const, Enum, Field, Function, Impl, Module, Param, Record, Reexport, Static, Trait,
+        Variant,
+    },
+    visitor::Visitor,
+};
 
 register_kinds! {
     /// A namespace, package, or module — a container for other entries.

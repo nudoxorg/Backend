@@ -17,7 +17,7 @@ use clang::Unsaved;
 use crate::clang::oracle::{
     ClangOracle, OracleAlias, OracleEnum, OracleField, OracleFnMod, OracleFunction,
     OracleGenericParam, OracleNamespace, OracleParam, OracleReceiver, OracleRecord, OracleType,
-    OracleVar, OracleVariant, OracleVisibility, Usr,
+    OracleVar, OracleVariant, OracleVisibility, Reference, Usr,
 };
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ use crate::clang::oracle::{
 pub fn extract_file(index: &Index<'_>, path: &Path, args: &[&str]) -> ClangOracle {
     let mut parser = index.parser(path);
     parser.arguments(args);
+    parser.detailed_preprocessing_record(true);
     let tu = match parser.parse() {
         Ok(tu) => tu,
         Err(e) => {
@@ -51,6 +52,7 @@ pub fn extract_unsaved(
     let mut parser = index.parser(virtual_path);
     parser.arguments(args);
     parser.unsaved(&unsaved);
+    parser.detailed_preprocessing_record(true);
     let tu = match parser.parse() {
         Ok(tu) => tu,
         Err(e) => {
@@ -121,6 +123,14 @@ fn visit_entity(
     if !is_in_main_file(entity, main_file) {
         return;
     }
+    // Macros are preprocessing entities, not always "valid declarations" in
+    // libclang's sense — skip `is_invalid_declaration` so they are not
+    // dropped. Keep the main-file filter so system/builtin macros stay out.
+    // Skip `MacroExpansion` (instantiations) via the catch-all.
+    if entity.get_kind() == EntityKind::MacroDefinition {
+        visit_macro(oracle, entity, parent_usr);
+        return;
+    }
     if entity.is_invalid_declaration() {
         return;
     }
@@ -128,7 +138,9 @@ fn visit_entity(
     match entity.get_kind() {
         EntityKind::Namespace => visit_namespace(oracle, entity, parent_usr, main_file),
         EntityKind::StructDecl => visit_record(oracle, entity, parent_usr, false, main_file),
-        EntityKind::ClassDecl | EntityKind::ClassTemplate => {
+        EntityKind::ClassDecl
+        | EntityKind::ClassTemplate
+        | EntityKind::ClassTemplatePartialSpecialization => {
             visit_record(oracle, entity, parent_usr, false, main_file);
         }
         EntityKind::UnionDecl => visit_record(oracle, entity, parent_usr, true, main_file),
@@ -201,7 +213,11 @@ fn visit_record(
     main_file: &Path,
 ) {
     // Forward declarations (no definition) — skip to avoid duplicates.
-    if !entity.is_definition() {
+    // Partial specializations *are* definitions of a specialized template;
+    // extract them even if libclang's definition bit is unset.
+    if !entity.is_definition()
+        && entity.get_kind() != EntityKind::ClassTemplatePartialSpecialization
+    {
         return;
     }
 
@@ -216,7 +232,9 @@ fn visit_record(
 
     let is_class = matches!(
         entity.get_kind(),
-        EntityKind::ClassDecl | EntityKind::ClassTemplate
+        EntityKind::ClassDecl
+            | EntityKind::ClassTemplate
+            | EntityKind::ClassTemplatePartialSpecialization
     );
 
     let children = entity.get_children();
@@ -298,13 +316,15 @@ fn visit_function(
     let children = entity.get_children();
     let generics = generic_params(&children);
     let (params, variadic) = function_params(entity, &children);
-    let ret = entity.get_result_type().map_or(OracleType::Void, resolve_type);
+    let ret = entity
+        .get_result_type()
+        .map_or(OracleType::Void, resolve_type);
 
     let modifiers = fn_modifiers(entity, &children);
     let abi = fn_abi(entity);
 
     oracle.functions.push(OracleFunction {
-        usr,
+        usr: usr.clone(),
         name,
         source_file: entity_file(entity),
         byte_offset: entity_offset(entity),
@@ -319,6 +339,44 @@ fn visit_function(
         visibility: visibility(entity),
         parent_usr: parent_usr.map(str::to_owned),
     });
+    collect_references(oracle, entity, &usr);
+}
+
+fn collect_references(oracle: &mut ClangOracle, entity: Entity<'_>, owner: &str) {
+    for child in entity.get_children() {
+        if matches!(
+            child.get_kind(),
+            EntityKind::DeclRefExpr | EntityKind::MemberRefExpr | EntityKind::CallExpr
+        ) {
+            if let Some(target) = child.get_reference() {
+                let target_kind = target.get_kind();
+                if matches!(
+                    target_kind,
+                    EntityKind::FunctionDecl
+                        | EntityKind::FunctionTemplate
+                        | EntityKind::Method
+                        | EntityKind::Constructor
+                        | EntityKind::Destructor
+                ) {
+                    let target_usr = entity_usr(target);
+                    if let Some(range) = child.get_range() {
+                        let start = range.get_start().get_file_location();
+                        let end = range.get_end().get_file_location();
+                        if !target_usr.is_empty() {
+                            oracle.references.push(Reference {
+                                owner: owner.to_owned(),
+                                target: target_usr,
+                                source_file: entity_file(child),
+                                byte_start: start.offset as usize,
+                                byte_end: end.offset as usize,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        collect_references(oracle, child, owner);
+    }
 }
 
 fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OracleParam>, bool) {
@@ -333,6 +391,8 @@ fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OraclePa
                 name: arg.get_name().unwrap_or_default(),
                 ty,
                 is_variadic: false,
+                source_file: entity_file(arg),
+                byte_offset: entity_offset(arg),
             });
         }
     } else {
@@ -351,6 +411,8 @@ fn function_params(entity: Entity<'_>, children: &[Entity<'_>]) -> (Vec<OraclePa
                     name: child.get_name().unwrap_or_default(),
                     ty,
                     is_variadic: false,
+                    source_file: entity_file(*child),
+                    byte_offset: entity_offset(*child),
                 });
             }
         }
@@ -508,6 +570,33 @@ fn visit_var(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&s
     });
 }
 
+// ── Macros ────────────────────────────────────────────────────────────────────
+
+fn visit_macro(oracle: &mut ClangOracle, entity: Entity<'_>, parent_usr: Option<&str>) {
+    let name = match entity.get_name() {
+        Some(n) if !n.is_empty() => n,
+        _ => return,
+    };
+    // libclang often has no USR for macros; synthesize one so an empty-USR
+    // early-return cannot drop them.
+    let usr = match entity_usr(entity) {
+        usr if !usr.is_empty() => usr,
+        _ => format!("c:@macro@{}", name),
+    };
+
+    oracle.vars.push(OracleVar {
+        usr,
+        name,
+        source_file: entity_file(entity),
+        byte_offset: entity_offset(entity),
+        ty: OracleType::Inferred,
+        is_const: !entity.is_function_like_macro(),
+        documentation: documentation(entity),
+        visibility: visibility(entity),
+        parent_usr: parent_usr.map(str::to_owned),
+    });
+}
+
 // ── Generics / templates ──────────────────────────────────────────────────────
 
 fn generic_params(children: &[Entity<'_>]) -> Vec<OracleGenericParam> {
@@ -551,10 +640,19 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         TypeKind::Void => OracleType::Void,
         TypeKind::Bool => OracleType::Bool,
 
-        TypeKind::CharS | TypeKind::SChar | TypeKind::Short | TypeKind::Int | TypeKind::Long
+        TypeKind::CharS
+        | TypeKind::SChar
+        | TypeKind::Short
+        | TypeKind::Int
+        | TypeKind::Long
         | TypeKind::LongLong => width_int(ty, true),
-        TypeKind::CharU | TypeKind::UChar | TypeKind::WChar | TypeKind::UShort | TypeKind::UInt
-        | TypeKind::ULong | TypeKind::ULongLong => width_int(ty, false),
+        TypeKind::CharU
+        | TypeKind::UChar
+        | TypeKind::WChar
+        | TypeKind::UShort
+        | TypeKind::UInt
+        | TypeKind::ULong
+        | TypeKind::ULongLong => width_int(ty, false),
         TypeKind::Char16 => OracleType::Integer {
             signed: false,
             bits: 16,
@@ -579,13 +677,15 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
         TypeKind::Double => OracleType::Float { bits: 64 },
         TypeKind::LongDouble | TypeKind::Float128 => width_float(ty),
 
-        TypeKind::Pointer => ty.get_pointee_type().map_or(OracleType::Inferred, |pointee| {
-            if pointee.is_const_qualified() {
-                OracleType::ConstPointer(Box::new(resolve_type(pointee)))
-            } else {
-                OracleType::MutPointer(Box::new(resolve_type(pointee)))
-            }
-        }),
+        TypeKind::Pointer => ty
+            .get_pointee_type()
+            .map_or(OracleType::Inferred, |pointee| {
+                if pointee.is_const_qualified() {
+                    OracleType::ConstPointer(Box::new(resolve_type(pointee)))
+                } else {
+                    OracleType::MutPointer(Box::new(resolve_type(pointee)))
+                }
+            }),
         TypeKind::LValueReference => ty
             .get_pointee_type()
             .or_else(|| ty.get_element_type())
@@ -621,9 +721,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 .into_iter()
                 .map(resolve_type)
                 .collect();
-            let ret = ty
-                .get_result_type()
-                .map_or(OracleType::Void, resolve_type);
+            let ret = ty.get_result_type().map_or(OracleType::Void, resolve_type);
             OracleType::FnPtr {
                 ret: Box::new(ret),
                 params,
@@ -759,11 +857,7 @@ fn clean_comment(raw: String) -> String {
             line.trim()
                 .strip_prefix("///")
                 .or_else(|| line.trim().strip_prefix("//"))
-                .unwrap_or_else(|| {
-                    line.trim()
-                        .strip_prefix('*')
-                        .unwrap_or_else(|| line.trim())
-                })
+                .unwrap_or_else(|| line.trim().strip_prefix('*').unwrap_or_else(|| line.trim()))
                 .trim()
         })
         .filter(|l| !l.is_empty())

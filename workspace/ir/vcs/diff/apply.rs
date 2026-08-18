@@ -132,9 +132,9 @@ pub fn apply_delta_with_t1(
             continue;
         }
 
-        let (payload, parent) = entries.get_mut(&id).ok_or_else(|| {
-            Error(format!("apply_delta: id {} not found in base", id.to_hex()))
-        })?;
+        let (payload, parent) = entries
+            .get_mut(&id)
+            .ok_or_else(|| Error(format!("apply_delta: id {} not found in base", id.to_hex())))?;
 
         let mut new_parent = *parent;
 
@@ -212,7 +212,8 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) {
             // added=true: new DeprecationWire not in op; skipped.
         }
         IrOp::AliasesChanged { added, removed } => {
-            let removed_set: BTreeSet<String> = removed.iter().map(smol_str::SmolStr::to_string).collect();
+            let removed_set: BTreeSet<String> =
+                removed.iter().map(smol_str::SmolStr::to_string).collect();
             payload.symbol.aliases.retain(|a| !removed_set.contains(a));
             for a in added {
                 if !payload.symbol.aliases.iter().any(|x| x == a.as_str()) {
@@ -298,8 +299,11 @@ fn apply_op_to_payload(op: &IrOp, payload: &mut OwnedEntryPayload) {
             }
         }
         IrOp::GenericsChanged { detail } => {
-            let removed_set: BTreeSet<String> =
-                detail.removed.iter().map(smol_str::SmolStr::to_string).collect();
+            let removed_set: BTreeSet<String> = detail
+                .removed
+                .iter()
+                .map(smol_str::SmolStr::to_string)
+                .collect();
             let apply_to = |generics: &mut Box<[GenericParamWire]>| {
                 let mut gs: Vec<GenericParamWire> = generics
                     .iter()

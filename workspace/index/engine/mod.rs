@@ -221,7 +221,10 @@ pub enum EngineError {
     Transaction(String),
     /// A `dolt_*` versioning call failed.
     #[error("versioning operation `{operation}` failed: {detail}")]
-    Versioning { operation: &'static str, detail: String },
+    Versioning {
+        operation: &'static str,
+        detail: String,
+    },
     /// The engine was asked to do something structurally impossible (e.g. a
     /// second writer, or a versioning call on a plain-SQLite fake in a code path
     /// that requires real history).
@@ -318,10 +321,8 @@ pub trait VersioningEngine: CatalogEngine {
     /// Resolve an as-of-time read to the newest commit at or before the instant
     /// (INDEX-PLAN §9 `AsOf::Time`). `None` when the instant precedes the first
     /// commit.
-    fn resolve_as_of_time(
-        &self,
-        unix_milliseconds: i64,
-    ) -> Result<Option<CommitHash>, EngineError>;
+    fn resolve_as_of_time(&self, unix_milliseconds: i64)
+    -> Result<Option<CommitHash>, EngineError>;
 
     /// Read one entity table **as of** a historical commit reference
     /// (INDEX-PLAN §9, §18 scenario 1).

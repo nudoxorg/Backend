@@ -250,9 +250,21 @@ mod tests {
                 ("remote", t.trust.remote),
                 ("stale", t.trust.stale),
             ] {
-                assert_eq!(style.colour.a, 1.0, "{}: trust.{name} not opaque", t.theme_key);
-                assert_eq!(style.fg_on.a, 1.0, "{}: trust.{name}.fg_on not opaque", t.theme_key);
-                assert_eq!(style.wash.a, 1.0, "{}: trust.{name}.wash not opaque", t.theme_key);
+                assert_eq!(
+                    style.colour.a, 1.0,
+                    "{}: trust.{name} not opaque",
+                    t.theme_key
+                );
+                assert_eq!(
+                    style.fg_on.a, 1.0,
+                    "{}: trust.{name}.fg_on not opaque",
+                    t.theme_key
+                );
+                assert_eq!(
+                    style.wash.a, 1.0,
+                    "{}: trust.{name}.wash not opaque",
+                    t.theme_key
+                );
             }
             for (i, c) in kind_colours_as_array(&t.kind_colours).iter().enumerate() {
                 assert_eq!(c.a, 1.0, "{}: kind colour [{i}] not opaque", t.theme_key);
@@ -295,8 +307,16 @@ mod tests {
             ("mono", ts.mono.size),
             ("caption", ts.caption.size),
         ];
-        let max_name = sizes.iter().max_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0;
-        let min_name = sizes.iter().min_by(|a, b| a.1.partial_cmp(&b.1).unwrap()).unwrap().0;
+        let max_name = sizes
+            .iter()
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap()
+            .0;
+        let min_name = sizes
+            .iter()
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .unwrap()
+            .0;
         assert_eq!(max_name, "display", "display should be the largest token");
         assert_eq!(min_name, "caption", "caption should be the smallest token");
     }
@@ -347,9 +367,8 @@ mod tests {
 
     fn kind_colours_as_array(k: &KindColours) -> [Hsla; 13] {
         [
-            k.module, k.record, k.field, k.function, k.alias,
-            k.trait_, k.impl_, k.enum_, k.variant, k.const_,
-            k.static_, k.reexport, k.param,
+            k.module, k.record, k.field, k.function, k.alias, k.trait_, k.impl_, k.enum_,
+            k.variant, k.const_, k.static_, k.reexport, k.param,
         ]
     }
 
@@ -498,9 +517,16 @@ mod tests {
     #[test]
     fn space_tokens_on_4px_grid() {
         let s = SpaceTokens::STANDARD;
-        let spaces = [s.space_1, s.space_2, s.space_3, s.space_4, s.space_5, s.space_6, s.space_7, s.space_8];
+        let spaces = [
+            s.space_1, s.space_2, s.space_3, s.space_4, s.space_5, s.space_6, s.space_7, s.space_8,
+        ];
         for (i, sp) in spaces.iter().enumerate() {
-            assert_eq!(*sp % px(4.0), px(0.0), "space_{} is not on the 4px grid", i + 1);
+            assert_eq!(
+                *sp % px(4.0),
+                px(0.0),
+                "space_{} is not on the 4px grid",
+                i + 1
+            );
         }
         for i in 0..spaces.len() - 1 {
             assert!(

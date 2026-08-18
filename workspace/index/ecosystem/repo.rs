@@ -99,7 +99,9 @@ pub fn normalize_repo_url(raw: &str) -> Option<RepoSlug> {
 /// stripped). Strips credentials and `www.` prefix from the host.
 fn parse_url_after_scheme(after_scheme: &str) -> Option<RepoSlug> {
     // Strip userinfo (`user:pass@` or `user@`).
-    let after_auth = after_scheme.find('@').map_or(after_scheme, |at| &after_scheme[at + 1..]);
+    let after_auth = after_scheme
+        .find('@')
+        .map_or(after_scheme, |at| &after_scheme[at + 1..]);
 
     // Split host from path at the first `/`.
     let (raw_host, path_and_rest) = match after_auth.split_once('/') {

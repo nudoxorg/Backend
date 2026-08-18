@@ -171,10 +171,10 @@ pub(crate) fn run_pack_a(old: &ApiSurface, new: &ApiSurface, out: &mut Vec<Findi
         let new_item = &new_items[id];
 
         // Canonical moniker path (old surface, as diagnostic label).
-        let moniker = old
-            .monikers
-            .iter()
-            .find(|(_, v)| *v == id).map_or_else(|| MonikerPath::new(vec![SmolStr::new("<unknown>")]), |(k, _)| k.clone());
+        let moniker = old.monikers.iter().find(|(_, v)| *v == id).map_or_else(
+            || MonikerPath::new(vec![SmolStr::new("<unknown>")]),
+            |(k, _)| k.clone(),
+        );
 
         lint_a4_to_a19(id, old_item, new_item, &moniker, old, new, out);
     }
@@ -204,9 +204,10 @@ fn lint_a4_to_a19(
         for removed in old_fields.difference(&new_fields) {
             // Only fire if the field was on the old surface (it was exported).
             if old_surface.items.contains_key(removed) {
-                let field_name = old_surface
-                    .items
-                    .get(removed).map_or_else(|| SmolStr::new("<field>"), |fi| SmolStr::new(fi.kind.field_name_hint()));
+                let field_name = old_surface.items.get(removed).map_or_else(
+                    || SmolStr::new("<field>"),
+                    |fi| SmolStr::new(fi.kind.field_name_hint()),
+                );
                 out.push(Finding {
                     lint: A4,
                     item: Some(*removed),
@@ -229,7 +230,8 @@ fn lint_a4_to_a19(
             if old_surface.items.contains_key(removed) {
                 let variant_name = old_surface
                     .items
-                    .get(removed).map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
+                    .get(removed)
+                    .map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
                 out.push(Finding {
                     lint: A5,
                     item: Some(*removed),
@@ -259,7 +261,8 @@ fn lint_a4_to_a19(
             if new_surface.items.contains_key(added) {
                 let variant_name = new_surface
                     .items
-                    .get(added).map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
+                    .get(added)
+                    .map_or_else(|| SmolStr::new("<variant>"), variant_name_hint);
                 let (lint, class) = if enum_non_exhaustive {
                     (A7, BreakClass::Minor) // A-7
                 } else {
@@ -300,11 +303,15 @@ fn lint_a4_to_a19(
                 let child_name = new_surface
                     .monikers
                     .iter()
-                    .find(|(_, v)| *v == added_child).map_or_else(|| SmolStr::new("<item>"), |(k, _)| {
-                        k.0.last()
-                            .cloned()
-                            .unwrap_or_else(|| SmolStr::new("<item>"))
-                    });
+                    .find(|(_, v)| *v == added_child)
+                    .map_or_else(
+                        || SmolStr::new("<item>"),
+                        |(k, _)| {
+                            k.0.last()
+                                .cloned()
+                                .unwrap_or_else(|| SmolStr::new("<item>"))
+                        },
+                    );
 
                 let defaulted = is_defaulted_fn(child_item);
 
@@ -347,11 +354,15 @@ fn lint_a4_to_a19(
                 let child_name = old_surface
                     .monikers
                     .iter()
-                    .find(|(_, v)| *v == removed_child).map_or_else(|| SmolStr::new("<item>"), |(k, _)| {
-                        k.0.last()
-                            .cloned()
-                            .unwrap_or_else(|| SmolStr::new("<item>"))
-                    });
+                    .find(|(_, v)| *v == removed_child)
+                    .map_or_else(
+                        || SmolStr::new("<item>"),
+                        |(k, _)| {
+                            k.0.last()
+                                .cloned()
+                                .unwrap_or_else(|| SmolStr::new("<item>"))
+                        },
+                    );
 
                 out.push(Finding {
                     lint: A10,
@@ -593,9 +604,10 @@ fn lint_a4_to_a19(
                 } else if all_pub {
                     // All prior fields were public: literal-constructible → Major.
                     for gained_id in &gained {
-                        let field_name = new_surface
-                            .items
-                            .get(gained_id).map_or_else(|| SmolStr::new("<field>"), |_| field_name_from_surface(new_surface, gained_id));
+                        let field_name = new_surface.items.get(gained_id).map_or_else(
+                            || SmolStr::new("<field>"),
+                            |_| field_name_from_surface(new_surface, gained_id),
+                        );
                         out.push(Finding {
                             lint: A18,
                             item: Some(*gained_id),
@@ -773,7 +785,7 @@ fn is_defaulted_fn(item: &ApiItem) -> bool {
 }
 
 fn self_kind_differs(a: &SelfKind, b: &SelfKind) -> bool {
-    use SelfKind::{None, Value, Ref, RefMut, Arbitrary};
+    use SelfKind::{Arbitrary, None, Ref, RefMut, Value};
     match (a, b) {
         (None, None) | (Value, Value) | (Ref, Ref) | (RefMut, RefMut) => false,
         (Arbitrary(ta), Arbitrary(tb)) => ta != tb,

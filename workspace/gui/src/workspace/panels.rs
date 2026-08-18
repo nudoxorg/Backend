@@ -1,11 +1,11 @@
 //! The dock `Panel` implementations: placeholders, jobs, and the centre pane.
 
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ParentElement as _, Render, SharedString, Window, div,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
-use gpui_component::{IconName, h_flex, v_flex};
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState, TitleStyle};
+use gpui_component::{IconName, h_flex, v_flex};
 use serde_json::Value as JsonValue;
 
 use crate::stores::index_jobs::{IndexJobState, IndexJobStore, IndexJobsChanged};
@@ -70,7 +70,9 @@ macro_rules! placeholder_panel {
 
         impl $name {
             pub fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
-                Self { focus: cx.focus_handle() }
+                Self {
+                    focus: cx.focus_handle(),
+                }
             }
         }
 
@@ -87,11 +89,7 @@ macro_rules! placeholder_panel {
                 $panel_name_str
             }
 
-            fn title(
-                &mut self,
-                _: &mut Window,
-                _: &mut Context<Self>,
-            ) -> impl IntoElement {
+            fn title(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 div().child(SharedString::from($tab_label))
             }
 
@@ -119,14 +117,8 @@ macro_rules! placeholder_panel {
         }
 
         impl Render for $name {
-            fn render(
-                &mut self,
-                _: &mut Window,
-                cx: &mut Context<Self>,
-            ) -> impl IntoElement {
-                let motion = crate::motion::tokens::MotionTokens::new(
-                    cx.theme_ext().motion_scale,
-                );
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let motion = crate::motion::tokens::MotionTokens::new(cx.theme_ext().motion_scale);
                 div().size_full().child(crate::ui::EmptyState::new(
                     $icon,
                     SharedString::from($empty_title),
@@ -264,75 +256,81 @@ impl Render for JobsPanel {
         }
 
         let rows: Vec<_> = store.rows().to_vec();
-        div().size_full().p(sp.space_3).child(
-            v_flex().w_full().gap(sp.space_2).children(
-                rows.into_iter().map(move |row| {
-                    let (headline, detail, tone) = match &row.state {
-                        IndexJobState::Running { stage, detail } => {
-                            (stage.clone(), detail.clone(), colours.fg_muted)
-                        }
-                        IndexJobState::Done { detail, .. } => {
-                            (SharedString::from("Indexed"), detail.clone(), colours.fg_muted)
-                        }
-                        IndexJobState::Failed { detail, .. } => {
-                            (SharedString::from("Failed"), detail.clone(), colours.danger)
-                        }
-                    };
-                    // The `help` line is rendered *below* the failure and in a
-                    // quieter role: "what happened" and "what to do next" are
-                    // different sentences and the panel must not run them
-                    // together (the same split the MCP error vocabulary makes).
-                    let help = match &row.state {
-                        IndexJobState::Failed { help, .. } => help.clone(),
-                        _ => None,
-                    };
+        div()
+            .size_full()
+            .p(sp.space_3)
+            .child(
+                v_flex()
+                    .w_full()
+                    .gap(sp.space_2)
+                    .children(rows.into_iter().map(move |row| {
+                        let (headline, detail, tone) = match &row.state {
+                            IndexJobState::Running { stage, detail } => {
+                                (stage.clone(), detail.clone(), colours.fg_muted)
+                            }
+                            IndexJobState::Done { detail, .. } => (
+                                SharedString::from("Indexed"),
+                                detail.clone(),
+                                colours.fg_muted,
+                            ),
+                            IndexJobState::Failed { detail, .. } => {
+                                (SharedString::from("Failed"), detail.clone(), colours.danger)
+                            }
+                        };
+                        // The `help` line is rendered *below* the failure and in a
+                        // quieter role: "what happened" and "what to do next" are
+                        // different sentences and the panel must not run them
+                        // together (the same split the MCP error vocabulary makes).
+                        let help = match &row.state {
+                            IndexJobState::Failed { help, .. } => help.clone(),
+                            _ => None,
+                        };
 
-                    v_flex()
-                        .w_full()
-                        .gap(sp.space_1)
-                        .px(sp.space_2)
-                        .py(sp.space_2)
-                        .rounded(sp.r_md)
-                        .bg(colours.bg_raised)
-                        .child(
-                            h_flex()
-                                .w_full()
-                                .items_center()
-                                .gap(sp.space_2)
-                                .child(
-                                    div()
-                                        .text_size(ts.ui.size)
-                                        .line_height(ts.ui.line_height)
-                                        .text_color(colours.fg_default)
-                                        .child(row.purl.clone()),
-                                )
-                                .child(
+                        v_flex()
+                            .w_full()
+                            .gap(sp.space_1)
+                            .px(sp.space_2)
+                            .py(sp.space_2)
+                            .rounded(sp.r_md)
+                            .bg(colours.bg_raised)
+                            .child(
+                                h_flex()
+                                    .w_full()
+                                    .items_center()
+                                    .gap(sp.space_2)
+                                    .child(
+                                        div()
+                                            .text_size(ts.ui.size)
+                                            .line_height(ts.ui.line_height)
+                                            .text_color(colours.fg_default)
+                                            .child(row.purl.clone()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(ts.dense.size)
+                                            .line_height(ts.dense.line_height)
+                                            .text_color(tone)
+                                            .child(headline),
+                                    ),
+                            )
+                            .when(!detail.is_empty(), |el| {
+                                el.child(
                                     div()
                                         .text_size(ts.dense.size)
                                         .line_height(ts.dense.line_height)
-                                        .text_color(tone)
-                                        .child(headline),
-                                ),
-                        )
-                        .when(!detail.is_empty(), |el| {
-                            el.child(
+                                        .text_color(colours.fg_muted)
+                                        .child(detail),
+                                )
+                            })
+                            .children(help.map(|help| {
                                 div()
                                     .text_size(ts.dense.size)
                                     .line_height(ts.dense.line_height)
-                                    .text_color(colours.fg_muted)
-                                    .child(detail),
-                            )
-                        })
-                        .children(help.map(|help| {
-                            div()
-                                .text_size(ts.dense.size)
-                                .line_height(ts.dense.line_height)
-                                .text_color(colours.fg_faint)
-                                .child(help)
-                        }))
-                }),
-            ),
-        )
+                                    .text_color(colours.fg_faint)
+                                    .child(help)
+                            }))
+                    })),
+            )
     }
 }
 

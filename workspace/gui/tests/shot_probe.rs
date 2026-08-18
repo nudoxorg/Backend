@@ -11,24 +11,23 @@
 
 use std::sync::Arc;
 
-use gpui::{AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, div, px, size};
 use gpui::Platform as _;
+use gpui::{
+    AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, div, px, size,
+};
 
 struct Probe;
 
 impl Render for Probe {
     fn render(&mut self, _window: &mut gpui::Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .bg(gpui::rgb(0x11131a))
-            .child(
-                div()
-                    .m(px(48.))
-                    .p(px(24.))
-                    .bg(gpui::rgb(0x1e2230))
-                    .text_color(gpui::rgb(0xe6e8ef))
-                    .child("nudox screenshot probe — real glyphs, real renderer"),
-            )
+        div().size_full().bg(gpui::rgb(0x11131a)).child(
+            div()
+                .m(px(48.))
+                .p(px(24.))
+                .bg(gpui::rgb(0x1e2230))
+                .text_color(gpui::rgb(0xe6e8ef))
+                .child("nudox screenshot probe — real glyphs, real renderer"),
+        )
     }
 }
 

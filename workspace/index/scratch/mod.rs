@@ -152,12 +152,16 @@ impl ScratchStore {
         Ok(jobs::next_queued(&self.connection, limit)?)
     }
 
+    /// Return a terminal (`Done`/`Failed`) job to `Queued` with a fresh attempt
+    /// budget. A no-op for a job in any other state — see
+    /// [`jobs::requeue_terminal`].
+    pub fn requeue_terminal_job(&self, job_key: &str, now: i64) -> Result<(), Error> {
+        jobs::requeue_terminal(&self.connection, job_key, now)?;
+        Ok(())
+    }
+
     /// Increment the attempt counter for a job.
-    pub fn increment_job_attempts(
-        &self,
-        job_key: &str,
-        updated_at: i64,
-    ) -> Result<(), Error> {
+    pub fn increment_job_attempts(&self, job_key: &str, updated_at: i64) -> Result<(), Error> {
         jobs::increment_attempts(&self.connection, job_key, updated_at)?;
         Ok(())
     }
@@ -165,11 +169,7 @@ impl ScratchStore {
     // ── wanted ────────────────────────────────────────────────────────────────
 
     /// Record that a client wants `coordinate` compiled, returning the new row id.
-    pub fn add_wanted(
-        &self,
-        coordinate: &str,
-        requested_at: i64,
-    ) -> Result<i64, Error> {
+    pub fn add_wanted(&self, coordinate: &str, requested_at: i64) -> Result<i64, Error> {
         Ok(wanted::add(&self.connection, coordinate, requested_at)?)
     }
 
@@ -213,10 +213,7 @@ impl ScratchStore {
     /// This is the primary entry-point for the writer-sticky guarantee
     /// (INDEX-PLAN ID-19). The router calls this before dispatching any request
     /// that belongs to an existing session.
-    pub fn writer_for_session(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<String>, Error> {
+    pub fn writer_for_session(&self, session_id: &str) -> Result<Option<String>, Error> {
         Ok(sessions::writer_for(&self.connection, session_id)?)
     }
 
@@ -227,10 +224,7 @@ impl ScratchStore {
     /// join-semilattice graph in the `graph_state` column. This accessor is the
     /// read half of that store; [`ScratchStore::set_session_graph_state`] is the
     /// write half.
-    pub fn session_graph_state(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<String>, Error> {
+    pub fn session_graph_state(&self, session_id: &str) -> Result<Option<String>, Error> {
         Ok(sessions::get(&self.connection, session_id)?.and_then(|row| row.graph_state))
     }
 
@@ -290,11 +284,7 @@ impl ScratchStore {
     }
 
     /// Renew a job claim with a new `lease_expires_at`.
-    pub fn renew_job_claim(
-        &self,
-        job_key: &str,
-        new_lease_expires_at: i64,
-    ) -> Result<(), Error> {
+    pub fn renew_job_claim(&self, job_key: &str, new_lease_expires_at: i64) -> Result<(), Error> {
         claims::renew(&self.connection, job_key, new_lease_expires_at)?;
         Ok(())
     }
@@ -415,7 +405,10 @@ mod tests {
         let writer_after_touch = scratch
             .writer_for_session("sess-abc")
             .expect("lookup must not error");
-        assert_eq!(writer_after_touch.as_deref(), Some("writer-primary.internal"));
+        assert_eq!(
+            writer_after_touch.as_deref(),
+            Some("writer-primary.internal")
+        );
     }
 
     #[test]

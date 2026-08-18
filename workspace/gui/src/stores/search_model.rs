@@ -449,7 +449,10 @@ impl PreparedRow {
     /// apart — the remote analogue of [`PreparedRow::prepare`].
     pub fn prepare_remote(hits: &[Scored<Symbol>]) -> Arc<[PreparedRow]> {
         let mut rows: Vec<PreparedRow> = hits.iter().map(PreparedRow::ingest_remote).collect();
-        let names: Vec<&str> = hits.iter().map(|h| &*h.value.name.fully_qualified).collect();
+        let names: Vec<&str> = hits
+            .iter()
+            .map(|h| &*h.value.name.fully_qualified)
+            .collect();
         disambiguate(&mut rows, &names);
         rows.into()
     }
@@ -996,12 +999,9 @@ impl SearchSnapshot {
     /// Whether any section has finished at least once — i.e. whether "zero
     /// hits" is a real answer rather than "nothing has arrived yet".
     pub fn any_section_settled(&self) -> bool {
-        self.sections.iter().any(|s| {
-            matches!(
-                s.status,
-                SectionStatus::Ready | SectionStatus::Offline
-            )
-        })
+        self.sections
+            .iter()
+            .any(|s| matches!(s.status, SectionStatus::Ready | SectionStatus::Offline))
     }
 }
 
@@ -1083,8 +1083,7 @@ mod tests {
     /// assertion that would have caught GUI-WORKORDER-2 F1 — seven consecutive
     /// `mod memchr` rows — and did not exist.
     fn assert_rows_distinct(rows: &[PreparedRow]) {
-        let mut seen: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for (ix, row) in rows.iter().enumerate() {
             if let Some(first) = seen.insert(row.render_identity(), ix) {
                 panic!(
@@ -1157,7 +1156,12 @@ mod tests {
         assert_rows_distinct(&rows);
         let tails: Vec<String> = rows
             .iter()
-            .map(|r| r.qualifier.text().map(|t| t.to_string()).unwrap_or_default())
+            .map(|r| {
+                r.qualifier
+                    .text()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(
             tails,
@@ -1189,7 +1193,12 @@ mod tests {
         assert_rows_distinct(&rows);
         let tails: Vec<String> = rows
             .iter()
-            .map(|r| r.qualifier.text().map(|t| t.to_string()).unwrap_or_default())
+            .map(|r| {
+                r.qualifier
+                    .text()
+                    .map(|t| t.to_string())
+                    .unwrap_or_default()
+            })
             .collect();
         assert_eq!(tails, vec!["memchr.", "memchr.arch.all."]);
     }
@@ -1202,7 +1211,10 @@ mod tests {
         let rows = PreparedRow::prepare(&[hit("memchr"), hit("memchr.arch.all.memchr")]);
         assert_rows_distinct(&rows);
         assert!(rows[0].qualifier.text().is_none());
-        assert_eq!(rows[1].qualifier.text().unwrap().as_ref(), "memchr.arch.all.");
+        assert_eq!(
+            rows[1].qualifier.text().unwrap().as_ref(),
+            "memchr.arch.all."
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@
 
 use std::path::Path;
 
+use oxc_ast::AstKind;
 use oxc_ast::ast::{
     AccessorPropertyType, Argument, AssignmentOperator, AssignmentTarget, BindingPattern,
     CallExpression, Class, ClassElement, Declaration, ExportDefaultDeclarationKind, Expression,
@@ -26,8 +27,9 @@ use oxc_ast::ast::{
     TSModuleDeclaration, TSModuleDeclarationBody, TSModuleDeclarationName, TSSignature,
     VariableDeclaration, VariableDeclarationKind,
 };
-use oxc_semantic::Semantic;
-use oxc_span::GetSpan;
+use oxc_ast_visit::Visit;
+use oxc_semantic::{Reference, Semantic};
+use oxc_span::{GetSpan, Span};
 use oxc_syntax::module_record::{
     ExportExportName, ExportImportName, ExportLocalName, ImportImportName, ModuleRecord,
 };
@@ -36,8 +38,8 @@ use super::{
     Accessibility, AttrTok, ClassBody, ConstBody, DeclBody, DeclFact, DocFacts, EnumBody,
     ExportTable, FunctionBody, ImportFact, ImportName, IndexSignatureFact, IndirectExport,
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
-    NamespaceBody, ParamFact, PropertyFact, ReceiverKind, StarExport, StaticBody, TypeAliasBody,
-    VariantFact, jsdoc,
+    NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
+    StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
     types::{lower_ts_type, lower_type_params},
 };
 
@@ -86,7 +88,16 @@ pub fn extract_module<'a>(
     // one code path — the "honesty gate": without this, a CommonJS-exported
     // declaration is real (declared, counted) but `Visibility::Private`,
     // which is not actually honest about what the package's public API is.
-    let cjs_exports = scan_commonjs_exports(&program.body);
+    let runtime_exports = scan_runtime_exports(program);
+    let mut cjs_exports = scan_commonjs_exports(&program.body);
+    for runtime_export in &runtime_exports {
+        if runtime_export.function.is_some() {
+            cjs_exports.named.push((
+                runtime_export.export_name.clone(),
+                runtime_export.local_name.clone(),
+            ));
+        }
+    }
     let mut visible_names = exported_names.clone();
     if let Some(name) = &cjs_exports.whole_module {
         visible_names.insert(name.clone());
@@ -108,6 +119,44 @@ pub fn extract_module<'a>(
         );
         declarations.extend(decls);
     }
+
+    // CommonJS packages may return an object assembled inside a function:
+    // `function setup() { createDebug.enable = enable; return createDebug; }`.
+    // These assignments are part of the exported runtime surface even though
+    // neither the property nor its function declaration is top-level syntax.
+    // Recover only identifier-backed function members; expression-backed
+    // values (notably `require('ms')`) are intentionally not fabricated as
+    // constants.
+    for runtime_export in runtime_exports {
+        let Some(function) = runtime_export.function else {
+            continue;
+        };
+        let name = runtime_export.local_name;
+        let span = function.span();
+        if declarations
+            .iter()
+            .any(|decl| decl.name == name && decl.span_start == span.start)
+        {
+            continue;
+        }
+        let decl_index = bump_count(&name, &mut name_counts);
+        declarations.push(DeclFact {
+            name,
+            visibility: nudox_ir::entry::Visibility::Public,
+            doc: jsdoc::jsdoc_for_span(semantic, span),
+            body: DeclBody::Function(lower_function(function, source)),
+            module: path.to_path_buf(),
+            span_start: span.start,
+            span_end: span.end,
+            is_default: false,
+            decl_index,
+        });
+    }
+
+    // ── Reference occurrences ─────────────────────────────────────────────────
+    // Must run after `declarations` is fully built: `record_occurrences` needs
+    // the whole list to resolve both ends of every edge (see its doc comment).
+    let occurrences = record_occurrences(semantic, &declarations);
 
     // ── Export table ──────────────────────────────────────────────────────────
     let exports = build_export_table(
@@ -131,11 +180,234 @@ pub fn extract_module<'a>(
         declarations,
         exports,
         imports,
+        occurrences,
         source_len: source.len(),
     }
 }
 
+// ── Reference occurrences ───────────────────────────────────────────────────────
+
+/// Build this module's same-module occurrence graph from OXC's resolved
+/// symbol/reference table. See [`OccurrenceFact`]'s doc comment for the
+/// same-module and top-level-only restrictions this necessarily inherits.
+///
+/// OXC's `SemanticBuilder` (already run by `graph::build_and_extract` before
+/// this is called) resolves every identifier to a declaring `SymbolId` and
+/// keeps that symbol's full reference list — the same binder-level name
+/// resolution a real compiler front end does, not a heuristic. Walking
+/// `symbol_ids()` once and, for each, its `symbol_references()`, visits every
+/// resolved binding/use pair in the file exactly once.
+fn record_occurrences(semantic: &Semantic<'_>, declarations: &[DeclFact]) -> Vec<OccurrenceFact> {
+    let mut out = Vec::new();
+    for symbol_id in semantic.scoping().symbol_ids() {
+        let decl_span = semantic.scoping().symbol_span(symbol_id);
+        let Some(target) = innermost_declaration(declarations, decl_span.start, decl_span.end)
+        else {
+            // Not a top-level declaration of this module: a parameter, a
+            // local variable/const, a destructured binding, an import
+            // binding, a catch clause name, … `OccurrenceFact` only tracks
+            // edges between this module's own top-level declarations.
+            continue;
+        };
+
+        for reference in semantic.symbol_references(symbol_id) {
+            let ref_span = semantic.nodes().get_node(reference.node_id()).kind().span();
+            let Some(owner) = innermost_declaration(declarations, ref_span.start, ref_span.end)
+            else {
+                // A reference at module top level, outside every declaration
+                // (e.g. a bare `console.log(someExport)` statement) has
+                // nothing to attribute the edge to.
+                continue;
+            };
+
+            // A reference is not a caller of its own declaration. The
+            // clearest case is direct recursion (`function f() { f(); }`),
+            // but the same equality also catches every reference that is
+            // merely *nested inside* its own target at the top-level
+            // granularity this graph tracks: a parameter or local variable
+            // used inside the function that declares it (its declaring span
+            // and every use of it both fall inside that one enclosing
+            // `DeclFact`), or a call between two members of the same
+            // namespace (see `OccurrenceFact`'s doc comment). None of those
+            // are a useful "who calls this" row, and recording them would
+            // make every recursive function — and every namespace with more
+            // than one member — its own caller.
+            if owner == target {
+                continue;
+            }
+
+            let kind = classify_reference(semantic, reference);
+            out.push(OccurrenceFact {
+                owner,
+                target,
+                span_start: ref_span.start,
+                span_end: ref_span.end,
+                kind,
+            });
+        }
+    }
+    out
+}
+
+/// The top-level declaration whose span most tightly contains `[start, end)`,
+/// or `None` when nothing does.
+///
+/// Top-level declarations never nest inside one another — a nested function
+/// declaration inside another function's body is never walked into by
+/// `extract_statement`, and a namespace's own children live in
+/// `NamespaceBody::children`, not in this list — so in practice at most one
+/// candidate ever contains a given span. `min_by_key` on span width exists
+/// only to make the choice deterministic if that ever stops being true,
+/// rather than depending on `declarations`' iteration order.
+fn innermost_declaration(declarations: &[DeclFact], start: u32, end: u32) -> Option<usize> {
+    declarations
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.span_start <= start && end <= d.span_end)
+        .min_by_key(|(_, d)| d.span_end - d.span_start)
+        .map(|(idx, _)| idx)
+}
+
+/// Classify one resolved reference for [`OccurrenceFact::kind`].
+///
+/// `ReferenceFlags::Type` (checked via `Reference::is_type`) already tells
+/// type-position references apart from value references — OXC's binder keeps
+/// type and value name resolution in separate namespaces precisely so a type
+/// and a value can share a name without colliding, and that flag is set
+/// exactly when the reference was resolved through the type namespace. A
+/// value reference is further split into `Call` — this identifier is exactly
+/// a `CallExpression`'s callee, not one of its arguments or something else
+/// entirely — versus every other value use, by checking the reference site's
+/// immediate parent node.
+fn classify_reference(semantic: &Semantic<'_>, reference: &Reference) -> OccurrenceKind {
+    if reference.flags().is_type() {
+        return OccurrenceKind::Type;
+    }
+    let ref_span = semantic.nodes().get_node(reference.node_id()).kind().span();
+    if let AstKind::CallExpression(call) = semantic.nodes().parent_kind(reference.node_id())
+        && call.callee.span() == ref_span
+    {
+        return OccurrenceKind::Call;
+    }
+    OccurrenceKind::ValueUse
+}
+
 // ── CommonJS export recognition ─────────────────────────────────────────────────
+
+struct RuntimeExport<'a> {
+    export_name: String,
+    local_name: String,
+    function: Option<&'a Function<'a>>,
+}
+
+#[derive(Default)]
+struct RuntimeExportVisitor<'a> {
+    functions: Vec<&'a Function<'a>>,
+    returns: Vec<(Span, String)>,
+    assignments: Vec<(Span, String, String, String)>,
+}
+
+impl<'a> Visit<'a> for RuntimeExportVisitor<'a> {
+    fn enter_node(&mut self, kind: AstKind<'a>) {
+        match kind {
+            AstKind::Function(function) => {
+                if function.id.is_some() {
+                    self.functions.push(function);
+                }
+            }
+            AstKind::ReturnStatement(return_statement) => {
+                if let Some(Expression::Identifier(identifier)) = &return_statement.argument {
+                    self.returns
+                        .push((return_statement.span, identifier.name.to_string()));
+                }
+            }
+            AstKind::AssignmentExpression(assignment)
+                if assignment.operator == AssignmentOperator::Assign =>
+            {
+                let AssignmentTarget::StaticMemberExpression(member) = &assignment.left else {
+                    return;
+                };
+                let Expression::Identifier(object) = &member.object else {
+                    return;
+                };
+                let Some(local_name) = as_plain_identifier(&assignment.right) else {
+                    return;
+                };
+                self.assignments.push((
+                    assignment.span,
+                    object.name.to_string(),
+                    member.property.name.to_string(),
+                    local_name,
+                ));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Recover identifier-backed properties assigned to an object returned by a
+/// function. This is deliberately structural rather than a package-specific
+/// name rule: the innermost function containing `return value` owns assignments
+/// to `value`, and only assignments whose RHS names a nested function become
+/// declarations. Calls, literals, and object expressions remain unmodelled
+/// values instead of becoming synthetic constants.
+fn scan_runtime_exports<'a>(program: &'a oxc_ast::ast::Program<'a>) -> Vec<RuntimeExport<'a>> {
+    let mut visitor = RuntimeExportVisitor::default();
+    visitor.visit_program(program);
+
+    let returned_objects: Vec<(Span, String)> = visitor
+        .returns
+        .iter()
+        .filter_map(|(return_span, object_name)| {
+            visitor
+                .functions
+                .iter()
+                .filter(|function| {
+                    let span = function.span();
+                    span.start <= return_span.start && return_span.end <= span.end
+                })
+                .min_by_key(|function| {
+                    let span = function.span();
+                    span.end - span.start
+                })
+                .map(|function| (function.span(), object_name.clone()))
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for (assignment_span, object_name, export_name, local_name) in visitor.assignments {
+        let Some((owner_span, _)) = returned_objects.iter().find(|(function_span, object)| {
+            object == &object_name
+                && function_span.start <= assignment_span.start
+                && assignment_span.end <= function_span.end
+        }) else {
+            continue;
+        };
+        let function = visitor
+            .functions
+            .iter()
+            .filter(|function| {
+                let span = function.span();
+                span.start >= owner_span.start
+                    && span.end <= owner_span.end
+                    && function
+                        .id
+                        .as_ref()
+                        .is_some_and(|id| id.name.as_str() == local_name)
+            })
+            .min_by_key(|function| {
+                let span = function.span();
+                span.end - span.start
+            })
+            .copied();
+        out.push(RuntimeExport {
+            export_name,
+            local_name,
+            function,
+        });
+    }
+    out
+}
 
 /// Local names this module exports via CommonJS `module.exports`/`exports`
 /// assignment forms, discovered by a syntactic scan of the module's
@@ -276,9 +548,8 @@ fn scan_commonjs_exports(body: &[Statement<'_>]) -> CommonJsExports {
         let AssignmentTarget::StaticMemberExpression(mem) = &assign.left else {
             continue;
         };
-        let is_whole_module_target =
-            matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
-                && mem.property.name == "exports";
+        let is_whole_module_target = matches!(&mem.object, Expression::Identifier(id) if id.name == "module")
+            && mem.property.name == "exports";
         if is_whole_module_target {
             if let Some(name) = as_plain_identifier(&assign.right) {
                 out.whole_module = Some(name);
@@ -356,47 +627,41 @@ fn extract_statement<'a>(
             let decl = stmt
                 .as_declaration()
                 .expect("FunctionDeclaration is a Declaration");
-            f.id.as_ref().map_or_else(
-                Vec::new,
-                |id| {
-                    let name = id.name.to_string();
-                    let is_exported = exported_names.contains(&name)
-                        || default_local_name.as_deref() == Some(&name);
-                    extract_declaration(
-                        decl,
-                        source,
-                        semantic,
-                        path,
-                        is_exported,
-                        false,
-                        exported_names,
-                        name_counts,
-                    )
-                },
-            )
+            f.id.as_ref().map_or_else(Vec::new, |id| {
+                let name = id.name.to_string();
+                let is_exported =
+                    exported_names.contains(&name) || default_local_name.as_deref() == Some(&name);
+                extract_declaration(
+                    decl,
+                    source,
+                    semantic,
+                    path,
+                    is_exported,
+                    false,
+                    exported_names,
+                    name_counts,
+                )
+            })
         }
 
         Statement::ClassDeclaration(c) => {
             let decl = stmt
                 .as_declaration()
                 .expect("ClassDeclaration is a Declaration");
-            c.id.as_ref().map_or_else(
-                Vec::new,
-                |id| {
-                    let name = id.name.to_string();
-                    let is_exported = exported_names.contains(&name);
-                    extract_declaration(
-                        decl,
-                        source,
-                        semantic,
-                        path,
-                        is_exported,
-                        false,
-                        exported_names,
-                        name_counts,
-                    )
-                },
-            )
+            c.id.as_ref().map_or_else(Vec::new, |id| {
+                let name = id.name.to_string();
+                let is_exported = exported_names.contains(&name);
+                extract_declaration(
+                    decl,
+                    source,
+                    semantic,
+                    path,
+                    is_exported,
+                    false,
+                    exported_names,
+                    name_counts,
+                )
+            })
         }
 
         Statement::VariableDeclaration(_v) => {
@@ -570,9 +835,15 @@ fn extract_declaration<'a>(
             }]
         }
 
-        Declaration::VariableDeclaration(v) => {
-            lower_variable(v, source, semantic, path, is_exported, exported_names, name_counts)
-        }
+        Declaration::VariableDeclaration(v) => lower_variable(
+            v,
+            source,
+            semantic,
+            path,
+            is_exported,
+            exported_names,
+            name_counts,
+        ),
 
         Declaration::TSTypeAliasDeclaration(a) => {
             let name = a.id.name.to_string();
@@ -671,10 +942,9 @@ fn extract_default_export<'a>(
     use nudox_ir::entry::Visibility;
     match kind {
         ExportDefaultDeclarationKind::FunctionDeclaration(f) => {
-            let name = f
-                .id
-                .as_ref()
-                .map_or_else(|| "default".to_string(), |id| id.name.to_string());
+            let name =
+                f.id.as_ref()
+                    .map_or_else(|| "default".to_string(), |id| id.name.to_string());
             let span = f.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
@@ -692,10 +962,9 @@ fn extract_default_export<'a>(
             }]
         }
         ExportDefaultDeclarationKind::ClassDeclaration(c) => {
-            let name = c
-                .id
-                .as_ref()
-                .map_or_else(|| "default".to_string(), |id| id.name.to_string());
+            let name =
+                c.id.as_ref()
+                    .map_or_else(|| "default".to_string(), |id| id.name.to_string());
             let span = c.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
@@ -1690,19 +1959,27 @@ fn build_export_table(
     // like `build_local_export_map`'s own `overload_count_of` above, rather
     // than assuming 1.
     let cjs_overload_count = |name: &str| -> u32 {
-        declarations.iter().filter(|d| d.name == name).count().max(1) as u32
+        declarations
+            .iter()
+            .filter(|d| d.name == name)
+            .count()
+            .max(1) as u32
     };
     if let Some(local_name) = &cjs_exports.whole_module {
-        locals.entry("default".to_string()).or_insert_with(|| LocalExport::Named {
-            overload_count: cjs_overload_count(local_name),
-            local_name: local_name.clone(),
-        });
+        locals
+            .entry("default".to_string())
+            .or_insert_with(|| LocalExport::Named {
+                overload_count: cjs_overload_count(local_name),
+                local_name: local_name.clone(),
+            });
     }
     for (export_name, local_name) in &cjs_exports.named {
-        locals.entry(export_name.clone()).or_insert_with(|| LocalExport::Named {
-            overload_count: cjs_overload_count(local_name),
-            local_name: local_name.clone(),
-        });
+        locals
+            .entry(export_name.clone())
+            .or_insert_with(|| LocalExport::Named {
+                overload_count: cjs_overload_count(local_name),
+                local_name: local_name.clone(),
+            });
     }
 
     ExportTable {
@@ -1753,7 +2030,8 @@ fn build_local_export_map(
     // discriminant assignment) hands out `0..count` for a same-named group,
     // so counting occurrences in `declarations` here reconstructs exactly
     // that count without re-deriving it a second, possibly-inconsistent way.
-    let mut overload_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+    let mut overload_counts: std::collections::HashMap<&str, u32> =
+        std::collections::HashMap::new();
     for d in declarations {
         *overload_counts.entry(d.name.as_str()).or_insert(0) += 1;
     }

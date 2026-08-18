@@ -63,13 +63,14 @@
 use std::path::PathBuf;
 
 use nudox_ir::{
-    entry::{Symbol, Visibility},
+    entry::{SourceLocation, Symbol, Unlocated, Visibility},
     kinds::{
         Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, GenericParam,
         Module, Param, ParamAttribute, Receiver, Record, RecordForm, Static, Type, Variant,
         VariantForm,
     },
     lower::Lowering,
+    vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
 use crate::clang::oracle::{
@@ -102,6 +103,30 @@ pub fn lower_oracle(oracle: &ClangOracle, out: &mut Lowering<Usr>) {
     for var in &oracle.vars {
         lower_var(var, out);
     }
+    for reference in &oracle.references {
+        let Some(owner) = oracle.functions.iter().find(|f| f.usr == reference.owner) else {
+            continue;
+        };
+        let Some(target) = oracle.functions.iter().find(|f| f.usr == reference.target) else {
+            continue;
+        };
+        if owner.source_file != reference.source_file || reference.byte_start < owner.byte_offset {
+            continue;
+        }
+        let Ok(start) = u32::try_from(reference.byte_start - owner.byte_offset) else {
+            continue;
+        };
+        let Ok(end) = u32::try_from(reference.byte_end.saturating_sub(owner.byte_offset)) else {
+            continue;
+        };
+        out.record_occurrence(
+            owner.usr.clone(),
+            target.usr.clone(),
+            ReferenceKind::FunctionCall,
+            Confidence::Oracle,
+            RelSpan::new(start, end),
+        );
+    }
 }
 
 // ── Symbol construction ───────────────────────────────────────────────────────
@@ -118,7 +143,10 @@ fn make_sym(
         visibility: oracle_vis(vis),
         documentation: doc.to_owned(),
         source,
-        span: offset..offset,
+        // libclang gives this frontend the declaration's start offset but not
+        // an extent. The identifier itself is still a genuine, non-empty
+        // source range and is preferable to the historical 0..0 sentinel.
+        span: offset..offset.saturating_add(name.len()),
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([]),
@@ -250,8 +278,8 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
                 },
                 visibility: Visibility::Public,
                 documentation: String::new(),
-                source: fun.source_file.clone(),
-                span: 0..0,
+                source: p.source_file.clone(),
+                span: p.byte_offset..p.byte_offset.saturating_add(p.name.len()),
                 aliases: Box::new([]),
                 deprecation: None,
                 doc_links: Box::new([]),
@@ -303,7 +331,13 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
         let kind = Param::builder()
             .attributes([ParamAttribute::Variadic])
             .build();
-        out.declare(vusr, Some(fun.usr.clone()), vsym, kind);
+        out.declare_at(
+            vusr,
+            Some(fun.usr.clone()),
+            vsym,
+            kind,
+            SourceLocation::Unlocated(Unlocated::Synthesized),
+        );
         Some(vref)
     } else {
         None
@@ -327,7 +361,13 @@ fn lower_function(fun: &OracleFunction, _oracle: &ClangOracle, out: &mut Lowerin
             cfg: None,
         };
         let kind = Param::builder().ty(lower_type(&fun.ret)).build();
-        out.declare(ret_usr, Some(fun.usr.clone()), rsym, kind);
+        out.declare_at(
+            ret_usr,
+            Some(fun.usr.clone()),
+            rsym,
+            kind,
+            SourceLocation::Unlocated(Unlocated::Synthesized),
+        );
         output_refs.push(rref);
     }
 
@@ -668,7 +708,10 @@ mod tests {
 
         let ty = lower_type(&OracleType::Named {
             name: "Foo".to_owned(),
-            args: vec![OracleType::Integer { signed: true, bits: 32 }],
+            args: vec![OracleType::Integer {
+                signed: true,
+                bits: 32,
+            }],
         });
         match ty {
             Type::Apply { base, args } => {

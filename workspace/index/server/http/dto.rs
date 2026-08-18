@@ -12,10 +12,10 @@ use crate::server::{registry, vector};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
+use crate::ecosystem::PackageNameExt as _;
 use crate::server::registry::package::{Coordinates as PackageCoordinates, PackageName};
 use arc_swap::ArcSwap;
 use heart::{Language, PackageVersion, RegistryOrigin};
-use crate::ecosystem::PackageNameExt as _;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use url::Url;
@@ -58,7 +58,6 @@ fn required_or_default_origin(ecosystem: Language) -> Result<RegistryOrigin, Ser
         Language::Rust => Ok(RegistryOrigin::CratesIo),
         Language::Typescript => Ok(RegistryOrigin::NpmPublic),
         Language::Python => Ok(RegistryOrigin::PyPi),
-        Language::Nix => Ok(RegistryOrigin::FlakeHub),
         Language::CSharp => Ok(RegistryOrigin::NuGet),
         Language::Go => Ok(RegistryOrigin::GoProxy),
         Language::Java => Ok(RegistryOrigin::MavenCentral),
@@ -366,16 +365,16 @@ impl RerankRequestDto {
             return Err(BadRequestReason::MissingField { field: "documents" }.into());
         }
         if self.documents.len() > RERANK_MAX_DOCUMENTS {
-            return Err(
-                BadRequestReason::MalformedQuery(crate::server::error::QueryError::Malformed {
+            return Err(BadRequestReason::MalformedQuery(
+                crate::server::error::QueryError::Malformed {
                     detail: format!(
                         "too many rerank documents: {} (maximum {RERANK_MAX_DOCUMENTS})",
                         self.documents.len()
                     ),
                     query: String::new(),
-                })
-                .into(),
-            );
+                },
+            )
+            .into());
         }
         Ok(())
     }

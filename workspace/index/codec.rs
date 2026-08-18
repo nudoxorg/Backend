@@ -6,9 +6,9 @@
 //! `to_blob().to_vec()` and reads via `from_blob`. Nothing here panics; every
 //! decode error is a typed [`CodecError`].
 
+use crate::engine::{EngineError, Value};
 use crate::enums::{TextEnum, TextEnumError};
 use crate::ids::IdDecodeError;
-use crate::engine::{EngineError, Value};
 
 /// Why a stored row could not be decoded into typed fields.
 #[derive(Debug, thiserror::Error)]

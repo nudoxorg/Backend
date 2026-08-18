@@ -54,25 +54,47 @@ fn source_fixture() -> tempfile::TempDir {
     fixture
 }
 
-fn key_of(hit: &nudox_engine::HitRow) -> SymbolKeyDto {
+fn key_of(hit: &nudox_engine::mcp::tools::SearchHitDoc) -> SymbolKeyDto {
     SymbolKeyDto(format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem,
-        hit.key.package.name,
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem,
+        hit.hit.key.package.name,
+        hit.hit.key.intro.to_hex()
     ))
 }
 
+/// How long the fixture is allowed to take to load.
+///
+/// Raised from 30 s, which had stopped being a timeout and started being the
+/// assertion: `ra_lower phase=lower_package` alone measures ~28 s for this
+/// four-function crate on a developer machine, so the budget was being missed
+/// on load *before* any of the file's real assertions ran — and the failure
+/// then read as "the package must load", pointing at the producer rather than
+/// at the clock.
+///
+/// The number is deliberately far above the observed cost rather than just
+/// over it: a timeout tight enough to fail under ordinary machine load tests
+/// the machine, not the pipeline. If lowering a crate this small ever genuinely
+/// approaches this budget, that is a performance defect worth its own
+/// investigation — see `elapsed` in the panic below, which reports what it
+/// actually took so a future slowdown is visible instead of mysterious.
+const LOAD_BUDGET: Duration = Duration::from_secs(180);
+
 async fn wait_until_loaded(tools: &NudoxTools) {
     let events = tools.engine().packages();
-    match tokio::time::timeout(Duration::from_secs(30), events.recv_async()).await {
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(LOAD_BUDGET, events.recv_async()).await {
         Ok(Ok(PackageLoadEvent::Loaded { .. })) => {}
         Ok(Ok(PackageLoadEvent::LoadFailed { error, .. })) => {
             panic!("the self-contained Rust package must load: {error}")
         }
         Ok(Ok(other)) => panic!("unexpected package event while loading fixture: {other:?}"),
         Ok(Err(error)) => panic!("package event channel closed before fixture loaded: {error}"),
-        Err(_) => panic!("production engine did not load real fixture within 30 seconds"),
+        Err(_) => panic!(
+            "production engine did not load real fixture within {:?} (waited {:?})",
+            LOAD_BUDGET,
+            started.elapsed(),
+        ),
     }
 }
 
@@ -90,7 +112,7 @@ async fn one_function(tools: &NudoxTools, name: &str) -> SymbolKeyDto {
     let matches: Vec<_> = result
         .hits
         .iter()
-        .filter(|hit| &*hit.display_name == name)
+        .filter(|hit| &*hit.hit.display_name == name)
         .collect();
     assert_eq!(
         matches.len(),
@@ -99,7 +121,7 @@ async fn one_function(tools: &NudoxTools, name: &str) -> SymbolKeyDto {
         result
             .hits
             .iter()
-            .map(|hit| &*hit.display_name)
+            .map(|hit| &*hit.hit.display_name)
             .collect::<Vec<_>>()
     );
     key_of(matches[0])
@@ -119,14 +141,14 @@ async fn one_symbol(tools: &NudoxTools, name: &str, kind: &str) -> SymbolKeyDto 
     let hit = result
         .hits
         .iter()
-        .find(|hit| &*hit.display_name == name)
+        .find(|hit| &*hit.hit.display_name == name)
         .unwrap_or_else(|| {
             panic!(
                 "real source must produce {kind} {name}; got {:?}",
                 result
                     .hits
                     .iter()
-                    .map(|hit| &*hit.display_name)
+                    .map(|hit| &*hit.hit.display_name)
                     .collect::<Vec<_>>()
             )
         });
@@ -249,10 +271,30 @@ async fn real_rust_source_reaches_precise_usages_and_compact_batched_mcp() {
         .await
         .expect("semantic_search must degrade honestly without an embedder");
     assert!(semantic.hits.is_empty());
-    assert!(matches!(
-        semantic.status,
-        SemanticStatus::Unavailable { ref reason } if reason == "NoEmbedder"
-    ));
+    // The label distinguishes the state; the remedy is what a reader can act
+    // on, so both are asserted. The ONNX runtime is compiled in
+    // unconditionally now, so the only way to have no embedder is a missing
+    // model directory — and the remedy must say so, actionably, with no
+    // rebuild suggested.
+    let SemanticStatus::Unavailable {
+        ref reason,
+        ref remedy,
+    } = semantic.status
+    else {
+        panic!(
+            "a build with no embedder must report Unavailable, got {:?}",
+            semantic.status
+        );
+    };
+    assert_eq!(reason, "NoModelConfigured");
+    assert!(
+        remedy.contains("NUDOX_EMBED_MODEL_DIR"),
+        "the no-model remedy must name the variable to set: {remedy}",
+    );
+    assert!(
+        remedy.contains("no rebuild"),
+        "the remedy must say plainly that no rebuild is involved: {remedy}",
+    );
 
     // 5. The compact batch projection preserves request order, carries exact
     // bodies, and does not force the tool to serialise the GUI document model.
@@ -300,7 +342,10 @@ async fn real_rust_source_reaches_precise_usages_and_compact_batched_mcp() {
         batch.symbols[0].source
     );
     assert!(
-        batch.symbols.iter().all(|symbol| symbol.signature.is_none()),
+        batch
+            .symbols
+            .iter()
+            .all(|symbol| symbol.signature.is_none()),
         "source mode must not duplicate signatures already present in exact source"
     );
     assert!(

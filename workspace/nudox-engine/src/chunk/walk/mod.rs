@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
-use nudox_ir::{change::IntroId, entry::Entry, kind::Kind, view::IrView};
 use crate::store::package::PackageView;
+use nudox_ir::{change::IntroId, entry::Entry, kind::Kind, view::IrView};
 
 use crate::wire::{
     FieldRow, KindTag, MemberRow, RenderSection, SectionId, SectionKind, SectionPlan, SharedStr,
@@ -93,6 +93,7 @@ pub(crate) fn walk_doc(
                     sig,
                     kind: KindTag::Known(disc),
                     visibility: child.sym().visibility,
+                    source: crate::wire::SourceLocation::from_ir(child.location()),
                 },
             ))
         })

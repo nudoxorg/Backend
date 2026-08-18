@@ -22,8 +22,8 @@
 //! them with `format!` in `render` would defeat the cache on every frame.
 
 use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce,
-    SharedString, StatefulInteractiveElement as _, Styled, Window, div,
+    App, ElementId, InteractiveElement as _, IntoElement, ParentElement, RenderOnce, SharedString,
+    StatefulInteractiveElement as _, Styled, Window, div,
 };
 
 use crate::theme::ext::ThemeExtAccessor as _;
@@ -162,9 +162,8 @@ impl RenderOnce for SignatureLine {
                             .text_color(ty_colour)
                             .hover(|s| s.underline())
                             .when_some(navigate, |el, navigate| {
-                                el.cursor_pointer().on_click(move |_, window, cx| {
-                                    navigate(&key, window, cx)
-                                })
+                                el.cursor_pointer()
+                                    .on_click(move |_, window, cx| navigate(&key, window, cx))
                             })
                             .child(text)
                             // `.id()` makes this arm a `Stateful<Div>` while the
@@ -175,12 +174,11 @@ impl RenderOnce for SignatureLine {
                     SigToken::Ty { .. } => {
                         div().text_color(ty_colour).child(text).into_any_element()
                     }
-                    SigToken::Kw(_) => {
-                        div().text_color(kw_colour).child(text).into_any_element()
-                    }
-                    SigToken::Punct(_) => {
-                        div().text_color(punct_colour).child(text).into_any_element()
-                    }
+                    SigToken::Kw(_) => div().text_color(kw_colour).child(text).into_any_element(),
+                    SigToken::Punct(_) => div()
+                        .text_color(punct_colour)
+                        .child(text)
+                        .into_any_element(),
                     SigToken::Generic(_) => div()
                         .text_color(generic_colour)
                         .child(text)

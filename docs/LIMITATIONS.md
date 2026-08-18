@@ -218,13 +218,14 @@ and never reach the GUI.
   Verified against a real crate — `memchr::arch::aarch64` (declared
   `#[cfg(target_arch = "aarch64")]` in `result/memchr-2.8.3/src/arch/mod.rs`)
   reaches `SymbolHead.cfg == Some("cfg(target_arch = \"aarch64\")")`.
-- **Still open on the producer side:** five sites build `Symbol` literals directly
-  instead of going through `ctx.symbol_parts()`, and each hardcodes `cfg: None` —
-  `lower_module`'s re-export symbol, `lower_enum`'s variant symbol,
-  `declare_hir_fields`'s field symbol, the builtin-type symbol, and `plain_sym`.
-  Real crates do put `#[cfg(…)]` on enum variants, struct fields and `pub use`
-  re-exports, so these are genuine (smaller) losses. The structural fix is to make
-  the direct-literal construction impossible rather than to patch five call sites.
+- **Still open on the producer side:** synthesized / fallback symbols still
+  hardcode `cfg: None` — `plain_sym` (params / `$return`), `default_parts`,
+  the anonymous-module `unwrap_or_else` fallback, and the re-export symbol
+  (no `HasAttrs` syntax node on that path). Those are correct absences, not
+  dropped predicates.
+- **Closed 2026-08-15:** enum variants, impl headers, and HIR fields now take
+  `cfg` from `docs::cfg_expr` instead of `None`. Pinned by
+  `rust_cfg_on_enum_variants::cfg_on_an_enum_variant_survives_lowering`.
 - `attrs` and `aliases` remain OPEN, untouched.
 
 **See also L14**, which is the same theme at much larger scale.
@@ -626,8 +627,10 @@ listed here without screenshot evidence.
 The `?` case compounds the others — the cheat sheet is the mechanism by which a
 user would *discover* that the command palette exists, and it does not open either.
 
-**Status:** OPEN. Either implement them or remove the bindings; a documented
-binding that does nothing is worse than an absent one.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. The unreachable GraphView and
+PackageBrowser bindings/actions were removed, and a regression test now keeps
+those absent until the views exist. The remaining intentional future views are
+not advertised as bindings.
 
 ---
 
@@ -826,7 +829,11 @@ instances. The IR is already content-addressed in spirit (`ContentHash`, BLAKE3,
 `PristineIntroTable::seal`), and `heart::sync` already exists as an iroh-free
 seam, so the shape is there. Nothing is wired.
 
-**Status:** OPEN, not started. Large.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. `ArchiveCache` now provides a
+typed local SHA-256 content-addressed archive cache with PURL metadata,
+reopen/hash validation, and the existing registry downloader behind it.
+This removes the local-checkout-only boundary for fetched archives. A shared
+IPLD/iroh remote package-and-IR store remains unimplemented.
 
 ---
 
@@ -1527,7 +1534,11 @@ captured frame.
 anything. It may work and merely be unreachable from the keyboard, in which case
 this collapses into L16.
 
-**Status:** OPEN. Filed as F6.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. C# type declarations now carry
+typed `Declared` source locations with byte and line/column data; the C#
+lowering repro and 24-test lowering suite pass under the repository toolchain.
+Member declarations in C# and several other producer/synthesized sites still
+use legacy or unlocated source data, and absolute-path relativization remains.
 
 ---
 
@@ -1543,7 +1554,11 @@ sidebar shows name, version, and symbol count.
 promising any. Adding a rail the engine cannot fill reproduces L30's empty
 table of contents in a new place.
 
-**Status:** OPEN. Filed as F8.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. Optional description,
+repository, and license metadata now flow through `PackageLoadEvent`,
+`PackageRow`, and the project panel, with unknown values represented as
+`None`. Owner, dependency list, release date, homepage, and doc-coverage
+metadata remain absent from the event contract.
 
 ---
 
@@ -1722,7 +1737,15 @@ fixture spells `"typeKind"` where `schema.rs` declares `type_kind`. Only
 snake_case deserializes, so that fixture field is silently `""`. Harmless only
 because nothing reads it — which is exactly why it survived.
 
-**Status:** OPEN.
+**Status:** PARTIALLY RESOLVED, 2026-08-15.
+
+- Namespaces are declared as `Module` (`N:{name}`), nested prefixes included,
+  and top-level types parent onto that module rather than the assembly root.
+  Pinned by `oracle_namespace_is_declared_as_a_module`.
+- Methods and other members now store the Roslyn doc-id as an alias, same as
+  types. Pinned by `method_carries_its_roslyn_doc_id_as_an_alias`.
+- Still open: oracle `diagnostics` / assembly metadata still unused;
+  array rank and `System.Decimal` still unrepresentable.
 
 ---
 
@@ -2191,12 +2214,13 @@ not, and all three diagnoses said so.** Coverage is **4 of 7**:
 | producer | emits for a cross-package type |
 |---|---|
 | Rust, Go, Java, C# | `Ref::Foreign` ✅ |
-| TypeScript | `Primitive::Builtin(name)` — **looks resolved to consumers** |
-| C/C++ | `Type::TypeVar(name)` — **looks resolved to consumers** |
+| TypeScript | `Type::UnresolvedExternal(name)` ✅ (preserves the unresolved identity) |
+| C/C++ | `Type::UnresolvedExternal(name)` ✅ for the previously affected clang path |
 | Python | `Type::Any` |
 
-The TypeScript and clang cases are **worse than `Type::Any`**, because a
-consumer cannot tell them from a genuinely resolved type. Tracked as task #12.
+The TypeScript and clang cases no longer masquerade as resolved types on the
+covered paths. TypeScript has a focused unresolved-nominal regression test;
+the remaining open concern is the unlinked foreign-key census noted below.
 
 **This explains the unexplained +503 symbol jump.** The run reports
 `recovering 510 declarations that previously vanished`. The count did not
@@ -2252,11 +2276,11 @@ same function against the same symmetric namesake set, so they elide the
 identical prefix and diverge exactly where their real paths diverge
 (`io.Error` vs `fmt.Error`). Pinned by an adversarial test.
 
-**Known sibling defect, disclosed not hidden:**
-`crates/nudox-engine/src/search.rs::qualified_display_name` builds its label
-from the same raw `path_of` output and has the identical repetition bug when a
-search collision forces the qualified form. Different call site, different
-problem — left alone under scope discipline. Tracked as task #14.
+**Known sibling defect, closed 2026-08-15 (F1 / task #14):**
+`qualified_display_name` now collapses adjacent identical path segments with
+the same helper signature rendering already used
+(`collapse_repeated_segments`). Pinned by
+`qualified_display_name_does_not_repeat_the_crate_root_segment`.
 
 **Status:** LANDED, verification incomplete. See tasks #12 and #14.
 
@@ -2540,7 +2564,12 @@ effort can resolve them.
    `{key, label, is_blanket, trait_label, self_generic_count}`. A per-impl source
    link has nothing to point at.
 
-**Status:** OPEN, all three.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. Version-aware package events now
+forward later generations, the GUI store retains the latest loaded version,
+and C# type declarations carry typed `Declared` source locations. The wire
+also carries impl source data. Remaining gaps are GUI impl-row rendering,
+legacy member/synthesized producer locations, and absolute-path
+relativization.
 
 ---
 
@@ -3292,8 +3321,20 @@ path — e.g. a field on the extraction result, typed/counted/bounded/visible pe
 the L46 discipline — which touches the shared `Producer`/`ProducerError`
 contract in `workspace/compiler/producer/src/lib.rs`, out of this task's scope.
 
-**Status:** OPEN. Recorded, not fixed. The next fix must design the carrier on
-the success path before touching `ra/loaded.rs`, not the other way around.
+**Status:** RESOLVED, 2026-08-15, on the success path LIMITATIONS asked for.
+
+- `LoadCompleteness` gained a third axis, `proc_macros: ProcMacroAvailability`
+  (`Available` / `Unavailable(String)`). A missing proc-macro server is
+  recorded there when `load_workspace` sees `proc_macro.is_none()`.
+- `is_degraded()` and `require_complete` ignore this axis — extraction still
+  succeeds with fewer entries; callers inspect `completeness().proc_macros()`.
+- `producer_error_for` maps `Error::ProcMacroDegraded` to
+  `ProducerError::ProcMacroDegraded` instead of `UnsupportedConstruct`. The
+  load path still does not construct that error (soft, not a package failure).
+- Pinned by `proc_macro_degraded_is_not_mapped_to_unsupported_construct` and
+  `missing_proc_macro_server_is_recorded_and_is_not_a_hard_error`.
+- Residual: the corpus fixture still avoids asserting on proc-macro-derived
+  items, so silent expansion failure in a *working* server is untested.
 
 ---
 
@@ -3328,7 +3369,11 @@ that only exists under `//go:build windows`) documents only whatever the build
 host happens to be, with nothing in the extraction's output recording that
 other platforms exist or were skipped.
 
-**Status:** OPEN. Unrecorded before this entry.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. Go extraction now scans excluded
+source files and carries typed build-constraint diagnostics plus exported
+declaration names, so host-platform omission is visible instead of silent.
+Cross-platform compilation and a full end-to-end oracle run remain
+environment-dependent; this host has no `go` executable.
 
 ---
 
@@ -3350,7 +3395,9 @@ members — which can differ arbitrarily from the primary template's — never
 reach the oracle, and nothing in the extraction's diagnostics counts or names
 what was skipped.
 
-**Status:** OPEN. Unrecorded before this entry.
+**Status:** RESOLVED, 2026-08-15. `visit_entity` now dispatches
+`EntityKind::ClassTemplatePartialSpecialization` through `visit_record`.
+Pinned by `partial_template_specialization_is_extracted`.
 
 ---
 
@@ -3373,7 +3420,11 @@ and every other `#define`d constant or function-like macro in a documented
 library is real, real API surface, and it is silently absent from every
 extraction this producer has ever produced.
 
-**Status:** OPEN. Unrecorded before this entry.
+**Status:** RESOLVED, 2026-08-15. Both parsers request
+`detailed_preprocessing_record(true)`; `MacroDefinition` is visited as an
+`OracleVar` (synthetic USR if libclang has none). Pinned by
+`macro_definition_is_extracted_as_a_named_declaration`. Function-like macros
+are recorded as named vars, not as callable IR; expansions are still ignored.
 
 ---
 
@@ -3398,7 +3449,12 @@ now handles (see the `nuget_corpus.rs` module docs). A package whose public API
 is partly generator-emitted documents only its hand-written half, with nothing
 in the extraction's diagnostics naming what a generator would have added.
 
-**Status:** OPEN. Unrecorded before this entry.
+**Status:** PARTIALLY RESOLVED, 2026-08-15. Source-mode C# extraction now
+includes a typed `generatorSupport: "unavailable"` field and a regression
+test verifies that configured-analyzer requests expose the limitation instead
+of silently claiming generated members were analyzed. Running generators is
+still unsupported; validation of the published oracle is blocked on this host
+because `dotnet` is unavailable.
 
 ---
 
@@ -3429,11 +3485,102 @@ first sign anything is wrong is an MCP-backed action failing, which reads as a
 bug in whatever feature made that call rather than as an account problem,
 because nothing in the still-open window said otherwise.
 
-**Status:** OPEN, disclosed rather than fixed at the same time the gate itself
-landed (2026-08-10). Closing it needs a periodic re-check — something already
-absent for the status bar's account chip, which reads the same cached
-`AccountService::status` this gate does — scoped out as a separate concern
-from wiring the gate to the posture machinery that already exists.
+**Status:** RESOLVED, 2026-08-15. `Shell` owns a 60s GPUI task
+(`ACCOUNT_GATE_RECHECK`) that calls `AccountService::refresh` and re-engages
+or settles the gate on the ungated→cannot-work / gated→can-work transitions.
+Pinned by `shell_arms_an_account_posture_recheck_while_the_window_stays_open`.
+MCP `AccountGate::admit` was already clock-derived per call; this closes the
+presentation-layer staleness only.
+
+---
+
+## L57 — Six of the seven producers record no reference graph, and `refs` reports the silence as an answer
+
+**Blast radius:** every `refs` call against a TypeScript, Go, Java, C#, Python
+or C/C++ package — that is, six of the seven supported ecosystems. The failure
+is silent and its wrong reading is the confident one: an agent asks "who calls
+this?", gets an empty page with `truncated: false`, and concludes the symbol is
+dead code. Reported from the field against a TypeScript package where the
+queried function had a caller in the same file.
+
+**Evidence:** `grep -rn 'record_occurrence\|record_foreign_occurrence'
+workspace/compiler/languages/src/` returns hits in exactly one file —
+`rust/mod.rs`, whose `lower` loops over `ra::lower_workspace`'s occurrences and
+records each. The TypeScript producer's `lower`
+(`workspace/compiler/languages/src/typescript/mod.rs`) calls `lower_package`
+and returns; `emit.rs` emits declarations only. The other five are the same
+shape.
+
+Downstream, `PackageIndexes::usages_of`
+(`workspace/nudox-engine/src/store/package.rs`) returns `&[]` when the target
+has no posting list, and nothing between there and the MCP result distinguishes
+"no posting list was ever built" from "this posting list is empty". The
+`usages` builder is fed at `package.rs:706-712` by filtering occurrences that
+were never recorded, so the builder is not empty by accident — it is empty by
+construction, for every symbol in the package.
+
+This is the exact shape doctrine §8 names: a degraded case presented as the good
+one. It is worse than the `Option<SharedString>` case L35 records, because that
+one rendered as *absence* and this one renders as *data*.
+
+**Status:** PARTIALLY RESOLVED, 2026-08-16. The honesty half is fixed:
+`RefsResult` now carries `coverage: Option<ReferenceCoverage>`, computed from a
+package-level `occurrences_recorded` fact rather than from a language allowlist
+in the MCP layer, and follows `SearchResult::semantic`'s discipline of being
+omitted when the page is authoritative. A `NotRecorded` page can no longer be
+mistaken for an empty one. Regression tests:
+`workspace/nudox-engine/tests/mcp/refs_non_rust_languages.rs`.
+
+The capability half is NOT fixed: the six producers still record nothing, so
+`refs` remains unable to answer for them — it can now only say so. TypeScript is
+the cheapest to close, because `graph::build_and_extract` already runs OXC's
+`SemanticBuilder`, which resolves every identifier to a symbol and holds its
+reference list; the gap is in lowering, not in analysis. A genuinely
+reference-free package is deliberately folded into `NotRecorded` rather than
+given its own state — under-claiming rather than over-claiming.
+
+---
+
+## L58 — `NoEmbedder` collapses two configurations whose remedies share nothing
+
+**Blast radius:** every user who sees `~sem:unavailable(NoEmbedder)` and has to
+work out which of two unrelated things to do about it. Semantic search is the
+capability that makes the corpus explorable by concept rather than by exact
+identifier, so its being off — for a reason the reader cannot determine — takes
+the "explore an unfamiliar codebase" use case with it.
+
+**Evidence:** `crate::semantic::Unavailable::NoEmbedder` is produced at exactly
+one place, `search/mod.rs:400`, when `EngineConfig::embedder` is `None`. Two
+independent, non-overlapping conditions produce that `None`:
+
+1. `embed::load_from_env` is `#[cfg(not(feature = "onnx"))] None` — a
+   compile-time constant. `onnx` is off by default in `nudox-engine`, and
+   `lindsey` forwards it only behind its own non-default `semantic-onnx`
+   feature, so the shipped binary is this case unless deliberately built
+   otherwise. **Remedy: rebuild.**
+2. With `onnx` on, `embed/onnx.rs:32-48` returns `None` when
+   `NUDOX_EMBED_MODEL_DIR` is unset. **Remedy: set one environment variable.**
+
+The two are indistinguishable in the reported reason, and guessing wrong costs a
+long rebuild *and* leaves the variable unset.
+
+`Unavailable`'s own doc comment makes precisely this argument one level up, about
+`ModelFailed` versus `NoEmbedder`: the two are kept apart because they "send a
+reader to completely different places", and collapsing them "would have made a
+broken model indistinguishable from a deliberate configuration". The same test
+applied to `NoEmbedder` splits it.
+
+Secondary, and separate: the reported reason is an enum *name*, not an action.
+Every other user-fixable unavailable state in this codebase says what to do —
+`McpStatus::failed` walks the whole `#[source]` chain specifically so a
+five-second diagnosis does not become an hour.
+
+**Status:** OPEN as of 2026-08-16. Contract pinned by
+`workspace/nudox-engine/tests/engine/semantic_unconfigured_is_actionable.rs`,
+which requires the two states to be distinct values and each to carry a remedy
+naming the thing to change. Note also that the semantic index is in-memory and
+never persisted (`semantic.rs:287-290`), so even a fully configured build
+re-embeds the corpus on every launch — a separate cost, not tracked here.
 
 ---
 
@@ -3504,4 +3651,143 @@ built against the toolchain's default deployment target (14.0 against the
 installed 14.4 SDK) with no `MACOSX_DEPLOYMENT_TARGET` override in *this* crate
 (Zed's own 10.15.7 setting lives in Zed's build.rs, which does not run here).
 Lowering it is possible but unverified, so it is not claimed.
+
+---
+
+## Java artifact coverage — 2026-08-16
+
+Under Nix OpenJDK 21, Kafka and Retrofit lower with explicit, Nix-pinned,
+per-package binary dependency classpaths. Only Lombok remains intentionally
+red for content-specific reasons; Java artifact coverage remains limited.
+
+---
+
+## Audit snapshot — 2026-08-16
+
+This ledger is retained. It is not a release blocker list alone: it records
+active correctness gaps, deliberately typed unavailable capabilities, support
+boundaries, and the evidence behind safeguards that would otherwise look
+unnecessary. Deleting it would falsely imply that those boundaries no longer
+exist.
+
+### Re-verified this pass
+
+- The Nix development shell supplies `javac 21.0.11`.
+- `nix develop -c cargo test -p nudox-languages --test java_corpus_sweep -- --nocapture`
+  passed all nine test assertions. Its diagnostic sweep lowered **21/22** Maven
+  entries, rather than the stale 5/22, 6/22, or 19/22 figures elsewhere in
+  this historical ledger.
+- Kafka's Jackson secondary type and Retrofit's Kotlin/Android/OkHttp types
+  now resolve through explicit, Nix-pinned `--class-path` jars. Those jars
+  cannot become lowering input: they live in `result/.class-path`, the source
+  walker skips dot-directories, and only the selected package's test scopes
+  the compiler flag.
+- Lombok remains the sole expected failure: source level 9 parses its legacy
+  `@interface var`, but its published sources still need non-published and
+  Eclipse-build dependencies. Its assertion is evidence that this remaining
+  limitation is diagnosed, not evidence that Java coverage is complete.
+
+### Status corrections required when individual entries are next revised
+
+The historical entries below have implementation and regression evidence newer
+than their local status lines. Do not rely on their older `OPEN` wording:
+L16 (view-scoped action dispatch), L18 (breadcrumb de-duplication), L20
+(qualified search names), L25 (root nextest exclusions), L27 (per-link bracket
+interpretation), and L36 (real-corpus MCP transport) are covered by current
+code and tests. A future consolidation should update those entries in place
+without erasing the original diagnosis.
+
+### Active work that prevents retirement
+
+At minimum, L1, L3, L5, L19, L23, L26, L30–L32, L37, L41–L42, L45, L51–L55,
+remote/shared package storage, Linux validation, real-VM infrastructure,
+mutation execution, and multi-package memory-pressure testing remain open or
+partial. Several are product decisions or environment-dependent support
+boundaries, not defects that can be made to disappear by editing documentation.
+
+### Update — Python producer support
+
+L43's historical pyrefly blocker is no longer current. The default pyrefly
+producer path, the `--no-default-features` syntax-only fallback, 22-package
+real-PyPI corpus sweep, inference spot checks, and the type-lattice census all
+pass in the current tree. Python support is therefore no longer an active
+reason to retain this ledger; the older entry remains as the record of why
+typed unavailability and the fallback path exist.
+
+### Current-state reconciliation — Java, Python, and index deltas
+
+The current Java result is **21/22**, not the older 5/22, 6/22, or 19/22
+snapshots. It was established by:
+
+```text
+nix develop -c cargo test -p nudox-languages --test java_corpus_sweep -- --nocapture
+```
+
+That run passed all nine assertions under `javac 21.0.11`, representing the
+current Java 21/22 toolchain line. Kafka and Retrofit now lower with explicit,
+Nix-pinned binary dependency classpaths. Those jars are classpath-only and are
+not source-walked or lowered. Lombok is the sole remaining red entry, so L45
+is not resolved.
+
+The remaining Lombok barrier is partly **non-artifact**: its sources require a
+pre-Java-10 source level because they declare `public @interface var`, but they
+also use removed or non-exported `com.sun.tools.javac` APIs on the running JDK.
+`--release` cannot be combined with the needed `--add-exports`, so completing
+the dependency/artifact closure would still not make this source/JDK
+combination lower cleanly. The published source classifier's omitted
+generated/build-only material remains a separate artifact boundary. The
+named Lombok tests deliberately prove these failure modes rather than
+weakening the floor.
+
+Python is supported by the current producer path, not merely registered:
+`every_provisioned_pypi_corpus_package_lowers_real_named_declarations` covers
+all 22 provisioned entries with named-symbol canaries and non-module floors,
+and `a_producer_that_contributes_nothing_is_rejected_even_under_the_default_contract`
+guards against the former root-only stub. The older L43 text is retained as
+history and must not be read as the current Python verdict.
+
+Index facet deltas are also covered now:
+`changing_version_facets_emits_one_delta_outbox_without_duplicates` proves that
+a real facet-only change emits one outbox notification while identical
+reapplication emits none; `reapplying_identical_package_and_version_emits_no_duplicate_outbox`
+and the related store, enumeration, and pipeline tests cover the unchanged
+metadata path. This closes only the duplicate-notification defect. Full
+changeset/delta representation and propagation through ingest, store, and
+search remain open under L43-ic.
+
+## L5 update — serde_json corpus lowering is bounded and green
+
+The registered `rust_serde_json_diagnosis` test now provisions the complete
+offline Cargo dependency closure, including the missing dev-dependency path
+that first failed at `automod`. It lowers 5,201 entries in 38,079.7 ms under
+the 300-second budget (build scripts 485.8 ms; lowering 35,890.9 ms). The
+former timeout was a missing offline metadata dependency rather than an
+undiagnosed lowering hang.
+
+## L49 update — bounded mutation gate executes in Nix
+
+The Nix dev shell now provides `cargo-mutants 27.1.0`. Its bounded six-mutant
+library run completed with five mutants caught, zero survivors, and one
+unviable result; the baseline and zero-limit regression pass. Automated
+mutation execution is no longer blocked on a missing tool.
+
+## Unresolved categories that still prevent deletion
+
+At minimum, deletion would still be dishonest because these categories remain
+open, partial, or explicitly environment-bound:
+
+- corpus/IR correctness and measurement (L1, L3, L19, L23), including
+  remaining foreign/type/value gaps and producer source-location gaps;
+- Java's Lombok source/JDK incompatibility and the broader dependency-artifact
+  policy (L45);
+- complete index changesets/search propagation (L43-ic), live
+  transport/watermark integration, and multi-package memory-pressure testing;
+- semantic-search runtime/model provisioning and default-build availability;
+- remote/shared package and IR storage beyond the local archive cache;
+- MCP application wiring and remaining daemon/file-watching stubs (L35/L37);
+- real-VM sandbox infrastructure (L26) and Linux/cross-platform validation;
+- GUI/backend source jumping, provenance/metadata incompleteness, and remaining
+  producer location gaps; and
+- reproducibility, packaging, and other historical claims whose evidence is
+  intentionally retained rather than upgraded to “resolved.”
 

@@ -491,7 +491,8 @@ mod tests {
         // Sorted output should be identical regardless of input order.
         // (Note: v2.0.0 and v2.0.0+incompatible are equal, so we compare
         // the canonical strings after sorting.)
-        let canonical_sorted: Vec<String> = sorted.iter().map(super::GoVersion::canonical).collect();
+        let canonical_sorted: Vec<String> =
+            sorted.iter().map(super::GoVersion::canonical).collect();
         let canonical_perm1_len = perm1.iter().map(super::GoVersion::canonical).count();
         let canonical_perm2_len = perm2.iter().map(super::GoVersion::canonical).count();
         // They may differ only for equal elements (e.g. v2.0.0 vs v2.0.0+incompatible).

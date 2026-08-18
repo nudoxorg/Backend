@@ -24,6 +24,31 @@ pub struct VersionLifecycle {
 }
 
 /// Write a version's lifecycle columns (and only those columns).
+///
+/// # Does not fan out to the Text sink
+///
+/// This used to unconditionally `emit_outbox_row(.., SinkKind::Text, Upsert)`
+/// after every write — i.e. on *every* pipeline phase transition
+/// (`Acquiring`/`Extracting`/`Compiling`/`Emitting`), not just the terminal
+/// one. One parse job therefore left five-plus Text intents behind it (one
+/// per `set_state` call, via `GlobalStore::write_state`), all functionally
+/// identical from the Text/package-search sink's point of view — its
+/// consumer (`materialize`'s `SinkKind::Text` arm) is a no-op; the real work
+/// happens in the separate `package_index_poller`, which reads the *current*
+/// catalog row whenever it processes an intent, not a per-emission snapshot.
+/// Bookkeeping transitions through the pipeline's phases carry no
+/// search-relevant change, so they need no Text signal at all.
+///
+/// Two other places *do* carry a real Text-relevant change and each emits its
+/// own dedicated signal: metadata becoming known/updated, at
+/// `store::apply::apply_run`'s `CatalogOp::UpsertVersion` arm (see
+/// `tests/store_apply.rs` / `tests/dolt_engine.rs`), and a generation
+/// reaching the terminal `Stored` state — once symbols actually exist to
+/// project — at `coordination::Outbox::record_stored` (see that function's
+/// doc comment for why Text is emitted there too, symmetric with
+/// Vector/Graph, and `tests/text_sink_recovers_after_stored.rs` for the
+/// regression it fixes). Emitting from *this* function in between would
+/// still be pure duplication, not a second necessary signal.
 pub fn set_version_lifecycle<E: CatalogEngine>(
     engine: &E,
     version: PackageId,
@@ -54,13 +79,7 @@ pub fn set_version_lifecycle<E: CatalogEngine>(
             what: "versions row for lifecycle write",
         });
     }
-    super::apply::emit_outbox_row(
-        engine,
-        Some(version),
-        None,
-        SinkKind::Text,
-        OutboxOperation::Upsert,
-    )
+    Ok(())
 }
 
 /// Read a version's lifecycle columns. `Ok(None)` when the row is absent.
@@ -88,7 +107,8 @@ pub fn version_lifecycle<E: CatalogEngine>(
         return Ok(None);
     };
     Ok(Some(VersionLifecycle {
-        parse_state: ParseState::from_token(&state_token).map_err(crate::codec::CodecError::from)?,
+        parse_state: ParseState::from_token(&state_token)
+            .map_err(crate::codec::CodecError::from)?,
         parse_phase,
         attempts,
         failure,
@@ -116,10 +136,7 @@ pub fn record_stored_generation<E: CatalogEngine>(
     let stmt = generations::Entity::insert(am)
         .on_conflict(
             OnConflict::column(generations::Column::GenStamp)
-                .update_columns([
-                    generations::Column::SealedAt,
-                    generations::Column::IrStatus,
-                ])
+                .update_columns([generations::Column::SealedAt, generations::Column::IrStatus])
                 .to_owned(),
         )
         .build(DbBackend::Sqlite);
@@ -330,8 +347,19 @@ pub fn set_archive_cache_meta<E: CatalogEngine>(
     Ok(())
 }
 
-/// Overwrite a version's facet row and emit a Text outbox row.
-pub fn set_facets<E: CatalogEngine>(
+/// Overwrite a version's facet row (write only — does not fan out).
+///
+/// Split out of [`set_facets`] for callers that already emit their own Text
+/// signal for the very same event they're calling this from — most notably
+/// `coordination::Outbox::record_stored`, which just transitioned the
+/// version's lifecycle to `Stored` and is about to notify Vector/Graph
+/// explicitly. `record_stored`'s facets write used to *also* call the
+/// emitting [`set_facets`] immediately after, so one `Stored` transition left
+/// two Text intents where the metadata-upsert intent (`store::apply`'s
+/// `CatalogOp::UpsertVersion` arm, fired at `ensure_initialized` track time)
+/// had already left the one that matters (see
+/// `tests/pipeline_end_to_end.rs::package_is_parsed_once_and_fanned_out`).
+fn set_facets_row<E: CatalogEngine>(
     engine: &E,
     version: PackageId,
     keywords: Option<&str>,
@@ -356,6 +384,18 @@ pub fn set_facets<E: CatalogEngine>(
         )
         .build(DbBackend::Sqlite);
     engine::exec(engine, stmt)?;
+    Ok(())
+}
+
+/// Overwrite a version's facet row and emit a Text outbox row.
+pub fn set_facets<E: CatalogEngine>(
+    engine: &E,
+    version: PackageId,
+    keywords: Option<&str>,
+    quality_ppm: Option<i64>,
+    extras_json: Option<&str>,
+) -> Result<(), MetaError> {
+    set_facets_row(engine, version, keywords, quality_ppm, extras_json)?;
     super::apply::emit_outbox_row(
         engine,
         Some(version),
@@ -363,6 +403,82 @@ pub fn set_facets<E: CatalogEngine>(
         SinkKind::Text,
         OutboxOperation::Upsert,
     )
+}
+
+/// Overwrite a version's facet row without emitting an outbox row. See
+/// [`set_facets_row`] (which this wraps) for why this variant exists.
+pub fn set_facets_quiet<E: CatalogEngine>(
+    engine: &E,
+    version: PackageId,
+    keywords: Option<&str>,
+    quality_ppm: Option<i64>,
+    extras_json: Option<&str>,
+) -> Result<(), MetaError> {
+    set_facets_row(engine, version, keywords, quality_ppm, extras_json)
+}
+
+/// Batched form of [`set_facets`]: upsert many versions' facets and emit
+/// their outbox rows in **one** transaction — one `INSERT … ON CONFLICT` for
+/// the facets rows plus one `INSERT` for the outbox rows, instead of two
+/// engine round-trips (each its own SQLite autocommit outside an explicit
+/// transaction) per version. Used by `Catalog::refresh_dependents` /
+/// `refresh_popularity_percentiles`, which can touch the whole corpus.
+///
+/// Each row is `(version, keywords, quality_ppm, extras_json)`, matching
+/// `set_facets`'s parameters. A no-op for an empty slice.
+pub fn set_facets_batch<E: CatalogEngine>(
+    engine: &E,
+    rows: &[(PackageId, Option<String>, Option<i64>, Option<String>)],
+) -> Result<(), MetaError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut deferred: Option<MetaError> = None;
+    let transaction_result = engine.transaction(&mut |tx| {
+        let models =
+            rows.iter().map(
+                |(version, keywords, quality_ppm, extras_json)| facets::ActiveModel {
+                    version_id: Set(*version.as_uuid()),
+                    keywords: Set(keywords.clone()),
+                    quality_ppm: Set(*quality_ppm),
+                    extras: Set(extras_json.clone()),
+                },
+            );
+        let stmt = facets::Entity::insert_many(models)
+            .on_conflict(
+                OnConflict::column(facets::Column::VersionId)
+                    .update_columns([
+                        facets::Column::Keywords,
+                        facets::Column::QualityPpm,
+                        facets::Column::Extras,
+                    ])
+                    .to_owned(),
+            )
+            .build(DbBackend::Sqlite);
+        engine::exec(tx, stmt)?;
+
+        if let Err(error) = super::apply::emit_outbox_rows(
+            tx,
+            rows.iter().map(|(version, ..)| *version),
+            SinkKind::Text,
+            OutboxOperation::Upsert,
+        ) {
+            let engine_error = match error {
+                MetaError::Engine(inner) => inner,
+                other => {
+                    let message = other.to_string();
+                    deferred = Some(other);
+                    crate::engine::EngineError::Statement(message)
+                }
+            };
+            return Err(engine_error);
+        }
+        Ok(())
+    });
+    match transaction_result {
+        Ok(()) => Ok(()),
+        Err(engine_error) => Err(deferred.unwrap_or(MetaError::Engine(engine_error))),
+    }
 }
 
 /// A facet row: `(keywords, quality_ppm, extras_json)`.
@@ -455,7 +571,18 @@ pub fn latest_listing<E: CatalogEngine>(
 pub fn version_record<E: CatalogEngine>(
     engine: &E,
     version: PackageId,
-) -> Result<Option<(String, String, Option<String>, String, String, String, String)>, MetaError> {
+) -> Result<
+    Option<(
+        String,
+        String,
+        Option<String>,
+        String,
+        String,
+        String,
+        String,
+    )>,
+    MetaError,
+> {
     use sea_orm::sea_query::Expr;
 
     let stmt = versions::Entity::find()
@@ -515,4 +642,3 @@ pub fn versions_in_state<E: CatalogEngine>(
         })
         .collect()
 }
-

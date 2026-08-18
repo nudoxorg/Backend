@@ -6,22 +6,39 @@
 //! its stdin/stdout — a second consumer of those handles would corrupt both.
 //! Streamable HTTP is the transport MCP defines for exactly this case.
 //!
-//! # Why an ephemeral port
+//! # Why an ephemeral port, and why it can now be a *remembered* one
 //!
-//! The listener binds `127.0.0.1:0`, so the kernel picks a free port. A fixed
-//! port would mean two `lindsey` windows on one machine collide on start-up,
-//! with the loser either failing or — worse — silently attaching an agent to
-//! the other window's corpus. The bound [`SocketAddr`] is available from
-//! [`McpEndpoint::addr`] the moment [`McpEndpoint::start`] returns, so the
+//! The listener defaults to `127.0.0.1:0`, so the kernel picks a free port. A
+//! fixed port would mean two `lindsey` windows on one machine collide on
+//! start-up, with the loser either failing or — worse — silently attaching an
+//! agent to the other window's corpus. The bound [`SocketAddr`] is available
+//! from [`McpEndpoint::addr`] the moment [`McpEndpoint::start`] returns, so the
 //! status bar and Settings → Connection can display it (GUI-PLAN §21).
+//!
+//! That collision hazard is real, but it is not a reason for the port to
+//! change on *every* launch — only on a genuine collision, which is
+//! detectable: the second binder finds the port taken. [`PortPreference`] and
+//! [`preferred_bind`] carry that distinction: a caller may ask this module to
+//! try a specific port again (typically the one a previous launch used and
+//! recorded — see `crate::mcp::identity::EndpointIdentity`), and
+//! [`McpEndpoint::start_with_preference`] falls back to the kernel-assigned
+//! behaviour only when that specific bind fails. The single-window case, which
+//! is nearly every case, gets a stable port; the two-window case keeps the
+//! guarantee it always had.
 //!
 //! # Local-only by construction
 //!
-//! [`LOOPBACK_BIND`] is a constant, not a setting. There is no code path in
-//! this crate that binds anything else, so "local only" is a property of the
-//! type system's reachable states rather than of a default that a config file
-//! could override. rmcp's own `allowed_hosts` DNS-rebinding guard is left at
-//! its loopback default on top of that.
+//! [`LOOPBACK_BIND`] is a constant, and [`preferred_bind`] is a pure function
+//! from [`PortPreference`] to a [`SocketAddr`] — no I/O, no environment. Every
+//! branch of that function hard-codes [`Ipv4Addr::LOCALHOST`]; only the *port*
+//! varies with the preference. So introducing a state file that can influence
+//! the port does not reopen "local only is a property of a default a config
+//! file could override" — the config file this module reads (indirectly, via
+//! [`McpEndpoint::start_with_preference`]'s caller) can only ever supply a
+//! *port number*, never an address, and `tests/mcp/endpoint_stability.rs`
+//! pins that no reachable [`PortPreference`] can change that. rmcp's own
+//! `allowed_hosts` DNS-rebinding guard is left at its loopback default on top
+//! of that.
 //!
 //! # Why the token layer sits outside rmcp
 //!
@@ -48,15 +65,59 @@ use crate::mcp::error::McpError;
 use crate::mcp::server::NudoxMcpServer;
 use crate::mcp::session::{SessionToken, Unauthenticated};
 
-/// The only address this server ever binds: loopback, kernel-assigned port.
+/// Loopback, kernel-assigned port — [`preferred_bind`]`(`[`PortPreference::Any`]`)`.
 ///
-/// Not configurable in v1 (§L6). Changing this constant is the only way to
-/// make the server reachable off-box, which makes such a change visible in a
-/// diff rather than hidden in a settings file.
+/// Kept as a named constant because it is what every caller wanted before
+/// [`PortPreference`] existed, and is still what [`McpEndpoint::start`] uses.
+/// Not configurable in the sense that matters (§L6): every value
+/// [`preferred_bind`] can produce is loopback, so nothing that reaches this
+/// module can make the server bind off-box — only the port varies, never the
+/// address.
 pub const LOOPBACK_BIND: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 
 /// The HTTP path the MCP endpoint is mounted at.
 pub const MCP_PATH: &str = "/mcp";
+
+/// What port [`McpEndpoint::start_with_preference`] should try to bind.
+///
+/// A caller-facing choice, not a caller-facing address: this says *what to
+/// try*, and [`preferred_bind`] is the only thing that turns it into a
+/// [`SocketAddr`], so there is exactly one place that decision can go wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PortPreference {
+    /// No memory of a previous launch — first run, or a discarded/corrupt
+    /// state file (`crate::mcp::identity::EndpointIdentity::load` returning
+    /// `None`). The kernel picks a free port, as it always has.
+    Any,
+    /// A previous launch's port, worth trying again so a client config a user
+    /// pasted once keeps working. Not a guarantee: [`McpEndpoint::start_with_preference`]
+    /// falls back to [`PortPreference::Any`]'s behaviour if this port turns
+    /// out to be taken.
+    Remembered(u16),
+}
+
+/// Turn a [`PortPreference`] into the loopback address to bind.
+///
+/// Pure: no I/O, no environment access, so the whole decision table —
+/// including "a remembered port of zero is not a preference" — is a plain
+/// unit test rather than something that needs a real socket, following
+/// `app::corpus::select`'s split between a pure decision and the I/O shell
+/// around it. Every branch binds [`Ipv4Addr::LOCALHOST`]; only the port
+/// changes. That is what keeps the "Local-only by construction" claim above
+/// true now that a state file feeds this function a port.
+pub const fn preferred_bind(preference: PortPreference) -> SocketAddr {
+    let port = match preference {
+        PortPreference::Any => 0,
+        // Zero is what an empty or corrupt state file decodes to, not a real
+        // preference. Binding it *would* happen to work (port 0 is ephemeral
+        // either way), but treating that as intentional would hide a corrupt
+        // state file behind a coincidence — so it is normalised to `Any`
+        // explicitly instead.
+        PortPreference::Remembered(0) => 0,
+        PortPreference::Remembered(port) => port,
+    };
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
+}
 
 /// A running MCP server.
 ///
@@ -87,25 +148,34 @@ impl McpEndpoint {
         Self::start_with_token(server, SessionToken::generate()).await
     }
 
-    /// Bind and start with a caller-supplied token.
+    /// Bind and start with a caller-supplied token, on an ephemeral port.
     ///
     /// Used by tests, which need to know the secret before the server exists.
+    /// Equivalent to [`start_with_preference`](Self::start_with_preference)
+    /// with [`PortPreference::Any`] — port stability is a decision for a
+    /// caller that knows whether a previous launch is worth remembering
+    /// (`McpHost::start`), not something every test and doc example should
+    /// have to thread through by hand.
     pub async fn start_with_token(
         server: NudoxMcpServer,
         token: SessionToken,
     ) -> Result<Self, McpError> {
-        let listener = TcpListener::bind(LOOPBACK_BIND)
-            .await
-            .map_err(|source| McpError::Bind {
-                addr: LOOPBACK_BIND,
-                source,
-            })?;
-        let addr = listener.local_addr().map_err(|source| McpError::Bind {
-            addr: LOOPBACK_BIND,
-            source,
-        })?;
+        Self::start_with_preference(server, token, PortPreference::Any).await
+    }
 
-        debug_assert!(addr.ip().is_loopback(), "LOOPBACK_BIND must bind loopback");
+    /// Bind and start with a caller-supplied token and port preference.
+    ///
+    /// `preference` names what to *try*, not what is guaranteed: see
+    /// [`PortPreference::Remembered`]. Which address was actually requested
+    /// and, if it had to fall back, why, are always logged — a silent
+    /// fallback would make "why did my pasted config stop working" the kind
+    /// of question nobody can answer from the running process.
+    pub async fn start_with_preference(
+        server: NudoxMcpServer,
+        token: SessionToken,
+        preference: PortPreference,
+    ) -> Result<Self, McpError> {
+        let (listener, addr) = Self::bind_preferring(preference).await?;
 
         let config = StreamableHttpServerConfig::default();
         let shutdown = config.cancellation_token.clone();
@@ -142,6 +212,57 @@ impl McpEndpoint {
             shutdown,
             task,
         })
+    }
+
+    /// Bind loopback, preferring `preference`'s port and falling back to
+    /// [`PortPreference::Any`]'s kernel-assigned behaviour on failure.
+    ///
+    /// Only a genuinely *remembered* port (a non-zero one — see
+    /// [`preferred_bind`]'s normalisation of `Remembered(0)`) is worth
+    /// retrying: if the kernel was already free to pick, a second bind would
+    /// just ask it the same question again and could only fail the same way.
+    /// The fallback is logged rather than silent, because a config that
+    /// worked yesterday and does not today is otherwise undebuggable from the
+    /// running process.
+    async fn bind_preferring(
+        preference: PortPreference,
+    ) -> Result<(TcpListener, SocketAddr), McpError> {
+        let requested = preferred_bind(preference);
+        let (listener, bound_at) = match TcpListener::bind(requested).await {
+            Ok(listener) => (listener, requested),
+            Err(source) if requested.port() != 0 => {
+                let fallback = preferred_bind(PortPreference::Any);
+                tracing::info!(
+                    remembered = %requested,
+                    error = %source,
+                    "remembered mcp port is unavailable; falling back to an ephemeral port",
+                );
+                let listener =
+                    TcpListener::bind(fallback)
+                        .await
+                        .map_err(|source| McpError::Bind {
+                            addr: fallback,
+                            source,
+                        })?;
+                (listener, fallback)
+            }
+            Err(source) => {
+                return Err(McpError::Bind {
+                    addr: requested,
+                    source,
+                });
+            }
+        };
+
+        let addr = listener.local_addr().map_err(|source| McpError::Bind {
+            addr: bound_at,
+            source,
+        })?;
+        debug_assert!(
+            addr.ip().is_loopback(),
+            "preferred_bind must always be loopback"
+        );
+        Ok((listener, addr))
     }
 
     /// The bound address, including the kernel-assigned port.
@@ -314,6 +435,23 @@ mod tests {
             LOOPBACK_BIND.port(),
             0,
             "port 0 asks the kernel for a free port"
+        );
+    }
+
+    /// The full decision table for `preferred_bind` lives in
+    /// `tests/mcp/endpoint_stability.rs`, which is the contract; this pins
+    /// just the two cases co-located with the function they test.
+    #[test]
+    fn preferred_bind_tries_a_remembered_port_and_normalises_zero_to_any() {
+        assert_eq!(preferred_bind(PortPreference::Any), LOOPBACK_BIND);
+        assert_eq!(
+            preferred_bind(PortPreference::Remembered(0)),
+            LOOPBACK_BIND,
+            "a remembered zero is what a corrupt state file decodes to, not a real port"
+        );
+        assert_eq!(
+            preferred_bind(PortPreference::Remembered(51234)).port(),
+            51234
         );
     }
 }

@@ -63,16 +63,16 @@ use pyrefly::commands::config_finder::{
 };
 use pyrefly::state::require::Require;
 use pyrefly::state::state::State;
+use pyrefly_build::handle::Handle;
 use pyrefly_config::base::{InferReturnTypes, Preset};
 use pyrefly_config::config::ConfigFile;
 use pyrefly_config::finder::{ConfigError, ConfigFinder};
-use pyrefly_util::arc_id::ArcId;
-use pyrefly_build::handle::Handle;
 use pyrefly_python::module_name::ModuleName;
 use pyrefly_python::module_path::ModulePath;
 use pyrefly_python::sys_info::SysInfo;
 use pyrefly_types::callable::{Callable, Param, Params};
 use pyrefly_types::types::{Forallable, Type as PyType};
+use pyrefly_util::arc_id::ArcId;
 use pyrefly_util::thread_pool::ThreadCount;
 
 use crate::python::oracle::{ClassData, FunctionData, ItemBody, ItemData, PythonOracle, TypeData};
@@ -103,13 +103,22 @@ struct SlotKey {
 
 impl SlotKey {
     fn ret(id: impl Into<String>) -> Self {
-        SlotKey { id: id.into(), slot: Slot::Return }
+        SlotKey {
+            id: id.into(),
+            slot: Slot::Return,
+        }
     }
     fn param(id: impl Into<String>, name: impl Into<String>) -> Self {
-        SlotKey { id: id.into(), slot: Slot::Param(name.into()) }
+        SlotKey {
+            id: id.into(),
+            slot: Slot::Param(name.into()),
+        }
     }
     fn value(id: impl Into<String>) -> Self {
-        SlotKey { id: id.into(), slot: Slot::Value }
+        SlotKey {
+            id: id.into(),
+            slot: Slot::Value,
+        }
     }
 }
 
@@ -365,12 +374,17 @@ fn convert(ty: &PyType) -> TypeData {
             if args.is_empty() {
                 base
             } else {
-                TypeData::Apply { base: Box::new(base), args }
+                TypeData::Apply {
+                    base: Box::new(base),
+                    args,
+                }
             }
         }
         PyType::ClassDef(c) => TypeData::Apply {
             base: Box::new(TypeData::Nominal("typing.Type".to_owned())),
-            args: vec![TypeData::Nominal(strip_loc(&format!("{}", c.qname())).to_owned())],
+            args: vec![TypeData::Nominal(
+                strip_loc(&format!("{}", c.qname())).to_owned(),
+            )],
         },
         PyType::Type(inner) => TypeData::Apply {
             base: Box::new(TypeData::Nominal("typing.Type".to_owned())),
@@ -385,7 +399,9 @@ fn convert(ty: &PyType) -> TypeData {
         PyType::TypeVar(tv) => TypeData::TypeVar(tv.qname().id().to_string()),
         PyType::ParamSpec(p) => TypeData::TypeVar(p.qname().id().to_string()),
         PyType::TypeVarTuple(t) => TypeData::TypeVar(t.qname().id().to_string()),
-        PyType::Quantified(q) | PyType::QuantifiedValue(q) => TypeData::TypeVar(q.name().to_string()),
+        PyType::Quantified(q) | PyType::QuantifiedValue(q) => {
+            TypeData::TypeVar(q.name().to_string())
+        }
         PyType::SelfType(_) => TypeData::SelfType,
         PyType::Module(m) => TypeData::Nominal(format!("{m}")),
         PyType::Forall(_)
@@ -426,7 +442,9 @@ fn apply_item(mut item: ItemData, inferred: &Inferred, filled: &mut usize) -> It
         ItemBody::Module => ItemBody::Module,
         ItemBody::Function(f) => ItemBody::Function(apply_fn(&id, f, inferred, filled)),
         ItemBody::Overloaded(fs) => ItemBody::Overloaded(
-            fs.into_iter().map(|f| apply_fn(&id, f, inferred, filled)).collect(),
+            fs.into_iter()
+                .map(|f| apply_fn(&id, f, inferred, filled))
+                .collect(),
         ),
         ItemBody::Const(mut c) => {
             merge_type(&mut c.ty, inferred.get(&SlotKey::value(&id)), filled);
@@ -446,12 +464,25 @@ fn apply_class(id: &str, mut c: ClassData, inferred: &Inferred, filled: &mut usi
         let key = SlotKey::value(format!("{id}.{}", field.name));
         merge_type(&mut field.ty, inferred.get(&key), filled);
     }
-    c.methods = c.methods.into_iter().map(|m| apply_item(m, inferred, filled)).collect();
-    c.nested = c.nested.into_iter().map(|n| apply_item(n, inferred, filled)).collect();
+    c.methods = c
+        .methods
+        .into_iter()
+        .map(|m| apply_item(m, inferred, filled))
+        .collect();
+    c.nested = c
+        .nested
+        .into_iter()
+        .map(|n| apply_item(n, inferred, filled))
+        .collect();
     c
 }
 
-fn apply_fn(id: &str, mut f: FunctionData, inferred: &Inferred, filled: &mut usize) -> FunctionData {
+fn apply_fn(
+    id: &str,
+    mut f: FunctionData,
+    inferred: &Inferred,
+    filled: &mut usize,
+) -> FunctionData {
     merge_type(&mut f.return_ty, inferred.get(&SlotKey::ret(id)), filled);
     for param in &mut f.params {
         let key = SlotKey::param(id, param.name.clone());
@@ -503,9 +534,7 @@ fn merge_type(slot: &mut Option<TypeData>, inferred: Option<&TypeData>, filled: 
 /// confirm that a qualification fix is talking about the same name.
 fn principal_short_name(ty: &TypeData) -> Option<String> {
     match ty {
-        TypeData::Nominal(n) => {
-            Some(strip_loc(n).rsplit('.').next().unwrap_or(n).to_owned())
-        }
+        TypeData::Nominal(n) => Some(strip_loc(n).rsplit('.').next().unwrap_or(n).to_owned()),
         TypeData::Apply { base, .. } => principal_short_name(base),
         _ => None,
     }
@@ -747,7 +776,9 @@ mod tests {
     fn any_type_position(oracle: &PythonOracle) -> bool {
         fn item_has_type(item: &ItemData) -> bool {
             match &item.body {
-                ItemBody::Function(f) => f.return_ty.is_some() || f.params.iter().any(|p| p.ty.is_some()),
+                ItemBody::Function(f) => {
+                    f.return_ty.is_some() || f.params.iter().any(|p| p.ty.is_some())
+                }
                 ItemBody::Overloaded(fs) => fs
                     .iter()
                     .any(|f| f.return_ty.is_some() || f.params.iter().any(|p| p.ty.is_some())),
@@ -761,7 +792,10 @@ mod tests {
                 ItemBody::Module => false,
             }
         }
-        oracle.modules.iter().any(|m| m.items.iter().any(item_has_type))
+        oracle
+            .modules
+            .iter()
+            .any(|m| m.items.iter().any(item_has_type))
     }
 
     /// **Corpus-scale check that the fallback path in `invoke_oracle`'s own
@@ -809,7 +843,8 @@ mod tests {
                 continue;
             }
             let src = PackageSource::new(&pkg_root, *name, *version);
-            let enriched = invoke_oracle(&src).unwrap_or_else(|e| panic!("{dir}: invoke_oracle failed: {e}"));
+            let enriched =
+                invoke_oracle(&src).unwrap_or_else(|e| panic!("{dir}: invoke_oracle failed: {e}"));
             assert!(
                 any_type_position(&enriched),
                 "{dir}: invoke_oracle produced zero resolved type positions — this is exactly \
@@ -819,6 +854,9 @@ mod tests {
             );
             checked += 1;
         }
-        assert!(checked >= 6, "expected all 6 zero-annotation corpus packages provisioned; got {checked}");
+        assert!(
+            checked >= 6,
+            "expected all 6 zero-annotation corpus packages provisioned; got {checked}"
+        );
     }
 }

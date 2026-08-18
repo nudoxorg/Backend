@@ -10,23 +10,41 @@
 //!
 //! A description string here is the *only* documentation an LLM client ever
 //! sees for a tool — there is no README, no rustdoc, and no type signature it
-//! can read. Each one therefore says what the tool returns, when to prefer it
-//! over the others, and what a `SymbolKey` looks like. The typed tools
-//! (`search_symbols`, `semantic_search`, `get_symbol`, `find_usages`, `get_occurrences`, `list_packages`,
-//! `list_versions`, `select_version`) announce themselves as the first choice
-//! and `graph_query` announces itself as the escape hatch, per §L6.
+//! can read. Each one says what the tool returns and when to prefer it over
+//! the others, without re-inventorying what the response itself already
+//! carries. Two things repeated across nearly every tool live in
+//! [`INSTRUCTIONS`] instead of in each description: the pagination contract
+//! (`next_cursor` → pass back as `cursor`, treat it as opaque) and the
+//! key-stability caveat (not every `SymbolKey` survives a version switch).
+//!
+//! # Thirteen tools consolidated to nine (docs/MCP-SURFACE-PLAN.md §5.1)
+//!
+//! | merged from | into |
+//! |---|---|
+//! | `search_symbols` + `semantic_search` | `search` |
+//! | `get_symbol` + `get_symbols` | `read` |
+//! | `find_usages` + `get_occurrences` | `refs` (`direction: in\|out`) |
+//! | `list_packages` + `list_versions` | `packages` |
+//!
+//! `diff_versions`, `index_package`, `graph_query` and `graph_schema` keep
+//! their own tool (renamed `diff`/`index`/`graph`/`schema`); `select_version`
+//! is unchanged — folding it in needs per-call version support the address
+//! scheme does not yet have (§8's Stage 10), and dropping it would lose
+//! capability rather than consolidate it.
 //!
 //! # Resources
 //!
 //! §L6 asks for "the schema, and one resource per loaded package":
 //!
-//! * `nudox://schema` — the Trustfall SDL, identical to what `graph_schema`
-//!   returns. It is a resource *as well as* a tool because MCP clients attach
+//! * `nudox://schema` — the verbatim Trustfall SDL, identical to what
+//!   `schema(full: true)` returns (the default, argument-less `schema` call
+//!   instead returns a compact reference card — see its tool description).
+//!   It is a resource *as well as* a tool because MCP clients attach
 //!   resources up front, which is exactly when an agent needs the schema —
-//!   before it writes its first `graph_query`.
+//!   before it writes its first `graph` query.
 //! * `nudox://package/{ecosystem}:{name}` — one per loaded package, resolved
-//!   through the same engine call `list_packages` uses (LR-8). There is no
-//!   second path to the corpus.
+//!   through the same engine call `packages` uses (LR-8). There is no second
+//!   path to the corpus.
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -40,13 +58,11 @@ use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_handler, tool_router
 
 use crate::mcp::account::AccountGate;
 use crate::mcp::error::McpError;
-use crate::mcp::tools::{
-    DiffVersionsArgs, FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GetSymbolsArgs,
-    GraphQueryArgs, GraphSchemaArgs, IndexPackageArgs, ListPackagesArgs, ListVersionsArgs,
-    NudoxTools, PackagesResult, SchemaResult, SearchSymbolsArgs, SelectVersionArgs,
-    SemanticSearchArgs, SymbolFormat,
-};
 use crate::mcp::result_format::MarkdownResult;
+use crate::mcp::tools::{
+    DiffVersionsArgs, GraphQueryArgs, GraphSchemaArgs, IndexArgs, NudoxTools, PackagesArgs,
+    PackagesResult, ReadArgs, RefsArgs, SchemaResult, SearchSymbolsArgs, SelectVersionArgs,
+};
 
 /// URI of the schema resource.
 pub const SCHEMA_URI: &str = "nudox://schema";
@@ -56,38 +72,48 @@ pub const PACKAGE_URI_PREFIX: &str = "nudox://package/";
 
 /// Instructions surfaced to the MCP client at initialisation.
 ///
-/// The one place an agent is told how the tools relate to each other before it
-/// has called any of them, so it says which to reach for first.
+/// The one place an agent is told how the tools relate to each other before
+/// it has called any of them — and the one place the pagination and
+/// key-stability explainers live, instead of being copy-pasted into every
+/// tool description that needs them (docs/MCP-SURFACE-PLAN.md §2.2).
 const INSTRUCTIONS: &str = "\
 Local documentation and code intelligence for the packages loaded in this nudox \
 workspace. Tool results are compact Markdown: a declaration's rendered signature \
-is its primary identity, exact source is fenced verbatim, and tables are reserved \
-for repeated relationships. Every stable key is reusable across the tools.
+is its primary identity, exact source is fenced verbatim, and every symbol row \
+carries a stable key (`ecosystem:name#introhex`) and, where renderable, a readable \
+address — either can be passed to `read` or `refs`.
 
-Start with `list_packages` to see what is loaded, then `search_symbols` to find \
-a symbol by name, or `semantic_search` for a concept/behavior. Use `get_symbols` to read one or \
-more without repeated context round trips. Use `find_usages` to find symbols referring to a \
-target, and `get_occurrences` for exact owner-relative references inside one symbol. All these \
-tools speak the same key format, \
-`ecosystem:name#introhex`, so a key returned by one goes straight into another. \
-`get_symbol` is source-first and compact; use `list_versions` and \
-`diff_versions` for package history.
+Start with `packages` to see what is loaded and at what versions, then `search` \
+to find a symbol by name, kind, or natural-language concept — it ranks structural \
+and semantic hits together and labels which matched semantically. Use `read` for \
+one or many symbols in one round trip (source by default). Use `refs` to find \
+what references a symbol (`direction: in`) or what a symbol's own body references \
+(`direction: out`).
 
-If `list_packages` does not list a package you need, the corpus is not fixed: \
-`index_package` takes a package URL (`pkg:cargo/serde@1.0.196`, \
-`pkg:npm/left-pad@1.3.0`, `pkg:maven/com.google.guava/guava@33.0.0-jre`) and \
-fetches, verifies and indexes it on demand. It is much slower than every other \
-tool here — it downloads sources and runs a compiler front end — so reach for \
-it when you genuinely need a package that is absent, not to explore.
+Pagination is uniform across `search`, `refs`, `graph` and `diff`: when a response \
+carries `next_cursor`, pass it back as `cursor` for the next page; treat it as an \
+opaque token, never construct one yourself.
 
-When a package has more than one version loaded, use `list_versions` to see \
-them and `select_version` to switch which one the other tools answer from. \
-Most `SymbolKey`s survive a version switch, but not all — read \
-`select_version`'s description before relying on one across a switch.
+Key stability is not uniform: most `SymbolKey`s survive a version switch, because \
+their identity is derived from the declaration's content, but a declaration that \
+collided during lowering can fall back to an identity keyed on byte offset or \
+emission order, which does not survive every release — indistinguishable from \
+deletion when it happens. `packages` and `select_version` say more; `diff` re-pairs \
+a stale key with what it became.
 
-Reach for `graph_query` only when those tools cannot express the question. It \
-runs an arbitrary Trustfall query over the corpus, and you must call \
-`graph_schema` first to learn the exact type, property and edge names.";
+If `packages` does not list what you need, `index` takes a package URL \
+(`pkg:cargo/serde@1.0.196`, `pkg:npm/left-pad@1.3.0`, \
+`pkg:maven/com.google.guava/guava@33.0.0-jre`) and fetches, verifies and indexes it \
+on demand. It is much slower than every other tool here — it downloads sources and \
+runs a compiler front end — so reach for it when a package is genuinely absent, not \
+to explore.
+
+When a package has more than one version loaded, use `select_version` to switch \
+which one the other tools answer from.
+
+Reach for `graph` only when the tools above cannot express the question — an \
+arbitrary Trustfall query over the corpus. Call `schema` first for the exact type, \
+property and edge names.";
 
 /// The MCP server `lindsey` hosts (§L6).
 ///
@@ -195,7 +221,7 @@ impl NudoxMcpServer {
             Resource::new(SCHEMA_URI, "Trustfall schema")
                 .with_title("nudox graph schema")
                 .with_description(
-                    "The GraphQL SDL that `graph_query` queries are validated against. \
+                    "The GraphQL SDL that `graph` queries are validated against. \
 Read this before writing a query.",
                 )
                 .with_mime_type("application/graphql"),
@@ -210,7 +236,7 @@ Read this before writing a query.",
                 .with_title(pkg.lineage.clone())
                 .with_description(format!(
                     "Package {} from the {} ecosystem. Its lineage key `{}` prefixes every \
-symbol key it declares, and is what `search_symbols`'s `packages` filter accepts.",
+symbol key it declares, and is what `search`'s `packages` filter accepts.",
                     pkg.name, pkg.ecosystem, pkg.lineage
                 ))
                 .with_mime_type("text/markdown"),
@@ -269,153 +295,94 @@ symbol key it declares, and is what `search_symbols`'s `packages` filter accepts
 
 #[tool_router(router = tool_router)]
 impl NudoxMcpServer {
-    /// Find symbols by name or kind across the loaded corpus.
+    /// Find symbols by name, kind or concept — structural and semantic
+    /// ranking in one call.
     #[tool(
-        name = "search_symbols",
-        description = "PREFER THIS FIRST when looking for a symbol by name. Searches the \
-loaded local corpus by symbol name and by kind, returning ranked Markdown hits — each with its \
-stable key and complete rendered declaration signature. A key looks like \
-`ecosystem:name#introhex`, for example \
-`cargo:serde#3f1a…` with 64 hex characters after the `#`; pass it straight to `get_symbol` to \
-read the symbol or to `find_usages` to find its callers. Narrow with `kinds` (Function, Record, \
-Trait, Enum, Impl, Alias, Field, Const, Static, Module, Variant, Reexport, Param) and with \
-`packages` (each `ecosystem:name`; see `list_packages`). This matches names and kinds, not \
-documentation prose — for structural questions such as \"which types implement this trait\" or \
-\"what does this function reference\", use `graph_query`. Results are paginated: if `next_cursor` \
-is present in the response, more results exist — pass it back as `cursor` to get the next page. \
-Treat `cursor` as opaque; never construct one yourself."
+        name = "search",
+        description = "PREFER THIS FIRST when looking for a symbol. One ranked list of Markdown \
+hits combining exact/prefix name-and-kind matches with semantic ranking over documentation — no \
+need to choose an index up front. Each hit carries a stable key and, where renderable, an address; \
+pass either straight to `read` or `refs`. A hit found only through semantic similarity is marked \
+`semantic: true`. By default only top-level declarations are searched (Function, Record, Trait, \
+Enum, Impl, Alias, Const, Static, Module, Reexport) — fields, enum variants and parameters are \
+held back because they outnumber declarations and crowd out the API surface a first look wants; \
+the response says so via `excluded_kinds`. Pass `kinds` naming any of those three (Field, Variant, \
+Param) — or any subset of the full twelve — to search them specifically, e.g. `kinds: [\"Param\"]` \
+to find where a parameter is used. Narrow further with `packages` (each `ecosystem:name`; see \
+`packages`). For structural questions such as \"which types implement this trait\", use `graph` \
+instead."
     )]
-    pub async fn search_symbols(
+    pub async fn search(
         &self,
         Parameters(args): Parameters<SearchSymbolsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_search(args)).await
+        self.metered(self.tools.do_unified_search(args)).await
     }
 
-    /// Find documented public APIs by concept or behavior.
+    /// Read one or more symbols through the compact source-first projection.
     #[tool(
-        name = "semantic_search",
-        description = "Use for natural-language questions such as `retry failed requests` or `which API parses URLs`. Searches embeddings of public symbol paths, kinds and documentation. Results are ranked Markdown rows with complete declaration signatures and stable keys; documentation evidence is fenced below the relationship table. Use `get_symbol` for exact source. The status line distinguishes complete coverage, partial indexing and an unavailable model. Narrow with `kinds` or `packages`; pagination cursors are opaque. This is semantic retrieval, not a claim that the implementation body was searched."
+        name = "read",
+        description = "Read 1-32 symbols (keys or addresses) in one round trip as compact Markdown \
+records: stable key and path, then exact declaration source (including the body when present) in a \
+fenced block, or the rendered signature when source is unavailable — which happens for any \
+declaration that exists only after macro expansion (e.g. serde's generated `Deserialize` impls for \
+built-in types), where `format=source` and `format=signature` render identically with no flag \
+distinguishing the two. Resolved type references, location and deprecation follow only when \
+present. `format=signature` omits source for the whole batch; `format=source` (default) includes it \
+when available."
     )]
-    pub async fn semantic_search(
+    pub async fn read(
         &self,
-        Parameters(args): Parameters<SemanticSearchArgs>,
+        Parameters(args): Parameters<ReadArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_semantic_search(args)).await
+        self.metered(self.tools.do_read(args)).await
     }
 
-    /// Read one symbol through the compact source-first projection.
+    /// Find what references a symbol, or what a symbol's own body references.
     #[tool(
-        name = "get_symbol",
-        description = "Read one symbol as a compact source-first Markdown record: stable key and path, then exact declaration source (including the body when present) in a fenced block. When source is unavailable, the complete rendered signature is fenced instead. Resolved type references, location and deprecation follow only when present; kind and visibility are derivable from the declaration and are not repeated. Prefer `get_symbols` when reading more than one key."
+        name = "refs",
+        description = "PREFER THIS to answer \"who calls this?\" (`direction: in`, the default) or \
+to read a symbol's own exact references (`direction: out`). `in` returns symbols holding a \
+resolved reference to `key` — callers of a function, users of a type — with each declaration \
+signature, path and key. Only references resolved with index-grade confidence or better are \
+returned: a name that merely appears in a comment will not show up. `out` returns exact references \
+owned by `key`'s own body, grouped by target, with byte spans relative to the owner's declaration \
+start. `key` accepts either a stable key or an address."
     )]
-    pub async fn get_symbol(
+    pub async fn refs(
         &self,
-        Parameters(args): Parameters<GetSymbolArgs>,
+        Parameters(args): Parameters<RefsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_get_symbol_compact(args, SymbolFormat::Source))
-            .await
+        self.metered(self.tools.do_refs(args)).await
     }
 
-    /// Read several symbols through one compact projection.
+    /// List loaded packages and their loaded versions.
     #[tool(
-        name = "get_symbols",
-        description = "PREFER THIS when reading multiple symbols. Accepts 1–32 stable keys and \
-returns compact Markdown records in the same order in one MCP round trip. Each record keeps its path \
-and key outside a fenced declaration/signature snippet; relationship references are tables. \
-`format=signature` omits source; `format=source` includes the exact declaration and body."
+        name = "packages",
+        description = "PREFER THIS FIRST to discover what is loaded before searching. Omit \
+`package` to list every loaded package with its `ecosystem:name` lineage key and every loaded \
+version (which one is current, its symbol count). Pass `package` to narrow to one; an unloaded \
+package returns one entry with an empty version list rather than an error — this is how you tell \
+\"not indexed here\" apart from \"does not exist\". The lineage key is what `search`'s `packages` \
+filter accepts."
     )]
-    pub async fn get_symbols(
+    pub async fn packages(
         &self,
-        Parameters(args): Parameters<GetSymbolsArgs>,
+        Parameters(args): Parameters<PackagesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_get_symbols(args)).await
-    }
-
-    /// Find the symbols that reference a given symbol.
-    #[tool(
-        name = "find_usages",
-        description = "PREFER THIS to answer \"who calls this?\" or \"what breaks if I change \
-this?\". Given a symbol key, returns a relationship table of symbols holding a resolved reference \
-to it — callers of a function, users of a type — with each complete declaration signature, path \
-and key, so you can follow the chain \
-with `get_symbol`. Only references the producer resolved with index-grade confidence or better \
-are returned, so results are precise rather than textual: a name that merely appears in a comment \
-or belongs to an unrelated identifier will not show up. `key` must be `ecosystem:name#introhex`. \
-Paginated the same way as `search_symbols`: check `next_cursor` and pass it back as `cursor` for \
-more."
-    )]
-    pub async fn find_usages(
-        &self,
-        Parameters(args): Parameters<FindUsagesArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_find_usages(args)).await
-    }
-
-    /// Read exact references owned by one symbol.
-    #[tool(
-        name = "get_occurrences",
-        description = "Read exact references contained in the symbol identified by `key`, grouped by target and owner declaration signature. Each relationship row labels bytes relative to the owner's declaration span, not an absolute file offset. The target key is retained even when its package is unloaded. Use `find_usages` for the different question of which symbols refer to a target."
-    )]
-    pub async fn get_occurrences(
-        &self,
-        Parameters(args): Parameters<GetOccurrencesArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_get_occurrences(args)).await
-    }
-
-    /// List the packages currently loaded.
-    #[tool(
-        name = "list_packages",
-        description = "PREFER THIS FIRST to discover what is available before searching. Returns \
-every package loaded into the local corpus with its `ecosystem:name` lineage key, display name \
-and ecosystem. The lineage key prefixes every symbol key in that package and is exactly what \
-`search_symbols`'s `packages` filter accepts. If a package you expect is missing then it has not \
-been produced or loaded yet and no other tool will find symbols from it — this is how you tell \
-\"not indexed here\" apart from \"does not exist\"."
-    )]
-    pub async fn list_packages(
-        &self,
-        Parameters(_args): Parameters<ListPackagesArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_list_packages()).await
-    }
-
-    /// List every loaded generation of a package.
-    #[tool(
-        name = "list_versions",
-        description = "List every loaded generation of one package, newest first, with which one \
-is current and its symbol count. Several real packages in this corpus have more than one version \
-loaded at once (for example memchr, pydantic, guava, jackson-databind) — call this to see them \
-before assuming there is only one. `package` is `ecosystem:name` (see `list_packages`). An unloaded \
-package returns zero versions rather than an error. HONESTY NOTE: most symbol keys are stable \
-across the versions this lists, but not all are — some declarations mint a key that depends on \
-byte offsets or emission order and does not survive every release. This tool cannot tell you which \
-ones in a given package are affected; see `select_version`'s description before switching."
-    )]
-    pub async fn list_versions(
-        &self,
-        Parameters(args): Parameters<ListVersionsArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_list_versions(args)).await
+        self.metered(self.tools.do_packages(args)).await
     }
 
     /// Switch which loaded generation of a package the other tools answer from.
     #[tool(
         name = "select_version",
-        description = "Switch which loaded generation of a package `get_symbol`, `search_symbols` \
-and `graph_query` answer from. `package` is `ecosystem:name`; `version` must be one of the strings \
-`list_versions` returned — call that first. Returns `Switched` (with the new symbol count) or, if \
-the version is not loaded, `NotLoaded` — not an error, since the engine only holds what it was \
-asked to load. By the time you receive this tool's response the switch has actually landed, so \
-subsequent calls answer from the new generation. HONESTY NOTE, read before relying on this across a \
-switch: most `SymbolKey`s survive a version change unchanged, because their identity is derived \
-from the declaration's content — but not every declaration's key is content-derived. Some fall back \
-to an identity keyed on byte offset or emission order during lowering, and that kind of key can \
-silently stop resolving after a switch — indistinguishable from the symbol having been deleted, \
-because this tool has no way to tell you in advance which declarations in a package are affected. \
-If a key you held before switching returns `symbol not found` afterward, treat it as possibly-stale \
-and re-fetch it with `search_symbols` rather than concluding the symbol was removed."
+        description = "Switch which loaded generation of a package `read`, `search` and `graph` \
+answer from. `package` is `ecosystem:name`; `version` must be one of the strings `packages` \
+returned. Returns `Switched` (with the new symbol count) or, if the version is not loaded, \
+`NotLoaded` — not an error. By the time you receive this response the switch has landed, so \
+subsequent calls answer from the new generation. If a key you held before switching returns \
+`symbol not found` afterward, treat it as possibly-stale and re-search rather than concluding the \
+symbol was removed."
     )]
     pub async fn select_version(
         &self,
@@ -426,22 +393,17 @@ and re-fetch it with `search_symbols` rather than concluding the symbol was remo
 
     /// Compare two loaded generations of one package.
     #[tool(
-        name = "diff_versions",
-        description = "Compare two loaded generations of one package and get back what changed, \
-declaration by declaration — the question `select_version` could previously only answer by \
-switching, querying, switching back and diffing by hand. `package` is `ecosystem:name`; \
-`from_version` is the OLDER and `to_version` the NEWER, exactly as `list_versions` spells them \
-(call it first; several packages here have two generations loaded). If either is not loaded you \
-get `not_loaded` with the list of ones that are, not an error. READ THE VERDICT ON EACH ROW: \
-`removed` is the ONLY value that means a declaration is gone, and it is emitted only when the \
-symbol's key was derived from its own content. `rekeyed` means one declaration got a new key \
-(use `to_key`, stop using `from_key`) — a naive diff would report that as a deletion plus an \
-addition, which is the single most misleading thing a diff can say. `indeterminate` means it \
-vanished but its key was of a kind that can move on its own, so the tool refuses to guess: \
-re-search by name and path before concluding it was deleted. Rows are paginated like \
-`search_symbols`; the counts describe the whole diff on every page."
+        name = "diff",
+        description = "Compare two loaded generations of one package, declaration by declaration. \
+`package` is `ecosystem:name`; `from_version` is the OLDER and `to_version` the NEWER, exactly as \
+`packages` spells them. If either is not loaded you get `not_loaded` with the versions that are, \
+not an error. READ THE VERDICT ON EACH ROW: `removed` is the ONLY value that means a declaration is \
+gone, emitted only when the key was derived from its own content. `rekeyed` means one declaration \
+got a new key (use `to_key`, stop using `from_key`) — a naive diff would report that as a deletion \
+plus an addition. `indeterminate` means it vanished but its key was of a kind that can move on its \
+own, so the tool refuses to guess: re-search by name and path before concluding it was deleted."
     )]
-    pub async fn diff_versions(
+    pub async fn diff(
         &self,
         Parameters(args): Parameters<DiffVersionsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
@@ -450,85 +412,88 @@ re-search by name and path before concluding it was deleted. Rows are paginated 
 
     /// Fetch, produce and index a package named by a package URL.
     #[tool(
-        name = "index_package",
-        description = "Add a package to this corpus on demand, by package URL, and then read it \
-with the other tools. USE THIS when `list_packages` does not list a dependency you need to \
-understand — a crate you just added, a transitive dependency whose API you are checking, a library \
-you are choosing between. It fetches the package's SOURCES from its own registry, verifies them, \
-runs the language producer, and inserts the result into the running corpus, after which \
-`search_symbols`, `get_symbol`, `find_usages` and `graph_query` answer from it exactly as they do \
-for anything else. `purl` is `pkg:<type>/[<namespace>/]<name>@<version>` — types `cargo`, `npm`, \
-`pypi`, `golang`, `maven`, `nuget`. The namespace is the groupId for maven \
-(`pkg:maven/com.google.guava/guava@33.0.0-jre`), the @scope for npm \
-(`pkg:npm/@types/node@20.11.0`), and the module path prefix for golang \
-(`pkg:golang/github.com/pkg/errors@v0.9.1`); cargo, pypi and nuget names have no namespace. THE \
-VERSION IS REQUIRED and must be the registry's own spelling; omit it and the error lists what is \
-published. THIS IS SLOW — seconds to minutes, because it downloads and then runs a real compiler \
-front end. It waits `wait_seconds` (default 120, max 600) and then returns \
-`status: \"running\"` with the stage it reached; that is not a failure and not a timeout — call it \
-again with the same `purl` to keep waiting, and it will attach to the same job rather than start a \
-second one. READ THE `integrity` FIELD on success: \
-`verified_against_published_digest: true` means the registry published a digest of those exact \
-bytes and it matched, which holds for cargo, npm, pypi and maven; `false` means no digest was \
-available to compare against (golang and nuget) and the documentation rests on transport trust \
-alone."
+        name = "index",
+        description = "Add packages to this corpus on demand, then read them with the other tools. \
+USE THIS when `packages` does not list something you need to understand. Each entry in `targets` is \
+EITHER a package URL OR a path to a package root on this machine — you may mix them in one call. \
+A PACKAGE URL is `pkg:<type>/[<namespace>/]<name>@<version>` — types `cargo`, `npm`, `pypi`, \
+`golang`, `maven`, `nuget`; the namespace is the groupId for maven \
+(`pkg:maven/com.google.guava/guava@33.0.0-jre`), the @scope for npm (`pkg:npm/@types/node@20.11.0`), \
+and the module path prefix for golang (`pkg:golang/github.com/pkg/errors@v0.9.1`). THE VERSION IS \
+REQUIRED and must be the registry's own spelling; omit it and the error lists what is published. \
+A PATH is the directory holding the manifest (`Cargo.toml`, `package.json`, `go.mod`, `pom.xml`, \
+`build.gradle`, `pyproject.toml`, a `*.csproj`, `CMakeLists.txt` or `compile_commands.json`) — the \
+language is read from which manifest is there, so you do not name it. USE A PATH to index the \
+checkout you are working in, or a sibling package in the same monorepo. SET `dependencies: true` to \
+also index what those packages declare; it is OFF by default because a dependency closure is \
+unbounded, and `depth` (default 1, max 3) bounds how far it walks. Dependencies declared by path — \
+a cargo `path = \"../lib\"`, an npm `\"file:../lib\"` or `\"workspace:*\"` — resolve on this \
+filesystem with no registry involved. THIS IS SLOW — seconds to minutes per package, because it \
+runs a real compiler front end. The `wait_seconds` deadline (default 120, max 600) covers the WHOLE \
+batch; targets still going are returned under `running`, which is not a failure — call again with \
+the same targets to attach to those jobs rather than start new ones. EVERY TARGET IS REPORTED \
+SEPARATELY: read `indexed`, `running` and `failed`, because one bad target does not discard the \
+others. In `indexed`, `requested: false` marks a package pulled in as a dependency rather than one \
+you named. READ `not_scanned`: it lists dependency declarations that were NOT followed and why — \
+an unread manifest format there means nobody looked, NOT that the package has no dependencies."
     )]
-    pub async fn index_package(
+    pub async fn index(
         &self,
-        Parameters(args): Parameters<IndexPackageArgs>,
+        Parameters(args): Parameters<IndexArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.metered(self.tools.do_index_package(args)).await
+        self.metered(self.tools.do_index(args)).await
     }
 
     /// Run an arbitrary Trustfall query over the corpus.
     #[tool(
-        name = "graph_query",
-        description = "THE ESCAPE HATCH — use it only when the typed tools cannot express the \
-question. `search_symbols`, `get_symbol`, `find_usages`, `list_packages`, `list_versions` and \
-`select_version` are faster, cheaper and better shaped for what they cover; come here for \
-structural or relational questions they do not, such as \"every public function in package X \
+        name = "graph",
+        description = "THE ESCAPE HATCH — use it only when the other tools cannot express the \
+question: structural or relational questions such as \"every public function in package X \
 returning type Y\" (the `returnedBy` edge), \"what does this type implement\" (`implementedBy`), \
-\"all implementors of this trait\" (`implementors`), or a join across packages. Takes a \
-Trustfall (GraphQL-subset) query plus string variable bindings referenced as `$name`, and returns \
-an agent-facing Markdown relationship table. Select `signature` on symbol rows to retain type context; \
-when present, the formatter suppresses derivable `name` and `kind` columns. ALWAYS call `graph_schema` \
-first and write the query against the exact type, property and edge names it returns — queries are \
-validated against that schema, so a guessed field name is an error rather than an empty result. \
-Paginated the same way as `search_symbols`: \
-check `next_cursor` and pass it back as `cursor` for more."
+\"all implementors of this trait\" (`implementors`), or a join across packages. Takes a Trustfall \
+(GraphQL-subset) query plus string variable bindings referenced as `$name`, and returns an \
+agent-facing Markdown relationship table. Select `signature` on symbol rows to retain type context; \
+when present, the formatter suppresses derivable `name`/`kind` columns. ALWAYS call `schema` first \
+and write the query against the exact type, property and edge names it returns — a guessed field \
+name is an error, not an empty result."
     )]
-    pub async fn graph_query(
+    pub async fn graph(
         &self,
         Parameters(args): Parameters<GraphQueryArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         self.metered(self.tools.do_graph_query(args)).await
     }
 
-    /// Return the Trustfall schema `graph_query` is checked against.
+    /// Return the reference for what `graph` is checked against.
     #[tool(
-        name = "graph_schema",
-        description = "Returns, verbatim, the GraphQL SDL schema that `graph_query` queries are \
-validated against. Call this before writing any `graph_query`: it documents every queryable type \
-(Package; Symbol and its Function, Record, Trait, Impl, Enum, Field, Const and Alias \
-implementors; Occurrence), every scalar property, every edge (members, parent, usages, mentions, \
-implementors, occurrencesOf, and the type-reference edges implementedBy, subtypes, returnedBy, \
-acceptedBy, heldBy and signatureTypes) and the cost of each traversal. It also documents the \
-`ecosystem:name#introhex` key format that every other tool consumes. The schema is fixed for the \
-life of the server, so one call per session is enough."
+        name = "schema",
+        description = "Call this before writing any `graph` query. Returns a compact reference \
+card — every queryable type, scalar and edge, the key format, worked example queries, and the \
+semantic rules that make a query silently wrong if missed. Complete for writing a query; it names \
+what it omits, and `full: true` returns the verbatim SDL for those cases. Fixed for the life of the \
+server, so one call per session is enough."
     )]
-    pub async fn graph_schema(
+    pub async fn schema(
         &self,
-        Parameters(_args): Parameters<GraphSchemaArgs>,
+        Parameters(args): Parameters<GraphSchemaArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         // Metered like every other tool. It answers from a constant rather
         // than from the engine, but `docs/auth.md` bills a `tool_call`, and an agent
         // cannot tell which of our tools happen to be cheap for us to serve.
         // Exempting it would put a hole in the meter whose size is set by how
-        // often agents call `graph_schema`, which is once per session and
+        // often agents call `schema`, which is once per session and
         // therefore not small.
         self.metered(async {
-            Ok(SchemaResult {
-                schema: crate::mcp::SCHEMA_SDL.to_owned(),
+            Ok(if args.full {
+                SchemaResult {
+                    schema: crate::mcp::SCHEMA_SDL.to_owned(),
+                    full: true,
+                }
+            } else {
+                SchemaResult {
+                    schema: crate::mcp::SCHEMA_CARD.to_owned(),
+                    full: false,
+                }
             })
         })
         .await

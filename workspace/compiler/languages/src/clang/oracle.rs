@@ -86,6 +86,8 @@ pub struct OracleParam {
     pub name: String,
     pub ty: OracleType,
     pub is_variadic: bool,
+    pub source_file: PathBuf,
+    pub byte_offset: usize,
 }
 
 // ── Generic parameters ────────────────────────────────────────────────────────
@@ -249,6 +251,15 @@ pub struct OracleVar {
     pub parent_usr: Option<Usr>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Reference {
+    pub owner: Usr,
+    pub target: Usr,
+    pub source_file: PathBuf,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
 // ── Collected oracle output ───────────────────────────────────────────────────
 
 /// The fully-owned result of the extraction pass.
@@ -266,4 +277,5 @@ pub struct ClangOracle {
     pub variants: Vec<OracleVariant>,
     pub aliases: Vec<OracleAlias>,
     pub vars: Vec<OracleVar>,
+    pub references: Vec<Reference>,
 }

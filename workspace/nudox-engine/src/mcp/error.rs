@@ -208,6 +208,23 @@ pub enum McpError {
         /// The typed acquisition failure.
         error: Box<crate::packages::acquire::Error>,
     },
+
+    /// A `key`-shaped tool argument was accepted as an address
+    /// (docs/MCP-SURFACE-PLAN.md §4) but did not resolve to exactly one
+    /// declaration.
+    ///
+    /// This is the address resolver's own [`crate::mcp::address::ResolveOutcome`]
+    /// carried whole rather than re-derived into a parallel taxonomy here —
+    /// the same argument [`Self::Index`]'s doc comment makes: a new outcome
+    /// variant added to the resolver reaches an agent with no edit needed in
+    /// this file. Only non-`Resolved` outcomes ever reach this variant —
+    /// `Resolved` is unwrapped to the key it names before an `McpError` is
+    /// ever constructed.
+    #[error("address did not resolve to exactly one declaration: {outcome:?}")]
+    AddressUnresolved {
+        /// Why resolution did not land on exactly one declaration.
+        outcome: crate::mcp::address::ResolveOutcome,
+    },
 }
 
 impl McpError {
@@ -246,7 +263,8 @@ impl McpError {
         match self {
             Self::MalformedKey { .. }
             | Self::MalformedPackage { .. }
-            | Self::InvalidArgument { .. } => rmcp::ErrorData::invalid_params(message, data),
+            | Self::InvalidArgument { .. }
+            | Self::AddressUnresolved { .. } => rmcp::ErrorData::invalid_params(message, data),
             Self::UnknownResource(_) => rmcp::ErrorData::resource_not_found(message, data),
             // The code encodes the *category*: an index failure the caller can
             // fix by changing its arguments (a misspelled name, a version that
@@ -306,6 +324,24 @@ impl McpError {
             Self::Serve(_) => "serve_failed",
             // Delegated, not mapped: the acquisition taxonomy has one home.
             Self::Index { error } => error.kind(),
+            // Sub-tagged by the resolver's own outcome, mirroring how
+            // `Self::Engine` sub-tags `data.engine.kind` — an agent that only
+            // reads `data.kind` still learns *which* address failure this was
+            // (ambiguous vs. not found vs. stale) rather than one bucket.
+            Self::AddressUnresolved { outcome } => match outcome {
+                crate::mcp::address::ResolveOutcome::Resolved { .. } => "address_unresolved",
+                crate::mcp::address::ResolveOutcome::Ambiguous { .. } => "address_ambiguous",
+                crate::mcp::address::ResolveOutcome::NotFound { .. } => "address_not_found",
+                crate::mcp::address::ResolveOutcome::PackageNotIndexed { .. } => {
+                    "address_package_not_indexed"
+                }
+                crate::mcp::address::ResolveOutcome::VersionMismatch { .. } => {
+                    "address_version_mismatch"
+                }
+                crate::mcp::address::ResolveOutcome::StaleKey => "address_stale_key",
+                crate::mcp::address::ResolveOutcome::AddressConflict { .. } => "address_conflict",
+                crate::mcp::address::ResolveOutcome::ParseError { .. } => "address_parse_error",
+            },
             // These seven are the wire spelling of `account::Denial::kind`.
             // `crates/nudox-mcp/tests/account_error_vocabulary.rs` asserts the
             // two agree for every denial, so the mapping cannot drift into two
@@ -357,31 +393,77 @@ impl McpError {
             | Self::UnknownResource(_)
             | Self::Bind { .. }
             | Self::Serve(_) => None,
-            Self::Engine(EngineError::PackageNotLoaded { attempted, .. }) => Some(if attempted.is_some() {
-                "The load for this package was attempted and failed — see data.engine.attempted \
+            Self::Engine(EngineError::PackageNotLoaded { attempted, .. }) => {
+                Some(if attempted.is_some() {
+                    "The load for this package was attempted and failed — see data.engine.attempted \
                  for why. Retrying this call will not help until the underlying problem (a bad \
                  manifest, a missing toolchain) is fixed and the package is reloaded."
-            } else {
-                "This lineage was never loaded, or never existed under this exact \
+                } else {
+                    "This lineage was never loaded, or never existed under this exact \
                  'ecosystem:name' spelling. Call list_packages to see what is actually loaded."
-            }),
-            Self::Engine(EngineError::SymbolNotFound { possibly_stale }) => Some(if possibly_stale.is_some() {
-                "This key resolves under a different loaded generation of the same package — see \
+                })
+            }
+            Self::Engine(EngineError::SymbolNotFound { possibly_stale }) => {
+                Some(if possibly_stale.is_some() {
+                    "This key resolves under a different loaded generation of the same package — see \
                  data.engine.possibly_stale. It may not have survived a select_version switch \
                  rather than having been deleted; re-search by name with search_symbols, or call \
                  diff_versions to see what it became."
-            } else {
-                "Re-search by name with search_symbols rather than assuming this key still \
+                } else {
+                    "Re-search by name with search_symbols rather than assuming this key still \
                  identifies a declaration — it may have been renamed, removed, or never existed."
-            }),
-            Self::Engine(EngineError::GraphQueryFailed { position, .. }) => Some(if position.is_some() {
-                "Fix the query at data.engine.position (1-based line:column) and retry. Call \
+                })
+            }
+            Self::Engine(EngineError::GraphQueryFailed { position, .. }) => {
+                Some(if position.is_some() {
+                    "Fix the query at data.engine.position (1-based line:column) and retry. Call \
                  graph_schema first if the problem is an unfamiliar type or edge name."
-            } else {
-                "Call graph_schema for the exact type, edge, and property names this query must \
+                } else {
+                    "Call graph_schema for the exact type, edge, and property names this query must \
                  be written against, then retry."
-            }),
+                })
+            }
             Self::Index { error } => error.help(),
+            Self::AddressUnresolved { outcome } => Some(match outcome {
+                crate::mcp::address::ResolveOutcome::Ambiguous { .. } => {
+                    "See data.candidates for every match. Add a `[kind]` qualifier (e.g. \
+                     `[method]`) to the address's last segment to disambiguate, or copy the exact \
+                     `#hash` from search_symbols instead of composing the address by hand."
+                }
+                crate::mcp::address::ResolveOutcome::NotFound { .. } => {
+                    "See data.nearMisses for names close to what you typed. Call search_symbols \
+                     to find the exact declaration rather than guessing at the path."
+                }
+                crate::mcp::address::ResolveOutcome::PackageNotIndexed { .. } => {
+                    "See data.residentSimilar for loaded packages with a similar name. Call \
+                     list_packages for the exact 'ecosystem:name' spelling, or index_package if \
+                     this package genuinely is not loaded yet."
+                }
+                crate::mcp::address::ResolveOutcome::VersionMismatch { .. } => {
+                    "See data.resident for the versions actually loaded. Drop the '@version' to \
+                     use whichever generation is current, or call list_versions first."
+                }
+                crate::mcp::address::ResolveOutcome::StaleKey => {
+                    "The '#hash' half decoded but does not name a live declaration in this \
+                     package/version. Re-search by name with search_symbols rather than reusing \
+                     a hash from a different generation."
+                }
+                crate::mcp::address::ResolveOutcome::AddressConflict { .. } => {
+                    "The address's sym-path and its '#hash' disagree about which declaration is \
+                     meant. Drop one half and retry: the path alone if you are unsure of the \
+                     hash, or the hash alone (search_symbols/get_symbol) if you trust it."
+                }
+                crate::mcp::address::ResolveOutcome::ParseError { .. } => {
+                    "See data.offset for the exact byte position that failed to parse. This is a \
+                     syntax problem in the address text itself, not a lookup failure."
+                }
+                // Never actually constructed with `Resolved` — see the
+                // variant's own doc comment — but `outcome` is matched
+                // exhaustively rather than leaving this arm to panic.
+                crate::mcp::address::ResolveOutcome::Resolved { .. } => {
+                    "This should not happen: report it as a bug."
+                }
+            }),
 
             // -- Account -----------------------------------------------------
             //
@@ -477,8 +559,51 @@ impl McpError {
             // into `data` rather than nested under a key, because unlike
             // `Engine` this variant *is* the whole error rather than a wrapper
             // around a lower layer's.
-            Self::Index { error } => serde_json::to_value(error.as_ref())
-                .unwrap_or_else(|_| json!({})),
+            Self::Index { error } => {
+                serde_json::to_value(error.as_ref()).unwrap_or_else(|_| json!({}))
+            }
+            // Hand-built rather than `#[derive(Serialize)]` on `ResolveOutcome`
+            // itself: the resolver's `Candidate` carries a raw `IntroId`,
+            // whose derived `Serialize` is the ContentBlake3 byte array, not
+            // the hex string every other key in this crate's JSON surface
+            // renders as (`SymbolKeyDto`, `IntroId::to_hex`). Building the
+            // object here keeps that one rendering decision in one place
+            // instead of teaching the resolver's own types about it.
+            Self::AddressUnresolved { outcome } => {
+                use crate::mcp::address::ResolveOutcome as O;
+                match outcome {
+                    O::Ambiguous {
+                        candidates,
+                        refine_hint,
+                    } => json!({
+                        "refineHint": refine_hint,
+                        "candidates": candidates.iter().map(|c| json!({
+                            "key": c.intro.to_hex(),
+                            "physicalPath": c.physical_path,
+                            "publicPath": c.public_path,
+                            "kind": c.kind,
+                        })).collect::<Vec<_>>(),
+                    }),
+                    O::NotFound { near_misses } => json!({ "nearMisses": near_misses }),
+                    O::PackageNotIndexed { resident_similar } => {
+                        json!({ "residentSimilar": resident_similar })
+                    }
+                    O::VersionMismatch {
+                        requested,
+                        resident,
+                    } => json!({
+                        "requested": requested,
+                        "resident": resident,
+                    }),
+                    O::StaleKey => json!({}),
+                    O::AddressConflict { message } => json!({ "conflict": message }),
+                    O::ParseError { offset, message } => json!({
+                        "offset": offset,
+                        "reason": message,
+                    }),
+                    O::Resolved { .. } => json!({}),
+                }
+            }
 
             // -- Account -----------------------------------------------------
             //
@@ -621,7 +746,10 @@ mod tests {
         let data = assert_structured(err);
         assert_eq!(data["kind"], "malformed_key");
         assert_eq!(data["input"], "not-a-key");
-        assert_eq!(data["reason"], "expected 'ecosystem:name#introhex' — no '#' found");
+        assert_eq!(
+            data["reason"],
+            "expected 'ecosystem:name#introhex' — no '#' found"
+        );
         assert_eq!(data["expectedShape"], "ecosystem:name#introhex");
         assert!(
             data.get("help").is_some(),
@@ -716,7 +844,10 @@ mod tests {
     fn graph_query_failed_with_a_position_surfaces_line_and_column() {
         let err = McpError::Engine(crate::wire::EngineError::GraphQueryFailed {
             message: "Unrecognized directive foo".to_owned(),
-            position: Some(QueryErrorPosition { line: 3, column: 12 }),
+            position: Some(QueryErrorPosition {
+                line: 3,
+                column: 12,
+            }),
         });
         let data = assert_structured(err);
         assert_eq!(data["engine"]["position"]["line"], 3);

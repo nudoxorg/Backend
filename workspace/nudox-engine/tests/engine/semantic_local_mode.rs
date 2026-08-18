@@ -6,7 +6,7 @@
 //!
 //! | file | embedder | proves |
 //! |---|---|---|
-//! | `semantic_section_contract.rs` | none (`EngineConfig::default()`) | `Unavailable { NoEmbedder }` is reported, not an empty `Section` |
+//! | `semantic_section_contract.rs` | none (`EngineConfig::default()`) | `Unavailable { NoModelConfigured }` is reported, not an empty `Section` |
 //! | `workspace/registry/tests/vector/engine_relevance.rs` | real ONNX model, `#[ignore]`, needs the artifact | ranking quality — a relevant symbol outranks an irrelevant one |
 //! | **this file** | a fake, in-process [`Embedder`] | `Building { covered, total }` mid-index, honest partial coverage, and the eventual `Complete` |
 
@@ -34,10 +34,14 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::{
+    Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor,
+};
 use nudox_ir::apply::PristineIntroTable;
 use nudox_ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName};
 use nudox_ir::entry::{Entry, Node, Symbol, Visibility};
@@ -45,8 +49,6 @@ use nudox_ir::index::RawRef;
 use nudox_ir::kind::Kind;
 use nudox_ir::kinds::Module;
 use nudox_ir::view::IrView;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error};
 
 use futures::stream::BoxStream;
 use nudox_engine::wire::{Gen, SearchEvent};
@@ -249,8 +251,7 @@ async fn observe_semantic(
     while let Ok(event) = rx.recv_async().await {
         match event {
             SearchEvent::SectionState {
-                section,
-                state: s, ..
+                section, state: s, ..
             } if section == nudox_engine::search::SECTION_SEMANTIC => {
                 state = Some(s);
             }
@@ -279,10 +280,14 @@ async fn poll_until(
         gens.0 += 1;
         let (state, names) = observe_semantic(engine, *gens).await;
         if let Some(state) = &state
-            && matches(state) {
-                return (state.clone(), names);
-            }
-        assert!(tokio::time::Instant::now() < deadline, "condition never satisfied within 5s; last state: {state:?}, rows: {names:?}");
+            && matches(state)
+        {
+            return (state.clone(), names);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "condition never satisfied within 5s; last state: {state:?}, rows: {names:?}"
+        );
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
 }
@@ -329,10 +334,22 @@ async fn semantic_coverage_is_reported_honestly_while_building_and_completes_onc
 
     // --- Building: alpha covered, beta gated -------------------------------
     let (state, names) = poll_until(&engine, &mut gens, |s| {
-        matches!(s, SectionState::Building { covered: 1, total: 2 })
+        matches!(
+            s,
+            SectionState::Building {
+                covered: 1,
+                total: 2
+            }
+        )
     })
     .await;
-    assert_eq!(state, SectionState::Building { covered: 1, total: 2 });
+    assert_eq!(
+        state,
+        SectionState::Building {
+            covered: 1,
+            total: 2
+        }
+    );
     assert!(
         names.iter().any(|n| n == "Alpha"),
         "the covered package's symbol must be findable while building; rows: {names:?}"
@@ -345,9 +362,11 @@ async fn semantic_coverage_is_reported_honestly_while_building_and_completes_onc
     );
 
     // --- Release the gate, wait for the second package to finish -----------
-    gate.send(true).expect("the embedder task must still be running");
+    gate.send(true)
+        .expect("the embedder task must still be running");
 
-    let (state, names) = poll_until(&engine, &mut gens, |s| matches!(s, SectionState::Complete)).await;
+    let (state, names) =
+        poll_until(&engine, &mut gens, |s| matches!(s, SectionState::Complete)).await;
     assert_eq!(state, SectionState::Complete);
     assert!(
         names.iter().any(|n| n == "Alpha") && names.iter().any(|n| n == "Beta"),

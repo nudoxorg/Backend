@@ -165,7 +165,10 @@ fn maven_tokenise(raw: &str) -> Vec<MavenToken> {
     }
     // Strip trailing null tokens (zero / Release qualifier).
     while let Some(last) = tokens.last() {
-        let is_null = matches!(last, MavenToken::Num(0) | MavenToken::Qual(QualRank::Release));
+        let is_null = matches!(
+            last,
+            MavenToken::Num(0) | MavenToken::Qual(QualRank::Release)
+        );
         if is_null {
             tokens.pop();
         } else {

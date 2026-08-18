@@ -90,10 +90,7 @@ pub fn claim(
 ///
 /// No-ops silently if the claim does not exist.
 pub fn release(connection: &Connection, job_key: &str) -> Result<()> {
-    connection.execute(
-        "DELETE FROM claims WHERE job_key = ?1",
-        params![job_key],
-    )?;
+    connection.execute("DELETE FROM claims WHERE job_key = ?1", params![job_key])?;
     Ok(())
 }
 

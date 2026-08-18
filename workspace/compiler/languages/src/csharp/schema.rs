@@ -37,7 +37,14 @@ where
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Extraction {
-    /// Schema version stamped by the oracle (currently `1`).
+    /// The payload schema this build reads.
+    ///
+    /// `0` when the field is absent, which is what any `oracle.dll` built
+    /// before this handshake existed emits — see [`Extraction::staleness`].
+    /// The oracle (`Extractor.WriteExtraction` in
+    /// `oracle/csharp/Extractor.cs`) stamps this unconditionally, never
+    /// omitted.
+    #[serde(default)]
     pub format: u32,
     /// The .NET runtime version the oracle ran on (`"10.0"`).
     #[serde(default, deserialize_with = "null_as_default")]
@@ -61,6 +68,81 @@ pub struct Extraction {
     /// [`TypeDecl::enclosing`] (a flat list).
     #[serde(default)]
     pub types: Vec<TypeDecl>,
+    /// Roslyn-bound same-assembly method calls.
+    #[serde(default)]
+    pub references: Vec<Reference>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reference {
+    pub owner: String,
+    pub target: String,
+    pub file: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Why an oracle payload cannot be trusted to be complete.
+///
+/// Mirrors `crate::go::oracle::Staleness` — see that type's doc comment for
+/// the field report that motivated the mechanism. `NUDOX_CSHARP_ORACLE` is
+/// the C# analogue of `NUDOX_GO_ORACLE_BIN`: `lindsey.app` ships neither
+/// oracle, so a user points either variable at whatever prebuilt copy they
+/// find.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Staleness {
+    /// The oracle predates a field — or a field's scope — this build reads.
+    #[error(
+        "the C# oracle is out of date: it speaks payload schema {found}, but \
+         this build reads schema {required}. Data added since (currently: \
+         `references`, the Roslyn-bound same-assembly call graph that backs \
+         `refs`) is absent or incomplete in its output, so `refs` will look \
+         empty for every C# package rather than genuinely reference-free. \
+         Rebuild the oracle (`dotnet publish -c Release --no-self-contained -o \
+         publish` in workspace/compiler/languages/oracle/csharp) and point \
+         NUDOX_CSHARP_ORACLE at the result."
+    )]
+    OlderThanRequired {
+        /// What the oracle declared (`0` when it declared nothing).
+        found: u32,
+        /// What this build needs.
+        required: u32,
+    },
+}
+
+impl Extraction {
+    /// The payload schema this build reads.
+    ///
+    /// Bump this in lockstep with the `format` argument
+    /// `Extractor.WriteExtraction` is called with (`oracle/csharp/Extractor.cs`)
+    /// whenever the Rust side starts *reading* a field the oracle only
+    /// recently started emitting — that is exactly the moment an older
+    /// `oracle.dll` begins under-reporting it. Currently `1`: every field this
+    /// build reads (including `references`) has been part of `format` 1 since
+    /// it was introduced, so nothing has forced a bump yet.
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 1;
+
+    /// Whether the oracle that produced this payload is older than this build
+    /// expects.
+    ///
+    /// # Why this is not a deserialization error
+    ///
+    /// Every field on [`Extraction`] is `#[serde(default)]`, deliberately: a
+    /// *newer* oracle adding fields must not break an older reader. The cost
+    /// is that an *older* oracle omitting fields is indistinguishable from a
+    /// package that genuinely has none — both arrive as an empty `Vec`. See
+    /// `crate::go::oracle::Output::staleness` for the incident that made this
+    /// worth guarding before a C#-specific field report is what surfaces it.
+    ///
+    /// Returns `None` for a current *or newer* oracle: only older
+    /// under-reports.
+    pub fn staleness(&self) -> Option<Staleness> {
+        (self.format < Self::REQUIRED_SCHEMA_VERSION).then_some(Staleness::OlderThanRequired {
+            found: self.format,
+            required: Self::REQUIRED_SCHEMA_VERSION,
+        })
+    }
 }
 
 /// The assembly identity and facade metadata.
@@ -89,6 +171,36 @@ pub struct Diagnostics {
     /// Total compilation error count.
     #[serde(default)]
     pub error_count: u64,
+    /// Whether source generators contributed to this extraction.
+    ///
+    /// `Applied` means configured source generators contributed syntax;
+    /// `Unavailable` means configured inputs could not be loaded; `Unknown`
+    /// means no generator configuration was present or the field was omitted
+    /// by an older oracle.
+    #[serde(default)]
+    pub generator_support: GeneratorSupport,
+}
+
+/// Source-generator support reported by the oracle.
+///
+/// This is deliberately typed rather than an advisory string: consumers must
+/// be able to distinguish an extraction that included generated API from one
+/// that could not evaluate generators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GeneratorSupport {
+    /// A configured source generator could not be loaded or executed.
+    Unavailable,
+    /// Configured source generators were loaded and their output was applied.
+    Applied,
+    /// A legacy document omitted the field.
+    Unknown,
+}
+
+impl Default for GeneratorSupport {
+    fn default() -> Self {
+        Self::Unknown
+    }
 }
 
 /// A namespace, with a doc summary when present.
@@ -120,6 +232,16 @@ pub struct Location {
     /// Inclusive-start, exclusive-end UTF-8 byte offset into `file`.
     pub start: usize,
     pub end: usize,
+    /// Zero-based line and UTF-8 byte column of the start.
+    #[serde(default)]
+    pub start_line: u32,
+    #[serde(default)]
+    pub start_column: u32,
+    /// Zero-based line and UTF-8 byte column of the end.
+    #[serde(default)]
+    pub end_line: u32,
+    #[serde(default)]
+    pub end_column: u32,
 }
 
 /// A type declaration: class, struct, interface, enum, delegate, or record.

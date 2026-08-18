@@ -258,6 +258,7 @@ async fn search_spans_multiple_packages() {
     let q_a = SearchQuery {
         text: "RouterA".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: Vec::new(),
         limit: 50,
     };
@@ -284,6 +285,7 @@ async fn search_spans_multiple_packages() {
     let q_b = SearchQuery {
         text: "HandlerB".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: Vec::new(),
         limit: 50,
     };
@@ -391,6 +393,7 @@ async fn name_collisions_across_packages_are_disambiguated() {
     let q = SearchQuery {
         text: "Router".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: Vec::new(),
         limit: 50,
     };
@@ -458,6 +461,7 @@ async fn one_failing_package_does_not_block_others() {
     let q = SearchQuery {
         text: "StableApi".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: Vec::new(),
         limit: 50,
     };
@@ -642,6 +646,7 @@ async fn packages_filter_is_applied_before_truncation_not_after() {
     let unfiltered = SearchQuery {
         text: "Shared".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: Vec::new(),
         limit: 1,
     };
@@ -661,6 +666,7 @@ async fn packages_filter_is_applied_before_truncation_not_after() {
     let filtered = SearchQuery {
         text: "Shared".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: vec![lid_z.clone()],
         limit: 1,
     };
@@ -680,6 +686,7 @@ async fn packages_filter_is_applied_before_truncation_not_after() {
     let filtered_type = SearchQuery {
         text: "mod".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         packages: vec![lid_z.clone()],
         limit: 1,
     };
@@ -703,4 +710,92 @@ async fn packages_filter_is_applied_before_truncation_not_after() {
          truncation too"
     );
     assert_eq!(type_hits[0].key.package.name.as_str(), "zzz");
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent loading and searching under a bounded burst
+// ---------------------------------------------------------------------------
+
+/// Loading a package must not monopolize the corpus lock or make concurrent
+/// searches wait forever.  This is intentionally an integration test: the
+/// loader, corpus, search task, and package notification path all participate
+/// in the race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_package_arrivals_and_searches_complete_without_starvation() {
+    let packages: Vec<_> = (0..64)
+        .map(|n| {
+            let lid = lineage("cargo", &format!("burst-{n:02}"));
+            let package = build_package(&lid, &[(1, "SharedApi")]);
+            (lid, Some("1.0.0".to_owned()), package)
+        })
+        .collect();
+
+    let source = StaticSource::new(packages);
+    let engine = Engine::start(EngineConfig::default(), source);
+    let package_events = engine.packages();
+
+    let searches: Vec<_> = (0..32)
+        .map(|n| {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                let query = SearchQuery {
+                    text: "SharedApi".to_owned(),
+                    kinds: Vec::new(),
+                    exclude_kinds: Vec::new(),
+                    packages: Vec::new(),
+                    limit: 50,
+                };
+                let (_handle, receiver) = engine.search(query, Gen(10_000 + n));
+                let events = tokio::time::timeout(Duration::from_secs(5), drain_search(receiver))
+                    .await
+                    .expect("concurrent search must terminate while packages load");
+                assert!(
+                    events.iter().any(|event| {
+                        matches!(
+                            event,
+                            nudox_engine::wire::SearchEvent::Done { generation }
+                                if generation.0 == 10_000 + n
+                        )
+                    }),
+                    "concurrent search must emit Done"
+                );
+            })
+        })
+        .collect();
+
+    let loaded = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut count = 0;
+        while count < 64 {
+            match package_events
+                .recv_async()
+                .await
+                .expect("package stream open")
+            {
+                PackageLoadEvent::Loaded { .. } => count += 1,
+                PackageLoadEvent::LoadFailed { error, .. } => {
+                    panic!("burst package unexpectedly failed: {error}")
+                }
+                // `PackageLoadEvent` is `#[non_exhaustive]`. A variant added
+                // later is not a load, so it must not increment the count —
+                // silently treating it as one would let this test pass on 64
+                // events that were never 64 packages.
+                other => panic!("unexpected package event during burst: {other:?}"),
+            }
+        }
+        count
+    })
+    .await
+    .expect("all packages must load within the bounded burst timeout");
+    assert_eq!(loaded, 64);
+
+    for search in searches {
+        search.await.expect("concurrent search task panicked");
+    }
+    assert!(
+        engine
+            .versions(&lineage("cargo", "burst-63"))
+            .current()
+            .is_some(),
+        "the final package must be resident after the burst"
+    );
 }

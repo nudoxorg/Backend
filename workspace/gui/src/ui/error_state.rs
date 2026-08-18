@@ -9,10 +9,8 @@
 //! **No motion on errors** (§5.2: "errors must be calm").  The component
 //! renders immediately without any entrance animation.
 
-use gpui::{
-    App, IntoElement, ParentElement, RenderOnce, Window, prelude::FluentBuilder as _,
-};
-use gpui_component::{ActiveTheme as _, IconName, Icon, v_flex};
+use gpui::{App, IntoElement, ParentElement, RenderOnce, Window, prelude::FluentBuilder as _};
+use gpui_component::{ActiveTheme as _, Icon, IconName, v_flex};
 
 use crate::bridge::slot::Error;
 use crate::theme::ext::ThemeExtAccessor as _;
@@ -43,7 +41,10 @@ impl ErrorState {
     ///
     /// Pass `on_retry: None` for permanent errors (auth failures, missing
     /// packages, schema mismatches — anything a retry cannot resolve).
-    pub fn new(error: Error, on_retry: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>) -> Self {
+    pub fn new(
+        error: Error,
+        on_retry: Option<Box<dyn Fn(&mut Window, &mut App) + 'static>>,
+    ) -> Self {
         Self { error, on_retry }
     }
 
@@ -53,7 +54,9 @@ impl ErrorState {
         on_retry: impl Fn(&mut Window, &mut App) + 'static,
     ) -> Self {
         Self {
-            error: Error::Transient { message: message.into() },
+            error: Error::Transient {
+                message: message.into(),
+            },
             on_retry: Some(Box::new(on_retry)),
         }
     }
@@ -61,7 +64,9 @@ impl ErrorState {
     /// Convenience: build from a permanent error (no retry).
     pub fn permanent(message: impl Into<String>) -> Self {
         Self {
-            error: Error::Permanent { message: message.into() },
+            error: Error::Permanent {
+                message: message.into(),
+            },
             on_retry: None,
         }
     }

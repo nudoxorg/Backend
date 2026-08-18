@@ -1,11 +1,23 @@
 //! `cpp` manifest extraction (REGISTRYLESS §8).
 //!
-//! Seven pure text-scanning parsers, one per build-descriptor family. Each
+//! Seven pure text-scanning parsers, one per build-descriptor family, plus a
+//! conservative `LICENSE`/`LICENCE`/`COPYING` file sniffer
+//! ([`crate::ecosystem::license`]) — eight dispatch destinations total. Each
 //! yields a [`CppManifest`] carrying the shared [`ExtractedFacts`] plus typed
 //! dependency records `(token, mechanism)`. Parsers never execute code
 //! (conanfile.py is scanned as text, never run), never panic, and log-not-fatal
 //! on partial input.
+//!
+//! `CMakeLists.txt` and a bare `.pc`/`.pc.in` file carry no license
+//! *expression* field of their own (only `has_license_file`, from a
+//! `CPACK_RESOURCE_FILE_LICENSE` var or nothing at all) — a repo that ships
+//! one of those plus a standalone `LICENSE` file used to get **no** license
+//! at all, because `server::coordination::indexing::facets::extract_facets`
+//! stopped at the first manifest that parsed. That call site now merges
+//! across every matching candidate (`ExtractedFacts::merge`), so the license
+//! candidates below are finally reachable for those manifest shapes.
 
+use crate::ecosystem::license;
 use crate::ecosystem::manifest::{ExtractedFacts, ManifestCandidate, ManifestFacts};
 
 pub mod cmake;
@@ -115,6 +127,16 @@ impl ManifestFacts for CppManifest {
 }
 
 /// The manifest candidates for `cpp`, in priority order (REGISTRYLESS §6.3).
+///
+/// The `LICENSE`/`LICENCE`/`COPYING` candidates are last: they're a
+/// heuristic content sniff (`license::detect_spdx`), strictly less
+/// authoritative than an explicit `license = "..."` expression a
+/// higher-priority build descriptor (`vcpkg.json`, `conanfile.*`,
+/// `meson.build`) may already have supplied — the merge in `facets.rs`
+/// leaves an already-set `license` field alone, so ordering here is what
+/// gives the declared expression precedence over the sniffed one. Kept in
+/// sync with [`license::LICENSE_FILENAMES`] — see the
+/// `license_candidates_match_shared_list` test.
 pub fn manifest_candidates() -> &'static [ManifestCandidate] {
     static CANDIDATES: &[ManifestCandidate] = &[
         ManifestCandidate::new("vcpkg.json"),
@@ -128,6 +150,14 @@ pub fn manifest_candidates() -> &'static [ManifestCandidate] {
         // (a repo usually ships one or the other).
         ManifestCandidate::new(".pc.in"),
         ManifestCandidate::new(".pc"),
+        ManifestCandidate::new("LICENSE"),
+        ManifestCandidate::new("LICENSE.txt"),
+        ManifestCandidate::new("LICENSE.md"),
+        ManifestCandidate::new("LICENCE"),
+        ManifestCandidate::new("LICENCE.txt"),
+        ManifestCandidate::new("LICENCE.md"),
+        ManifestCandidate::new("COPYING"),
+        ManifestCandidate::new("COPYING.txt"),
     ];
     CANDIDATES
 }
@@ -137,6 +167,13 @@ pub fn manifest_candidates() -> &'static [ManifestCandidate] {
 /// (possibly empty) so facet extraction degrades to name-only, never fails.
 pub fn parse_manifest(candidate: &ManifestCandidate, bytes: &[u8]) -> Option<CppManifest> {
     let text = std::str::from_utf8(bytes).ok()?;
+    // Strip a leading UTF-8 BOM (`\u{FEFF}`) — common on files saved by
+    // Windows-native editors (vcpkg.json, CMakeLists.txt in particular).
+    // Left in place, it corrupts the first token every one of these
+    // hand-rolled scanners looks for (a leading `{` for JSON, a command name
+    // for CMake/meson/Bazel, a `[` for `.gitmodules`/`.txt`), so every field
+    // silently comes back empty instead of populated.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let suffix = candidate.path_suffix;
     let manifest = if suffix.ends_with("vcpkg.json") {
         vcpkg::parse(text)
@@ -156,6 +193,22 @@ pub fn parse_manifest(candidate: &ManifestCandidate, bytes: &[u8]) -> Option<Cpp
         || suffix.ends_with(".pc.in")
     {
         pkgconfig::parse(text)
+    } else if license::LICENSE_FILENAMES
+        .iter()
+        .any(|f| suffix.eq_ignore_ascii_case(f))
+    {
+        // A standalone license file carries no dependency/description/
+        // homepage information — only ever `has_license_file` (always true,
+        // the file exists and is non-empty-check-free: an empty LICENSE file
+        // is still a declared intent) and a best-effort sniffed `license`.
+        CppManifest {
+            facts: ExtractedFacts {
+                has_license_file: true,
+                license: license::detect_spdx(text),
+                ..ExtractedFacts::default()
+            },
+            dependencies: Vec::new(),
+        }
     } else {
         CppManifest::default()
     };

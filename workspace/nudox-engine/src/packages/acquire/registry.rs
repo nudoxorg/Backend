@@ -44,6 +44,14 @@ pub(crate) struct Artifact {
     pub(crate) expected: Option<PublishedDigest>,
 }
 
+/// Canonical registry roots, optionally redirected to a trusted upstream
+/// mirror. The override is deliberately owned by the acquisition boundary so
+/// callers cannot put arbitrary URLs into a PURL.
+#[derive(Clone, Debug)]
+pub(crate) struct RegistryEndpoints {
+    pub(crate) upstream: Option<String>,
+}
+
 /// A digest a registry publishes for an artifact, in whatever algorithm that
 /// registry chose.
 ///
@@ -187,10 +195,7 @@ fn maven_group_path(group: &str) -> String {
 pub(crate) async fn versions(client: &reqwest::Client, purl: &Purl) -> Result<Vec<String>, Error> {
     match purl.ty() {
         PurlType::Cargo => {
-            let url = format!(
-                "https://index.crates.io/{}",
-                crates_index_path(purl.name())
-            );
+            let url = format!("https://index.crates.io/{}", crates_index_path(purl.name()));
             let body = http::get_text(client, &url, purl).await?;
             // Newline-delimited JSON, one object per published version, in
             // publish order. Yanked versions stay listed — a yanked version is
@@ -264,7 +269,11 @@ pub(crate) async fn versions(client: &reqwest::Client, purl: &Purl) -> Result<Ve
             let mut out: Vec<String> = body
                 .get("versions")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
                 .unwrap_or_default();
             out.reverse();
             Ok(out)
@@ -307,9 +316,14 @@ fn parse_maven_versions(xml: &str) -> Vec<String> {
 /// ([`super::acquire`]) has already turned `None` into
 /// [`Error::VersionMissing`] with the version list attached, which is a
 /// far more useful failure than anything this function could produce.
-pub(crate) async fn artifact(
+pub(crate) async fn artifact(client: &reqwest::Client, purl: &Purl) -> Result<Artifact, Error> {
+    artifact_with_endpoints(client, purl, &RegistryEndpoints { upstream: None }).await
+}
+
+pub(crate) async fn artifact_with_endpoints(
     client: &reqwest::Client,
     purl: &Purl,
+    endpoints: &RegistryEndpoints,
 ) -> Result<Artifact, Error> {
     let version = purl.version().unwrap_or_default();
 
@@ -319,9 +333,11 @@ pub(crate) async fn artifact(
             // that GLOBAL-IR-GRAPH §2 asks us to verify *before* generating IR
             // ("so IR is provably generated from the exact bytes the registry
             // serves"), and its presence confirms the version exists.
-            let index_url = format!(
-                "https://index.crates.io/{}",
-                crates_index_path(purl.name())
+            let index_url = endpoint_url(
+                endpoints,
+                "https://index.crates.io",
+                &format!("{}", crates_index_path(purl.name())),
+                "index",
             );
             let body = http::get_text(client, &index_url, purl).await?;
             let line = body
@@ -334,9 +350,11 @@ pub(crate) async fn artifact(
                 .and_then(Value::as_str)
                 .map(|s| PublishedDigest::Sha256Hex(s.to_ascii_lowercase()));
             Ok(Artifact {
-                url: format!(
-                    "https://static.crates.io/crates/{name}/{name}-{version}.crate",
-                    name = purl.name(),
+                url: endpoint_url(
+                    endpoints,
+                    "https://static.crates.io",
+                    &format!("{}-{version}.crate", purl.name()),
+                    "crates",
                 ),
                 expected: cksum,
             })
@@ -475,6 +493,22 @@ pub(crate) async fn artifact(
     }
 }
 
+fn endpoint_url(
+    endpoints: &RegistryEndpoints,
+    canonical: &str,
+    path: &str,
+    fixture_prefix: &str,
+) -> String {
+    match &endpoints.upstream {
+        Some(base) => format!(
+            "{}/{}",
+            base.trim_end_matches('/'),
+            format!("{fixture_prefix}/{path}")
+        ),
+        None => format!("{canonical}/{path}"),
+    }
+}
+
 /// Fetch the `go.mod` the module proxy serves *beside* the zip.
 ///
 /// # Why this exists at all
@@ -494,10 +528,7 @@ pub(crate) async fn artifact(
 ///
 /// This was found by fetching a real module. No fixture would have contained
 /// the *absence* of a file.
-pub(crate) async fn go_mod(
-    client: &reqwest::Client,
-    purl: &Purl,
-) -> Result<String, Error> {
+pub(crate) async fn go_mod(client: &reqwest::Client, purl: &Purl) -> Result<String, Error> {
     let url = format!(
         "https://proxy.golang.org/{}/@v/{}.mod",
         go_escape(&purl.lineage_name()),
@@ -522,7 +553,10 @@ fn version_not_found(purl: &Purl, available: Vec<String>) -> Error {
         registry: purl.ty().registry(),
         requested: purl.version().unwrap_or_default().to_owned(),
         published: available.len(),
-        available: available.into_iter().take(super::MAX_LISTED_VERSIONS).collect(),
+        available: available
+            .into_iter()
+            .take(super::MAX_LISTED_VERSIONS)
+            .collect(),
     }
 }
 
@@ -585,11 +619,19 @@ mod tests {
         let bytes = b"nudox";
         let sha256 = PublishedDigest::Sha256Hex(String::new());
         assert_eq!(sha256.compute_over(bytes).len(), 64);
-        assert!(sha256.compute_over(bytes).chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            sha256
+                .compute_over(bytes)
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
 
         let sha512 = PublishedDigest::Sha512B64(String::new());
         let encoded = sha512.compute_over(bytes);
-        assert!(encoded.ends_with('='), "SRI sha512 is padded base64: {encoded}");
+        assert!(
+            encoded.ends_with('='),
+            "SRI sha512 is padded base64: {encoded}"
+        );
 
         let sha1 = PublishedDigest::Sha1Hex(String::new());
         assert_eq!(sha1.compute_over(bytes).len(), 40);

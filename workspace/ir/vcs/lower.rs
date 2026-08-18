@@ -123,6 +123,9 @@ fn lower_symbol(sw: &SymbolWire) -> Symbol {
             .map(|dl| DocLink {
                 target: dl.target.to_string(),
                 label: dl.label.clone(),
+                source_span: dl
+                    .source_span
+                    .map(|(start, end)| start as usize..end as usize),
             })
             .collect(),
         attrs: sw
@@ -301,10 +304,14 @@ fn lower_variant(v: &crate::wire::VariantWire) -> Variant {
 }
 
 fn lower_const(c: &crate::wire::ConstWire) -> Const {
-    Const {
-        ty: lower_type_ref(&c.ty),
-        value: c.value.clone(),
-    }
+    let ty = lower_type_ref(&c.ty);
+    let value = c.value.as_ref().map(|source| {
+        ir::kinds::ConstExpr::builder()
+            .ty(ty.clone())
+            .source(source.clone())
+            .build()
+    });
+    Const { ty, value }
 }
 
 fn lower_static(s: &crate::wire::StaticWire) -> Static {
@@ -317,6 +324,7 @@ fn lower_static(s: &crate::wire::StaticWire) -> Static {
 fn lower_param(p: &ParamWire) -> ir::kinds::param::Param {
     ir::kinds::param::Param {
         ty: Some(lower_type_ref(&p.ty)),
+        default_value: None,
         attributes: Box::default(),
     }
 }
@@ -552,8 +560,7 @@ fn lower_width(w: crate::wire::WidthWire) -> Width {
             // `bits` is a u32, but `Width::Fixed` takes `NonZeroU16`.
             // In practice all bit widths in use (8, 16, 32, 64, 80, 128) fit in u16.
             // A width of 0 would be malformed; map to Width::Arch as a safe fallback.
-            NonZeroU16::new(bits as u16)
-                .map_or(Width::Arch, Width::Fixed)
+            NonZeroU16::new(bits as u16).map_or(Width::Arch, Width::Fixed)
         }
     }
 }

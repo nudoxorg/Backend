@@ -605,13 +605,19 @@ mod tests {
     #[test]
     fn never_lowers_to_never() {
         let mut sink = make_sink();
-        assert_eq!(lower_type(&TypeData::Never, &mut sink, &empty_ids()), Type::Never);
+        assert_eq!(
+            lower_type(&TypeData::Never, &mut sink, &empty_ids()),
+            Type::Never
+        );
     }
 
     #[test]
     fn self_type_lowers_to_self_type() {
         let mut sink = make_sink();
-        assert_eq!(lower_type(&TypeData::SelfType, &mut sink, &empty_ids()), Type::SelfType);
+        assert_eq!(
+            lower_type(&TypeData::SelfType, &mut sink, &empty_ids()),
+            Type::SelfType
+        );
     }
 
     #[test]
@@ -633,7 +639,11 @@ mod tests {
         let mut sink = make_sink();
         assert!(
             matches!(
-                lower_type(&TypeData::Nominal("str".to_string()), &mut sink, &empty_ids()),
+                lower_type(
+                    &TypeData::Nominal("str".to_string()),
+                    &mut sink,
+                    &empty_ids()
+                ),
                 Type::Primitive(Primitive::Str)
             ),
             "str must map to Primitive::Str"
@@ -641,7 +651,11 @@ mod tests {
         let mut sink = make_sink();
         assert!(
             matches!(
-                lower_type(&TypeData::Nominal("builtins.str".to_string()), &mut sink, &empty_ids()),
+                lower_type(
+                    &TypeData::Nominal("builtins.str".to_string()),
+                    &mut sink,
+                    &empty_ids()
+                ),
                 Type::Primitive(Primitive::Str)
             ),
             "builtins.str must also map to Primitive::Str"
@@ -678,11 +692,7 @@ mod tests {
     fn bare_name_declared_locally_is_unresolved_local_not_external() {
         let mut sink = make_sink();
         let known = ids(&["click.core.Context", "click.core.Command"]);
-        let lowered = lower_type(
-            &TypeData::Nominal("Context".to_string()),
-            &mut sink,
-            &known,
-        );
+        let lowered = lower_type(&TypeData::Nominal("Context".to_string()), &mut sink, &known);
         assert_eq!(
             lowered,
             Type::Unknown(UnknownType::UnresolvedLocalName {
@@ -835,7 +845,10 @@ mod tests {
     fn builtins_win_over_a_same_named_local_declaration() {
         let mut sink = make_sink();
         let known = ids(&["mypkg.shims.str", "mypkg.shims.int"]);
-        assert!(known.is_local_short_name("str"), "the shim really is declared");
+        assert!(
+            known.is_local_short_name("str"),
+            "the shim really is declared"
+        );
         assert_eq!(
             lower_type(&TypeData::Nominal("str".to_string()), &mut sink, &known),
             Type::Primitive(Primitive::Str),
@@ -871,11 +884,19 @@ mod tests {
         let lowered = lower_generics(&params, &mut sink, &empty_ids());
         assert_eq!(lowered.len(), 1);
         match &lowered[0] {
-            GenericParam::Type { name, bounds, default, variance } => {
+            GenericParam::Type {
+                name,
+                bounds,
+                default,
+                variance,
+            } => {
                 assert_eq!(name, "T");
                 assert_eq!(bounds.len(), 1);
                 assert!(default.is_none());
-                assert!(variance.is_none(), "Python TypeVar has no declaration-site variance");
+                assert!(
+                    variance.is_none(),
+                    "Python TypeVar has no declaration-site variance"
+                );
             }
             other => panic!("expected GenericParam::Type, got {other:?}"),
         }
@@ -963,7 +984,9 @@ mod tests {
             Record::builder().build(),
         );
 
-        let pkg = sink.finish().expect("forward-referenced nominal must resolve");
+        let pkg = sink
+            .finish()
+            .expect("forward-referenced nominal must resolve");
 
         // Verify Payload is present and the nominal sealed to Ref::Intro.
         let payload_entry = pkg
@@ -993,10 +1016,7 @@ mod tests {
         use nudox_ir::kinds::Record;
 
         let mut sink = make_sink();
-        let known: KnownIds = ["my_pkg.Container"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let known: KnownIds = ["my_pkg.Container"].iter().map(|s| s.to_string()).collect();
 
         // Container[int]
         let applied = lower_type(
@@ -1055,10 +1075,7 @@ mod tests {
         use nudox_ir::kinds::Record;
 
         let mut sink = make_sink();
-        let known: KnownIds = ["my_pkg.Base"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
+        let known: KnownIds = ["my_pkg.Base"].iter().map(|s| s.to_string()).collect();
 
         let params = vec![GenericParamData {
             name: "T".to_string(),
@@ -1069,7 +1086,12 @@ mod tests {
         let lowered = lower_generics(&params, &mut sink, &known);
         assert_eq!(lowered.len(), 1);
         match &lowered[0] {
-            GenericParam::Type { name, bounds, variance, .. } => {
+            GenericParam::Type {
+                name,
+                bounds,
+                variance,
+                ..
+            } => {
                 assert_eq!(name, "T");
                 assert_eq!(bounds.len(), 1);
                 assert!(
@@ -1077,7 +1099,10 @@ mod tests {
                     "bound on same-package class must be Nominal, got {:?}",
                     bounds[0]
                 );
-                assert!(variance.is_none(), "Python TypeVar has no declaration-site variance");
+                assert!(
+                    variance.is_none(),
+                    "Python TypeVar has no declaration-site variance"
+                );
             }
             other => panic!("expected GenericParam::Type, got {other:?}"),
         }
@@ -1119,7 +1144,10 @@ mod tests {
         let mut sink = make_sink();
         let lowered = lower_type(&ty, &mut sink, &empty_ids());
         match lowered {
-            Type::Annotated { ref inner, ref annotation } => {
+            Type::Annotated {
+                ref inner,
+                ref annotation,
+            } => {
                 assert_eq!(annotation.token, "Annotated");
                 assert_eq!(annotation.arg.as_deref(), Some("validator"));
                 assert!(
@@ -1144,10 +1172,16 @@ mod tests {
         let lowered = lower_type(&ty, &mut sink, &empty_ids());
         // Outer layer wraps meta2 (last), inner layer wraps meta1 (first).
         match &lowered {
-            Type::Annotated { inner: outer_inner, annotation } => {
+            Type::Annotated {
+                inner: outer_inner,
+                annotation,
+            } => {
                 assert_eq!(annotation.arg.as_deref(), Some("meta2"));
                 match outer_inner.as_ref() {
-                    Type::Annotated { inner: inner_inner, annotation: inner_ann } => {
+                    Type::Annotated {
+                        inner: inner_inner,
+                        annotation: inner_ann,
+                    } => {
                         assert_eq!(inner_ann.arg.as_deref(), Some("meta1"));
                         assert!(matches!(**inner_inner, Type::Primitive(Primitive::Str)));
                     }
@@ -1170,7 +1204,11 @@ mod tests {
         };
         let mut sink = make_sink();
         let lowered = lower_type(&ty, &mut sink, &empty_ids());
-        assert_eq!(lowered, Type::Never, "empty-metadata Annotated must lower to inner type");
+        assert_eq!(
+            lowered,
+            Type::Never,
+            "empty-metadata Annotated must lower to inner type"
+        );
     }
 
     // ── New: Tuple wraps elements as TupleElement::Positional ─────────────────

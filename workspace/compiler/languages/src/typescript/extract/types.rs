@@ -183,12 +183,10 @@ fn lower_ts_type_impl<'a>(
             use oxc_ast::ast::TSMappedTypeModifierOperator;
             let key_var = m.key.name.to_string();
             let source_ty = Box::new(lower_ts_type_impl(&m.constraint, source, type_params));
-            let value_ty = m
-                .type_annotation
-                .as_ref()
-                .map_or_else(|| Box::new(TypeOwned::Any), |v| {
-                    Box::new(lower_ts_type_impl(v, source, type_params))
-                });
+            let value_ty = m.type_annotation.as_ref().map_or_else(
+                || Box::new(TypeOwned::Any),
+                |v| Box::new(lower_ts_type_impl(v, source, type_params)),
+            );
             let readonly = match &m.readonly {
                 Some(TSMappedTypeModifierOperator::True | TSMappedTypeModifierOperator::Plus) => {
                     MappedModifier::Add
@@ -218,13 +216,10 @@ fn lower_ts_type_impl<'a>(
             // TSTemplateLiteralType has `quasis: Vec<TemplateElement>` and `types: Vec<TSType>`
             // They alternate: quasi[0], type[0], quasi[1], type[1], ..., quasi[n]
             for (i, quasi) in tl.quasis.iter().enumerate() {
-                let s = quasi
-                    .value
-                    .cooked
-                    .as_ref()
-                    .map_or_else(|| quasi.value.raw.as_str().to_string(), |s| {
-                        s.as_str().to_string()
-                    });
+                let s = quasi.value.cooked.as_ref().map_or_else(
+                    || quasi.value.raw.as_str().to_string(),
+                    |s| s.as_str().to_string(),
+                );
                 if !s.is_empty() {
                     parts.push(TemplatePart::Literal(s));
                 }
@@ -315,12 +310,9 @@ fn lower_ts_type_impl<'a>(
                             .key
                             .static_name()
                             .map_or_else(|| "__computed".to_string(), |s| s.to_string());
-                        let ty = p
-                            .type_annotation
-                            .as_ref()
-                            .map_or(TypeOwned::Any, |a| {
-                                lower_ts_type_impl(&a.type_annotation, source, type_params)
-                            });
+                        let ty = p.type_annotation.as_ref().map_or(TypeOwned::Any, |a| {
+                            lower_ts_type_impl(&a.type_annotation, source, type_params)
+                        });
                         members.push(AnonFieldOwned {
                             name,
                             ty,
@@ -338,11 +330,9 @@ fn lower_ts_type_impl<'a>(
                             .items
                             .iter()
                             .map(|p| {
-                                p.type_annotation
-                                    .as_ref()
-                                    .map_or(TypeOwned::Any, |a| {
-                                        lower_ts_type_impl(&a.type_annotation, source, type_params)
-                                    })
+                                p.type_annotation.as_ref().map_or(TypeOwned::Any, |a| {
+                                    lower_ts_type_impl(&a.type_annotation, source, type_params)
+                                })
                             })
                             .collect();
                         let ret = m
@@ -518,10 +508,10 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
                     .quasis
                     .iter()
                     .map(|q| {
-                        q.value
-                            .cooked
-                            .as_ref()
-                            .map_or_else(|| q.value.raw.to_string(), std::string::ToString::to_string)
+                        q.value.cooked.as_ref().map_or_else(
+                            || q.value.raw.to_string(),
+                            std::string::ToString::to_string,
+                        )
                     })
                     .collect::<String>();
                 TypeOwned::TemplateLiteral(vec![TemplatePart::Literal(text)])

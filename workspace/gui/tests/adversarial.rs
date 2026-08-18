@@ -136,29 +136,25 @@ macro_rules! boot_shell {
         let search = $cx.new(|_cx| SearchStore::new(engine.clone()));
         let symbols = $cx.new(|_cx| SymbolStore::new(engine.clone()));
         let packages = $cx.new(|cx| PackageStore::new(engine.clone(), &[], cx));
-        let index_jobs = $cx
-            .new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
+        let index_jobs =
+            $cx.new(|_cx| lindsey::stores::index_jobs::IndexJobStore::new(engine.clone()));
 
-        let shell_cell =
-            std::sync::Arc::new(std::sync::Mutex::new(None::<gpui::Entity<Shell>>));
+        let shell_cell = std::sync::Arc::new(std::sync::Mutex::new(None::<gpui::Entity<Shell>>));
         let shell_cell_w = shell_cell.clone();
         // Clone for the move closure — Entity<T> clone is a cheap arc bump.
         // The originals are returned in the tuple so callers observe the same
         // entities the Shell holds.
-        let (s2, y2, p2, j2) =
-            (search.clone(), symbols.clone(), packages.clone(), index_jobs.clone());
+        let (s2, y2, p2, j2) = (
+            search.clone(),
+            symbols.clone(),
+            packages.clone(),
+            index_jobs.clone(),
+        );
         let window = $cx
             .update(|cx: &mut App| {
                 cx.open_window(WindowOptions::default(), move |window, cx| {
                     let entity = cx.new(|cx| {
-                        Shell::new(
-                            s2.clone(),
-                            y2.clone(),
-                            p2.clone(),
-                            j2.clone(),
-                            window,
-                            cx,
-                        )
+                        Shell::new(s2.clone(), y2.clone(), p2.clone(), j2.clone(), window, cx)
                     });
                     *shell_cell_w.lock().unwrap() = Some(entity.clone());
                     // `Input` (`SignInView`'s field) requires a `Root`-rooted
@@ -219,11 +215,11 @@ async fn clicking_a_search_result_opens_the_document(cx: &mut TestAppContext) {
     // Discover the painted centre of the first Name result row.
     // The row_enter cascade may animate in; `run_until_parked` has drained all
     // pending GPUI work, so the frame is stable.
-    let row_bounds = vcx
-        .debug_bounds("search.row.0.0")
-        .expect("row 'search.row.0.0' must be painted after run_until_parked — \
+    let row_bounds = vcx.debug_bounds("search.row.0.0").expect(
+        "row 'search.row.0.0' must be painted after run_until_parked — \
                  check that OmniSearch::render_row registers the selector and \
-                 that the results are visible in the overlay");
+                 that the results are visible in the overlay",
+    );
 
     // Drive the real hit-test pipeline: mouse-down + mouse-up at the row centre.
     vcx.simulate_click(row_bounds.center(), Modifiers::default());
@@ -277,22 +273,26 @@ async fn click_and_enter_open_the_same_document(cx: &mut TestAppContext) {
     .await;
 
     // Extract the first-row key from both stores — they must be the same corpus.
-    let key_a = search_a.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0].key.clone()
-    });
-    let key_b = search_b.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0].key.clone()
-    });
+    let key_a = search_a.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
+    let key_b = search_b.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
 
     // Open via "keyboard" path (store.open directly).
-    let tab_a = symbols_a.update(cx, |s, cx| s.open(key_a.clone(), OpenDisposition::Replace, cx));
+    let tab_a = symbols_a.update(cx, |s, cx| {
+        s.open(key_a.clone(), OpenDisposition::Replace, cx)
+    });
     // Open via "mouse" path (also store.open — the click closure does the same).
-    let tab_b = symbols_b.update(cx, |s, cx| s.open(key_b.clone(), OpenDisposition::Replace, cx));
+    let tab_b = symbols_b.update(cx, |s, cx| {
+        s.open(key_b.clone(), OpenDisposition::Replace, cx)
+    });
 
     // Both must have resolved to docs with the same key.
     wait_until(cx, "both symbol docs have a head", |cx| {
-        let ha = symbols_a.read_with(cx, |s, _| s.doc(tab_a).and_then(|d| d.head.as_ref()).is_some());
-        let hb = symbols_b.read_with(cx, |s, _| s.doc(tab_b).and_then(|d| d.head.as_ref()).is_some());
+        let ha = symbols_a.read_with(cx, |s, _| {
+            s.doc(tab_a).and_then(|d| d.head.as_ref()).is_some()
+        });
+        let hb = symbols_b.read_with(cx, |s, _| {
+            s.doc(tab_b).and_then(|d| d.head.as_ref()).is_some()
+        });
         ha && hb
     })
     .await;
@@ -592,7 +592,11 @@ async fn very_long_query_does_not_crash(cx: &mut TestAppContext) {
     // Reaching here without panicking is the assertion.
     search.read_with(cx, |s, _| {
         // Input must still be stored correctly.
-        assert_eq!(s.snapshot().input.len(), 512, "input must survive round-trip");
+        assert_eq!(
+            s.snapshot().input.len(),
+            512,
+            "input must survive round-trip"
+        );
     });
 }
 
@@ -645,9 +649,7 @@ async fn opening_same_symbol_twice_does_not_create_duplicate_tab(cx: &mut TestAp
     })
     .await;
 
-    let key = search.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0].key.clone()
-    });
+    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
 
     let tab_a = symbols.update(cx, |s, cx| {
         s.open(key.clone(), OpenDisposition::Replace, cx)
@@ -686,9 +688,7 @@ async fn open_several_then_close_one_leaves_no_orphan(cx: &mut TestAppContext) {
     })
     .await;
 
-    let rows = search.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0..2].to_vec()
-    });
+    let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
     let key1 = rows[0].key.clone();
     let key2 = rows[1].key.clone();
 
@@ -697,14 +697,13 @@ async fn open_several_then_close_one_leaves_no_orphan(cx: &mut TestAppContext) {
     // which the implementation previously ignored), so opening two symbols with
     // `Replace` correctly leaves one tab, not two. This test is about tab
     // lifetime with several tabs open, so it must ask for several.
-    let tab1 = symbols.update(cx, |s, cx| {
-        s.open(key1.clone(), OpenDisposition::Stay, cx)
-    });
-    let tab2 = symbols.update(cx, |s, cx| {
-        s.open(key2.clone(), OpenDisposition::Stay, cx)
-    });
+    let tab1 = symbols.update(cx, |s, cx| s.open(key1.clone(), OpenDisposition::Stay, cx));
+    let tab2 = symbols.update(cx, |s, cx| s.open(key2.clone(), OpenDisposition::Stay, cx));
 
-    assert_ne!(tab1, tab2, "two different keys must produce two different tab ids");
+    assert_ne!(
+        tab1, tab2,
+        "two different keys must produce two different tab ids"
+    );
 
     symbols.read_with(cx, |s, _| {
         assert_eq!(s.docs.len(), 2, "two docs must be open");
@@ -714,23 +713,21 @@ async fn open_several_then_close_one_leaves_no_orphan(cx: &mut TestAppContext) {
     symbols.update(cx, |s, cx| s.close(tab1, cx));
 
     symbols.read_with(cx, |s, _| {
-        assert_eq!(s.docs.len(), 1, "closing one tab must leave exactly one doc");
+        assert_eq!(
+            s.docs.len(),
+            1,
+            "closing one tab must leave exactly one doc"
+        );
         assert!(
             s.doc(tab2).is_some(),
             "the surviving tab must still have its doc"
         );
-        assert!(
-            s.doc(tab1).is_none(),
-            "the closed tab must not have a doc"
-        );
+        assert!(s.doc(tab1).is_none(), "the closed tab must not have a doc");
         assert!(
             !s.is_open(&key1),
             "closed key must not appear as open in the store"
         );
-        assert!(
-            s.is_open(&key2),
-            "surviving key must still appear as open"
-        );
+        assert!(s.is_open(&key2), "surviving key must still appear as open");
     });
 }
 
@@ -747,9 +744,7 @@ async fn reveal_document_background_does_not_steal_focus(cx: &mut TestAppContext
     })
     .await;
 
-    let rows = search.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0..2].to_vec()
-    });
+    let rows = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0..2].to_vec());
     let key1 = rows[0].key.clone();
     let key2 = rows[1].key.clone();
 
@@ -759,9 +754,7 @@ async fn reveal_document_background_does_not_steal_focus(cx: &mut TestAppContext
     });
     vcx.run_until_parked();
 
-    let active_after_first_open = shell.read_with(&mut vcx, |s, cx| {
-        s.pane().read(cx).active_id()
-    });
+    let active_after_first_open = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).active_id());
     assert!(
         active_after_first_open.is_some(),
         "a tab must be active after the first open"
@@ -773,9 +766,8 @@ async fn reveal_document_background_does_not_steal_focus(cx: &mut TestAppContext
     });
     vcx.run_until_parked();
 
-    let active_after_background_open = shell.read_with(&mut vcx, |s, cx| {
-        s.pane().read(cx).active_id()
-    });
+    let active_after_background_open =
+        shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).active_id());
     assert_eq!(
         active_after_first_open, active_after_background_open,
         "Background disposition must not change the active tab — \
@@ -829,15 +821,18 @@ async fn clicking_a_project_panel_row_selects_it(cx: &mut TestAppContext) {
     vcx.run_until_parked();
 
     // Discover the painted centre of the first project panel row.
-    let row_bounds = vcx
-        .debug_bounds("project.panel.row.0")
-        .expect("row 'project.panel.row.0' must be painted after run_until_parked — \
+    let row_bounds = vcx.debug_bounds("project.panel.row.0").expect(
+        "row 'project.panel.row.0' must be painted after run_until_parked — \
                  check that ProjectPanel::render_row registers the selector and \
-                 that packages have loaded from the fixture engine");
+                 that packages have loaded from the fixture engine",
+    );
 
     // Pane must be empty before the click (pre-condition).
     let pre_click_tabs = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
-    assert_eq!(pre_click_tabs, 0, "pre-condition: pane must be empty before any click");
+    assert_eq!(
+        pre_click_tabs, 0,
+        "pre-condition: pane must be empty before any click"
+    );
 
     // Drive the real hit-test pipeline.
     vcx.simulate_click(row_bounds.center(), Modifiers::default());
@@ -1030,10 +1025,10 @@ async fn scrim_click_dismisses_omni_search(cx: &mut TestAppContext) {
     // Discover the scrim's painted bounds. The scrim is painted under the overlay
     // panel, so its selector is registered by Shell::render when an overlay is
     // visible and dismiss_on_scrim_click() is true.
-    let scrim_bounds = vcx
-        .debug_bounds("overlay.scrim")
-        .expect("scrim 'overlay.scrim' must be painted when an overlay is open — \
-                 check that Shell::render registers the selector on the scrim div");
+    let scrim_bounds = vcx.debug_bounds("overlay.scrim").expect(
+        "scrim 'overlay.scrim' must be painted when an overlay is open — \
+                 check that Shell::render registers the selector on the scrim div",
+    );
 
     // Click the scrim *away from the panel*.
     //
@@ -1053,8 +1048,7 @@ async fn scrim_click_dismisses_omni_search(cx: &mut TestAppContext) {
     // Overlay must be closed.
     let after = shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned());
     assert_eq!(
-        after,
-        None,
+        after, None,
         "clicking the scrim must close the OmniSearch overlay — \
          Some(…) here means the scrim's on_click is not wired or \
          dismiss_on_scrim_click() returned false for OmniSearch"
@@ -1147,9 +1141,8 @@ async fn escape_on_non_empty_input_clears_input_before_closing(cx: &mut TestAppC
     vcx.simulate_keystrokes("escape");
     vcx.run_until_parked();
 
-    let input_after_first_escape = search.read_with(&mut vcx, |s, _| {
-        s.snapshot().input.to_string()
-    });
+    let input_after_first_escape =
+        search.read_with(&mut vcx, |s, _| s.snapshot().input.to_string());
     assert_eq!(
         input_after_first_escape, "",
         "first Escape must clear the input, not close the overlay"
@@ -1170,8 +1163,7 @@ async fn escape_on_non_empty_input_clears_input_before_closing(cx: &mut TestAppC
     let overlay_after_second_escape =
         shell.read_with(&mut vcx, |s, _| s.overlay_kind_on_top().cloned());
     assert_eq!(
-        overlay_after_second_escape,
-        None,
+        overlay_after_second_escape, None,
         "second Escape on empty input must close the overlay"
     );
 }
@@ -1243,9 +1235,7 @@ async fn reveal_document_reuses_existing_pane_tab(cx: &mut TestAppContext) {
     })
     .await;
 
-    let key = search.read_with(cx, |s, _| {
-        s.snapshot().sections[0].rows[0].key.clone()
-    });
+    let key = search.read_with(cx, |s, _| s.snapshot().sections[0].rows[0].key.clone());
 
     // First open.
     symbols.update(cx, |s, cx| {
@@ -1300,23 +1290,37 @@ async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContex
     vcx.simulate_keystrokes("cmd-1");
     vcx.run_until_parked();
     let active = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).active_id());
-    assert_eq!(active, Some(pane_tab1), "cmd-1 must activate the first pane tab");
+    assert_eq!(
+        active,
+        Some(pane_tab1),
+        "cmd-1 must activate the first pane tab"
+    );
 
     // Replace the selected first tab with a new symbol. The second tab must
     // survive, proving the pane activation was mirrored into SymbolStore.
-    let tab3 = symbols.update(cx, |s, cx| s.open(key3.clone(), OpenDisposition::Replace, cx));
+    let tab3 = symbols.update(cx, |s, cx| {
+        s.open(key3.clone(), OpenDisposition::Replace, cx)
+    });
     vcx.run_until_parked();
 
     symbols.read_with(cx, |s, _| {
-        assert!(!s.is_open(&key1), "the selected first document must be replaced");
-        assert!(s.is_open(&key2), "the unselected second document must survive");
+        assert!(
+            !s.is_open(&key1),
+            "the selected first document must be replaced"
+        );
+        assert!(
+            s.is_open(&key2),
+            "the unselected second document must survive"
+        );
         assert!(s.is_open(&key3), "the replacement document must be open");
     });
 
     let pane_len = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
     assert_eq!(pane_len, 2, "replacement must not leave a ghost pane tab");
     assert!(
-        shell.read_with(&mut vcx, |s, _| s.pane_tab_for_document(tab2)).is_some(),
+        shell
+            .read_with(&mut vcx, |s, _| s.pane_tab_for_document(tab2))
+            .is_some(),
         "the second document's pane tab must remain mapped"
     );
     assert_eq!(
@@ -1330,10 +1334,19 @@ async fn pane_tab_activation_keeps_store_and_pane_in_sync(cx: &mut TestAppContex
     vcx.simulate_keystrokes("cmd-w");
     vcx.run_until_parked();
     let pane_len_after_close = shell.read_with(&mut vcx, |s, cx| s.pane().read(cx).len());
-    assert_eq!(pane_len_after_close, 1, "cmd-w must close the active pane tab");
+    assert_eq!(
+        pane_len_after_close, 1,
+        "cmd-w must close the active pane tab"
+    );
     symbols.read_with(cx, |s, _| {
-        assert!(!s.is_open(&key3), "closing a pane tab must close its SymbolDoc");
-        assert!(s.is_open(&key2), "the surviving pane tab must keep its SymbolDoc");
+        assert!(
+            !s.is_open(&key3),
+            "closing a pane tab must close its SymbolDoc"
+        );
+        assert!(
+            s.is_open(&key2),
+            "the surviving pane tab must keep its SymbolDoc"
+        );
     });
 }
 
@@ -1406,9 +1419,7 @@ async fn activating_a_tab_focuses_the_symbol_page_not_the_pane(cx: &mut TestAppC
     //    dispatches. `y` → `CopySymbolUri`, observed as clipboard content.
     let sentinel = "adversarial-sentinel-before-copy-symbol-uri";
     let original = vcx.update(|_, cx| cx.read_from_clipboard());
-    vcx.update(|_, cx| {
-        cx.write_to_clipboard(gpui::ClipboardItem::new_string(sentinel.to_owned()))
-    });
+    vcx.update(|_, cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(sentinel.to_owned())));
 
     vcx.simulate_keystrokes("y");
     vcx.run_until_parked();
@@ -1647,8 +1658,9 @@ fn string_literals(src: &str) -> Vec<String> {
             if j < b.len() && b[j] == '"' {
                 j += 1;
                 let start = j;
-                let closing: String =
-                    std::iter::once('"').chain(std::iter::repeat_n('#', hashes)).collect();
+                let closing: String = std::iter::once('"')
+                    .chain(std::iter::repeat_n('#', hashes))
+                    .collect();
                 let rest: String = b[j..].iter().collect();
                 match rest.find(&closing) {
                     Some(rel) => {
@@ -1698,8 +1710,8 @@ fn string_literals(src: &str) -> Vec<String> {
 /// Every `.rs` file under `src/`.
 fn crate_sources() -> Vec<std::path::PathBuf> {
     fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let entries = std::fs::read_dir(dir)
-            .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
+        let entries =
+            std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display()));
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {

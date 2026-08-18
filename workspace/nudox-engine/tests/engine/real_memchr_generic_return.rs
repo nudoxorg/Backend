@@ -109,15 +109,16 @@
 //!   cargo test -p nudox-engine --test real_memchr_generic_return -- --ignored --nocapture
 //! ```
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nudox_ir::kind::Kind;
-use nudox_ir::view::IrView;
-use nudox_languages::produce;
-use nudox_languages::rust::RustProducer;
 use nudox_engine::store::package::{PackageView, Provenance};
 use nudox_engine::store::source::producer::PackageDescriptor;
+use nudox_ir::view::IrView;
+use nudox_ir::{index::Ref, kind::Kind};
+use nudox_languages::produce;
+use nudox_languages::rust::RustProducer;
 
 use nudox_engine::chunk::signature;
 use nudox_engine::wire::SigToken;
@@ -129,9 +130,12 @@ fn var(key: &str) -> Option<String> {
 }
 
 fn root() -> PathBuf {
-    var("NUDOX_PKG_ROOT").map_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
-    }, PathBuf::from)
+    var("NUDOX_PKG_ROOT")
+        .map(PathBuf::from)
+        .or_else(|| var("NUDOX_CORPUS_ROOT").map(|root| PathBuf::from(root).join("memchr-2.8.3")))
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
+        })
 }
 
 fn name() -> String {
@@ -164,10 +168,6 @@ fn render_text(toks: &[SigToken]) -> String {
 /// Passing as of 2026-08-07 (see the module doc for the measured run and for
 /// the param/return identity collision this remains the regression guard for).
 #[test]
-#[ignore = "drives in-process rust-analyzer over the real result/memchr-2.8.3 cargo \
-            workspace: ~30 s and needs the fixture fetched. Run it on purpose with \
-            `cargo test -p nudox-engine --test real_memchr_generic_return -- --ignored \
-            --nocapture`; it passes"]
 fn real_memchr_return_type_keeps_option_wrapper() {
     let root = root();
     assert!(
@@ -180,10 +180,8 @@ fn real_memchr_return_type_keeps_option_wrapper() {
     );
 
     let descriptor = PackageDescriptor::cargo(&root, name(), version());
-    let (table, cost) = heart::cost::measured(
-        &format!("l19/real/{}-{}", name(), version()),
-        &root,
-        || {
+    let (table, cost) =
+        heart::cost::measured(&format!("l19/real/{}-{}", name(), version()), &root, || {
             produce(
                 &RustProducer { direct_repo: false },
                 &descriptor.source,
@@ -199,8 +197,8 @@ fn real_memchr_return_type_keeps_option_wrapper() {
                 }
                 panic!("{} must lower without error:\n{chain}", name());
             })
-        .table},
-    );
+            .table
+        });
     eprintln!(
         "lowered {} entries from {}-{} in {:.1}s",
         table.len(),
@@ -265,5 +263,40 @@ fn real_memchr_return_type_keeps_option_wrapper() {
             .map(|(id, text)| format!("  {id}… => {text}"))
             .collect::<Vec<_>>()
             .join("\n"),
+    );
+
+    // The same real crate also supplies the collision proof: these sibling
+    // functions all have a synthesized `return` parameter.  Their identities
+    // must be distinct and each parameter must be parented by its owner; an
+    // ordinal or zero-span fallback is not an identity source.
+    let mut return_ids = BTreeSet::new();
+    for function_name in ["memchr", "memchr2", "memchr3"] {
+        let (function_id, entry) = v
+            .entries()
+            .find(|(_, e)| {
+                e.sym().name == function_name
+                    && matches!(e.kind().as_owned_kind(), Some(Kind::Function(_)))
+            })
+            .unwrap_or_else(|| panic!("real memchr must declare `{function_name}`"));
+        let Some(Kind::Function(function)) = entry.kind().as_owned_kind() else {
+            unreachable!("filtered above");
+        };
+        let Some(Ref::Intro(return_id)) = function.output_params.first() else {
+            panic!("`{function_name}` must have a sealed synthetic return parameter");
+        };
+        assert_eq!(
+            v.parent_of(*return_id),
+            Some(function_id),
+            "`{function_name}` return parameter must be owned by its function"
+        );
+        assert!(
+            return_ids.insert(*return_id),
+            "sibling function `{function_name}` reused another function's return identity"
+        );
+    }
+    assert_eq!(
+        return_ids.len(),
+        3,
+        "memchr/memchr2/memchr3 must retain three collision-free return identities"
     );
 }

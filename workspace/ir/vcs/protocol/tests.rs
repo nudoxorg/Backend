@@ -26,8 +26,7 @@ use ir::kind::KindDiscriminant;
 
 use crate::protocol::{
     BodyWire, Error, FailureKindWire, FrameReader, FrameWriter, IR_STREAM_VERSION, MAX_FRAME_BYTES,
-    PhaseWire, ProducerId, Received, StreamFrame, StreamReceiver, SymbolSink,
-    WireEntry, WireLink,
+    PhaseWire, ProducerId, Received, StreamFrame, StreamReceiver, SymbolSink, WireEntry, WireLink,
 };
 
 // ---------------------------------------------------------------------------
@@ -371,9 +370,7 @@ fn test_oversize_single_entry_rejected_at_emit() {
             assert!(actual > MAX_FRAME_BYTES);
             assert_eq!(variant, Some("Symbols"));
         }
-        other => panic!(
-            "expected FrameTooLarge at emit, got {other:?}"
-        ),
+        other => panic!("expected FrameTooLarge at emit, got {other:?}"),
     }
 }
 

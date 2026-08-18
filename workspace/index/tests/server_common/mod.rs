@@ -11,11 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use index::server::authz::{Principal, ReadCap, WriteCap};
-use index::server::{Server, ServerConfiguration};
 use heart::PageSpecification;
 use heart::client::query::{ExecutionQuery as Query, Filter, Search};
 use heart::{EntryUri, Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
+use index::server::authz::{Principal, ReadCap, WriteCap};
+use index::server::{BackgroundWorkers, Server, ServerConfiguration};
 use smol_str::SmolStr;
 
 /// The embedding-model brand every test monomorphizes over. The sealed model
@@ -98,6 +98,39 @@ pub fn page(limit: u32) -> PageSpecification {
     }
 }
 
+/// Drain a `heart::surface::Answer<heart::surface::Symbols>` into a plain
+/// `Vec`, the way callers collected `search_symbols`'s returned stream before
+/// S2 (`Vec<Scored<Symbol>> = server.search_symbols(..).await?.try_collect().await?`).
+///
+/// `search_symbols` now returns an `Answer<Symbols>` instead of a fallible
+/// `Stream` — under the streaming envelope a failure is a *terminal* frame
+/// (`Frame::Failed`), not a per-item `Err` interleaved with hits, so the
+/// closest equivalent to the old `Result<Vec<_>, _>` is "the whole answer
+/// either finished with `End` or it didn't": every `Frame::Item` collects into
+/// the `Vec`, and a `Frame::Failed` fails the whole collection rather than
+/// just the one item that triggered it. `Frame::Degraded` is deliberately
+/// *not* treated as failure here — same as everywhere else this module's
+/// `merge` semantics apply, a degraded source does not sink an answer other
+/// sources already partly satisfied.
+pub async fn collect_symbol_answer(
+    answer: heart::surface::Answer<heart::surface::Symbols>,
+) -> Result<Vec<heart::Scored<heart::Symbol>>, heart::stream::WireError> {
+    let mut hits = Vec::new();
+    while let Some(frame) = answer.recv().await {
+        match frame {
+            heart::surface::Frame::Item(located) => hits.push(located.value),
+            heart::surface::Frame::End(_) => return Ok(hits),
+            heart::surface::Frame::Failed(error) => return Err(error),
+            // `Frame` is `#[non_exhaustive]` outside `heart`; `Degraded`,
+            // `Note`, and any future frame kind (a progress marker, say) all
+            // fold into "keep reading" here — this helper only cares about
+            // items and the terminal outcome.
+            _ => {}
+        }
+    }
+    Ok(hits)
+}
+
 /// A unique temporary directory removed on drop (for package-index replicas and
 /// per-test server data directories).
 pub struct TempDir {
@@ -172,6 +205,28 @@ async fn assemble_server(test: &str) -> Result<(Arc<Server<TestModel>>, TempDir)
         .map_err(|error| format!("test configuration resolves: {error}"))?;
     configuration.definitive.data_directory = Some(data_directory.path().to_path_buf());
 
+    // `Endpoints::localhost_defaults()` (workspace/index/server/config.rs) —
+    // what `ServerConfiguration::resolve()` falls back to when no
+    // `NUDOX_DEFINITIVE__ENDPOINTS__*` override is set — points
+    // `catalog_directory` and `object_store` at *fixed* paths
+    // (`./data/catalog`, `$TMPDIR/nudox/blobs`), not the per-test
+    // `data_directory` above. Left alone, every server-integration test in
+    // the suite opens the *same* on-disk DoltLite catalog and blob store.
+    // Under real parallelism (cargo-nextest's default is one process per
+    // test) that produced, empirically: `SQLITE_BUSY`/"database is locked"
+    // panics (no `busy_timeout` is configured on the catalog connection —
+    // workspace/vendor/rusqdoltlite/connection.rs's `Connection::open`, a
+    // separate product-side gap, reported rather than patched here) and
+    // cross-test data contamination (one test's added package visible to
+    // another's "does this add return the same identity" assertion). Each
+    // test gets its own catalog directory and blob store here so the
+    // isolation the per-test `data_directory` above already implies is
+    // actually complete.
+    configuration.definitive.endpoints.catalog_directory = data_directory.path().join("catalog");
+    configuration.definitive.endpoints.object_store =
+        url::Url::from_file_path(data_directory.path().join("blobs"))
+            .map_err(|()| "test data directory path is not a valid file:// base".to_owned())?;
+
     // Server::serve binds this address itself. Port zero lets that bind choose
     // an ephemeral port atomically instead of reserving a port and releasing it
     // before the server starts, which leaves a bind-then-release race.
@@ -191,17 +246,44 @@ pub fn loopback_listener() -> std::io::Result<std::net::TcpListener> {
     Ok(listener)
 }
 
-/// Run the full server (HTTP + background pollers) for the rest of the test
-/// process. The task is detached; the test binary's exit reaps it. The legacy
-/// signature is retained, but serving is bounded so a wedged server cannot keep
-/// a test process alive indefinitely.
-pub fn spawn_serving(server: Arc<Server<TestModel>>) {
-    let serving = spawn_serving_bounded(server, Duration::from_secs(10 * 60));
-    tokio::spawn(async move {
-        if let Err(error) = serving.wait().await {
-            eprintln!("background serve exited: {error}");
-        }
-    });
+/// Start this test server's background pollers (fan-out consumers + the
+/// replica-local index sync/watermark loops) so a tracked package's symbols
+/// actually get materialized into the text/vector/graph stores — the same
+/// consume path production runs, exercised for real rather than stubbed.
+///
+/// This calls [`Server::spawn_background_workers`] — the poller-only seam
+/// [`Server::serve`] itself is built on — instead of `serve()`/`serve_on()`.
+/// None of these tests talk to the server over HTTP (they call
+/// `search_symbols`/`expand`/`outbox()`/… directly in-process), so binding a
+/// TCP listener would be pure overhead and, with cargo-nextest running many
+/// of these tests as concurrent processes, unnecessary port-contention risk;
+/// the narrower seam keeps the test hermetic.
+///
+/// The returned [`BackgroundWorkers`] owns every spawned task, pollers and
+/// (if this test server's role runs one) the indexing queue worker alike:
+/// hold it for as long as the test needs materialization to keep happening,
+/// then let it drop before the test's `TempDir` does (declare the binding
+/// *after* the `(server, _data)` one — Rust drops locals in reverse
+/// declaration order, so the pollers stop writing before their directory is
+/// removed). Dropping it aborts everything at the workers' next await point;
+/// call [`BackgroundWorkers::shutdown`] instead for a graceful queue drain.
+/// Either way nothing outlives the guard — unlike a bare `tokio::spawn` of
+/// `serve()`, which has no caller-side handle to stop it with (`serve()`'s
+/// only shutdown path waits for a process-level SIGINT/SIGTERM, which a test
+/// process never sends) and — even wrapped in a bounded
+/// `tokio::time::timeout`, as this helper used to — leaked the queue worker
+/// past that timeout anyway: it was a bare `JoinHandle` local to `serve_on`,
+/// not tracked by the `pollers` `JoinSet` that timing out the future
+/// aborts. cargo-nextest's leak detector caught exactly this on the prior
+/// version of this helper (`deferred_external_symbol_resolves_later` marked
+/// LEAK: it and its sibling tests reached their assertions in ~31s in
+/// isolation, but the un-cancelled poller/queue-worker tasks from earlier
+/// tests in the same `cargo nextest run` kept running and contending for
+/// CPU/the shared embeddings stub afterward, degrading the *other* tests
+/// enough that their probes missed the 300s `PIPELINE_DEADLINE`).
+#[must_use = "dropping this immediately stops the pollers it started"]
+pub fn spawn_pollers(server: &Arc<Server<TestModel>>) -> BackgroundWorkers {
+    server.spawn_background_workers()
 }
 
 /// A bounded, abort-on-drop server task for tests that need explicit lifetime
@@ -343,8 +425,21 @@ pub async fn call(
         // Keep the old no-body compatibility behavior for status-only callers.
         serde_json::Value::Null
     } else {
-        serde_json::from_slice(&bytes)
-            .unwrap_or_else(|error| panic!("{status} response body is not valid JSON: {error}"))
+        // Not every response this helper sees is an application-authored JSON
+        // envelope: axum's own built-in rejections (a failed `Json<T>`
+        // extractor -> 422, `RequestBodyLimitLayer` -> 413, the router's
+        // method-not-allowed fallback -> 405) answer with a plain-text body,
+        // by framework default, not a bug in the handler being exercised.
+        // Every real caller of `call()` that hit one of those paths only
+        // asserted on `status` and discarded the body (`let (status, _) =
+        // ...`), so a hard panic here was strictly worse than useless — it
+        // failed the *status* assertion's test before it ever ran. Callers
+        // that need a guaranteed-JSON body should use `call_json`, which
+        // still surfaces `JsonResponseError::InvalidJson` instead of
+        // silently downgrading it.
+        serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+            serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned())
+        })
     };
     (status, body)
 }

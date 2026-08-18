@@ -14,19 +14,32 @@
 //! `heart` types — no bespoke request/response structs.
 
 use crate::client::dto::{AddPackageDto, HealthDto};
+use crate::client::remote::RemoteClient;
 use crate::query::Query;
-use crate::stream::{StreamFrame, WireError};
-use crate::{Page, PackageHit, Scored, Symbol};
+#[cfg(test)]
+use crate::stream::StreamFrame;
+use crate::stream::WireError;
+use crate::surface::{Frame, Gen, Serve as _, Symbols};
+use crate::{PackageHit, Page, Scored, Symbol};
 use url::Url;
 
 /// A client bound to one `nudox-serve` base URL.
 ///
-/// Cheap to clone (the inner [`reqwest::Client`] is an `Arc` handle). Construct
-/// once at startup and share.
+/// Cheap to clone (the inner [`reqwest::Client`] is an `Arc` handle, and
+/// [`RemoteClient`] clones just as cheaply — see its own doc comment).
+/// Construct once at startup and share.
 #[derive(Debug, Clone)]
 pub struct NudoxClient {
     base: Url,
     http: reqwest::Client,
+    /// The `Serve<Symbols>` transport [`NudoxClient::search`] is now a thin
+    /// shim over (contract §2.1/S1). Every other method here
+    /// (`readyz`/`search_packages`/`add_package`) still speaks its own
+    /// hand-written request/response shape directly through `http` — this
+    /// crate's `/search` route is the first (and, until S3 ports the rest of
+    /// this client's routes onto `Surface`, only) one that speaks `Frame<S>`
+    /// on the wire, which is what `RemoteClient` requires.
+    remote: RemoteClient,
 }
 
 /// Why a client call failed.
@@ -105,7 +118,8 @@ impl NudoxClient {
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(concat!("nudox-client/", env!("CARGO_PKG_VERSION")))
             .build()?;
-        Ok(Self { base, http })
+        let remote = RemoteClient::new(base.clone())?;
+        Ok(Self { base, http, remote })
     }
 
     /// Parse `base` from a string and bind.
@@ -123,19 +137,64 @@ impl NudoxClient {
     }
 
     /// Symbol search (`POST /search`): send the one query algebra, read the
-    /// typed NDJSON [`StreamFrame`] stream of ranked hits. `query.target` must be
-    /// [`crate::query::Target::Symbols`].
+    /// ranked hits. `query.target` must be [`crate::query::Target::Symbols`].
     ///
-    /// On success every line was a well-typed frame terminated by a
-    /// [`StreamFrame::End`]. A mid-stream [`StreamFrame::Error`] surfaces as
-    /// [`Error::Wire`] (a *value*, carrying how many hits preceded it); a
-    /// stream with no terminal frame surfaces as [`Error::Truncated`] —
-    /// never as a spurious empty success.
+    /// # This is now a shim over [`RemoteClient`]
+    ///
+    /// The server's `/search` route moved from the ad hoc
+    /// [`StreamFrame`]/[`read_hit_stream`] envelope this type used to decode
+    /// by hand onto [`crate::surface::Frame<Symbols>`] — `heart::surface`'s
+    /// one envelope, shared with every other search surface
+    /// (`LOCAL-REMOTE-CONTRACT.md` S1/S2). `RemoteClient`'s blanket
+    /// `Serve<Symbols>` impl already speaks that envelope (streaming, via
+    /// [`crate::surface::decode_frames`], not `response.text()`), so this
+    /// method's whole body is now "drive that `Serve` call and fold its
+    /// frames into the `Vec` this signature has always returned" — the exact
+    /// shim `LOCAL-REMOTE-CONTRACT.md`'s S1 phase deferred to whoever
+    /// unbuffered the server (S2), because routing this through `RemoteClient`
+    /// before the server spoke `Frame<Symbols>` would have silently stopped
+    /// talking to it (see [`RemoteClient`]'s own module doc comment on why
+    /// S1 originally left this method untouched).
+    ///
+    /// The public signature — `Result<Vec<Scored<Symbol>>, Error>` — is
+    /// unchanged, so every existing caller (the GUI's `SearchStore`, this
+    /// crate's own tests) keeps compiling and keeps its "collect everything,
+    /// then render" behaviour; a caller that wants the progressive/streaming
+    /// behaviour `Answer<Symbols>` actually offers should call
+    /// `RemoteClient::serve` directly instead of through this shim.
+    ///
+    /// `Frame::Failed` becomes [`Error::Wire`] (carrying how many hits arrived
+    /// first, same as the old mid-stream [`StreamFrame::Error`] case); an
+    /// answer whose stream ends with **no** terminal frame at all (the
+    /// `flume` channel disconnecting without an `End`/`Failed` ever being
+    /// sent — `RemoteClient::serve`'s own pump does not do this in practice,
+    /// but nothing in `Answer`'s type forbids a future `Serve<S>` impl from
+    /// dropping a channel silently) still surfaces as [`Error::Truncated`],
+    /// carrying forward the same "no terminal frame is never a silent
+    /// success" rule the old NDJSON reader enforced.
     pub async fn search(&self, query: &Query) -> Result<Vec<Scored<Symbol>>, Error> {
-        let url = self.base.join("search")?;
-        let response = self.http.post(url).json(query).send().await?;
-        let body = self.checked(response).await?;
-        read_hit_stream::<Symbol>(&body)
+        let answer: crate::surface::Answer<Symbols> = self.remote.serve(query.clone(), Gen(0));
+        let mut hits = Vec::new();
+        while let Some(frame) = answer.recv().await {
+            match frame {
+                Frame::Item(located) => hits.push(located.value),
+                Frame::End(_) => return Ok(hits),
+                Frame::Failed(error) => {
+                    return Err(Error::Wire {
+                        error,
+                        hits_before: hits.len(),
+                    });
+                }
+                // `Frame` is `#[non_exhaustive]`; `Degraded` and any future
+                // frame kind fold into "keep reading" — a degraded federated
+                // source does not fail this collection, same as everywhere
+                // else `heart::surface::merge`'s semantics apply.
+                _ => {}
+            }
+        }
+        Err(Error::Truncated {
+            hits_before: hits.len(),
+        })
     }
 
     /// Package search (`POST /packages/search`): the lexical package surface.
@@ -195,6 +254,15 @@ impl NudoxClient {
 /// the count of hits that preceded it); a line that fails to parse as a frame is
 /// a [`Error::Decode`] — the three outcomes the bare-line reader could not
 /// tell apart.
+///
+/// `#[cfg(test)]`: [`NudoxClient::search`] — the only production caller this
+/// ever had — is now a shim over [`RemoteClient`]/[`crate::surface::decode_frames`]
+/// (see that method's own doc comment), so nothing outside this module's own
+/// tests constructs the pre-`Frame<S>` [`StreamFrame`] envelope over the wire
+/// anymore. The function (and the tests exercising it below) stay as a pinned
+/// spec of that older envelope's decode rules — `StreamFrame` itself is still
+/// live vocabulary elsewhere in this crate — rather than being deleted outright.
+#[cfg(test)]
 fn read_hit_stream<T>(body: &str) -> Result<Vec<Scored<T>>, Error>
 where
     T: serde::de::DeserializeOwned,
@@ -255,7 +323,12 @@ mod tests {
 
     #[test]
     fn a_terminated_stream_yields_its_hits() {
-        let body = format!("{}\n{}\n{}", hit_line("a", 0.9), hit_line("b", 0.5), end_line(2));
+        let body = format!(
+            "{}\n{}\n{}",
+            hit_line("a", 0.9),
+            hit_line("b", 0.5),
+            end_line(2)
+        );
         let hits = read_hit_stream::<String>(&body).expect("terminated stream is ok");
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].value, "a");
@@ -275,7 +348,11 @@ mod tests {
     fn a_mid_stream_error_frame_is_a_typed_value_not_a_decode_failure() {
         let error: StreamFrame<Scored<String>> =
             StreamFrame::Error(WireError::Backend("qdrant down".into()));
-        let body = format!("{}\n{}", hit_line("a", 0.9), serde_json::to_string(&error).unwrap());
+        let body = format!(
+            "{}\n{}",
+            hit_line("a", 0.9),
+            serde_json::to_string(&error).unwrap()
+        );
         match read_hit_stream::<String>(&body) {
             Err(Error::Wire { error, hits_before }) => {
                 assert_eq!(hits_before, 1, "one hit preceded the error");

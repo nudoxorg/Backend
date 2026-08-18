@@ -37,19 +37,21 @@ pub use ranking::{gates, listing_signals, local_enrichment, squat};
 // re-export so those references resolve without moving the pipeline file.
 pub use ranking::{eval, interleave, multi_parent, policy, popularity, rrf};
 
-pub use alias::{AliasConfidence, AliasExpander, ResolvedAlias, expand_cpp_bare_token, presence_facet};
-pub use health::PackageIndexHealth;
-pub use ranking::local_enrichment::{
-	DepRelation, EnrichedHit, HitSource, LocalContext, LocalEnrichment, LocalLabel,
-	LocalOnlyPackage, RankedItem, UsageStat,
+pub use alias::{
+    AliasConfidence, AliasExpander, ResolvedAlias, expand_cpp_bare_token, presence_facet,
 };
+pub use health::PackageIndexHealth;
 pub use pipeline::{
-	PackageSearchDeps, PackageSearchRequest, retrieve_and_rank, retrieve_and_rank_page,
+    PackageSearchDeps, PackageSearchRequest, retrieve_and_rank, retrieve_and_rank_page,
+};
+pub use ranking::local_enrichment::{
+    DepRelation, EnrichedHit, HitSource, LocalContext, LocalEnrichment, LocalLabel,
+    LocalOnlyPackage, RankedItem, UsageStat,
 };
 pub use ranking::popularity::assign_percentiles;
 pub use structured::StructuredQuery;
 pub use usages::{
-	ReverseIndexUsageBackend, Unsupported, Usage, UsageQueryBackend, UsageQueryError,
+    ReverseIndexUsageBackend, Unsupported, Usage, UsageQueryBackend, UsageQueryError,
 };
 
 /// The keyset a registry-search cursor advances over.
@@ -68,153 +70,173 @@ pub type SearchKey = (heart::Score, PackageId);
 /// `after` is `None` for a first page (every hit qualifies).
 #[must_use]
 pub fn keyset_is_after(after: Option<SearchKey>, score: heart::Score, id: PackageId) -> bool {
-	match after {
-		None => true,
-		Some((cursor_score, cursor_id)) => {
-			score < cursor_score || (score == cursor_score && id > cursor_id)
-		}
-	}
+    match after {
+        None => true,
+        Some((cursor_score, cursor_id)) => {
+            score < cursor_score || (score == cursor_score && id > cursor_id)
+        }
+    }
 }
 
 /// Did-you-mean suggestions for free terms (does not re-query the index).
 #[must_use]
 pub fn dym_suggestions_for_request(
-	vocab: impl IntoIterator<Item = impl AsRef<str>>,
-	query: &PackageSearchRequest,
-	limit: usize,
+    vocab: impl IntoIterator<Item = impl AsRef<str>>,
+    query: &PackageSearchRequest,
+    limit: usize,
 ) -> Vec<String> {
-	let sq = StructuredQuery::parse(&query.text, query.ecosystem);
-	if sq.terms.is_empty() {
-		return Vec::new();
-	}
-	spell::dym_suggestions(vocab, &sq.terms, limit)
+    let sq = StructuredQuery::parse(&query.text, query.ecosystem);
+    if sq.terms.is_empty() {
+        return Vec::new();
+    }
+    spell::dym_suggestions(vocab, &sq.terms, limit)
 }
 
 /// Optional zero-hit auto-repair for bare free-text queries.
 #[must_use]
 pub fn maybe_repair_request(
-	spell_index: &spell::SpellIndex,
-	query: &PackageSearchRequest,
+    spell_index: &spell::SpellIndex,
+    query: &PackageSearchRequest,
 ) -> Option<PackageSearchRequest> {
-	let sq = StructuredQuery::parse(&query.text, query.ecosystem);
-	if sq.terms.is_empty() {
-		return None;
-	}
-	if query.text.trim() != sq.terms.trim() {
-		return None;
-	}
-	let repaired = spell::maybe_repair_query(spell_index, &sq.terms)?;
-	Some(PackageSearchRequest {
-		text: repaired,
-		ecosystem: query.ecosystem,
-		limit: query.limit,
-		after: query.after.clone(),
-		semantic: query.semantic.clone(),
-	})
+    let sq = StructuredQuery::parse(&query.text, query.ecosystem);
+    if sq.terms.is_empty() {
+        return None;
+    }
+    if query.text.trim() != sq.terms.trim() {
+        return None;
+    }
+    let repaired = spell::maybe_repair_query(spell_index, &sq.terms)?;
+    Some(PackageSearchRequest {
+        text: repaired,
+        ecosystem: query.ecosystem,
+        limit: query.limit,
+        after: query.after.clone(),
+        semantic: query.semantic.clone(),
+    })
 }
 
 /// One page of results — thin wrapper over [`retrieve_and_rank_page`].
 pub async fn search_page(
-	index: &tantivy::PackageIndex,
-	query: &PackageSearchRequest,
-	synonyms: Option<&Synonyms>,
+    index: &tantivy::PackageIndex,
+    query: &PackageSearchRequest,
+    synonyms: Option<&Synonyms>,
 ) -> Result<Page<GlobalPackage>, SearchError> {
-	retrieve_and_rank_page(index, query, PackageSearchDeps { synonyms, ..Default::default() }).await
+    retrieve_and_rank_page(
+        index,
+        query,
+        PackageSearchDeps {
+            synonyms,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Full ranked order — thin wrapper over [`retrieve_and_rank`].
 pub async fn collect_ranked_hits(
-	index: &tantivy::PackageIndex,
-	query: &PackageSearchRequest,
-	synonyms: Option<&Synonyms>,
+    index: &tantivy::PackageIndex,
+    query: &PackageSearchRequest,
+    synonyms: Option<&Synonyms>,
 ) -> Result<Vec<Scored<GlobalPackage>>, SearchError> {
-	collect_ranked_hits_hybrid(index, query, &[], synonyms).await
+    collect_ranked_hits_hybrid(index, query, &[], synonyms).await
 }
 
 /// Hybrid BM25 + semantic RRF path.
 pub async fn collect_ranked_hits_hybrid(
-	index: &tantivy::PackageIndex,
-	query: &PackageSearchRequest,
-	semantic: &[PackageId],
-	synonyms: Option<&Synonyms>,
+    index: &tantivy::PackageIndex,
+    query: &PackageSearchRequest,
+    semantic: &[PackageId],
+    synonyms: Option<&Synonyms>,
 ) -> Result<Vec<Scored<GlobalPackage>>, SearchError> {
-	let mut req = query.clone();
-	req.semantic = semantic.to_vec();
-	retrieve_and_rank(index, &req, PackageSearchDeps { synonyms, ..Default::default() }).await
+    let mut req = query.clone();
+    req.semantic = semantic.to_vec();
+    retrieve_and_rank(
+        index,
+        &req,
+        PackageSearchDeps {
+            synonyms,
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 /// Clamp a raw tantivy score onto the provably-finite [`heart::Score`].
 pub fn finite_score(raw: f32) -> heart::Score {
-	heart::Score::try_new(raw)
-		.unwrap_or_else(|_| heart::Score::try_new(0.0).expect("0.0 is finite"))
+    heart::Score::try_new(raw)
+        .unwrap_or_else(|_| heart::Score::try_new(0.0).expect("0.0 is finite"))
 }
 
 #[cfg(test)]
 mod keyset_home_tests {
-	use super::{keyset_is_after, SearchKey};
-	use heart::{PackageId, Score};
-	use uuid::Uuid;
+    use super::{SearchKey, keyset_is_after};
+    use heart::{PackageId, Score};
+    use uuid::Uuid;
 
-	fn score(raw: f32) -> Score {
-		Score::try_new(raw).expect("finite")
-	}
+    fn score(raw: f32) -> Score {
+        Score::try_new(raw).expect("finite")
+    }
 
-	fn id(byte: u8) -> PackageId {
-		PackageId::from_uuid(Uuid::from_bytes([byte; 16]))
-	}
+    fn id(byte: u8) -> PackageId {
+        PackageId::from_uuid(Uuid::from_bytes([byte; 16]))
+    }
 
-	/// A `None` cursor (first page) admits every hit.
-	#[test]
-	fn first_page_admits_everything() {
-		assert!(keyset_is_after(None, score(9.0), id(1)));
-		assert!(keyset_is_after(None, score(0.0), id(255)));
-	}
+    /// A `None` cursor (first page) admits every hit.
+    #[test]
+    fn first_page_admits_everything() {
+        assert!(keyset_is_after(None, score(9.0), id(1)));
+        assert!(keyset_is_after(None, score(0.0), id(255)));
+    }
 
-	/// Under `(score desc, id asc)`: strictly-lower score is after; equal score
-	/// with a strictly-higher id is after; the cursor key itself is not after
-	/// (strictness → no repeat at the page seam).
-	#[test]
-	fn ordering_is_score_desc_then_id_asc() {
-		let cursor: SearchKey = (score(5.0), id(10));
-		// Lower score → after.
-		assert!(keyset_is_after(Some(cursor), score(4.9), id(1)));
-		// Higher score → not after.
-		assert!(!keyset_is_after(Some(cursor), score(5.1), id(255)));
-		// Tie on score, higher id → after.
-		assert!(keyset_is_after(Some(cursor), score(5.0), id(11)));
-		// Tie on score, lower id → not after.
-		assert!(!keyset_is_after(Some(cursor), score(5.0), id(9)));
-		// The cursor key itself is excluded (no page-boundary repeat).
-		assert!(!keyset_is_after(Some(cursor), score(5.0), id(10)));
-	}
+    /// Under `(score desc, id asc)`: strictly-lower score is after; equal score
+    /// with a strictly-higher id is after; the cursor key itself is not after
+    /// (strictness → no repeat at the page seam).
+    #[test]
+    fn ordering_is_score_desc_then_id_asc() {
+        let cursor: SearchKey = (score(5.0), id(10));
+        // Lower score → after.
+        assert!(keyset_is_after(Some(cursor), score(4.9), id(1)));
+        // Higher score → not after.
+        assert!(!keyset_is_after(Some(cursor), score(5.1), id(255)));
+        // Tie on score, higher id → after.
+        assert!(keyset_is_after(Some(cursor), score(5.0), id(11)));
+        // Tie on score, lower id → not after.
+        assert!(!keyset_is_after(Some(cursor), score(5.0), id(9)));
+        // The cursor key itself is excluded (no page-boundary repeat).
+        assert!(!keyset_is_after(Some(cursor), score(5.0), id(10)));
+    }
 
-	/// Single-home seam property: paging a fixed descending order with the
-	/// predicate never repeats and never skips a hit. This is the regression the
-	/// review flagged — the *one* predicate governs both the per-source pipeline
-	/// and the federated merge, so page-1 → resume is seam-free.
-	#[test]
-	fn paging_is_seam_free_over_a_fixed_order() {
-		// A total order under (score desc, id asc): distinct scores keep it simple.
-		let order: Vec<SearchKey> =
-			(0..10u8).map(|n| (score(10.0 - f32::from(n)), id(n))).collect();
+    /// Single-home seam property: paging a fixed descending order with the
+    /// predicate never repeats and never skips a hit. This is the regression the
+    /// review flagged — the *one* predicate governs both the per-source pipeline
+    /// and the federated merge, so page-1 → resume is seam-free.
+    #[test]
+    fn paging_is_seam_free_over_a_fixed_order() {
+        // A total order under (score desc, id asc): distinct scores keep it simple.
+        let order: Vec<SearchKey> = (0..10u8)
+            .map(|n| (score(10.0 - f32::from(n)), id(n)))
+            .collect();
 
-		let mut seen: Vec<SearchKey> = Vec::new();
-		let mut after: Option<SearchKey> = None;
-		let page_size = 3;
-		loop {
-			let page: Vec<SearchKey> = order
-				.iter()
-				.copied()
-				.filter(|(s, i)| keyset_is_after(after, *s, *i))
-				.take(page_size)
-				.collect();
-			if page.is_empty() {
-				break;
-			}
-			seen.extend_from_slice(&page);
-			after = page.last().copied();
-		}
+        let mut seen: Vec<SearchKey> = Vec::new();
+        let mut after: Option<SearchKey> = None;
+        let page_size = 3;
+        loop {
+            let page: Vec<SearchKey> = order
+                .iter()
+                .copied()
+                .filter(|(s, i)| keyset_is_after(after, *s, *i))
+                .take(page_size)
+                .collect();
+            if page.is_empty() {
+                break;
+            }
+            seen.extend_from_slice(&page);
+            after = page.last().copied();
+        }
 
-		assert_eq!(seen, order, "paging must reproduce the whole order exactly once");
-	}
+        assert_eq!(
+            seen, order,
+            "paging must reproduce the whole order exactly once"
+        );
+    }
 }

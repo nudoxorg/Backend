@@ -55,7 +55,11 @@ pub fn detect_spdx(text: &str) -> Option<String> {
 
     // Whitespace-normalized (single spaces, lowercase) so wrapped lines and
     // inconsistent indentation don't defeat a substring match.
-    let normalized: String = text.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    let normalized: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
 
     // Each entry: ALL marker substrings must be present for the SPDX id to
     // be reported. Ordered most-specific-first (checked as a `find`, so the
@@ -92,7 +96,9 @@ pub fn detect_spdx(text: &str) -> Option<String> {
             "ISC",
         ),
         (
-            &["permission is hereby granted, free of charge, to any person obtaining a copy of this software"],
+            &[
+                "permission is hereby granted, free of charge, to any person obtaining a copy of this software",
+            ],
             "MIT",
         ),
         (
@@ -193,7 +199,10 @@ AUTHOR DISCLAIMS ALL WARRANTIES.";
 
     #[test]
     fn unrecognized_content_returns_none() {
-        assert_eq!(detect_spdx("All rights reserved. Contact us for terms."), None);
+        assert_eq!(
+            detect_spdx("All rights reserved. Contact us for terms."),
+            None
+        );
         assert_eq!(detect_spdx(""), None);
     }
 

@@ -89,9 +89,7 @@ impl<W: Write> SymbolSink<W> {
     /// If the batch count reaches [`SINK_BATCH_ENTRIES`], the batch is also
     /// flushed.
     pub fn emit(&mut self, entry: WireEntry) -> Result<(), Error> {
-        let entry_bytes = postcard::to_allocvec(&entry)
-            .map_err(Error::Encode)?
-            .len();
+        let entry_bytes = postcard::to_allocvec(&entry).map_err(Error::Encode)?.len();
 
         // A single entry that cannot fit in any frame is the producer's bug —
         // reject it eagerly instead of at flush time.
@@ -153,11 +151,7 @@ impl<W: Write> SymbolSink<W> {
     /// Body facts do not count towards the emitted-symbol total: bodies are an
     /// extension slot on the entry, not a new entry. `self.emitted` is not
     /// incremented.
-    pub fn emit_body(
-        &mut self,
-        intro: IntroId,
-        body: ir::body::BodyEmbed,
-    ) -> Result<(), Error> {
+    pub fn emit_body(&mut self, intro: IntroId, body: ir::body::BodyEmbed) -> Result<(), Error> {
         self.emit_bodies(std::iter::once(BodyWire { intro, body }))
     }
 
@@ -171,10 +165,7 @@ impl<W: Write> SymbolSink<W> {
     /// Body facts do not count towards the emitted-symbol total: bodies are an
     /// extension slot on the entry, not a new entry. `self.emitted` is not
     /// incremented.
-    pub fn emit_bodies(
-        &mut self,
-        bodies: impl IntoIterator<Item = BodyWire>,
-    ) -> Result<(), Error> {
+    pub fn emit_bodies(&mut self, bodies: impl IntoIterator<Item = BodyWire>) -> Result<(), Error> {
         let batch: Vec<BodyWire> = bodies.into_iter().collect();
         if batch.is_empty() {
             return Ok(());
@@ -209,10 +200,7 @@ impl<W: Write> SymbolSink<W> {
     /// Iterates `entries` and calls [`SymbolSink::emit`] for each. This lets
     /// producers that still build an in-memory collection stream it in one call
     /// with zero behavior change; auto-batching still applies.
-    pub fn emit_all(
-        &mut self,
-        entries: impl IntoIterator<Item = WireEntry>,
-    ) -> Result<(), Error> {
+    pub fn emit_all(&mut self, entries: impl IntoIterator<Item = WireEntry>) -> Result<(), Error> {
         for entry in entries {
             self.emit(entry)?;
         }

@@ -2,11 +2,11 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::AliasConfidence;
 use crate::enums::LineageEvidence;
 use crate::enums::LineageRelation;
 use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "repo_lineage")]
@@ -33,4 +33,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type RepoLineageRow = Model;
 
 pub const TABLE: &str = "repo_lineage";
-

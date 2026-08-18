@@ -8,10 +8,10 @@ mod server_common;
 
 use std::time::Duration;
 
-use index::server::search::SearchPlanner;
-use index::server::search::planner::Plan;
 use heart::SymbolKind;
 use heart::client::query::ExecutionQuery as Query;
+use index::server::search::SearchPlanner;
+use index::server::search::planner::Plan;
 
 /// The default item-search request is a literal (precise) plan — never semantic.
 ///
@@ -64,11 +64,8 @@ async fn similar_items_sidebar_is_explicit_qdrant() {
 ///   round-trip over the live stack.
 #[tokio::test]
 async fn connections_are_surfaced_from_the_graph() {
-    let Some((server, _data)) =
-        server_common::assembled_server("connections_are_surfaced_from_the_graph").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("connections_are_surfaced_from_the_graph").await;
     let package = server_common::package_id("serde");
     let symbol = server_common::rust_symbol(
         package,

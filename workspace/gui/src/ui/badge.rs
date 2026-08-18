@@ -164,11 +164,9 @@ impl RenderOnce for Badge {
             .font_weight(gpui::FontWeight(ts.caption.weight as f32))
             .refine_style(&self.style)
             .child(label)
-            .with_animation(
-                id,
-                Animation::new(dur).with_easing(ease_in_out),
-                |el, t| el.opacity(t),
-            )
+            .with_animation(id, Animation::new(dur).with_easing(ease_in_out), |el, t| {
+                el.opacity(t)
+            })
             .into_any()
     }
 }
@@ -203,7 +201,11 @@ mod tests {
         assert_eq!(f(0.0), 0.0, "bounce(ease_in_out) at t=0 must be 0 (pin)");
         // t = 1: settled endpoint — badge is PERMANENTLY invisible.  This is
         // the defect.
-        assert_eq!(f(1.0), 0.0, "bounce(ease_in_out) at t=1 must be 0 (pin: the bug)");
+        assert_eq!(
+            f(1.0),
+            0.0,
+            "bounce(ease_in_out) at t=1 must be 0 (pin: the bug)"
+        );
     }
 
     /// The fix: `ease_in_out` settles at 1.0.

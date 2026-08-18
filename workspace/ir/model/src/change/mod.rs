@@ -31,7 +31,7 @@ pub use ids::{EcosystemId, PackageLineageId, PackageName, StableRef};
 /// holds: the v4 → v5 IntroId domain bump moved every symbol identity and
 /// deliberately did **not** touch this constant, because no `Entry`'s serde
 /// shape changed with it.
-pub const FORMAT_VERSION: u16 = 2;
+pub const FORMAT_VERSION: u16 = 3;
 
 #[cfg(test)]
 mod tests {

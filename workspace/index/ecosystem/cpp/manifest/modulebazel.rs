@@ -332,4 +332,94 @@ bazel_dep(name = "abseil-cpp", version = "20230802.1")
         assert!(tokens.contains(&"sdl"));
         assert!(tokens.contains(&"glfw"));
     }
+
+    #[test]
+    fn parse_real_world_module_bazel_shape() {
+        // Shaped after a real MODULE.bazel (protobuf-style).
+        let text = r#"
+module(
+    name = "protobuf",
+    version = "27.0",
+    compatibility_level = 1,
+)
+
+bazel_dep(name = "abseil-cpp", version = "20230802.1")
+bazel_dep(name = "rules_cc", version = "0.0.9")
+bazel_dep(name = "zlib", version = "1.3.1", repo_name = "zlib_repo")
+
+# A dev-only dependency.
+bazel_dep(name = "googletest", version = "1.14.0", dev_dependency = True)
+"#;
+        let manifest = parse(text);
+        let tokens: Vec<&str> = manifest
+            .dependencies
+            .iter()
+            .map(|r| r.token.as_str())
+            .collect();
+        assert!(tokens.contains(&"abseil-cpp"));
+        assert!(tokens.contains(&"rules_cc"));
+        assert!(tokens.contains(&"zlib"));
+        assert!(tokens.contains(&"googletest"));
+        assert_eq!(manifest.dependencies.len(), 4);
+        // `module()` carries no ExtractedFacts-mappable field (no name/version
+        // slot in the shared facts model for cpp — identity/version come from
+        // git, not the manifest).
+        assert_eq!(manifest.facts.description, None);
+    }
+
+    // ── Hostile-input hardening ───────────────────────────────────────────────
+
+    #[test]
+    fn parse_unterminated_string_no_panic() {
+        let text = r#"bazel_dep(name = "unterminated"#;
+        let manifest = parse(text);
+        let _ = manifest;
+    }
+
+    #[test]
+    fn parse_unterminated_call_no_panic() {
+        let text = r#"bazel_dep(name = "zlib""#;
+        let manifest = parse(text);
+        let _ = manifest;
+    }
+
+    #[test]
+    fn parse_unicode_name_value() {
+        let text = "bazel_dep(name = \"日本語モジュール\", version = \"1.0\")\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.dependencies[0].token, "日本語モジュール");
+    }
+
+    #[test]
+    fn parse_deeply_nested_parens_no_panic() {
+        let mut text = String::from("bazel_dep(name = \"x\", version = \"1.0\"");
+        for _ in 0..5000 {
+            text.push('(');
+        }
+        for _ in 0..5000 {
+            text.push(')');
+        }
+        text.push(')');
+        let manifest = parse(&text);
+        let _ = manifest;
+    }
+
+    #[test]
+    fn parse_enormous_number_of_bazel_deps_no_panic() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for i in 0..20_000 {
+            let _ = writeln!(text, "bazel_dep(name = \"dep{i}\", version = \"1.0\")");
+        }
+        let manifest = parse(&text);
+        assert_eq!(manifest.dependencies.len(), 20_000);
+    }
+
+    #[test]
+    fn parse_name_value_containing_escaped_quote_no_panic() {
+        let text = r#"bazel_dep(name = "we\"ird", version = "1.0")"#;
+        let manifest = parse(text);
+        let _ = manifest;
+    }
 }

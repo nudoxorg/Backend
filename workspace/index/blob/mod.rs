@@ -24,7 +24,7 @@
 //! of extracted [`ir::syntax::ResolvedReference`] spans, as plain serializable
 //! data, so cross-references survive without the tree.
 
-use heart::{content::ContentHash, PackageId, Toolchain};
+use heart::{PackageId, Toolchain, content::ContentHash};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 

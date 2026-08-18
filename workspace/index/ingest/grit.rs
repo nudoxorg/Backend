@@ -35,8 +35,8 @@ use std::path::{Path, PathBuf};
 use grit_lib::objects::ObjectId;
 use grit_lib::pkt_line;
 use grit_lib::repo::Repository;
-use grit_lib::transport::http::ureq_client::UreqHttpClient;
 use grit_lib::transport::http::HttpClient;
+use grit_lib::transport::http::ureq_client::UreqHttpClient;
 
 use crate::ingest::git::{GitRepository, GitRepositoryError, LsRemoteRef};
 
@@ -74,7 +74,9 @@ fn classify_remote_url(url: &str) -> RemoteUrlClass {
         return RemoteUrlClass::LocalPath(PathBuf::from(path));
     }
     if let Some((scheme, _rest)) = url.split_once("://") {
-        return RemoteUrlClass::UnsupportedTransport { scheme: scheme.to_owned() };
+        return RemoteUrlClass::UnsupportedTransport {
+            scheme: scheme.to_owned(),
+        };
     }
     // No scheme: a plain local path. An option-shaped string lands here too and
     // simply fails to open as a repository — it can never become a flag.
@@ -96,7 +98,9 @@ impl Default for GritAdapter {
 
 impl std::fmt::Debug for GritAdapter {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("GritAdapter").finish_non_exhaustive()
+        formatter
+            .debug_struct("GritAdapter")
+            .finish_non_exhaustive()
     }
 }
 
@@ -105,7 +109,9 @@ impl GritAdapter {
     /// client.
     #[must_use]
     pub fn new() -> Self {
-        Self { http_client: UreqHttpClient::new() }
+        Self {
+            http_client: UreqHttpClient::new(),
+        }
     }
 
     /// Every ref the remote reports, with `HEAD` and peeled `^{}` entries
@@ -115,7 +121,10 @@ impl GritAdapter {
             RemoteUrlClass::LocalPath(path) => local_ls_remote(url, &path),
             RemoteUrlClass::SmartHttp => self.http_ls_remote(url),
             RemoteUrlClass::UnsupportedTransport { scheme } => {
-                Err(GitRepositoryError::UnsupportedTransport { url: url.to_owned(), scheme })
+                Err(GitRepositoryError::UnsupportedTransport {
+                    url: url.to_owned(),
+                    scheme,
+                })
             }
         }
     }
@@ -124,15 +133,20 @@ impl GritAdapter {
     /// parsed with peeled/`HEAD` fidelity; falls back to a dumb-HTTP plaintext
     /// body.
     fn http_ls_remote(&self, url: &str) -> Result<Vec<LsRemoteRef>, GitRepositoryError> {
-        let discovery_url =
-            format!("{}/info/refs?service=git-upload-pack", url.trim_end_matches('/'));
+        let discovery_url = format!(
+            "{}/info/refs?service=git-upload-pack",
+            url.trim_end_matches('/')
+        );
         // No `Git-Protocol` header: request the classic v0 advertisement, which
         // carries HEAD and peeled `^{}` lines inline (v2 would require a second
         // ls-refs round-trip and grit-lib keeps that plumbing private).
         let body = self
             .http_client
             .get(&discovery_url, None)
-            .map_err(|source| GitRepositoryError::Grit { url: url.to_owned(), source })?;
+            .map_err(|source| GitRepositoryError::Grit {
+                url: url.to_owned(),
+                source,
+            })?;
         parse_info_refs_body(url, &body)
     }
 }
@@ -178,15 +192,28 @@ fn local_ls_remote(url: &str, path: &Path) -> Result<Vec<LsRemoteRef>, GitReposi
     // A checkout keeps its git directory under `.git/`; a bare repository *is*
     // the git directory.
     let dot_git = path.join(".git");
-    let git_dir = if dot_git.is_dir() { dot_git } else { path.to_path_buf() };
-    let repository = Repository::open(&git_dir, None)
-        .map_err(|source| GitRepositoryError::Grit { url: url.to_owned(), source })?;
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        path.to_path_buf()
+    };
+    let repository =
+        Repository::open(&git_dir, None).map_err(|source| GitRepositoryError::Grit {
+            url: url.to_owned(),
+            source,
+        })?;
     let options = grit_lib::ls_remote::Options::default();
     let entries = grit_lib::ls_remote::ls_remote(&repository.git_dir, &repository.odb, &options)
-        .map_err(|source| GitRepositoryError::Grit { url: url.to_owned(), source })?;
+        .map_err(|source| GitRepositoryError::Grit {
+            url: url.to_owned(),
+            source,
+        })?;
     Ok(entries
         .into_iter()
-        .map(|entry| LsRemoteRef { object_id: entry.oid.to_hex(), reference: entry.name })
+        .map(|entry| LsRemoteRef {
+            object_id: entry.oid.to_hex(),
+            reference: entry.name,
+        })
         .collect())
 }
 
@@ -238,9 +265,7 @@ fn parse_smart_advertisement(
             // only the `capabilities^{}` carrier, yielding zero refs.
             None => break,
             Some(
-                pkt_line::Packet::Flush
-                | pkt_line::Packet::Delim
-                | pkt_line::Packet::ResponseEnd,
+                pkt_line::Packet::Flush | pkt_line::Packet::Delim | pkt_line::Packet::ResponseEnd,
             ) => {
                 if refs.is_empty() {
                     continue;
@@ -282,7 +307,10 @@ fn parse_advertised_ref_line(line: &str) -> Option<LsRemoteRef> {
     if reference.is_empty() || reference == "capabilities^{}" {
         return None;
     }
-    Some(LsRemoteRef { object_id: object_id.to_hex(), reference: reference.to_owned() })
+    Some(LsRemoteRef {
+        object_id: object_id.to_hex(),
+        reference: reference.to_owned(),
+    })
 }
 
 /// Parse a dumb-HTTP `info/refs` body: plaintext `<oid>\t<ref>` lines.
@@ -303,11 +331,12 @@ fn parse_dumb_ref_listing(url: &str, body: &[u8]) -> Result<Vec<LsRemoteRef>, Gi
                 detail: format!("dumb info/refs line without a tab separator: {line:?}"),
             });
         };
-        let object_id =
-            ObjectId::from_hex(oid_hex.trim()).map_err(|_| GitRepositoryError::MalformedOutput {
+        let object_id = ObjectId::from_hex(oid_hex.trim()).map_err(|_| {
+            GitRepositoryError::MalformedOutput {
                 url: url.to_owned(),
                 detail: format!("dumb info/refs line with a non-hex object id: {line:?}"),
-            })?;
+            }
+        })?;
         refs.push(LsRemoteRef {
             object_id: object_id.to_hex(),
             reference: reference.trim().to_owned(),
@@ -332,7 +361,10 @@ mod tests {
 
     #[test]
     fn http_and_file_urls_classify() {
-        assert_eq!(classify_remote_url("https://example.test/r.git"), RemoteUrlClass::SmartHttp);
+        assert_eq!(
+            classify_remote_url("https://example.test/r.git"),
+            RemoteUrlClass::SmartHttp
+        );
         assert_eq!(
             classify_remote_url("file:///tmp/repo"),
             RemoteUrlClass::LocalPath(PathBuf::from("/tmp/repo"))
@@ -351,11 +383,15 @@ mod tests {
     fn unsupported_schemes_are_typed() {
         assert_eq!(
             classify_remote_url("git://example.test/r.git"),
-            RemoteUrlClass::UnsupportedTransport { scheme: "git".to_owned() }
+            RemoteUrlClass::UnsupportedTransport {
+                scheme: "git".to_owned()
+            }
         );
         assert_eq!(
             classify_remote_url("ssh://example.test/r.git"),
-            RemoteUrlClass::UnsupportedTransport { scheme: "ssh".to_owned() }
+            RemoteUrlClass::UnsupportedTransport {
+                scheme: "ssh".to_owned()
+            }
         );
     }
 
@@ -366,15 +402,28 @@ mod tests {
         let mut body = Vec::new();
         pkt_line::write_line_to_vec(&mut body, "# service=git-upload-pack\n").unwrap();
         pkt_line::write_flush(&mut body).unwrap();
-        pkt_line::write_line_to_vec(&mut body, &format!("{oid_a} HEAD\0multi_ack symref=HEAD:refs/heads/main\n")).unwrap();
+        pkt_line::write_line_to_vec(
+            &mut body,
+            &format!("{oid_a} HEAD\0multi_ack symref=HEAD:refs/heads/main\n"),
+        )
+        .unwrap();
         pkt_line::write_line_to_vec(&mut body, &format!("{oid_a} refs/heads/main\n")).unwrap();
         pkt_line::write_line_to_vec(&mut body, &format!("{oid_a} refs/tags/v1.0.0\n")).unwrap();
-        pkt_line::write_line_to_vec(&mut body, &format!("{oid_b} refs/tags/v1.0.0^{{}}\n")).unwrap();
+        pkt_line::write_line_to_vec(&mut body, &format!("{oid_b} refs/tags/v1.0.0^{{}}\n"))
+            .unwrap();
         pkt_line::write_flush(&mut body).unwrap();
 
         let refs = parse_info_refs_body("u", &body).expect("smart body parses");
         let names: Vec<&str> = refs.iter().map(|r| r.reference.as_str()).collect();
-        assert_eq!(names, ["HEAD", "refs/heads/main", "refs/tags/v1.0.0", "refs/tags/v1.0.0^{}"]);
+        assert_eq!(
+            names,
+            [
+                "HEAD",
+                "refs/heads/main",
+                "refs/tags/v1.0.0",
+                "refs/tags/v1.0.0^{}"
+            ]
+        );
         assert_eq!(refs[3].object_id, oid_b);
     }
 

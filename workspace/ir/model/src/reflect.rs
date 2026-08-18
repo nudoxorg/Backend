@@ -83,17 +83,73 @@ pub fn exported(table: &PristineIntroTable, policy: ExportPolicy, intro: IntroId
 }
 
 // ---------------------------------------------------------------------------
+// PathStyle
+// ---------------------------------------------------------------------------
+
+/// The segment separator an ecosystem's own idiomatic path syntax uses.
+///
+/// Two disagreeing `path` implementations grew up independently — MCP's
+/// compact symbol path (`::`, always) and this module's [`moniker_path`]
+/// (`.`, always) — so Java rendered with `::` and Rust rendered with `.`,
+/// each wrong for its own ecosystem. `for_ecosystem` is the single decision
+/// both producers should defer to, so the mistake can only be made once.
+///
+/// This type governs *rendering*, never identity: the [`IntroId`] preimage
+/// (`bootstrap_intro_id`) encodes ancestor segments individually, with no
+/// separator baked in, so choosing a different `PathStyle` to *display* a
+/// path never changes what it hashes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathStyle {
+    /// `a::b::c` — Rust (`cargo`), C/C++ (`cpp`).
+    DoubleColon,
+    /// `a.b.c` — Java (`maven`), Python (`pypi`), npm, NuGet, Go.
+    Dot,
+}
+
+impl PathStyle {
+    /// The idiomatic style for `ecosystem`'s own path syntax.
+    ///
+    /// Unrecognized ecosystem tags fall back to [`PathStyle::Dot`] — the
+    /// majority case among the seven registered ecosystems — rather than
+    /// panicking or returning an `Option`: a rendering choice for an unknown
+    /// tag should degrade gracefully, not become a new failure mode.
+    pub fn for_ecosystem(ecosystem: &str) -> Self {
+        match ecosystem {
+            "cargo" | "cpp" => PathStyle::DoubleColon,
+            _ => PathStyle::Dot,
+        }
+    }
+
+    /// The literal separator text.
+    pub fn separator(self) -> &'static str {
+        match self {
+            PathStyle::DoubleColon => "::",
+            PathStyle::Dot => ".",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // moniker_path
 // ---------------------------------------------------------------------------
 
-/// The root-first dotted path of `Symbol.name`s from the top ancestor down to
-/// `intro` (e.g. `"mymod.MyType.method"`).
+/// The root-first ancestor chain of `Symbol.name`s from the top ancestor down
+/// to `intro`, unjoined (e.g. `["mymod", "MyType", "method"]`).
 ///
-/// Returns `None` if `intro` is absent from `table`.
+/// Returns `None` if `intro` is absent from `table`. A cycle in the parent
+/// chain causes `None` to be returned (defensive; should not happen in a
+/// well-formed table).
 ///
-/// A cycle in the parent chain causes `None` to be returned (defensive; should
-/// not happen in a well-formed table).
-pub fn moniker_path(table: &PristineIntroTable, intro: IntroId) -> Option<String> {
+/// Shared by [`moniker_path`] and [`moniker_path_styled`] so the one walk
+/// that matters — the exact segment sequence the `IntroId` preimage was
+/// hashed from — has exactly one implementation; the two callers differ only
+/// in how they join it into a string.
+///
+/// Public (not just an internal helper) because the address scheme's
+/// renderer needs the individual segments, not a pre-joined string, to build
+/// an `AddressSegment` list rather than re-splitting a rendered path back
+/// apart.
+pub fn moniker_segments(table: &PristineIntroTable, intro: IntroId) -> Option<Vec<String>> {
     let mut segments: Vec<String> = Vec::new();
     let mut current = Some(intro);
     let mut visited: HashSet<IntroId> = HashSet::new();
@@ -109,7 +165,37 @@ pub fn moniker_path(table: &PristineIntroTable, intro: IntroId) -> Option<String
     }
 
     segments.reverse();
-    Some(segments.join("."))
+    Some(segments)
+}
+
+/// The root-first dotted path of `Symbol.name`s from the top ancestor down to
+/// `intro` (e.g. `"mymod.MyType.method"`).
+///
+/// This is the historical, always-`.` rendering used by `Symbol.path` in the
+/// GraphQL schema. It is deliberately left unchanged — flipping its separator
+/// per-ecosystem is a wire-visible break for anything filtering `path` in
+/// `graph_query` and needs filter-side separator normalization to ship first
+/// (see the address-scheme design doc §4.9's "ordering hazard"). New callers
+/// that want the ecosystem-correct separator should use
+/// [`moniker_path_styled`] instead.
+///
+/// Returns `None` if `intro` is absent from `table`.
+pub fn moniker_path(table: &PristineIntroTable, intro: IntroId) -> Option<String> {
+    moniker_segments(table, intro).map(|segments| segments.join("."))
+}
+
+/// [`moniker_path`], joined with `style`'s separator instead of always `.`.
+///
+/// This is the *physical path* producer §4.9 calls canonical: it walks the
+/// exact same preimage chain [`moniker_path`] does (via [`moniker_segments`]),
+/// so the two can never disagree about which ancestors exist — only about how
+/// the join is spelled.
+pub fn moniker_path_styled(
+    table: &PristineIntroTable,
+    intro: IntroId,
+    style: PathStyle,
+) -> Option<String> {
+    moniker_segments(table, intro).map(|segments| segments.join(style.separator()))
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +476,11 @@ mod tests {
         let crate_mod_id = intro(21);
         t.insert_live(
             root_id,
-            entry(sym_with_vis("pkg", Visibility::Public), node::root([]), Module),
+            entry(
+                sym_with_vis("pkg", Visibility::Public),
+                node::root([]),
+                Module,
+            ),
             None,
         );
         t.insert_live(

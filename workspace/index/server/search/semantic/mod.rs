@@ -304,7 +304,9 @@ impl<'a, M: EmbeddingModel, E: Embedder<Model = M>> SemanticSurface<'a, M, E> {
         }));
 
         let pools = futures::future::try_join_all(
-            requests.into_iter().map(|request| self.store.search(request)),
+            requests
+                .into_iter()
+                .map(|request| self.store.search(request)),
         )
         .await
         .map_err(|error| ServerError::from(error))?;
@@ -436,7 +438,11 @@ fn bucket_interleave_and_page(
         ));
     }
     if skipped > 0 {
-        tracing::warn!(skipped, total = hits.len(), "semantic interleave dropped undecodable hits");
+        tracing::warn!(
+            skipped,
+            total = hits.len(),
+            "semantic interleave dropped undecodable hits"
+        );
     }
     // Best-first within each bucket, with a stable id tiebreak — the same
     // ordering contract the single-language scoped path applies, just
@@ -474,7 +480,10 @@ fn bucket_interleave_and_page(
 /// qdrant score) and the unscoped path's per-language buckets (before
 /// interleaving; called with `after_key: None` there since resume happens
 /// once, after the interleave, over the synthetic rank score).
-fn sort_best_first_and_resume(scored: &mut Vec<Scored<SymbolId>>, after_key: Option<(Score, SymbolId)>) {
+fn sort_best_first_and_resume(
+    scored: &mut Vec<Scored<SymbolId>>,
+    after_key: Option<(Score, SymbolId)>,
+) {
     scored.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.value.cmp(&b.value)));
     if let Some((after_score, after_id)) = after_key {
         scored.retain(|hit| match hit.score.cmp(&after_score) {
@@ -514,8 +523,8 @@ fn rank_score(ordinal: usize, total: usize) -> Score {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::registry::vector::{PointId, SourceTag};
+    use super::*;
 
     /// Unwrap a `SearchFilter` built by `language_filter` into the plain list
     /// of language tokens it names, asserting the shape (a single `Any`
@@ -570,7 +579,6 @@ mod tests {
             (Language::Python, "python"),
             (Language::Go, "go"),
             (Language::Java, "java"),
-            (Language::Nix, "nix"),
             (Language::CSharp, "csharp"),
             (Language::Cpp, "cpp"),
         ];
@@ -582,7 +590,11 @@ mod tests {
             "add the new Language variant's expected wire token above"
         );
         for (language, token) in expected {
-            assert_eq!(language.to_string(), token, "{language:?} wire token drifted");
+            assert_eq!(
+                language.to_string(),
+                token,
+                "{language:?} wire token drifted"
+            );
             let filter = language_filter(std::iter::once(&language));
             assert_eq!(language_tokens(&filter), vec![token.to_owned()]);
         }
@@ -597,7 +609,10 @@ mod tests {
             .map(|ordinal| rank_score(ordinal, total).into_inner())
             .collect();
         for window in scores.windows(2) {
-            assert!(window[0] > window[1], "{scores:?} is not strictly descending");
+            assert!(
+                window[0] > window[1],
+                "{scores:?} is not strictly descending"
+            );
         }
     }
 
@@ -668,7 +683,12 @@ mod tests {
         let mut by_language: BTreeMap<String, Vec<Scored<SymbolId>>> = BTreeMap::new();
         by_language.insert(
             "python".to_owned(),
-            vec![scored(1, 0.99), scored(2, 0.98), scored(3, 0.97), scored(4, 0.96)],
+            vec![
+                scored(1, 0.99),
+                scored(2, 0.98),
+                scored(3, 0.97),
+                scored(4, 0.96),
+            ],
         );
         by_language.insert("rust".to_owned(), vec![scored(5, 0.80)]);
         by_language.insert("go".to_owned(), vec![scored(6, 0.75)]);
@@ -704,7 +724,11 @@ mod tests {
             .iter()
             .map(|s| s.value.as_uuid().as_bytes()[15])
             .collect();
-        assert_eq!(top_three, vec![6, 1, 5], "top 3 must be the fair interleave, not python's own top 3 (1,2,3)");
+        assert_eq!(
+            top_three,
+            vec![6, 1, 5],
+            "top 3 must be the fair interleave, not python's own top 3 (1,2,3)"
+        );
     }
 
     #[test]
@@ -716,7 +740,10 @@ mod tests {
         }
         let columns: Vec<(String, Vec<Scored<SymbolId>>)> = by_language.into_iter().collect();
         let interleaved = interleave_columns(columns);
-        let order: Vec<u8> = interleaved.iter().map(|s| s.value.as_uuid().as_bytes()[15]).collect();
+        let order: Vec<u8> = interleaved
+            .iter()
+            .map(|s| s.value.as_uuid().as_bytes()[15])
+            .collect();
         assert_eq!(order, vec![1, 2]);
     }
 
@@ -750,12 +777,19 @@ mod tests {
             hit_with_id("rust", 5, 0.50),
         ];
         let page = bucket_interleave_and_page(&hits, 2, None).expect("valid pool");
-        let order: Vec<u8> = page.iter().map(|s| s.value.as_uuid().as_bytes()[15]).collect();
+        let order: Vec<u8> = page
+            .iter()
+            .map(|s| s.value.as_uuid().as_bytes()[15])
+            .collect();
         // python < rust by key order, so python's head goes first, but rust's
         // sole hit must land in the first page (limit 2) despite its raw
         // score trailing python's entire top 4 — a raw-cosine sort would have
         // produced [1, 2] here instead.
-        assert_eq!(order, vec![1, 5], "rust must not be crowded out of a 2-language scope by python's raw-cosine lead");
+        assert_eq!(
+            order,
+            vec![1, 5],
+            "rust must not be crowded out of a 2-language scope by python's raw-cosine lead"
+        );
     }
 
     #[test]
@@ -778,7 +812,11 @@ mod tests {
         let page2 = bucket_interleave_and_page(&hits, 2, Some(cursor)).expect("valid pool");
         let full = bucket_interleave_and_page(&hits, hits.len(), None).expect("valid pool");
         assert_eq!(
-            page1.iter().chain(page2.iter()).map(|s| s.value).collect::<Vec<_>>(),
+            page1
+                .iter()
+                .chain(page2.iter())
+                .map(|s| s.value)
+                .collect::<Vec<_>>(),
             full.iter().map(|s| s.value).collect::<Vec<_>>(),
             "page1 ++ page2 (resumed via the synthetic cursor) must equal the unpaginated full order"
         );
@@ -801,8 +839,15 @@ mod tests {
             hit_with_id("java", 7, 0.10),
         ];
         let full = bucket_interleave_and_page(&hits, hits.len(), None).expect("pool");
-        let full_ids: Vec<u8> = full.iter().map(|s| s.value.as_uuid().as_bytes()[15]).collect();
-        assert_eq!(full_ids.len(), hits.len(), "full page returns every decodable hit once");
+        let full_ids: Vec<u8> = full
+            .iter()
+            .map(|s| s.value.as_uuid().as_bytes()[15])
+            .collect();
+        assert_eq!(
+            full_ids.len(),
+            hits.len(),
+            "full page returns every decodable hit once"
+        );
 
         for page_size in [1usize, 2, 3] {
             let mut walked: Vec<u8> = Vec::new();
@@ -844,9 +889,17 @@ mod tests {
 
     #[test]
     fn adversarial_empty_pool_and_zero_target_are_empty_not_panics() {
-        assert!(bucket_interleave_and_page(&[], 10, None).expect("empty ok").is_empty());
+        assert!(
+            bucket_interleave_and_page(&[], 10, None)
+                .expect("empty ok")
+                .is_empty()
+        );
         let hits = vec![hit_with_id("rust", 1, 0.5)];
-        assert!(bucket_interleave_and_page(&hits, 0, None).expect("zero target ok").is_empty());
+        assert!(
+            bucket_interleave_and_page(&hits, 0, None)
+                .expect("zero target ok")
+                .is_empty()
+        );
     }
 
     #[test]
@@ -860,9 +913,17 @@ mod tests {
         let missing_language = hit(None, Some(&uuid::Uuid::new_v4().to_string()), 0.95);
         let bad_symbol_id = hit(Some("python"), Some("not-a-uuid"), 0.99);
         let hits = vec![missing_language, good_rust, bad_symbol_id, good_go];
-        let page = bucket_interleave_and_page(&hits, 10, None).expect("partial corruption still serves");
-        let ids: Vec<u8> = page.iter().map(|s| s.value.as_uuid().as_bytes()[15]).collect();
-        assert_eq!(ids.len(), 2, "the two decodable hits survive; the two bad ones are skipped");
+        let page =
+            bucket_interleave_and_page(&hits, 10, None).expect("partial corruption still serves");
+        let ids: Vec<u8> = page
+            .iter()
+            .map(|s| s.value.as_uuid().as_bytes()[15])
+            .collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "the two decodable hits survive; the two bad ones are skipped"
+        );
         assert!(ids.contains(&1) && ids.contains(&2));
     }
 
@@ -891,9 +952,13 @@ mod tests {
             hit_with_id("rust", 3, 0.6),
         ];
         let bogus = (rank_score(1, hits.len()), scored(250, 0.0).value);
-        let page = bucket_interleave_and_page(&hits, 10, Some(bogus)).expect("no panic on stale cursor");
+        let page =
+            bucket_interleave_and_page(&hits, 10, Some(bogus)).expect("no panic on stale cursor");
         for w in page.windows(2) {
-            assert!(w[0].score >= w[1].score, "page must stay descending by synthetic score");
+            assert!(
+                w[0].score >= w[1].score,
+                "page must stay descending by synthetic score"
+            );
         }
     }
 
@@ -912,7 +977,10 @@ mod tests {
         ];
         // languages present: go, python, rust => 3
         let page = bucket_interleave_and_page(&hits, 3, None).expect("pool");
-        let ids: HashSet<u8> = page.iter().map(|s| s.value.as_uuid().as_bytes()[15]).collect();
+        let ids: HashSet<u8> = page
+            .iter()
+            .map(|s| s.value.as_uuid().as_bytes()[15])
+            .collect();
         assert!(
             ids.contains(&6) && ids.contains(&1) && ids.contains(&5),
             "a 3-slot page over 3 languages must include each language's head, got {ids:?} (not python's own top-3)"

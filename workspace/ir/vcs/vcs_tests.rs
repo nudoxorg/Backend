@@ -246,10 +246,7 @@ fn seal_archive_serves_zero_copy() {
     let m = view.lookup_intro(intro(1)).expect("module in archive");
     let f = view.lookup_intro(intro(2)).expect("function in archive");
     assert!(view.lookup_name("root").any(|x| x == m));
-    assert!(
-        view.lookup_name("do_thing")
-            .any(|x| x == f)
-    );
+    assert!(view.lookup_name("do_thing").any(|x| x == f));
     assert!(
         view.children(m).any(|x| x == f),
         "function is a child of the module"

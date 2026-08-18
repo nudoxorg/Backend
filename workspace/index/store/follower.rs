@@ -136,11 +136,7 @@ pub struct DrainReport {
 /// `outbox_claim` already filters to `seq > watermark`, so this guard is
 /// belt-and-suspenders — but it is the single place the redelivery contract is
 /// enforced and tested, so a redelivered row is provably not re-run.
-pub fn drain_once<S, F>(
-    store: &S,
-    follower: &mut F,
-    batch: usize,
-) -> Result<DrainReport, Error>
+pub fn drain_once<S, F>(store: &S, follower: &mut F, batch: usize) -> Result<DrainReport, Error>
 where
     S: MetaStore,
     F: SinkFollower,

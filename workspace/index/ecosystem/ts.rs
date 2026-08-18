@@ -63,9 +63,10 @@ impl EcosystemSpec for TypeScript {
 
     /// Canonical: `@scope/name` for scoped packages, else just `name`.
     fn render_canonical(n: &name::StructuredName) -> String {
-        n.namespace
-            .first()
-            .map_or_else(|| n.name.to_string(), |scope| format!("@{scope}/{}", n.name))
+        n.namespace.first().map_or_else(
+            || n.name.to_string(),
+            |scope| format!("@{scope}/{}", n.name),
+        )
     }
 
     fn endpoints() -> upstream::UpstreamEndpoints {

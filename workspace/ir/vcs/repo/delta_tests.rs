@@ -1,6 +1,8 @@
 //! Tests for O(delta) incremental materialization.
 use super::*;
-use crate::wire::{EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, PayloadTable, SymbolWire};
+use crate::wire::{
+    EntryPayloadFlags, FnSigFlags, FunctionWire, KindWire, PayloadTable, SymbolWire,
+};
 use ir::change::{EcosystemId, PackageName};
 use ir::entry::Visibility;
 use ir::kind::KindDiscriminant;

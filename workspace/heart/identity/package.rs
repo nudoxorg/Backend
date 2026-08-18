@@ -62,16 +62,6 @@ pub struct PythonVersionError {
     source: uv_pep440::VersionParseError,
 }
 
-/// FlakeHub versions are Cargo-semver (`X.Y.Z+rev-{sha}`); kept distinct from
-/// Cargo so the ecosystem stays traceable in the error chain.
-#[derive(Debug, Error)]
-#[error("invalid nix flake version {raw:?}: {source}")]
-pub struct NixVersionError {
-    raw: String,
-    #[source]
-    source: semver::Error,
-}
-
 /// Why a raw version failed to parse. Each variant wraps the concrete parser
 /// error (with raw for context) and uses #[from] for direct ? conversion.
 #[derive(Debug, Error)]
@@ -82,8 +72,6 @@ pub enum VersionError {
     Npm(#[from] NpmVersionError),
     #[error(transparent)]
     Python(#[from] PythonVersionError),
-    #[error(transparent)]
-    Nix(#[from] NixVersionError),
 }
 
 /// An ecosystem-appropriate, typed package version.
@@ -102,10 +90,6 @@ pub enum PackageVersion {
     /// NuGet version string (SemVer2 with an optional legacy 4th part;
     /// case-insensitive prerelease, build metadata dropped in ordering).
     CSharp(String),
-    /// Nix flake version — FlakeHub Cargo-semver (`X.Y.Z+rev-{sha}`); the
-    /// `+rev` build metadata is preserved but ignored in ordering (FlakeHub
-    /// patch numbers are monotonic commit counts, so ordering stays correct).
-    Nix(semver::Version),
     /// C/C++ registry-less version string (git tag, vcpkg `version-date`,
     /// Go-style pseudo-version, or a raw lexical fallback). Kept as the raw
     /// string; ordering/grammar live in `ecosystem::cpp::version::CppVersion`.
@@ -147,13 +131,6 @@ impl TryFrom<(Language, &str)> for PackageVersion {
             // grammar (total: every string is at worst a `Raw`), so the raw
             // string is always accepted here.
             Language::Cpp => Ok(Self::Cpp(raw.to_owned())),
-            Language::Nix => {
-                let v = semver::Version::parse(raw).map_err(|source| NixVersionError {
-                    raw: raw.to_owned(),
-                    source,
-                })?;
-                Ok(Self::Nix(v))
-            }
         }
     }
 }
@@ -162,9 +139,7 @@ impl PackageVersion {
     /// The canonical string form under this version's grammar.
     pub fn canonical(&self) -> String {
         match self {
-            PackageVersion::Cargo(v) | PackageVersion::Npm(v) | PackageVersion::Nix(v) => {
-                v.to_string()
-            }
+            PackageVersion::Cargo(v) | PackageVersion::Npm(v) => v.to_string(),
             PackageVersion::Python(v) => v.to_string(),
             PackageVersion::Go(v)
             | PackageVersion::Java(v)
@@ -183,7 +158,6 @@ impl From<&PackageVersion> for Language {
             PackageVersion::Go(_) => Language::Go,
             PackageVersion::Java(_) => Language::Java,
             PackageVersion::CSharp(_) => Language::CSharp,
-            PackageVersion::Nix(_) => Language::Nix,
             PackageVersion::Cpp(_) => Language::Cpp,
         }
     }
@@ -195,9 +169,6 @@ pub enum RegistryOrigin {
     CratesIo,
     NpmPublic,
     PyPi,
-    /// FlakeHub — a first-class origin (bespoke resolution semantics), not a
-    /// `Custom` registry.
-    FlakeHub,
     /// nuget.org — the public NuGet gallery / flat-container feed.
     NuGet,
     /// proxy.golang.org — the public Go module proxy.
@@ -220,7 +191,6 @@ impl RegistryOrigin {
             RegistryOrigin::CratesIo => Cow::Borrowed("crates.io"),
             RegistryOrigin::NpmPublic => Cow::Borrowed("npm"),
             RegistryOrigin::PyPi => Cow::Borrowed("pypi"),
-            RegistryOrigin::FlakeHub => Cow::Borrowed("flakehub"),
             RegistryOrigin::NuGet => Cow::Borrowed("nuget"),
             RegistryOrigin::GoProxy => Cow::Borrowed("goproxy"),
             RegistryOrigin::MavenCentral => Cow::Borrowed("maven-central"),

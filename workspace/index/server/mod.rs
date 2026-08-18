@@ -12,7 +12,6 @@
 //! Fields are private; the read/coordination flows reach them through accessors
 //! (the common single-source path delegates to the definitive base).
 
-
 // ── Layer-facade (§8 re-layering compatibility shim) ──────────────────────────
 // The staged `server` modules were authored against the *old monolithic
 // `registry`* surface, where the data/storage/coordination plane, the graph
@@ -73,7 +72,8 @@ pub mod registry {
 #[allow(unused_imports)]
 pub mod vector {
     pub use ::registry::vector::core::{
-        admission, embed, embedding, fusion, key, model, quant, recipe, routing, shard, store,
+        admission, embed, embedding, fusion, key, license, model, quant, recipe, routing, shard,
+        store,
     };
     pub use ::registry::vector::*;
     pub use ::registry::vector::{cache, gate, local, remote};
@@ -103,6 +103,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::compiled::ObjectCompiledStore;
+use crate::runtime::session::ScratchSessionStore;
 use crate::server::registry::vector::{EmbeddingCache, EmbeddingModel};
 use crate::server::registry::{
     Store,
@@ -112,10 +114,8 @@ use crate::server::registry::{
     queue::{Queue, RetryPolicy},
 };
 use crate::server::vector::remote::store::{CollectionConfig, RemoteStore, ensure_collection};
-use heart::{BackendKind, Connect, ConnectError, ConnectFailure, Federation, Live};
-use crate::compiled::ObjectCompiledStore;
-use crate::runtime::session::ScratchSessionStore;
 use crate::store::writer::CatalogWriter;
+use heart::{BackendKind, Connect, ConnectError, ConnectFailure, Federation, Live};
 
 pub use config::{Deployment, Endpoints, Limits, Role, ServerConfiguration, SourceConfig};
 use error::InternalError;
@@ -163,6 +163,17 @@ pub struct SourceStores<M: EmbeddingModel> {
     /// Replica-local package-search index (tantivy over the package catalog
     /// projection), shared with the sync poller.
     pub packages: Arc<PackageSearchIndex>,
+    /// Replica-local symbol-search index (tantivy over the catalog's
+    /// `symbols_proj` projection) — the precise/literal search surface
+    /// (`SourceStores::search`). Kept caught up by [`poll::text_index_poller`],
+    /// which pulls the Text-sink outbox through [`crate::runtime::text::Poller`].
+    pub text: Arc<crate::runtime::text::TextIndex>,
+    /// The catalog-outbox → [`Self::text`] poller for this source, driven once
+    /// per tick by [`poll::text_index_poller`]. Owned here (rather than
+    /// reconstructed per tick) because it is not `Clone`; its own handles
+    /// ([`Outbox`], [`GlobalStore`]) are cheap Arc-backed clones taken at
+    /// [`Driver::connect_source`] time.
+    text_poller: crate::runtime::text::Poller<CatalogEngine>,
 }
 
 /// The assembled server, generic over the embedding-model brand `M` (lifted into
@@ -262,7 +273,7 @@ impl<M: EmbeddingModel> Driver<M> {
         http::dto::register_custom_registries(&config.custom_registries);
 
         // The definitive base is the federation's required root.
-        let base = Self::connect_source(&config.definitive).await?;
+        let base = Self::connect_source(&config.definitive, config.limits.poll_interval).await?;
         // The compiled-lookup store rides the base's own object-store backend —
         // one namespace for cas/, ptr/, and compiled/ (SV-6).
         let compiled_store = ObjectCompiledStore::new(base.blobs.backend());
@@ -270,7 +281,7 @@ impl<M: EmbeddingModel> Driver<M> {
 
         // Overlays, in declared precedence order (highest first).
         for overlay in &config.overlays {
-            let stores = Self::connect_source(overlay).await?;
+            let stores = Self::connect_source(overlay, config.limits.poll_interval).await?;
             federation = federation.with_overlay(overlay.source_id(), stores);
         }
 
@@ -346,7 +357,9 @@ impl<M: EmbeddingModel> Driver<M> {
     /// Empty until a package's IR view + reverse index is loaded; queries then
     /// answer the honest `IndexUnavailable` rather than a `501` or a fake empty
     /// page (INDEX-PLAN §5.5).
-    pub(crate) fn usage_backend(&self) -> &crate::server::registry::search::ReverseIndexUsageBackend {
+    pub(crate) fn usage_backend(
+        &self,
+    ) -> &crate::server::registry::search::ReverseIndexUsageBackend {
         &self.usage_backend
     }
 
@@ -359,7 +372,10 @@ impl<M: EmbeddingModel> Driver<M> {
 
     /// Build and connect the full store stack for one configured source, bringing
     /// its backends up concurrently.
-    async fn connect_source(cfg: &SourceConfig) -> ServerResult<SourceStores<M>> {
+    async fn connect_source(
+        cfg: &SourceConfig,
+        poll_interval: Duration,
+    ) -> ServerResult<SourceStores<M>> {
         let endpoints = &cfg.endpoints;
 
         // The versioned catalog underlies every relational store of this source
@@ -460,6 +476,24 @@ impl<M: EmbeddingModel> Driver<M> {
         })?;
         let packages = Arc::new(PackageSearchIndex::open(&packages_dir)?);
 
+        // The symbol-search index is likewise replica-local, fed by its own
+        // poller off the Text-sink outbox feed (kept separate from the
+        // package index above: one projects packages, the other symbols).
+        let text_dir = cfg.text_index_directory();
+        std::fs::create_dir_all(&text_dir).map_err(|error| {
+            ServerError::Runtime(registry::runtime::error::TextError::Io(error).into())
+        })?;
+        let text = Arc::new(
+            crate::runtime::text::TextIndex::open_or_create(&text_dir)
+                .map_err(|error| ServerError::Runtime(error.into()))?,
+        );
+        let text_poller = crate::runtime::text::Poller::new(
+            outbox.clone(),
+            global_store.clone(),
+            &text_dir,
+            poll_interval,
+        );
+
         Ok(SourceStores {
             global_store,
             blobs,
@@ -467,6 +501,8 @@ impl<M: EmbeddingModel> Driver<M> {
             outbox,
             semantics,
             packages,
+            text,
+            text_poller,
         })
     }
 
@@ -555,6 +591,99 @@ impl<M: EmbeddingModel> Driver<M> {
         None
     }
 
+    /// Spawn this node's role-gated background workers — the indexing queue
+    /// worker plus, on gateway roles, the derived-store fan-out consumers and
+    /// the replica-local index sync/watermark pollers — without binding an
+    /// HTTP listener.
+    ///
+    /// [`Self::serve_on`] is this plus the HTTP surface; it is the seam for
+    /// callers that only need the consume-side loops actually running (e.g. a
+    /// test driving [`Self::search_symbols`]/[`Self::expand`] in-process and
+    /// waiting on real materialization) without the network footprint or the
+    /// OS-signal-only shutdown of a full `serve`. The returned
+    /// [`BackgroundWorkers`] owns every spawned task: drop it (or call
+    /// [`BackgroundWorkers::shutdown`] for a graceful drain first) to stop
+    /// them, mirroring the two-phase wind-down `serve_on` runs after its HTTP
+    /// listener closes.
+    pub fn spawn_background_workers(self: &Arc<Self>) -> BackgroundWorkers {
+        // Supervised background pollers, gated by this node's role. The queue
+        // worker runs on forge/compile nodes; the derived-store fan-out consumers
+        // and the replica-local index sync/watermark loops run on gateway nodes.
+        // `All` (the default) runs both; every role still serves the HTTP surface.
+        let role = self.config.role;
+        let mut pollers = tokio::task::JoinSet::new();
+
+        // Graceful-drain signal for the queue worker: on shutdown we fire it,
+        // let the worker stop dequeuing new jobs and finish in-flight ones (up to
+        // a bounded deadline), then abort whatever remains.
+        let drain = tokio_util::sync::CancellationToken::new();
+        let mut queue_worker: Option<tokio::task::JoinHandle<()>> = None;
+        if role.runs_forge() {
+            queue_worker = Some(tokio::spawn(poll::queue_worker(
+                Arc::clone(self),
+                drain.clone(),
+            )));
+        }
+        if role.runs_gateway() {
+            // The bakery worker scans for packages that need edge-shard baking.
+            // Gated by `config.bakery.enabled` (default false) so it never runs
+            // unless the operator explicitly opts in.
+            if self.config.bakery.enabled {
+                pollers.spawn(crate::server::bakery::bakery_worker(Arc::clone(self)));
+            }
+
+            for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
+                pollers.spawn(poll::outbox_consumer(Arc::clone(self), sink));
+            }
+            pollers.spawn(poll::package_index_poller(Arc::clone(self)));
+            pollers.spawn(poll::text_index_poller(Arc::clone(self)));
+            pollers.spawn(poll::package_signals_poller(Arc::clone(self)));
+            // Storage reclamation (CAS GC): purge consumed outbox rows below every
+            // sink's watermark. The delete is idempotent, so overlapping replicas
+            // are harmless — no advisory lock needed. Blob GC is a documented TODO
+            // (see `poll::cas_gc`) pending a safe live-reference oracle.
+            pollers.spawn(poll::cas_gc(Arc::clone(self)));
+
+            // Catalog followers (M2): one task per configured ecosystem. The list
+            // defaults to empty (demand-pull only); operators opt in via
+            // `[mirror] follow = ["csharp", "rust"]`. Each follower is built here
+            // and driven by `catalog_follower_worker`.
+            for lang_str in &self.config.mirror.follow {
+                use std::str::FromStr;
+                let Ok(lang) = crate::ecosystem::Language::from_str(lang_str.as_str()) else {
+                    tracing::warn!(lang = %lang_str, "unknown language in mirror.follow; skipping");
+                    continue;
+                };
+                let follower: Box<dyn crate::server::registry::upstream::CatalogFollower> =
+                    match lang {
+                        crate::ecosystem::Language::CSharp => {
+                            Box::new(registry::upstream::NuGetCatalogFollower::production())
+                        }
+                        crate::ecosystem::Language::Rust => {
+                            Box::new(registry::upstream::CratesCatalogFollower::production())
+                        }
+                        other => {
+                            tracing::warn!(%other, "no catalog follower implemented for language; skipping");
+                            continue;
+                        }
+                    };
+                tracing::info!(%lang, "starting catalog follower");
+                pollers.spawn(catalog_follower::catalog_follower_worker(
+                    Arc::clone(self),
+                    follower,
+                ));
+            }
+        }
+        tracing::info!(?role, "background pollers started");
+
+        BackgroundWorkers {
+            drain,
+            queue_worker,
+            pollers,
+            drain_deadline: self.config.limits.drain_deadline,
+        }
+    }
+
     /// Serve until shutdown: bind the HTTP router to `config.serving_address` and
     /// run the background pollers (queue workers + derived-store consumers) for
     /// every source in the federation.
@@ -583,94 +712,61 @@ impl<M: EmbeddingModel> Driver<M> {
         let router = http::router::router(Arc::clone(&self));
         tracing::info!(address = ?listener.local_addr().ok(), "serving");
 
-        // Supervised background pollers, gated by this node's role. The queue
-        // worker runs on forge/compile nodes; the derived-store fan-out consumers
-        // and the replica-local index sync/watermark loops run on gateway nodes.
-        // `All` (the default) runs both; every role still serves the HTTP surface.
-        let role = self.config.role;
-        let mut pollers = tokio::task::JoinSet::new();
-
-        // Graceful-drain signal for the queue worker: on shutdown we fire it,
-        // let the worker stop dequeuing new jobs and finish in-flight ones (up to
-        // a bounded deadline), then abort whatever remains.
-        let drain = tokio_util::sync::CancellationToken::new();
-        let mut queue_worker: Option<tokio::task::JoinHandle<()>> = None;
-        if role.runs_forge() {
-            queue_worker = Some(tokio::spawn(poll::queue_worker(
-                Arc::clone(&self),
-                drain.clone(),
-            )));
-        }
-        if role.runs_gateway() {
-            // The bakery worker scans for packages that need edge-shard baking.
-            // Gated by `config.bakery.enabled` (default false) so it never runs
-            // unless the operator explicitly opts in.
-            if self.config.bakery.enabled {
-                pollers.spawn(crate::server::bakery::bakery_worker(Arc::clone(&self)));
-            }
-
-            for sink in <heart::DerivedStore as strum::IntoEnumIterator>::iter() {
-                pollers.spawn(poll::outbox_consumer(Arc::clone(&self), sink));
-            }
-            pollers.spawn(poll::package_index_poller(Arc::clone(&self)));
-            pollers.spawn(poll::package_signals_poller(Arc::clone(&self)));
-            // Storage reclamation (CAS GC): purge consumed outbox rows below every
-            // sink's watermark. The delete is idempotent, so overlapping replicas
-            // are harmless — no advisory lock needed. Blob GC is a documented TODO
-            // (see `poll::cas_gc`) pending a safe live-reference oracle.
-            pollers.spawn(poll::cas_gc(Arc::clone(&self)));
-
-            // Catalog followers (M2): one task per configured ecosystem. The list
-            // defaults to empty (demand-pull only); operators opt in via
-            // `[mirror] follow = ["csharp", "rust"]`. Each follower is built here
-            // and driven by `catalog_follower_worker`.
-            for lang_str in &self.config.mirror.follow {
-                use std::str::FromStr;
-                let Ok(lang) = crate::ecosystem::Language::from_str(lang_str.as_str()) else {
-                    tracing::warn!(lang = %lang_str, "unknown language in mirror.follow; skipping");
-                    continue;
-                };
-                let follower: Box<dyn crate::server::registry::upstream::CatalogFollower> = match lang {
-                    crate::ecosystem::Language::CSharp => {
-                        Box::new(registry::upstream::NuGetCatalogFollower::production())
-                    }
-                    crate::ecosystem::Language::Rust => {
-                        Box::new(registry::upstream::CratesCatalogFollower::production())
-                    }
-                    other => {
-                        tracing::warn!(%other, "no catalog follower implemented for language; skipping");
-                        continue;
-                    }
-                };
-                tracing::info!(%lang, "starting catalog follower");
-                pollers.spawn(catalog_follower::catalog_follower_worker(Arc::clone(&self), follower));
-            }
-        }
-        tracing::info!(?role, "background pollers started");
+        let workers = self.spawn_background_workers();
 
         axum::serve(listener, router)
             .with_graceful_shutdown(shutdown_signal())
             .await
             .map_err(|source| ServerError::Internal(InternalError::ServeFailed { source }))?;
 
-        // The HTTP listener has drained. Wind down in two phases:
-        //
-        // 1. **Graceful drain of the queue worker.** Signal it to stop dequeuing;
-        //    its in-flight jobs run to completion (or their own deadline). We wait
-        //    at most `drain_deadline` for the worker's clean return before forcing
-        //    it — a wedged job cannot hold shutdown open forever. Idempotent job
-        //    settling means a forced abort here re-delivers rather than corrupts.
-        if let Some(handle) = queue_worker {
+        // The HTTP listener has drained; wind the background workers down the
+        // same two-phase way `BackgroundWorkers::shutdown` always does: a
+        // bounded graceful drain of the queue worker, then abort-and-reap
+        // everything else.
+        workers.shutdown().await;
+        Ok(())
+    }
+}
+
+/// A running set of a node's role-gated background workers, returned by
+/// [`Server::spawn_background_workers`]. Owns every spawned task; nothing it
+/// started outlives this handle.
+///
+/// Dropping it aborts the queue worker (if any) and every poller immediately,
+/// at their next await point — every unit of poller work is idempotent, so an
+/// abort mid-tick is safe. Prefer [`Self::shutdown`] when a graceful queue
+/// drain matters (it still falls back to the same abort past the deadline);
+/// the `Drop` path exists so a test ending (including by panic) or an early
+/// return can never leak these tasks past the value that owns them.
+pub struct BackgroundWorkers {
+    drain: tokio_util::sync::CancellationToken,
+    queue_worker: Option<tokio::task::JoinHandle<()>>,
+    pollers: tokio::task::JoinSet<()>,
+    drain_deadline: Duration,
+}
+
+impl BackgroundWorkers {
+    /// Wind down in the same two phases [`Server::serve_on`] always has:
+    ///
+    /// 1. **Graceful drain of the queue worker**, if this role runs one. Signal
+    ///    it to stop dequeuing; its in-flight jobs run to completion (or their
+    ///    own deadline). Wait at most `drain_deadline` for its clean return
+    ///    before forcing it — a wedged job cannot hold shutdown open forever.
+    ///    Idempotent job settling means a forced abort here re-delivers rather
+    ///    than corrupts.
+    /// 2. **Abort the remaining (gateway) pollers** at their next await point
+    ///    and reap them so nothing outlives this handle.
+    pub async fn shutdown(mut self) {
+        if let Some(handle) = self.queue_worker.take() {
             tracing::info!("draining queue worker (no new jobs; finishing in-flight)");
-            drain.cancel();
-            let deadline = self.config.limits.drain_deadline;
-            match tokio::time::timeout(deadline, handle).await {
+            self.drain.cancel();
+            match tokio::time::timeout(self.drain_deadline, handle).await {
                 Ok(Ok(())) => tracing::info!("queue worker drained cleanly"),
                 Ok(Err(join)) => {
                     tracing::warn!(error = %join, "queue worker task ended abnormally")
                 }
                 Err(_) => tracing::warn!(
-                    ?deadline,
+                    deadline = ?self.drain_deadline,
                     "drain deadline exceeded; forcing queue worker down"
                 ),
                 // `handle` is dropped on timeout, aborting the still-running task at
@@ -678,13 +774,25 @@ impl<M: EmbeddingModel> Driver<M> {
             }
         }
 
-        // 2. **Abort the remaining (gateway) pollers** at their next await point
-        //    and reap them so nothing outlives the server. Every unit of poller
-        //    work is idempotent, so an abort mid-tick is safe.
         tracing::info!("shutting background pollers down");
-        pollers.abort_all();
-        while pollers.join_next().await.is_some() {}
-        Ok(())
+        self.pollers.abort_all();
+        while self.pollers.join_next().await.is_some() {}
+    }
+}
+
+impl Drop for BackgroundWorkers {
+    fn drop(&mut self) {
+        // Synchronous, best-effort teardown for handles dropped without an
+        // explicit `shutdown().await` (a test panicking, an early return, or
+        // simply the handle going out of scope). No graceful queue drain here
+        // — Drop cannot `.await` — just an immediate abort signal; idempotent
+        // poller/job work makes that safe. A prior `shutdown()` call already
+        // emptied `queue_worker`/`pollers`, so this is a no-op in that case.
+        self.drain.cancel();
+        if let Some(handle) = self.queue_worker.take() {
+            handle.abort();
+        }
+        self.pollers.abort_all();
     }
 }
 

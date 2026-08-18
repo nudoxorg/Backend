@@ -417,6 +417,13 @@ impl SourceConfig {
     pub fn package_index_directory(&self) -> PathBuf {
         self.data_directory().join("packages")
     }
+
+    /// This source's replica-local tantivy *symbol/text* index directory
+    /// (`crate::runtime::text::TextIndex`) — the precise-search surface,
+    /// distinct from the package index above.
+    pub fn text_index_directory(&self) -> PathBuf {
+        self.data_directory().join("symbols")
+    }
 }
 
 impl ServerConfiguration {
@@ -463,16 +470,12 @@ impl ServerConfiguration {
         let mut names = std::collections::HashSet::new();
         for source in std::iter::once(&self.definitive).chain(&self.overlays) {
             if source.name.trim().is_empty() {
-                return Err(Error::Validation(
-                    ValidationError::EmptySourceName,
-                ));
+                return Err(Error::Validation(ValidationError::EmptySourceName));
             }
             if !names.insert(source.name.clone()) {
-                return Err(Error::Validation(
-                    ValidationError::DuplicateSourceName {
-                        name: source.name.clone(),
-                    },
-                ));
+                return Err(Error::Validation(ValidationError::DuplicateSourceName {
+                    name: source.name.clone(),
+                }));
             }
         }
 
@@ -480,13 +483,11 @@ impl ServerConfiguration {
         // error, checked against vector-core's canonical deny-list — even when
         // no endpoint is configured yet, so a forbidden id never lies dormant in
         // config waiting for an endpoint to activate it.
-        if let Err(error) = vector::model::license::assert_licensed(self.rerank.model_id.as_str()) {
-            return Err(Error::Validation(
-                ValidationError::ForbiddenRerankModel {
-                    model: self.rerank.model_id.clone(),
-                    detail: error.to_string(),
-                },
-            ));
+        if let Err(error) = vector::license::assert_licensed(self.rerank.model_id.as_str()) {
+            return Err(Error::Validation(ValidationError::ForbiddenRerankModel {
+                model: self.rerank.model_id.clone(),
+                detail: error.to_string(),
+            }));
         }
         Ok(())
     }

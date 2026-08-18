@@ -32,13 +32,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 
+use gpui::prelude::FluentBuilder as _;
 use gpui::{
     AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, UniformListScrollHandle, Window, div, uniform_list,
 };
-use gpui::prelude::FluentBuilder as _;
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _};
-use nudox_engine::wire::{ImplsPage, RefRow, RefsPage, SymbolKey};
+use nudox_engine::wire::{ImplsPage, RefRow, RefsPage, SourceLocation, SymbolKey};
 
 use crate::motion::declarative::{entrance_id, row_enter};
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
@@ -567,8 +567,12 @@ impl RefsTable {
                                 FlatRow::Row { row, nested } => {
                                     let key = row.target.clone();
                                     let open = open.clone();
-                                    let (badge_bg, badge_fg, badge_label) =
-                                        precision_chrome(row.precision, &row.kind, &colours, &ext.alpha);
+                                    let (badge_bg, badge_fg, badge_label) = precision_chrome(
+                                        row.precision,
+                                        &row.kind,
+                                        &colours,
+                                        &ext.alpha,
+                                    );
 
                                     // The engine's raw kind tag, shown only
                                     // when the precision badge is not already
@@ -747,6 +751,8 @@ struct ImplRowView {
     trait_label: Option<SharedString>,
     /// Generic count on the self type — used for arity-family detection.
     self_generic_count: u32,
+    /// Copyable package-relative source target, when the impl is navigable.
+    source: Option<SharedString>,
 
     // ── Display decomposition (built by `ImplRowView::new`, never by hand) ────
     //
@@ -780,6 +786,7 @@ impl ImplRowView {
         is_blanket: bool,
         trait_label: Option<SharedString>,
         self_generic_count: u32,
+        source: Option<SharedString>,
     ) -> Self {
         let (head, tail) = split_impl_label(&label);
         // Prefer the wire's own `trait_label` over anything parsed out of the
@@ -814,6 +821,7 @@ impl ImplRowView {
             is_blanket,
             trait_label,
             self_generic_count,
+            source,
             primary,
             self_type,
         }
@@ -946,7 +954,15 @@ fn collapse_family(rows: &[ImplRowView]) -> ImplRowView {
     let max = rows.iter().map(|r| r.self_generic_count).max().unwrap_or(0);
     let base_label = self_base(&first.label);
     let summary = SharedString::from(
-        [base_label, "  (arities ", &min.to_string(), "–", &max.to_string(), ")"].concat(),
+        [
+            base_label,
+            "  (arities ",
+            &min.to_string(),
+            "–",
+            &max.to_string(),
+            ")",
+        ]
+        .concat(),
     );
     ImplRowView::new(
         first.key.clone(),
@@ -954,6 +970,7 @@ fn collapse_family(rows: &[ImplRowView]) -> ImplRowView {
         first.is_blanket,
         first.trait_label.clone(),
         first.self_generic_count,
+        first.source.clone(),
     )
 }
 
@@ -973,9 +990,9 @@ fn apply_variadic_grouping(rows: Vec<ImplRowView>) -> Vec<ImplRowView> {
         let base = SharedString::from(self_base(&row.label).to_owned());
         let key_trait = row.trait_label.clone();
         // Find an existing group with the same (trait, base).
-        let found = groups.iter_mut().find(|(t, b, _)| {
-            *t == key_trait && *b == base
-        });
+        let found = groups
+            .iter_mut()
+            .find(|(t, b, _)| *t == key_trait && *b == base);
         match found {
             Some((_, _, group)) => group.push(row),
             None => groups.push((key_trait, base, vec![row])),
@@ -1014,7 +1031,11 @@ fn build_flat(
             + if blanket_rows.is_empty() {
                 0
             } else {
-                1 + if blanket_collapsed { 0 } else { blanket_rows.len() }
+                1 + if blanket_collapsed {
+                    0
+                } else {
+                    blanket_rows.len()
+                }
             },
     );
 
@@ -1161,6 +1182,12 @@ impl ImplsTable {
                     r.is_blanket,
                     r.trait_label.as_ref().map(|t| shared(t)),
                     r.self_generic_count,
+                    match &r.source {
+                        SourceLocation::Declared { .. } => {
+                            r.source.jump_target().map(SharedString::from)
+                        }
+                        _ => None,
+                    },
                 );
                 if r.is_blanket {
                     raw_blanket.push(view);
@@ -1208,6 +1235,7 @@ impl ImplsTable {
         &self,
         streaming: bool,
         on_open: impl Fn(&SymbolKey, &mut Window, &mut App) + 'static,
+        on_source: impl Fn(&SharedString, &mut Window, &mut App) + 'static,
         on_toggle_blanket: impl Fn(&mut Window, &mut App) + 'static,
         cx: &App,
     ) -> AnyElement {
@@ -1236,6 +1264,7 @@ impl ImplsTable {
             .is_some_and(|t| t.elapsed() < ROW_CASCADE_WINDOW)
             && scale > 0.0;
         let open: Rc<dyn Fn(&SymbolKey, &mut Window, &mut App)> = Rc::new(on_open);
+        let source: Rc<dyn Fn(&SharedString, &mut Window, &mut App)> = Rc::new(on_source);
         let toggle_blanket: Rc<dyn Fn(&mut Window, &mut App)> = Rc::new(on_toggle_blanket);
 
         // Pre-compute the row height so the `uniform_list` can receive an
@@ -1292,6 +1321,8 @@ impl ImplsTable {
                                 ImplFlatRow::Row(row) => {
                                     let key = row.key.clone();
                                     let open = open.clone();
+                                    let source_handler = source.clone();
+                                    let source_target = row.source.clone();
                                     // `for <type>` — two elements, present only
                                     // when the label actually named a self
                                     // type, so an inherent impl does not render
@@ -1402,8 +1433,40 @@ impl ImplsTable {
                                                 .child(row.primary.clone()),
                                         )
                                         .children(tail)
+                                        .when_some(row.source.clone(), |el, source| {
+                                            let source_handler = source_handler.clone();
+                                            let source_target = source_target.clone();
+                                            el.child(
+                                                div()
+                                                    .id(("symbol.impls.source", ix))
+                                                    .flex_shrink_0()
+                                                    .font_family("monospace")
+                                                    .text_size(ts.caption.size)
+                                                    .line_height(ts.mono.line_height)
+                                                    .text_color(colours.accent)
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.underline())
+                                                    .on_click(move |_, window, cx| {
+                                                        // The source affordance is nested inside
+                                                        // the row's "open impl" target.  A click
+                                                        // must perform exactly one action: jump
+                                                        // to the file, not jump and then replace
+                                                        // the page with the impl symbol.
+                                                        cx.stop_propagation();
+                                                        if let Some(target) = source_target.as_ref()
+                                                        {
+                                                            source_handler(target, window, cx);
+                                                        }
+                                                    })
+                                                    .child(source),
+                                            )
+                                        })
                                 }
-                                ImplFlatRow::Subheading { label, count, collapsed } => {
+                                ImplFlatRow::Subheading {
+                                    label,
+                                    count,
+                                    collapsed,
+                                } => {
                                     let toggle = toggle_blanket.clone();
                                     div()
                                         .id(("symbol.impls.blanket.head", ix))
@@ -1532,8 +1595,7 @@ mod tests {
     fn unknown_precision_shows_the_engines_words() {
         let theme = crate::theme::default_theme();
         let kind = SharedString::from("call-site");
-        let (_, _, label) =
-            precision_chrome(Precision::Other, &kind, &theme.colours, &theme.alpha);
+        let (_, _, label) = precision_chrome(Precision::Other, &kind, &theme.colours, &theme.alpha);
         assert_eq!(&*label, "call-site");
     }
 
@@ -1728,7 +1790,10 @@ mod tests {
     /// matching the exact keyword shape passes through untouched.
     #[test]
     fn strip_is_conservative_about_non_keyword_text() {
-        assert_eq!(strip_impl_keyword("implementation detail"), "implementation detail");
+        assert_eq!(
+            strip_impl_keyword("implementation detail"),
+            "implementation detail"
+        );
         // Unbalanced generics: leave it entirely alone rather than guess.
         assert_eq!(strip_impl_keyword("impl<'h Iterator"), "impl<'h Iterator");
         assert_eq!(strip_impl_keyword("Memchr"), "Memchr");
@@ -1765,7 +1830,10 @@ mod tests {
     fn wire_trait_label_is_preferred_over_parsing() {
         let row = fake_row("impl ? for memchr.Memchr", false, Some("Iterator"), 0);
         assert_eq!(row.primary.as_ref(), "Iterator");
-        assert_eq!(row.self_type.as_ref().map(|s| s.as_ref()), Some("memchr.Memchr"));
+        assert_eq!(
+            row.self_type.as_ref().map(|s| s.as_ref()),
+            Some("memchr.Memchr")
+        );
     }
 
     /// An inherent impl renders its type and no `for` clause.
@@ -1773,7 +1841,31 @@ mod tests {
     fn inherent_impl_row_has_no_tail() {
         let row = fake_row("impl<'h> memchr.memchr.Memchr", false, None, 0);
         assert_eq!(row.primary.as_ref(), "memchr.memchr.Memchr");
-        assert!(row.self_type.is_none(), "inherent impl must not render a `for` clause");
+        assert!(
+            row.self_type.is_none(),
+            "inherent impl must not render a `for` clause"
+        );
+    }
+
+    /// A declared implementation keeps its copyable source target in the
+    /// projected row. The render path exposes that value through the dedicated
+    /// source affordance instead of burying it in the row's navigation click.
+    #[test]
+    fn implementation_source_target_survives_projection() {
+        use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName, SymbolKey};
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg"));
+        let key = SymbolKey::new(lineage, IntroId::from_raw([1_u8; 32]));
+        let source = SharedString::from("src/lib.rs:12:4");
+        let row = ImplRowView::new(
+            key,
+            SharedString::from("impl Display for Thing"),
+            false,
+            Some(SharedString::from("Display")),
+            0,
+            Some(source.clone()),
+        );
+
+        assert_eq!(row.source.as_ref(), Some(&source));
     }
 
     // ── Blanket / variadic grouping ───────────────────────────────────────────
@@ -1793,6 +1885,7 @@ mod tests {
             is_blanket,
             trait_label.map(|t| SharedString::from(t.to_owned())),
             self_generic_count,
+            None,
         )
     }
 
@@ -1810,7 +1903,10 @@ mod tests {
         let (own, blanket): (Vec<_>, Vec<_>) = rows.iter().partition(|r| !r.is_blanket);
         assert_eq!(own.len(), 2, "own impls");
         assert_eq!(blanket.len(), 1, "blanket impls");
-        assert!(blanket[0].label.contains("ToString"), "blanket is the ToString impl");
+        assert!(
+            blanket[0].label.contains("ToString"),
+            "blanket is the ToString impl"
+        );
 
         // Also verify build_flat places the subheading between own and blanket.
         let own_views: Vec<ImplRowView> = own.iter().map(|r| (*r).clone()).collect();
@@ -1830,22 +1926,34 @@ mod tests {
     fn variadic_family_detected_by_generic_count_run() {
         // Build 16 rows: impl Handler for F<T1>, F<T1,T2>, … F<T1,…,T16>
         let rows: Vec<ImplRowView> = (1_u32..=16)
-            .map(|n| fake_row(
-                &["impl Handler for F<", &"T,".repeat(n as usize), ">"].concat(),
-                false,
-                Some("Handler"),
-                n,
-            ))
+            .map(|n| {
+                fake_row(
+                    &["impl Handler for F<", &"T,".repeat(n as usize), ">"].concat(),
+                    false,
+                    Some("Handler"),
+                    n,
+                )
+            })
             .collect();
 
         // All 16 counts must be consecutive.
         let counts: Vec<u32> = rows.iter().map(|r| r.self_generic_count).collect();
-        assert!(rows.len() >= 3, "need at least 3 members to trigger family collapse");
-        assert!(is_consecutive_run(&counts), "all arities must be consecutive");
+        assert!(
+            rows.len() >= 3,
+            "need at least 3 members to trigger family collapse"
+        );
+        assert!(
+            is_consecutive_run(&counts),
+            "all arities must be consecutive"
+        );
 
         // apply_variadic_grouping must collapse these to a single summary row.
         let collapsed = apply_variadic_grouping(rows);
-        assert_eq!(collapsed.len(), 1, "16-member consecutive family must collapse to 1");
+        assert_eq!(
+            collapsed.len(),
+            1,
+            "16-member consecutive family must collapse to 1"
+        );
         assert!(
             collapsed[0].label.contains("arities 1\u{2013}16")
                 || collapsed[0].label.contains("arities 1-16"),
@@ -1871,7 +1979,11 @@ mod tests {
             .map(|&n| fake_row("impl Handler for F", false, Some("Handler"), n))
             .collect();
         let result = apply_variadic_grouping(rows);
-        assert_eq!(result.len(), 3, "non-consecutive arities must not be collapsed");
+        assert_eq!(
+            result.len(),
+            3,
+            "non-consecutive arities must not be collapsed"
+        );
     }
 
     /// A family of fewer than 3 members must not be collapsed — two identical-
@@ -1891,6 +2003,10 @@ mod tests {
             .map(|&n| fake_row("impl Handler for F", false, Some("Handler"), n))
             .collect();
         let result = apply_variadic_grouping(rows);
-        assert_eq!(result.len(), 2, "two-member run must pass through unchanged");
+        assert_eq!(
+            result.len(),
+            2,
+            "two-member run must pass through unchanged"
+        );
     }
 }

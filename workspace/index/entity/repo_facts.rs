@@ -2,8 +2,8 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "repo_facts")]
@@ -26,4 +26,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type RepoFactsRow = Model;
 
 pub const TABLE: &str = "repo_facts";
-

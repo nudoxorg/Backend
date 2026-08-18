@@ -118,3 +118,56 @@ fn invalid_utf8_yields_nothing() {
     let body = [0xff, 0xfe, 0x00];
     assert!(parse_ls_remote(&body).is_empty());
 }
+
+// ── Hostile-input hardening ───────────────────────────────────────────────
+
+#[test]
+fn unicode_tag_name_survives() {
+    let body = "dddddddddddddddddddddddddddddddddddddddd\trefs/tags/日本語タグ\n";
+    let out = parse(body);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].0, "日本語タグ");
+}
+
+#[test]
+fn enormous_number_of_tags_no_panic() {
+    use std::fmt::Write as _;
+    let mut body = String::new();
+    for i in 0..30_000 {
+        let _ = writeln!(body, "{i:040x}\trefs/tags/v0.0.{i}");
+    }
+    let out = parse_ls_remote(body.as_bytes());
+    assert_eq!(out.len(), 30_000);
+}
+
+#[test]
+fn empty_object_id_line_skipped_no_panic() {
+    // Tab present but the object-id side is blank.
+    let body = "\trefs/tags/v1.0.0\n";
+    assert!(parse(body).is_empty());
+}
+
+#[test]
+fn empty_reference_after_tab_no_panic() {
+    let body = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t\n";
+    assert!(parse(body).is_empty());
+}
+
+#[test]
+fn many_tabs_on_one_line_no_panic() {
+    let body = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/v1\t\t\t\textra\n";
+    // split_once only splits on the FIRST tab, so the reference retains the
+    // trailing tabs — it just won't match a clean tag name comparison; the
+    // important property is no panic, and it's still recognised as a tag
+    // ref (arbitrary trailing content included verbatim in the "tag name").
+    let out = parse_ls_remote(body.as_bytes());
+    assert_eq!(out.len(), 1);
+}
+
+#[test]
+fn enormous_single_tag_name_no_panic() {
+    let huge_name = "v".to_string() + &"0.".repeat(500_000) + "1";
+    let body = format!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/tags/{huge_name}\n");
+    let out = parse_ls_remote(body.as_bytes());
+    assert_eq!(out.len(), 1);
+}

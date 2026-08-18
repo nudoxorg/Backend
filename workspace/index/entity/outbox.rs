@@ -2,10 +2,10 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
-use crate::ids::GenerationStamp;
 use crate::enums::OutboxOperation;
 use crate::enums::SinkKind;
+use crate::ids::GenerationStamp;
+use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -29,4 +29,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type OutboxRow = Model;
 
 pub const TABLE: &str = "outbox";
-

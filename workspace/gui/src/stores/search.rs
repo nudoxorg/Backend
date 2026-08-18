@@ -42,8 +42,8 @@ use crate::bridge::generation::GenSource;
 use crate::bridge::handle::StreamHandle as BridgeStreamHandle;
 use crate::stores::events::{OpenDisposition, OpenSymbol};
 use crate::stores::search_model::{
-    Cursor, PreparedRow, RemoteFailure, RemoteStatus, SearchMode, SearchSnapshot, ScopeChip,
-    SectionData, SectionStatus, SECTION_COUNT,
+    Cursor, PreparedRow, RemoteFailure, RemoteStatus, SECTION_COUNT, ScopeChip, SearchMode,
+    SearchSnapshot, SectionData, SectionStatus,
 };
 use heart::client::http::ClientError;
 use heart::stream::WireError;
@@ -69,8 +69,8 @@ const NUDOX_SERVER_URL_DEFAULT: &str = "http://127.0.0.1:8080";
 /// URL and constructs a `reqwest::Client` — no I/O — so this is synchronous
 /// and safe to call from [`SearchStore::new`].
 fn remote_client_from_env() -> Option<NudoxClient> {
-    let base = std::env::var(NUDOX_SERVER_URL_ENV)
-        .unwrap_or_else(|_| NUDOX_SERVER_URL_DEFAULT.to_owned());
+    let base =
+        std::env::var(NUDOX_SERVER_URL_ENV).unwrap_or_else(|_| NUDOX_SERVER_URL_DEFAULT.to_owned());
     NudoxClient::connect(&base).ok()
 }
 
@@ -228,6 +228,7 @@ impl SearchEngine for EngineHandle {
         let query = SearchQuery {
             text: text.to_owned(),
             kinds,
+            exclude_kinds: Vec::new(),
             limit: 50,
             // Empty means "every loaded package", which is what the omni-search
             // has always done — the field exists because MCP's `search_symbols`
@@ -309,7 +310,11 @@ impl<E: SearchEngine> SearchStore<E> {
             input: SharedString::default(),
             scope: SearchScope::default(),
             mode: SearchMode::default(),
-            sections: [SectionBuf::empty(), SectionBuf::empty(), SectionBuf::empty()],
+            sections: [
+                SectionBuf::empty(),
+                SectionBuf::empty(),
+                SectionBuf::empty(),
+            ],
             gens: GenSource::new(),
             generation: 0,
             stream_handle: None,
@@ -341,12 +346,9 @@ impl<E: SearchEngine> SearchStore<E> {
         }
         self.gen_arrival = None;
         // 3. Open the stream — dropping the previous handle cancels it.
-        let (handle, rx) = self.engine.search(
-            &self.input,
-            &self.scope,
-            self.mode,
-            generation,
-        );
+        let (handle, rx) = self
+            .engine
+            .search(&self.input, &self.scope, self.mode, generation);
         // 4. Assign handle — drops+cancels predecessor.
         self.stream_handle = Some(handle);
         // 5. Spin up the drain loop (owned, not detached — LD-18).
@@ -414,7 +416,33 @@ impl<E: SearchEngine> SearchStore<E> {
                 page: heart::query::PageSpecification::default(),
                 query_id: None,
             };
-            let outcome = client.search(&query).await;
+            // `NudoxClient::search` is async **reqwest**, and reqwest's futures
+            // panic with "there is no reactor running, must be called from the
+            // context of a Tokio 1.x runtime" unless they are polled inside a
+            // Tokio runtime. GPUI's executor is not one, so awaiting the future
+            // directly here aborted the app the first time this button was ever
+            // pressed against a live server — the escape hatch had the right URL
+            // and a dead code path (LR-9's "lindsey links no async runtime"
+            // describes the *executor*; reqwest, and therefore Tokio, has been
+            // in the graph since `heart`'s `client` feature was switched on).
+            //
+            // Rather than adopt Tokio as the app's runtime, the request is
+            // driven on a background thread that owns a minimal current-thread
+            // runtime for exactly the length of one request. The UI thread still
+            // only ever sees the resolved value, through the same `store.update`
+            // below.
+            let outcome = cx
+                .background_executor()
+                .spawn(async move {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(RemoteDriveFailure::Runtime)?;
+                    runtime
+                        .block_on(client.search(&query))
+                        .map_err(RemoteDriveFailure::Client)
+                })
+                .await;
             let elapsed_ms = started.elapsed().as_millis() as u64;
             let _ = store.update(cx, |store, cx| {
                 store.remote_status = match outcome {
@@ -429,10 +457,19 @@ impl<E: SearchEngine> SearchStore<E> {
                             rows,
                         }
                     }
-                    Err(error) => {
+                    Err(RemoteDriveFailure::Client(error)) => {
                         let (kind, detail) = classify_remote_error(&error);
                         RemoteStatus::Unreachable { kind, detail }
                     }
+                    // The request never left this process. Reported as its own
+                    // caption rather than folded into `Offline`, which would
+                    // blame a server that was never contacted.
+                    Err(RemoteDriveFailure::Runtime(error)) => RemoteStatus::Unreachable {
+                        kind: RemoteFailure::Offline,
+                        detail: SharedString::from(format!(
+                            "could not start a runtime for the request: {error}"
+                        )),
+                    },
                 };
                 cx.notify();
             });
@@ -443,7 +480,11 @@ impl<E: SearchEngine> SearchStore<E> {
 
     fn apply_search_event(&mut self, ev: SearchEvent, cx: &mut Context<Self>) {
         match ev {
-            SearchEvent::Section { generation, section, rows } => {
+            SearchEvent::Section {
+                generation,
+                section,
+                rows,
+            } => {
                 // Stale guard: drop events from superseded queries.
                 if generation.0 != self.generation {
                     return;
@@ -464,7 +505,11 @@ impl<E: SearchEngine> SearchStore<E> {
                 cx.notify();
             }
 
-            SearchEvent::Merge { generation, section, rows } => {
+            SearchEvent::Merge {
+                generation,
+                section,
+                rows,
+            } => {
                 if generation.0 != self.generation {
                     return;
                 }
@@ -474,8 +519,7 @@ impl<E: SearchEngine> SearchStore<E> {
                 let idx = section.0 as usize;
                 if idx < SECTION_COUNT {
                     // Append prepared rows without clearing earlier sections (LD-15).
-                    let mut combined: Vec<PreparedRow> =
-                        self.sections[idx].rows.to_vec();
+                    let mut combined: Vec<PreparedRow> = self.sections[idx].rows.to_vec();
                     let new_rows = PreparedRow::prepare(&rows);
                     combined.extend_from_slice(&new_rows);
                     self.sections[idx].rows = Arc::from(combined.as_slice());
@@ -493,7 +537,11 @@ impl<E: SearchEngine> SearchStore<E> {
             // exist and there may never be a `Section` event worth waiting for
             // — and until it lands the section is still showing `Loading`,
             // i.e. a shimmer promising rows that are not coming.
-            SearchEvent::SectionState { generation, section, state } => {
+            SearchEvent::SectionState {
+                generation,
+                section,
+                state,
+            } => {
                 if generation.0 != self.generation {
                     return;
                 }
@@ -507,7 +555,11 @@ impl<E: SearchEngine> SearchStore<E> {
                 cx.notify();
             }
 
-            SearchEvent::Latency { generation, section, elapsed } => {
+            SearchEvent::Latency {
+                generation,
+                section,
+                elapsed,
+            } => {
                 if generation.0 != self.generation {
                     return;
                 }
@@ -676,9 +728,7 @@ impl<E: SearchEngine> SearchStore<E> {
                 // Nothing selected: commit first row of first populated section.
                 let counts = self.row_counts();
                 match first_populated_from(&counts, 0) {
-                    Some(s) if !self.sections[s].rows.is_empty() => {
-                        Cursor { section: s, row: 0 }
-                    }
+                    Some(s) if !self.sections[s].rows.is_empty() => Cursor { section: s, row: 0 },
                     _ => return,
                 }
             }
@@ -763,6 +813,20 @@ impl<E: SearchEngine> gpui::EventEmitter<OpenSymbol> for SearchStore<E> {}
 /// Both `ClientError` and `WireError` are `#[non_exhaustive]`, so the `_` arms
 /// fold any future class into the most conservative decision rather than failing
 /// to compile.
+/// Why one remote round-trip did not produce hits.
+///
+/// Two genuinely different failures that must not be reported as one: the
+/// server answered badly ([`Self::Client`]), or the request never left this
+/// process because no Tokio runtime could be built to drive reqwest
+/// ([`Self::Runtime`]). Collapsing the second into "offline" would blame a
+/// server nothing ever contacted.
+enum RemoteDriveFailure {
+    /// The request was made and the client rejected the outcome.
+    Client(ClientError),
+    /// A Tokio runtime for this request could not be constructed.
+    Runtime(std::io::Error),
+}
+
 fn classify_remote_error(error: &ClientError) -> (RemoteFailure, SharedString) {
     let kind = match error {
         // No route to the server: connect refused, timeout, DNS, or an unusable
@@ -829,7 +893,10 @@ fn step_down(current: Option<Cursor>, counts: &[usize; SECTION_COUNT]) -> Option
     };
     let cursor = clamp_cursor_inner(cursor, counts)?;
     if cursor.row + 1 < counts[cursor.section] {
-        Some(Cursor { section: cursor.section, row: cursor.row + 1 })
+        Some(Cursor {
+            section: cursor.section,
+            row: cursor.row + 1,
+        })
     } else {
         match first_populated_from(counts, cursor.section + 1) {
             Some(s) => Some(Cursor { section: s, row: 0 }),
@@ -840,17 +907,25 @@ fn step_down(current: Option<Cursor>, counts: &[usize; SECTION_COUNT]) -> Option
 
 fn step_up(current: Option<Cursor>, counts: &[usize; SECTION_COUNT]) -> Option<Cursor> {
     let Some(cursor) = current else {
-        return last_populated_before(counts, SECTION_COUNT - 1)
-            .map(|s| Cursor { section: s, row: counts[s].saturating_sub(1) });
+        return last_populated_before(counts, SECTION_COUNT - 1).map(|s| Cursor {
+            section: s,
+            row: counts[s].saturating_sub(1),
+        });
     };
     let cursor = clamp_cursor_inner(cursor, counts)?;
     if cursor.row > 0 {
-        Some(Cursor { section: cursor.section, row: cursor.row - 1 })
+        Some(Cursor {
+            section: cursor.section,
+            row: cursor.row - 1,
+        })
     } else if cursor.section == 0 {
         Some(cursor)
     } else {
         match last_populated_before(counts, cursor.section - 1) {
-            Some(s) => Some(Cursor { section: s, row: counts[s].saturating_sub(1) }),
+            Some(s) => Some(Cursor {
+                section: s,
+                row: counts[s].saturating_sub(1),
+            }),
             None => Some(cursor),
         }
     }
@@ -944,9 +1019,21 @@ mod tests {
         store.sections[0].rows = prepared;
         store.sections[0].status = SectionStatus::Ready;
 
-        assert_eq!(store.sections[1].rows.len(), 1, "Type section must survive Name arrival");
-        assert_eq!(store.sections[0].rows.len(), 1, "Name section has the new row");
-        assert_eq!(store.sections[2].rows.len(), 0, "Semantic section untouched");
+        assert_eq!(
+            store.sections[1].rows.len(),
+            1,
+            "Type section must survive Name arrival"
+        );
+        assert_eq!(
+            store.sections[0].rows.len(),
+            1,
+            "Name section has the new row"
+        );
+        assert_eq!(
+            store.sections[2].rows.len(),
+            0,
+            "Semantic section untouched"
+        );
     }
 
     /// A Merge event appends to target section only (LD-15).

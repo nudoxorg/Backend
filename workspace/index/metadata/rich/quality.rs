@@ -58,11 +58,7 @@ fn temporal_score(input: &ExtractionInput<'_>) -> Option<Score> {
 
     // Maturity: multi-release already partial; light signal here for temporal axis.
     if let Some(release_count) = input.release_count {
-        t.frac(
-            "maturity",
-            10,
-            (f64::from(release_count) / 10.0).min(1.0),
-        );
+        t.frac("maturity", 10, (f64::from(release_count) / 10.0).min(1.0));
     }
 
     // Deadness demotion: very old last release AND low-ish release count.

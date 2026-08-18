@@ -45,10 +45,10 @@ pub(crate) fn collect_impls(
     pkg: &crate::store::package::PackageView,
     lineage: nudox_ir::change::PackageLineageId,
 ) -> Vec<ImplRow> {
+    use crate::store::package::TypePosition;
     use nudox_ir::change::StableRef;
     use nudox_ir::kind::Kind;
     use nudox_ir::kinds::Type;
-    use crate::store::package::TypePosition;
 
     let view = pkg.view();
 

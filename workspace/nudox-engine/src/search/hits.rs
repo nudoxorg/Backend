@@ -49,15 +49,21 @@ pub(crate) struct Candidate {
 /// (Rust's root module is named after the crate), so prefixing
 /// unconditionally would yield `axum::axum.routing.…` — prepend only when
 /// the first segment is not already the package name.
+///
+/// Adjacent identical segments are collapsed first (same rule as
+/// [`signature::collapse_repeated_segments`]), so a path like
+/// `memchr.memchr.memchr.Memchr` displays as `memchr.Memchr` rather than
+/// repeating the crate root.
 pub(crate) fn qualified_display_name(
     indexes: &crate::store::package::PackageIndexes,
     intro: nudox_ir::change::IntroId,
     leaf: &str,
     pkg_name: &str,
 ) -> SharedStr {
-    let base = indexes
+    let raw = indexes
         .path_of(intro)
         .map_or_else(|| leaf.to_owned(), |p| p.as_ref().to_owned());
+    let base = signature::collapse_repeated_segments(&raw).join(".");
     if base.split(['.', ':']).next() == Some(pkg_name) {
         SharedStr::from(base)
     } else {
@@ -84,11 +90,7 @@ pub(crate) fn finalize_candidates(candidates: Vec<Candidate>) -> Vec<HitRow> {
     candidates
         .into_iter()
         .map(|mut c| {
-            let collides = leaf_counts
-                .get(&c.row.display_name)
-                .copied()
-                .unwrap_or(0)
-                > 1;
+            let collides = leaf_counts.get(&c.row.display_name).copied().unwrap_or(0) > 1;
             if collides {
                 c.row.display_name = c.qualified;
             }
@@ -181,6 +183,23 @@ fn kind_weight(kind: KindDiscriminant) -> f32 {
 /// factors. See the module docs.
 pub(crate) fn score_of(relevance: f32, visibility: Visibility, kind: KindDiscriminant) -> f32 {
     relevance * visibility_weight(visibility) * kind_weight(kind)
+}
+
+/// Whether `kind` is a member: addressable only through an owner, per
+/// `kind_weight` above (a field, a variant, a parameter — everything that
+/// function scores below `1.0`).
+///
+/// Derived from `kind_weight` rather than re-listing the same variants, so
+/// the two questions this file and `mcp::tools` each ask about a kind —
+/// "how far down should this rank" and "should a caller have to name this to
+/// see it" — stay answered by one exhaustive match instead of two lists that
+/// can drift apart when a language contributes a new kind.
+///
+/// `mcp::tools::default_search_kinds` uses this to hold members out of
+/// `search`'s default page (see that function's doc comment for why a
+/// discount on score is not the same fix as a default scope).
+pub(crate) fn is_member_kind(kind: KindDiscriminant) -> bool {
+    kind_weight(kind) < 1.0
 }
 
 /// The **total** order search results are presented in.
@@ -397,7 +416,10 @@ fn collect_signature_hits(
                 Some(previous) => previous.intersection(&this_facet).copied().collect(),
             });
             // Nothing left to intersect with — stop probing this package.
-            if owners.as_ref().is_some_and(std::collections::BTreeSet::is_empty) {
+            if owners
+                .as_ref()
+                .is_some_and(std::collections::BTreeSet::is_empty)
+            {
                 break;
             }
         }
@@ -559,3 +581,47 @@ fn keyword_to_kinds(lower: &str) -> Vec<KindDiscriminant> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use nudox_ir::change::IntroId;
+
+    use crate::store::index::{AliasIndex, NameIndex, PostingList};
+    use crate::store::package::PackageIndexes;
+
+    use super::qualified_display_name;
+
+    /// docs/ISSUES.md F1: `qualified_display_name` returns `path_of` as-is, so
+    /// a crate whose root module shares the crate name (`memchr::memchr::Memchr`)
+    /// renders `memchr.memchr.memchr.Memchr` in search hits. Adjacent identical
+    /// segments must collapse — the same rule signature rendering already
+    /// applies via `collapse_repeated_segments`.
+    #[test]
+    fn qualified_display_name_does_not_repeat_the_crate_root_segment() {
+        let intro = IntroId::from_raw([7u8; 32]);
+        let mut paths = HashMap::new();
+        paths.insert(intro, Arc::from("memchr.memchr.memchr.Memchr"));
+        let indexes = PackageIndexes {
+            by_name: NameIndex::new(),
+            by_kind: HashMap::new(),
+            usages: PostingList::empty(),
+            type_refs: PostingList::empty(),
+            paths,
+            by_alias: AliasIndex::new(),
+            // This fixture holds no occurrences, so `false` is the truthful
+            // value rather than a placeholder. Nothing in display-name
+            // rendering reads it.
+            occurrences_recorded: false,
+            // Same: no type refs were built for this fixture, so an empty
+            // set is truthful, not a placeholder.
+            type_positions_recorded: std::collections::BTreeSet::new(),
+        };
+        let got = qualified_display_name(&indexes, intro, "Memchr", "memchr");
+        assert_eq!(
+            &*got, "memchr.Memchr",
+            "adjacent crate-name runs must collapse; got {got}"
+        );
+    }
+}

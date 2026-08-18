@@ -254,11 +254,11 @@ gpui::actions!(
 gpui::actions!(
     lindsey,
     [
-        /// Fit the entire graph into the visible viewport with animated pan+zoom (§18.4).
+        /// Fit the graph's visible nodes into the viewport.
         FitGraphToView,
-        /// Expand the neighbors of the currently selected graph node (§18.4).
+        /// Expand the selected graph node's neighbors.
         ExpandNeighbors,
-        /// Pin or unpin the selected graph node so force-layout ignores it (§18.4).
+        /// Pin or unpin the selected graph node.
         PinGraphNode,
     ]
 );
@@ -278,13 +278,13 @@ gpui::actions!(
 gpui::actions!(
     lindsey,
     [
-        /// Open a diff view comparing the current package against its previous version (§17/§22).
+        /// Show the difference between the selected package and its predecessor.
         DiffAgainstPrevious,
-        /// Collapse the selected module-tree node in the package browser (§17).
+        /// Collapse the selected package-tree node.
         CollapseTreeNode,
-        /// Expand the selected module-tree node in the package browser (§17).
+        /// Expand the selected package-tree node.
         ExpandTreeNode,
-        /// Switch keyboard focus between the module tree and the item table (§17).
+        /// Move keyboard focus between the package tree and item table.
         SwitchFocusTreeTable,
     ]
 );

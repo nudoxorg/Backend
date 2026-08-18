@@ -29,24 +29,24 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 
+use nudox_engine::store::{
+    package::{PackageView, Provenance},
+    source::{Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
-    entry::{Entry, Node, Symbol, Visibility},
+    entry::{ByteSpan, Entry, LineCol, Node, SourceFile, SourceLocation, Symbol, Visibility},
     index::{RawRef, Ref},
     kind::Kind,
     kinds::{Impl, ImplFlags, Module, Record, Type},
     view::IrView,
     vocab::{Confidence, Occurrence, ReferenceKind, RelSpan},
 };
-use nudox_engine::store::{
-    package::{PackageView, Provenance},
-    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error},
-};
 
 use nudox_engine::{
     Engine, EngineConfig,
-    wire::{DocEvent, Gen, ImplsPage, RefsPage},
+    wire::{DocEvent, Gen, ImplsPage, RefsPage, RenderSection},
 };
 
 // ---------------------------------------------------------------------------
@@ -102,6 +102,39 @@ fn inherent_impl_entry(name: &str, self_ty_intro: IntroId) -> Entry {
         blank_sym(name),
         Node::build(None::<RawRef>, []),
         Kind::Impl(impl_),
+    )
+}
+
+/// An impl whose producer supplied the complete typed source location.
+fn located_inherent_impl_entry(name: &str, self_ty_intro: IntroId) -> Entry {
+    let entry = inherent_impl_entry(name, self_ty_intro);
+    Entry::new_located(
+        entry.sym().clone(),
+        Node::build(None::<RawRef>, []),
+        match entry.kind().as_owned_kind() {
+            Some(Kind::Impl(impl_)) => Kind::Impl(impl_.clone()),
+            _ => unreachable!(),
+        },
+        SourceLocation::Declared {
+            file: SourceFile::new("src/router.rs").expect("relative source file"),
+            bytes: ByteSpan::new(120, 160).expect("non-empty source span"),
+            start: LineCol::from_zero_based(11, 2),
+            end: LineCol::from_zero_based(11, 42),
+        },
+    )
+}
+
+fn located_member_entry(name: &str) -> Entry {
+    Entry::new_located(
+        blank_sym(name),
+        Node::build(None::<RawRef>, []),
+        Kind::Function(nudox_ir::kinds::Function::builder().build()),
+        SourceLocation::Declared {
+            file: SourceFile::new("src/router.rs").expect("relative source file"),
+            bytes: ByteSpan::new(40, 75).expect("non-empty source span"),
+            start: LineCol::from_zero_based(3, 0),
+            end: LineCol::from_zero_based(3, 35),
+        },
     )
 }
 
@@ -337,7 +370,7 @@ async fn three_impls_all_appear_in_impls_events() {
     table.insert_live(intro(4), module_entry("Debug"), Some(intro(1)));
     table.insert_live(
         intro(5),
-        inherent_impl_entry("impl Router", intro(2)),
+        located_inherent_impl_entry("impl Router", intro(2)),
         Some(intro(1)),
     );
     table.insert_live(
@@ -350,12 +383,13 @@ async fn three_impls_all_appear_in_impls_events() {
         trait_impl_entry("impl Debug for Router", intro(2), intro(4)),
         Some(intro(1)),
     );
+    table.insert_live(intro(8), located_member_entry("route"), Some(intro(2)));
 
     let view = IrView::with_package(lid.clone(), table);
     let pkg = Arc::new(PackageView::build(view, Provenance::TrustedLocal));
 
     let engine = start_and_settle(lid.clone(), pkg).await;
-    let key = StableRef::new(lid, intro(2)); // open Router
+    let key = StableRef::new(lid.clone(), intro(2)); // open Router
     let events = drain(&engine, key, 1).await;
 
     let pages = collect_impls_pages(&events);
@@ -374,6 +408,30 @@ async fn three_impls_all_appear_in_impls_events() {
             assert!(!row.label.is_empty(), "impl row label must not be empty");
         }
     }
+
+    let located = pages
+        .iter()
+        .flat_map(|page| page.impls.iter())
+        .find(|row| row.label.contains("impl Router"))
+        .expect("located impl row must be emitted");
+    assert_eq!(
+        located.source.jump_target().as_deref(),
+        Some("src/router.rs:12:3"),
+        "impl rows must preserve the producer's package-relative line location"
+    );
+
+    let member_events = drain(&engine, StableRef::new(lid, intro(2)), 2).await;
+    let member = member_events.iter().find_map(|event| match event {
+        DocEvent::Section(RenderSection::Members { entries, .. }) => {
+            entries.iter().find(|row| &*row.name == "route")
+        }
+        _ => None,
+    });
+    assert_eq!(
+        member.and_then(|row| row.source.jump_target()),
+        Some("src/router.rs:4:1".to_owned()),
+        "member rows must preserve their package-relative line location"
+    );
 }
 
 /// Opening a symbol with zero impls must still emit exactly one `Impls` page

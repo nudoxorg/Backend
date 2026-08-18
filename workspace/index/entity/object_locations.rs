@@ -2,10 +2,10 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::enums::LocationStatus;
 use crate::ids::ObjectPackHash;
 use crate::ids::StoreId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "object_locations")]
@@ -26,4 +26,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type ObjectLocationRow = Model;
 
 pub const TABLE: &str = "object_locations";
-

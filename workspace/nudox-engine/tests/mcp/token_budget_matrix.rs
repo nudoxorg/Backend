@@ -21,18 +21,17 @@ use std::{future::Future, path::Path, time::Duration};
 use heart::cost::{estimated_text_tokens, measured_text};
 use nudox_engine::{
     Engine, EngineConfig,
-    wire::KindTag,
     mcp::{
         AccountGate, NudoxMcpServer, PACKAGE_URI_PREFIX, SCHEMA_URI, SymbolKeyDto,
         key::PackageLineageDto,
         render_markdown,
         tools::{
-            DiffVersionsArgs, FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GetSymbolsArgs,
-            GraphQueryArgs, GraphSchemaArgs, IndexPackageArgs, ListPackagesArgs, ListVersionsArgs,
-            SearchSymbolsArgs, SelectVersionArgs, SemanticHitRow, SemanticSearchArgs,
-            SemanticSearchResult, SemanticStatus, SymbolFormat,
+            DiffVersionsArgs, GraphQueryArgs, GraphSchemaArgs, IndexArgs, KeysArg,
+            PackagesArgs, ReadArgs, RefsArgs, RefsDirection, SearchSymbolsArgs, SelectVersionArgs,
+            SemanticHitRow, SemanticSearchResult, SemanticStatus, SymbolFormat,
         },
     },
+    wire::KindTag,
 };
 use rmcp::{
     ErrorData,
@@ -203,7 +202,7 @@ fn search_key(
             .hits
             .first()
             .unwrap_or_else(|| panic!("search for {query:?} returned no hits"));
-        SymbolKeyDto::from_wire(&hit.key)
+        SymbolKeyDto::from_wire(&hit.hit.key)
     })
 }
 
@@ -213,11 +212,11 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     wait_for_packages(&runtime, &server);
 
     // Discovery and package context.
-    let packages_args = Parameters(ListPackagesArgs::default());
+    let packages_args = Parameters(PackagesArgs::default());
     let packages = measure_call(
         &runtime,
         "mcp/both/list_packages",
-        server.list_packages(packages_args),
+        server.packages(packages_args),
     );
     assert!(packages.contains(RICH));
     assert!(packages.contains(PERF));
@@ -269,15 +268,14 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let rich_search = measure_call(
         &runtime,
         "mcp/both/rich/search_symbols",
-        server.search_symbols(Parameters(rich_search_args.clone())),
+        server.search(Parameters(rich_search_args.clone())),
     );
     assert!(rich_search.contains("Point"));
-    assert!(rich_search.contains("| declaration |"));
     assert!(!rich_search.contains("| kind |"));
     assert!(!rich_search.contains("| trust |"));
     assert_compact("mcp/both/rich/search_symbols", &rich_search, &rich_typed);
     let rich_repeat = runtime
-        .block_on(server.search_symbols(Parameters(rich_search_args)))
+        .block_on(server.search(Parameters(rich_search_args)))
         .map(text_result)
         .expect("repeat rich search must work");
     assert_eq!(
@@ -300,7 +298,7 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let perf_first = measure_call(
         &runtime,
         "mcp/both/perf/search_symbols/page_1",
-        server.search_symbols(Parameters(perf_first_args)),
+        server.search(Parameters(perf_first_args)),
     );
     assert!(
         perf_first.contains("next:"),
@@ -310,7 +308,7 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let perf_second = measure_call(
         &runtime,
         "mcp/both/perf/search_symbols/page_2",
-        server.search_symbols(Parameters(SearchSymbolsArgs {
+        server.search(Parameters(SearchSymbolsArgs {
             query: "fn_".to_owned(),
             kinds: Some(vec!["Function".to_owned()]),
             packages: Some(vec![PERF.to_owned()]),
@@ -323,13 +321,13 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
         "pagination must advance the result"
     );
 
-    // Semantic search is still an honest, compact result when this default
-    // build has no embedder. This assertion prevents a missing model from
-    // being represented as an empty successful search.
+    // `search` is still an honest, compact result when this default build has
+    // no embedder: the merged tool's semantic-coverage signal is present
+    // rather than a missing model being represented as an empty search.
     let semantic = measure_call(
         &runtime,
         "mcp/both/rich/semantic_search/unavailable",
-        server.semantic_search(Parameters(SemanticSearchArgs {
+        server.search(Parameters(SearchSymbolsArgs {
             query: "format values as readable text".to_owned(),
             kinds: None,
             packages: Some(vec![RICH.to_owned()]),
@@ -337,7 +335,7 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
             cursor: None,
         })),
     );
-    assert!(semantic.contains("status: unavailable"));
+    assert!(semantic.contains("~sem:unavailable"));
 
     // The live fixture build intentionally has no embedder, so also measure a
     // ready semantic projection directly. This pins the output contract for
@@ -370,8 +368,9 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let symbol = measure_call(
         &runtime,
         "mcp/both/rich/get_symbol/source",
-        server.get_symbol(Parameters(GetSymbolArgs {
-            key: point_key.clone(),
+        server.read(Parameters(ReadArgs {
+            keys: KeysArg(vec![point_key.clone()]),
+            format: SymbolFormat::Source,
         })),
     );
     assert!(symbol.contains(&point_key.0));
@@ -383,17 +382,20 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
         format_key.clone(),
         perf_key.clone(),
     ];
-    let batch_args = GetSymbolsArgs {
-        keys: batch_keys,
+    let batch_args = nudox_engine::mcp::tools::GetSymbolsArgs {
+        keys: batch_keys.clone(),
         format: SymbolFormat::Signature,
     };
     let batch_typed = runtime
-        .block_on(server.tools().do_get_symbols(batch_args.clone()))
+        .block_on(server.tools().do_get_symbols(batch_args))
         .expect("mixed rich/perf batch must work");
     let batch = measure_call(
         &runtime,
         "mcp/both/mixed/get_symbols/signature",
-        server.get_symbols(Parameters(batch_args)),
+        server.read(Parameters(ReadArgs {
+            keys: KeysArg(batch_keys),
+            format: SymbolFormat::Signature,
+        })),
     );
     assert!(batch.contains(RICH));
     assert!(batch.contains(PERF));
@@ -403,25 +405,27 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     assert_compact("mcp/both/mixed/get_symbols/signature", &batch, &batch_typed);
 
     // Relationship facets: reverse usages and owner-relative exact
-    // occurrences are distinct questions and both must retain their keys.
+    // occurrences are distinct questions (`refs`'s `direction`) and both
+    // must retain their keys.
     let usages = measure_call(
         &runtime,
         "mcp/both/rich/find_usages",
-        server.find_usages(Parameters(FindUsagesArgs {
+        server.refs(Parameters(RefsArgs {
             key: distance_key,
+            direction: RefsDirection::In,
             limit: Some(8),
             cursor: None,
         })),
     );
     assert!(usages.contains("format_point"));
-    assert!(usages.contains("declaration"));
     assert!(usages.contains("fn format_point"));
 
     let occurrences = measure_call(
         &runtime,
         "mcp/both/rich/get_occurrences",
-        server.get_occurrences(Parameters(GetOccurrencesArgs {
+        server.refs(Parameters(RefsArgs {
             key: format_key,
+            direction: RefsDirection::Out,
             limit: Some(8),
             cursor: None,
         })),
@@ -435,8 +439,8 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let versions = measure_call(
         &runtime,
         "mcp/both/rich/list_versions",
-        server.list_versions(Parameters(ListVersionsArgs {
-            package: PackageLineageDto(RICH.to_owned()),
+        server.packages(Parameters(PackagesArgs {
+            package: Some(PackageLineageDto(RICH.to_owned())),
         })),
     );
     assert!(versions.contains("0.1.0"));
@@ -454,7 +458,7 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let diff = measure_call(
         &runtime,
         "mcp/both/rich/diff_versions/not_loaded",
-        server.diff_versions(Parameters(DiffVersionsArgs {
+        server.diff(Parameters(DiffVersionsArgs {
             package: PackageLineageDto(RICH.to_owned()),
             from_version: "0.1.0".to_owned(),
             to_version: "9.9.9".to_owned(),
@@ -469,14 +473,14 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     let schema = measure_call(
         &runtime,
         "mcp/both/graph_schema",
-        server.graph_schema(Parameters(GraphSchemaArgs::default())),
+        server.schema(Parameters(GraphSchemaArgs::default())),
     );
     assert!(schema.contains("type RootSchemaQuery"));
 
     let graph = measure_call(
         &runtime,
         "mcp/both/mixed/graph_query",
-        server.graph_query(Parameters(GraphQueryArgs {
+        server.graph(Parameters(GraphQueryArgs {
             query: "{ Symbols { key @output signature @output kind @output name @output path @output } }"
                 .to_owned(),
             args: None,
@@ -496,29 +500,42 @@ fn every_mcp_facet_has_compact_markdown_measurements_across_contexts() {
     // exercising its malformed-input error through the server and cover the
     // long-running state with the same canonical formatter used by the live
     // result. The latter is important: progress output is agent context too.
-    let index_error = runtime
-        .block_on(server.index_package(Parameters(IndexPackageArgs {
-            purl: "not-a-package-url".to_owned(),
+    // `index` takes a batch, so a malformed target is no longer an error for
+    // the whole call — it is one `failed` row beside whatever else landed.
+    // That is the point of the three-list result: five targets where the third
+    // is misspelled must not discard the two that already cost a fetch and a
+    // producer run. What the caller must still get is the bad target named,
+    // which is what this asserts.
+    let index_result = runtime
+        .block_on(server.index(Parameters(IndexArgs {
+            targets: vec!["not-a-package-url".to_owned()],
+            dependencies: false,
+            depth: None,
             wait_seconds: Some(0),
         })))
-        .expect_err("malformed package URL must be rejected");
-    let index_error_debug = format!("{index_error:?}");
+        .expect("a batch whose only target is malformed is still a result");
+    let index_debug = format!("{index_result:?}");
     assert!(
-        index_error_debug.contains("Index") || index_error_debug.contains("purl"),
-        "index error must retain its typed cause: {index_error_debug}"
+        index_debug.contains("not-a-package-url"),
+        "the failed row must echo the target verbatim, or the caller cannot \
+         tell which of its targets to correct: {index_debug}"
     );
 
-    let running = nudox_engine::mcp::tools::IndexPackageResult::Running {
-        purl: "pkg:cargo/example@1.2.3".to_owned(),
-        stage: "downloading".to_owned(),
-        received_bytes: Some(512),
-        total_bytes: Some(1024),
-        elapsed_seconds: 3,
-        joined_existing_job: true,
+    let running = nudox_engine::mcp::tools::IndexResult {
+        indexed: Vec::new(),
+        running: vec![nudox_engine::mcp::tools::RunningTarget {
+            target: "pkg:cargo/example@1.2.3".to_owned(),
+            stage: "downloading".to_owned(),
+            joined_existing_job: true,
+            requested: true,
+        }],
+        failed: Vec::new(),
+        not_scanned: Vec::new(),
     };
-    let running = measure_text_variant(&runtime, "mcp/both/index_package/running", &running);
-    assert!(running.contains("Index running"));
-    assert!(running.contains("512/1024 B"));
+    let running = measure_text_variant(&runtime, "mcp/both/index/running", &running);
+    assert!(running.contains("Still running"));
+    assert!(running.contains("pkg:cargo/example@1.2.3"));
+    assert!(running.contains("downloading"));
 }
 
 fn measure_text_variant<T: nudox_engine::mcp::MarkdownResult>(

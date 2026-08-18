@@ -16,12 +16,12 @@
 
 use std::{num::NonZeroU32, sync::Arc, sync::Mutex, time::Duration};
 
+use crate::scratch::{
+    ScratchStore,
+    jobs::{JobRow, JobState},
+};
 use chrono::{DateTime, TimeZone, Utc};
 use heart::{FailureKind, PackageId, ResolutionState};
-use crate::scratch::{
-	jobs::{JobRow, JobState},
-	ScratchStore,
-};
 
 use crate::{error::QueueError, schema::codec};
 
@@ -32,25 +32,25 @@ const INDEX_JOB_KIND: &str = "index_package";
 /// One unit of pipeline work: index this package.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Job {
-	/// The stable job id (row identity, distinct from the package it targets).
-	pub id: JobId,
+    /// The stable job id (row identity, distinct from the package it targets).
+    pub id: JobId,
 
-	/// The package to index.
-	pub package: PackageId,
+    /// The package to index.
+    pub package: PackageId,
 
-	/// The package's current lifecycle state (mirrors the global index; carried
-	/// on the job so a worker needn't re-read it to resume).
-	pub state: ResolutionState,
+    /// The package's current lifecycle state (mirrors the global index; carried
+    /// on the job so a worker needn't re-read it to resume).
+    pub state: ResolutionState,
 
-	/// How many times this job has been attempted.
-	pub attempts: u32,
+    /// How many times this job has been attempted.
+    pub attempts: u32,
 
-	/// When the job was first enqueued.
-	pub enqueued_at: DateTime<Utc>,
+    /// When the job was first enqueued.
+    pub enqueued_at: DateTime<Utc>,
 
-	/// The lease deadline: while set and in the future, the job is owned by a
-	/// worker and invisible to `dequeue_batch`. `None` when idle.
-	pub lease_until: Option<DateTime<Utc>>,
+    /// The lease deadline: while set and in the future, the job is owned by a
+    /// worker and invisible to `dequeue_batch`. `None` when idle.
+    pub lease_until: Option<DateTime<Utc>>,
 }
 
 /// A compile-time witness that a job was leased by THIS worker **at dequeue
@@ -84,43 +84,57 @@ pub struct Job {
 /// leased" unrepresentable, not "settle a job whose lease you already lost".
 #[derive(Debug)]
 pub struct LeasedJob {
-	/// The underlying job row.
-	job: Job,
-	/// The lease deadline as stamped at dequeue time (informational only). The
-	/// scratch `claims` row is the authoritative source — this snapshot lets a
-	/// caller cheaply notice a lease that has *already* lapsed locally, but it can
-	/// go stale: only the claim re-check on the settling operation proves the
-	/// lease still held.
-	lease_until: DateTime<Utc>,
+    /// The underlying job row.
+    job: Job,
+    /// The lease deadline as stamped at dequeue time (informational only). The
+    /// scratch `claims` row is the authoritative source — this snapshot lets a
+    /// caller cheaply notice a lease that has *already* lapsed locally, but it can
+    /// go stale: only the claim re-check on the settling operation proves the
+    /// lease still held.
+    lease_until: DateTime<Utc>,
 }
 
 impl LeasedJob {
-	/// The underlying job (immutable reference).
-	pub fn job(&self) -> &Job { &self.job }
+    /// The underlying job (immutable reference).
+    pub fn job(&self) -> &Job {
+        &self.job
+    }
 
-	/// The stable job id.
-	pub fn id(&self) -> JobId { self.job.id }
+    /// The stable job id.
+    pub fn id(&self) -> JobId {
+        self.job.id
+    }
 
-	/// The package this job targets.
-	pub fn package(&self) -> PackageId { self.job.package }
+    /// The package this job targets.
+    pub fn package(&self) -> PackageId {
+        self.job.package
+    }
 
-	/// The current [`ResolutionState`] as decoded from the row at dequeue time.
-	pub fn state(&self) -> &ResolutionState { &self.job.state }
+    /// The current [`ResolutionState`] as decoded from the row at dequeue time.
+    pub fn state(&self) -> &ResolutionState {
+        &self.job.state
+    }
 
-	/// How many times this job has been attempted (includes the current attempt).
-	pub fn attempts(&self) -> u32 { self.job.attempts }
+    /// How many times this job has been attempted (includes the current attempt).
+    pub fn attempts(&self) -> u32 {
+        self.job.attempts
+    }
 
-	/// The lease deadline as stamped by `dequeue_batch` at dequeue time. This is
-	/// a local snapshot, not a live claim: it can lapse (and the row be
-	/// reclaimed) without this value changing. Treat it as a cheap hint for
-	/// "should I even bother heartbeating?"; the authoritative check is the
-	/// claim re-check on `complete`/`fail`/`renew_lease`.
-	pub fn lease_until(&self) -> DateTime<Utc> { self.lease_until }
+    /// The lease deadline as stamped by `dequeue_batch` at dequeue time. This is
+    /// a local snapshot, not a live claim: it can lapse (and the row be
+    /// reclaimed) without this value changing. Treat it as a cheap hint for
+    /// "should I even bother heartbeating?"; the authoritative check is the
+    /// claim re-check on `complete`/`fail`/`renew_lease`.
+    pub fn lease_until(&self) -> DateTime<Utc> {
+        self.lease_until
+    }
 
-	/// Consume the witness and return the inner [`Job`]. Prefer the typed
-	/// accessors above; `into_inner` is an escape hatch for callers that need
-	/// the whole struct (e.g. to serialise it for observability).
-	pub fn into_inner(self) -> Job { self.job }
+    /// Consume the witness and return the inner [`Job`]. Prefer the typed
+    /// accessors above; `into_inner` is an escape hatch for callers that need
+    /// the whole struct (e.g. to serialise it for observability).
+    pub fn into_inner(self) -> Job {
+        self.job
+    }
 }
 
 /// The stable identity of a queued job.
@@ -132,16 +146,18 @@ impl LeasedJob {
 pub struct JobId(pub uuid::Uuid);
 
 impl JobId {
-	/// The job's scratch `job_key`: the target package's uuid, simple (dashed)
-	/// hex. One job per package, so the key is the package identity.
-	fn job_key(self) -> String { self.0.to_string() }
+    /// The job's scratch `job_key`: the target package's uuid, simple (dashed)
+    /// hex. One job per package, so the key is the package identity.
+    fn job_key(self) -> String {
+        self.0.to_string()
+    }
 
-	/// Recover a [`JobId`] from a scratch `job_key`. Errors are impossible for
-	/// keys this crate wrote (they are always package uuids); a malformed key
-	/// therefore indicates a foreign writer and is surfaced as `None`.
-	fn from_job_key(key: &str) -> Option<Self> {
-		uuid::Uuid::parse_str(key).ok().map(JobId)
-	}
+    /// Recover a [`JobId`] from a scratch `job_key`. Errors are impossible for
+    /// keys this crate wrote (they are always package uuids); a malformed key
+    /// therefore indicates a foreign writer and is surfaced as `None`.
+    fn from_job_key(key: &str) -> Option<Self> {
+        uuid::Uuid::parse_str(key).ok().map(JobId)
+    }
 }
 
 /// The JSON payload persisted in the scratch `jobs.payload` column — the fields
@@ -149,48 +165,52 @@ impl JobId {
 /// state discriminant), now travelling as one serialised blob.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct JobPayload {
-	/// The target package uuid.
-	package: uuid::Uuid,
-	/// The scheduling priority (higher dequeues first).
-	priority: i32,
-	/// The lifecycle-state discriminant token (see [`state_discriminant`]).
-	state_token: String,
+    /// The target package uuid.
+    package: uuid::Uuid,
+    /// The scheduling priority (higher dequeues first).
+    priority: i32,
+    /// The lifecycle-state discriminant token (see [`state_discriminant`]).
+    state_token: String,
 }
 
 /// The retry schedule the queue applies when a job fails. Combined with
 /// [`FailureKind::is_retriable`] to decide retry-vs-dead-letter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetryPolicy {
-	/// The attempt ceiling; at or beyond this, a job is dead-lettered regardless
-	/// of failure kind. `NonZero` so a misconfigured `0` (which would dead-letter
-	/// every job on its first failure) is unrepresentable.
-	pub max_attempts: NonZeroU32,
+    /// The attempt ceiling; at or beyond this, a job is dead-lettered regardless
+    /// of failure kind. `NonZero` so a misconfigured `0` (which would dead-letter
+    /// every job on its first failure) is unrepresentable.
+    pub max_attempts: NonZeroU32,
 
-	/// The base backoff for the first retry.
-	pub base_backoff: Duration,
+    /// The base backoff for the first retry.
+    pub base_backoff: Duration,
 
-	/// The cap on exponential backoff growth.
-	pub max_backoff: Duration,
+    /// The cap on exponential backoff growth.
+    pub max_backoff: Duration,
 }
 
 impl RetryPolicy {
-	/// Compute the backoff before the `attempt`-th retry (exponential, capped).
-	pub fn backoff_for(&self, attempt: u32) -> Duration {
-		// base * 2^attempt, saturating, then clamped to max_backoff.
-		let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
-		let scaled = self.base_backoff.saturating_mul(factor.min(u64::from(u32::MAX)) as u32);
-		scaled.min(self.max_backoff)
-	}
+    /// Compute the backoff before the `attempt`-th retry (exponential, capped).
+    pub fn backoff_for(&self, attempt: u32) -> Duration {
+        // base * 2^attempt, saturating, then clamped to max_backoff.
+        let factor = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+        let scaled = self
+            .base_backoff
+            .saturating_mul(factor.min(u64::from(u32::MAX)) as u32);
+        scaled.min(self.max_backoff)
+    }
 
-	/// The decision a failure yields under this policy: retry (with a delay) or
-	/// dead-letter. Retries only if the kind is retriable *and* attempts remain.
-	pub fn decide(&self, kind: FailureKind, attempts: u32) -> RetryDecision {
-		if kind.is_retriable() && attempts < self.max_attempts.get() {
-			RetryDecision::Retry { after: self.backoff_for(attempts) }
-		} else {
-			RetryDecision::DeadLetter
-		}
-	}
+    /// The decision a failure yields under this policy: retry (with a delay) or
+    /// dead-letter. Retries only if the kind is retriable *and* attempts remain.
+    pub fn decide(&self, kind: FailureKind, attempts: u32) -> RetryDecision {
+        if kind.is_retriable() && attempts < self.max_attempts.get() {
+            RetryDecision::Retry {
+                after: self.backoff_for(attempts),
+            }
+        } else {
+            RetryDecision::DeadLetter
+        }
+    }
 }
 
 /// A job's scheduling priority: higher dequeues first, ties broken FIFO by
@@ -202,27 +222,33 @@ impl RetryPolicy {
 pub struct Priority(i32);
 
 impl Priority {
-	/// The default, neutral priority (`0`): normal FIFO scheduling.
-	pub const NORMAL: Priority = Priority(0);
+    /// The default, neutral priority (`0`): normal FIFO scheduling.
+    pub const NORMAL: Priority = Priority(0);
 
-	/// Construct an explicit priority. Larger values run earlier.
-	pub const fn new(value: i32) -> Self { Priority(value) }
+    /// Construct an explicit priority. Larger values run earlier.
+    pub const fn new(value: i32) -> Self {
+        Priority(value)
+    }
 
-	/// The raw `int` value carried on the job payload.
-	pub const fn get(self) -> i32 { self.0 }
+    /// The raw `int` value carried on the job payload.
+    pub const fn get(self) -> i32 {
+        self.0
+    }
 }
 
 impl From<i32> for Priority {
-	fn from(value: i32) -> Self { Priority(value) }
+    fn from(value: i32) -> Self {
+        Priority(value)
+    }
 }
 
 /// What to do with a failed job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetryDecision {
-	/// Re-enqueue after the given delay.
-	Retry { after: Duration },
-	/// Move to the dead-letter state; stop attempting.
-	DeadLetter,
+    /// Re-enqueue after the given delay.
+    Retry { after: Duration },
+    /// Move to the dead-letter state; stop attempting.
+    DeadLetter,
 }
 
 /// The durable scratch-backed job queue.
@@ -236,345 +262,382 @@ pub enum RetryDecision {
 /// connection to verify, so the typestate no longer pays for itself and has been
 /// removed. A `Queue` is directly usable once constructed.
 pub struct Queue {
-	/// The shared scratch store. `Arc<Mutex<_>>` because the connection is
-	/// `!Sync` and is shared with the session store and other scratch consumers
-	/// of the same source.
-	scratch: Arc<Mutex<ScratchStore>>,
-	/// This worker's opaque identity, recorded as `claims.claimed_by` so a claim
-	/// can be attributed and a foreign worker's live claim rejected.
-	worker_identity: String,
-	/// The retry schedule.
-	policy: RetryPolicy,
+    /// The shared scratch store. `Arc<Mutex<_>>` because the connection is
+    /// `!Sync` and is shared with the session store and other scratch consumers
+    /// of the same source.
+    scratch: Arc<Mutex<ScratchStore>>,
+    /// This worker's opaque identity, recorded as `claims.claimed_by` so a claim
+    /// can be attributed and a foreign worker's live claim rejected.
+    worker_identity: String,
+    /// The retry schedule.
+    policy: RetryPolicy,
 }
 
 impl Queue {
-	/// Configure a queue over a shared scratch store + retry policy. `worker_identity`
-	/// is recorded on every claim this queue acquires.
-	pub fn new(
-		scratch: Arc<Mutex<ScratchStore>>,
-		worker_identity: String,
-		policy: RetryPolicy,
-	) -> Self {
-		Self { scratch, worker_identity, policy }
-	}
+    /// Configure a queue over a shared scratch store + retry policy. `worker_identity`
+    /// is recorded on every claim this queue acquires.
+    pub fn new(
+        scratch: Arc<Mutex<ScratchStore>>,
+        worker_identity: String,
+        policy: RetryPolicy,
+    ) -> Self {
+        Self {
+            scratch,
+            worker_identity,
+            policy,
+        }
+    }
 
-	/// The lock is only ever held over infallible-to-acquire scratch calls and is
-	/// never held across an `.await`, so poisoning is unreachable.
-	fn locked(&self) -> std::sync::MutexGuard<'_, ScratchStore> {
-		self.scratch
-			.lock()
-			.expect("scratch queue mutex is never poisoned: guarded sections cannot panic")
-	}
+    /// The lock is only ever held over infallible-to-acquire scratch calls and is
+    /// never held across an `.await`, so poisoning is unreachable.
+    fn locked(&self) -> std::sync::MutexGuard<'_, ScratchStore> {
+        self.scratch
+            .lock()
+            .expect("scratch queue mutex is never poisoned: guarded sections cannot panic")
+    }
 
-	/// Drop every lease claim — restart recovery: a fresh process holds no
-	/// leases, so surviving claim rows are stale crash artifacts.
-	pub async fn clear_all_leases(&self) -> Result<u64, QueueError> {
-		let cleared = self.locked().clear_all_job_claims().map_err(QueueError::Scratch)?;
-		Ok(cleared as u64)
-	}
+    /// Drop every lease claim — restart recovery: a fresh process holds no
+    /// leases, so surviving claim rows are stale crash artifacts.
+    pub async fn clear_all_leases(&self) -> Result<u64, QueueError> {
+        let cleared = self
+            .locked()
+            .clear_all_job_claims()
+            .map_err(QueueError::Scratch)?;
+        Ok(cleared as u64)
+    }
 
-	/// Enqueue a package for indexing at the default priority (`0`). Idempotent on
-	/// `package`: an existing job for the same package is a no-op (returns its id).
-	/// Thin wrapper over [`Queue::enqueue_with_priority`].
-	pub async fn enqueue(&self, package: PackageId) -> Result<JobId, QueueError> {
-		self.enqueue_with_priority(package, Priority::default()).await
-	}
+    /// Enqueue a package for indexing at the default priority (`0`). Idempotent on
+    /// `package`: an existing job for the same package is a no-op (returns its id).
+    /// Thin wrapper over [`Queue::enqueue_with_priority`].
+    pub async fn enqueue(&self, package: PackageId) -> Result<JobId, QueueError> {
+        self.enqueue_with_priority(package, Priority::default())
+            .await
+    }
 
-	/// Enqueue a package for indexing at an explicit scheduling [`Priority`].
-	/// Higher priorities dequeue first (see [`Queue::dequeue_batch`]). Idempotent
-	/// on `package`: because the scratch `job_key` is the package uuid, a second
-	/// enqueue hits the primary-key and is a silent no-op that preserves the
-	/// original job (and thus its priority) — a re-enqueue never reprioritizes a
-	/// job already claimed by a worker.
-	pub async fn enqueue_with_priority(
-		&self,
-		package: PackageId,
-		priority: Priority,
-	) -> Result<JobId, QueueError> {
-		let id = JobId(*package.as_uuid());
-		let now = now_unix();
-		let payload = JobPayload {
-			package: *package.as_uuid(),
-			priority: priority.get(),
-			state_token: "unindexed".to_owned(),
-		};
-		let payload_json = serde_json::to_string(&payload).map_err(QueueError::Codec)?;
-		let row = JobRow {
-			job_key: id.job_key(),
-			kind: INDEX_JOB_KIND.to_owned(),
-			state: JobState::Queued,
-			attempts: 0,
-			enqueued_at: now,
-			updated_at: now,
-			payload: Some(payload_json),
-		};
-		let store = self.locked();
-		match store.enqueue_job(&row) {
-			Ok(()) => Ok(id),
-			// Primary-key collision → a live job for this package already exists.
-			Err(error) if error.is_unique_violation() => Ok(id),
-			Err(other) => Err(QueueError::Scratch(other)),
-		}
-	}
+    /// Enqueue a package for indexing at an explicit scheduling [`Priority`].
+    /// Higher priorities dequeue first (see [`Queue::dequeue_batch`]). Idempotent
+    /// on `package`: because the scratch `job_key` is the package uuid, a second
+    /// enqueue hits the primary-key and is a silent no-op that preserves the
+    /// original job (and thus its priority) — a re-enqueue never reprioritizes a
+    /// job already claimed by a worker.
+    pub async fn enqueue_with_priority(
+        &self,
+        package: PackageId,
+        priority: Priority,
+    ) -> Result<JobId, QueueError> {
+        let id = JobId(*package.as_uuid());
+        let now = now_unix();
+        let payload = JobPayload {
+            package: *package.as_uuid(),
+            priority: priority.get(),
+            state_token: "unindexed".to_owned(),
+        };
+        let payload_json = serde_json::to_string(&payload).map_err(QueueError::Codec)?;
+        let row = JobRow {
+            job_key: id.job_key(),
+            kind: INDEX_JOB_KIND.to_owned(),
+            state: JobState::Queued,
+            attempts: 0,
+            enqueued_at: now,
+            updated_at: now,
+            payload: Some(payload_json),
+        };
+        let store = self.locked();
+        match store.enqueue_job(&row) {
+            Ok(()) => Ok(id),
+            // Primary-key collision → a job for this package already exists.
+            //
+            // "Exists" is not the same as "live", and conflating the two made
+            // a failed package permanently unindexable. `job_key` is the
+            // package uuid, so a job that reached `Failed` (retries exhausted,
+            // or a non-retryable error) keeps that key forever; `dequeue_batch`
+            // only scans `Queued`, so nothing ever ran it again, and every
+            // later `enqueue` no-oped on this very branch. The catalog
+            // meanwhile still said `Unindexed { needed: true }`, so the two
+            // planes disagreed with no path back.
+            //
+            // Observed 2026-08-16 on macOS: `rust/ryu@1.0.18` had a `failed`
+            // job row from the previous day and sat at
+            // `Unindexed { needed: true }` across repeated `POST /packages`
+            // and a full server restart, never compiling.
+            //
+            // So a *terminal* job (`Done`/`Failed`) is returned to `Queued`
+            // with a fresh attempt budget, which is what a caller asking to
+            // enqueue it again plainly means. A *live* job (`Queued`,
+            // `Claimed`, `Running`) is still preserved untouched — the
+            // idempotence that keeps a re-enqueue from disturbing a job a
+            // worker already holds is the half worth keeping, and
+            // `requeue_terminal` re-checks the state in its own `WHERE` so a
+            // job that got claimed between our read and our write is not
+            // stolen.
+            Err(error) if error.is_unique_violation() => {
+                store
+                    .requeue_terminal_job(&id.job_key(), now)
+                    .map_err(QueueError::Scratch)?;
+                Ok(id)
+            }
+            Err(other) => Err(QueueError::Scratch(other)),
+        }
+    }
 
-	/// Claim up to `limit` runnable jobs, leasing each for `lease`.
-	///
-	/// Scans `Queued` jobs in priority-then-FIFO order and atomically claims each
-	/// via the `claims` table's insert-if-absent-or-expired protocol, so
-	/// concurrent workers claim disjoint sets without double-leasing. Each claimed
-	/// job's `attempts` is bumped and its state advanced to `Running`.
-	///
-	/// Returns [`LeasedJob`] witnesses — proof that each returned job was leased
-	/// by THIS worker *at this dequeue*. That is a compile-time guard against
-	/// operating on a job the caller never dequeued; it is **not** a proof the
-	/// lease is still held later (leases expire and can be reclaimed). Pass these
-	/// witnesses to [`Queue::complete`], [`Queue::fail`], and
-	/// [`Queue::renew_lease`], each of which additionally re-checks the claim at
-	/// commit time and returns [`QueueError::LeaseLost`] if the reclaimer got
-	/// there first.
-	pub async fn dequeue_batch(
-		&self,
-		limit: usize,
-		lease: Duration,
-	) -> Result<Vec<LeasedJob>, QueueError> {
-		let now = now_unix();
-		let lease_seconds = lease.as_secs() as i64;
-		let lease_expires_at = now.saturating_add(lease_seconds);
-		let lease_until = unix_to_datetime(lease_expires_at);
+    /// Claim up to `limit` runnable jobs, leasing each for `lease`.
+    ///
+    /// Scans `Queued` jobs in priority-then-FIFO order and atomically claims each
+    /// via the `claims` table's insert-if-absent-or-expired protocol, so
+    /// concurrent workers claim disjoint sets without double-leasing. Each claimed
+    /// job's `attempts` is bumped and its state advanced to `Running`.
+    ///
+    /// Returns [`LeasedJob`] witnesses — proof that each returned job was leased
+    /// by THIS worker *at this dequeue*. That is a compile-time guard against
+    /// operating on a job the caller never dequeued; it is **not** a proof the
+    /// lease is still held later (leases expire and can be reclaimed). Pass these
+    /// witnesses to [`Queue::complete`], [`Queue::fail`], and
+    /// [`Queue::renew_lease`], each of which additionally re-checks the claim at
+    /// commit time and returns [`QueueError::LeaseLost`] if the reclaimer got
+    /// there first.
+    pub async fn dequeue_batch(
+        &self,
+        limit: usize,
+        lease: Duration,
+    ) -> Result<Vec<LeasedJob>, QueueError> {
+        let now = now_unix();
+        let lease_seconds = lease.as_secs() as i64;
+        let lease_expires_at = now.saturating_add(lease_seconds);
+        let lease_until = unix_to_datetime(lease_expires_at);
 
-		let store = self.locked();
-		// Fetch a generous window of queued jobs then sort by the runnable order
-		// (scratch orders only by enqueued_at); claim up to `limit` of them.
-		let mut candidates = store
-			.next_queued_jobs((limit as i64).saturating_mul(4).max(limit as i64))
-			.map_err(QueueError::Scratch)?;
-		candidates.sort_by(|a, b| {
-			let a_priority = priority_of(a);
-			let b_priority = priority_of(b);
-			runnable_order((a_priority, a.enqueued_at), (b_priority, b.enqueued_at))
-		});
+        let store = self.locked();
+        // Fetch a generous window of queued jobs then sort by the runnable order
+        // (scratch orders only by enqueued_at); claim up to `limit` of them.
+        let mut candidates = store
+            .next_queued_jobs((limit as i64).saturating_mul(4).max(limit as i64))
+            .map_err(QueueError::Scratch)?;
+        candidates.sort_by(|a, b| {
+            let a_priority = priority_of(a);
+            let b_priority = priority_of(b);
+            runnable_order((a_priority, a.enqueued_at), (b_priority, b.enqueued_at))
+        });
 
-		let mut leased = Vec::new();
-		for row in candidates {
-			if leased.len() >= limit {
-				break;
-			}
-			// Atomically claim: succeeds only if no live claim exists.
-			let acquired = store
-				.claim_job(&row.job_key, &self.worker_identity, now, lease_expires_at)
-				.map_err(QueueError::Scratch)?;
-			if !acquired {
-				continue;
-			}
-			// Bump attempts and mark Running in the same critical section.
-			store
-				.increment_job_attempts(&row.job_key, now)
-				.map_err(QueueError::Scratch)?;
-			store
-				.set_job_state(&row.job_key, JobState::Running, now)
-				.map_err(QueueError::Scratch)?;
+        let mut leased = Vec::new();
+        for row in candidates {
+            if leased.len() >= limit {
+                break;
+            }
+            // Atomically claim: succeeds only if no live claim exists.
+            let acquired = store
+                .claim_job(&row.job_key, &self.worker_identity, now, lease_expires_at)
+                .map_err(QueueError::Scratch)?;
+            if !acquired {
+                continue;
+            }
+            // Bump attempts and mark Running in the same critical section.
+            store
+                .increment_job_attempts(&row.job_key, now)
+                .map_err(QueueError::Scratch)?;
+            store
+                .set_job_state(&row.job_key, JobState::Running, now)
+                .map_err(QueueError::Scratch)?;
 
-			// Reflect the just-applied attempt increment on the witness (the fetched
-			// `row` still carries the pre-increment count).
-			let mut bumped = row.clone();
-			bumped.attempts = row.attempts + 1;
-			let job = row_to_job(&bumped, Some(lease_until))?;
-			leased.push(LeasedJob { job, lease_until });
-		}
-		Ok(leased)
-	}
+            // Reflect the just-applied attempt increment on the witness (the fetched
+            // `row` still carries the pre-increment count).
+            let mut bumped = row.clone();
+            bumped.attempts = row.attempts + 1;
+            let job = row_to_job(&bumped, Some(lease_until))?;
+            leased.push(LeasedJob { job, lease_until });
+        }
+        Ok(leased)
+    }
 
-	/// Extend a claimed job's lease to `now + lease` — the heartbeat a
-	/// long-running worker beats periodically so its lease never lapses under a
-	/// fast reclaimer.
-	///
-	/// Requires a [`LeasedJob`] witness: only a job that THIS worker dequeued (and
-	/// that hasn't been settled yet) can have its lease renewed. Re-checks that
-	/// this worker still owns the claim; if the reclaimer already returned the job
-	/// (the worker was too slow, or paused), this returns [`QueueError::LeaseLost`]
-	/// — the signal for the worker to abandon its now-orphaned run.
-	pub async fn renew_lease(&self, leased: &LeasedJob, lease: Duration) -> Result<(), QueueError> {
-		let now = now_unix();
-		let new_expires = now.saturating_add(lease.as_secs() as i64);
-		let key = leased.id().job_key();
-		let store = self.locked();
-		if !self.owns_claim(&store, &key, now)? {
-			return Err(QueueError::LeaseLost { package: leased.package() });
-		}
-		store
-			.renew_job_claim(&key, new_expires)
-			.map_err(QueueError::Scratch)?;
-		Ok(())
-	}
+    /// Extend a claimed job's lease to `now + lease` — the heartbeat a
+    /// long-running worker beats periodically so its lease never lapses under a
+    /// fast reclaimer.
+    ///
+    /// Requires a [`LeasedJob`] witness: only a job that THIS worker dequeued (and
+    /// that hasn't been settled yet) can have its lease renewed. Re-checks that
+    /// this worker still owns the claim; if the reclaimer already returned the job
+    /// (the worker was too slow, or paused), this returns [`QueueError::LeaseLost`]
+    /// — the signal for the worker to abandon its now-orphaned run.
+    pub async fn renew_lease(&self, leased: &LeasedJob, lease: Duration) -> Result<(), QueueError> {
+        let now = now_unix();
+        let new_expires = now.saturating_add(lease.as_secs() as i64);
+        let key = leased.id().job_key();
+        let store = self.locked();
+        if !self.owns_claim(&store, &key, now)? {
+            return Err(QueueError::LeaseLost {
+                package: leased.package(),
+            });
+        }
+        store
+            .renew_job_claim(&key, new_expires)
+            .map_err(QueueError::Scratch)?;
+        Ok(())
+    }
 
-	/// Mark a job complete and remove it from the runnable set.
-	///
-	/// Consumes the [`LeasedJob`] witness: after `complete` returns the job is
-	/// terminal and the witness cannot be reused. The witness proves only that
-	/// THIS worker leased the job at dequeue; it does **not** prove the lease is
-	/// still held now.
-	///
-	/// **The real guard against the expiry/reclaim race is the claim re-check**:
-	/// if the lease expired and the reclaimer returned the job to the runnable
-	/// set, this returns [`QueueError::LeaseLost`] rather than silently reporting
-	/// success — so a worker that lost the race cannot commit a result it no
-	/// longer owns. `_state` is the terminal `Stored` state the caller has already
-	/// recorded in the global index; the job row is simply settled to `Done` and
-	/// its claim released.
-	pub async fn complete(
-		&self,
-		leased: LeasedJob,
-		_state: &ResolutionState,
-	) -> Result<(), QueueError> {
-		let now = now_unix();
-		let key = leased.id().job_key();
-		let package = leased.package();
-		let store = self.locked();
-		if !self.owns_claim(&store, &key, now)? {
-			return Err(QueueError::LeaseLost { package });
-		}
-		store
-			.set_job_state(&key, JobState::Done, now)
-			.map_err(QueueError::Scratch)?;
-		store.release_job_claim(&key).map_err(QueueError::Scratch)?;
-		Ok(())
-	}
+    /// Mark a job complete and remove it from the runnable set.
+    ///
+    /// Consumes the [`LeasedJob`] witness: after `complete` returns the job is
+    /// terminal and the witness cannot be reused. The witness proves only that
+    /// THIS worker leased the job at dequeue; it does **not** prove the lease is
+    /// still held now.
+    ///
+    /// **The real guard against the expiry/reclaim race is the claim re-check**:
+    /// if the lease expired and the reclaimer returned the job to the runnable
+    /// set, this returns [`QueueError::LeaseLost`] rather than silently reporting
+    /// success — so a worker that lost the race cannot commit a result it no
+    /// longer owns. `_state` is the terminal `Stored` state the caller has already
+    /// recorded in the global index; the job row is simply settled to `Done` and
+    /// its claim released.
+    pub async fn complete(
+        &self,
+        leased: LeasedJob,
+        _state: &ResolutionState,
+    ) -> Result<(), QueueError> {
+        let now = now_unix();
+        let key = leased.id().job_key();
+        let package = leased.package();
+        let store = self.locked();
+        if !self.owns_claim(&store, &key, now)? {
+            return Err(QueueError::LeaseLost { package });
+        }
+        store
+            .set_job_state(&key, JobState::Done, now)
+            .map_err(QueueError::Scratch)?;
+        store.release_job_claim(&key).map_err(QueueError::Scratch)?;
+        Ok(())
+    }
 
-	/// Record a failure and apply the retry policy: either re-arm the job with
-	/// backoff (release the claim so it can be re-dequeued) or dead-letter the
-	/// poison job. The single place retry-vs-dead-letter is decided.
-	///
-	/// Consumes the [`LeasedJob`] witness. As with [`Queue::complete`], the
-	/// witness only proves this worker leased the job at dequeue; the claim
-	/// re-check is what proves the lease is still live at commit. Returns
-	/// [`QueueError::LeaseLost`] if the claim was reclaimed mid-flight.
-	pub async fn fail(
-		&self,
-		leased: LeasedJob,
-		kind: FailureKind,
-		message: String,
-	) -> Result<RetryDecision, QueueError> {
-		let _ = message; // recorded as the Failure payload in the global index by the caller.
-		let now = now_unix();
-		let key = leased.id().job_key();
-		let package = leased.package();
-		let attempts = leased.attempts();
-		let decision = self.policy.decide(kind, attempts);
+    /// Record a failure and apply the retry policy: either re-arm the job with
+    /// backoff (release the claim so it can be re-dequeued) or dead-letter the
+    /// poison job. The single place retry-vs-dead-letter is decided.
+    ///
+    /// Consumes the [`LeasedJob`] witness. As with [`Queue::complete`], the
+    /// witness only proves this worker leased the job at dequeue; the claim
+    /// re-check is what proves the lease is still live at commit. Returns
+    /// [`QueueError::LeaseLost`] if the claim was reclaimed mid-flight.
+    pub async fn fail(
+        &self,
+        leased: LeasedJob,
+        kind: FailureKind,
+        message: String,
+    ) -> Result<RetryDecision, QueueError> {
+        let _ = message; // recorded as the Failure payload in the global index by the caller.
+        let now = now_unix();
+        let key = leased.id().job_key();
+        let package = leased.package();
+        let attempts = leased.attempts();
+        let decision = self.policy.decide(kind, attempts);
 
-		let store = self.locked();
-		if !self.owns_claim(&store, &key, now)? {
-			return Err(QueueError::LeaseLost { package });
-		}
-		match decision {
-			RetryDecision::Retry { .. } => {
-				// Return the job to the runnable set: back to Queued, claim released.
-				// The next dequeue re-claims it; the backoff delay is enforced by the
-				// caller's scheduling cadence (the worker sleeps between ticks).
-				store
-					.set_job_state(&key, JobState::Queued, now)
-					.map_err(QueueError::Scratch)?;
-			}
-			RetryDecision::DeadLetter => {
-				store
-					.set_job_state(&key, JobState::Failed, now)
-					.map_err(QueueError::Scratch)?;
-			}
-		}
-		store.release_job_claim(&key).map_err(QueueError::Scratch)?;
-		Ok(decision)
-	}
+        let store = self.locked();
+        if !self.owns_claim(&store, &key, now)? {
+            return Err(QueueError::LeaseLost { package });
+        }
+        match decision {
+            RetryDecision::Retry { .. } => {
+                // Return the job to the runnable set: back to Queued, claim released.
+                // The next dequeue re-claims it; the backoff delay is enforced by the
+                // caller's scheduling cadence (the worker sleeps between ticks).
+                store
+                    .set_job_state(&key, JobState::Queued, now)
+                    .map_err(QueueError::Scratch)?;
+            }
+            RetryDecision::DeadLetter => {
+                store
+                    .set_job_state(&key, JobState::Failed, now)
+                    .map_err(QueueError::Scratch)?;
+            }
+        }
+        store.release_job_claim(&key).map_err(QueueError::Scratch)?;
+        Ok(decision)
+    }
 
-	/// Reclaim jobs whose leases have expired (a worker died mid-flight),
-	/// returning them to the runnable set. Run periodically by a sweeper.
-	///
-	/// Returns the number of jobs reclaimed. Each expired claim is released and
-	/// its job (if still `Running`) reset to `Queued` so it is re-dequeuable.
-	pub async fn reclaim_expired_leases(&self) -> Result<u64, QueueError> {
-		let now = now_unix();
-		let store = self.locked();
-		let expired = store.expired_claims(now).map_err(QueueError::Scratch)?;
-		let mut reclaimed = 0u64;
-		for claim in &expired {
-			store.release_job_claim(&claim.job_key).map_err(QueueError::Scratch)?;
-			// Only reset jobs still marked Running (a settled job may have released
-			// its own claim after expiry stamping; do not resurrect it).
-			if let Some(job) = store.get_job(&claim.job_key).map_err(QueueError::Scratch)?
-				&& job.state == JobState::Running
-			{
-				store
-					.set_job_state(&claim.job_key, JobState::Queued, now)
-					.map_err(QueueError::Scratch)?;
-			}
-			reclaimed += 1;
-		}
-		Ok(reclaimed)
-	}
+    /// Reclaim jobs whose leases have expired (a worker died mid-flight),
+    /// returning them to the runnable set. Run periodically by a sweeper.
+    ///
+    /// Returns the number of jobs reclaimed. Each expired claim is released and
+    /// its job (if still `Running`) reset to `Queued` so it is re-dequeuable.
+    pub async fn reclaim_expired_leases(&self) -> Result<u64, QueueError> {
+        let now = now_unix();
+        let store = self.locked();
+        let expired = store.expired_claims(now).map_err(QueueError::Scratch)?;
+        let mut reclaimed = 0u64;
+        for claim in &expired {
+            store
+                .release_job_claim(&claim.job_key)
+                .map_err(QueueError::Scratch)?;
+            // Only reset jobs still marked Running (a settled job may have released
+            // its own claim after expiry stamping; do not resurrect it).
+            if let Some(job) = store.get_job(&claim.job_key).map_err(QueueError::Scratch)?
+                && job.state == JobState::Running
+            {
+                store
+                    .set_job_state(&claim.job_key, JobState::Queued, now)
+                    .map_err(QueueError::Scratch)?;
+            }
+            reclaimed += 1;
+        }
+        Ok(reclaimed)
+    }
 
-	/// Count the number of runnable (un-claimed) jobs in the queue.
-	///
-	/// Used by the catalog follower driver for backpressure: if the queue depth
-	/// exceeds the configured ceiling the driver pauses rather than enqueueing
-	/// more work.
-	pub async fn pending_count(&self) -> Result<u64, QueueError> {
-		let store = self.locked();
-		let queued = store.next_queued_jobs(i64::MAX).map_err(QueueError::Scratch)?;
-		Ok(queued.len() as u64)
-	}
+    /// Count the number of runnable (un-claimed) jobs in the queue.
+    ///
+    /// Used by the catalog follower driver for backpressure: if the queue depth
+    /// exceeds the configured ceiling the driver pauses rather than enqueueing
+    /// more work.
+    pub async fn pending_count(&self) -> Result<u64, QueueError> {
+        let store = self.locked();
+        let queued = store
+            .next_queued_jobs(i64::MAX)
+            .map_err(QueueError::Scratch)?;
+        Ok(queued.len() as u64)
+    }
 
-	/// Whether this worker currently holds a live (unexpired) claim on `key`.
-	/// The scratch-store analog of the postgres `lease_still_held` guard.
-	fn owns_claim(
-		&self,
-		store: &ScratchStore,
-		key: &str,
-		now: i64,
-	) -> Result<bool, QueueError> {
-		let claim = store.get_job_claim(key).map_err(QueueError::Scratch)?;
-		Ok(match claim {
-			Some(claim) => {
-				claim.claimed_by == self.worker_identity && claim.lease_expires_at > now
-			}
-			None => false,
-		})
-	}
+    /// Whether this worker currently holds a live (unexpired) claim on `key`.
+    /// The scratch-store analog of the postgres `lease_still_held` guard.
+    fn owns_claim(&self, store: &ScratchStore, key: &str, now: i64) -> Result<bool, QueueError> {
+        let claim = store.get_job_claim(key).map_err(QueueError::Scratch)?;
+        Ok(match claim {
+            Some(claim) => claim.claimed_by == self.worker_identity && claim.lease_expires_at > now,
+            None => false,
+        })
+    }
 }
 
 /// Read the priority carried on a scratch job's payload (0 if absent/malformed).
 fn priority_of(row: &JobRow) -> Priority {
-	row.payload
-		.as_deref()
-		.and_then(|json| serde_json::from_str::<JobPayload>(json).ok())
-		.map(|payload| Priority::new(payload.priority))
-		.unwrap_or_default()
+    row.payload
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<JobPayload>(json).ok())
+        .map(|payload| Priority::new(payload.priority))
+        .unwrap_or_default()
 }
 
 /// Reassemble a [`Job`] from a scratch `jobs` row.
-fn row_to_job(
-	row: &JobRow,
-	lease_until: Option<DateTime<Utc>>,
-) -> Result<Job, QueueError> {
-	let payload: JobPayload = match &row.payload {
-		Some(json) => serde_json::from_str(json).map_err(QueueError::Codec)?,
-		None => {
-			// A payload-less row cannot name its package; treat it as unrecoverable
-			// rather than fabricate a package identity.
-			return Err(QueueError::NotFound {
-				package: codec::package_id_from_uuid(uuid::Uuid::nil()),
-			});
-		}
-	};
-	let id = JobId::from_job_key(&row.job_key).unwrap_or(JobId(payload.package));
-	let package = codec::package_id_from_uuid(payload.package);
-	let enqueued_at = unix_to_datetime(row.enqueued_at);
-	let state = state_from_discriminant(&payload.state_token, row.attempts.max(0) as u32, enqueued_at);
-	Ok(Job {
-		id,
-		package,
-		state,
-		attempts: row.attempts.max(0) as u32,
-		enqueued_at,
-		lease_until,
-	})
+fn row_to_job(row: &JobRow, lease_until: Option<DateTime<Utc>>) -> Result<Job, QueueError> {
+    let payload: JobPayload = match &row.payload {
+        Some(json) => serde_json::from_str(json).map_err(QueueError::Codec)?,
+        None => {
+            // A payload-less row cannot name its package; treat it as unrecoverable
+            // rather than fabricate a package identity.
+            return Err(QueueError::NotFound {
+                package: codec::package_id_from_uuid(uuid::Uuid::nil()),
+            });
+        }
+    };
+    let id = JobId::from_job_key(&row.job_key).unwrap_or(JobId(payload.package));
+    let package = codec::package_id_from_uuid(payload.package);
+    let enqueued_at = unix_to_datetime(row.enqueued_at);
+    let state = state_from_discriminant(
+        &payload.state_token,
+        row.attempts.max(0) as u32,
+        enqueued_at,
+    );
+    Ok(Job {
+        id,
+        package,
+        state,
+        attempts: row.attempts.max(0) as u32,
+        enqueued_at,
+        lease_until,
+    })
 }
 
 /// Decode a job payload's state discriminant into a [`ResolutionState`].
@@ -592,225 +655,251 @@ fn row_to_job(
 /// - `"stored"` → `Stored { hash: ContentHash::of_bytes(&[]) }` — a sentinel
 ///   hash; a stored job is terminal and will never be claimed again.
 /// - `"unindexed"` (and any unknown token) → `Unindexed { needed: false }`.
-fn state_from_discriminant(
-	token: &str,
-	attempts: u32,
-	at: DateTime<Utc>,
-) -> ResolutionState {
-	match token {
-		"progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
-		"stored" => ResolutionState::Stored {
-			hash: heart::ContentHash::of_bytes(&[]),
-		},
-		"failed" | "deadlettered" => {
-			let failure = heart::Failure {
-				attempts,
-				phase: heart::Phase::Acquiring,
-				message: format!(
-					"[stub] job payload discriminant `{token}`; real failure in global index"
-				),
-				cause: None,
-				at,
-			};
-			if token == "deadlettered" {
-				ResolutionState::DeadLettered(failure)
-			} else {
-				ResolutionState::Failed(failure)
-			}
-		}
-		_ => ResolutionState::Unindexed { needed: false },
-	}
+fn state_from_discriminant(token: &str, attempts: u32, at: DateTime<Utc>) -> ResolutionState {
+    match token {
+        "progressing" => ResolutionState::Progressing(heart::Phase::Acquiring),
+        "stored" => ResolutionState::Stored {
+            hash: heart::ContentHash::of_bytes(&[]),
+        },
+        "failed" | "deadlettered" => {
+            let failure = heart::Failure {
+                attempts,
+                phase: heart::Phase::Acquiring,
+                message: format!(
+                    "[stub] job payload discriminant `{token}`; real failure in global index"
+                ),
+                cause: None,
+                at,
+            };
+            if token == "deadlettered" {
+                ResolutionState::DeadLettered(failure)
+            } else {
+                ResolutionState::Failed(failure)
+            }
+        }
+        _ => ResolutionState::Unindexed { needed: false },
+    }
 }
 
 /// Wall-clock seconds since the Unix epoch, for the scratch bookkeeping columns.
 fn now_unix() -> i64 {
-	std::time::SystemTime::now()
-		.duration_since(std::time::UNIX_EPOCH)
-		.map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Convert a Unix-seconds timestamp into a UTC [`DateTime`], clamping an
 /// out-of-range value to the epoch rather than panicking.
 fn unix_to_datetime(seconds: i64) -> DateTime<Utc> {
-	Utc.timestamp_opt(seconds, 0).single().unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap())
+    Utc.timestamp_opt(seconds, 0)
+        .single()
+        .unwrap_or_else(|| Utc.timestamp_opt(0, 0).unwrap())
 }
 
 /// The total order the dequeue hot path claims runnable jobs in, as a *pure*
 /// comparator: **priority descending, then FIFO by `enqueued_at` ascending**.
 ///
 /// `Ordering::Less` means `a` is claimed *before* `b`.
-pub fn runnable_order(
-	a: (Priority, i64),
-	b: (Priority, i64),
-) -> std::cmp::Ordering {
-	let (a_prio, a_enq) = a;
-	let (b_prio, b_enq) = b;
-	// Higher priority first → reverse the natural (ascending) Priority order.
-	b_prio.cmp(&a_prio).then(a_enq.cmp(&b_enq))
+pub fn runnable_order(a: (Priority, i64), b: (Priority, i64)) -> std::cmp::Ordering {
+    let (a_prio, a_enq) = a;
+    let (b_prio, b_enq) = b;
+    // Higher priority first → reverse the natural (ascending) Priority order.
+    b_prio.cmp(&a_prio).then(a_enq.cmp(&b_enq))
 }
 
 #[cfg(test)]
 mod state_discriminant_tests {
-	use super::*;
+    use super::*;
 
-	fn now() -> DateTime<Utc> { Utc::now() }
+    fn now() -> DateTime<Utc> {
+        Utc::now()
+    }
 
-	/// Every job payload state token decodes to the correct [`ResolutionState`]
-	/// variant — in particular `deadlettered` must NOT collapse to `Unindexed`.
-	#[test]
-	fn all_discriminants_decode_to_correct_variant() {
-		let t = now();
-		assert!(matches!(
-			state_from_discriminant("unindexed", 0, t),
-			ResolutionState::Unindexed { .. }
-		));
-		assert!(matches!(
-			state_from_discriminant("progressing", 1, t),
-			ResolutionState::Progressing(_)
-		));
-		assert!(matches!(
-			state_from_discriminant("stored", 0, t),
-			ResolutionState::Stored { .. }
-		));
-		assert!(matches!(
-			state_from_discriminant("failed", 2, t),
-			ResolutionState::Failed(_)
-		));
-		// The key regression: `deadlettered` must not silently become Unindexed.
-		assert!(matches!(
-			state_from_discriminant("deadlettered", 3, t),
-			ResolutionState::DeadLettered(_)
-		));
-	}
+    /// Every job payload state token decodes to the correct [`ResolutionState`]
+    /// variant — in particular `deadlettered` must NOT collapse to `Unindexed`.
+    #[test]
+    fn all_discriminants_decode_to_correct_variant() {
+        let t = now();
+        assert!(matches!(
+            state_from_discriminant("unindexed", 0, t),
+            ResolutionState::Unindexed { .. }
+        ));
+        assert!(matches!(
+            state_from_discriminant("progressing", 1, t),
+            ResolutionState::Progressing(_)
+        ));
+        assert!(matches!(
+            state_from_discriminant("stored", 0, t),
+            ResolutionState::Stored { .. }
+        ));
+        assert!(matches!(
+            state_from_discriminant("failed", 2, t),
+            ResolutionState::Failed(_)
+        ));
+        // The key regression: `deadlettered` must not silently become Unindexed.
+        assert!(matches!(
+            state_from_discriminant("deadlettered", 3, t),
+            ResolutionState::DeadLettered(_)
+        ));
+    }
 
-	/// Unknown tokens fall back to `Unindexed` rather than panicking.
-	#[test]
-	fn unknown_discriminant_falls_back_to_unindexed() {
-		let state = state_from_discriminant("bogus_future_variant", 0, now());
-		assert!(matches!(state, ResolutionState::Unindexed { .. }));
-	}
+    /// Unknown tokens fall back to `Unindexed` rather than panicking.
+    #[test]
+    fn unknown_discriminant_falls_back_to_unindexed() {
+        let state = state_from_discriminant("bogus_future_variant", 0, now());
+        assert!(matches!(state, ResolutionState::Unindexed { .. }));
+    }
 
-	/// A dead-lettered stub carries the attempt count from the row.
-	#[test]
-	fn dead_lettered_stub_carries_attempt_count() {
-		let state = state_from_discriminant("deadlettered", 7, now());
-		if let ResolutionState::DeadLettered(f) = state {
-			assert_eq!(f.attempts, 7);
-		} else {
-			panic!("expected DeadLettered");
-		}
-	}
+    /// A dead-lettered stub carries the attempt count from the row.
+    #[test]
+    fn dead_lettered_stub_carries_attempt_count() {
+        let state = state_from_discriminant("deadlettered", 7, now());
+        if let ResolutionState::DeadLettered(f) = state {
+            assert_eq!(f.attempts, 7);
+        } else {
+            panic!("expected DeadLettered");
+        }
+    }
 }
 
 #[cfg(test)]
 mod runnable_order_tests {
-	use super::*;
+    use super::*;
 
-	/// Higher priority claims first; ties break FIFO by enqueue time.
-	#[test]
-	fn priority_desc_then_fifo() {
-		let low = Priority::new(0);
-		let high = Priority::new(10);
-		assert_eq!(runnable_order((high, 100), (low, 1)), std::cmp::Ordering::Less);
-		assert_eq!(runnable_order((low, 1), (low, 2)), std::cmp::Ordering::Less);
-		assert_eq!(runnable_order((low, 2), (low, 1)), std::cmp::Ordering::Greater);
-	}
+    /// Higher priority claims first; ties break FIFO by enqueue time.
+    #[test]
+    fn priority_desc_then_fifo() {
+        let low = Priority::new(0);
+        let high = Priority::new(10);
+        assert_eq!(
+            runnable_order((high, 100), (low, 1)),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(runnable_order((low, 1), (low, 2)), std::cmp::Ordering::Less);
+        assert_eq!(
+            runnable_order((low, 2), (low, 1)),
+            std::cmp::Ordering::Greater
+        );
+    }
 }
 
 #[cfg(test)]
 mod queue_scratch_tests {
-	use super::*;
+    use super::*;
 
-	fn queue(identity: &str) -> Queue {
-		let scratch = Arc::new(Mutex::new(
-			ScratchStore::open_in_memory().expect("in-memory scratch open must not fail"),
-		));
-		Queue::new(scratch, identity.to_owned(), policy())
-	}
+    fn queue(identity: &str) -> Queue {
+        let scratch = Arc::new(Mutex::new(
+            ScratchStore::open_in_memory().expect("in-memory scratch open must not fail"),
+        ));
+        Queue::new(scratch, identity.to_owned(), policy())
+    }
 
-	fn shared(scratch: Arc<Mutex<ScratchStore>>, identity: &str) -> Queue {
-		Queue::new(scratch, identity.to_owned(), policy())
-	}
+    fn shared(scratch: Arc<Mutex<ScratchStore>>, identity: &str) -> Queue {
+        Queue::new(scratch, identity.to_owned(), policy())
+    }
 
-	fn policy() -> RetryPolicy {
-		RetryPolicy {
-			max_attempts: NonZeroU32::new(3).unwrap(),
-			base_backoff: Duration::from_secs(1),
-			max_backoff: Duration::from_secs(60),
-		}
-	}
+    fn policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: NonZeroU32::new(3).unwrap(),
+            base_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_mins(1),
+        }
+    }
 
-	fn package() -> PackageId {
-		codec::package_id_from_uuid(uuid::Uuid::new_v4())
-	}
+    fn package() -> PackageId {
+        codec::package_id_from_uuid(uuid::Uuid::new_v4())
+    }
 
-	#[tokio::test]
-	async fn enqueue_is_idempotent_on_package() {
-		let q = queue("worker-a");
-		let pkg = package();
-		let first = q.enqueue(pkg).await.unwrap();
-		let second = q.enqueue(pkg).await.unwrap();
-		assert_eq!(first, second, "same package yields same job id");
-		assert_eq!(q.pending_count().await.unwrap(), 1, "no duplicate row");
-	}
+    #[tokio::test]
+    async fn enqueue_is_idempotent_on_package() {
+        let q = queue("worker-a");
+        let pkg = package();
+        let first = q.enqueue(pkg).await.unwrap();
+        let second = q.enqueue(pkg).await.unwrap();
+        assert_eq!(first, second, "same package yields same job id");
+        assert_eq!(q.pending_count().await.unwrap(), 1, "no duplicate row");
+    }
 
-	#[tokio::test]
-	async fn dequeue_leases_then_complete_settles() {
-		let q = queue("worker-a");
-		let pkg = package();
-		q.enqueue(pkg).await.unwrap();
-		let leased = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
-		assert_eq!(leased.len(), 1);
-		assert_eq!(leased[0].package(), pkg);
-		assert_eq!(leased[0].attempts(), 1, "dequeue bumps attempts");
-		// While leased, it is not runnable.
-		assert_eq!(q.pending_count().await.unwrap(), 0);
-		let job = leased.into_iter().next().unwrap();
-		q.complete(job, &ResolutionState::Stored { hash: heart::ContentHash::of_bytes(&[]) })
-			.await
-			.unwrap();
-	}
+    #[tokio::test]
+    async fn dequeue_leases_then_complete_settles() {
+        let q = queue("worker-a");
+        let pkg = package();
+        q.enqueue(pkg).await.unwrap();
+        let leased = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
+        assert_eq!(leased.len(), 1);
+        assert_eq!(leased[0].package(), pkg);
+        assert_eq!(leased[0].attempts(), 1, "dequeue bumps attempts");
+        // While leased, it is not runnable.
+        assert_eq!(q.pending_count().await.unwrap(), 0);
+        let job = leased.into_iter().next().unwrap();
+        q.complete(
+            job,
+            &ResolutionState::Stored {
+                hash: heart::ContentHash::of_bytes(&[]),
+            },
+        )
+        .await
+        .unwrap();
+    }
 
-	#[tokio::test]
-	async fn a_live_claim_blocks_a_second_worker() {
-		let scratch = Arc::new(Mutex::new(ScratchStore::open_in_memory().unwrap()));
-		let worker_a = shared(Arc::clone(&scratch), "worker-a");
-		let worker_b = shared(Arc::clone(&scratch), "worker-b");
-		let pkg = package();
-		worker_a.enqueue(pkg).await.unwrap();
-		let a = worker_a.dequeue_batch(10, Duration::from_secs(300)).await.unwrap();
-		assert_eq!(a.len(), 1, "worker-a claims the job");
-		let b = worker_b.dequeue_batch(10, Duration::from_secs(300)).await.unwrap();
-		assert!(b.is_empty(), "worker-b cannot claim a live-leased job");
-	}
+    #[tokio::test]
+    async fn a_live_claim_blocks_a_second_worker() {
+        let scratch = Arc::new(Mutex::new(ScratchStore::open_in_memory().unwrap()));
+        let worker_a = shared(Arc::clone(&scratch), "worker-a");
+        let worker_b = shared(Arc::clone(&scratch), "worker-b");
+        let pkg = package();
+        worker_a.enqueue(pkg).await.unwrap();
+        let a = worker_a
+            .dequeue_batch(10, Duration::from_mins(5))
+            .await
+            .unwrap();
+        assert_eq!(a.len(), 1, "worker-a claims the job");
+        let b = worker_b
+            .dequeue_batch(10, Duration::from_mins(5))
+            .await
+            .unwrap();
+        assert!(b.is_empty(), "worker-b cannot claim a live-leased job");
+    }
 
-	#[tokio::test]
-	async fn fail_retry_returns_job_to_runnable_set() {
-		let q = queue("worker-a");
-		let pkg = package();
-		q.enqueue(pkg).await.unwrap();
-		let leased = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
-		let job = leased.into_iter().next().unwrap();
-		// A retriable failure under the attempt ceiling re-queues.
-		let decision = q.fail(job, FailureKind::Transient, "boom".to_owned()).await.unwrap();
-		assert!(matches!(decision, RetryDecision::Retry { .. }));
-		assert_eq!(q.pending_count().await.unwrap(), 1, "job returned to runnable set");
-	}
+    #[tokio::test]
+    async fn fail_retry_returns_job_to_runnable_set() {
+        let q = queue("worker-a");
+        let pkg = package();
+        q.enqueue(pkg).await.unwrap();
+        let leased = q.dequeue_batch(10, Duration::from_secs(30)).await.unwrap();
+        let job = leased.into_iter().next().unwrap();
+        // A retriable failure under the attempt ceiling re-queues.
+        let decision = q
+            .fail(job, FailureKind::Transient, "boom".to_owned())
+            .await
+            .unwrap();
+        assert!(matches!(decision, RetryDecision::Retry { .. }));
+        assert_eq!(
+            q.pending_count().await.unwrap(),
+            1,
+            "job returned to runnable set"
+        );
+    }
 
-	#[tokio::test]
-	async fn complete_after_reclaim_reports_lease_lost() {
-		let q = queue("worker-a");
-		let pkg = package();
-		q.enqueue(pkg).await.unwrap();
-		// Lease for zero seconds so the claim is already expired at reclaim time.
-		let leased = q.dequeue_batch(10, Duration::from_secs(0)).await.unwrap();
-		let job = leased.into_iter().next().unwrap();
-		// The reclaimer returns the job to the runnable set.
-		q.reclaim_expired_leases().await.unwrap();
-		// Completing the now-orphaned witness must surface LeaseLost.
-		let result = q
-			.complete(job, &ResolutionState::Stored { hash: heart::ContentHash::of_bytes(&[]) })
-			.await;
-		assert!(matches!(result, Err(QueueError::LeaseLost { .. })));
-	}
+    #[tokio::test]
+    async fn complete_after_reclaim_reports_lease_lost() {
+        let q = queue("worker-a");
+        let pkg = package();
+        q.enqueue(pkg).await.unwrap();
+        // Lease for zero seconds so the claim is already expired at reclaim time.
+        let leased = q.dequeue_batch(10, Duration::from_secs(0)).await.unwrap();
+        let job = leased.into_iter().next().unwrap();
+        // The reclaimer returns the job to the runnable set.
+        q.reclaim_expired_leases().await.unwrap();
+        // Completing the now-orphaned witness must surface LeaseLost.
+        let result = q
+            .complete(
+                job,
+                &ResolutionState::Stored {
+                    hash: heart::ContentHash::of_bytes(&[]),
+                },
+            )
+            .await;
+        assert!(matches!(result, Err(QueueError::LeaseLost { .. })));
+    }
 }

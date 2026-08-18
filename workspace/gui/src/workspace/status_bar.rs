@@ -21,7 +21,8 @@
 //! toggles the HUD.
 
 use gpui::{
-    Context, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
+    Context, InteractiveElement as _, IntoElement, ParentElement, Render, SharedString, Styled,
+    Window, div,
 };
 
 use crate::app::account::AccountStatus;
@@ -250,7 +251,9 @@ impl Render for StatusBar {
                     .child(ProvenanceDot::new("status.dot", self.provenance))
                     .child(self.packages_label.clone()),
             )
-            .child(segment(div().child(self.sync_label.clone()).into_any_element()));
+            .child(segment(
+                div().child(self.sync_label.clone()).into_any_element(),
+            ));
 
         if self.diagnostics.is_some() {
             bar = bar.child(

@@ -50,10 +50,6 @@ pub enum Language {
     /// <https://www.java.com/>.
     Java,
 
-    /// <https://nix.dev/>. Flakes, packages, NixOS modules, and lib functions,
-    /// acquired from FlakeHub and evaluated in-process.
-    Nix,
-
     /// <https://dotnet.microsoft.com/>. .NET / NuGet packages, extracted from
     /// compiled assemblies (metadata) or source via a Roslyn oracle.
     CSharp,
@@ -122,10 +118,6 @@ pub enum Toolchain {
     /// The JDK/javac version used for extraction.
     Java { compiler: Version },
 
-    /// The vendored Nix evaluator (snix) revision/version the flake was
-    /// evaluated and statically analyzed against.
-    Nix { evaluator: Version },
-
     /// The .NET SDK version whose Roslyn the oracle ran as.
     CSharp { sdk: Version },
 
@@ -144,7 +136,6 @@ impl From<&Toolchain> for Language {
             Toolchain::Python { .. } => Language::Python,
             Toolchain::Go { .. } => Language::Go,
             Toolchain::Java { .. } => Language::Java,
-            Toolchain::Nix { .. } => Language::Nix,
             Toolchain::CSharp { .. } => Language::CSharp,
             Toolchain::Cpp { .. } => Language::Cpp,
         }

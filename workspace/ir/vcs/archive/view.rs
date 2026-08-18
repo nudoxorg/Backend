@@ -196,10 +196,7 @@ impl<'a> PackageArchiveView<'a> {
         let i = idx.0 as usize;
         let count = self.parsed.entry_count as usize;
         if i >= count {
-            return Err(Error::IndexOutOfRange(
-                idx.0,
-                self.parsed.entry_count,
-            ));
+            return Err(Error::IndexOutOfRange(idx.0, self.parsed.entry_count));
         }
         let bytes = self.entry_heads_bytes().ok_or(Error::Truncated)?;
         let off = i * std::mem::size_of::<EntryHead>();

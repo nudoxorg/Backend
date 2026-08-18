@@ -280,14 +280,18 @@ pub enum Error {
     /// happens to share a name — the exact "apparent success" failure mode
     /// `nix build .#checks.corpus`'s header warns about, arrived at without a hash
     /// mismatch to notice.
-    #[error("package URL qualifier {key:?} is not supported; nudox resolves every package against its ecosystem's canonical registry and follows no caller-supplied location")]
+    #[error(
+        "package URL qualifier {key:?} is not supported; nudox resolves every package against its ecosystem's canonical registry and follows no caller-supplied location"
+    )]
     UnsupportedQualifier {
         /// The qualifier key that was present.
         key: String,
     },
 
     /// A `#subpath` was present.
-    #[error("package URL subpath {subpath:?} is not supported; nudox indexes whole packages, not directories inside them")]
+    #[error(
+        "package URL subpath {subpath:?} is not supported; nudox indexes whole packages, not directories inside them"
+    )]
     UnsupportedSubpath {
         /// The subpath as written.
         subpath: String,
@@ -392,9 +396,9 @@ impl Purl {
         };
 
         // Namespace / name.
-        let (namespace, name) = path
-            .rfind('/')
-            .map_or((None, path), |slash| (Some(&path[..slash]), &path[slash + 1..]));
+        let (namespace, name) = path.rfind('/').map_or((None, path), |slash| {
+            (Some(&path[..slash]), &path[slash + 1..])
+        });
 
         let name = percent_decode(name, "name")?;
         if name.is_empty() {
@@ -753,7 +757,10 @@ mod tests {
             let rendered = parsed.render();
             let reparsed = Purl::parse(&rendered)
                 .unwrap_or_else(|e| panic!("{input} rendered as {rendered}: {e}"));
-            assert_eq!(parsed, reparsed, "{input} did not round-trip via {rendered}");
+            assert_eq!(
+                parsed, reparsed,
+                "{input} did not round-trip via {rendered}"
+            );
         }
     }
 
@@ -809,10 +816,7 @@ mod tests {
         // unambiguously a purl must fall through to being a search query.
         for not_a_purl in ["serde", "Vec::push", "pkg", "package:serde", "http://x/y"] {
             assert!(
-                matches!(
-                    Purl::parse(not_a_purl),
-                    Err(Error::NotAPurl { .. })
-                ),
+                matches!(Purl::parse(not_a_purl), Err(Error::NotAPurl { .. })),
                 "{not_a_purl:?} must not parse as a purl"
             );
         }
@@ -842,7 +846,9 @@ mod tests {
             "com.google.guava__guava-33.0.0-jre",
         );
         assert_eq!(
-            Purl::parse("pkg:cargo/serde@1.0.196").unwrap().cache_dir_name(),
+            Purl::parse("pkg:cargo/serde@1.0.196")
+                .unwrap()
+                .cache_dir_name(),
             "serde-1.0.196",
         );
     }
@@ -864,6 +870,10 @@ mod tests {
             assert_eq!(ty.language(), language, "{ty}");
             assert_eq!(ty.ecosystem(), ecosystem, "{ty}");
         }
-        assert_eq!(expected.len(), PurlType::ALL.len(), "a type was added without a pairing");
+        assert_eq!(
+            expected.len(),
+            PurlType::ALL.len(),
+            "a type was added without a pairing"
+        );
     }
 }

@@ -339,7 +339,10 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
         Some(&session),
         r#"{"method":"notifications/initialized","jsonrpc":"2.0"}"#,
     );
-    assert_eq!(notified.status, 202, "the initialized notification must be accepted");
+    assert_eq!(
+        notified.status, 202,
+        "the initialized notification must be accepted"
+    );
 
     // --- 3. tools/call list_packages ---------------------------------------
     //
@@ -353,7 +356,7 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
             &url,
             &token,
             Some(&session),
-            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_packages","arguments":{}}}"#,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"packages","arguments":{}}}"#,
         );
         assert_eq!(response.status, 200, "list_packages must succeed");
         let message = sse_json_messages(&response.body)
@@ -364,30 +367,24 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
             message.get("error").is_none(),
             "list_packages must not return a JSON-RPC error: {message}",
         );
-        let listed = message
-            .pointer("/result/structuredContent/packages")
-            .and_then(Value::as_array)
-            .cloned()
+        let text = message
+            .pointer("/result/content/0/text")
+            .and_then(Value::as_str)
             .unwrap_or_default();
-        if !listed.is_empty() || Instant::now() >= deadline {
-            break listed;
+        if text.contains("nudox-fixture-rich") || Instant::now() >= deadline {
+            break text.to_owned();
         }
         std::thread::sleep(Duration::from_millis(100));
     };
 
-    let rich = packages
-        .iter()
-        .find(|p| p.get("name").and_then(Value::as_str) == Some("nudox-fixture-rich"))
-        .unwrap_or_else(|| {
-            panic!(
-                "the agent must see the same corpus the window does; \
-                 `nudox-fixture-rich` missing from {packages:?}"
-            )
-        });
-    assert_eq!(
-        rich.get("ecosystem").and_then(Value::as_str),
-        Some("fixture"),
-        "package rows must carry real lineage data: {rich}",
+    assert!(
+        packages.contains("nudox-fixture-rich"),
+        "the agent must see the same corpus the window does; \
+         `nudox-fixture-rich` missing from {packages:?}",
+    );
+    assert!(
+        packages.contains("fixture:nudox-fixture-rich"),
+        "package rows must carry real lineage data: {packages:?}",
     );
 
     // --- 4. tools/call search_symbols --------------------------------------
@@ -400,7 +397,7 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
         &url,
         &token,
         Some(&session),
-        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search_symbols","arguments":{"query":"Point","limit":50}}}"#,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"Point","limit":50}}}"#,
     );
     assert_eq!(response.status, 200, "search_symbols must succeed");
     let message = sse_json_messages(&response.body)
@@ -412,31 +409,18 @@ async fn the_endpoint_the_status_bar_displays_answers_a_real_tools_call(cx: &mut
         "search_symbols must not return a JSON-RPC error: {message}",
     );
 
-    let hits = message
-        .pointer("/result/structuredContent/hits")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("search_symbols must carry structuredContent.hits: {message}"));
-    let names: Vec<&str> = hits
-        .iter()
-        .filter_map(|hit| hit.get("display_name").and_then(Value::as_str))
-        .collect();
+    let text = message
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("search must carry Markdown content: {message}"));
     assert!(
-        names.iter().any(|n| n.contains("Point")),
-        "an agent searching the window's corpus for `Point` must find it; got {names:?}",
+        text.contains("Point"),
+        "an agent searching the window's corpus for `Point` must find it; got {text:?}",
     );
-
-    // Every key must carry the fixture lineage: proof the answer came from this
-    // window's engine and not from anything the MCP layer made up.
-    for hit in hits {
-        let key = hit
-            .get("key")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("every hit must carry a string key: {hit}"));
-        assert!(
-            key.starts_with("fixture:"),
-            "hits must come from the fixture corpus this window loaded; got {key}",
-        );
-    }
+    assert!(
+        text.contains("fixture:nudox-fixture-rich::"),
+        "hits must come from the fixture corpus this window loaded; got {text:?}",
+    );
 
     cx.update(|cx| {
         cx.update_global::<McpService, _>(|service, _| service.stop());
@@ -561,7 +545,7 @@ fn search_over_the_wire(url: &str, token: &str, query: &str) -> Vec<String> {
     );
 
     let body = format!(
-        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"search_symbols","arguments":{{"query":"{query}","limit":50}}}}}}"#,
+        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"search","arguments":{{"query":"{query}","limit":50}}}}}}"#,
     );
     let response = post_json_rpc(url, token, Some(&session), &body);
     assert_eq!(response.status, 200, "search_symbols must succeed");
@@ -574,11 +558,13 @@ fn search_over_the_wire(url: &str, token: &str, query: &str) -> Vec<String> {
         "search_symbols must not return a JSON-RPC error: {message}",
     );
     message
-        .pointer("/result/structuredContent/hits")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("search_symbols must carry structuredContent.hits: {message}"))
-        .iter()
-        .filter_map(|hit| hit.get("display_name").and_then(Value::as_str))
+        .pointer("/result/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("search must carry Markdown content: {message}"))
+        .lines()
+        .filter(|line| !line.is_empty() && !line.starts_with('#') && !line.starts_with('~'))
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("pub "))
         .map(str::to_owned)
         .collect()
 }
@@ -832,9 +818,7 @@ async fn a_process_with_no_service_shows_no_endpoint_at_all(cx: &mut TestAppCont
 /// the address, and the address must stop answering. A stale URL is worse than
 /// none — the port may be reused by another process.
 #[gpui::test]
-async fn stopping_the_service_retracts_the_endpoint_and_closes_the_socket(
-    cx: &mut TestAppContext,
-) {
+async fn stopping_the_service_retracts_the_endpoint_and_closes_the_socket(cx: &mut TestAppContext) {
     cx.executor().allow_parking();
 
     let engine = Engine::start_with_fixtures(EngineConfig::default());
@@ -899,7 +883,10 @@ async fn stopping_the_service_retracts_the_endpoint_and_closes_the_socket(
 async fn a_server_that_could_not_bind_is_visible_rather_than_absent(cx: &mut TestAppContext) {
     let error = nudox_engine::mcp::McpError::Bind {
         addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)),
-        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "Operation not permitted"),
+        source: std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "Operation not permitted",
+        ),
     };
     let status = McpStatus::failed(&error);
 

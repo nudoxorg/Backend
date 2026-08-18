@@ -33,12 +33,13 @@
 //! `walk::walk_doc` — the same function that `sections::sections` calls.
 //! The two are guaranteed structurally identical (see `walk.rs` docs).
 
+use crate::store::package::PackageView;
 use nudox_ir::{
     change::IntroId,
     entry::{CfgExpr, Entry},
+    kind::KindDiscriminant,
     view::IrView,
 };
-use crate::store::package::PackageView;
 
 use crate::wire::{
     CrumbRef, KindTag, Provenance, SectionPlan, SharedStr, SigToken, SourceLocation, SymbolHead,
@@ -162,7 +163,15 @@ fn join_predicates(inner: &[CfgExpr]) -> String {
 /// Returns `None` when no alias improves on the physical chain (including
 /// the common case of no aliases at all), in which case the caller keeps
 /// the physical breadcrumb unchanged.
-fn shortest_alias_module_path(
+///
+/// # Promoted, not duplicated (§4.9)
+///
+/// This is the one place the alias-shortening decision is made. `projection`
+/// uses it to build the breadcrumb; [`public_path`] uses the exact same
+/// decision (via [`shortened_ancestors`]) to render the address scheme's
+/// `public_path` string, so the two can never disagree about which alias
+/// won.
+pub(crate) fn shortest_alias_module_path(
     aliases: &[String],
     ancestors: &[(IntroId, String)],
 ) -> Option<Vec<(IntroId, String)>> {
@@ -178,9 +187,9 @@ fn shortest_alias_module_path(
         // Only a *strict* improvement over the physical chain is worth
         // taking — otherwise we would replace a correct chain with an
         // equally-long (or longer) one for no reason.
-        let is_shorter = best.as_ref().map_or(segs.len() < ancestors.len(), |b| {
-            segs.len() < b.len()
-        });
+        let is_shorter = best
+            .as_ref()
+            .map_or(segs.len() < ancestors.len(), |b| segs.len() < b.len());
         if is_shorter {
             best = Some(segs);
         }
@@ -204,6 +213,102 @@ fn shortest_alias_module_path(
     Some(projected)
 }
 
+/// Walk `intro`'s root-first physical ancestor chain (excluding `intro`
+/// itself), then apply L18's alias-shortening.
+///
+/// Returns the ancestors to use for display alongside whether an alias
+/// shortcut was actually taken — `public_path` needs the latter to know
+/// whether it has anything to say beyond the physical path (see its docs).
+pub(crate) fn shortened_ancestors(
+    intro: IntroId,
+    entry: &Entry,
+    view: &IrView,
+) -> (Vec<(IntroId, String)>, bool) {
+    let mut ancestors: Vec<(IntroId, String)> = Vec::new();
+    let mut cursor = view.parent_of(intro);
+    while let Some(parent_id) = cursor {
+        let label = view
+            .entry(parent_id)
+            .map_or_else(|| "?".to_owned(), |e| e.sym().name.clone());
+        ancestors.push((parent_id, label));
+        cursor = view.parent_of(parent_id);
+    }
+    ancestors.reverse(); // root-first
+
+    // L18: prefer the shortest re-export alias over the raw physical chain,
+    // when one exists and is actually shorter. See `shortest_alias_module_path`
+    // for why this can only drop ancestors, never invent one.
+    match shortest_alias_module_path(&entry.sym().aliases, &ancestors) {
+        // Only a *module* prefix may be shortened away. `shortest_alias_module_path`
+        // matches the alias's segments against ancestor *labels* in order, which
+        // on its own is happy to drop a trait, impl or record ancestor — and a
+        // path that skips a type level names nothing.
+        //
+        // Found on real serde 1.0.196: the associated type
+        // `serde::de::IntoDeserializer::Deserializer` carries an alias whose
+        // module prefix is `serde`, so the projection dropped
+        // `de::IntoDeserializer` wholesale and produced the public path
+        // `serde::Deserializer` — which is the *trait* `serde::de::Deserializer`,
+        // a different declaration entirely. Address resolution then reported
+        // `serde::Deserializer` as ambiguous between the two, and a display-only
+        // consumer would simply have shown the wrong path.
+        Some(projected) if only_modules_dropped(&ancestors, &projected, view) => (projected, true),
+        _ => (ancestors, false),
+    }
+}
+
+/// True when every ancestor `projected` drops relative to `ancestors` is a
+/// module.
+///
+/// Dropping a module is what re-export shortening is *for* — `serde::de::Foo`
+/// published as `serde::Foo`. Dropping a trait, impl, record or enum is never
+/// valid: those are not path prefixes a caller can omit, so the shortened path
+/// would name a different declaration or none at all.
+fn only_modules_dropped(
+    ancestors: &[(IntroId, String)],
+    projected: &[(IntroId, String)],
+    view: &IrView,
+) -> bool {
+    let kept: std::collections::HashSet<IntroId> = projected.iter().map(|(id, _)| *id).collect();
+    ancestors
+        .iter()
+        .filter(|(id, _)| !kept.contains(id))
+        .all(|(id, _)| {
+            view.entry(*id)
+                .and_then(|e| e.kind().discriminant())
+                .is_some_and(|d| d == KindDiscriminant::Module)
+        })
+}
+
+/// The address scheme's `public_path` (§4.9 of docs/MCP-SURFACE-PLAN.md): the
+/// shortest path by which `intro` is reachable from the package root through
+/// re-exports/aliases, rendered with `style`'s separator.
+///
+/// `chunk::head::projection`'s alias-shortening (`shortest_alias_module_path`)
+/// is *promoted* here to be the `public_path` producer rather than
+/// reimplemented — it is exactly the computation this function needs, it was
+/// simply never given a name of its own or a leaf segment appended.
+///
+/// Returns `None` when no alias improves on the physical chain (the common
+/// case: most declarations are reachable only via their one physical path,
+/// in which case `public_path` carries no information `physical_path`
+/// doesn't already have — callers should treat `None` as "same as physical",
+/// not as an error).
+pub(crate) fn public_path(
+    intro: IntroId,
+    entry: &Entry,
+    view: &IrView,
+    style: nudox_ir::reflect::PathStyle,
+) -> Option<String> {
+    let (ancestors, took_shortcut) = shortened_ancestors(intro, entry, view);
+    if !took_shortcut {
+        return None;
+    }
+    let mut parts: Vec<String> = ancestors.into_iter().map(|(_, label)| label).collect();
+    parts.push(entry.sym().name.clone());
+    Some(parts.join(style.separator()))
+}
+
 /// Build the `SymbolHead` for `entry` at `intro`.
 ///
 /// # Arguments
@@ -224,29 +329,10 @@ pub(crate) fn projection(
 
     // ── Breadcrumb ────────────────────────────────────────────────────────────
     //
-    // Walk from `intro` upward through parent links, collecting each ancestor's
-    // (IntroId, name).  The walk stops at `None`.  We then reverse to produce
-    // the root-first breadcrumb.  `intro` itself is NOT included — the
-    // breadcrumb shows ancestors only, not the symbol itself.
-
-    let mut ancestors: Vec<(IntroId, String)> = Vec::new();
-    let mut cursor = view.parent_of(intro);
-    while let Some(parent_id) = cursor {
-        let label = view
-            .entry(parent_id)
-            .map_or_else(|| "?".to_owned(), |e| e.sym().name.clone());
-        ancestors.push((parent_id, label));
-        cursor = view.parent_of(parent_id);
-    }
-    ancestors.reverse(); // root-first
-
-    // L18: prefer the shortest re-export alias over the raw physical chain,
-    // when one exists and is actually shorter. See the module docs and
-    // `shortest_alias_module_path` for why this can only drop ancestors,
-    // never invent one.
-    if let Some(projected) = shortest_alias_module_path(&entry.sym().aliases, &ancestors) {
-        ancestors = projected;
-    }
+    // See `shortened_ancestors` for the walk + L18 alias-shortening; shared
+    // with `public_path` so the two producers can never disagree about which
+    // alias won.
+    let (ancestors, _took_alias_shortcut) = shortened_ancestors(intro, entry, view);
 
     let breadcrumb: Vec<CrumbRef> = ancestors
         .into_iter()
@@ -529,6 +615,122 @@ mod tests {
         )
     }
 
+    /// Alias shortening may drop a **module** prefix and nothing else.
+    ///
+    /// Regression guard for a real defect found on serde 1.0.196. The
+    /// associated type `serde::de::IntoDeserializer::Deserializer` carries an
+    /// alias whose module prefix is `serde`, and `shortest_alias_module_path`
+    /// matches alias segments against ancestor *labels* in order — with no
+    /// check on what it is dropping. It therefore discarded the trait
+    /// `IntoDeserializer` along with the module `de` and produced the public
+    /// path `serde::Deserializer`, which is the *trait* `serde::de::Deserializer`
+    /// — a different declaration.
+    ///
+    /// The visible symptom was address resolution reporting `serde::Deserializer`
+    /// as ambiguous between an `alias` and a `trait`; the quieter symptom was
+    /// `get_symbol` displaying a path that names nothing.
+    ///
+    /// A trait ancestor is not a path prefix a caller may omit, so the
+    /// projection must be abandoned and the physical chain kept.
+    #[test]
+    fn alias_shortening_never_drops_a_non_module_ancestor() {
+        use nudox_ir::{
+            apply::PristineIntroTable,
+            change::{EcosystemId, IntroId, PackageLineageId, PackageName},
+            entry::{Node, Symbol, Visibility},
+            index::RawRef,
+            kind::Kind,
+            kinds::{Module, Trait},
+        };
+
+        fn sym(name: &str, aliases: &[&str]) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::new(),
+                span: 0..0,
+                aliases: aliases
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        // serde (module) -> de (module) -> IntoDeserializer (TRAIT) -> Deserializer
+        let root = IntroId::from_raw([21u8; 32]);
+        let de = IntroId::from_raw([22u8; 32]);
+        let tr = IntroId::from_raw([23u8; 32]);
+        let leaf = IntroId::from_raw([24u8; 32]);
+
+        let mut table = PristineIntroTable::new();
+        for (id, name, parent, kind) in [
+            (root, "serde", None, Kind::Module(Module)),
+            (de, "de", Some(root), Kind::Module(Module)),
+            (
+                tr,
+                "IntoDeserializer",
+                Some(de),
+                Kind::Trait(Trait::builder().build()),
+            ),
+        ] {
+            table.insert_live(
+                id,
+                Entry::new(sym(name, &[]), Node::build(None::<RawRef>, []), kind),
+                parent,
+            );
+        }
+        table.insert_live(
+            leaf,
+            Entry::new(
+                // The alias that triggered the real bug.
+                sym("Deserializer", &["serde::Deserializer"]),
+                Node::build(None::<RawRef>, []),
+                Kind::Module(Module),
+            ),
+            Some(tr),
+        );
+
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("serde"));
+        let view = IrView::with_package(lineage, table);
+        let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);
+        let entry = pkg.view().entry(leaf).expect("leaf entry must exist");
+
+        let (ancestors, took_shortcut) = shortened_ancestors(leaf, entry, pkg.view());
+        let labels: Vec<String> = ancestors.into_iter().map(|(_, l)| l).collect();
+
+        assert!(
+            !took_shortcut,
+            "the projection drops the trait `IntoDeserializer`, so it must be \
+             abandoned; got shortened ancestors {labels:?}"
+        );
+        assert_eq!(
+            labels,
+            vec![
+                "serde".to_string(),
+                "de".to_string(),
+                "IntoDeserializer".to_string()
+            ],
+            "the physical chain must survive intact"
+        );
+        assert_eq!(
+            public_path(
+                leaf,
+                entry,
+                pkg.view(),
+                nudox_ir::reflect::PathStyle::DoubleColon
+            ),
+            None,
+            "no alias improves on the physical chain here, so public_path must \
+             be None rather than a path that names a different declaration"
+        );
+    }
+
     /// L18: a private submodule that shares its name with the crate itself
     /// must not leave the breadcrumb repeating that name — the shortest
     /// re-export alias must win over the raw physical chain.
@@ -607,9 +809,9 @@ mod tests {
     #[test]
     #[ignore = "loads a real Cargo workspace through rust-analyzer; run with --ignored"]
     fn real_memchr_memchr_breadcrumb_has_no_repeated_segment() {
+        use crate::store::source::producer::PackageDescriptor;
         use nudox_languages::produce;
         use nudox_languages::rust::RustProducer;
-        use crate::store::source::producer::PackageDescriptor;
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../result/memchr-2.8.3")
@@ -635,7 +837,8 @@ mod tests {
             &descriptor.lineage,
             &nudox_ir::foreign::Unlinked,
         )
-        .expect("memchr must lower without error for a real checkout").table;
+        .expect("memchr must lower without error for a real checkout")
+        .table;
 
         let view = IrView::with_package(descriptor.lineage, table);
         let pkg = PackageView::build(view, StoreProvenance::TrustedLocal);

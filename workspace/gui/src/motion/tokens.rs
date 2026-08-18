@@ -135,7 +135,11 @@ const _: () = {
         ($token:expr, $name:expr) => {
             assert!(
                 $token.as_millis() <= 240,
-                concat!("motion token ", $name, " exceeds the 240 ms declarative cap (§5.4)"),
+                concat!(
+                    "motion token ",
+                    $name,
+                    " exceeds the 240 ms declarative cap (§5.4)"
+                ),
             );
         };
     }
@@ -285,6 +289,9 @@ mod tests {
         drop(p1);
         assert_eq!(t.active_loops(), 2);
         let p5 = t.acquire_loop_slot();
-        assert!(p5.is_some(), "slot released by drop must be available again");
+        assert!(
+            p5.is_some(),
+            "slot released by drop must be available again"
+        );
     }
 }

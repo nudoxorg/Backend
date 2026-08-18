@@ -38,20 +38,17 @@ pub(crate) fn collect_refs(
             // Skip entries that no longer exist (shouldn't happen in a sealed
             // table, but be defensive against future non-live entries).
             let entry = view.entry(owner)?;
-            let path = indexes
-                .path_of(owner)
-                .map_or_else(|| SharedStr::from(entry.sym().name.as_str()), |p| {
-                    SharedStr::from(&**p)
-                });
+            let path = indexes.path_of(owner).map_or_else(
+                || SharedStr::from(entry.sym().name.as_str()),
+                |p| SharedStr::from(&**p),
+            );
 
             // Derive a short kind label from the entry's kind discriminant.
             // This is the "precision badge" the wire spec describes on `RefRow`.
-            let kind_tag = entry
-                .kind()
-                .discriminant()
-                .map_or_else(|| SharedStr::from("ref"), |d| {
-                    SharedStr::from(format!("{d:?}").as_str())
-                });
+            let kind_tag = entry.kind().discriminant().map_or_else(
+                || SharedStr::from("ref"),
+                |d| SharedStr::from(format!("{d:?}").as_str()),
+            );
 
             Some(RefRow {
                 target: SymbolKey::new(lineage.clone(), owner),

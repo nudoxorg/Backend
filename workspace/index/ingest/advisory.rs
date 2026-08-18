@@ -10,10 +10,10 @@
 //! `SetListing { status: Advisory }` op (the bitemporal `listing_events` row the
 //! Trustfall security policy plane reads — no new query surface, per §12).
 
-use heart::identity::{Id, namespace};
 use crate::enums::ListingStatus;
 use crate::ids::{AdvisoryId, PackageId, PackageStemId};
 use crate::protocol::{AdvisoryWire, CatalogOp};
+use heart::identity::{Id, namespace};
 
 /// A typed, transport-neutral advisory as an upstream feed (OSV) presents it,
 /// before it is mapped onto the catalog. Deliberately a superset of the
@@ -70,7 +70,9 @@ impl AdvisorySource {
 
     /// The [`CatalogOp::UpsertAdvisory`] op for this advisory.
     pub fn to_upsert_op(&self) -> CatalogOp {
-        CatalogOp::UpsertAdvisory { advisory: self.to_wire() }
+        CatalogOp::UpsertAdvisory {
+            advisory: self.to_wire(),
+        }
     }
 }
 
@@ -79,11 +81,7 @@ impl AdvisorySource {
 /// reads. The follower calls this once per version it has determined the
 /// advisory's git range covers (`introduced ≤ rev < fixed`); that ancestry
 /// translation is S-A proper and out of scope here.
-pub fn advisory_listing_event(
-    version: PackageId,
-    valid_from: i64,
-    upstream_id: &str,
-) -> CatalogOp {
+pub fn advisory_listing_event(version: PackageId, valid_from: i64, upstream_id: &str) -> CatalogOp {
     CatalogOp::SetListing {
         version,
         status: ListingStatus::Advisory,

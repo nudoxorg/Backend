@@ -97,6 +97,7 @@ async fn known_symbol_returns_hits() {
     let q = SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -130,6 +131,7 @@ async fn nonsense_query_returns_no_hits() {
     let q = SearchQuery {
         text: "XxXzZzNoSuchSymbol42XxX".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -166,6 +168,7 @@ async fn repeated_identical_queries_produce_stable_results() {
     let q = || SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -203,6 +206,7 @@ async fn dropping_handle_does_not_hang() {
     let q = SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -235,6 +239,7 @@ async fn case_insensitive_lookup_returns_same_hits() {
     let make = |text: &str| SearchQuery {
         text: text.to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -294,6 +299,7 @@ async fn exact_match_outscores_prefix_match() {
     let q = SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -352,6 +358,7 @@ async fn very_long_query_terminates() {
     let q = SearchQuery {
         text: long,
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -380,6 +387,7 @@ async fn non_ascii_query_does_not_panic() {
         let q = SearchQuery {
             text: text.to_string(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             limit: 50,
             packages: Vec::new(),
         };
@@ -414,6 +422,7 @@ async fn search_before_corpus_ready_does_not_error() {
     let q = SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };
@@ -450,6 +459,7 @@ async fn cancelled_gen_does_not_deliver_events_to_next_gen() {
     let q = || SearchQuery {
         text: "Point".to_owned(),
         kinds: Vec::new(),
+        exclude_kinds: Vec::new(),
         limit: 50,
         packages: Vec::new(),
     };

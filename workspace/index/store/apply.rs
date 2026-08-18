@@ -7,20 +7,38 @@
 use sea_orm::sea_query::OnConflict;
 use sea_orm::{ActiveValue::Set, DbBackend, EntityTrait, QueryTrait};
 
-use crate::engine::{self, CatalogEngine};
+use crate::engine::{self, CatalogEngine, Value};
 use crate::entity::{
-    advisories, edges, facets, generations, git_watermarks, listing_events, outbox, packages,
-    package_aliases, repo_facts, repo_lineage, sink_watermarks, versions,
+    advisories, edges, generations, git_watermarks, listing_events, outbox, package_aliases,
+    packages, repo_facts, repo_lineage, sink_watermarks,
 };
-use crate::enums::{OutboxOperation, ParseState, SinkKind, SourceKind};
+use crate::enums::{OutboxOperation, SinkKind, SourceKind, TextEnum};
 use crate::ids::PackageId;
-use crate::protocol::CatalogOp;
+use crate::protocol::{CatalogOp, VersionDelta};
 
 use super::read::current_watermark;
 use super::{ApplyReport, GenerationRegistration, MetaError};
 
 /// Apply a batch of ops atomically, emitting outbox fan-out rows in the same
 /// transaction (ID-3).
+///
+/// Ops are dispatched in **runs**: maximal stretches of consecutive ops that
+/// share a [`CatalogOp`] variant (same variant ⇒ same target table(s) and the
+/// same `OnConflict` clause). Each run is written with one `insert_many` per
+/// table instead of one `insert` per op, which is what made a 20-op ingest
+/// batch cost 7.59ms of `apply_and_commit` — every op was its own prepared
+/// statement + round trip through the engine's locked connection, even
+/// though all 20 were already inside one transaction.
+///
+/// Runs are never merged across a variant boundary, so op order (and hence
+/// final state, when two ops in a batch touch the same row) is unchanged
+/// from the fully sequential form: within a run, `insert_many(..).on_conflict`
+/// applies its rows in the given order, so an earlier row's conflict-update
+/// is still overwritten by a later row's, exactly as issuing them as
+/// separate statements would. Cross-table ordering *within* a run (e.g.
+/// `UpsertVersion`'s versions → edges → facets → outbox) is preserved too:
+/// each table still gets its own statement, issued in the same relative
+/// order as before, just once per run instead of once per op.
 pub fn apply_ops<E: CatalogEngine>(
     engine: &E,
     ops: &[CatalogOp],
@@ -30,10 +48,17 @@ pub fn apply_ops<E: CatalogEngine>(
 
     let transaction_result = engine.transaction(&mut |tx| {
         report = ApplyReport::default();
-        for op in ops {
-            match apply_one(tx, op) {
+        let mut start = 0;
+        while start < ops.len() {
+            let variant = std::mem::discriminant(&ops[start]);
+            let mut end = start + 1;
+            while end < ops.len() && std::mem::discriminant(&ops[end]) == variant {
+                end += 1;
+            }
+            let run = &ops[start..end];
+            match apply_run(tx, run) {
                 Ok(outbox_rows) => {
-                    report.applied += 1;
+                    report.applied += run.len();
                     report.outbox_rows += outbox_rows;
                 }
                 Err(error) => {
@@ -48,6 +73,7 @@ pub fn apply_ops<E: CatalogEngine>(
                     return Err(engine_error);
                 }
             }
+            start = end;
         }
         Ok(())
     });
@@ -58,19 +84,28 @@ pub fn apply_ops<E: CatalogEngine>(
     }
 }
 
-fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError> {
-    match op {
-        CatalogOp::UpsertPackage { stem, repo_url } => {
-            let am = packages::ActiveModel {
-                stem_id: Set(stem.stem_id),
-                ecosystem: Set(stem.ecosystem.as_token().to_owned()),
-                name_struct: Set(stem.name_struct.clone()),
-                name_canonical: Set(stem.name_canonical.clone()),
-                name_original: Set(stem.name_original.clone()),
-                repo_url: Set(repo_url.clone()),
-                created_at: Set(now_placeholder()),
-            };
-            let stmt = packages::Entity::insert(am)
+/// Apply one run of same-variant ops, returning the outbox rows fanned out.
+/// `run` is guaranteed non-empty and every element shares `run[0]`'s variant
+/// (enforced by `apply_ops`'s grouping loop), so each arm can destructure
+/// every element with the same pattern.
+fn apply_run(tx: &dyn CatalogEngine, run: &[CatalogOp]) -> Result<usize, MetaError> {
+    match &run[0] {
+        CatalogOp::UpsertPackage { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::UpsertPackage { stem, repo_url } = op else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                packages::ActiveModel {
+                    stem_id: Set(stem.stem_id),
+                    ecosystem: Set(stem.ecosystem.as_token().to_owned()),
+                    name_struct: Set(stem.name_struct.clone()),
+                    name_canonical: Set(stem.name_canonical.clone()),
+                    name_original: Set(stem.name_original.clone()),
+                    repo_url: Set(repo_url.clone()),
+                    created_at: Set(now_placeholder()),
+                }
+            });
+            let stmt = packages::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::column(packages::Column::StemId)
                         .update_columns([
@@ -87,45 +122,87 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::UpsertVersion {
-            coordinates,
-            published_at,
-            toolchain,
-            license,
-            edges: edge_wires,
-            facets: facet_wire,
-            source,
-        } => {
-            upsert_version(
+        CatalogOp::UpsertVersion { .. } => {
+            let changed = upsert_versions_batch(tx, run)?;
+            emit_outbox_rows(
                 tx,
-                coordinates,
-                *published_at,
-                toolchain.as_ref(),
-                license.as_deref(),
-                edge_wires,
-                facet_wire,
-                source.as_ref(),
-            )?;
-            emit_outbox_row(
-                tx,
-                Some(coordinates.version_id),
-                None,
+                changed.iter().copied(),
                 SinkKind::Text,
                 OutboxOperation::Upsert,
             )?;
-            Ok(1)
+            Ok(changed.len())
         }
 
-        CatalogOp::SetRepoFacts { stem, facts } => {
-            let am = repo_facts::ActiveModel {
-                stem_id: Set(*stem),
-                stars: Set(facts.stars),
-                last_activity_at: Set(facts.last_activity_at),
-                archived: Set(facts.archived),
-                default_branch: Set(facts.default_branch.clone()),
-                fetched_at: Set(facts.fetched_at),
-            };
-            let stmt = repo_facts::Entity::insert(am)
+        CatalogOp::VersionDelta { .. } => {
+            let mut outbox_rows = 0;
+            for op in run {
+                let CatalogOp::VersionDelta { delta } = op else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                match delta {
+                    VersionDelta::Added { version } | VersionDelta::Changed { version } => {
+                        let upsert = CatalogOp::UpsertVersion {
+                            coordinates: version.coordinates.clone(),
+                            published_at: version.published_at,
+                            toolchain: version.toolchain.clone(),
+                            license: version.license.clone(),
+                            edges: version.edges.clone(),
+                            facets: version.facets.clone(),
+                            source: version.source.clone(),
+                        };
+                        let changed = upsert_versions_batch(tx, &[upsert])?;
+                        emit_outbox_rows(
+                            tx,
+                            changed.iter().copied(),
+                            SinkKind::Text,
+                            OutboxOperation::Upsert,
+                        )?;
+                        outbox_rows += changed.len();
+                    }
+                    VersionDelta::Removed { version_id, .. } => {
+                        let version_blob = crate::ids::version_id::to_blob(version_id).to_vec();
+                        let uuid_blob = version_id.as_uuid().as_bytes().to_vec();
+                        tx.execute(
+                            "DELETE FROM edges WHERE dependent_version = ?",
+                            &[Value::Blob(uuid_blob.clone())],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM facets WHERE version_id = ?",
+                            &[Value::Blob(uuid_blob)],
+                        )?;
+                        tx.execute(
+                            "DELETE FROM versions WHERE id = ?",
+                            &[Value::Blob(version_blob)],
+                        )?;
+                        emit_outbox_row(
+                            tx,
+                            Some(*version_id),
+                            None,
+                            SinkKind::Text,
+                            OutboxOperation::Delete,
+                        )?;
+                        outbox_rows += 1;
+                    }
+                }
+            }
+            Ok(outbox_rows)
+        }
+
+        CatalogOp::SetRepoFacts { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::SetRepoFacts { stem, facts } = op else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                repo_facts::ActiveModel {
+                    stem_id: Set(*stem),
+                    stars: Set(facts.stars),
+                    last_activity_at: Set(facts.last_activity_at),
+                    archived: Set(facts.archived),
+                    default_branch: Set(facts.default_branch.clone()),
+                    fetched_at: Set(facts.fetched_at),
+                }
+            });
+            let stmt = repo_facts::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::column(repo_facts::Column::StemId)
                         .update_columns([
@@ -142,39 +219,52 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::SetListing {
-            version,
-            status,
-            valid_from,
-            reason,
-        } => {
-            let am = listing_events::ActiveModel {
-                seq: sea_orm::ActiveValue::NotSet,
-                version_id: Set(*version.as_uuid()),
-                status: Set(*status),
-                reason: Set(reason.clone()),
-                valid_from: Set(*valid_from),
-                valid_to: Set(None),
-                recorded_at: Set(now_placeholder()),
-            };
-            let stmt = listing_events::Entity::insert(am).build(DbBackend::Sqlite);
+        CatalogOp::SetListing { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::SetListing {
+                    version,
+                    status,
+                    valid_from,
+                    reason,
+                } = op
+                else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                listing_events::ActiveModel {
+                    seq: sea_orm::ActiveValue::NotSet,
+                    version_id: Set(*version.as_uuid()),
+                    status: Set(*status),
+                    reason: Set(reason.clone()),
+                    valid_from: Set(*valid_from),
+                    valid_to: Set(None),
+                    recorded_at: Set(now_placeholder()),
+                }
+            });
+            // No `OnConflict`: every listing event is an append (bitemporal
+            // log), matching the original single-row `insert`.
+            let stmt = listing_events::Entity::insert_many(models).build(DbBackend::Sqlite);
             engine::exec(tx, stmt)?;
             Ok(0)
         }
 
-        CatalogOp::UpsertAdvisory { advisory } => {
-            let am = advisories::ActiveModel {
-                id: Set(advisory.id),
-                stem_id: Set(advisory.stem_id),
-                version_range: Set(advisory.version_range.clone()),
-                severity: Set(advisory.severity.clone()),
-                summary: Set(advisory.summary.clone()),
-                url: Set(advisory.url.clone()),
-                valid_from: Set(advisory.valid_from),
-                valid_to: Set(advisory.valid_to),
-                recorded_at: Set(advisory.recorded_at),
-            };
-            let stmt = advisories::Entity::insert(am)
+        CatalogOp::UpsertAdvisory { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::UpsertAdvisory { advisory } = op else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                advisories::ActiveModel {
+                    id: Set(advisory.id),
+                    stem_id: Set(advisory.stem_id),
+                    version_range: Set(advisory.version_range.clone()),
+                    severity: Set(advisory.severity.clone()),
+                    summary: Set(advisory.summary.clone()),
+                    url: Set(advisory.url.clone()),
+                    valid_from: Set(advisory.valid_from),
+                    valid_to: Set(advisory.valid_to),
+                    recorded_at: Set(advisory.recorded_at),
+                }
+            });
+            let stmt = advisories::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::column(advisories::Column::Id)
                         .update_columns([
@@ -194,18 +284,24 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::SourceMoved {
-            stem,
-            rev,
-            checked_at,
-        } => {
-            let am = git_watermarks::ActiveModel {
-                stem_id: Set(*stem),
-                last_rev: Set(Some(rev.0.to_string())),
-                last_checked_at: Set(*checked_at),
-                last_error: Set(None),
-            };
-            let stmt = git_watermarks::Entity::insert(am)
+        CatalogOp::SourceMoved { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::SourceMoved {
+                    stem,
+                    rev,
+                    checked_at,
+                } = op
+                else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                git_watermarks::ActiveModel {
+                    stem_id: Set(*stem),
+                    last_rev: Set(Some(rev.0.to_string())),
+                    last_checked_at: Set(*checked_at),
+                    last_error: Set(None),
+                }
+            });
+            let stmt = git_watermarks::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::column(git_watermarks::Column::StemId)
                         .update_columns([
@@ -219,23 +315,36 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::SetIrStatus {
-            version,
-            status,
-            generation,
-        } => {
-            if let Some(gen_wire) = generation {
-                let am = generations::ActiveModel {
-                    gen_stamp: Set(gen_wire.gen_stamp),
-                    version_id: Set(*version.as_uuid()),
-                    channel_tip: Set(gen_wire.channel_tip),
-                    job_key: Set(None),
-                    producer_toolchain: Set(None),
-                    sealed_at: Set(None),
-                    ir_status: Set(*status),
-                    resolution_stats: Set(None),
-                };
-                let stmt = generations::Entity::insert(am)
+        CatalogOp::SetIrStatus { .. } => {
+            // Only ops carrying a generation write anything (see `apply_one`'s
+            // original `if let Some(gen_wire) = generation`); ops without one
+            // are dropped from the batch, same as before.
+            let models: Vec<_> = run
+                .iter()
+                .filter_map(|op| {
+                    let CatalogOp::SetIrStatus {
+                        version,
+                        status,
+                        generation,
+                    } = op
+                    else {
+                        unreachable!("run is homogeneous by construction")
+                    };
+                    let gen_wire = generation.as_ref()?;
+                    Some(generations::ActiveModel {
+                        gen_stamp: Set(gen_wire.gen_stamp),
+                        version_id: Set(*version.as_uuid()),
+                        channel_tip: Set(gen_wire.channel_tip),
+                        job_key: Set(None),
+                        producer_toolchain: Set(None),
+                        sealed_at: Set(None),
+                        ir_status: Set(*status),
+                        resolution_stats: Set(None),
+                    })
+                })
+                .collect();
+            if !models.is_empty() {
+                let stmt = generations::Entity::insert_many(models)
                     .on_conflict(
                         OnConflict::column(generations::Column::GenStamp)
                             .update_columns([
@@ -250,14 +359,19 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::Refresh { stem } => {
-            let am = git_watermarks::ActiveModel {
-                stem_id: Set(*stem),
-                last_rev: Set(None),
-                last_checked_at: Set(now_placeholder()),
-                last_error: Set(None),
-            };
-            let stmt = git_watermarks::Entity::insert(am)
+        CatalogOp::Refresh { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::Refresh { stem } = op else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                git_watermarks::ActiveModel {
+                    stem_id: Set(*stem),
+                    last_rev: Set(None),
+                    last_checked_at: Set(now_placeholder()),
+                    last_error: Set(None),
+                }
+            });
+            let stmt = git_watermarks::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::column(git_watermarks::Column::StemId)
                         .update_columns([git_watermarks::Column::LastCheckedAt])
@@ -268,22 +382,28 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::UpsertAlias {
-            ecosystem,
-            kind,
-            alias,
-            stem,
-            confidence,
-        } => {
-            let am = package_aliases::ActiveModel {
-                ecosystem: Set(ecosystem.as_token().to_owned()),
-                alias_kind: Set(kind.to_string()),
-                alias: Set(alias.to_string()),
-                stem_id: Set(*stem),
-                confidence: Set(*confidence),
-                recorded_at: Set(now_placeholder()),
-            };
-            let stmt = package_aliases::Entity::insert(am)
+        CatalogOp::UpsertAlias { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::UpsertAlias {
+                    ecosystem,
+                    kind,
+                    alias,
+                    stem,
+                    confidence,
+                } = op
+                else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                package_aliases::ActiveModel {
+                    ecosystem: Set(ecosystem.as_token().to_owned()),
+                    alias_kind: Set(kind.to_string()),
+                    alias: Set(alias.to_string()),
+                    stem_id: Set(*stem),
+                    confidence: Set(*confidence),
+                    recorded_at: Set(now_placeholder()),
+                }
+            });
+            let stmt = package_aliases::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::columns([
                         package_aliases::Column::Ecosystem,
@@ -302,26 +422,32 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
             Ok(0)
         }
 
-        CatalogOp::UpsertLineage {
-            stem,
-            relation,
-            target,
-            evidence,
-            fork_point_rev,
-            overlap_ratio,
-            confidence,
-        } => {
-            let am = repo_lineage::ActiveModel {
-                stem_id: Set(*stem),
-                relation: Set(*relation),
-                target_stem: Set(*target),
-                evidence: Set(*evidence),
-                fork_point_rev: Set(fork_point_rev.as_ref().map(|r| r.0.to_string())),
-                overlap_ratio: Set(overlap_ratio.map(f64::from)),
-                confidence: Set(*confidence),
-                recorded_at: Set(now_placeholder()),
-            };
-            let stmt = repo_lineage::Entity::insert(am)
+        CatalogOp::UpsertLineage { .. } => {
+            let models = run.iter().map(|op| {
+                let CatalogOp::UpsertLineage {
+                    stem,
+                    relation,
+                    target,
+                    evidence,
+                    fork_point_rev,
+                    overlap_ratio,
+                    confidence,
+                } = op
+                else {
+                    unreachable!("run is homogeneous by construction")
+                };
+                repo_lineage::ActiveModel {
+                    stem_id: Set(*stem),
+                    relation: Set(*relation),
+                    target_stem: Set(*target),
+                    evidence: Set(*evidence),
+                    fork_point_rev: Set(fork_point_rev.as_ref().map(|r| r.0.to_string())),
+                    overlap_ratio: Set(overlap_ratio.map(f64::from)),
+                    confidence: Set(*confidence),
+                    recorded_at: Set(now_placeholder()),
+                }
+            });
+            let stmt = repo_lineage::Entity::insert_many(models)
                 .on_conflict(
                     OnConflict::columns([
                         repo_lineage::Column::StemId,
@@ -344,79 +470,124 @@ fn apply_one(tx: &dyn CatalogEngine, op: &CatalogOp) -> Result<usize, MetaError>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn upsert_version(
+/// Batch-write the `versions`, `edges`, and `facets` rows for a run of
+/// `UpsertVersion` ops: one `insert_many` per table (edges flattened across
+/// every op in the run) instead of `1 + edges.len() + 1` statements per op.
+/// `run` must be non-empty and every element `UpsertVersion` (enforced by
+/// `apply_run`'s caller).
+fn upsert_versions_batch(
     tx: &dyn CatalogEngine,
-    coordinates: &crate::protocol::VersionCoordinates,
-    published_at: Option<i64>,
-    toolchain: Option<&crate::protocol::ToolchainRef>,
-    license: Option<&str>,
-    edge_wires: &[crate::protocol::EdgeWire],
-    facet_wire: &crate::protocol::FacetWire,
-    source: Option<&crate::protocol::SourceAcquisitionWire>,
-) -> Result<(), MetaError> {
-    // Metadata upsert only — never touch lifecycle columns on conflict.
-    let source_kind = source.map_or(SourceKind::Unknown, |s| s.source_kind);
-    let am = versions::ActiveModel {
-        id: Set(*coordinates.version_id.as_uuid()),
-        stem_id: Set(coordinates.stem_id),
-        version_canonical: Set(coordinates.version_canonical.clone()),
-        version_original: Set(coordinates.version_original.clone()),
-        published_at: Set(published_at),
-        toolchain: Set(toolchain.map(|t| t.0.to_string())),
-        license_spdx: Set(license.map(std::borrow::ToOwned::to_owned)),
-        yanked_upstream: Set(false),
-        parse_state: Set(ParseState::Pending),
-        parse_phase: Set(None),
-        attempts: Set(0),
-        failure: Set(None),
-        source_kind: Set(source_kind),
-        source_pack: Set(source.and_then(|s| s.source_pack)),
-        source_rev: Set(source.and_then(|s| s.source_rev.clone())),
-        registry_checksum: Set(source.and_then(|s| s.registry_checksum.clone())),
-        registry_package_uri: Set(source.and_then(|s| s.registry_package_uri.clone())),
-        // W4b conditional-GET cache columns: not part of this metadata-only
-        // upsert's contract (see `store::lifecycle::set_archive_cache_meta`
-        // for the dedicated writer). `None` only matters for the INSERT arm
-        // (a fresh version starts with no cached validators); the UPDATE arm
-        // below deliberately omits both columns from `update_columns` so an
-        // existing row's cache is never clobbered by a metadata upsert.
-        archive_etag: Set(None),
-        archive_last_modified: Set(None),
-    };
-    let stmt = versions::Entity::insert(am)
-        .on_conflict(
-            OnConflict::column(versions::Column::Id)
-                .update_columns([
-                    versions::Column::StemId,
-                    versions::Column::VersionCanonical,
-                    versions::Column::VersionOriginal,
-                    versions::Column::PublishedAt,
-                    versions::Column::Toolchain,
-                    versions::Column::LicenseSpdx,
-                    versions::Column::YankedUpstream,
-                    versions::Column::SourceKind,
-                    versions::Column::SourcePack,
-                    versions::Column::SourceRev,
-                    versions::Column::RegistryChecksum,
-                    versions::Column::RegistryPackageUri,
-                ])
-                .to_owned(),
-        )
-        .build(DbBackend::Sqlite);
-    engine::exec(tx, stmt)?;
-
-    for edge in edge_wires {
-        let am = edges::ActiveModel {
-            dependent_version: Set(*coordinates.version_id.as_uuid()),
-            dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
-            dep_name_canonical: Set(edge.dep_name_canonical.clone()),
-            kind: Set(edge.kind),
-            requirement: Set(edge.requirement.clone()),
-            resolved_stem: Set(edge.resolved_stem),
-            source: Set(edge.source),
+    run: &[CatalogOp],
+) -> Result<Vec<PackageId>, MetaError> {
+    // Use a conditional upsert so SQLite reports zero affected rows when the
+    // re-enumerated metadata is byte-for-byte unchanged. This is the delta
+    // boundary for the outbox: only versions whose catalog metadata changed
+    // need another projection upsert.
+    let mut changed = Vec::with_capacity(run.len());
+    for op in run {
+        let CatalogOp::UpsertVersion {
+            coordinates,
+            published_at,
+            toolchain,
+            license,
+            source,
+            ..
+        } = op
+        else {
+            unreachable!("run is homogeneous by construction")
         };
-        let stmt = edges::Entity::insert(am)
+        let source_kind = source
+            .as_ref()
+            .map_or(SourceKind::Unknown, |s| s.source_kind);
+        let source_pack = source.as_ref().and_then(|s| s.source_pack);
+        let source_rev = source.as_ref().and_then(|s| s.source_rev.as_deref());
+        let registry_checksum = source.as_ref().and_then(|s| s.registry_checksum.as_deref());
+        let registry_package_uri = source
+            .as_ref()
+            .and_then(|s| s.registry_package_uri.as_deref());
+        let params = vec![
+            Value::Blob(crate::ids::version_id::to_blob(&coordinates.version_id).to_vec()),
+            Value::Blob(coordinates.stem_id.to_blob().to_vec()),
+            Value::text(&coordinates.version_canonical),
+            Value::text(&coordinates.version_original),
+            published_at.map_or(Value::Null, Value::Integer),
+            Value::from_optional(toolchain.as_ref(), |t| Value::text(t.0.to_string())),
+            Value::from_optional(license.as_ref(), |v| Value::text(v.clone())),
+            Value::Integer(0),
+            Value::text(source_kind.as_token()),
+            Value::from_optional(source_pack, |v| Value::Blob(v.to_blob().to_vec())),
+            Value::from_optional(source_rev, Value::text),
+            Value::from_optional(registry_checksum, Value::text),
+            Value::from_optional(registry_package_uri, Value::text),
+        ];
+        let affected = tx.execute(
+            "INSERT INTO versions (
+                id, stem_id, version_canonical, version_original, published_at,
+                toolchain, license_spdx, yanked_upstream, source_kind,
+                source_pack, source_rev, registry_checksum, registry_package_uri,
+                parse_state, parse_phase, attempts, failure
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, 0, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+                stem_id = excluded.stem_id,
+                version_canonical = excluded.version_canonical,
+                version_original = excluded.version_original,
+                published_at = excluded.published_at,
+                toolchain = excluded.toolchain,
+                license_spdx = excluded.license_spdx,
+                yanked_upstream = excluded.yanked_upstream,
+                source_kind = excluded.source_kind,
+                source_pack = excluded.source_pack,
+                source_rev = excluded.source_rev,
+                registry_checksum = excluded.registry_checksum,
+                registry_package_uri = excluded.registry_package_uri
+            WHERE versions.stem_id IS NOT excluded.stem_id
+               OR versions.version_canonical IS NOT excluded.version_canonical
+               OR versions.version_original IS NOT excluded.version_original
+               OR versions.published_at IS NOT excluded.published_at
+               OR versions.toolchain IS NOT excluded.toolchain
+               OR versions.license_spdx IS NOT excluded.license_spdx
+               OR versions.yanked_upstream IS NOT excluded.yanked_upstream
+               OR versions.source_kind IS NOT excluded.source_kind
+               OR versions.source_pack IS NOT excluded.source_pack
+               OR versions.source_rev IS NOT excluded.source_rev
+               OR versions.registry_checksum IS NOT excluded.registry_checksum
+               OR versions.registry_package_uri IS NOT excluded.registry_package_uri",
+            &params,
+        )?;
+        if affected != 0 {
+            changed.push(coordinates.version_id);
+        }
+    }
+
+    // Flatten every op's edges into one insert, preserving both cross-op
+    // order (op[0]'s edges before op[1]'s, …) and within-op order, so a
+    // duplicate key's conflict-update still resolves to the same value it
+    // would issuing one statement per edge.
+    let edge_models: Vec<_> = run
+        .iter()
+        .flat_map(|op| {
+            let CatalogOp::UpsertVersion {
+                coordinates,
+                edges: edge_wires,
+                ..
+            } = op
+            else {
+                unreachable!("run is homogeneous by construction")
+            };
+            let dependent_version = *coordinates.version_id.as_uuid();
+            edge_wires.iter().map(move |edge| edges::ActiveModel {
+                dependent_version: Set(dependent_version),
+                dep_ecosystem: Set(edge.dep_ecosystem.as_token().to_owned()),
+                dep_name_canonical: Set(edge.dep_name_canonical.clone()),
+                kind: Set(edge.kind),
+                requirement: Set(edge.requirement.clone()),
+                resolved_stem: Set(edge.resolved_stem),
+                source: Set(edge.source),
+            })
+        })
+        .collect();
+    if !edge_models.is_empty() {
+        let stmt = edges::Entity::insert_many(edge_models)
             .on_conflict(
                 OnConflict::columns([
                     edges::Column::DependentVersion,
@@ -435,26 +606,44 @@ fn upsert_version(
         engine::exec(tx, stmt)?;
     }
 
-    let am = facets::ActiveModel {
-        version_id: Set(*coordinates.version_id.as_uuid()),
-        keywords: Set(facet_wire.keywords.clone()),
-        quality_ppm: Set(facet_wire.quality_ppm),
-        extras: Set(facet_wire.extras.clone()),
-    };
-    let stmt = facets::Entity::insert(am)
-        .on_conflict(
-            OnConflict::column(facets::Column::VersionId)
-                .update_columns([
-                    facets::Column::Keywords,
-                    facets::Column::QualityPpm,
-                    facets::Column::Extras,
-                ])
-                .to_owned(),
-        )
-        .build(DbBackend::Sqlite);
-    engine::exec(tx, stmt)?;
+    // Facets are part of the version's search projection too. A plain
+    // `ON CONFLICT DO UPDATE` would overwrite them correctly but would not
+    // tell the delta boundary that a facet-only change occurred. Keep the
+    // conditional write inside the caller's transaction and merge its
+    // affected-row signal with the version metadata signal above.
+    for op in run {
+        let CatalogOp::UpsertVersion {
+            coordinates,
+            facets: facet_wire,
+            ..
+        } = op
+        else {
+            unreachable!("run is homogeneous by construction")
+        };
+        let facet_params = vec![
+            Value::Blob(coordinates.version_id.as_uuid().as_bytes().to_vec()),
+            Value::from_optional(facet_wire.keywords.as_deref(), Value::text),
+            Value::from_optional(facet_wire.quality_ppm, Value::Integer),
+            Value::from_optional(facet_wire.extras.as_deref(), Value::text),
+        ];
+        let affected = tx.execute(
+            "INSERT INTO facets (version_id, keywords, quality_ppm, extras)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(version_id) DO UPDATE SET
+                 keywords = excluded.keywords,
+                 quality_ppm = excluded.quality_ppm,
+                 extras = excluded.extras
+             WHERE facets.keywords IS NOT excluded.keywords
+                OR facets.quality_ppm IS NOT excluded.quality_ppm
+                OR facets.extras IS NOT excluded.extras",
+            &facet_params,
+        )?;
+        if affected != 0 && !changed.contains(&coordinates.version_id) {
+            changed.push(coordinates.version_id);
+        }
+    }
 
-    Ok(())
+    Ok(changed)
 }
 
 /// Emit one outbox row in the caller's transaction (ID-3).
@@ -474,6 +663,36 @@ pub fn emit_outbox_row(
         created_at: Set(now_placeholder()),
     };
     let stmt = outbox::Entity::insert(am).build(DbBackend::Sqlite);
+    engine::exec(tx, stmt)?;
+    Ok(())
+}
+
+/// Batched form of [`emit_outbox_row`]: emit one outbox row per `version` in
+/// a single `INSERT` instead of one round-trip (and, outside an explicit
+/// transaction, one autocommit) per row. All rows share `sink`/`op` and carry
+/// no `gen_stamp`, matching every current facet-refresh caller; extend the
+/// signature if a caller ever needs per-row sink/op/gen_stamp.
+pub fn emit_outbox_rows(
+    tx: &dyn CatalogEngine,
+    versions: impl IntoIterator<Item = PackageId>,
+    sink: SinkKind,
+    op: OutboxOperation,
+) -> Result<(), MetaError> {
+    let models: Vec<outbox::ActiveModel> = versions
+        .into_iter()
+        .map(|version| outbox::ActiveModel {
+            seq: sea_orm::ActiveValue::NotSet,
+            version_id: Set(Some(*version.as_uuid())),
+            gen_stamp: Set(None),
+            sink_kind: Set(sink),
+            op: Set(op),
+            created_at: Set(now_placeholder()),
+        })
+        .collect();
+    if models.is_empty() {
+        return Ok(());
+    }
+    let stmt = outbox::Entity::insert_many(models).build(DbBackend::Sqlite);
     engine::exec(tx, stmt)?;
     Ok(())
 }

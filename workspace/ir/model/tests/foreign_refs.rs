@@ -33,10 +33,7 @@ fn lineage() -> PackageLineageId {
 }
 
 fn core_lineage() -> PackageLineageId {
-    PackageLineageId::new(
-        EcosystemId::new("rust-sysroot"),
-        PackageName::new("core"),
-    )
+    PackageLineageId::new(EcosystemId::new("rust-sysroot"), PackageName::new("core"))
 }
 
 fn sym(name: &str) -> Symbol {
@@ -67,11 +64,7 @@ fn memchr_like() -> Lowering<&'static str> {
         ("impl#debug", "core::fmt::Debug", "Debug"),
         ("impl#iterator", "core::iter::Iterator", "Iterator"),
     ] {
-        let of = low.nominal_import(ForeignKey::in_package(
-            core_lineage(),
-            trait_path,
-            display,
-        ));
+        let of = low.nominal_import(ForeignKey::in_package(core_lineage(), trait_path, display));
         low.declare(
             id,
             None,
@@ -127,7 +120,11 @@ fn foreign_trait_impls_seal_as_named_foreign_refs() {
     traits.sort();
     assert_eq!(
         traits,
-        vec!["Clone".to_owned(), "Debug".to_owned(), "Iterator".to_owned()],
+        vec![
+            "Clone".to_owned(),
+            "Debug".to_owned(),
+            "Iterator".to_owned()
+        ],
         "each impl must name its own trait; identical labels mean the \
          reference lost its identity"
     );
@@ -172,7 +169,10 @@ fn a_resolver_links_a_named_reference_to_a_stable_ref() {
             None => named_only += 1,
         }
     }
-    assert_eq!(linked, 1, "exactly the trait the resolver knew about is linked");
+    assert_eq!(
+        linked, 1,
+        "exactly the trait the resolver knew about is linked"
+    );
     assert_eq!(
         named_only, 2,
         "the two the resolver did not know stay named-but-unlinked, \

@@ -29,8 +29,8 @@ use std::fmt::Write as _;
 use crate::ids::PackageStemId;
 use crate::protocol::{CatalogOp, GitRev};
 
-use crate::ingest::enumerate::{enumerate_git_versions, Error as EnumerateError};
-use crate::ingest::git::{GitRepository, Error as GitRepositoryError};
+use crate::ingest::enumerate::{Error as EnumerateError, enumerate_git_versions};
+use crate::ingest::git::{Error as GitRepositoryError, GitRepository};
 
 /// What one [`GitMonitor::tick`] observed — the driver turns this into a
 /// watermark write and (when changed) an atomic op batch.
@@ -109,7 +109,12 @@ impl<Repository: GitRepository> GitMonitor<Repository> {
             rev: GitRev(digest.clone().into()),
             checked_at,
         });
-        ops.extend(enumerate_git_versions(&self.git, repo_slug, repo_url, commit_time)?);
+        ops.extend(enumerate_git_versions(
+            &self.git,
+            repo_slug,
+            repo_url,
+            commit_time,
+        )?);
 
         Ok(TickOutcome::Moved { rev: digest, ops })
     }
@@ -123,8 +128,10 @@ fn combined_ref_digest(refs: &[crate::ingest::git::LsRemoteRef]) -> String {
     use sha2::{Digest, Sha256};
 
     // Sort so the digest is independent of line order.
-    let mut lines: Vec<String> =
-        refs.iter().map(|entry| format!("{}\t{}", entry.object_id, entry.reference)).collect();
+    let mut lines: Vec<String> = refs
+        .iter()
+        .map(|entry| format!("{}\t{}", entry.object_id, entry.reference))
+        .collect();
     lines.sort();
 
     let mut hasher = Sha256::new();

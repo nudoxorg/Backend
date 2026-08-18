@@ -552,9 +552,10 @@ fn decode_entities(text: &str) -> String {
                     .and_then(|num| {
                         num.strip_prefix('x')
                             .or_else(|| num.strip_prefix('X'))
-                            .map_or_else(|| num.parse::<u32>().ok(), |hex| {
-                                u32::from_str_radix(hex, 16).ok()
-                            })
+                            .map_or_else(
+                                || num.parse::<u32>().ok(),
+                                |hex| u32::from_str_radix(hex, 16).ok(),
+                            )
                     })
                     .and_then(char::from_u32),
             };

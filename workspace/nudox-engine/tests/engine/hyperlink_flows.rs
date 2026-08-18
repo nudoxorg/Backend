@@ -36,6 +36,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nudox_engine::store::package::{PackageView, Provenance};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -45,7 +46,6 @@ use nudox_ir::{
     kinds::Module,
     view::IrView,
 };
-use nudox_engine::store::package::{PackageView, Provenance};
 
 use nudox_engine::chunk;
 use nudox_engine::wire::{
@@ -178,6 +178,7 @@ fn bare_shortcut_link_becomes_symbol_link_through_chunk() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
         "child_fn",
     );
@@ -236,6 +237,7 @@ fn backtick_shortcut_link_becomes_symbol_link_through_chunk() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
         "child_fn",
     );
@@ -296,6 +298,7 @@ fn transposed_backtick_shortcut_is_recorded_as_a_repair() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
         "child_fn",
     );
@@ -367,6 +370,7 @@ fn cross_crate_link_strips_brackets_and_emits_plain_text() {
             vec![DocLink {
                 target: "tower::Service".to_owned(),
                 label: Some("Service".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -444,6 +448,7 @@ fn callout_lead_survives_verbatim_and_is_not_a_link() {
             vec![DocLink {
                 target: "something".to_owned(),
                 label: Some("something".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -608,6 +613,7 @@ fn ambiguous_leaf_name_does_not_resolve_to_wrong_symbol() {
             vec![DocLink {
                 target: "io::Read".to_owned(),
                 label: Some("io::Read".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -631,20 +637,20 @@ fn ambiguous_leaf_name_does_not_resolve_to_wrong_symbol() {
                 ..
             }
         )
-    })
-        && let InlineRun::Link {
-                target: LinkTarget::Symbol { key },
-                ..
-            } = link {
-            // Both are valid because we can't know which one is "io::Read"
-            // without a real module path — but neither must be a fabricated one.
-            assert!(
-                key.intro == read_a_id || key.intro == read_b_id,
-                "the Symbol link must point at one of the two 'Read' entries; \
+    }) && let InlineRun::Link {
+        target: LinkTarget::Symbol { key },
+        ..
+    } = link
+    {
+        // Both are valid because we can't know which one is "io::Read"
+        // without a real module path — but neither must be a fabricated one.
+        assert!(
+            key.intro == read_a_id || key.intro == read_b_id,
+            "the Symbol link must point at one of the two 'Read' entries; \
                  got intro {:?}",
-                key.intro
-            );
-        }
+            key.intro
+        );
+    }
     // No assertion that a link MUST be present — "no link" is the correct
     // fallback when ambiguity cannot be resolved.
 }
@@ -663,6 +669,7 @@ fn shortcut_link_inside_strong_is_still_a_link() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
         "child_fn",
     );
@@ -751,6 +758,7 @@ fn trailing_prose_after_shortcut_link_is_not_lost() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
         "child_fn",
     );
@@ -808,6 +816,7 @@ fn qualified_path_shortcut_resolves_via_leaf_fallback() {
             vec![DocLink {
                 target: "Router::with_state".to_owned(),
                 label: Some("Router::with_state".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -999,6 +1008,7 @@ fn namespace_tagged_target_produces_symbol_link_through_chunk() {
                 // same-name fields/consts.  The `!m` suffix must be stripped.
                 target: "Router::with_state!m".to_owned(),
                 label: Some("Router::with_state".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -1061,6 +1071,7 @@ fn dot_path_namespace_tagged_target_produces_symbol_link_through_chunk() {
             vec![DocLink {
                 target: "axum.routing.Router.with_state!m".to_owned(),
                 label: Some("Router::with_state".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -1124,6 +1135,7 @@ fn anchor_style_target_produces_symbol_link_through_chunk() {
             vec![DocLink {
                 target: "#method.with_state".to_owned(),
                 label: Some("with_state".to_owned()),
+                source_span: None,
             }],
         )),
         None,
@@ -1192,10 +1204,12 @@ fn self_and_crate_prefixed_paths_produce_symbol_links_through_chunk() {
                 DocLink {
                     target: "Self::bar".to_owned(),
                     label: Some("Self::bar".to_owned()),
+                    source_span: None,
                 },
                 DocLink {
                     target: "crate::routing::Router".to_owned(),
                     label: Some("crate::routing::Router".to_owned()),
+                    source_span: None,
                 },
             ],
         )),

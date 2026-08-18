@@ -60,7 +60,7 @@ use crate::pack::sync::ObjectPackContentIo;
 pub const OBJECT_PACK_ALPN: &[u8] = b"nudox/object-pack/1";
 
 /// Default timeout for a single provide/fetch exchange.
-const OBJECT_PACK_TIMEOUT: Duration = Duration::from_secs(120);
+const OBJECT_PACK_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Hard cap on a single framed message (matches ir-sync's frame discipline).
 /// Whole-pack payloads can be large, so this is generous but still bounds a

@@ -25,12 +25,12 @@
 
 use std::collections::HashMap;
 
-use heart::{PackageId, Scored, cursor::Cursor, Language, search::Page};
+use heart::{Language, PackageId, Scored, cursor::Cursor, search::Page};
 
 use crate::{GlobalPackage, error::SearchError, metadata::Synonyms};
 
-use super::{SearchKey, finite_score, ranking, structured::StructuredQuery, tantivy::PackageIndex};
 use super::ranking::{entity, interleave, multi_parent, policy, popularity, rrf};
+use super::{SearchKey, finite_score, ranking, structured::StructuredQuery, tantivy::PackageIndex};
 
 /// The quality assigned to a package with no extracted facets yet — a neutral
 /// midpoint so the fusion multiplier neither erases (`0.0`) nor inflates such a
@@ -42,24 +42,24 @@ const NEUTRAL_QUALITY: f32 = 0.5;
 /// Built once by callers and fed exclusively into [`retrieve_and_rank`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageSearchRequest {
-	/// Free-text query (package name / description / keywords), may include
-	/// structured tokens (`lang:`, `dep:`, `license:`, `scope:`, …).
-	pub text: String,
+    /// Free-text query (package name / description / keywords), may include
+    /// structured tokens (`lang:`, `dep:`, `license:`, `scope:`, …).
+    pub text: String,
 
-	/// API-level ecosystem scope. Wins over any inline `lang:`/`ecosystem:`
-	/// token when present (see [`StructuredQuery::parse`]).
-	pub ecosystem: Option<Language>,
+    /// API-level ecosystem scope. Wins over any inline `lang:`/`ecosystem:`
+    /// token when present (see [`StructuredQuery::parse`]).
+    pub ecosystem: Option<Language>,
 
-	/// Page size (also tunes position-sensitive rank stages; the full order is
-	/// still materialised for keyset resume).
-	pub limit: usize,
+    /// Page size (also tunes position-sensitive rank stages; the full order is
+    /// still materialised for keyset resume).
+    pub limit: usize,
 
-	/// Keyset cursor to resume after, or `None` for the first page. Only
-	/// consumed by [`retrieve_and_rank_page`]; ignored by [`retrieve_and_rank`].
-	pub after: Option<Cursor<SearchKey>>,
+    /// Keyset cursor to resume after, or `None` for the first page. Only
+    /// consumed by [`retrieve_and_rank_page`]; ignored by [`retrieve_and_rank`].
+    pub after: Option<Cursor<SearchKey>>,
 
-	/// Optional semantic (vector) ranking ids, best-first. Empty = pure BM25.
-	pub semantic: Vec<PackageId>,
+    /// Optional semantic (vector) ranking ids, best-first. Empty = pure BM25.
+    pub semantic: Vec<PackageId>,
 }
 
 /// Optional runtime deps for the retrieval pipeline.
@@ -67,16 +67,16 @@ pub struct PackageSearchRequest {
 /// Spell-check index will land here later; keep the struct open for that.
 #[derive(Clone, Copy, Default)]
 pub struct PackageSearchDeps<'a> {
-	/// When `Some`, free terms are synonym-expanded before the tantivy query
-	/// (populates [`StructuredQuery::expanded_terms`]).
-	pub synonyms: Option<&'a Synonyms>,
+    /// When `Some`, free terms are synonym-expanded before the tantivy query
+    /// (populates [`StructuredQuery::expanded_terms`]).
+    pub synonyms: Option<&'a Synonyms>,
 
-	/// When `Some`, a `cpp`-scoped bare-token query is alias-expanded to its
-	/// canonical stem name before the tantivy query (REGISTRYLESS §9, P8 — the
-	/// "users never type slugs" hook). Catalog-backed; injected by the server,
-	/// which holds both the `MetaStore` and this pipeline. `None` disables
-	/// expansion (the default; every non-cpp path is unaffected regardless).
-	pub alias_expander: Option<&'a dyn super::alias::AliasExpander>,
+    /// When `Some`, a `cpp`-scoped bare-token query is alias-expanded to its
+    /// canonical stem name before the tantivy query (REGISTRYLESS §9, P8 — the
+    /// "users never type slugs" hook). Catalog-backed; injected by the server,
+    /// which holds both the `MetaStore` and this pipeline. `None` disables
+    /// expansion (the default; every non-cpp path is unaffected regardless).
+    pub alias_expander: Option<&'a dyn super::alias::AliasExpander>,
 }
 
 /// **The only high-level entry** for package discovery.
@@ -88,203 +88,200 @@ pub struct PackageSearchDeps<'a> {
 ///
 /// LocalEnrichment is **not** applied (see module docs).
 pub async fn retrieve_and_rank(
-	index: &PackageIndex,
-	req: &PackageSearchRequest,
-	deps: PackageSearchDeps<'_>,
+    index: &PackageIndex,
+    req: &PackageSearchRequest,
+    deps: PackageSearchDeps<'_>,
 ) -> Result<Vec<Scored<GlobalPackage>>, SearchError> {
-	// Over-fetch so filtering, de-dup, and cursor resume still fill a page.
-	let over_fetch = req.limit.max(1) * 4 + 32;
-	let mut sq = StructuredQuery::parse(&req.text, req.ecosystem);
-	// P8: a cpp-scoped bare token (`zlib`) is rewritten to its canonical stem
-	// name (`github.com/madler/zlib`) before search, so users never type slugs.
-	// A miss, a non-cpp scope, or a non-bare token is a pass-through.
-	if let Some(expander) = deps.alias_expander {
-		super::alias::expand_cpp_bare_token(sq.ecosystem, &mut sq.terms, expander);
-	}
-	if let Some(synonyms) = deps.synonyms {
-		sq.expand_synonyms(synonyms);
-	}
-	let raw = index.query_structured(&sq, over_fetch)?;
+    // Over-fetch so filtering, de-dup, and cursor resume still fill a page.
+    let over_fetch = req.limit.max(1) * 4 + 32;
+    let mut sq = StructuredQuery::parse(&req.text, req.ecosystem);
+    // P8: a cpp-scoped bare token (`zlib`) is rewritten to its canonical stem
+    // name (`github.com/madler/zlib`) before search, so users never type slugs.
+    // A miss, a non-cpp scope, or a non-bare token is a pass-through.
+    if let Some(expander) = deps.alias_expander {
+        super::alias::expand_cpp_bare_token(sq.ecosystem, &mut sq.terms, expander);
+    }
+    if let Some(synonyms) = deps.synonyms {
+        sq.expand_synonyms(synonyms);
+    }
+    let raw = index.query_structured(&sq, over_fetch)?;
 
-	// Build the id order and score map from BM25 results.
-	let bm25_ids: Vec<PackageId> = raw.iter().map(|(id, _)| *id).collect();
-	let bm25_scores: HashMap<PackageId, f32> = raw.into_iter().collect();
+    // Build the id order and score map from BM25 results.
+    let bm25_ids: Vec<PackageId> = raw.iter().map(|(id, _)| *id).collect();
+    let bm25_scores: HashMap<PackageId, f32> = raw.into_iter().collect();
 
-	// Determine the final id order and per-id relevance score.
-	// When semantic is empty this is a no-op (pure BM25 path).
-	let (hydrate_ids, scores): (Vec<PackageId>, HashMap<PackageId, f32>) =
-		if req.semantic.is_empty() {
-			(bm25_ids.clone(), bm25_scores)
-		} else {
-			// RRF-fuse BM25 order with semantic order.
-			let fused =
-				rrf::fuse(&[bm25_ids.as_slice(), req.semantic.as_slice()], rrf::DEFAULT_RRF_K);
+    // Determine the final id order and per-id relevance score.
+    // When semantic is empty this is a no-op (pure BM25 path).
+    let (hydrate_ids, scores): (Vec<PackageId>, HashMap<PackageId, f32>) =
+        if req.semantic.is_empty() {
+            (bm25_ids.clone(), bm25_scores)
+        } else {
+            // RRF-fuse BM25 order with semantic order.
+            let fused = rrf::fuse(
+                &[bm25_ids.as_slice(), req.semantic.as_slice()],
+                rrf::DEFAULT_RRF_K,
+            );
 
-			// Rescale RRF scores into BM25 magnitude so downstream stages (quality
-			// kink, exact/contains bonus) keep their calibration. The rescaling
-			// factor is max_bm25 / max_rrf; when no BM25 hits exist the RRF scores
-			// stand as-is.
-			let max_bm25 = bm25_scores.values().copied().fold(0.0_f32, f32::max);
-			let max_rrf = fused.first().map_or(1.0_f32, |(_, s)| *s);
-			let rescale = if max_rrf > 0.0 && max_bm25 > 0.0 {
-				max_bm25 / max_rrf
-			} else {
-				1.0
-			};
+            // Rescale RRF scores into BM25 magnitude so downstream stages (quality
+            // kink, exact/contains bonus) keep their calibration. The rescaling
+            // factor is max_bm25 / max_rrf; when no BM25 hits exist the RRF scores
+            // stand as-is.
+            let max_bm25 = bm25_scores.values().copied().fold(0.0_f32, f32::max);
+            let max_rrf = fused.first().map_or(1.0_f32, |(_, s)| *s);
+            let rescale = if max_rrf > 0.0 && max_bm25 > 0.0 {
+                max_bm25 / max_rrf
+            } else {
+                1.0
+            };
 
-			let all_ids: Vec<PackageId> = fused.iter().map(|(id, _)| *id).collect();
-			let score_map: HashMap<PackageId, f32> =
-				fused.into_iter().map(|(id, s)| (id, s * rescale)).collect();
-			(all_ids, score_map)
-		};
+            let all_ids: Vec<PackageId> = fused.iter().map(|(id, _)| *id).collect();
+            let score_map: HashMap<PackageId, f32> =
+                fused.into_iter().map(|(id, s)| (id, s * rescale)).collect();
+            (all_ids, score_map)
+        };
 
-	let scored: Vec<Scored<GlobalPackage>> = index
-		.hydrate(&hydrate_ids)
-		.await?
-		.into_iter()
-		// Ecosystem filtering happens in the index (Must TermQuery, Q4); this
-		// assert is a belt-and-braces rollout guard only, never a filter.
-		.inspect(|package| {
-			debug_assert!(
-				req.ecosystem
-					.is_none_or(|eco| package.package.coordinates.ecosystem() == eco),
-				"tantivy ecosystem Must-filter missed a doc — index may need rebuild"
-			);
-		})
-		.map(|package| {
-			let raw_score = scores.get(&package.id).copied().unwrap_or_default();
-			Scored::new(package, finite_score(raw_score))
-		})
-		.collect();
+    let scored: Vec<Scored<GlobalPackage>> = index
+        .hydrate(&hydrate_ids)
+        .await?
+        .into_iter()
+        // Ecosystem filtering happens in the index (Must TermQuery, Q4); this
+        // assert is a belt-and-braces rollout guard only, never a filter.
+        .inspect(|package| {
+            debug_assert!(
+                req.ecosystem
+                    .is_none_or(|eco| package.package.coordinates.ecosystem() == eco),
+                "tantivy ecosystem Must-filter missed a doc — index may need rebuild"
+            );
+        })
+        .map(|package| {
+            let raw_score = scores.get(&package.id).copied().unwrap_or_default();
+            Scored::new(package, finite_score(raw_score))
+        })
+        .collect();
 
-	// Collapse multi-parent duplicates to their best representative.
-	let mut representatives: Vec<GlobalPackage> = multi_parent::merge(scored)
-		.into_iter()
-		.map(|merged| merged.representative.value)
-		.collect();
+    // Collapse multi-parent duplicates to their best representative.
+    let mut representatives: Vec<GlobalPackage> = multi_parent::merge(scored)
+        .into_iter()
+        .map(|merged| merged.representative.value)
+        .collect();
 
-	// Cross-ecosystem entity dedup for unscoped queries: when the user hasn't
-	// narrowed to a single ecosystem, deduplicate "the same project" (e.g. a
-	// Rust crate + its npm wasm shim) by repository slug, keeping the best-ranked
-	// representative only.
-	// Use the *resolved* structured ecosystem (API scope or inline `lang:`) so
-	// `lang:rust serde` does not re-merge across ecosystems that the index already
-	// pruned.
-	if sq.ecosystem.is_none() {
-		representatives = entity::dedup_by_repo(representatives, |pkg| {
-			pkg.facets.as_ref().and_then(|f| f.repo_slug.as_deref())
-		});
-	}
+    // Cross-ecosystem entity dedup for unscoped queries: when the user hasn't
+    // narrowed to a single ecosystem, deduplicate "the same project" (e.g. a
+    // Rust crate + its npm wasm shim) by repository slug, keeping the best-ranked
+    // representative only.
+    // Use the *resolved* structured ecosystem (API scope or inline `lang:`) so
+    // `lang:rust serde` does not re-merge across ecosystems that the index already
+    // pruned.
+    if sq.ecosystem.is_none() {
+        representatives = entity::dedup_by_repo(representatives, |pkg| {
+            pkg.facets.as_ref().and_then(|f| f.repo_slug.as_deref())
+        });
+    }
 
-	// Build ranking candidates. Downloads calibration + percentile go through
-	// `PopularitySignals::from_facets_full` so scale/pct cannot be forgotten.
-	// Gate flags come from facets; verified_repo is computed if unset.
-	let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
-		.into_iter()
-		.map(|package| {
-			use crate::ecosystem::LanguageExt;
-			let bm25 = scores.get(&package.id).copied().unwrap_or_default();
-			let (
-				quality,
-				keywords,
-				raw_downloads,
-				dependents,
-				withdrawn,
-				popularity_pct,
-				squat_suspect,
-				malware,
-				facets_verified_repo,
-				repo_slug,
-			) = package
-				.facets
-				.as_ref()
-				.map_or(
-					(
-						NEUTRAL_QUALITY,
-						Vec::new(),
-						None,
-						None,
-						false,
-						None,
-						false,
-						false,
-						false,
-						None,
-					),
-					|facets| {
-						(
-							facets.quality(),
-							facets.keywords.clone(),
-							facets.downloads,
-							facets.dependents,
-							facets.withdrawn,
-							facets.popularity_pct_f32(),
-							facets.squat_suspect,
-							facets.malware,
-							facets.verified_repo,
-							facets.repo_slug.as_deref(),
-						)
-					},
-				);
-			let ecosystem = package.package.coordinates.ecosystem();
-			let scale = ecosystem.spec().search_norms().downloads_scale;
-			let popularity = popularity::PopularitySignals::from_facets_full(
-				raw_downloads,
-				dependents,
-				scale,
-				popularity_pct,
-			);
-			let name = package.package.coordinates.name.canonical().to_string();
-			let verified_repo =
-				facets_verified_repo || super::ranking::gates::verified_repo(&name, repo_slug);
-			ranking::Candidate {
-				item: package,
-				name,
-				bm25,
-				quality,
-				downloads: popularity.downloads,
-				dependents: popularity.dependents,
-				popularity_pct: popularity.popularity_pct,
-				withdrawn,
-				squat_suspect,
-				malware,
-				verified_repo,
-				ecosystem,
-				keywords,
-			}
-		})
-		.collect();
+    // Build ranking candidates. Downloads calibration + percentile go through
+    // `PopularitySignals::from_facets_full` so scale/pct cannot be forgotten.
+    // Gate flags come from facets; verified_repo is computed if unset.
+    let candidates: Vec<ranking::Candidate<GlobalPackage>> = representatives
+        .into_iter()
+        .map(|package| {
+            use crate::ecosystem::LanguageExt;
+            let bm25 = scores.get(&package.id).copied().unwrap_or_default();
+            let (
+                quality,
+                keywords,
+                raw_downloads,
+                dependents,
+                withdrawn,
+                popularity_pct,
+                squat_suspect,
+                malware,
+                facets_verified_repo,
+                repo_slug,
+            ) = package.facets.as_ref().map_or(
+                (
+                    NEUTRAL_QUALITY,
+                    Vec::new(),
+                    None,
+                    None,
+                    false,
+                    None,
+                    false,
+                    false,
+                    false,
+                    None,
+                ),
+                |facets| {
+                    (
+                        facets.quality(),
+                        facets.keywords.clone(),
+                        facets.downloads,
+                        facets.dependents,
+                        facets.withdrawn,
+                        facets.popularity_pct_f32(),
+                        facets.squat_suspect,
+                        facets.malware,
+                        facets.verified_repo,
+                        facets.repo_slug.as_deref(),
+                    )
+                },
+            );
+            let ecosystem = package.package.coordinates.ecosystem();
+            let scale = ecosystem.spec().search_norms().downloads_scale;
+            let popularity = popularity::PopularitySignals::from_facets_full(
+                raw_downloads,
+                dependents,
+                scale,
+                popularity_pct,
+            );
+            let name = package.package.coordinates.name.canonical().to_string();
+            let verified_repo =
+                facets_verified_repo || super::ranking::gates::verified_repo(&name, repo_slug);
+            ranking::Candidate {
+                item: package,
+                name,
+                bm25,
+                quality,
+                downloads: popularity.downloads,
+                dependents: popularity.dependents,
+                popularity_pct: popularity.popularity_pct,
+                withdrawn,
+                squat_suspect,
+                malware,
+                verified_repo,
+                ecosystem,
+                keywords,
+            }
+        })
+        .collect();
 
-	// Rank on FREE terms via RankingPolicy. Unscoped: per-eco rank + interleave
-	// so crates.io download scale never pure-sorts the whole multi-eco SERP.
-	let limit = req.limit.max(1);
-	let ranked = if sq.ecosystem.is_some() {
-		policy::RankingPolicy::default().rank_full_candidates(
-			&sq.terms,
-			candidates,
-			limit,
-			sq.ecosystem,
-		)
-	} else {
-		let policy = policy::RankingPolicy::default();
-		interleave::rank_per_ecosystem_and_interleave(candidates, limit, |eco, group| {
-			policy.rank_full_candidates(&sq.terms, group, limit, Some(eco))
-		})
-	};
+    // Rank on FREE terms via RankingPolicy. Unscoped: per-eco rank + interleave
+    // so crates.io download scale never pure-sorts the whole multi-eco SERP.
+    let limit = req.limit.max(1);
+    let ranked = if sq.ecosystem.is_some() {
+        policy::RankingPolicy::default().rank_full_candidates(
+            &sq.terms,
+            candidates,
+            limit,
+            sq.ecosystem,
+        )
+    } else {
+        let policy = policy::RankingPolicy::default();
+        interleave::rank_per_ecosystem_and_interleave(candidates, limit, |eco, group| {
+            policy.rank_full_candidates(&sq.terms, group, limit, Some(eco))
+        })
+    };
 
-	// Stamp each item with a strictly-descending rank score keyed on its final
-	// ordinal, so `(score, id)` is a strict total order matching the pipeline
-	// order. `finite_score` clamps onto the provably-finite `heart::Score`.
-	let total = ranked.len();
-	let hits: Vec<Scored<GlobalPackage>> = ranked
-		.into_iter()
-		.enumerate()
-		.map(|(ordinal, candidate)| {
-			Scored::new(candidate.item, rank_score(ordinal, total))
-		})
-		.collect();
+    // Stamp each item with a strictly-descending rank score keyed on its final
+    // ordinal, so `(score, id)` is a strict total order matching the pipeline
+    // order. `finite_score` clamps onto the provably-finite `heart::Score`.
+    let total = ranked.len();
+    let hits: Vec<Scored<GlobalPackage>> = ranked
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, candidate)| Scored::new(candidate.item, rank_score(ordinal, total)))
+        .collect();
 
-	Ok(hits)
+    Ok(hits)
 }
 
 /// Keyset-paginated form of [`retrieve_and_rank`].
@@ -295,34 +292,34 @@ pub async fn retrieve_and_rank(
 ///
 /// LocalEnrichment is **not** applied (see module docs).
 pub async fn retrieve_and_rank_page(
-	index: &PackageIndex,
-	req: &PackageSearchRequest,
-	deps: PackageSearchDeps<'_>,
+    index: &PackageIndex,
+    req: &PackageSearchRequest,
+    deps: PackageSearchDeps<'_>,
 ) -> Result<Page<GlobalPackage>, SearchError> {
-	let hits = retrieve_and_rank(index, req, deps).await?;
+    let hits = retrieve_and_rank(index, req, deps).await?;
 
-	let snapshot = heart::ContentHash::of_bytes(&index.watermark().position.to_le_bytes());
+    let snapshot = heart::ContentHash::of_bytes(&index.watermark().position.to_le_bytes());
 
-	// Resume strictly after the cursor key under (score desc, id asc).
-	let after = req.after.as_ref().map(|cursor| {
-		if cursor.snapshot != snapshot {
-			tracing::debug!("cursor anchored to an older snapshot; serving from the newer one");
-		}
-		cursor.after
-	});
-	let resumed = hits
-		.into_iter()
-		.filter(|hit| super::keyset_is_after(after, hit.score, hit.value.id));
+    // Resume strictly after the cursor key under (score desc, id asc).
+    let after = req.after.as_ref().map(|cursor| {
+        if cursor.snapshot != snapshot {
+            tracing::debug!("cursor anchored to an older snapshot; serving from the newer one");
+        }
+        cursor.after
+    });
+    let resumed = hits
+        .into_iter()
+        .filter(|hit| super::keyset_is_after(after, hit.score, hit.value.id));
 
-	let limit = req.limit.max(1);
-	let mut items: Vec<Scored<GlobalPackage>> = resumed.take(limit + 1).collect();
-	let has_more = items.len() > limit;
-	items.truncate(limit);
-	let next = has_more
-		.then(|| items.last())
-		.flatten()
-		.map(|last| Cursor::new((last.score, last.value.id), snapshot).encode());
-	Ok(Page { items, next })
+    let limit = req.limit.max(1);
+    let mut items: Vec<Scored<GlobalPackage>> = resumed.take(limit + 1).collect();
+    let has_more = items.len() > limit;
+    items.truncate(limit);
+    let next = has_more
+        .then(|| items.last())
+        .flatten()
+        .map(|last| Cursor::new((last.score, last.value.id), snapshot).encode());
+    Ok(Page { items, next })
 }
 
 /// Map a pipeline ordinal (`0` = best) onto a strictly-descending, provably
@@ -335,5 +332,5 @@ pub async fn retrieve_and_rank_page(
 /// stay well within `f32`'s exact-integer range for any realistic candidate set
 /// (over-fetch is `limit*4 + 32`), so no two ordinals ever collide.
 fn rank_score(ordinal: usize, total: usize) -> heart::Score {
-	finite_score((total.saturating_sub(ordinal)) as f32)
+    finite_score((total.saturating_sub(ordinal)) as f32)
 }

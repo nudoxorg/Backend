@@ -315,7 +315,9 @@ impl HeaderModel {
 
     /// The currently selected version's label, if a version list is known.
     pub fn active_version_label(&self) -> Option<SharedString> {
-        self.versions.get(self.active_version).map(|v| v.label.clone())
+        self.versions
+            .get(self.active_version)
+            .map(|v| v.label.clone())
     }
 }
 
@@ -644,68 +646,68 @@ fn version_picker(
     let dropdown = open.then(|| {
         let pick = on_pick.clone();
         gpui::deferred(
-        div()
-            .absolute()
-            .top(row_h + sp.space_1)
-            .right_0()
-            .w(sp.space_8 * 4.0)
-            .h(list_h)
-            .rounded(sp.r_md)
-            .border_1()
-            .border_color(colours.border_strong)
-            .bg(colours.bg_overlay)
-            .child(
-                uniform_list(
-                    "symbol.header.version.list",
-                    count,
-                    move |range, _window, cx| {
-                        let ext = cx.theme_ext();
-                        let sp = ext.space;
-                        let ts = ext.type_scale;
-                        let colours = ext.colours;
-                        range
-                            .map(|ix| {
-                                let opt = &versions[ix];
-                                let is_active = ix == active;
-                                let pick = pick.clone();
-                                let dot_style = ext.for_provenance(opt.provenance);
-                                div()
-                                    .id(("symbol.header.version.row", ix))
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(sp.space_2)
-                                    .px(sp.space_2)
-                                    .h(ts.ui.line_height + sp.space_2)
-                                    .text_size(ts.ui.size)
-                                    .line_height(ts.ui.line_height)
-                                    .text_color(if is_active {
-                                        colours.fg_default
-                                    } else {
-                                        colours.fg_muted
-                                    })
-                                    .when(is_active, |s| s.bg(colours.bg_active))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(colours.bg_hover))
-                                    .when_some(pick, |el, pick| {
-                                        el.on_click(move |_, window, cx| pick(ix, window, cx))
-                                    })
-                                    // LD-8: trust travels with the *version*,
-                                    // not just with the symbol.
-                                    .child(
-                                        div()
-                                            .w(sp.space_2)
-                                            .h(sp.space_2)
-                                            .rounded_full()
-                                            .bg(dot_style.colour),
-                                    )
-                                    .child(opt.label.clone())
-                            })
-                            .collect::<Vec<_>>()
-                    },
-                )
-                .h(list_h),
-            ),
+            div()
+                .absolute()
+                .top(row_h + sp.space_1)
+                .right_0()
+                .w(sp.space_8 * 4.0)
+                .h(list_h)
+                .rounded(sp.r_md)
+                .border_1()
+                .border_color(colours.border_strong)
+                .bg(colours.bg_overlay)
+                .child(
+                    uniform_list(
+                        "symbol.header.version.list",
+                        count,
+                        move |range, _window, cx| {
+                            let ext = cx.theme_ext();
+                            let sp = ext.space;
+                            let ts = ext.type_scale;
+                            let colours = ext.colours;
+                            range
+                                .map(|ix| {
+                                    let opt = &versions[ix];
+                                    let is_active = ix == active;
+                                    let pick = pick.clone();
+                                    let dot_style = ext.for_provenance(opt.provenance);
+                                    div()
+                                        .id(("symbol.header.version.row", ix))
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(sp.space_2)
+                                        .px(sp.space_2)
+                                        .h(ts.ui.line_height + sp.space_2)
+                                        .text_size(ts.ui.size)
+                                        .line_height(ts.ui.line_height)
+                                        .text_color(if is_active {
+                                            colours.fg_default
+                                        } else {
+                                            colours.fg_muted
+                                        })
+                                        .when(is_active, |s| s.bg(colours.bg_active))
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(colours.bg_hover))
+                                        .when_some(pick, |el, pick| {
+                                            el.on_click(move |_, window, cx| pick(ix, window, cx))
+                                        })
+                                        // LD-8: trust travels with the *version*,
+                                        // not just with the symbol.
+                                        .child(
+                                            div()
+                                                .w(sp.space_2)
+                                                .h(sp.space_2)
+                                                .rounded_full()
+                                                .bg(dot_style.colour),
+                                        )
+                                        .child(opt.label.clone())
+                                })
+                                .collect::<Vec<_>>()
+                        },
+                    )
+                    .h(list_h),
+                ),
         )
     });
 
@@ -745,7 +747,10 @@ mod tests {
     /// badge is a trust claim, so the safe default is the weakest one.
     #[test]
     fn unknown_provenance_is_not_trusted() {
-        assert_eq!(trust_of(&WireProvenance::TrustedLocal), Provenance::TrustedLocal);
+        assert_eq!(
+            trust_of(&WireProvenance::TrustedLocal),
+            Provenance::TrustedLocal
+        );
         assert_eq!(
             trust_of(&WireProvenance::Stale {
                 as_of: std::time::SystemTime::UNIX_EPOCH

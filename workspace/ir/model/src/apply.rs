@@ -314,8 +314,7 @@ impl PristineIntroTable {
     pub fn iter_sorted(&self) -> impl Iterator<Item = (IntroId, &Entry)> {
         let mut ids: Vec<IntroId> = self.map.keys().copied().collect();
         ids.sort_unstable();
-        ids.into_iter()
-            .map(move |id| (id, &self.map[&id].entry))
+        ids.into_iter().map(move |id| (id, &self.map[&id].entry))
     }
 
     /// Alias for [`iter`](Self::iter) — iterate over all live intros and their

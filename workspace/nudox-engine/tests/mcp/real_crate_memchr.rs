@@ -69,10 +69,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nudox_engine::mcp::{AccountGate, McpEndpoint, NudoxMcpServer, SessionToken};
 use nudox_engine::{
     Engine, EngineConfig, EngineHandle, PackageLoadEvent, PackageSpec, ProducerLanguage, SharedStr,
 };
-use nudox_engine::mcp::{AccountGate, McpEndpoint, NudoxMcpServer, SessionToken};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -368,7 +368,7 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
                     addr,
                     &secret,
                     Some(&session_id),
-                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search_symbols","arguments":{"query":"mem","limit":100}}}"#,
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"mem","limit":100}}}"#,
                 )
                 .await;
                 assert_eq!(search.status, 200, "search_symbols call must succeed");
@@ -386,7 +386,7 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
                     addr,
                     &secret,
                     Some(&session_id),
-                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_packages","arguments":{}}}"#,
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"packages","arguments":{}}}"#,
                 )
                 .await;
                 assert_eq!(packages.status, 200, "list_packages call must succeed");
@@ -441,7 +441,10 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
     // Every key returned must actually carry the cargo:memchr lineage — proof
     // this came from the real producer's real IR, not from a stub or a
     // hand-authored fixture (doctrine §4).
-    for line in search_text.lines().filter(|line| line.contains("cargo:memchr#")) {
+    for line in search_text
+        .lines()
+        .filter(|line| line.contains("cargo:memchr#"))
+    {
         assert!(
             line.contains("cargo:memchr#"),
             "every rendered search row must carry the cargo:memchr lineage; got {line}"
@@ -454,7 +457,11 @@ fn tools_call_over_real_transport_returns_real_memchr_symbols() {
         .unwrap_or_else(|| {
             panic!("list_packages result must carry Markdown content: {packages_result}")
         });
-    assert!(packages_result.pointer("/result/structuredContent").is_none());
+    assert!(
+        packages_result
+            .pointer("/result/structuredContent")
+            .is_none()
+    );
     assert!(
         package_text.contains("cargo:memchr"),
         "memchr must appear in list_packages: {package_text}"

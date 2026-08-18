@@ -37,7 +37,10 @@ impl DiskCas {
     /// Process default: `$NUDOX_PARSE_CACHE` or temp `nudox-parse-cache`
     /// (same env as the historical parse cache so existing ops configs work).
     pub fn default_open() -> Result<Self, CasError> {
-        let root = std::env::var_os("NUDOX_PARSE_CACHE").map_or_else(|| std::env::temp_dir().join("nudox-parse-cache"), PathBuf::from);
+        let root = std::env::var_os("NUDOX_PARSE_CACHE").map_or_else(
+            || std::env::temp_dir().join("nudox-parse-cache"),
+            PathBuf::from,
+        );
         Self::open(root)
     }
 

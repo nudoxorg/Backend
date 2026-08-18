@@ -147,7 +147,10 @@ pub(crate) mod test_support {
         ) -> Self {
             self.table.insert(
                 (ecosystem, token.to_ascii_lowercase()),
-                ResolvedAlias { stem_name: stem_name.to_owned(), confidence },
+                ResolvedAlias {
+                    stem_name: stem_name.to_owned(),
+                    confidence,
+                },
             );
             self
         }
@@ -187,7 +190,10 @@ mod tests {
         let mut terms = "zlib".to_owned();
         let expanded = expand_cpp_bare_token(Some(Language::Rust), &mut terms, &zlib_expander());
         assert!(!expanded, "non-cpp scope must never expand");
-        assert_eq!(terms, "zlib", "the rust-scoped query is passed through verbatim");
+        assert_eq!(
+            terms, "zlib",
+            "the rust-scoped query is passed through verbatim"
+        );
     }
 
     #[test]

@@ -19,11 +19,9 @@ use index::server::http::router::router;
 ///   the pipeline was kicked off, not run inline.
 #[tokio::test]
 async fn add_package_returns_immediately_then_syncs() {
-    let Some((server, _data)) =
-        server_common::assembled_server("add_package_returns_immediately_then_syncs").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("add_package_returns_immediately_then_syncs")
+            .await;
     let body = add_body("serde", "1.0.219");
     let (status, response) =
         server_common::call(router(server), server_common::post_json("/packages", &body)).await;
@@ -50,15 +48,18 @@ async fn add_package_returns_immediately_then_syncs() {
 ///   reports the already-in-flight state rather than enqueueing again.
 #[tokio::test]
 async fn duplicate_add_returns_existing() {
-    let Some((server, _data)) = server_common::assembled_server("duplicate_add_returns_existing").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("duplicate_add_returns_existing").await;
     let body = add_body("tokio", "1.45.0");
     let application = router(server);
 
-    let (_, first) = server_common::call(application.clone(), server_common::post_json("/packages", &body)).await;
-    let (status, second) = server_common::call(application, server_common::post_json("/packages", &body)).await;
+    let (_, first) = server_common::call(
+        application.clone(),
+        server_common::post_json("/packages", &body),
+    )
+    .await;
+    let (status, second) =
+        server_common::call(application, server_common::post_json("/packages", &body)).await;
 
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -79,21 +80,25 @@ async fn duplicate_add_returns_existing() {
 ///   discovery path is `/packages/search`.)
 #[tokio::test]
 async fn list_and_get_reflect_tracked_packages() {
-    let Some((server, _data)) =
-        server_common::assembled_server("list_and_get_reflect_tracked_packages").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("list_and_get_reflect_tracked_packages").await;
     let application = router(server);
     let body = add_body("smol_str", "0.3.2");
-    let (_, added) = server_common::call(application.clone(), server_common::post_json("/packages", &body)).await;
+    let (_, added) = server_common::call(
+        application.clone(),
+        server_common::post_json("/packages", &body),
+    )
+    .await;
     let id = added["package"]
         .as_str()
         .expect("the add answers with the package id")
         .to_owned();
 
-    let (status, fetched) =
-        server_common::call(application.clone(), server_common::get(&format!("/packages/{id}"))).await;
+    let (status, fetched) = server_common::call(
+        application.clone(),
+        server_common::get(&format!("/packages/{id}")),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         fetched["package"], added["package"],
@@ -101,7 +106,11 @@ async fn list_and_get_reflect_tracked_packages() {
     );
 
     let absent = uuid::Uuid::new_v4();
-    let (status, _) = server_common::call(application, server_common::get(&format!("/packages/{absent}"))).await;
+    let (status, _) = server_common::call(
+        application,
+        server_common::get(&format!("/packages/{absent}")),
+    )
+    .await;
     assert_eq!(
         status,
         StatusCode::NOT_FOUND,
@@ -146,16 +155,14 @@ async fn unsupported_language_is_rejected() {
 /// and read routes reject the admin mutation verb.
 #[tokio::test]
 async fn read_and_write_planes_are_separated() {
-    let Some((server, _data)) =
-        server_common::assembled_server("read_and_write_planes_are_separated").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("read_and_write_planes_are_separated").await;
     let application = router(server);
 
     // The write surface does not answer reads-as-writes: GET on the mutation
     // route is not a handler, it is a method mismatch.
-    let (status, _) = server_common::call(application.clone(), server_common::get("/packages")).await;
+    let (status, _) =
+        server_common::call(application.clone(), server_common::get("/packages")).await;
     assert_eq!(
         status,
         StatusCode::METHOD_NOT_ALLOWED,
@@ -165,7 +172,8 @@ async fn read_and_write_planes_are_separated() {
     // The read surface has no mutation aliases: posting a package to the
     // search route is a shape error, never an ingest.
     let body = add_body("serde", "1.0.219");
-    let (status, _) = server_common::call(application, server_common::post_json("/search", &body)).await;
+    let (status, _) =
+        server_common::call(application, server_common::post_json("/search", &body)).await;
     assert_eq!(
         status,
         StatusCode::UNPROCESSABLE_ENTITY,

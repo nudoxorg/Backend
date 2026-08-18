@@ -54,15 +54,27 @@ fn quality_ppm_bounded() {
 fn rust_ecosystem_words_stopword_filtered() {
     // "rust"/"crate"/"crates" must be stopwords when using Rust norms.
     let norms = rust_norms();
-    assert!(norms.is_stopword("rust"), "'rust' must be stopped by Rust norms");
-    assert!(norms.is_stopword("crate"), "'crate' must be stopped by Rust norms");
-    assert!(norms.is_stopword("crates"), "'crates' must be stopped by Rust norms");
+    assert!(
+        norms.is_stopword("rust"),
+        "'rust' must be stopped by Rust norms"
+    );
+    assert!(
+        norms.is_stopword("crate"),
+        "'crate' must be stopped by Rust norms"
+    );
+    assert!(
+        norms.is_stopword("crates"),
+        "'crates' must be stopped by Rust norms"
+    );
 }
 
 #[test]
 fn npm_ecosystem_words_not_stopped_by_rust_norms() {
     let norms = rust_norms();
-    assert!(!norms.is_stopword("node"), "'node' NOT stopped by Rust norms");
+    assert!(
+        !norms.is_stopword("node"),
+        "'node' NOT stopped by Rust norms"
+    );
     assert!(!norms.is_stopword("npm"), "'npm' NOT stopped by Rust norms");
 }
 
@@ -326,7 +338,10 @@ fn temporal_group_score_bounded() {
         ..Default::default()
     };
     let q = compute_quality(&input);
-    assert!((0.0..=1.0).contains(&q), "quality must stay in 0..=1, got {q}");
+    assert!(
+        (0.0..=1.0).contains(&q),
+        "quality must stay in 0..=1, got {q}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -364,7 +379,10 @@ fn search_facets_legacy_json_decodes_with_defaults() {
     // Simulate a stored facet that predates all new fields.
     let legacy = r#"{"keywords":["async","runtime"],"quality_ppm":500000}"#;
     let decoded: SearchFacets = serde_json::from_str(legacy).expect("legacy decode");
-    assert_eq!(decoded.keywords, vec![SmolStr::from("async"), SmolStr::from("runtime")]);
+    assert_eq!(
+        decoded.keywords,
+        vec![SmolStr::from("async"), SmolStr::from("runtime")]
+    );
     assert_eq!(decoded.quality_ppm, 500_000);
     assert!(decoded.dependencies.is_empty());
     assert!(decoded.dependents.is_none());

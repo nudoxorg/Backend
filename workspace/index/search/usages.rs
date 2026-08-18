@@ -160,7 +160,9 @@ impl ReverseIndexUsageBackend {
     /// `reverse` (both must be built from the same channel tip).
     #[must_use]
     pub fn loaded(view: Arc<IrView>, reverse: Arc<ReversePositionIndex>) -> Self {
-        Self { scope: Some(UsageScope { view, reverse }) }
+        Self {
+            scope: Some(UsageScope { view, reverse }),
+        }
     }
 
     /// Whether a scope is currently loaded (a query can be answered with real
@@ -185,8 +187,8 @@ impl UsageQueryBackend for ReverseIndexUsageBackend {
         // Resolve the wire reference into the typed cross-package reference the
         // reverse index keys on. A malformed intro id is a client-side
         // unresolvable target, not an unavailability.
-        let target = stable_ref_from_wire(symbol)
-            .map_err(|detail| Error::UnresolvableTarget { detail })?;
+        let target =
+            stable_ref_from_wire(symbol).map_err(|detail| Error::UnresolvableTarget { detail })?;
 
         // If the target's package is not the one this scope loaded, we hold no
         // index for it — honest unavailable rather than a false "no uses".
@@ -225,8 +227,7 @@ impl UsageQueryBackend for ReverseIndexUsageBackend {
         // Deterministic order: by enclosing entry, then span. Keeps pagination
         // stable across identical loads.
         uses.sort_by(|a, b| {
-            (a.within.to_string(), a.relative_span)
-                .cmp(&(b.within.to_string(), b.relative_span))
+            (a.within.to_string(), a.relative_span).cmp(&(b.within.to_string(), b.relative_span))
         });
 
         Ok(paginate(uses, page))
@@ -267,8 +268,12 @@ fn stable_ref_to_wire(sref: &StableRef) -> StableReference {
 /// Resolve a wire [`StableReference`] into the typed [`StableRef`] the reverse
 /// index keys on. Returns a human-readable reason on failure.
 fn stable_ref_from_wire(reference: &StableReference) -> Result<StableRef, String> {
-    let intro_bytes = decode_hex_32(reference.intro_hex())
-        .ok_or_else(|| format!("intro id `{}` is not 32 bytes of hex", reference.intro_hex()))?;
+    let intro_bytes = decode_hex_32(reference.intro_hex()).ok_or_else(|| {
+        format!(
+            "intro id `{}` is not 32 bytes of hex",
+            reference.intro_hex()
+        )
+    })?;
     let package = PackageLineageId::new(
         ir::change::EcosystemId::new(reference.ecosystem()),
         ir::change::PackageName::new(reference.package()),
@@ -309,7 +314,10 @@ fn paginate(uses: Vec<Usage>, page: &PageSpecification) -> Page<Usage> {
         .skip(start)
         .take(limit)
         .cloned()
-        .map(|usage| Scored { score: neutral, value: usage })
+        .map(|usage| Scored {
+            score: neutral,
+            value: usage,
+        })
         .collect();
 
     let consumed = start + items.len();
@@ -331,8 +339,8 @@ mod tests {
     use ir::entry::{Entry, Node, Symbol, Visibility};
     use ir::kind::Kind;
     use ir::kinds::Module;
-    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
     use ir::view::IrView;
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind, RelSpan};
 
     fn pkg() -> PackageLineageId {
         PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("demo"))
@@ -359,7 +367,11 @@ mod tests {
     }
 
     fn module(name: &str) -> Entry {
-        Entry::new(sym(name), Node::build(None::<ir::index::RawRef>, []), Kind::Module(Module))
+        Entry::new(
+            sym(name),
+            Node::build(None::<ir::index::RawRef>, []),
+            Kind::Module(Module),
+        )
     }
 
     /// Build a view where owners `2` and `3` each hold one graph-worthy call to
@@ -374,11 +386,21 @@ mod tests {
         let target = StableRef::new(pkg(), intro(1));
         ir.add_occurrence(
             intro(2),
-            Occurrence::new(target.clone(), ReferenceKind::FunctionCall, Confidence::Index, RelSpan::new(4, 9)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Index,
+                RelSpan::new(4, 9),
+            ),
         );
         ir.add_occurrence(
             intro(3),
-            Occurrence::new(target.clone(), ReferenceKind::MethodCall, Confidence::Index, RelSpan::new(1, 5)),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::MethodCall,
+                Confidence::Index,
+                RelSpan::new(1, 5),
+            ),
         );
 
         let key = registry::graph::ReverseIndexKey {
@@ -452,12 +474,24 @@ mod tests {
     fn pagination_advances_by_offset_cursor() {
         let (backend, wire) = loaded_backend();
         let first = backend
-            .usages(&wire, &PageSpecification { limit: 1, cursor: None })
+            .usages(
+                &wire,
+                &PageSpecification {
+                    limit: 1,
+                    cursor: None,
+                },
+            )
             .expect("first page");
         assert_eq!(first.items.len(), 1);
         let cursor = first.next.expect("more uses remain");
         let second = backend
-            .usages(&wire, &PageSpecification { limit: 1, cursor: Some(cursor) })
+            .usages(
+                &wire,
+                &PageSpecification {
+                    limit: 1,
+                    cursor: Some(cursor),
+                },
+            )
             .expect("second page");
         assert_eq!(second.items.len(), 1);
         assert!(second.next.is_none(), "two uses consumed in two pages");

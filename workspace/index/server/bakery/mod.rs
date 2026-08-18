@@ -43,9 +43,9 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::shard_sync::ShardContentIo;
 use heart::sync::ContentIo as _;
 use heart::{ContentHash, PackageId};
-use crate::shard_sync::ShardContentIo;
 use registry::vector::{EmbedRole, EmbeddingCache, EmbeddingKey, EmbeddingModel};
 use vector::model::{Metric, ModelId};
 use vector::quant::QuantProfile;
@@ -196,10 +196,7 @@ pub trait ClaimStore: Send + Sync {
     /// Attempt to claim the artifact identified by `request`'s key digest.
     /// Returns `true` iff *this* caller inserted the `claimed` row — the
     /// single-claim rule (`INSERT ... ON CONFLICT DO NOTHING`).
-    fn try_claim(
-        &self,
-        request: &BakeRequest,
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
+    fn try_claim(&self, request: &BakeRequest) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Terminal success: record the artifact id + RAM estimate, status `ready`.
     fn mark_ready(
@@ -212,10 +209,7 @@ pub trait ClaimStore: Send + Sync {
     /// Terminal failure: status `failed`. The claim stays terminal — a failed
     /// bake is not retried until the row is deleted (operator action) or the
     /// recipe rotates.
-    fn mark_failed(
-        &self,
-        digest: ContentHash,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
+    fn mark_failed(&self, digest: ContentHash) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 /// What one bake attempt produced.

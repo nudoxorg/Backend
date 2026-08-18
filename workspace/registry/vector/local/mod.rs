@@ -26,16 +26,16 @@ pub use actor::StoreHandle;
 pub use compact::{
     COMPACT_DELETED_RATIO, COMPACT_IDLE, COMPACT_UPSERT_THRESHOLD, CompactPolicy, spawn_compactor,
 };
+pub use depshard::Error as InstallError;
 pub use depshard::{
     ArtifactFetcher, DepManifestEntry, FetchError, InstallOutcome, RemoteRouteReason, evict,
     install, install_with_io,
 };
-pub use depshard::Error as InstallError;
 pub use fanout::{SharedWorkingSet, WorkingSet, merge_hits};
 pub use hotset::{AdmissionState, HotSetManager, InstallPlan, PackageStats, apply_plan, diff_plan};
 pub use lock::{LOCK_FILE, ShardLock};
-pub use pack::{pack_shard, pack_shard_to_file, unpack_shard};
 pub use pack::Error as PackError;
+pub use pack::{pack_shard, pack_shard_to_file, unpack_shard};
 pub use shard::{SCHEMA_FILE, VECTOR_NAME, open_or_create, schema_for};
 pub use store::{LocalShardStore, upsert_raw};
 

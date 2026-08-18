@@ -8,6 +8,10 @@
 //! The following CMake commands are recognised:
 //!
 //! - `project(<name> ... DESCRIPTION "<text>" ...)` → `facts.description`.
+//! - `project(<name> ... HOMEPAGE_URL "<url>" ...)` (CMake 3.12+) →
+//!   `facts.repository`, and sets `facts.documentation`.
+//! - `set(CPACK_RESOURCE_FILE_LICENSE "<path>")` → `facts.has_license_file`
+//!   (the dedicated CPack variable naming the packaged license file).
 //! - `find_package(<Name> ...)` → [`DependencyMechanism::FindPackage`].
 //! - `pkg_check_modules(<PREFIX> [REQUIRED|QUIET|IMPORTED_TARGET|GLOBAL] <names>...)`
 //!   → [`DependencyMechanism::PkgConfig`].
@@ -62,6 +66,25 @@ pub fn parse(text: &str) -> CppManifest {
         if command.eq_ignore_ascii_case("project") {
             if manifest.facts.description.is_none() {
                 manifest.facts.description = extract_project_description(&arguments);
+            }
+            // CMake 3.12+ `project(... HOMEPAGE_URL "...")`.
+            if manifest.facts.repository.is_none()
+                && let Some(url) = extract_keyword_value(&arguments, "HOMEPAGE_URL")
+            {
+                manifest.facts.repository = Some(url);
+                manifest.facts.documentation = true;
+            }
+        } else if command.eq_ignore_ascii_case("set") {
+            // `set(CPACK_RESOURCE_FILE_LICENSE "LICENSE")` — the dedicated
+            // CPack variable naming the packaged license file, same idea as
+            // Cargo's `license-file` key.
+            if !manifest.facts.has_license_file
+                && arguments
+                    .first()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("CPACK_RESOURCE_FILE_LICENSE"))
+                && arguments.get(1).is_some_and(|v| !v.trim().is_empty())
+            {
+                manifest.facts.has_license_file = true;
             }
         } else if command.eq_ignore_ascii_case("find_package") {
             if let Some(name) = arguments.first().filter(|s| !s.is_empty()) {
@@ -143,23 +166,32 @@ fn collect_arguments(text: &str, position: &mut usize) -> Vec<String> {
         } else if byte.is_ascii_whitespace() {
             *position += 1;
         } else if byte == b'"' {
-            // Quoted argument.
+            // Quoted argument. Collected as raw bytes and decoded once at the
+            // end (NOT `byte as char` per-byte — that reinterprets each byte
+            // of a multi-byte UTF-8 sequence as its own Latin-1 code point,
+            // corrupting any non-ASCII content, e.g. project descriptions in
+            // Japanese/emoji/etc.). `"` and `\` are single ASCII bytes that
+            // can never occur as a lead or continuation byte of a valid
+            // multi-byte UTF-8 sequence, so byte-level scanning for them
+            // never splits a multi-byte character; `from_utf8_lossy` is a
+            // pure safety net (never panics even if that invariant were
+            // somehow violated).
             *position += 1;
-            let mut value = String::new();
+            let mut value_bytes: Vec<u8> = Vec::new();
             while *position < bytes.len() {
                 let inner = bytes[*position];
                 if inner == b'\\' && *position + 1 < bytes.len() {
                     *position += 1;
-                    value.push(bytes[*position] as char);
+                    value_bytes.push(bytes[*position]);
                 } else if inner == b'"' {
                     *position += 1;
                     break;
                 } else {
-                    value.push(inner as char);
+                    value_bytes.push(inner);
                 }
                 *position += 1;
             }
-            arguments.push(value);
+            arguments.push(String::from_utf8_lossy(&value_bytes).into_owned());
         } else if byte == b'(' {
             depth += 1;
             *position += 1;
@@ -197,9 +229,19 @@ fn collect_arguments(text: &str, position: &mut usize) -> Vec<String> {
 /// Returns the string following the `DESCRIPTION` keyword (case-insensitive),
 /// or `None` when the keyword is absent.
 fn extract_project_description(arguments: &[String]) -> Option<String> {
+    extract_keyword_value(arguments, "DESCRIPTION")
+}
+
+/// Extract the value immediately following a single-valued keyword argument
+/// (case-insensitive) from a command's already-tokenized argument list, e.g.
+/// the `HOMEPAGE_URL` in `project(foo HOMEPAGE_URL "https://...")`. Returns
+/// `None` when the keyword is absent or its value is empty/whitespace.
+fn extract_keyword_value(arguments: &[String], keyword: &str) -> Option<String> {
     let mut iterator = arguments.iter();
     while let Some(arg) = iterator.next() {
-        if arg.eq_ignore_ascii_case("DESCRIPTION") && let Some(value) = iterator.next() {
+        if arg.eq_ignore_ascii_case(keyword)
+            && let Some(value) = iterator.next()
+        {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 return Some(trimmed.to_owned());
@@ -268,7 +310,9 @@ fn extract_fetchcontent_url(arguments: &[String]) -> Option<String> {
     // Skip the content name argument.
     let _ = iterator.next();
     while let Some(arg) = iterator.next() {
-        if arg.eq_ignore_ascii_case("GIT_REPOSITORY") && let Some(url) = iterator.next() {
+        if arg.eq_ignore_ascii_case("GIT_REPOSITORY")
+            && let Some(url) = iterator.next()
+        {
             let trimmed = url.trim();
             if !trimmed.is_empty() {
                 return Some(trimmed.to_owned());
@@ -368,5 +412,136 @@ FetchContent_Declare(
         let manifest = parse(text);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dependencies[0].token, "Threads");
+    }
+
+    // ── `HOMEPAGE_URL` / `CPACK_RESOURCE_FILE_LICENSE` (P6 gap fill) ─────────
+
+    #[test]
+    fn parse_cmake_project_homepage_url() {
+        let text = r#"project(MyLib VERSION 1.0 HOMEPAGE_URL "https://github.com/example/mylib" LANGUAGES CXX)"#;
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://github.com/example/mylib")
+        );
+        assert!(manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_cmake_project_no_homepage_url_leaves_repository_none() {
+        let text = r#"project(MyLib VERSION 1.0)"#;
+        let manifest = parse(text);
+        assert!(manifest.facts.repository.is_none());
+        assert!(!manifest.facts.documentation);
+    }
+
+    #[test]
+    fn parse_cmake_cpack_resource_file_license() {
+        let text = r#"set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/LICENSE")"#;
+        let manifest = parse(text);
+        assert!(manifest.facts.has_license_file);
+    }
+
+    #[test]
+    fn parse_cmake_set_unrelated_variable_does_not_set_license_flag() {
+        let text = r#"set(CMAKE_CXX_STANDARD 17)"#;
+        let manifest = parse(text);
+        assert!(!manifest.facts.has_license_file);
+    }
+
+    #[test]
+    fn parse_cmake_set_cpack_license_case_insensitive_command() {
+        let text = r#"SET(CPACK_RESOURCE_FILE_LICENSE LICENSE.txt)"#;
+        let manifest = parse(text);
+        assert!(manifest.facts.has_license_file);
+    }
+
+    #[test]
+    fn parse_cmake_real_world_project_shape() {
+        // Shaped after a real top-level CMakeLists.txt (nlohmann/json-style).
+        let text = r#"
+cmake_minimum_required(VERSION 3.14)
+project(nlohmann_json
+    VERSION 3.11.2
+    DESCRIPTION "JSON for Modern C++"
+    HOMEPAGE_URL "https://github.com/nlohmann/json"
+    LANGUAGES CXX
+)
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.MIT")
+find_package(Threads REQUIRED)
+"#;
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("JSON for Modern C++")
+        );
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://github.com/nlohmann/json")
+        );
+        assert!(manifest.facts.documentation);
+        assert!(manifest.facts.has_license_file);
+        assert!(manifest.dependencies.iter().any(|d| d.token == "Threads"));
+    }
+
+    // ── Hostile-input hardening ──────────────────────────────────────────────
+
+    #[test]
+    fn parse_cmake_unterminated_quoted_description_no_panic() {
+        let text = r#"project(foo DESCRIPTION "unterminated"#;
+        let manifest = parse(text);
+        let _ = manifest;
+    }
+
+    #[test]
+    fn parse_cmake_unicode_description() {
+        let text = "project(foo DESCRIPTION \"日本語 😀 説明\")\n";
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("日本語 😀 説明")
+        );
+    }
+
+    #[test]
+    fn parse_cmake_crlf_line_endings() {
+        let text = "find_package(ZLIB REQUIRED)\r\nfind_package(OpenSSL)\r\n";
+        let manifest = parse(text);
+        assert_eq!(manifest.dependencies.len(), 2);
+    }
+
+    #[test]
+    fn parse_cmake_duplicate_project_calls_first_wins() {
+        let text = r#"
+project(first DESCRIPTION "first description" HOMEPAGE_URL "https://first.example")
+project(second DESCRIPTION "second description" HOMEPAGE_URL "https://second.example")
+"#;
+        let manifest = parse(text);
+        assert_eq!(
+            manifest.facts.description.as_deref(),
+            Some("first description")
+        );
+        assert_eq!(
+            manifest.facts.repository.as_deref(),
+            Some("https://first.example")
+        );
+    }
+
+    #[test]
+    fn parse_cmake_enormous_quoted_argument_no_panic() {
+        let huge = "x".repeat(2 * 1024 * 1024);
+        let text = format!(r#"project(foo DESCRIPTION "{huge}")"#);
+        let manifest = parse(&text);
+        assert_eq!(
+            manifest.facts.description.as_deref().map(str::len),
+            Some(huge.len())
+        );
+    }
+
+    #[test]
+    fn parse_cmake_null_bytes_in_input_no_panic() {
+        let text = "find_package(ZLIB)\0garbage\0more";
+        let manifest = parse(text);
+        assert!(manifest.dependencies.iter().any(|d| d.token == "ZLIB"));
     }
 }

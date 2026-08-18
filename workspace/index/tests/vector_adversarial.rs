@@ -36,11 +36,11 @@ use index::server::{registry, vector};
 // §5 — Bakery claim protocol adversarial cases
 // ─────────────────────────────────────────────────────────────────────────────
 
+use heart::{ContentHash, PackageId};
 use index::server::bakery::{
     BakeOutcome, BakeRequest, BakedArtifact, BakeryError, ClaimStore, EdgepackStatus, RECIPE_ID,
     run_bake,
 };
-use heart::{ContentHash, PackageId};
 // The sealed model brands' `id()` etc. come from this trait; bring it in scope
 // so `JinaCodeV2::id()` resolves in the fixtures below.
 use std::collections::HashSet;

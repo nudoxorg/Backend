@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use crate::store::package::{PackageView, Provenance};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -13,7 +14,6 @@ use nudox_ir::{
     kinds::Module,
     view::IrView,
 };
-use crate::store::package::{PackageView, Provenance};
 
 use super::doc_link_table::DocLinkTable;
 use super::prose::is_symbol_path;
@@ -46,6 +46,80 @@ fn sym_with_doc_links(name: &str, doc: &str, links: Vec<DocLink>) -> Symbol {
         attrs: Box::new([]),
         cfg: None,
     }
+}
+
+/// L27 regression: each producer occurrence is interpreted independently, so
+/// a resolved and unresolved shortcut can share one doc body without making an
+/// adjacent literal bracket note look like a link.
+#[test]
+fn mixed_declared_and_unresolved_links_are_occurrence_local() {
+    let doc = "See [Thing] and [Missing] [NOTE].";
+    let declared_end = doc.find(']').unwrap() + 1;
+    let unresolved_start = doc.find("[Missing]").unwrap();
+    let unresolved_end = unresolved_start + "[Missing]".len();
+    let root_id = intro(1);
+    let child_id = intro(2);
+    let mut table = PristineIntroTable::new();
+    let child_sym = sym_with_doc_links("Thing", "", vec![]);
+    table.insert_live(
+        child_id,
+        Entry::new(
+            child_sym,
+            Node::build(None::<nudox_ir::index::RawRef>, []),
+            Kind::Module(Module),
+        ),
+        Some(root_id),
+    );
+    let sym = sym_with_doc_links(
+        "root",
+        doc,
+        vec![
+            DocLink::new("Thing", Some("Thing".to_owned())).with_source_span(4..declared_end),
+            DocLink::new("Missing", Some("Missing".to_owned()))
+                .with_source_span(unresolved_start..unresolved_end),
+        ],
+    );
+    table.insert_live(
+        root_id,
+        Entry::new(
+            sym,
+            Node::build(None::<nudox_ir::index::RawRef>, []),
+            Kind::Module(Module),
+        ),
+        None,
+    );
+    let view = IrView::with_package(lineage(), table);
+    let pkg = PackageView::build(view, Provenance::TrustedLocal);
+    let entry = pkg.view().entry(root_id).unwrap();
+    let output = walk_doc(root_id, entry, pkg.view(), &pkg);
+    let runs = output
+        .sections
+        .iter()
+        .find_map(|section| match section {
+            RenderSection::Prose { blocks, .. } => blocks.iter().find_map(|block| match block {
+                ProseBlock::Paragraph { runs } => Some(runs),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("paragraph");
+
+    assert!(runs.iter().any(|run| matches!(run, InlineRun::Link { .. })));
+    let text: String = runs
+        .iter()
+        .filter_map(|run| match run {
+            InlineRun::Text { text } => Some(&**text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("[NOTE]"),
+        "literal bracket note was changed: {text:?}"
+    );
+    assert!(
+        text.contains("Missing") && !text.contains("[Missing]"),
+        "unresolved path-shaped link was not stripped independently: {text:?}"
+    );
 }
 
 /// Build a two-entry `PackageView`: a root module and one child function.
@@ -119,6 +193,7 @@ fn doc_link_table_resolves_leaf_and_full_path() {
     let doc_links = vec![DocLink {
         target: "Router::with_state".to_owned(),
         label: Some("Router::with_state".to_owned()),
+        source_span: None,
     }];
 
     // Build a fake symbol just for the table builder.
@@ -157,6 +232,7 @@ fn doc_link_table_cross_crate_resolves_to_none() {
     let doc_links = vec![DocLink {
         target: "tower::Service".to_owned(),
         label: Some("Service".to_owned()),
+        source_span: None,
     }];
 
     let sym = sym_with_doc_links("MyStruct", "", doc_links);
@@ -260,6 +336,7 @@ fn walk_doc_shortcut_link_becomes_symbol_link() {
             // leaf or a qualified path; we test the bare leaf case).
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
     );
     table.insert_live(
@@ -369,6 +446,7 @@ fn walk_doc_backtick_shortcut_link_becomes_symbol_link() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
     );
     table.insert_live(
@@ -458,6 +536,7 @@ fn walk_doc_undeclared_bracket_text_strips_brackets_on_no_match() {
             // put `has_declared_links()` on the `true` side of the gate.
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     table.insert_live(
@@ -679,6 +758,7 @@ fn doc_link_table_namespace_tagged_target_resolves() {
         // fields and associated constants that share the same leaf name.
         target: "Router::with_state!m".to_owned(),
         label: Some("Router::with_state".to_owned()),
+        source_span: None,
     }];
 
     let sym = sym_with_doc_links("Router", "", doc_links);
@@ -725,6 +805,7 @@ fn doc_link_table_dot_path_target_resolves() {
     let doc_links = vec![DocLink {
         target: "axum.routing.Router.with_state".to_owned(),
         label: None,
+        source_span: None,
     }];
 
     let sym = sym_with_doc_links("Router", "", doc_links);
@@ -758,6 +839,7 @@ fn doc_link_table_dot_path_namespace_tagged_resolves() {
     let doc_links = vec![DocLink {
         target: "axum.routing.Router.with_state!m".to_owned(),
         label: None,
+        source_span: None,
     }];
 
     let sym = sym_with_doc_links("Router", "", doc_links);
@@ -792,6 +874,7 @@ fn doc_link_table_anchor_target_resolves() {
     let doc_links = vec![DocLink {
         target: "#method.with_state".to_owned(),
         label: Some("with_state".to_owned()),
+        source_span: None,
     }];
 
     let sym = sym_with_doc_links("Router", "", doc_links);
@@ -859,6 +942,7 @@ fn walk_doc_namespace_tagged_target_resolves_to_link_in_prose() {
         vec![DocLink {
             target: "Router::with_state!m".to_owned(),
             label: Some("Router::with_state".to_owned()),
+            source_span: None,
         }],
     );
     table.insert_live(
@@ -979,10 +1063,12 @@ fn walk_doc_self_and_crate_prefix_paths_resolve() {
             DocLink {
                 target: "Self::bar".to_owned(),
                 label: Some("Self::bar".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "crate::routing::Router".to_owned(),
                 label: Some("crate::routing::Router".to_owned()),
+                source_span: None,
             },
         ],
     );
@@ -1174,6 +1260,7 @@ fn doc_link_table_segment_level_fallback_picks_correct_symbol_when_suffix_fails(
     let doc_links = vec![DocLink {
         target: "root::with_state".to_owned(),
         label: Some("Router::with_state".to_owned()),
+        source_span: None,
     }];
 
     let root_sym = sym_with_doc_links("root", "Call [Router::with_state] here.", doc_links);
@@ -1288,6 +1375,7 @@ fn adversarial_no_target_strips_brackets() {
         vec![DocLink {
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1320,6 +1408,7 @@ fn adversarial_nested_brackets_leak_nothing() {
         vec![DocLink {
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1340,6 +1429,7 @@ fn adversarial_text_contains_close_bracket_leaks_nothing() {
         vec![DocLink {
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1360,6 +1450,7 @@ fn adversarial_empty_link_leaks_nothing() {
         vec![DocLink {
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1393,6 +1484,7 @@ fn adversarial_reference_style_link_leaks_nothing() {
         vec![DocLink {
             target: "unrelated".to_owned(),
             label: Some("unrelated".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1423,6 +1515,7 @@ fn adversarial_cross_crate_link_leaks_nothing() {
         vec![DocLink {
             target: "std::vec::Vec".to_owned(),
             label: Some("std::vec::Vec".to_owned()),
+            source_span: None,
         }],
     );
     let runs = first_paragraph_runs(&pkg, root_id);
@@ -1505,14 +1598,17 @@ fn real_memchr_doc_comment_leaks_no_bracket_for_any_link() {
             DocLink {
                 target: "memchr_iter".to_owned(),
                 label: Some("memchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "memrchr_iter".to_owned(),
                 label: Some("memrchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "Memchr::new".to_owned(),
                 label: Some("Memchr::new".to_owned()),
+                source_span: None,
             },
         ],
     );
@@ -1642,14 +1738,17 @@ fn repaired_link_records_its_kind_raw_and_resolved() {
             DocLink {
                 target: "memchr_iter".to_owned(),
                 label: Some("memchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "memrchr_iter".to_owned(),
                 label: Some("memrchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "Memchr::new".to_owned(),
                 label: Some("Memchr::new".to_owned()),
+                source_span: None,
             },
         ],
     );
@@ -1785,14 +1884,17 @@ fn authored_link_text_appears_verbatim_in_the_doc_comment() {
             DocLink {
                 target: "memchr_iter".to_owned(),
                 label: Some("memchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "memrchr_iter".to_owned(),
                 label: Some("memrchr_iter".to_owned()),
+                source_span: None,
             },
             DocLink {
                 target: "Memchr::new".to_owned(),
                 label: Some("Memchr::new".to_owned()),
+                source_span: None,
             },
         ],
     );
@@ -1989,6 +2091,7 @@ fn declared_symbol_resolves_matching_shortcut_and_strips_nonmatching_one() {
         vec![DocLink {
             target: "child_fn".to_owned(),
             label: Some("child_fn".to_owned()),
+            source_span: None,
         }],
     );
     table.insert_live(
@@ -2018,10 +2121,7 @@ fn declared_symbol_resolves_matching_shortcut_and_strips_nonmatching_one() {
             origin,
         } => {
             assert_eq!(&**text, "child_fn", "link text must be 'child_fn'");
-            assert_eq!(
-                key.intro, child_id,
-                "link must point at child_fn's IntroId"
-            );
+            assert_eq!(key.intro, child_id, "link must point at child_fn's IntroId");
             assert_eq!(
                 *origin,
                 LinkOrigin::Authored,
@@ -2047,5 +2147,29 @@ fn declared_symbol_resolves_matching_shortcut_and_strips_nonmatching_one() {
         !text.contains('[') && !text.contains(']'),
         "the non-resolving shortcut must have its brackets stripped (this \
              symbol DID declare a doc link, just not for NoSuchThing); got {text:?}"
+    );
+}
+
+#[test]
+fn declared_link_does_not_strip_literal_bracketed_note() {
+    let (pkg, root_id) = build_pkg_with_root_doc(
+        "See [child_fn], but preserve [NOTE] literally.",
+        vec![DocLink {
+            target: "child_fn".to_owned(),
+            label: Some("child_fn".to_owned()),
+            source_span: Some(4..14),
+        }],
+    );
+    let runs = first_paragraph_runs(&pkg, root_id);
+    let text: String = runs
+        .iter()
+        .filter_map(|r| match r {
+            InlineRun::Text { text } | InlineRun::Link { text, .. } => Some(&**text),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        text.contains("[NOTE]"),
+        "a literal bracketed note must retain its brackets; got {text:?}"
     );
 }

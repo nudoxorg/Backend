@@ -103,6 +103,7 @@ fn rich_sym(name: &str) -> Symbol {
         doc_links: Box::new([DocLink {
             target: "crate::other_fn".to_owned(),
             label: Some("other_fn".to_owned()),
+            source_span: None,
         }]),
         attrs: Box::new([
             AttrTok {
@@ -320,11 +321,7 @@ fn build_fixture() -> PristineIntroTable {
             // reference to the same target hash identically.
             {
                 let foreign_ref: Ref<Function> = Ref::Foreign {
-                    key: Arc::new(ForeignKey::in_package(
-                        lineage(),
-                        "demo::render",
-                        "render",
-                    )),
+                    key: Arc::new(ForeignKey::in_package(lineage(), "demo::render", "render")),
                     target: Some(StableRef::new(lineage(), IntroId::from_raw([0xd4; 32]))),
                 };
                 root.create_ref(id(), sym("render"), foreign_ref);
@@ -403,7 +400,7 @@ fa6a6170d0f22f5822a965b11ed4a73d86420c8e7c23cf1e36aaff808d6f6ae6";
 // entry_json) PAIRS, so it moves when either half moves. Here every intro_hex
 // moved and no entry_json did: identity moved, the encoding did not, and
 // `change::FORMAT_VERSION` correctly stays at 2.
-const GOLDEN_ENTRIES_B3: &str = "fa5b94487536f76ad15a8013ea619c4cf6c482231635f3d5618bb93f119927eb";
+const GOLDEN_ENTRIES_B3: &str = "62be9f0683ca66d358584496c125eeb51efae1ad0a15d0c02d9c697115d68ee8";
 
 /// IntroId of the sorted-first `draw` overload.
 /// Which overload this is depends on how their BLAKE3 digests sort; run
@@ -800,28 +797,16 @@ fn update_golden_print_all() {
     println!("{entries_b3}");
     println!();
     println!("// GOLDEN_DRAW_FIRST:");
-    println!(
-        "{}",
-        draws.first().map_or("(missing)", String::as_str)
-    );
+    println!("{}", draws.first().map_or("(missing)", String::as_str));
     println!();
     println!("// GOLDEN_DRAW_SECOND:");
-    println!(
-        "{}",
-        draws.get(1).map_or("(missing)", String::as_str)
-    );
+    println!("{}", draws.get(1).map_or("(missing)", String::as_str));
     println!();
     println!("// GOLDEN_IMPL_FIRST:");
-    println!(
-        "{}",
-        impls.first().map_or("(missing)", String::as_str)
-    );
+    println!("{}", impls.first().map_or("(missing)", String::as_str));
     println!();
     println!("// GOLDEN_IMPL_SECOND:");
-    println!(
-        "{}",
-        impls.get(1).map_or("(missing)", String::as_str)
-    );
+    println!("{}", impls.get(1).map_or("(missing)", String::as_str));
     println!();
     println!("╚═══════════════════════════════════════════════════════════╝");
     println!();

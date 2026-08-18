@@ -34,7 +34,9 @@ use registry::vector::EmbeddingModel;
 use crate::server::Server;
 use crate::server::authz::Principal;
 use crate::server::error::ServerResult;
-use crate::server::http::dto::{CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse};
+use crate::server::http::dto::{
+    CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse,
+};
 
 /// Names passed to the metrics facade. The Prometheus exporter appends
 /// `_total` when rendering counters, so these must not include that suffix.

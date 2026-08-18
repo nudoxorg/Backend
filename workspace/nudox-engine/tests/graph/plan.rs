@@ -21,10 +21,8 @@ fn many(vs: &[&str]) -> CandidateValue<FieldValue> {
     CandidateValue::Multiple(vs.iter().map(|v| FieldValue::String((*v).into())).collect())
 }
 
-const KEY_A: &str =
-    "cargo:alpha#0101010101010101010101010101010101010101010101010101010101010101";
-const KEY_B: &str =
-    "cargo:beta#0202020202020202020202020202020202020202020202020202020202020202";
+const KEY_A: &str = "cargo:alpha#0101010101010101010101010101010101010101010101010101010101010101";
+const KEY_B: &str = "cargo:beta#0202020202020202020202020202020202020202020202020202020202020202";
 
 fn plan(
     key: Option<CandidateValue<FieldValue>>,
@@ -107,9 +105,18 @@ fn impossible_beats_a_usable_constraint_elsewhere() {
 /// `one_of` with an empty operand list is satisfiable by nothing.
 #[test]
 fn an_empty_one_of_plans_nothing_at_all() {
-    assert_eq!(plan(Some(many(&[])), None, None, None).unwrap(), SymbolPlan::Empty);
-    assert_eq!(plan(None, Some(many(&[])), None, None).unwrap(), SymbolPlan::Empty);
-    assert_eq!(plan(None, None, Some(many(&[])), None).unwrap(), SymbolPlan::Empty);
+    assert_eq!(
+        plan(Some(many(&[])), None, None, None).unwrap(),
+        SymbolPlan::Empty
+    );
+    assert_eq!(
+        plan(None, Some(many(&[])), None, None).unwrap(),
+        SymbolPlan::Empty
+    );
+    assert_eq!(
+        plan(None, None, Some(many(&[])), None).unwrap(),
+        SymbolPlan::Empty
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +285,13 @@ fn a_range_candidate_falls_back_to_a_scan() {
 #[test]
 fn a_non_string_candidate_falls_back_to_a_scan() {
     assert_eq!(
-        plan(Some(CandidateValue::Single(FieldValue::Int64(7))), None, None, None).unwrap(),
+        plan(
+            Some(CandidateValue::Single(FieldValue::Int64(7))),
+            None,
+            None,
+            None
+        )
+        .unwrap(),
         SymbolPlan::FullScan
     );
 }

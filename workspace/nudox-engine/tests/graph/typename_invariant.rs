@@ -7,11 +7,11 @@
 use std::sync::Arc;
 
 use nudox_engine::graph::vertex::{OccurrenceVertex, SymbolVertex, Vertex};
-use nudox_ir::change::IntroId;
 use nudox_engine::store::{
     package::{PackageView, Provenance},
     source::fixtures::build_rich_view,
 };
+use nudox_ir::change::IntroId;
 use trustfall::provider::Typename as _;
 
 fn dummy_pkg() -> Arc<PackageView> {

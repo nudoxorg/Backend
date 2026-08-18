@@ -5,8 +5,9 @@
 //! # What changed
 //!
 //! - `doc_links` now returns `Option<Vec<nudox_ir::entry::DocLink>>` instead
-//!   of `Option<HashMap<String, NudoxPath>>`.  The new IR `DocLink` carries
-//!   `target: String` (the canonical path string) and `label: Option<String>`.
+//!   of `Option<HashMap<String, NudoxPath>>`. The IR `DocLink` carries
+//!   `target: String`, `label: Option<String>`, and the source span for every
+//!   path-shaped occurrence, including unresolved ones.
 //! - `deprecation` returns `nudox_ir::entry::Deprecation` directly (the field
 //!   names are the same: `note`, `since`).
 //! - `cfg_string` is renamed `cfg_expr` and now returns
@@ -193,10 +194,9 @@ fn lower_cfg_atom(atom: &ra_ap_cfg::CfgAtom) -> CfgExpr {
 
 // ── Intra-doc links ───────────────────────────────────────────────────────────
 
-/// Resolved intra-doc links: `Vec<DocLink>` (target = canonical path string,
-/// label = the link text as written).
-///
-/// Empty when no links resolve to known `ModuleDef`s.
+/// Intra-doc link attempts: `Vec<DocLink>` (resolved targets use the canonical
+/// path string; unresolved targets retain the link text as written). Every
+/// path-shaped occurrence carries its source span.
 pub(crate) fn doc_links<D: HasAttrs + Copy>(
     ctx: &mut LowerCtx<'_>,
     def: D,
@@ -205,27 +205,38 @@ pub(crate) fn doc_links<D: HasAttrs + Copy>(
     let docs = docs?;
     let mut out: Vec<DocLink> = Vec::new();
 
-    for link in extract_doc_link_targets(docs) {
+    for (link, source_span) in extract_doc_link_targets(docs) {
         let resolved = resolve_doc_path_on(ctx.db, def, &link, None, IsInnerDoc::No);
-        if let Some(DocLinkDef::ModuleDef(resolved_def)) = resolved
+        let target = if let Some(DocLinkDef::ModuleDef(resolved_def)) = resolved
             && let Some(target_key) = ctx.canonical(resolved_def)
         {
-            out.push(DocLink {
-                target: target_key.to_string(),
-                label: Some(link),
-            });
-        }
+            target_key.to_string()
+        } else {
+            // Preserve unresolved attempts too.  The renderer needs their
+            // occurrence spans to apply shortcut semantics independently;
+            // dropping them here makes one resolved link opt every bracket
+            // run in the whole documentation body into link interpretation.
+            link.clone()
+        };
+        out.push(doc_link_record(target, link, source_span));
     }
 
     if out.is_empty() { None } else { Some(out) }
 }
 
+fn doc_link_record(target: String, label: String, source_span: std::ops::Range<usize>) -> DocLink {
+    DocLink {
+        target,
+        label: Some(label),
+        source_span: Some(source_span),
+    }
+}
+
 /// Candidate intra-doc link targets from a markdown doc string.
 ///
 /// Ported verbatim from old `docs.rs`.
-fn extract_doc_link_targets(docs: &str) -> Vec<String> {
+fn extract_doc_link_targets(docs: &str) -> Vec<(String, std::ops::Range<usize>)> {
     let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
     let bytes = docs.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -250,8 +261,8 @@ fn extract_doc_link_targets(docs: &str) -> Vec<String> {
 
         let candidate = target.unwrap_or(inner);
         let candidate = candidate.trim().trim_matches('`').trim();
-        if is_pathish(candidate) && seen.insert(candidate.to_owned()) {
-            out.push(candidate.to_owned());
+        if is_pathish(candidate) {
+            out.push((candidate.to_owned(), i..close + 1));
         }
         i = close + 1;
     }
@@ -363,40 +374,53 @@ pub(crate) fn symbol_attrs(ctx: &LowerCtx<'_>, def: ModuleDef) -> Box<[nudox_ir:
     };
 
     if let Some(attrs) = ast_attrs {
-        for attr in attrs {
-            // Only outer attrs (`#[...]`); skip inner attrs (`#![...]`).
-            match attr.kind() {
-                ra_ap_syntax::ast::AttrKind::Inner => continue,
-                ra_ap_syntax::ast::AttrKind::Outer => {}
-            }
-            let token = match attr.simple_name() {
-                Some(name) => name.to_string(),
-                None => continue,
-            };
-            // Skip cfg, derive, doc — cfg is handled separately; derive and
-            // doc don't belong in attrs.
-            if matches!(token.as_str(), "cfg" | "cfg_attr" | "derive" | "doc") {
-                continue;
-            }
-            let arg = attr
-                .as_simple_call()
-                .map(|(_, tt)| tt.syntax().text().to_string());
-            // Deduplicate: skip if we already have this token (HIR flags may
-            // have already added doc_hidden / non_exhaustive above).
-            if out.iter().any(|a| a.token == token) {
-                continue;
-            }
-            out.push(nudox_ir::entry::AttrTok { token, arg });
-        }
+        append_ast_attrs(&mut out, attrs);
     }
 
     out.into_boxed_slice()
+}
+
+/// Extract declaration attributes from a syntax node that is not a
+/// `ModuleDef` (fields, variants, and impl blocks).
+pub(crate) fn ast_attrs<N: AstHasAttrs>(node: N) -> Box<[nudox_ir::entry::AttrTok]> {
+    let mut out = Vec::new();
+    append_ast_attrs(&mut out, node.attrs().collect());
+    out.into_boxed_slice()
+}
+
+fn append_ast_attrs(out: &mut Vec<nudox_ir::entry::AttrTok>, attrs: Vec<ast::Attr>) {
+    for attr in attrs {
+        // Only outer attrs (`#[...]`); skip inner attrs (`#![...]`).
+        match attr.kind() {
+            ra_ap_syntax::ast::AttrKind::Inner => continue,
+            ra_ap_syntax::ast::AttrKind::Outer => {}
+        }
+        let token = match attr.simple_name() {
+            Some(name) => name.to_string(),
+            None => continue,
+        };
+        // Skip cfg, derive, doc — cfg is handled separately; derive and
+        // doc don't belong in attrs.
+        if matches!(token.as_str(), "cfg" | "cfg_attr" | "derive" | "doc") {
+            continue;
+        }
+        let arg = attr
+            .as_simple_call()
+            .map(|(_, tt)| tt.syntax().text().to_string());
+        // Deduplicate: skip if we already have this token (HIR flags may
+        // have already added doc_hidden / non_exhaustive above).
+        if out.iter().any(|a| a.token == token) {
+            continue;
+        }
+        out.push(nudox_ir::entry::AttrTok { token, arg });
+    }
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use super::{doc_link_record, extract_doc_link_targets};
     use nudox_ir::entry::AttrTok;
     use ra_ap_syntax::{
         AstNode, Edition, SourceFile,
@@ -482,5 +506,23 @@ mod tests {
         let json = serde_json::to_string(&toks).expect("serialize");
         let rt: Vec<AttrTok> = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(toks, rt, "AttrTok must serde round-trip");
+    }
+
+    #[test]
+    fn mixed_link_attempts_keep_each_occurrence_and_span() {
+        let docs = "See [Known] and [Missing].";
+        let candidates = extract_doc_link_targets(docs);
+        assert_eq!(
+            candidates,
+            vec![("Known".to_owned(), 4..11), ("Missing".to_owned(), 16..25),]
+        );
+
+        let records: Vec<_> = candidates
+            .into_iter()
+            .map(|(label, span)| doc_link_record(label.clone(), label, span))
+            .collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].source_span, Some(4..11));
+        assert_eq!(records[1].source_span, Some(16..25));
     }
 }

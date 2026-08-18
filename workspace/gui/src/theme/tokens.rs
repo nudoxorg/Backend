@@ -778,4 +778,3 @@ pub struct SyntaxColours {
     /// keeps the number-of-colour-categories low (a key principle of restraint).
     pub boolean: Hsla,
 }
-

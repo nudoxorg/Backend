@@ -32,10 +32,10 @@
 //! Fully-qualified descriptive names, typed errors (`thiserror`), no `unwrap`
 //! outside tests, small files, strong typing (INDEX-PLAN house style).
 
+pub mod advisory;
 /// The untrusted-archive extraction plane (moved from `driver::ingest`).
 /// Sanitizes hostile archive inputs into content-addressed blobs.
 pub mod archive;
-pub mod advisory;
 pub mod driver;
 pub mod enumerate;
 pub mod follower;
@@ -46,7 +46,7 @@ pub mod monitor;
 pub mod transport;
 pub mod watermark;
 
-pub use driver::{DriveOutcome, FollowerDriver};
+pub use driver::{DriveOutcome, FollowerDriver, GitDriveOutcome, HomebrewIngestor};
 pub use follower::{Follower, FollowerError, PollCadence};
 pub use git::{GitCommandAdapter, GitRepository, GitRepositoryError, LsRemoteRef};
 pub use grit::GritAdapter;
@@ -58,5 +58,7 @@ pub use monitor::{GitMonitor, MonitorError};
 /// compiled as the subprocess fallback (and the subject of the
 /// subprocess-hardening regression tests); switching back is this one alias.
 pub type DefaultGitAdapter = grit::GritAdapter;
-pub use transport::{FeedRequest, FeedResponse, FeedTransport, TransportError};
-pub use watermark::{FeedWatermark, GitWatermark, WatermarkError, WatermarkStore};
+pub use transport::{FeedRequest, FeedResponse, FeedTransport, HttpTransport, TransportError};
+pub use watermark::{
+    FeedWatermark, FileWatermarkStore, GitWatermark, WatermarkError, WatermarkStore,
+};

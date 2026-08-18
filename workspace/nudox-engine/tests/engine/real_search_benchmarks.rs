@@ -101,15 +101,17 @@ use std::time::{Duration, Instant};
 
 use futures::stream::BoxStream;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
+use nudox_engine::store::source::{
+    Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor,
+};
 use nudox_ir::change::{IntroId, PackageLineageId};
 use nudox_ir::entry::Visibility;
 use nudox_ir::kind::KindDiscriminant;
 use nudox_ir::view::IrView;
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
-use nudox_engine::store::source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error};
 
 use nudox_engine::search::{SECTION_NAME, SECTION_TYPE};
 use nudox_engine::wire::{Gen, HitRow, SearchEvent};
@@ -120,8 +122,7 @@ use nudox_engine::{Engine, EngineConfig, PackageLoadEvent, SearchQuery};
 // ---------------------------------------------------------------------------
 
 fn real_crate_root(name: &str, version: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("../../result/{name}-{version}"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../result/{name}-{version}"))
 }
 
 /// Lower one real crate through the real Rust producer, exactly like
@@ -144,10 +145,8 @@ fn try_lower(name: &str, version: &str) -> Option<Arc<PackageView>> {
     }
 
     let descriptor = PackageDescriptor::cargo(&root, name, version);
-    let (table, cost) = heart::cost::measured(
-        &format!("load/real/{name}-{version}"),
-        &root,
-        || {
+    let (table, cost) =
+        heart::cost::measured(&format!("load/real/{name}-{version}"), &root, || {
             produce(
                 &RustProducer { direct_repo: false },
                 &descriptor.source,
@@ -164,8 +163,7 @@ fn try_lower(name: &str, version: &str) -> Option<Arc<PackageView>> {
                 panic!("{name}-{version} must lower without error:\n{chain}");
             })
             .table
-        },
-    );
+        });
     eprintln!(
         "lowered {} entries from {name}-{version} in {:.2}s",
         table.len(),
@@ -272,22 +270,32 @@ async fn drain(rx: flume::Receiver<SearchEvent>) -> Vec<SearchEvent> {
     events
 }
 
-fn section_rows(events: &[SearchEvent], section: nudox_engine::wire::SearchSectionId) -> Vec<HitRow> {
+fn section_rows(
+    events: &[SearchEvent],
+    section: nudox_engine::wire::SearchSectionId,
+) -> Vec<HitRow> {
     events
         .iter()
         .filter_map(|e| match e {
-            SearchEvent::Section { section: s, rows, .. } if *s == section => {
-                Some(rows.iter().cloned().collect::<Vec<_>>())
-            }
+            SearchEvent::Section {
+                section: s, rows, ..
+            } if *s == section => Some(rows.iter().cloned().collect::<Vec<_>>()),
             _ => None,
         })
         .flatten()
         .collect()
 }
 
-fn section_latency(events: &[SearchEvent], section: nudox_engine::wire::SearchSectionId) -> Option<Duration> {
+fn section_latency(
+    events: &[SearchEvent],
+    section: nudox_engine::wire::SearchSectionId,
+) -> Option<Duration> {
     events.iter().find_map(|e| match e {
-        SearchEvent::Latency { section: s, elapsed, .. } if *s == section => Some(*elapsed),
+        SearchEvent::Latency {
+            section: s,
+            elapsed,
+            ..
+        } if *s == section => Some(*elapsed),
         _ => None,
     })
 }
@@ -350,7 +358,8 @@ async fn name_search_latency_single_real_package() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
     let ((events, wall), _cost) = heart::cost::measured("search/name/1pkg/memchr", &dir, || {
@@ -401,7 +410,8 @@ async fn type_search_latency_single_real_package() {
     let query = SearchQuery {
         text: "fn".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0, // unlimited: we want the true kind-facet size
     };
     let ((events, wall), _cost) = heart::cost::measured("search/type/1pkg/fn", &dir, || {
@@ -468,7 +478,8 @@ async fn prefix_search_many_matches_latency() {
     let query = SearchQuery {
         text: "mem".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0, // unlimited: measure the true match volume
     };
     let ((events, wall), _cost) = heart::cost::measured("search/prefix/1pkg/mem", &dir, || {
@@ -515,7 +526,8 @@ async fn prefix_search_many_matches_latency() {
         rows.iter().map(|r| &*r.display_name).collect::<Vec<_>>()
     );
 
-    let found_intros: std::collections::HashSet<IntroId> = rows.iter().map(|r| r.key.intro).collect();
+    let found_intros: std::collections::HashSet<IntroId> =
+        rows.iter().map(|r| r.key.intro).collect();
     let missed: Vec<_> = real_prefix_matches.difference(&found_intros).collect();
     if !missed.is_empty() {
         for id in &missed {
@@ -556,6 +568,10 @@ async fn prefix_search_many_matches_latency() {
 #[ignore = "loads three real Cargo workspaces through rust-analyzer; run with --ignored"]
 async fn latency_one_package_vs_several_real_packages() {
     let (Some(memchr), Some(log), Some(itoa)) = (memchr_pkg(), log_pkg(), itoa_pkg()) else {
+        eprintln!(
+            "SKIP latency_one_package_vs_several_real_packages: one or more real-crate \
+             checkouts are unavailable"
+        );
         return;
     };
 
@@ -568,7 +584,8 @@ async fn latency_one_package_vs_several_real_packages() {
     let query = || SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
 
@@ -614,7 +631,10 @@ async fn latency_one_package_vs_several_real_packages() {
         "adding unrelated packages (log, itoa) to the corpus must not change the \
          'memchr' name-section results — every hit still belongs to the memchr package"
     );
-    assert!(!rows1.is_empty(), "sanity: the query must actually hit something");
+    assert!(
+        !rows1.is_empty(),
+        "sanity: the query must actually hit something"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +652,10 @@ async fn latency_one_package_vs_several_real_packages() {
 #[ignore = "loads three real Cargo workspaces through rust-analyzer; run with --ignored"]
 async fn first_query_cold_vs_warm_real_corpus() {
     let (Some(memchr), Some(log), Some(itoa)) = (memchr_pkg(), log_pkg(), itoa_pkg()) else {
+        eprintln!(
+            "SKIP first_query_cold_vs_warm_real_corpus: one or more real-crate \
+             checkouts are unavailable"
+        );
         return;
     };
     let engine = engine_over(&[memchr, log, itoa]);
@@ -640,14 +664,16 @@ async fn first_query_cold_vs_warm_real_corpus() {
     let query = || SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 50,
     };
 
     let cold_dir = scratch_dir("cold");
-    let ((cold_events, cold_wall), _c) = heart::cost::measured("search/cold/first", &cold_dir, || {
-        futures::executor::block_on(run_search_timed(&engine, query(), Gen(20)))
-    });
+    let ((cold_events, cold_wall), _c) =
+        heart::cost::measured("search/cold/first", &cold_dir, || {
+            futures::executor::block_on(run_search_timed(&engine, query(), Gen(20)))
+        });
     let cold_names: Vec<String> = section_rows(&cold_events, SECTION_NAME)
         .iter()
         .map(|r| r.display_name.to_string())
@@ -679,7 +705,10 @@ async fn first_query_cold_vs_warm_real_corpus() {
         warm_mean,
         warm_walls
     );
-    assert!(!cold_names.is_empty(), "sanity: the query must actually hit something");
+    assert!(
+        !cold_names.is_empty(),
+        "sanity: the query must actually hit something"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -701,7 +730,8 @@ async fn memchr_query_returns_the_real_function_and_the_real_struct() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(30)).await;
@@ -770,7 +800,8 @@ async fn memchr_query_ranks_public_api_above_same_named_internal_module() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(40)).await;
@@ -802,9 +833,7 @@ async fn memchr_query_ranks_public_api_above_same_named_internal_module() {
 
     let best_internal_module_rank = resolved
         .iter()
-        .filter(|(_, _, disc, vis)| {
-            *disc == KindDiscriminant::Module && *vis != Visibility::Public
-        })
+        .filter(|(_, _, disc, vis)| *disc == KindDiscriminant::Module && *vis != Visibility::Public)
         .map(|(rank, ..)| *rank)
         .min();
 
@@ -836,6 +865,10 @@ async fn memchr_query_ranks_public_api_above_same_named_internal_module() {
 #[ignore = "loads three real Cargo workspaces through rust-analyzer; run with --ignored"]
 async fn cross_package_search_returns_only_the_owning_real_package() {
     let (Some(memchr), Some(log), Some(itoa)) = (memchr_pkg(), log_pkg(), itoa_pkg()) else {
+        eprintln!(
+            "SKIP cross_package_search_returns_only_the_owning_real_package: one or more \
+             real-crate checkouts are unavailable"
+        );
         return;
     };
     let engine = engine_over(&[memchr, log, itoa]);
@@ -844,17 +877,26 @@ async fn cross_package_search_returns_only_the_owning_real_package() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(50)).await;
     let rows = section_rows(&events, SECTION_NAME);
 
-    assert!(!rows.is_empty(), "sanity: 'memchr' must hit something in the 3-package corpus");
+    assert!(
+        !rows.is_empty(),
+        "sanity: 'memchr' must hit something in the 3-package corpus"
+    );
     let foreign: Vec<_> = rows
         .iter()
         .filter(|r| r.key.package.name.as_str() != "memchr")
-        .map(|r| (r.key.package.name.as_str().to_owned(), r.display_name.to_string()))
+        .map(|r| {
+            (
+                r.key.package.name.as_str().to_owned(),
+                r.display_name.to_string(),
+            )
+        })
         .collect();
     assert!(
         foreign.is_empty(),
@@ -886,7 +928,8 @@ async fn memchr_query_display_names_do_not_triple_repeat_a_path_segment() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(60)).await;
@@ -946,7 +989,8 @@ async fn memchr_function_specifically_outranks_internal_module_collision() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(41)).await;
@@ -1028,12 +1072,15 @@ async fn memchr_reexport_aliases_are_invisible_to_name_search() {
     let query = SearchQuery {
         text: "memchr".to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (events, _wall) = run_search_timed(&engine, query, Gen(42)).await;
-    let found_intros: std::collections::HashSet<IntroId> =
-        section_rows(&events, SECTION_NAME).iter().map(|r| r.key.intro).collect();
+    let found_intros: std::collections::HashSet<IntroId> = section_rows(&events, SECTION_NAME)
+        .iter()
+        .map(|r| r.key.intro)
+        .collect();
 
     let visible_aliases: Vec<_> = reexport_aliases
         .iter()

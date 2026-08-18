@@ -121,21 +121,25 @@ fn lower_type_depth(
             apply_nullable(base, nullable)
         }
 
-        // SZ array → `Slice`; multidimensional → outer `Slice` of inner
-        // (rank-N is not directly representable; we nest Slice N times which
-        // loses the rectangular shape).
-        // KNOWN GAP: no `Type::Array { rank }` exists in the new IR;
-        // `Type::Array` has a `length: usize` for fixed-size, not rank.
-        // We use `Slice` for all ranks. A future `Type::Array { rank }` variant
-        // would let us represent `T[,]` as `Array { ty: T, rank: 2 }`.
+        // C# arrays are rectangular runtime types whose rank is part of their
+        // identity. The IR has no rectangular-array/rank slot, so preserve the
+        // element and rank in the typed annotation channel rather than making
+        // every rank indistinguishable as a bare Slice.
         TypeSig::Array {
             element,
-            rank: _,
+            rank,
             nullable,
         } => {
             let elem = lower_type_depth(element, name_to_doc_id, out, depth + 1);
             let base = Type::Slice(Box::new(elem));
-            apply_nullable(base, nullable)
+            let ranked = Type::Annotated {
+                inner: Box::new(base),
+                annotation: AttrTok {
+                    token: "csharp.array-rank".to_owned(),
+                    arg: Some(rank.to_string()),
+                },
+            };
+            apply_nullable(ranked, nullable)
         }
 
         // Unmanaged pointer.
@@ -412,8 +416,10 @@ fn lower_primitive(name: &str) -> Option<Type> {
         "System.Object" => Type::Any,
         // `void` — the unit type.
         "System.Void" => Type::Tuple(Box::new([])),
-        // `System.Decimal` — Track B item 1: no dedicated primitive slot yet.
-        // Falls through to return None, resolved as Nominal if in extraction.
+        // Decimal has CLI value-type and decimal-arithmetic semantics; it is
+        // neither an integer nor an IEEE float. There is no faithful Primitive
+        // variant, so retain a typed IR gap instead of widening it to Any.
+        "System.Decimal" => return Some(Type::no_ir_representation("System.Decimal")),
         _ => return None,
     };
     Some(prim)
@@ -863,5 +869,61 @@ mod tests {
             "Dictionary"
         );
         assert_eq!(simple_name("Foo.Bar"), "Bar");
+    }
+
+    #[test]
+    fn decimal_is_a_typed_ir_gap_not_a_nominal_or_top_type() {
+        let mut sink = make_sink();
+        let decimal = lower_type(
+            &TypeSig::Named {
+                name: "System.Decimal".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Struct".to_owned(),
+            },
+            &HashMap::new(),
+            &mut sink,
+        );
+
+        assert_eq!(
+            decimal,
+            Type::no_ir_representation("System.Decimal"),
+            "Decimal needs a future dedicated primitive slot"
+        );
+    }
+
+    #[test]
+    fn array_rank_is_preserved_in_typed_annotation() {
+        let mut sink = make_sink();
+        let array = lower_type(
+            &TypeSig::Array {
+                element: Box::new(TypeSig::Named {
+                    name: "System.Int32".to_owned(),
+                    args: vec![],
+                    owner: None,
+                    nullable: String::new(),
+                    type_kind: "Struct".to_owned(),
+                }),
+                rank: 3,
+                nullable: String::new(),
+            },
+            &HashMap::new(),
+            &mut sink,
+        );
+
+        assert!(
+            matches!(
+                array,
+                Type::Annotated {
+                    ref annotation,
+                    ref inner
+                }
+                    if annotation.token == "csharp.array-rank"
+                        && annotation.arg.as_deref() == Some("3")
+                        && matches!(**inner, Type::Slice(_))
+            ),
+            "rectangular rank must survive lowering, got {array:?}"
+        );
     }
 }

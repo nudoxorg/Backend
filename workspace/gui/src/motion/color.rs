@@ -181,7 +181,8 @@ mod tests {
         let color = m.value();
         assert!(
             (0.0..=1.0).contains(&color.h),
-            "normalised hue out of range: {}", color.h
+            "normalised hue out of range: {}",
+            color.h
         );
     }
 
@@ -227,7 +228,10 @@ mod tests {
             }
         }
 
-        assert!(settled, "MotionColor with SNAPPY spring should settle within ~1.6 s at 120 Hz");
+        assert!(
+            settled,
+            "MotionColor with SNAPPY spring should settle within ~1.6 s at 120 Hz"
+        );
 
         let c = m.value();
         assert!((c.h - to.h).abs() < 0.01, "hue did not settle to target");

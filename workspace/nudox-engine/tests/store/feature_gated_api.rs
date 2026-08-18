@@ -35,12 +35,12 @@
 
 use std::path::PathBuf;
 
-use nudox_languages::produce;
-use nudox_languages::rust::RustProducer;
 use nudox_engine::store::{
     package::{PackageView, Provenance},
     source::producer::PackageDescriptor,
 };
+use nudox_languages::produce;
+use nudox_languages::rust::RustProducer;
 
 /// Where `result/<name>-<version>` (or `result/<name>` for the
 /// no-version-suffix convention some fixtures use) lives.
@@ -88,7 +88,8 @@ fn try_lower(root: &PathBuf, name: &str, version: &str) -> Option<PackageView> {
             }
             panic!("{name} must lower without error:\n{chain}");
         })
-    .table});
+        .table
+    });
 
     eprintln!(
         "lowered {} entries from {name}-{version} in {:.1}s",
@@ -237,5 +238,9 @@ fn memchr_alloc_gated_method_reaches_the_lowered_ir() {
          found only: {into_owned_owners:?}"
     );
 
-    eprintln!("found {} into_owned: {:?}", into_owned_owners.len(), into_owned_owners);
+    eprintln!(
+        "found {} into_owned: {:?}",
+        into_owned_owners.len(),
+        into_owned_owners
+    );
 }

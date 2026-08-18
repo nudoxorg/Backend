@@ -86,9 +86,11 @@ pub(crate) fn discover_entry_points_with(
                 found.insert(path);
             }
         }
-        Err(ResolveError::Builtin { .. }
+        Err(
+            ResolveError::Builtin { .. }
             | ResolveError::NotFound(_)
-            | ResolveError::PackagePathNotExported { .. }) => {}
+            | ResolveError::PackagePathNotExported { .. },
+        ) => {}
         Err(other) => {
             tracing::debug!(
                 root = %root.display(),
@@ -131,12 +133,25 @@ pub(crate) fn discover_entry_points_with(
         }
     }
 
-    if found.is_empty() {
-        return Err(PackageError::EntryPointDiscoveryFailed {
-            path: root.to_path_buf(),
-        });
-    }
-
+    // No error path for "nothing found here": every read failure inside this
+    // function (`deep_import_roots`'s `fs::read_dir`, `exports_entry_points`'s
+    // manifest parse) is already swallowed above, and `root` itself was
+    // canonicalized — and therefore proven to exist and be readable — by the
+    // caller before this function ran. So by the time control reaches here,
+    // an empty `found` means only one thing: this package genuinely has no
+    // TS/JS entry points, the same way a Python package can genuinely have no
+    // `.py` files (`python::syntax::discover_py_files`'s doc comment: "only a
+    // failure to walk the package root itself... is reported as a
+    // `ProducerError`"). Surfacing that as a discovery *failure* — this used
+    // to return `Err(PackageError::EntryPointDiscoveryFailed)` here — made an
+    // empty package indistinguishable from a broken oracle: `producer.rs`
+    // could only report it as `OracleSpawn`, which by its own doc comment
+    // means "the subprocess could not be spawned", and nothing was spawned or
+    // even attempted. Returning `Ok(vec![])` instead lets `invoke` and `lower`
+    // both succeed on zero modules, so the generic `enforce_yield_contract`
+    // gate in `produce` is the one that rejects the package — as
+    // `NoDeclarationsContributed`, naming the real condition instead of a
+    // fabricated spawn error.
     Ok(found.into_iter().collect())
 }
 
@@ -179,10 +194,12 @@ fn exports_entry_points(
                     out.insert(path);
                 }
             }
-            Err(ResolveError::Builtin { .. }
+            Err(
+                ResolveError::Builtin { .. }
                 | ResolveError::NotFound(_)
                 | ResolveError::PackagePathNotExported { .. }
-                | ResolveError::Ignored(_)) => {}
+                | ResolveError::Ignored(_),
+            ) => {}
             Err(err) => {
                 tracing::debug!(
                     package_root = %package_root.display(),

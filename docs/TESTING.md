@@ -330,9 +330,165 @@ equivalent.
 | --- | --- | --- |
 | Fast | `cargo test --workspace --lib` | Root workspace library unit tests. Equivalent to nextest's `-E 'group(unit)'`, without the group's selectability. Needs the same `--exclude driver` nextest does (L7, above) — but note `--lib` alone would not actually trip L7, since `driver`'s failures are all bin/test targets; pass it anyway so the command stays correct if `--lib` is ever dropped. |
 | Default | `nu .config/scripts/full-check.nu` | Runs the default nextest profile for the root workspace, then the fixture-enabled `nudox-engine` profile so MCP fixture coverage (including token-budget measurements) is included. Corpus sweeps and ignored real-package tests remain opt-in because they require `result/` checkouts. The rest of the tier is unchanged: measurement-support tests, standalone GUI tests (when manifest present), and compiler Buck tests when `buck2` is available. `RUSTC_BOOTSTRAP=1` is set throughout because `nudox-ir` still uses unstable macro declarations; this is a diagnostic bridge until the crate is made stable-compatible. |
-| Live | `SERVER_TEST_BACKENDS=1 nu .config/scripts/full-check.nu --live` | Default checks plus required TCP tests against configured catalog/vector/object-store services. Missing opt-in is a failure. Live pipeline uses bin/driver. |
+| Live | `nu .config/scripts/local-backends.nu up` then `source .local-backends/env.sh && cargo nextest run -p index --features server --run-ignored all` | The `index` server-integration suite (`tests/server_common::required_assembled_server`) against real backends. Missing opt-in (`SERVER_TEST_BACKENDS`) is a hard failure everywhere in this suite now, never a silent pass — see "Local live backends" below. `full-check.nu --live` still runs `live_socket`/`live_download` specifically; `local-backends.nu` is the broader, reusable way to stand the stack up for the whole suite. Live pipeline uses bin/driver. |
 | Infrastructure | `nu .config/scripts/full-check.nu --nix` | Default checks plus `nix flake check --no-update-lock-file`. A requested Nix failure is a failure, never a skip. |
 | Nightly | `nu .config/scripts/full-check.nu --nightly` | Mutation (`cargo-mutants`) and fuzz inventory (`cargo fuzz list`) gates. Each missing requested tool fails instead of becoming a green no-op. |
+
+## A live index with real embeddings (macOS)
+
+The tier above stands up backends *for the test suite*. This section stands up a
+real, serving index you can query by hand and point the GUI at. Four commands:
+
+```bash
+nu .config/scripts/local-backends.nu up                    # qdrant + the test-tier stub
+nu .config/scripts/local-backends.nu serve                 # nudox-serve on 127.0.0.1:8080
+nu .config/scripts/local-backends.nu ingest rust itoa 1.0.11
+cargo run --manifest-path workspace/gui/Cargo.toml --bin lindsey   # GUI, already defaults to :8080
+```
+
+`local-backends.nu status` reports all four services plus the embedder's
+observed dimensionality.
+
+### The embedder is Ollama, and no stub is in the serving path
+
+`nudox-serve` is monomorphised over `EmbedModel = NomicEmbedText`
+(`workspace/index/server/main.rs:21`), whose `ModelId` is literally
+`nomic-embed-text` — a model Ollama serves directly. `endpoints.embeddings`
+already defaults to `http://127.0.0.1:11434/v1/embeddings`
+(`config.rs`'s `defaults::embeddings`), so the serving path talks to a real
+local model with no configuration and no stub.
+
+`stub-embeddings-server.py` (port 21434) exists only for the *test* tier, whose
+`server_common::TestModel` is hardcoded to `JinaCodeV2` — an id
+(`jinaai/jina-embeddings-v2-base-code`) no Ollama registry has. Do not point
+`nudox-serve` at 21434; `serve` deliberately passes 11434 so a stray
+`NUDOX_DEFINITIVE__ENDPOINTS__EMBEDDINGS` left over from a test run cannot leak in.
+
+Dimensions are checked, not assumed: `serve` refuses to start unless the
+endpoint returns 768-wide vectors, because `NomicEmbedText::DIMENSIONS` is 768
+and `CollectionConfig::NomicDev` (`workspace/registry/vector/remote/store.rs`)
+builds the 768-wide, Cosine, named-vector-`sym` collection
+`symbols__dev_nomic_embed_text_768`. A mismatch would be rejected by
+`Embedding::from_vec` at insert time, or land in the wrong collection.
+
+Prerequisite: `ollama serve` running with `ollama pull nomic-embed-text`. The
+script never starts or stops Ollama — it may be a long-lived host service — it
+only checks it.
+
+### The data directory must not be the default
+
+`SourceConfig::data_directory()` defaults to `$TMPDIR/nudox/<source>`, which on
+macOS is a `/var/folders/...` path the OS periodically purges. When it is
+purged the tantivy symbol index silently becomes empty while qdrant keeps its
+vectors, so lexical search returns zero hits forever and `/readyz` still
+answers `{"ready":true,"degraded":[]}`. `serve` pins it to
+`.local-backends/nudox-data` for exactly this reason.
+
+### Why `ingest` registers the package twice
+
+This is a workaround for a real defect, not a ritual. The Text sink gets
+exactly one outbox intent per package, emitted by `store::apply::apply_run`'s
+`CatalogOp::UpsertVersion` arm — i.e. when the version row is written, at
+*registration* time. The symbols do not exist yet at that moment; they appear
+~a minute later when compilation finishes. `runtime::text::poll::poll_once`
+consumes that intent within its poll interval, calls `symbols_for(package)`,
+gets `NotFound`, maps it to an empty batch
+(`workspace/index/runtime/text/poll.rs:138-144`) and still advances the durable
+watermark (`poll.rs:153`). `store/lifecycle.rs` deliberately no longer fans out
+to the Text sink on phase transitions, so nothing re-signals once the symbols
+land.
+
+Net effect: a freshly ingested package is semantically searchable but
+**lexically invisible, permanently, with no error anywhere**. Observed
+directly — `text index caught up | from 0 to 1 | intents 1 | symbols 0`, and a
+`symbols/` tantivy directory with zero segments. Re-registering emits a fresh
+`UpsertVersion` intent that the poller resolves against a catalog that now has
+the symbols (`intents 2 | symbols 76`), after which lexical search works. A
+real fix belongs in the indexing pipeline (emit a Text intent when a package
+reaches `Stored`), not in this script.
+
+### Which packages can actually be ingested here
+
+Two independent limits, both found by trying. `ingest` reports each one instead
+of waiting out its timeout.
+
+**Rust crate names containing `_` cannot be fetched at all.**
+`workspace/index/ecosystem/rust.rs:41` canonicalises a crate name to lowercase
+with `_` → `-` ("crates.io treats them as identical"), which is true for
+*identity* — you cannot publish both `once_cell` and `once-cell` — but not for
+the static download URL, which is literal. Line 60 then builds
+`https://static.crates.io/crates/{name}/{name}-{version}.crate` from that
+canonical name, so `once_cell` is requested as `once-cell` and crates.io
+answers **403**:
+
+```
+transport error: HTTP status client error (403 Forbidden) for url
+  (https://static.crates.io/crates/once-cell/once-cell-1.19.0.crate)
+```
+
+The URL *shape* is fine — `itoa/itoa-1.0.11.crate` and
+`once_cell/once_cell-1.19.0.crate` both return 200; only the substituted name is
+wrong. `StructuredName` already carries `original: raw.into()` beside the
+canonical form, so the archive template is reading the wrong one of two fields
+it already has. Ingest `itoa`, not `once_cell`, until that is fixed.
+
+**The compile phase runs `cargo metadata --offline`,** so a package whose full
+dependency closure (dev-dependencies included) is not already in the local cargo
+registry cache fails in `Compiling`, not at download:
+
+```
+error: failed to download `getrandom v0.2.15`
+Caused by: attempting to make an HTTP request, but --offline was specified
+```
+
+rust-analyzer then falls back to `--no-deps` metadata, and the compile plane
+refuses to lower a crate whose feature graph would silently evaluate to all-false
+rather than emit a half-empty package (a good refusal). `itoa` succeeds because
+its closure happens to be cached; `ryu` fails because `getrandom` is not. This is
+an environment limit, not a defect — but it means "pick any crate" is not true
+here.
+
+### Verifying both planes
+
+```bash
+# lexical (tantivy BM25)
+curl -s -XPOST http://127.0.0.1:8080/search -H 'Content-Type: application/json' \
+  -d '{"target":"Symbols","text":"Buffer","page":{"limit":4}}'
+# semantic (embed-and-match through Ollama)
+curl -s -XPOST http://127.0.0.1:8080/search -H 'Content-Type: application/json' \
+  -d '{"target":"Symbols","text":"convert an integer to a decimal string","mode":"semantic","page":{"limit":4}}'
+```
+
+Both stream NDJSON `{"hit":…}` rows then `{"end":{"hits":N}}`. `mode` is the
+only semantic opt-in; the planner still gates it against its own budget and
+silently degrades to lexical when exhausted, so a `precise`-looking result set
+is not evidence that semantics are broken.
+
+### Running the GUI against it
+
+`lindsey` reads `NUDOX_SERVER_URL` and already defaults to
+`http://127.0.0.1:8080` (`workspace/gui/src/stores/search.rs:59,65`), so it
+needs no configuration to reach a stock `nudox-serve`. It only issues
+`POST /search` (mode `Precise`) through the §15 zero-hit escape hatch — the
+"Search remote INDEX" button on the zero-hit screen — so a query must miss the
+local fixture corpus before any remote row appears.
+
+Two macOS-specific traps when launching it by hand:
+
+- Running `target/debug/lindsey` **as a bare binary gives it no window**. It
+  needs to be inside a `.app` bundle (or launched by cargo from a terminal that
+  owns an Aqua session) before macOS will give it a window server connection.
+- `AccountService::start` performs a **synchronous Keychain read on the GPUI
+  main thread before the first window is created**
+  (`main.rs:173` → `AccountGate::new` → `resolve_credential_with_env` →
+  `KeychainStore::load` → `SecItemCopyMatching`). For an unsigned dev build
+  `securityd` wants an authorization the binary cannot get, and the app hangs
+  forever with no window, no error, and no log line after `engine started`.
+  Setting `NUDOX_API_KEY` to any well-formed key (`ndx_` + ≥16 chars) short-
+  circuits the lookup before it reaches the keychain
+  (`workspace/nudox-engine/src/mcp/account/store.rs:272-283`) and the window
+  opens. This is a real defect — blocking I/O on the main thread ahead of the
+  first frame — and belongs in `nudox-engine`, not in a launch incantation.
 
 ## Exact Commands
 

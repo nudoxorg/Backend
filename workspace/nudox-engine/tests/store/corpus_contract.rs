@@ -14,12 +14,12 @@
 use std::collections::{HashMap, HashSet};
 
 use futures::StreamExt as _;
+use nudox_engine::store::prelude::*;
+use nudox_engine::store::source::fixtures::{FixtureSource, build_rich_view, rich_lineage};
 use nudox_ir::change::{IntroId, PackageLineageId, StableRef};
 use nudox_ir::kind::Kind;
 use nudox_ir::view::IrView;
 use nudox_ir::vocab::Confidence;
-use nudox_engine::store::prelude::*;
-use nudox_engine::store::source::fixtures::{FixtureSource, build_rich_view, rich_lineage};
 
 // ── Type-level guarantees ────────────────────────────────────────────────────
 
@@ -359,9 +359,7 @@ mod baseline {
     /// reported as an unmeasurable package. `descriptor_for` matches on it
     /// exhaustively with no wildcard, so a new variant also breaks compilation
     /// until someone says which producer serves it.
-    #[derive(
-        Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize,
-    )]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Deserialize)]
     pub enum Ecosystem {
         #[serde(rename = "crates.io")]
         CratesIo,
@@ -401,7 +399,12 @@ mod baseline {
         /// — that pairing is exactly what those constructors exist to make
         /// unmistakable (see their doc comments), and a second copy of it here
         /// could drift and route a package at a producer that cannot read it.
-        pub fn descriptor_for(self, root: &std::path::Path, name: &str, version: &str) -> PackageDescriptor {
+        pub fn descriptor_for(
+            self,
+            root: &std::path::Path,
+            name: &str,
+            version: &str,
+        ) -> PackageDescriptor {
             match self {
                 Self::CratesIo => PackageDescriptor::cargo(root, name, version),
                 Self::Go => PackageDescriptor::go(root, name, version),
@@ -428,7 +431,13 @@ mod baseline {
 
     impl std::fmt::Display for CorpusKey {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}/{} {}", self.ecosystem.token(), self.name, self.version)
+            write!(
+                f,
+                "{}/{} {}",
+                self.ecosystem.token(),
+                self.name,
+                self.version
+            )
         }
     }
 
@@ -669,7 +678,10 @@ mod baseline {
         pub fn render(&self) -> String {
             match self {
                 Self::Lowered(row) => {
-                    format!("{{ version = \"{}\", entries = {} }}", row.version, row.entries)
+                    format!(
+                        "{{ version = \"{}\", entries = {} }}",
+                        row.version, row.entries
+                    )
                 }
                 Self::Failed(row) => format!(
                     "{{ version = \"{}\", producer_error = \"{}\" }}",
@@ -1075,9 +1087,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
     let on_disk = baseline::manifest_keys_all();
     let absent_any: Vec<String> = on_disk
         .iter()
-        .filter(|key| {
-            !baseline::fixture_dir(key).is_dir()
-        })
+        .filter(|key| !baseline::fixture_dir(key).is_dir())
         .map(ToString::to_string)
         .collect();
     assert!(
@@ -1089,12 +1099,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
 
     let present: Vec<(baseline::CorpusKey, std::path::PathBuf)> = manifest
         .iter()
-        .map(|key| {
-            (
-                key.clone(),
-                baseline::fixture_dir(key),
-            )
-        })
+        .map(|key| (key.clone(), baseline::fixture_dir(key)))
         .collect();
 
     let absent: Vec<String> = present
@@ -1121,10 +1126,7 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
              Scoping is a regeneration convenience only: narrowing what a verification \
              run checks is indistinguishable from making it pass, so verification is \
              always total.",
-            only.iter()
-                .map(|e| e.token())
-                .collect::<Vec<_>>()
-                .join(",")
+            only.iter().map(|e| e.token()).collect::<Vec<_>>().join(",")
         );
     }
 
@@ -1139,11 +1141,20 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
     > = std::collections::BTreeMap::new();
 
     for (key, dir) in &present {
-        if regenerating && scope.as_ref().is_some_and(|only| !only.contains(&key.ecosystem)) {
+        if regenerating
+            && scope
+                .as_ref()
+                .is_some_and(|only| !only.contains(&key.ecosystem))
+        {
             continue;
         }
         let (row, _cost) = heart::cost::measured(
-            &format!("corpus/{}/{}-{}", key.ecosystem.token(), key.name, key.version),
+            &format!(
+                "corpus/{}/{}-{}",
+                key.ecosystem.token(),
+                key.name,
+                key.version
+            ),
             dir,
             || measure_one(&runtime, key, dir),
         );
@@ -1164,13 +1175,15 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
         for key in &manifest {
             measured_rows
                 .entry(key.clone())
-                .or_insert(baseline::VersionBaseline::Unmeasured(baseline::UnmeasuredRow {
-                    version: key.version.clone(),
-                    unmeasured: format!(
-                        "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS={}",
-                        key.ecosystem.token()
-                    ),
-                }));
+                .or_insert(baseline::VersionBaseline::Unmeasured(
+                    baseline::UnmeasuredRow {
+                        version: key.version.clone(),
+                        unmeasured: format!(
+                            "not yet measured; re-run with NUDOX_BASELINE_ECOSYSTEMS={}",
+                            key.ecosystem.token()
+                        ),
+                    },
+                ));
         }
 
         let rendered = baseline::render_baseline(&measured_rows);
@@ -1191,18 +1204,16 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
     let mut drifted: Vec<(i128, String)> = Vec::new();
     for (key, actual) in &measured_rows {
         let Some(expected) = recorded.get(key) else {
-            drifted.push((i128::MAX, format!("{key}: no baseline row (measured {})", actual.render())));
+            drifted.push((
+                i128::MAX,
+                format!("{key}: no baseline row (measured {})", actual.render()),
+            ));
             continue;
         };
         match (expected, actual) {
-            (
-                baseline::VersionBaseline::Lowered(want),
-                baseline::VersionBaseline::Lowered(got),
-            ) if want.entries == got.entries => {}
-            (
-                baseline::VersionBaseline::Lowered(want),
-                baseline::VersionBaseline::Lowered(got),
-            ) => {
+            (baseline::VersionBaseline::Lowered(want), baseline::VersionBaseline::Lowered(got))
+                if want.entries == got.entries => {}
+            (baseline::VersionBaseline::Lowered(want), baseline::VersionBaseline::Lowered(got)) => {
                 let delta = got.entries as i128 - want.entries as i128;
                 let percent = if want.entries == 0 {
                     f64::INFINITY
@@ -1219,7 +1230,11 @@ fn corpus_entry_counts_match_the_recorded_baseline() {
             }
             (want, got) => drifted.push((
                 i128::MAX,
-                format!("{key}: outcome changed\n    was: {}\n    now: {}", want.render(), got.render()),
+                format!(
+                    "{key}: outcome changed\n    was: {}\n    now: {}",
+                    want.render(),
+                    got.render()
+                ),
             )),
         }
     }
@@ -1422,8 +1437,8 @@ fn decode_published_key(text: &str) -> Option<StableRef> {
             with `cargo test -p nudox-store --features fixtures --test corpus_contract \
             every_corpus_declaration -- --ignored --nocapture`"]
 fn every_corpus_declaration_gets_a_distinct_content_derived_identity() {
-    use nudox_ir::package::Escalation;
     use nudox_engine::store::source::producer::ProducerRegistry;
+    use nudox_ir::package::Escalation;
 
     let manifest = baseline::manifest_keys();
     let fixtures = baseline::real_crates_root();

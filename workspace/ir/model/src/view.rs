@@ -201,9 +201,7 @@ impl IrView {
     ///
     /// Returns `&[]` when the entry has no recorded occurrences.
     pub fn occurrences_of(&self, intro: IntroId) -> &[Occurrence] {
-        self.occurrences
-            .get(&intro)
-            .map_or(&[], Vec::as_slice)
+        self.occurrences.get(&intro).map_or(&[], Vec::as_slice)
     }
 
     /// Every occurrence across all owners, yielding `(owner, &Occurrence)`.

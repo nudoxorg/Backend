@@ -34,16 +34,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use nudox_engine::{
-    Engine, EngineConfig, PackageHistorySpec, PackageLoadEvent, PackageSpec, PackageVersionSpec,
-    ProducerLanguage, SharedStr,
-};
 use nudox_engine::mcp::key::PackageLineageDto;
 use nudox_engine::mcp::tools::{
     DiffVersionsArgs, DiffVersionsResult, FindUsagesArgs, GetSymbolArgs, GraphQueryArgs,
     ListVersionsArgs, SearchSymbolsArgs, SelectVersionArgs, SelectVersionResult,
 };
 use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
+use nudox_engine::{
+    Engine, EngineConfig, PackageHistorySpec, PackageLoadEvent, PackageSpec, PackageVersionSpec,
+    ProducerLanguage, SharedStr,
+};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -70,7 +70,9 @@ fn all_memchr_versions_available() -> bool {
 }
 
 fn serde_available() -> bool {
-    real_crate_root("serde-1.0.196").join("Cargo.toml").is_file()
+    real_crate_root("serde-1.0.196")
+        .join("Cargo.toml")
+        .is_file()
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +176,8 @@ macro_rules! log_step {
 /// input.
 fn head_name(head: &nudox_engine::wire::SymbolHead) -> String {
     head.breadcrumb
-        .last().map_or_else(|| "<no breadcrumb>".to_owned(), |c| c.label.to_string())
+        .last()
+        .map_or_else(|| "<no breadcrumb>".to_owned(), |c| c.label.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +227,7 @@ fn memchr_agent_workflow_chain() {
                 .hits
                 .iter()
                 .take(5)
-                .map(|h| (h.display_name.clone(), h.kind))
+                .map(|h| (h.hit.display_name.clone(), h.hit.kind))
                 .collect::<Vec<_>>()
         );
         assert!(!search.hits.is_empty(), "real memchr must match \"mem\" by name");
@@ -237,12 +240,12 @@ fn memchr_agent_workflow_chain() {
             .hits
             .iter()
             .find(|h| {
-                &*h.display_name == "Memchr"
-                    && h.kind == nudox_engine::wire::KindTag::Known(nudox_engine::wire::KindDiscriminant::Record)
+                &*h.hit.display_name == "Memchr"
+                    && h.hit.kind == nudox_engine::wire::KindTag::Known(nudox_engine::wire::KindDiscriminant::Record)
             })
             .unwrap_or_else(|| panic!("expected a Record hit literally named Memchr; got {:?}",
-                search.hits.iter().map(|h| (h.display_name.clone(), h.kind)).collect::<Vec<_>>()));
-        let memchr_key = SymbolKeyDto::from_wire(&memchr_struct.key);
+                search.hits.iter().map(|h| (h.hit.display_name.clone(), h.hit.kind)).collect::<Vec<_>>()));
+        let memchr_key = SymbolKeyDto::from_wire(&memchr_struct.hit.key);
 
         // --- Step 2: get_symbol(key) ------------------------------------------
         let doc = tools
@@ -266,7 +269,7 @@ fn memchr_agent_workflow_chain() {
         // report note: `get_symbol`'s breadcrumb and `search_symbols`'s `display_name`
         // can disagree for at least one real symbol in a real package, which is worth
         // a follow-up investigation by whoever owns `chunk.rs`'s breadcrumb builder.
-        assert_eq!(doc.head.key, memchr_struct.key, "get_symbol must resolve to the same key search_symbols returned");
+        assert_eq!(doc.head.key, memchr_struct.hit.key, "get_symbol must resolve to the same key search_symbols returned");
         assert!(
             !doc.timeline.rows.is_empty(),
             "every resolved symbol must carry a non-empty timeline (§9.3.5)"
@@ -456,7 +459,7 @@ fn memchr_agent_workflow_chain() {
              sentence, not semantic search; whatever came back is name matches on \
              individual words, not intent)",
             semantic.hits.len(),
-            semantic.hits.iter().map(|h| h.display_name.clone()).collect::<Vec<_>>()
+            semantic.hits.iter().map(|h| h.hit.display_name.clone()).collect::<Vec<_>>()
         );
 
         // --- Step 8: pagination past 500 rows via cursor -------------------------
@@ -653,23 +656,36 @@ fn memchr_agent_workflow_chain() {
 async fn probe_malformed_inputs(tools: &NudoxTools) {
     // 1. Malformed SymbolKey.
     let bad_key = tools
-        .do_get_symbol(GetSymbolArgs { key: SymbolKeyDto("not-a-key-at-all".to_owned()) })
+        .do_get_symbol(GetSymbolArgs {
+            key: SymbolKeyDto("not-a-key-at-all".to_owned()),
+        })
         .await;
     log_step!(
         "get_symbol(key=\"not-a-key-at-all\")",
         "{}",
-        bad_key.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        bad_key.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
-    assert!(bad_key.is_err(), "a malformed key must be rejected, not silently accepted");
+    assert!(
+        bad_key.is_err(),
+        "a malformed key must be rejected, not silently accepted"
+    );
 
     // 2. Malformed PackageLineageDto.
     let bad_lineage = tools
-        .do_list_versions(ListVersionsArgs { package: PackageLineageDto("no-colon-here".to_owned()) })
+        .do_list_versions(ListVersionsArgs {
+            package: PackageLineageDto("no-colon-here".to_owned()),
+        })
         .await;
     log_step!(
         "list_versions(package=\"no-colon-here\")",
         "{}",
-        bad_lineage.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        bad_lineage.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
     assert!(bad_lineage.is_err());
 
@@ -685,7 +701,10 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "graph_query(\"{{ this is not valid graphql !! }}\")",
         "{}",
-        bad_query.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        bad_query.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
     assert!(bad_query.is_err());
 
@@ -702,7 +721,10 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "search_symbols(kinds=[\"Struct\"]) — a plausible-but-wrong guess",
         "{}",
-        bad_kind.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        bad_kind.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
     assert!(bad_kind.is_err());
 
@@ -719,7 +741,10 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "search_symbols(cursor=\"not-a-real-cursor\")",
         "{}",
-        bad_cursor.as_ref().err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        bad_cursor.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
     assert!(bad_cursor.is_err());
 
@@ -735,9 +760,10 @@ async fn probe_malformed_inputs(tools: &NudoxTools) {
     log_step!(
         "get_symbol(key=\"cargo:tokio#000...\") — tokio was never requested by this engine",
         "{}",
-        never_requested
-            .as_ref()
-            .err().map_or_else(|| "(unexpectedly Ok)".to_owned(), std::string::ToString::to_string)
+        never_requested.as_ref().err().map_or_else(
+            || "(unexpectedly Ok)".to_owned(),
+            std::string::ToString::to_string
+        )
     );
     assert!(never_requested.is_err());
 }
@@ -793,7 +819,12 @@ fn serde_trait_implementors_workflow() {
             "graph_query(\"what implements Serialize\") over real serde 1.0.196",
             "rows={}\n  first 10: {:?}",
             result.rows.len(),
-            result.rows.iter().take(10).map(|r| r.cells.clone()).collect::<Vec<_>>()
+            result
+                .rows
+                .iter()
+                .take(10)
+                .map(|r| r.cells.clone())
+                .collect::<Vec<_>>()
         );
         assert!(
             !result.rows.is_empty(),

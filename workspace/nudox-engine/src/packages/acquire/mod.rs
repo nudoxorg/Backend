@@ -65,7 +65,13 @@
 //!    test failure rather than a surprise.
 
 mod archive;
+mod archive_cache;
 mod registry;
+
+pub use archive::{SourcePolicy, source_policy};
+pub use archive_cache::{
+    ArchiveCache, ArchiveCacheError, ArchiveDigest, ArchiveReceipt, CachedArchive,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -139,6 +145,20 @@ pub enum Integrity {
         /// Why no comparison was possible, specific to this registry.
         why: String,
     },
+
+    /// The bytes were read from a directory on this machine.
+    ///
+    /// Not a weaker [`TransportOnly`](Self::TransportOnly): a *different*
+    /// claim. Nothing was fetched, so there is no transport to have
+    /// authenticated and no digest that would mean anything — a working tree
+    /// changes under the reader, and a hash of it would be stale before it was
+    /// rendered. What the reader needs to know instead is that this
+    /// documentation describes a checkout rather than a published release, and
+    /// may therefore describe code that exists nowhere else.
+    Local {
+        /// The directory the producer read, so the claim is checkable.
+        root: String,
+    },
 }
 
 impl Integrity {
@@ -154,6 +174,9 @@ impl Integrity {
                 "not verified against any published digest (transport trust only); sha256 {}",
                 &sha256[..sha256.len().min(16)],
             ),
+            Self::Local { root } => {
+                format!("read from the working tree at {root}; not a published release")
+            }
         }
     }
 }
@@ -186,6 +209,22 @@ pub enum Error {
         reason: String,
     },
 
+    /// A local path was named, and it is not a package root.
+    ///
+    /// Distinct from every registry failure below because nothing was
+    /// resolved, fetched or verified: the answer came from one `is_dir` and
+    /// one directory read. Carrying the path back verbatim is what lets a
+    /// caller tell a typo from a checkout that has not been generated yet —
+    /// the two look identical in a message that only says "not found".
+    #[error("{path} is not a package root: {reason}")]
+    NotAPackageRoot {
+        /// The path as the caller wrote it.
+        path: String,
+        /// Which precondition failed — no such directory, or no manifest any
+        /// registered producer recognises.
+        reason: String,
+    },
+
     /// **Failure 1 of 5.** The registry has never heard of this name.
     #[error("{registry} has no package named {name:?} (looked it up at {url}, which returned 404)")]
     UnknownPackage {
@@ -202,7 +241,7 @@ pub enum Error {
     /// **Failure 2 of 5.** The package exists; this version of it does not.
     #[error(
         "{registry} publishes {published} version(s) of {purl}, and {requested:?} is not one of them; the newest are {}",
-        preview(available),
+        preview(available)
     )]
     VersionNotFound {
         /// The PURL as canonicalized.
@@ -224,7 +263,7 @@ pub enum Error {
     /// than "that one is wrong", while still carrying the same list.
     #[error(
         "{purl} names no version; {registry} publishes {published}, newest first: {}",
-        preview(available),
+        preview(available)
     )]
     VersionMissing {
         /// The PURL as canonicalized.
@@ -308,7 +347,9 @@ pub enum Error {
     },
 
     /// **Failure 5 of 5.** The producer ran and could not lower the package.
-    #[error("{purl} was fetched and verified, but the {language} producer could not lower it: {detail}")]
+    #[error(
+        "{purl} was fetched and verified, but the {language} producer could not lower it: {detail}"
+    )]
     ProducerFailed {
         /// The PURL as canonicalized.
         purl: String,
@@ -353,6 +394,7 @@ impl Error {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::MalformedPurl { .. } => "malformed_purl",
+            Self::NotAPackageRoot { .. } => "not_a_package_root",
             Self::UnknownPackage { .. } => "unknown_package",
             Self::VersionNotFound { .. } => "version_not_found",
             Self::VersionMissing { .. } => "version_missing",
@@ -378,6 +420,14 @@ impl Error {
                 "A package URL is `pkg:<type>/<namespace>/<name>@<version>`. The namespace is the \
                  groupId for maven, the @scope for npm, and the module path prefix for golang; \
                  cargo, pypi and nuget names have no namespace at all.",
+            ),
+            Self::NotAPackageRoot { .. } => Some(
+                "A target is either a package URL — those begin `pkg:` — or a path to the \
+                 directory holding a package's manifest. If you meant a checkout, point at the \
+                 directory containing `Cargo.toml`, `package.json`, `go.mod`, `pom.xml`, \
+                 `build.gradle`, `pyproject.toml`, a `*.csproj`, `CMakeLists.txt` or \
+                 `compile_commands.json` — not at the repository root above it, and not at a \
+                 source file inside it.",
             ),
             Self::UnknownPackage { .. } => Some(
                 "Check the name against the registry itself. A package URL names the *registry's* \
@@ -437,6 +487,7 @@ impl Error {
         match self {
             Self::Network { .. } | Self::Cancelled { .. } | Self::TruncatedLoad { .. } => true,
             Self::MalformedPurl { .. }
+            | Self::NotAPackageRoot { .. }
             | Self::UnknownPackage { .. }
             | Self::VersionNotFound { .. }
             | Self::VersionMissing { .. }
@@ -453,9 +504,7 @@ impl From<purl::Error> for Error {
     fn from(e: purl::Error) -> Self {
         Self::MalformedPurl {
             input: match &e {
-                purl::Error::NotAPurl { input } | purl::Error::EmptyName { input } => {
-                    input.clone()
-                }
+                purl::Error::NotAPurl { input } | purl::Error::EmptyName { input } => input.clone(),
                 _ => String::new(),
             },
             reason: e.to_string(),
@@ -1066,13 +1115,7 @@ impl crate::EngineHandle {
             }
         };
 
-        let acquired = acquire(
-            self.http_client(),
-            purl,
-            self.package_cache(),
-            &report,
-        )
-        .await?;
+        let acquired = acquire(self.http_client(), purl, self.package_cache(), &report).await?;
 
         report(IndexStage::Producing, 0, None);
         let loaded = self.load_one(acquired.spec()).await;
@@ -1089,6 +1132,129 @@ impl crate::EngineHandle {
                 generation,
             }),
             Err(failure) => Err(classify_load_failure(purl, failure)),
+        }
+    }
+
+    /// Produce and insert a package that is **already on this filesystem**,
+    /// into the *running* corpus.
+    ///
+    /// # Why this is not `index_purl` with a different source
+    ///
+    /// [`index_purl`](Self::index_purl) is `acquire` then `load_one`, and for a
+    /// checkout the whole of `acquire` — resolve, download, verify, extract —
+    /// is not merely unnecessary, it is unanswerable: a directory has no
+    /// registry coordinate, no published digest to check itself against, and
+    /// no version the user has to have spelled the registry's way. So this is
+    /// the same pipeline with the first half removed rather than stubbed,
+    /// which is why the [`Integrity`] it reports is
+    /// [`Integrity::Local`] rather than a verification that trivially passed.
+    ///
+    /// # Why it exists
+    ///
+    /// Before it, a local root reached the corpus through exactly one door:
+    /// `Engine::start_with_producer`, called once, at process start, from
+    /// `NUDOX_PACKAGE_ROOT`. An agent that wanted a second package had to get
+    /// the *user* to restart the application — and, because the endpoint's port
+    /// moves on restart, to repair the MCP client configuration afterwards.
+    /// That is a long way to go to read a sibling directory.
+    pub fn index_path(
+        &self,
+        spec: crate::PackageSpec,
+        generation: Gen,
+    ) -> (crate::StreamHandle, flume::Receiver<IndexEvent>) {
+        let (tx, rx) = flume::bounded::<IndexEvent>(32);
+        let (cancel, cancel_fn) = Self::make_cancel();
+        let handle = crate::StreamHandle::new(generation, cancel_fn);
+
+        let engine = self.clone();
+        self.spawn(async move {
+            // The path *is* the identity here, so it is what `Started` and
+            // every failure name. A PURL would have to be invented, and an
+            // invented coordinate is one an agent could try to pass back.
+            let rendered: SharedStr = spec.root.display().to_string().into();
+            if tx
+                .send_async(IndexEvent::Started {
+                    purl: rendered.clone(),
+                    generation,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+
+            let event = tokio::select! {
+                biased;
+                () = cancel.cancelled() => IndexEvent::Failed {
+                    error: Error::Cancelled { purl: rendered.to_string() },
+                    generation,
+                },
+                outcome = engine.run_local_index_job(spec, generation, &tx) => match outcome {
+                    Ok(event) => event,
+                    Err(error) => IndexEvent::Failed { error, generation },
+                },
+            };
+            let _ = tx.send_async(event).await;
+        });
+
+        (handle, rx)
+    }
+
+    /// The body of one local index job: check the root, then produce.
+    ///
+    /// The precondition check is here rather than in the caller so that a bad
+    /// path fails as an [`IndexEvent::Failed`] on the same stream every other
+    /// failure arrives on — a path validated at the call site would make
+    /// "this directory does not exist" the one indexing failure that did not
+    /// look like an indexing failure.
+    async fn run_local_index_job(
+        &self,
+        spec: crate::PackageSpec,
+        generation: Gen,
+        tx: &flume::Sender<IndexEvent>,
+    ) -> Result<IndexEvent, Error> {
+        if !spec.root.is_dir() {
+            return Err(Error::NotAPackageRoot {
+                path: spec.root.display().to_string(),
+                reason: "no such directory".to_owned(),
+            });
+        }
+        if crate::packages::local::language_at(&spec.root).is_none() {
+            return Err(Error::NotAPackageRoot {
+                path: spec.root.display().to_string(),
+                reason: "no Cargo.toml, package.json, go.mod, pom.xml, build.gradle, \
+                         pyproject.toml, *.csproj, CMakeLists.txt or compile_commands.json"
+                    .to_owned(),
+            });
+        }
+
+        let root = spec.root.clone();
+        let language = format!("{:?}", spec.language);
+        let _ = tx.try_send(IndexEvent::Stage {
+            stage: IndexStage::Producing,
+            received: 0,
+            total: None,
+            generation,
+        });
+
+        match self.load_one(spec).await {
+            Ok(package) => Ok(IndexEvent::Indexed {
+                purl: root.display().to_string().into(),
+                name: package.name,
+                ecosystem: package.ecosystem,
+                version: package.version,
+                symbol_count: package.symbol_count,
+                root: package.root,
+                integrity: Integrity::Local {
+                    root: root.display().to_string(),
+                },
+                generation,
+            }),
+            Err(failure) => Err(Error::ProducerFailed {
+                purl: root.display().to_string(),
+                language,
+                detail: failure.to_string(),
+            }),
         }
     }
 }
@@ -1145,13 +1311,17 @@ fn blocker_for(language: ProducerLanguage) -> &'static str {
              empty oracle — making \"we cannot document this\" indistinguishable from \"this \
              package has no public API\" (docs/LIMITATIONS.md L2)."
         }
-        ProducerLanguage::Rust => "the Rust producer, which is registered unconditionally — its \
-             absence means the registry was built with `with_rust_pilot` or a custom set",
+        ProducerLanguage::Rust => {
+            "the Rust producer, which is registered unconditionally — its \
+             absence means the registry was built with `with_rust_pilot` or a custom set"
+        }
         ProducerLanguage::Go => "a Go toolchain reachable by the vendored Go oracle subprocess",
         ProducerLanguage::Java => "a JDK reachable by the Java oracle subprocess (javac/javadoc)",
         ProducerLanguage::CSharp => "a .NET SDK reachable as `dotnet`, for the Roslyn oracle",
-        ProducerLanguage::TypeScript => "the OXC-based TypeScript producer, which is in-process \
-             and registered unconditionally",
+        ProducerLanguage::TypeScript => {
+            "the OXC-based TypeScript producer, which is in-process \
+             and registered unconditionally"
+        }
         ProducerLanguage::Cpp => "libclang, loaded at runtime via dlopen",
     }
 }
@@ -1174,10 +1344,7 @@ pub(crate) struct LoadedPackage {
 /// module's internals — and because the alternative, re-deriving the URLs in
 /// the test, would have compared the test author's understanding of the
 /// conventions against `fetch.nu` instead of comparing the shipping code.
-pub async fn resolved_url_for_test(
-    client: &reqwest::Client,
-    purl: &Purl,
-) -> Result<String, Error> {
+pub async fn resolved_url_for_test(client: &reqwest::Client, purl: &Purl) -> Result<String, Error> {
     registry::artifact(client, purl).await.map(|a| a.url)
 }
 
@@ -1248,7 +1415,10 @@ mod tests {
             let help = case.help().unwrap_or_else(|| {
                 panic!("{kind} is one of the five headline failures and must say what to do next")
             });
-            assert!(!helps.contains(&help), "{kind} reuses another failure's help");
+            assert!(
+                !helps.contains(&help),
+                "{kind} reuses another failure's help"
+            );
             helps.push(help);
             // And the message must not merely restate the help.
             assert_ne!(case.to_string(), help);
@@ -1375,7 +1545,10 @@ mod tests {
             "lowering failed for pypi:attrs: duplicate declaration id".into(),
         );
         assert_eq!(err.kind(), "producer_failed");
-        assert!(err.to_string().contains("duplicate declaration id"), "{err}");
+        assert!(
+            err.to_string().contains("duplicate declaration id"),
+            "{err}"
+        );
     }
 
     /// Doctrine §2 applied to the `_` arm: an unrecognised `Error`

@@ -521,7 +521,8 @@ fn assert_from_palette(
 /// matching line here is a compile error, not a silently-skipped role.
 #[test]
 fn every_resolved_role_colour_comes_from_the_palette() {
-    for spec in parse_bundled().expect("bundled themes parse; pinned by bundled_themes_all_parse_and_have_unique_keys")
+    for spec in parse_bundled()
+        .expect("bundled themes parse; pinned by bundled_themes_all_parse_and_have_unique_keys")
     {
         let theme: NudoxThemeExt = resolve(&spec);
         let set = palette_rgb_set(&theme.palette);
@@ -776,8 +777,12 @@ fn theme_by_key_and_default_theme_resolve_real_bundled_themes() {
     let specs = parse_bundled().expect("bundled themes parse");
     let first = &specs[0];
 
-    let by_key = theme_by_key(&first.key)
-        .unwrap_or_else(|| panic!("theme_by_key(\"{}\") returned None for a bundled key", first.key));
+    let by_key = theme_by_key(&first.key).unwrap_or_else(|| {
+        panic!(
+            "theme_by_key(\"{}\") returned None for a bundled key",
+            first.key
+        )
+    });
     assert_eq!(by_key.theme_key.as_ref(), first.key);
 
     let default = default_theme();

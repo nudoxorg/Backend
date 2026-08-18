@@ -535,10 +535,8 @@ struct PriorIndexes {
 fn build_indexes(prior: &IrView) -> PriorIndexes {
     let mut kind_name: BTreeMap<(KindDiscriminant, String), Vec<IntroId>> = BTreeMap::new();
     let mut shape: BTreeMap<[u8; 32], Vec<IntroId>> = BTreeMap::new();
-    let mut kind_parent_stem: BTreeMap<
-        (KindDiscriminant, Option<IntroId>, String),
-        Vec<IntroId>,
-    > = BTreeMap::new();
+    let mut kind_parent_stem: BTreeMap<(KindDiscriminant, Option<IntroId>, String), Vec<IntroId>> =
+        BTreeMap::new();
 
     for (id, entry) in prior.entries() {
         let Some(disc) = entry.kind().discriminant() else {
@@ -610,10 +608,7 @@ fn candidates_for(
     }
 
     // Index 3: same (kind, resolved parent, name stem)
-    if let Some(ids) = indexes
-        .kind_parent_stem
-        .get(&(disc, durable_parent, stem))
-    {
+    if let Some(ids) = indexes.kind_parent_stem.get(&(disc, durable_parent, stem)) {
         for &id in ids.iter().take(cap) {
             cands.insert(id);
         }
@@ -1190,7 +1185,8 @@ pub fn resolve(prev: &IrView, next: &IrView, policy: &Policy) -> Substitution {
                         band: EvidenceBand::High,
                         r_ov_forced: false,
                         shape_matched: kind_shape_hash(next_entry)
-                            == prior_entry.map_or_else(|| kind_shape_hash(next_entry), kind_shape_hash),
+                            == prior_entry
+                                .map_or_else(|| kind_shape_hash(next_entry), kind_shape_hash),
                         name_matched: true,
                         parent_matched: true,
                         sig_matched: false,

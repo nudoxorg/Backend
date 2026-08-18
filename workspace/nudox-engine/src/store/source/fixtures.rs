@@ -42,8 +42,8 @@ use nudox_ir::{
     index::{RawRef, Ref},
     kind::Kind,
     kinds::{
-        Alias, Const, Enum, Field, FieldKey, Function, Impl, Module, Param, Record, RecordForm,
-        Reexport, Static, Trait, Type, Variant, VariantForm,
+        Alias, Const, ConstExpr, Enum, Field, FieldKey, Function, Impl, Module, Param, Record,
+        RecordForm, Reexport, Static, Trait, Type, Variant, VariantForm,
         ty::{Primitive, Width},
     },
     view::IrView,
@@ -53,7 +53,7 @@ use nudox_ir::{
 use crate::store::{
     package::{PackageView, Provenance},
     source::{
-        IrSource, LoadEvent, LoadRequest, PackageHint, ProduceStage, SourceDescriptor, Error,
+        Error, IrSource, LoadEvent, LoadRequest, PackageHint, ProduceStage, SourceDescriptor,
     },
 };
 
@@ -357,7 +357,12 @@ pub fn build_rich_view() -> IrView {
             Kind::Const(
                 Const::builder()
                     .ty(Type::U64)
-                    .value("1024".to_owned())
+                    .value(
+                        ConstExpr::builder()
+                            .ty(Type::U64)
+                            .source("1024".to_owned())
+                            .build(),
+                    )
                     .build(),
             ),
         ),

@@ -14,9 +14,9 @@
 use std::collections::HashMap;
 
 use nudox_engine::chunk;
-use nudox_engine::wire::{ProseBlock, RenderSection, SectionId, SizeHint};
 use nudox_engine::store::package::{PackageView, Provenance};
 use nudox_engine::store::source::fixtures::build_rich_view;
+use nudox_engine::wire::{ProseBlock, RenderSection, SectionId, SizeHint};
 
 /// How many display lines a section will actually occupy.
 ///

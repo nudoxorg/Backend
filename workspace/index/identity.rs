@@ -8,7 +8,7 @@
 //! re-exports the vocabulary and pins the higher-level [`Minter`] as the
 //! blessed entry point.
 
-pub use heart::identity::{EntryUri, SymbolId, PackageId, namespace};
+pub use heart::identity::{EntryUri, PackageId, SymbolId, namespace};
 // PackageCoordinates now lives in heart::package; re-export under the same
 // alias so existing `registry::identity::PackageCoordinates` references compile.
 pub use heart::package::Coordinates as PackageCoordinates;

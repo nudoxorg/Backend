@@ -5,7 +5,7 @@
 //! column lists. Extra unique indexes and secondary indexes that are not
 //! expressible as entity primary keys are appended below.
 
-use sea_orm::sea_query::{Index, SqliteQueryBuilder};
+use sea_orm::sea_query::{ConditionalStatement, Expr, Index, SqliteQueryBuilder};
 use sea_orm::{DbBackend, Schema};
 
 use crate::entity;
@@ -83,6 +83,54 @@ pub fn schema_v4_statements() -> Vec<String> {
             .name("idx_lineage_target")
             .table(entity::repo_lineage::Entity)
             .col(entity::repo_lineage::Column::TargetStem)
+            .to_string(SqliteQueryBuilder),
+    );
+
+    // v5 additions (INDEX-PLAN follow-up): `edges` has no usable index for
+    // `resolution::read_unresolved_edges`'s `dep_ecosystem = ? AND
+    // resolved_stem IS NULL` filter — the table's PK leads with
+    // `dependent_version`, so that query was a full table scan. Partial index
+    // scoped to unresolved rows only (the resolver never looks at resolved
+    // ones, and this keeps the index small as most edges do resolve).
+    out.push(
+        Index::create()
+            .if_not_exists()
+            .name("idx_edges_unresolved")
+            .table(entity::edges::Entity)
+            .col(entity::edges::Column::DepEcosystem)
+            .col(entity::edges::Column::DepNameCanonical)
+            .and_where(Expr::col(entity::edges::Column::ResolvedStem).is_null())
+            .to_string(SqliteQueryBuilder),
+    );
+
+    // FK-shaped columns that real queries actually filter on (verified by
+    // grep against non-test call sites before adding — see the `index`
+    // crate's write-batching/indexing task notes). Columns filtered
+    // elsewhere but never queried by (e.g. `outbox.version_id`,
+    // `advisories.stem_id`), and `edges.dependent_version`, which is already
+    // the PK's leading column, were deliberately left unindexed.
+    out.push(
+        Index::create()
+            .if_not_exists()
+            .name("idx_generations_version")
+            .table(entity::generations::Entity)
+            .col(entity::generations::Column::VersionId)
+            .to_string(SqliteQueryBuilder),
+    );
+    out.push(
+        Index::create()
+            .if_not_exists()
+            .name("idx_listing_events_version")
+            .table(entity::listing_events::Entity)
+            .col(entity::listing_events::Column::VersionId)
+            .to_string(SqliteQueryBuilder),
+    );
+    out.push(
+        Index::create()
+            .if_not_exists()
+            .name("idx_symbols_proj_version")
+            .table(entity::symbols_proj::Entity)
+            .col(entity::symbols_proj::Column::VersionId)
             .to_string(SqliteQueryBuilder),
     );
 

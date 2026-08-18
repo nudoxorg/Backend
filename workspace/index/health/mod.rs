@@ -11,27 +11,27 @@
 use heart::BackendKind;
 
 // Re-export so existing `registry::health::{Probe, Probeable}` paths keep working.
-pub use heart::{assert_probe_future_send, Probe, Probeable};
+pub use heart::{Probe, Probeable, assert_probe_future_send};
 
 /// The rolled-up health verdict across every registry backend.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Health {
-	/// Every backend probed healthy.
-	Ready,
+    /// Every backend probed healthy.
+    Ready,
 
-	/// Some backends are down but the registry can still serve a reduced surface;
-	/// carries which backends are impaired.
-	Degraded(Vec<BackendKind>),
+    /// Some backends are down but the registry can still serve a reduced surface;
+    /// carries which backends are impaired.
+    Degraded(Vec<BackendKind>),
 
-	/// A backend required for any operation is down.
-	Down,
+    /// A backend required for any operation is down.
+    Down,
 }
 
 impl Health {
-	/// Whether the registry should accept traffic at all.
-	pub const fn is_serving(&self) -> bool {
-		!matches!(self, Health::Down)
-	}
+    /// Whether the registry should accept traffic at all.
+    pub const fn is_serving(&self) -> bool {
+        !matches!(self, Health::Down)
+    }
 }
 
 /// Aggregate per-backend probe results into one [`Health`] verdict.
@@ -44,27 +44,27 @@ impl Health {
 /// `Probeable::probe` a native `async fn` (RPITIT) with no `Box<dyn Future>`
 /// anywhere.
 pub fn aggregate(probes: &[Probe]) -> Health {
-	/// The backends without which the registry cannot serve *anything*: the
-	/// relational spine (identity, lifecycle, queue, outbox) and the blob store
-	/// (the durable root every read plane derives from). The derived stores
-	/// (qdrant / terminus / tantivy) only degrade their own surfaces.
-	const REQUIRED: [BackendKind; 2] = [BackendKind::Catalog, BackendKind::ObjectStore];
+    /// The backends without which the registry cannot serve *anything*: the
+    /// relational spine (identity, lifecycle, queue, outbox) and the blob store
+    /// (the durable root every read plane derives from). The derived stores
+    /// (qdrant / terminus / tantivy) only degrade their own surfaces.
+    const REQUIRED: [BackendKind; 2] = [BackendKind::Catalog, BackendKind::ObjectStore];
 
-	let impaired: Vec<BackendKind> = probes
-		.iter()
-		.filter(|probe| !probe.healthy)
-		.map(|probe| probe.backend)
-		.collect();
+    let impaired: Vec<BackendKind> = probes
+        .iter()
+        .filter(|probe| !probe.healthy)
+        .map(|probe| probe.backend)
+        .collect();
 
-	match &impaired[..] {
-		[] => Health::Ready,
-		down if down.iter().any(|backend| REQUIRED.contains(backend)) => {
-			tracing::warn!(?down, "a required backend is down; registry not serving");
-			Health::Down
-		}
-		_ => {
-			tracing::warn!(backends = ?impaired, "registry degraded");
-			Health::Degraded(impaired)
-		}
-	}
+    match &impaired[..] {
+        [] => Health::Ready,
+        down if down.iter().any(|backend| REQUIRED.contains(backend)) => {
+            tracing::warn!(?down, "a required backend is down; registry not serving");
+            Health::Down
+        }
+        _ => {
+            tracing::warn!(backends = ?impaired, "registry degraded");
+            Health::Degraded(impaired)
+        }
+    }
 }

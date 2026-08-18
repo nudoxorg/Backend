@@ -66,11 +66,10 @@ fn forbidden_reason_display_names_the_action() {
 ///   route → `AdminPrincipal` extractor → `authorize_admin` → `verify_blobs`.
 #[tokio::test]
 async fn admin_verify_endpoint_routes_through_admin_principal() {
-    let Some((server, _data)) =
-        server_common::assembled_server("admin_verify_endpoint_routes_through_admin_principal").await
-    else {
-        return;
-    };
+    let (server, _data) = server_common::required_assembled_server(
+        "admin_verify_endpoint_routes_through_admin_principal",
+    )
+    .await;
     let server = std::sync::Arc::new(server);
     let router = index::server::http::router::router(std::sync::Arc::clone(&server));
 
@@ -97,11 +96,10 @@ async fn admin_verify_endpoint_routes_through_admin_principal() {
 /// `AdminPrincipal` and reaches `rebuild_from_blobs`.
 #[tokio::test]
 async fn admin_rebuild_endpoint_routes_through_admin_principal() {
-    let Some((server, _data)) =
-        server_common::assembled_server("admin_rebuild_endpoint_routes_through_admin_principal").await
-    else {
-        return;
-    };
+    let (server, _data) = server_common::required_assembled_server(
+        "admin_rebuild_endpoint_routes_through_admin_principal",
+    )
+    .await;
     let server = std::sync::Arc::new(server);
     let router = index::server::http::router::router(std::sync::Arc::clone(&server));
 
@@ -130,16 +128,20 @@ async fn admin_rebuild_endpoint_routes_through_admin_principal() {
 /// than hanging or panicking.
 #[tokio::test]
 async fn search_handler_mints_read_cap() {
-    let Some((server, _data)) = server_common::assembled_server("search_handler_mints_read_cap").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("search_handler_mints_read_cap").await;
     let server = std::sync::Arc::new(server);
     let router = index::server::http::router::router(std::sync::Arc::clone(&server));
 
+    // The wire body *is* `heart::query::Query` (no `SearchRequestDto`
+    // wrapper, per workspace/heart/query/mod.rs's `Query` doc comment): the
+    // required fields are `target` and `text`, not `query`/`limit`. This
+    // request previously sent `{"query": ..., "limit": ...}`, which the
+    // deserializer rejects outright (422) before the handler this test means
+    // to exercise ever runs.
     let req = server_common::post_json(
         "/search",
-        &serde_json::json!({ "query": "Deserialize", "limit": 8 }),
+        &serde_json::json!({ "target": "Symbols", "text": "Deserialize" }),
     );
     let (status, _body) = server_common::call(router, req).await;
     // 200 (empty corpus is fine) or 400 (malformed search) — never 500 from a

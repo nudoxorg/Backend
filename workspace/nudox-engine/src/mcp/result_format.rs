@@ -18,13 +18,13 @@ use std::fmt::Write as _;
 
 use crate::mcp::key::SymbolKeyDto;
 use crate::mcp::tools::{
-    CompactSymbolDoc, DiffVersionsResult, GetOccurrencesResult, IndexPackageResult,
-    ListVersionsResult, PackagesResult, QueryResult, QueryResultRow, SchemaResult, SearchResult,
-    SelectVersionResult, SemanticSearchResult, SemanticStatus, SymbolsResult, UsagesResult,
+    CompactSymbolDoc, DiffVersionsResult, EdgeCoverageNote, GetOccurrencesResult,
+    IndexPackageResult, IndexResult, ListVersionsResult, LoadedPackagesResult, PackagesResult,
+    QueryResult, QueryResultRow, ReferenceCoverage, RefsResult, SchemaResult, SearchHitDoc,
+    SearchResult, SelectVersionResult, SemanticSearchResult, SemanticStatus, SymbolsResult,
+    UsageRow, UsagesResult,
 };
-use crate::wire::{
-    DiffVerdict, HitRow, KeyTierLabel, KindTag, PackageDiff, SigToken, TimelineChange,
-};
+use crate::wire::{DiffVerdict, KeyTierLabel, KindTag, PackageDiff, SigToken, TimelineChange};
 
 /// The public formatting contract used by the MCP transport adapter.
 pub trait MarkdownResult {
@@ -32,89 +32,104 @@ pub trait MarkdownResult {
     fn to_markdown(&self) -> String;
 }
 
-/// Format a [`SearchResult`] as a ranked table.
-pub fn format_search_result(result: &SearchResult) -> String {
-    result.to_markdown()
-}
-
-/// Format one compact symbol, preserving its exact source when present.
-pub fn format_compact_symbol_doc(result: &CompactSymbolDoc) -> String {
-    result.to_markdown()
-}
-
-/// Format a batch of compact symbols.
-pub fn format_symbols_result(result: &SymbolsResult) -> String {
-    result.to_markdown()
-}
-
-/// Format a [`UsagesResult`] as a navigable symbol table.
-pub fn format_usages_result(result: &UsagesResult) -> String {
-    result.to_markdown()
-}
-
-/// Format a loaded-package listing.
-pub fn format_packages_result(result: &PackagesResult) -> String {
-    result.to_markdown()
-}
-
-/// Format the loaded versions of one package.
-pub fn format_list_versions_result(result: &ListVersionsResult) -> String {
-    result.to_markdown()
-}
-
-/// Format a version-selection outcome.
-pub fn format_select_version_result(result: &SelectVersionResult) -> String {
-    result.to_markdown()
-}
-
-/// Format a package diff, including rekey evidence and uncertainty.
-pub fn format_diff_versions_result(result: &DiffVersionsResult) -> String {
-    result.to_markdown()
-}
-
-/// Format an indexing job's current status.
-pub fn format_index_package_result(result: &IndexPackageResult) -> String {
-    result.to_markdown()
-}
-
-/// Format arbitrary graph-query columns and rows as a safe table.
-pub fn format_query_result(result: &QueryResult) -> String {
-    result.to_markdown()
-}
-
-/// Format the GraphQL schema without altering its bytes.
-pub fn format_schema_result(result: &SchemaResult) -> String {
-    result.to_markdown()
-}
-
-/// Format exact owner-relative occurrence rows.
-pub fn format_occurrences_result(result: &GetOccurrencesResult) -> String {
-    result.to_markdown()
-}
-
-/// Format a semantic-search result while preserving its coverage state.
-pub fn format_semantic_search_result(result: &SemanticSearchResult) -> String {
-    result.to_markdown()
-}
-
 impl MarkdownResult for SearchResult {
+    /// One two-line record per hit: the address, then the declaration indented
+    /// beneath it.
+    ///
+    /// # Why not a table
+    ///
+    /// A Markdown table has to escape its cells, and both fields carried here
+    /// are ones that must survive **verbatim**:
+    ///
+    /// * the **address** is what the agent passes back, and a Rust impl
+    ///   segment contains a lifetime apostrophe, which the address grammar
+    ///   escapes as `\'` — [`escape_table_cell`] then doubles the backslash to
+    ///   `\\'`, so an agent copying the cell gets a string that no longer
+    ///   parses;
+    /// * the **signature** is the declaration's primary identity, and modern
+    ///   Python and TypeScript signatures are full of union pipes
+    ///   (`str | bytes | None`), every one of which a cell must escape to
+    ///   `\|` — so the model reads, and echoes onward, something that is not
+    ///   the signature.
+    ///
+    /// Outside a cell neither needs escaping at all. The table chrome was also
+    /// pure cost: measured over these same responses it never paid for itself
+    /// at any row count, because the per-row floor is the pipes themselves.
     fn to_markdown(&self) -> String {
         let mut out = String::new();
         heading(&mut out, "Search", self.hits.len());
+        if let Some(status) = &self.semantic {
+            // A signal, not a sentence (§6.4): only printed when semantic
+            // coverage is not the default-complete case, so an ordinary
+            // structural search pays nothing for it.
+            writeln!(out, "{}", semantic_signal(status)).expect("String write");
+        }
+        if let Some(excluded) = &self.excluded_kinds {
+            // Same discipline as `semantic_signal`: a signal, printed only
+            // when the default scope actually narrowed something, so an
+            // explicit `kinds` call pays nothing for it.
+            writeln!(out, "{}", excluded_kinds_signal(excluded)).expect("String write");
+        }
         if self.hits.is_empty() {
             out.push_str("(no matches)\n");
         } else {
-            let rows = self
-                .hits
-                .iter()
-                .enumerate()
-                .map(|(index, hit)| search_row(index + 1, hit))
-                .collect::<Vec<_>>();
-            table(&mut out, &["#", "declaration", "key"], &rows);
+            for hit in &self.hits {
+                let identity = hit
+                    .address
+                    .clone()
+                    .unwrap_or_else(|| SymbolKeyDto::from_wire(&hit.hit.key).0);
+                let declaration = signature(&hit.hit.sig_preview);
+                let declaration = if declaration.is_empty() {
+                    format!("{} {}", kind_label(&hit.hit.kind), hit.hit.display_name)
+                } else {
+                    declaration
+                };
+                let marker = if hit.semantic { " [semantic]" } else { "" };
+                let _ = writeln!(out, "{identity}\n  {declaration}{marker}");
+                if let Some(documentation) = &hit.documentation {
+                    let _ = writeln!(out, "  doc: {}", inline(documentation));
+                }
+            }
+            out.push('\n');
         }
         pagination(&mut out, self.truncated, self.next_cursor.as_deref());
         out
     }
+}
+
+/// Render a [`SemanticStatus`] as a compact machine-readable signal rather
+/// than a sentence — the `~sem:` prefix marks it as a coverage note, not a
+/// row of data (docs/MCP-SURFACE-PLAN.md §6.4).
+fn semantic_signal(status: &SemanticStatus) -> String {
+    match status {
+        SemanticStatus::Ready => "~sem:ready".to_owned(),
+        SemanticStatus::Building { covered, total } => {
+            format!("~sem:building({covered}/{total})")
+        }
+        // The remedy rides along despite this being the terse surface. A
+        // coverage note that says only `NoModelConfigured` is a name for a
+        // state, and the reader who needs it is by definition the one who
+        // does not already know what that state implies — which is how
+        // `~sem:unavailable(NoEmbedder)` sent people to diagnose a broken
+        // embedder that had never been built in. Unavailability is also rare,
+        // so the extra text is not a per-result cost the common case pays.
+        SemanticStatus::Unavailable { reason, remedy } => {
+            format!("~sem:unavailable({reason}) — {remedy}")
+        }
+    }
+}
+
+/// Render `SearchResult::excluded_kinds` as a compact signal, same `~`
+/// convention as [`semantic_signal`]: this is coverage metadata about the
+/// page, not a row of data, and it names what was held back so the reader
+/// learns what to pass to `kinds` without re-deriving the kind vocabulary
+/// from the schema.
+fn excluded_kinds_signal(excluded: &[KindTag]) -> String {
+    let names: Vec<String> = excluded.iter().map(kind_label).collect();
+    format!(
+        "~scope:default (excluded {}; pass `kinds` to include them)",
+        names.join(", ")
+    )
 }
 
 impl MarkdownResult for CompactSymbolDoc {
@@ -143,22 +158,31 @@ impl MarkdownResult for SymbolsResult {
 }
 
 impl MarkdownResult for UsagesResult {
+    /// One record per usage: the address (or key), then the declaration and
+    /// path indented beneath it — never a table. Same reasoning as
+    /// [`SearchResult`]: a table cell must escape `|` and double `\`, which
+    /// corrupts both an address's escaped lifetime apostrophes and a
+    /// Python/TypeScript union signature.
     fn to_markdown(&self) -> String {
         let mut out = String::new();
         heading(&mut out, "Usages", self.usages.len());
         if self.usages.is_empty() {
             out.push_str("(none)\n");
         } else {
-            let rows = self
-                .usages
-                .iter()
-                .map(|usage| vec![usage.signature.clone(), usage.path.clone(), usage.key.0.clone()])
-                .collect::<Vec<_>>();
-            table(&mut out, &["declaration", "path", "key"], &rows);
+            render_usage_records(&mut out, &self.usages);
         }
         pagination(&mut out, self.truncated, self.next_cursor.as_deref());
         out
     }
+}
+
+/// Shared by [`UsagesResult`] and `RefsResult::In`.
+fn render_usage_records(out: &mut String, usages: &[UsageRow]) {
+    for usage in usages {
+        let identity = usage.address.clone().unwrap_or_else(|| usage.key.0.clone());
+        let _ = writeln!(out, "{identity}\n  {}\n  {}", usage.signature, usage.path);
+    }
+    out.push('\n');
 }
 
 impl MarkdownResult for PackagesResult {
@@ -216,6 +240,45 @@ impl MarkdownResult for ListVersionsResult {
     }
 }
 
+impl MarkdownResult for LoadedPackagesResult {
+    /// One heading per package (`lineage`; name/ecosystem are derivable and
+    /// not repeated), with its loaded versions as a nested table — merges
+    /// [`PackagesResult`]'s single-column listing and [`ListVersionsResult`]'s
+    /// version table into one response.
+    fn to_markdown(&self) -> String {
+        let mut out = String::new();
+        heading(&mut out, "Packages", self.packages.len());
+        if self.packages.is_empty() {
+            out.push_str("(none)\n");
+            return out;
+        }
+        for package in &self.packages {
+            writeln!(out, "package: {}", inline(&package.lineage)).expect("String write");
+            if package.versions.is_empty() {
+                out.push_str("(no versions loaded)\n\n");
+                continue;
+            }
+            let rows = package
+                .versions
+                .iter()
+                .map(|version| {
+                    vec![
+                        version.version.clone(),
+                        if version.is_current {
+                            "current".to_owned()
+                        } else {
+                            String::new()
+                        },
+                        version.symbol_count.to_string(),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            table(&mut out, &["version", "", "symbols"], &rows);
+        }
+        out
+    }
+}
+
 impl MarkdownResult for SelectVersionResult {
     fn to_markdown(&self) -> String {
         let mut out = String::new();
@@ -245,7 +308,6 @@ impl MarkdownResult for SelectVersionResult {
                 )
                 .expect("writing to String cannot fail");
             }
-            _ => out.push_str("## Version status\n\n(unrecognised status)\n"),
         }
         out
     }
@@ -288,7 +350,6 @@ impl MarkdownResult for DiffVersionsResult {
                     out.push('\n');
                 }
             }
-            _ => out.push_str("## Diff status\n\n(unrecognised status)\n"),
         }
         out
     }
@@ -357,16 +418,121 @@ impl MarkdownResult for IndexPackageResult {
                     out.push_str("attached: existing job\n");
                 }
             }
-            _ => out.push_str("## Index status\n\n(unrecognised status)\n"),
         }
         out
     }
+}
+
+impl MarkdownResult for IndexResult {
+    /// One record per line, never a table.
+    ///
+    /// A target is a PURL or a filesystem path, and both routinely contain the
+    /// characters a Markdown table cell has to escape. A reader — human or
+    /// model — that copies a mangled path back into the next `index` call gets
+    /// a failure about a target it never wrote.
+    fn to_markdown(&self) -> String {
+        let mut out = String::new();
+
+        if !self.indexed.is_empty() {
+            writeln!(out, "## Indexed ({})\n", self.indexed.len()).expect("String write");
+            for package in &self.indexed {
+                writeln!(
+                    out,
+                    "{} · version: {} · symbols: {}{}",
+                    inline(&package.package),
+                    inline(&package.version),
+                    package.symbol_count,
+                    if package.requested {
+                        ""
+                    } else {
+                        " · pulled in as a dependency"
+                    },
+                )
+                .expect("String write");
+                writeln!(out, "  from: {}", inline(&package.target)).expect("String write");
+                if let Some(root_key) = &package.root_key {
+                    writeln!(out, "  root: {}", inline(root_key)).expect("String write");
+                }
+                writeln!(out, "  integrity: {}", inline(&package.integrity.detail))
+                    .expect("String write");
+            }
+            out.push('\n');
+        }
+
+        if !self.running.is_empty() {
+            writeln!(out, "## Still running ({})\n", self.running.len()).expect("String write");
+            out.push_str(
+                "Not a failure. Call `index` again with these targets to attach to the \
+                 same jobs.\n\n",
+            );
+            for job in &self.running {
+                writeln!(
+                    out,
+                    "{} · stage: {}{}",
+                    inline(&job.target),
+                    inline(&job.stage),
+                    if job.joined_existing_job {
+                        " · attached to an existing job"
+                    } else {
+                        ""
+                    },
+                )
+                .expect("String write");
+            }
+            out.push('\n');
+        }
+
+        if !self.failed.is_empty() {
+            writeln!(out, "## Failed ({})\n", self.failed.len()).expect("String write");
+            for failure in &self.failed {
+                writeln!(out, "{}", inline(&failure.target)).expect("String write");
+                writeln!(out, "  {}", inline(&failure.error)).expect("String write");
+            }
+            out.push('\n');
+        }
+
+        if !self.not_scanned.is_empty() {
+            out.push_str("## Dependencies not followed\n\n");
+            // Spelled out because the whole reason this section exists is that
+            // its absence reads as "there were none".
+            out.push_str(
+                "These are declarations that were NOT read — not packages known to have \
+                 no dependencies.\n\n",
+            );
+            for note in &self.not_scanned {
+                writeln!(out, "{}", inline(&note.target)).expect("String write");
+                writeln!(out, "  {}", inline(&note.reason)).expect("String write");
+            }
+            out.push('\n');
+        }
+
+        if out.is_empty() {
+            out.push_str("## Index\n\n(nothing to report)\n");
+        }
+        out
+    }
+}
+
+/// Render an [`EdgeCoverageNote`] as a compact machine-readable signal, the
+/// same `~`-prefixed convention [`semantic_signal`]/[`coverage_signal`] use:
+/// this is metadata about why the page is empty, not a row of query data, and
+/// it must not be mistaken for one by whatever reads the Markdown.
+fn edge_coverage_signal(note: &EdgeCoverageNote) -> String {
+    format!(
+        "~graph:edge_empty({} → try {}) — {}",
+        note.edge, note.answers_instead, note.reason
+    )
 }
 
 impl MarkdownResult for QueryResult {
     fn to_markdown(&self) -> String {
         let mut out = String::new();
         heading(&mut out, "Query", self.rows.len());
+        if let Some(note) = &self.edge_coverage {
+            // A signal, not a sentence (§6.4): only printed on the empty page
+            // it explains, so a query that got rows pays nothing for it.
+            writeln!(out, "{}", edge_coverage_signal(note)).expect("String write");
+        }
         if self.rows.is_empty() {
             out.push_str("(no rows)\n");
         } else {
@@ -417,48 +583,147 @@ impl MarkdownResult for QueryResult {
 
 impl MarkdownResult for SchemaResult {
     fn to_markdown(&self) -> String {
-        let mut out = String::from("## GraphQL schema\n\n");
-        fenced(&mut out, Some("graphql"), &self.schema);
-        out
+        if self.full {
+            let mut out = String::from("## GraphQL schema (full SDL)\n\n");
+            fenced(&mut out, Some("graphql"), &self.schema);
+            out
+        } else {
+            // The card is itself Markdown (prose plus embedded ```graphql
+            // fences for the worked examples), not a single GraphQL
+            // document, so it is passed through unfenced rather than
+            // wrapped in a fence whose language tag would be wrong.
+            let mut out = String::from(
+                "## GraphQL schema (compact reference card — call again with \
+                 `full: true` for the complete SDL)\n\n",
+            );
+            out.push_str(&self.schema);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out
+        }
     }
 }
 
 impl MarkdownResult for GetOccurrencesResult {
     fn to_markdown(&self) -> String {
-        let rows = self
-            .occurrences
-            .iter()
-            .map(|row| crate::mcp::occurrence_format::OccurrenceRow {
-                target_key: row.target_key.clone(),
-                target: row.target.as_ref().map(|target| {
-                    crate::mcp::occurrence_format::SymbolSummary {
-                        signature: (!target.signature.is_empty()).then(|| target.signature.clone()),
-                        name: None,
-                        kind: None,
-                        path: target.path.clone(),
-                    }
-                }),
-                owner: crate::mcp::occurrence_format::OccurrenceOwner {
-                    key: row.owner.key.0.clone(),
-                    summary: crate::mcp::occurrence_format::SymbolSummary {
-                        signature: (!row.owner.signature.is_empty())
-                            .then(|| row.owner.signature.clone()),
-                        name: None,
-                        kind: None,
-                        path: row.owner.path.clone(),
-                    },
+        render_occurrences_markdown(&self.occurrences, self.next_cursor.as_deref())
+    }
+}
+
+/// Shared by [`GetOccurrencesResult`] and `RefsResult::Out`. Owner/target
+/// identity headings prefer the address (§4) over the bare key when one was
+/// rendered — headings use backtick code spans, not table cells, so an
+/// address's escaped apostrophes survive intact (unlike a table cell; see
+/// [`UsagesResult`]'s own doc comment for why that distinction matters).
+fn render_occurrences_markdown(
+    occurrences: &[crate::mcp::tools::OccurrenceRow],
+    next_cursor: Option<&str>,
+) -> String {
+    let rows = occurrences
+        .iter()
+        .map(|row| crate::mcp::occurrence_format::OccurrenceRow {
+            target_key: row
+                .target
+                .as_ref()
+                .and_then(|target| target.address.clone())
+                .unwrap_or_else(|| row.target_key.clone()),
+            target: row.target.as_ref().map(|target| {
+                crate::mcp::occurrence_format::SymbolSummary {
+                    signature: (!target.signature.is_empty()).then(|| target.signature.clone()),
+                    name: None,
+                    kind: None,
+                    path: target.path.clone(),
+                }
+            }),
+            owner: crate::mcp::occurrence_format::OccurrenceOwner {
+                key: row
+                    .owner
+                    .address
+                    .clone()
+                    .unwrap_or_else(|| row.owner.key.0.clone()),
+                summary: crate::mcp::occurrence_format::SymbolSummary {
+                    signature: (!row.owner.signature.is_empty())
+                        .then(|| row.owner.signature.clone()),
+                    name: None,
+                    kind: None,
+                    path: row.owner.path.clone(),
                 },
-                reference_kind: row.reference_kind.clone(),
-                confidence: row.confidence.clone(),
-                span_start: i64::from(row.span_start),
-                span_end: i64::from(row.span_end),
-            })
-            .collect::<Vec<_>>();
-        crate::mcp::occurrence_format::render_occurrences(
-            &rows,
-            &crate::mcp::occurrence_format::OccurrenceStatus::Complete,
-            self.next_cursor.as_deref(),
-        )
+            },
+            reference_kind: row.reference_kind.clone(),
+            confidence: row.confidence.clone(),
+            span_start: i64::from(row.span_start),
+            span_end: i64::from(row.span_end),
+        })
+        .collect::<Vec<_>>();
+    crate::mcp::occurrence_format::render_occurrences(
+        &rows,
+        &crate::mcp::occurrence_format::OccurrenceStatus::Complete,
+        next_cursor,
+    )
+}
+
+impl MarkdownResult for RefsResult {
+    fn to_markdown(&self) -> String {
+        match self {
+            RefsResult::In {
+                usages,
+                truncated,
+                next_cursor,
+                coverage,
+            } => {
+                let mut out = String::new();
+                heading(&mut out, "Refs (in)", usages.len());
+                if let Some(coverage) = coverage {
+                    // Same reasoning as `semantic_signal` below: a signal
+                    // line, not a sentence, printed only when the page is not
+                    // authoritative — the ordinary, fully-recorded case pays
+                    // nothing for it.
+                    writeln!(out, "{}", coverage_signal(coverage)).expect("String write");
+                }
+                if usages.is_empty() {
+                    out.push_str("(none)\n");
+                } else {
+                    render_usage_records(&mut out, usages);
+                }
+                pagination(&mut out, *truncated, next_cursor.as_deref());
+                out
+            }
+            RefsResult::Out {
+                occurrences,
+                next_cursor,
+                coverage,
+                ..
+            } => {
+                let mut out = String::new();
+                if let Some(coverage) = coverage {
+                    writeln!(out, "{}", coverage_signal(coverage)).expect("String write");
+                }
+                out.push_str(&render_occurrences_markdown(
+                    occurrences,
+                    next_cursor.as_deref(),
+                ));
+                out
+            }
+        }
+    }
+}
+
+/// Render a [`ReferenceCoverage`] as a compact machine-readable signal, the
+/// same `~`-prefixed convention [`semantic_signal`] uses for exactly the same
+/// reason: this is metadata about whether the page can be trusted, not a row
+/// of reference data, and the prefix keeps an agent from confusing the two.
+///
+/// `Recorded` is never actually reached through `do_refs` — `RefsResult`'s
+/// `coverage` field is `None` in that case (see the field's own doc comment)
+/// — but the match stays exhaustive rather than assuming callers always go
+/// through that collapse.
+fn coverage_signal(coverage: &ReferenceCoverage) -> String {
+    match coverage {
+        ReferenceCoverage::Recorded => "~refs:recorded".to_owned(),
+        ReferenceCoverage::NotRecorded { language } => {
+            format!("~refs:not_recorded({language})")
+        }
     }
 }
 
@@ -472,9 +737,22 @@ impl MarkdownResult for SemanticSearchResult {
                     total: *total,
                 }
             }
-            SemanticStatus::Unavailable { reason } => {
+            // `remedy` is deliberately not read here: the mirror enum below
+            // derives its own remedy text (`semantic_format::unavailable_remedy`),
+            // and that is the copy the rendering guard test pins. Threading
+            // this one through as well would give the same sentence two
+            // sources within a single call.
+            SemanticStatus::Unavailable { reason, .. } => {
+                // "NoRuntime" can no longer arrive here — the engine's
+                // `Unavailable::NoRuntime` variant is gone along with the
+                // `onnx` cargo feature it named the absence of — but a
+                // catch-all still degrades to `ModelFailed` rather than
+                // panicking, the same posture this match already took for any
+                // future engine reason it does not yet know the name of.
                 let reason = match reason.as_str() {
-                    "NoEmbedder" => crate::mcp::semantic_format::SemanticUnavailable::NoEmbedder,
+                    "NoModelConfigured" => {
+                        crate::mcp::semantic_format::SemanticUnavailable::NoModelConfigured
+                    }
                     "EmptyCorpus" => crate::mcp::semantic_format::SemanticUnavailable::EmptyCorpus,
                     "ModelFailed" => crate::mcp::semantic_format::SemanticUnavailable::ModelFailed,
                     _ => crate::mcp::semantic_format::SemanticUnavailable::ModelFailed,
@@ -504,11 +782,8 @@ impl MarkdownResult for SemanticSearchResult {
                 }
             })
             .collect();
-        let mut result = crate::mcp::semantic_format::SemanticResult::new(
-            self.query.clone(),
-            status,
-            hits,
-        );
+        let mut result =
+            crate::mcp::semantic_format::SemanticResult::new(self.query.clone(), status, hits);
         if self.truncated {
             result = result.with_facets([crate::mcp::semantic_format::SemanticFacet::new(
                 "next",
@@ -550,20 +825,6 @@ fn append_symbol(out: &mut String, symbol: &CompactSymbolDoc, level: u8) {
             .collect::<Vec<_>>();
         table(out, &["type", "target"], &rows);
     }
-}
-
-fn search_row(index: usize, hit: &HitRow) -> Vec<String> {
-    let declaration = signature(&hit.sig_preview);
-    let declaration = if declaration.is_empty() {
-        format!("{} {}", kind_label(&hit.kind), hit.display_name)
-    } else {
-        declaration
-    };
-    vec![
-        index.to_string(),
-        declaration,
-        SymbolKeyDto::from_wire(&hit.key).0,
-    ]
 }
 
 fn format_diff(out: &mut String, diff: &PackageDiff, truncated: bool, cursor: Option<&str>) {
@@ -896,6 +1157,7 @@ mod tests {
     fn symbol(source: Option<&str>) -> CompactSymbolDoc {
         CompactSymbolDoc {
             key: key_dto(),
+            address: None,
             path: "demo::Thing".into(),
             signature: Some("pub struct Thing<T>".into()),
             kind: KindTag::Unknown(777),
@@ -919,32 +1181,46 @@ mod tests {
     #[test]
     fn empty_results_are_short_and_well_formed() {
         assert_eq!(
-            format_search_result(&SearchResult {
+            SearchResult {
                 hits: vec![],
+                semantic: None,
+                excluded_kinds: None,
                 truncated: false,
                 next_cursor: None
-            }),
+            }
+            .to_markdown(),
             "## Search · 0\n\n(no matches)\n"
         );
         assert!(
-            format_usages_result(&UsagesResult {
+            UsagesResult {
                 usages: vec![],
                 truncated: false,
                 next_cursor: None
-            })
+            }
+            .to_markdown()
             .contains("(none)")
         );
-        assert!(format_packages_result(&PackagesResult { packages: vec![] }).contains("(none)"));
         assert!(
-            format_query_result(&QueryResult {
+            PackagesResult { packages: vec![] }
+                .to_markdown()
+                .contains("(none)")
+        );
+        assert!(
+            QueryResult {
                 columns: vec![],
                 rows: vec![],
                 truncated: false,
-                next_cursor: None
-            })
+                next_cursor: None,
+                edge_coverage: None,
+            }
+            .to_markdown()
             .contains("(no rows)")
         );
-        assert!(format_symbols_result(&SymbolsResult { symbols: vec![] }).contains("(none)"));
+        assert!(
+            SymbolsResult { symbols: vec![] }
+                .to_markdown()
+                .contains("(none)")
+        );
     }
 
     #[test]
@@ -954,7 +1230,7 @@ mod tests {
             truncated: true,
             next_cursor: Some("50|next".into()),
         };
-        let rendered = format_usages_result(&result);
+        let rendered = result.to_markdown();
         assert!(rendered.contains("next: `50|next`"));
         assert!(!rendered.contains("truncated"));
 
@@ -963,7 +1239,7 @@ mod tests {
             truncated: true,
             next_cursor: None,
         };
-        assert!(format_usages_result(&malformed).contains("truncated without cursor"));
+        assert!(malformed.to_markdown().contains("truncated without cursor"));
     }
 
     #[test]
@@ -975,8 +1251,9 @@ mod tests {
             }],
             truncated: false,
             next_cursor: None,
+            edge_coverage: None,
         };
-        let rendered = format_query_result(&result);
+        let rendered = result.to_markdown();
         assert!(rendered.contains("column\\|↵#"));
         assert!(rendered.contains("value\\|↵### injected↵\\\\slash"));
         assert!(!rendered.contains("\n### injected"));
@@ -1003,8 +1280,9 @@ mod tests {
             }],
             truncated: false,
             next_cursor: None,
+            edge_coverage: None,
         };
-        let rendered = format_query_result(&result);
+        let rendered = result.to_markdown();
         assert!(rendered.contains("```text"));
         assert!(rendered.contains("// key: fixture:demo#key"));
         assert!(rendered.contains("// kind: Record"));
@@ -1018,7 +1296,7 @@ mod tests {
     #[test]
     fn exact_source_uses_a_longer_fence_and_preserves_bytes() {
         let source = "pub fn x() {\n    let text = ` ``` `;\n}\n";
-        let rendered = format_compact_symbol_doc(&symbol(Some(source)));
+        let rendered = symbol(Some(source)).to_markdown();
         assert!(rendered.contains("pub fn x() {\n    let text = ` ``` `;\n}\n"));
         assert!(
             rendered.contains("````"),
@@ -1033,52 +1311,58 @@ mod tests {
     #[test]
     fn long_source_and_schema_are_not_truncated() {
         let source = "x".repeat(100_000);
-        let rendered_source = format_compact_symbol_doc(&symbol(Some(&source)));
+        let rendered_source = symbol(Some(&source)).to_markdown();
         assert!(rendered_source.contains(&source));
 
         let schema = "type X { field: String }\n".repeat(20_000);
-        let rendered_schema = format_schema_result(&SchemaResult {
+        let rendered_schema = SchemaResult {
             schema: schema.clone(),
-        });
+            full: true,
+        }
+        .to_markdown();
         assert!(rendered_schema.contains(&schema));
         assert_eq!(rendered_schema.matches("type X").count(), 20_000);
     }
 
     #[test]
     fn status_variants_keep_the_actionable_difference() {
-        let selected = format_select_version_result(&SelectVersionResult::Switched {
+        let selected = SelectVersionResult::Switched {
             package: PackageLineageDto("cargo:demo".into()),
             version: "1.2.3".into(),
             symbol_count: 42,
-        });
+        }
+        .to_markdown();
         assert!(selected.contains("Version selected"));
         assert!(selected.contains("symbols: 42"));
 
-        let missing = format_select_version_result(&SelectVersionResult::NotLoaded {
+        let missing = SelectVersionResult::NotLoaded {
             package: PackageLineageDto("cargo:demo".into()),
             version: "9.9.9".into(),
-        });
+        }
+        .to_markdown();
         assert!(missing.contains("Version not loaded"));
 
-        let running = format_index_package_result(&IndexPackageResult::Running {
+        let running = IndexPackageResult::Running {
             purl: "pkg:cargo/demo@1.0.0".into(),
             stage: "downloading".into(),
             received_bytes: Some(4),
             total_bytes: Some(10),
             elapsed_seconds: 3,
             joined_existing_job: true,
-        });
+        }
+        .to_markdown();
         assert!(running.contains("4/10 B"));
         assert!(running.contains("attached: existing job"));
 
-        let indexed = format_index_package_result(&IndexPackageResult::Indexed {
+        let indexed = IndexPackageResult::Indexed {
             purl: "pkg:cargo/demo@1.0.0".into(),
             package: "cargo:demo".into(),
             version: "1.0.0".into(),
             symbol_count: 4,
             root_key: Some(key_dto().0),
             integrity: integrity(true),
-        });
+        }
+        .to_markdown();
         assert!(indexed.contains("integrity: verified"));
     }
 
@@ -1091,8 +1375,9 @@ mod tests {
             }],
             truncated: false,
             next_cursor: None,
+            edge_coverage: None,
         };
-        let rendered = format_query_result(&result);
+        let rendered = result.to_markdown();
         assert!(rendered.contains("#2"));
         assert!(rendered.contains("extra"));
     }
@@ -1100,25 +1385,35 @@ mod tests {
     #[test]
     fn search_and_diff_keep_navigable_keys() {
         let search = SearchResult {
-            hits: vec![HitRow {
-                key: wire_key(7),
-                display_name: SharedStr::from("demo::Thing"),
-                sig_preview: vec![
-                    SigToken::Kw("pub"),
-                    SigToken::Ws,
-                    SigToken::Ident(SharedStr::from("Thing")),
-                ],
-                kind: KindTag::Unknown(44),
-                provenance: Provenance::SyncedLocal {
-                    generation: GenerationId(2),
+            hits: vec![SearchHitDoc {
+                hit: crate::wire::HitRow {
+                    key: wire_key(7),
+                    display_name: SharedStr::from("demo::Thing"),
+                    sig_preview: vec![
+                        SigToken::Kw("pub"),
+                        SigToken::Ws,
+                        SigToken::Ident(SharedStr::from("Thing")),
+                    ],
+                    kind: KindTag::Unknown(44),
+                    provenance: Provenance::SyncedLocal {
+                        generation: GenerationId(2),
+                    },
+                    score: 0.5,
                 },
-                score: 0.5,
+                address: Some("cargo:demo::Thing[struct]".to_owned()),
+                semantic: false,
+                documentation: None,
             }],
+            semantic: None,
+            excluded_kinds: None,
             truncated: false,
             next_cursor: None,
         };
-        let rendered = format_search_result(&search);
-        assert!(rendered.contains("cargo:demo#070707"));
+        let rendered = search.to_markdown();
+        // The renderer prefers the address over the raw key as the
+        // navigable identity when one was rendered (§4) — pre-existing
+        // behaviour this test's assertion had drifted out of sync with.
+        assert!(rendered.contains("cargo:demo::Thing[struct]"));
         assert!(rendered.contains("pub Thing"));
 
         let diff = DiffVersionsResult::Diff {
@@ -1141,7 +1436,7 @@ mod tests {
             truncated: false,
             next_cursor: None,
         };
-        let rendered = format_diff_versions_result(&diff);
+        let rendered = diff.to_markdown();
         assert!(rendered.contains("removed"));
         assert!(rendered.contains("| declaration |"));
         assert!(rendered.contains("pub struct Thing<T>"));
@@ -1152,24 +1447,25 @@ mod tests {
 
     #[test]
     fn source_without_newline_gets_only_a_structural_closing_line() {
-        let rendered = format_compact_symbol_doc(&symbol(Some("fn main() {}")));
+        let rendered = symbol(Some("fn main() {}")).to_markdown();
         assert!(rendered.contains("\nfn main() {}\n```"));
         assert_eq!(rendered.matches("fn main() {}").count(), 1);
     }
 
     #[test]
     fn package_and_version_renderers_omit_derivable_false_markers() {
-        let packages = format_packages_result(&PackagesResult {
+        let packages = PackagesResult {
             packages: vec![crate::mcp::tools::PackageSummary {
                 lineage: "cargo:demo".into(),
                 name: "demo".into(),
                 ecosystem: "cargo".into(),
             }],
-        });
+        }
+        .to_markdown();
         assert!(packages.contains("| package |"));
         assert!(!packages.contains("ecosystem"));
 
-        let versions = format_list_versions_result(&ListVersionsResult {
+        let versions = ListVersionsResult {
             package: PackageLineageDto("cargo:demo".into()),
             versions: vec![
                 crate::mcp::tools::VersionSummary {
@@ -1183,7 +1479,8 @@ mod tests {
                     symbol_count: 1,
                 },
             ],
-        });
+        }
+        .to_markdown();
         assert!(versions.contains("current"));
         assert_eq!(versions.matches("current").count(), 1);
         assert!(!versions.contains("is_current"));
@@ -1191,7 +1488,7 @@ mod tests {
 
     #[test]
     fn semantic_result_carries_exact_documentation_evidence() {
-        let rendered = format_semantic_search_result(&SemanticSearchResult {
+        let rendered = SemanticSearchResult {
             query: "retry failed requests".into(),
             status: SemanticStatus::Ready,
             hits: vec![crate::mcp::tools::SemanticHitRow {
@@ -1204,7 +1501,8 @@ mod tests {
             }],
             truncated: false,
             next_cursor: None,
-        });
+        }
+        .to_markdown();
 
         assert!(rendered.contains("status: ready · 1 match"));
         assert!(rendered.contains(

@@ -54,11 +54,11 @@ use std::path::Path;
 use heart::identity::EntryUri;
 use smol_str::SmolStr;
 
+use crate::server::SourceStores;
 use crate::server::error::{InternalError, ServerError, ServerResult};
 use crate::server::registry::blob::creation::BlobBuilder;
 use crate::server::registry::identity::PackageCoordinates;
 use crate::server::registry::vector::EmbeddingModel;
-use crate::server::SourceStores;
 
 /// Run the matching language producer in-process over `source_root` and
 /// stage the result: real catalog symbol rows (so the existing vector
@@ -91,20 +91,21 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     // doclet invocation, …) — run on the blocking pool exactly like the cage
     // path does, so heartbeats/other jobs keep flowing.
     let produce_name = name.clone();
-    let produced = tokio::task::spawn_blocking(move || run_language_producer(language, &src, &lineage))
-        .await
-        .map_err(|join| {
-            ServerError::Internal(InternalError::InProcessCompile {
-                package: produce_name.clone(),
-                reason: format!("producer task panicked or was cancelled: {join}"),
-            })
-        })?
-        .map_err(|reason| {
-            ServerError::Internal(InternalError::InProcessCompile {
-                package: name.clone(),
-                reason,
-            })
-        })?;
+    let produced =
+        tokio::task::spawn_blocking(move || run_language_producer(language, &src, &lineage))
+            .await
+            .map_err(|join| {
+                ServerError::Internal(InternalError::InProcessCompile {
+                    package: produce_name.clone(),
+                    reason: format!("producer task panicked or was cancelled: {join}"),
+                })
+            })?
+            .map_err(|reason| {
+                ServerError::Internal(InternalError::InProcessCompile {
+                    package: name.clone(),
+                    reason,
+                })
+            })?;
 
     // ── Stage real symbol rows into the catalog's serving projection ──────────
     // `provisional_generation()` is a valid, deterministic `ContentHash` over
@@ -192,8 +193,11 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     // is the whole point of the fix: it is what makes `Target::Usages` return
     // real edges for a package indexed on a macOS serving node.
     let owning_pkg = format!("{}:{}", lineage_ecosystem_tag(language), name);
-    let ref_set =
-        super::indexing::build_reference_set_from_table(table, source_root, Some(owning_pkg.as_str()));
+    let ref_set = super::indexing::build_reference_set_from_table(
+        table,
+        source_root,
+        Some(owning_pkg.as_str()),
+    );
     let reference_edges: usize = ref_set.by_file.iter().map(|f| f.references.len()).sum();
 
     if let Err(error) = builder.set_references(&ref_set) {
@@ -203,7 +207,9 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         // `set_references` handling in `ingest_ir_bytes`). Re-attach an empty
         // set first so the builder still has a valid section if a later stage
         // inspects it.
-        let empty = crate::server::registry::blob::ReferenceSet { by_file: Vec::new() };
+        let empty = crate::server::registry::blob::ReferenceSet {
+            by_file: Vec::new(),
+        };
         let _ = builder.set_references(&empty);
         return Err(ServerError::Internal(InternalError::InProcessCompile {
             package: name.clone(),
@@ -334,11 +340,10 @@ fn run_language_producer(
             lineage,
             &ir::foreign::Unlinked,
         ),
-        // No in-process producer is registered for these: Python only
-        // contributes real declarations behind the `pyrefly` feature (not
-        // wired into `index` — see `workspace/index/Cargo.toml`), and there
-        // is no nix producer in the workspace at all.
-        Language::Python | Language::Nix => {
+        // No in-process producer is registered: Python only contributes real
+        // declarations behind the `pyrefly` feature (not wired into `index` —
+        // see `workspace/index/Cargo.toml`).
+        Language::Python => {
             return Err(format!(
                 "no in-process producer available for language {language}"
             ));
@@ -373,7 +378,6 @@ fn lineage_ecosystem_tag(language: heart::Language) -> &'static str {
         Language::CSharp => "nuget",
         Language::Python => "pypi",
         Language::Cpp => "cpp",
-        Language::Nix => "nix",
     }
 }
 
@@ -402,7 +406,10 @@ fn map_symbol_kind(discriminant: ir::kind::KindDiscriminant) -> Option<heart::Sy
 /// "new"]`. Used both for the catalog's display name and (via
 /// [`EntryUri`]) for the deterministic symbol id — so two entries that
 /// share a bare name in different modules never collide.
-fn fully_qualified_path(table: &ir::apply::PristineIntroTable, intro: ir::change::IntroId) -> Vec<String> {
+fn fully_qualified_path(
+    table: &ir::apply::PristineIntroTable,
+    intro: ir::change::IntroId,
+) -> Vec<String> {
     let mut segments = Vec::new();
     let mut cursor = Some(intro);
     // Defensive cycle guard: `PristineIntroTable` never admits a parent

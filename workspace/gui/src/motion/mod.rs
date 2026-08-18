@@ -60,20 +60,35 @@ pub mod tokens;
 
 pub use color::MotionColor;
 pub use declarative::{
-    delayed, empty_state_enter, entrance_id, fade_in, fade_out, overlay_out, rise_in,
-    row_enter, shimmer,
+    delayed, empty_state_enter, entrance_id, fade_in, fade_out, overlay_out, rise_in, row_enter,
+    shimmer,
 };
 pub use motion2d::Motion2d;
 pub use permits::{LoopCensus, LoopPermit, MAX_LOOP_PERMITS};
 pub use spring::{Motion, Spring};
 pub use tokens::{
-    MotionTokens,
+    BADGE_POP,
+    CONTENT_CROSSFADE_IN,
+    CONTENT_CROSSFADE_OUT,
+    COUNT_TICK_SPRING_HINT,
+    EDGE_FLOW,
+    EMPTY_STATE,
     // §5.1 micro-feedback
-    FOCUS_RING, COUNT_TICK_SPRING_HINT, STATUS_BREATHE, TOOLTIP_IN,
-    // §5.2 content arrival
-    SKELETON_SHIMMER, CONTENT_CROSSFADE_OUT, CONTENT_CROSSFADE_IN,
-    ROW_CASCADE, STAGGER_STEP, MAX_STAGGER_ROWS, ROW_CASCADE_WINDOW,
-    SECTION_ARRIVE, HIGHLIGHT_SWEEP, BADGE_POP, EDGE_FLOW, EMPTY_STATE,
+    FOCUS_RING,
+    HIGHLIGHT_SWEEP,
+    MAX_STAGGER_ROWS,
+    MotionTokens,
+    NAV_FLASH,
     // §5.3 navigation & shell
-    OVERLAY_OUT, PAGE_HANDOFF_OUT, PAGE_HANDOFF_IN, NAV_FLASH,
+    OVERLAY_OUT,
+    PAGE_HANDOFF_IN,
+    PAGE_HANDOFF_OUT,
+    ROW_CASCADE,
+    ROW_CASCADE_WINDOW,
+    SECTION_ARRIVE,
+    // §5.2 content arrival
+    SKELETON_SHIMMER,
+    STAGGER_STEP,
+    STATUS_BREATHE,
+    TOOLTIP_IN,
 };

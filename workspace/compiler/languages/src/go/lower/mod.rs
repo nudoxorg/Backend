@@ -12,9 +12,11 @@ mod values;
 use std::{collections::HashSet, ops::Range, path::PathBuf};
 
 use nudox_ir::build::{
-    Deprecation, DocLink, Function, IrPackage, Lowering, Module, PackageId, PackageLineageId, Param,
-    ParamAttribute, Ref, Symbol, Visibility,
+    Deprecation, DocLink, Function, IrPackage, Lowering, Module, PackageId, PackageLineageId,
+    Param, ParamAttribute, Ref, Symbol, Visibility,
 };
+use nudox_ir::entry::{SourceLocation, Unlocated};
+use nudox_ir::vocab::{Confidence, ReferenceKind, RelSpan};
 
 use crate::go::{
     error::{self, Result},
@@ -47,6 +49,32 @@ pub enum GoId {
         import_path: String,
         type_name: String,
         member_name: String,
+        /// `None` for a member this type declares itself (a field, a
+        /// directly-declared method, or a synthetic member such as a
+        /// function's params/results) — `import_path` above is already that
+        /// member's home package. `Some(origin)` for a method *promoted*
+        /// through an embedded field, carrying the oracle's fully qualified
+        /// defining type (`oracle::Method::origin`, e.g.
+        /// `"google.golang.org/grpc.EmptyServerOption"` — package path plus
+        /// bare type name, joined by `.`; see `oracle/go/serialize.go`'s
+        /// `originOf`).
+        ///
+        /// This is what makes `GoId::Member` able to express Go's
+        /// "uniqueness of identifiers" rule (spec, "Declarations and
+        /// scope"): two unexported names are the same identifier only when
+        /// they belong to the same package. A struct can legally declare its
+        /// own field `apply` *and* promote an embedded type's unexported
+        /// method also named `apply` — real case:
+        /// `google.golang.org/grpc/xds`'s `serverOption` embeds
+        /// `grpc.EmptyServerOption` — because the two `apply`s are different
+        /// identifiers per spec even though spelled the same.
+        /// `go/types.NewMethodSet` (`oracle/go/serialize.go`'s
+        /// `promotedMethods`) reports both. Tagging every promoted method
+        /// with its origin, while every local member stays `None`, makes the
+        /// two cases structurally distinct ids instead of colliding — no
+        /// skip, no drop, and no risk of two *different* local members
+        /// colliding with each other (they were never tagged before either).
+        promoted_from: Option<String>,
     },
     /// A variant of a Go iota-enum convention.
     Variant {
@@ -219,6 +247,7 @@ fn parse_link_def(line: &str) -> Option<DocLink> {
     Some(DocLink {
         target: url.to_string(),
         label: Some(name.to_string()),
+        source_span: None,
     })
 }
 
@@ -276,7 +305,11 @@ fn sym_for(
 /// sentinel this replaces. Only degrades to `0..0` when the oracle recorded
 /// no position at all — the synthesized root module, and struct fields
 /// (`oracle::StructField` carries no position; see `types::lower_struct`).
-fn resolve_span(name: &str, pos: Option<&oracle::Pos>, span: Option<&oracle::Span>) -> Range<usize> {
+fn resolve_span(
+    name: &str,
+    pos: Option<&oracle::Pos>,
+    span: Option<&oracle::Span>,
+) -> Range<usize> {
     if let Some(span) = span
         && let (Ok(start), Ok(end)) = (usize::try_from(span.start), usize::try_from(span.end))
         && end > start
@@ -347,9 +380,29 @@ pub fn lower_into(output: &oracle::Output, low: &mut Lowering<GoId>) -> Result<(
         .map(|pkg| pkg.import_path.clone())
         .collect();
     for pkg in &output.packages {
+        report_build_constraints(pkg);
         lower_package(pkg, low, &local);
     }
     Ok(())
+}
+
+/// Surface declarations that the active Go build intentionally excluded.
+///
+/// They cannot be lowered as ordinary IR symbols without misrepresenting
+/// availability, but keeping this typed diagnostic on the oracle package and
+/// reporting it here prevents the source scan from becoming another silent
+/// omission at the lowering boundary.
+fn report_build_constraints(pkg: &oracle::Package) {
+    for file in &pkg.build_constraints {
+        for decl in &file.exported_decls {
+            eprintln!(
+                "[go-oracle] unavailable build-constrained declaration {} in {} ({})",
+                decl.name,
+                file.file,
+                file.constraints.join(" && ")
+            );
+        }
+    }
 }
 
 /// Lower all packages in an oracle `Output` into one [`IrPackage`].
@@ -385,6 +438,49 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSe
 
     for decl in &pkg.decls {
         lower_decl(pkg, decl, &enums, low, local);
+    }
+    record_references(pkg, low);
+}
+
+fn record_references(pkg: &oracle::Package, low: &mut Lowering<GoId>) {
+    for reference in &pkg.references {
+        let Some(owner_decl) = pkg
+            .decls
+            .iter()
+            .find(|decl| decl.kind == DeclKind::Func && decl.name == reference.owner)
+        else {
+            continue;
+        };
+        let Some(owner_span) = owner_decl.span.as_ref() else {
+            continue;
+        };
+        if owner_decl
+            .pos
+            .as_ref()
+            .is_none_or(|pos| pos.file != reference.file)
+            || reference.start < owner_span.start as usize
+            || reference.end > owner_span.end as usize
+        {
+            continue;
+        }
+        low.record_occurrence(
+            GoId::Item {
+                import_path: pkg.import_path.clone(),
+                name: reference.owner.clone(),
+            },
+            GoId::Item {
+                import_path: pkg.import_path.clone(),
+                name: reference.target.clone(),
+            },
+            ReferenceKind::FunctionCall,
+            Confidence::Oracle,
+            RelSpan::new(
+                u32::try_from(reference.start.saturating_sub(owner_span.start as usize))
+                    .unwrap_or(u32::MAX),
+                u32::try_from(reference.end.saturating_sub(owner_span.start as usize))
+                    .unwrap_or(u32::MAX),
+            ),
+        );
     }
 }
 
@@ -456,6 +552,23 @@ fn lower_methods(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
+    // A promoted method's `GoId::Member` carries its defining type
+    // (`promoted_from`), so it can never collide with a local field or
+    // directly-declared method of the same spelling — those always keep
+    // `promoted_from: None`. See `GoId::Member`'s doc for the Go-spec
+    // background (the real case that motivated this:
+    // `google.golang.org/grpc/xds`'s `serverOption`, which declares its own
+    // field `apply` and also promotes an embedded `apply` method).
+    //
+    // Two *different* promoted methods can only collide under the same id if
+    // they share both `member_name` and `promoted_from` — i.e. the oracle
+    // reported the same (name, origin) pair twice. `go/types.NewMethodSet`
+    // (`oracle/go/serialize.go`'s `promotedMethods`) already returns at most
+    // one entry per name — same-depth ties are ambiguous selectors and
+    // excluded, and a deeper shadowed candidate is never reached — so
+    // `decl.promoted_methods` cannot itself contain such a duplicate. No
+    // dedup pass is needed here; `Lowering::finish` still catches it as
+    // `Error::Duplicate` if that invariant is ever violated.
     for method in &decl.methods {
         lower_one_method(pkg, decl, method, false, parent, low, local);
     }
@@ -477,6 +590,7 @@ fn lower_one_method(
         import_path: pkg.import_path.clone(),
         type_name: type_decl.name.clone(),
         member_name: method.name.clone(),
+        promoted_from: is_promoted.then(|| method.origin.clone()),
     };
 
     let doc = if is_promoted {
@@ -494,7 +608,13 @@ fn lower_one_method(
         method.doc.clone()
     };
 
-    let mut msym = sym_for(&method.name, &doc, method.exported, method.pos.as_ref(), method.span.as_ref());
+    let mut msym = sym_for(
+        &method.name,
+        &doc,
+        method.exported,
+        method.pos.as_ref(),
+        method.span.as_ref(),
+    );
     // Populate the four search-entry-point aliases so the method can be
     // found by short name, dotted form, and fully-qualified variants.
     msym.aliases = method_aliases(&pkg.import_path, &type_decl.name, &method.name);
@@ -504,6 +624,7 @@ fn lower_one_method(
         pkg,
         &type_decl.name,
         &method.name,
+        is_promoted.then_some(method.origin.as_str()),
         method.signature.as_ref(),
         low,
         local,
@@ -526,18 +647,27 @@ fn lower_one_method(
 /// as a child of the function and returning the Refs for the Function builder.
 ///
 /// Returns `(input_refs, output_refs)`.
+///
+/// `promoted_from` must be exactly what the caller used to build the
+/// function/method's own `GoId::Member` (`None` for a package-level func or
+/// a directly-declared/interface method, `Some(origin)` for a promoted
+/// method) — `fn_id` below is only ever *referred* to as the params'/
+/// results' parent, never itself declared here, so if it disagreed with the
+/// id the method was actually `declare`d under, `Lowering::finish` would
+/// report every one of its params and results as "referred but never
+/// declared" instead of nesting them under the method.
 fn lower_sig_params_into_lowering(
     pkg: &oracle::Package,
     type_name: &str,
     fn_name: &str,
+    promoted_from: Option<&str>,
     sig: Option<&oracle::Type>,
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) -> (Vec<Ref<Param>>, Vec<Ref<Param>>) {
-    let (params, results, variadic) = sig
-        .map_or((&[][..], &[][..], false), |s| {
-            (s.params.as_ref(), s.results.as_ref(), s.variadic)
-        });
+    let (params, results, variadic) = sig.map_or((&[][..], &[][..], false), |s| {
+        (s.params.as_ref(), s.results.as_ref(), s.variadic)
+    });
 
     let fn_id = if type_name.is_empty() {
         GoId::Item {
@@ -549,6 +679,7 @@ fn lower_sig_params_into_lowering(
             import_path: pkg.import_path.clone(),
             type_name: type_name.to_string(),
             member_name: fn_name.to_string(),
+            promoted_from: promoted_from.map(str::to_string),
         }
     };
 
@@ -571,7 +702,15 @@ fn lower_sig_params_into_lowering(
         let param_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!("param:{}", if is_blank { i.to_string() } else { p.name.clone() }),
+            member_name: format!(
+                "param:{}",
+                if is_blank {
+                    i.to_string()
+                } else {
+                    p.name.clone()
+                }
+            ),
+            promoted_from: None,
         };
         let is_last_variadic = variadic && i == last_param;
         let attrs: Vec<ParamAttribute> = if is_last_variadic {
@@ -584,11 +723,31 @@ fn lower_sig_params_into_lowering(
             .r#type
             .as_ref()
             .map(|t| go_types::lower_type_with_lowering(t, low, local));
-        let pname = if is_blank { format!("_{i}") } else { p.name.clone() };
-        let psym = sym_for(&pname, "", true, None, None);
+        let pname = if is_blank {
+            format!("_{i}")
+        } else {
+            p.name.clone()
+        };
+        let ppos = (!is_blank).then_some(p.pos.as_ref()).flatten();
+        let psym = sym_for(
+            &pname,
+            "",
+            true,
+            ppos,
+            ppos.map(|pos| oracle::Span {
+                start: pos.offset,
+                end: pos.offset + p.name.len().max(1) as i64,
+            })
+            .as_ref(),
+        );
         let param_kind = Param::builder().maybe_ty(ty).attributes(attrs).build();
         input_refs.push(low.refer(param_id.clone()));
-        low.declare(param_id, Some(fn_id.clone()), psym, param_kind);
+        let location = if is_blank {
+            SourceLocation::Unlocated(Unlocated::Synthesized)
+        } else {
+            SourceLocation::from_legacy(&psym.source, &psym.span)
+        };
+        low.declare_at(param_id, Some(fn_id.clone()), psym, param_kind, location);
     }
 
     let mut output_refs: Vec<Ref<Param>> = Vec::with_capacity(results.len());
@@ -599,19 +758,69 @@ fn lower_sig_params_into_lowering(
         let result_id = GoId::Member {
             import_path: pkg.import_path.clone(),
             type_name: format!("{type_name}::{fn_name}"),
-            member_name: format!("result:{}", if is_blank { i.to_string() } else { r.name.clone() }),
+            member_name: format!(
+                "result:{}",
+                if is_blank {
+                    i.to_string()
+                } else {
+                    r.name.clone()
+                }
+            ),
+            promoted_from: None,
         };
         // Use lower_type_with_lowering so named result types produce Nominal refs.
         let ty = r
             .r#type
             .as_ref()
             .map(|t| go_types::lower_type_with_lowering(t, low, local));
-        let rname = if is_blank { format!("_{i}") } else { r.name.clone() };
-        let rsym = sym_for(&rname, "", true, None, None);
+        let rname = if is_blank {
+            format!("_{i}")
+        } else {
+            r.name.clone()
+        };
+        let rpos = (!is_blank).then_some(r.pos.as_ref()).flatten();
+        let rsym = sym_for(
+            &rname,
+            "",
+            true,
+            rpos,
+            rpos.map(|pos| oracle::Span {
+                start: pos.offset,
+                end: pos.offset + r.name.len().max(1) as i64,
+            })
+            .as_ref(),
+        );
         let result_kind = Param::builder().maybe_ty(ty).build();
         output_refs.push(low.refer(result_id.clone()));
-        low.declare(result_id, Some(fn_id.clone()), rsym, result_kind);
+        let location = if is_blank {
+            SourceLocation::Unlocated(Unlocated::Synthesized)
+        } else {
+            SourceLocation::from_legacy(&rsym.source, &rsym.span)
+        };
+        low.declare_at(result_id, Some(fn_id.clone()), rsym, result_kind, location);
     }
 
     (input_refs, output_refs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn named_parameter_position_becomes_a_real_span() {
+        let pos = oracle::Pos {
+            file: "fixture.go".to_owned(),
+            line: 1,
+            col: 10,
+            offset: 9,
+        };
+        let span = oracle::Span {
+            start: pos.offset,
+            end: pos.offset + 3,
+        };
+        let sym = sym_for("arg", "", true, Some(&pos), Some(&span));
+        assert_eq!(sym.source, PathBuf::from("fixture.go"));
+        assert_eq!(sym.span, 9..12);
+    }
 }

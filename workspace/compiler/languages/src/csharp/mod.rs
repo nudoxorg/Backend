@@ -69,12 +69,12 @@
 //! emitted by the oracle on every symbol — it is the natural join key for `<see
 //! cref=…>` resolution via `Lowering::refer`.
 
-pub mod schema;
-pub mod xmldoc;
-pub mod types;
+pub mod error;
 pub mod lower;
 pub mod producer;
-pub mod error;
+pub mod schema;
+pub mod types;
+pub mod xmldoc;
 
 pub use error::Error;
 pub use producer::CSharpProducer;
@@ -116,19 +116,55 @@ pub fn parse_extraction(json: &[u8]) -> Result<Extraction, Error> {
 /// Returns an error if the lowering finish step detects undeclared refs,
 /// duplicates, or cycles.  In practice the oracle ensures doc-ids are unique
 /// and non-cyclic, but we validate for safety.
-pub fn lower(
-    extraction: &Extraction,
-) -> Result<nudox_ir::package::IrPackage<String>, Error> {
+pub fn lower(extraction: &Extraction) -> Result<nudox_ir::package::IrPackage<String>, Error> {
     let assembly_name = if extraction.assembly.name.is_empty() {
         "assembly"
     } else {
         &extraction.assembly.name
     };
 
+    let mut root_documentation = format!(
+        "C# assembly `{assembly_name}`; target framework `{}`; Roslyn `{}`; mode `{}`.",
+        extraction.assembly.tfm.as_deref().unwrap_or("unknown"),
+        if extraction.roslyn.is_empty() {
+            "unknown"
+        } else {
+            extraction.roslyn.as_str()
+        },
+        if extraction.mode.is_empty() {
+            "unknown"
+        } else {
+            extraction.mode.as_str()
+        },
+    );
+    root_documentation.push_str(&format!(
+        "\nDiagnostics: {} compilation error(s), {} error type(s).",
+        extraction.diagnostics.error_count, extraction.diagnostics.error_type_count
+    ));
+    root_documentation.push_str(&format!(
+        "\nGenerator support: {:?}.",
+        extraction.diagnostics.generator_support
+    ));
+    if let Some(version) = &extraction.assembly.version {
+        root_documentation.push_str(&format!("\nAssembly version: `{version}`."));
+    }
+    if !extraction.assembly.forwarded_types.is_empty() {
+        root_documentation.push_str(&format!(
+            "\nForwarded types: `{}`.",
+            extraction.assembly.forwarded_types.join("`, `")
+        ));
+    }
+    if !extraction.assembly.ivt.is_empty() {
+        root_documentation.push_str(&format!(
+            "\nInternalsVisibleTo: `{}`.",
+            extraction.assembly.ivt.join("`, `")
+        ));
+    }
+
     let root_sym = Symbol {
         name: assembly_name.to_string(),
         visibility: Visibility::Public,
-        documentation: String::new(),
+        documentation: root_documentation,
         source: PathBuf::new(),
         span: 0..0,
         aliases: Box::new([]),
@@ -143,7 +179,5 @@ pub fn lower(
 
     lower::lower_extraction(extraction, &mut lowering);
 
-    lowering
-        .finish()
-        .map_err(|e| Error::oracle(format!("{e}")))
+    lowering.finish().map_err(|e| Error::oracle(format!("{e}")))
 }

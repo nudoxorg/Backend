@@ -19,9 +19,9 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+use heart::cost::measured;
 use nudox_engine::acquire::resolved_url_for_test;
 use nudox_engine::{Purl, PurlType};
-use heart::cost::measured;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")

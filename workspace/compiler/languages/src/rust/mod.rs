@@ -54,18 +54,15 @@ mod ra;
 pub mod error;
 
 use crate::{PackageSource, Producer, ProducerError, ProducerId};
-use nudox_ir::{
-    body::Language,
-    lower::Lowering,
-    vocab::Confidence,
-};
+use nudox_ir::{body::Language, lower::Lowering, vocab::Confidence};
+use std::time::Instant;
 
 use crate::rust::ra::ctx::PendingTarget;
 
 pub use self::error::Error;
 pub use self::ra::loaded::{
-    BuildScriptExecution, BuildScriptFailure, DependencyResolution, LoadCompleteness,
-    LoadedWorkspace, NoDepsFallback,
+    BuildScriptExecution, BuildScriptFailure, DependencyResolution, LoadCompleteness, LoadProfile,
+    LoadedWorkspace, NoDepsFallback, ProcMacroAvailability,
 };
 
 // ── RaId — producer-local item identity ──────────────────────────────────────
@@ -136,6 +133,7 @@ impl Producer for RustProducer {
         oracle: &LoadedWorkspace,
         out: &mut Lowering<RaId>,
     ) -> Result<(), ProducerError> {
+        let started = Instant::now();
         let occurrences = ra::lower_workspace(oracle, &oracle.package_name, out)
             .map_err(|e| producer_error_for(&oracle.package_name, e))?;
         for occurrence in occurrences {
@@ -159,6 +157,19 @@ impl Producer for RustProducer {
                     );
                 }
             }
+        }
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        tracing::info!(
+            phase = "rust_producer_lower",
+            package = %oracle.package_name,
+            elapsed_ms,
+            "rust producer phase complete"
+        );
+        if cfg!(debug_assertions) {
+            eprintln!(
+                "rust_producer phase=lower elapsed_ms={elapsed_ms:.1} package={}",
+                oracle.package_name
+            );
         }
         Ok(())
     }
@@ -194,29 +205,58 @@ impl Producer for RustProducer {
 /// the Rust producer happened to detect the emptiness early — while filling in
 /// the `#[source]` the backstop cannot. Anything else would make the early,
 /// better-diagnosed path the *less* recognisable one.
+///
+/// [`Error::ProcMacroDegraded`] maps to [`ProducerError::ProcMacroDegraded`]
+/// rather than `UnsupportedConstruct`. A correct `invoke` never constructs that
+/// error — unavailability lives on [`LoadCompleteness`] — but if the leftover
+/// variant is raised, it must stay a typed environment outcome, not a hard
+/// construct failure.
 fn producer_error_for(package: &str, err: Error) -> ProducerError {
     match err {
-        e @ Error::DependenciesUnresolved { .. } => {
-            ProducerError::DependenciesUnresolved {
-                package: package.to_owned(),
-                source: Box::new(e),
-            }
-        }
+        e @ Error::DependenciesUnresolved { .. } => ProducerError::DependenciesUnresolved {
+            package: package.to_owned(),
+            source: Box::new(e),
+        },
         e @ Error::BuildScriptsFailed { .. } => ProducerError::BuildScriptsFailed {
             package: package.to_owned(),
             source: Box::new(e),
         },
-        e @ Error::NothingToDocument { .. } => {
-            ProducerError::NoDeclarationsContributed {
-                package: package.to_owned(),
-                producer: <RustProducer as Producer>::ID,
-                source: Some(Box::new(e)),
-            }
-        }
+        e @ Error::NothingToDocument { .. } => ProducerError::NoDeclarationsContributed {
+            package: package.to_owned(),
+            producer: <RustProducer as Producer>::ID,
+            source: Some(Box::new(e)),
+        },
+        Error::ProcMacroDegraded(diagnostic) => ProducerError::ProcMacroDegraded {
+            package: package.to_owned(),
+            diagnostic,
+        },
         other => ProducerError::UnsupportedConstruct {
             package: package.to_owned(),
             symbol: String::new(),
             description: other.to_string(),
         },
+    }
+}
+
+#[cfg(test)]
+mod l51_proc_macro_degraded {
+    use super::*;
+
+    /// docs/LIMITATIONS.md L51 / docs/ISSUES.md: `Error::ProcMacroDegraded` is
+    /// declared as a soft warning but `producer_error_for`'s `other =>` arm
+    /// would mislabel it as `UnsupportedConstruct` — a hard failure of the
+    /// whole package. Soft proc-macro unavailability belongs on
+    /// `LoadCompleteness`, and this mapping must not flatten it.
+    #[test]
+    fn proc_macro_degraded_is_not_mapped_to_unsupported_construct() {
+        let err = producer_error_for(
+            "demo",
+            Error::ProcMacroDegraded("proc-macro server unavailable".into()),
+        );
+        assert!(
+            !matches!(err, ProducerError::UnsupportedConstruct { .. }),
+            "L51: ProcMacroDegraded fell into other => UnsupportedConstruct; \
+             got {err:?}"
+        );
     }
 }

@@ -14,14 +14,20 @@
 //!   carries `type Model: EmbeddingModel`), so the engine cannot hold it without
 //!   becoming generic over the model — which would leak a `registry` type
 //!   parameter into `EngineConfig`, `EngineHandle`, and therefore `lindsey`.
-//! * `registry` + `onnx` resolves to **483 crates**, versus `nudox-engine`
-//!   being the single crate `lindsey` depends on; and `ort-sys` fetches a
-//!   prebuilt C runtime at build time. Neither belongs under the engine.
 //!
 //! So the bridge lives here, *beside* the engine on `lindsey`'s argument list
-//! rather than beneath it. The whole graph enters a build only when someone
-//! turns on this crate's `onnx` feature; a default build compiles the two lines
-//! below and nothing else.
+//! rather than beneath it.
+//!
+//! # There is no `onnx` cargo feature
+//!
+//! `registry` (with its `onnx` feature) is a plain, non-optional dependency of
+//! this crate: `registry` + `onnx` resolves to **483 crates**, and `ort-sys`
+//! fetches a prebuilt C runtime at build time, on *every* build of this crate
+//! — including a bare `cargo check`. There is no way to opt out. This is a
+//! deliberate product decision (semantic search must always be one environment
+//! variable away, never a rebuild), and it means a build environment with no
+//! network access cannot build this crate at all; see `docs/LIMITATIONS.md`
+//! for what that costs the workspace's hermetic Nix checks.
 //!
 //! # The public surface is the port's vocabulary and nothing else
 //!
@@ -34,26 +40,36 @@
 //!
 //! # No model is a supported outcome, and it is honest
 //!
-//! [`load_from_env`] returns `None` — mapping to
-//! [`SectionState::Unavailable { NoEmbedder }`](crate::semantic::SectionState)
-//! and the GUI's "not configured in this build" notice — in exactly two cases,
-//! and they are indistinguishable to a reader *on purpose*, because both mean
-//! "this application, as assembled and configured, has no model":
+//! The runtime is always compiled in, so [`load_from_env`] returns `None` in
+//! exactly one case: [`MODEL_DIR_ENV`] is unset (no weights were
+//! provisioned) — the reader must **set one environment variable**; no
+//! rebuild is ever involved, because there is no feature left to rebuild
+//! with. [`unavailable_reason`] names that case as
+//! [`Unavailable::NoModelConfigured`], which is what
+//! [`SectionState::Unavailable`](crate::semantic::SectionState) reports and
+//! what the GUI and MCP surface render, with the matching
+//! [`remedy`](crate::semantic::Unavailable::remedy).
 //!
-//! * the `onnx` feature is off (no runtime was compiled in), or
-//! * the feature is on but [`MODEL_DIR_ENV`] is unset (no weights were
-//!   provisioned).
+//! This is also why [`Unavailable`](crate::semantic::Unavailable)'s old
+//! `NoRuntime` variant does not exist any more: it named "this build has no
+//! embedding runtime compiled in", a state that became unreachable the day
+//! `onnx` stopped being a cargo feature. Keeping a variant no code path can
+//! ever produce would
+//! have forced every consumer to carry a permanently-dead match arm; removing
+//! it instead means the compiler breaks every one of those matches once, here,
+//! rather than leaving a reader to wonder whether it was actually still
+//! possible. See `docs/LIMITATIONS.md` for the build-time cost of always
+//! compiling the runtime in.
 //!
-//! What is *not* collapsed into `None` is a model that is present but broken: a
-//! configured-but-unloadable model yields a live embedder whose first call
-//! fails, which the engine renders as
+//! Not collapsed into [`Unavailable::NoModelConfigured`] is a model that is
+//! present but broken: a configured-but-unloadable model yields a live
+//! embedder whose first call fails, which the engine renders as
 //! [`Unavailable::ModelFailed`](crate::semantic::Unavailable::ModelFailed)
 //! — a different place to send the reader (a missing file, a bad hash, an
 //! out-of-memory runtime) than "no model at all".
 
-use crate::semantic::SharedEmbedder;
+use crate::semantic::{SharedEmbedder, Unavailable};
 
-#[cfg(feature = "onnx")]
 mod onnx;
 
 /// The environment variable naming the directory that holds the pinned model.
@@ -69,43 +85,67 @@ mod onnx;
 pub const MODEL_DIR_ENV: &str = "NUDOX_EMBED_MODEL_DIR";
 
 /// Build the embedder this process should install on its engine, from the
-/// environment — or `None` if this build/configuration has no model.
+/// environment — or `None` if [`MODEL_DIR_ENV`] is unset.
 ///
-/// Always present regardless of features, so the caller (`lindsey`'s `main.rs`,
-/// or any other host) writes one unconditional line and lets the crate decide
-/// what is possible. The returned value is handed straight to
+/// One unconditional line for the caller (`lindsey`'s `main.rs`, or any other
+/// host): the runtime is always compiled in, so this always reads
+/// [`MODEL_DIR_ENV`] and either loads the pinned model or returns `None`. The
+/// returned value is handed straight to
 /// [`EngineConfig::embedder`](crate::runtime::EngineConfig::embedder).
-///
-/// With the `onnx` feature off this is a compile-time `None`. With it on it
-/// reads [`MODEL_DIR_ENV`]; see the module docs for the exact mapping of
-/// outcomes onto the section state a reader will see.
 pub fn load_from_env() -> SharedEmbedder {
-    #[cfg(feature = "onnx")]
-    {
-        onnx::load_from_env()
-    }
-    #[cfg(not(feature = "onnx"))]
-    {
+    onnx::load_from_env()
+}
+
+/// Why [`load_from_env`] would return (or did return) `None` — `None` when an
+/// embedder is available.
+///
+/// This is the split [`load_from_env`] itself does not make: that function
+/// answers *whether* this process has a model, and callers that only need a
+/// working embedder never had to care why not. A reader staring at an empty
+/// semantic section does care. This function makes the distinction the caller
+/// (`search::mod`, for what to put on
+/// [`SectionState::Unavailable`](crate::semantic::SectionState)) actually
+/// needs — today that is always [`Unavailable::NoModelConfigured`], because
+/// the runtime is never absent.
+///
+/// Cheap and side-effect-free like [`load_from_env`]'s own decision: it reads,
+/// at most, one environment variable, never the filesystem.
+pub fn unavailable_reason() -> Option<Unavailable> {
+    if std::env::var_os(MODEL_DIR_ENV).is_some() {
         None
+    } else {
+        Some(Unavailable::NoModelConfigured)
     }
 }
 
-#[cfg(all(test, not(feature = "onnx")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The no-runtime build is representable and its answer is `None`.
+    /// A build with no model directory configured is representable and
+    /// honest, never a panic.
     ///
-    /// Under `--features onnx` this still holds whenever `MODEL_DIR_ENV` is
-    /// unset, which is why it does not assert the negative branch specifically —
-    /// it pins the one invariant true in every build: a host that calls this and
-    /// gets `None` has a supported, honest "no model" configuration, never a
-    /// panic.
+    /// Reads the ambient environment rather than mutating it: `MODEL_DIR_ENV`
+    /// is process-global (see `embed::onnx`'s own tests for why that rules out
+    /// `std::env::set_var` here), and `cargo test`'s default parallelism runs
+    /// this alongside other tests in the same process — `search::mod`'s unit
+    /// tests among them, which read this same variable while computing a
+    /// semantic section's `Unavailable` reason.
     #[test]
-    fn a_build_without_the_onnx_feature_installs_no_embedder() {
+    fn no_model_directory_installs_no_embedder() {
+        if std::env::var_os(MODEL_DIR_ENV).is_some() {
+            eprintln!("SKIP: {MODEL_DIR_ENV} is set in this environment");
+            return;
+        }
+
         assert!(
             load_from_env().is_none(),
-            "with no ONNX runtime compiled in, there is no model to install"
+            "with no model directory configured, there is no model to install"
+        );
+        assert_eq!(
+            unavailable_reason(),
+            Some(Unavailable::NoModelConfigured),
+            "the reason must name the one remaining configuration gap"
         );
     }
 }

@@ -16,15 +16,15 @@ use nudox_engine::mcp::tools::{
     CompactSymbolDoc, CompactSymbolReference, DiffVersionsResult, FindUsagesArgs, GetSymbolArgs,
     GetSymbolsArgs, GraphQueryArgs, GraphSchemaArgs, IndexPackageResult, ListPackagesArgs,
     ListVersionsArgs, ListVersionsResult, PackageSummary, PackagesResult, QueryResult,
-    QueryResultRow, SchemaResult, SearchResult, SearchSymbolsArgs, SelectVersionArgs,
-    SelectVersionResult, SemanticStatus, SymbolDoc, SymbolFormat, SymbolsResult, UsageRow,
-    UsagesResult,
-    VersionSummary,
+    QueryResultRow, ReferenceCoverage, RefsResult, SchemaResult, SearchHitDoc, SearchResult,
+    SearchSymbolsArgs,
+    SelectVersionArgs, SelectVersionResult, SemanticStatus, SymbolDoc, SymbolFormat, SymbolsResult,
+    UsageRow, UsagesResult, VersionSummary,
 };
 use nudox_engine::wire::{
     CalloutLevel, GenerationId, HitRow, KindDiscriminant, KindTag, LangId, MemberRow, Provenance,
-    RenderSection, SectionId, SectionKind, SectionPlan, SigToken, SizeHint, SymbolHead, Timeline,
-    TimelineChange, TimelineRow, Visibility,
+    RenderSection, SectionId, SectionKind, SectionPlan, SigToken, SizeHint, SourceLocation,
+    SymbolHead, Timeline, TimelineChange, TimelineRow, Visibility,
 };
 use schemars::schema_for;
 use serde::Serialize;
@@ -92,6 +92,21 @@ fn every_tool_argument_type_has_a_derived_schema() {
     assert_schema_is_meaningful(&schema_for!(SelectVersionArgs), "select_version args");
     assert_schema_is_meaningful(&schema_for!(GraphQueryArgs), "graph_query args");
     assert_schema_is_meaningful(&schema_for!(GraphSchemaArgs), "graph_schema args");
+
+    // The consolidated tool surface (docs/MCP-SURFACE-PLAN.md §5.1): `search`,
+    // `read`, `refs`, `packages`.
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::ReadArgs),
+        "read args",
+    );
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::RefsArgs),
+        "refs args",
+    );
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::PackagesArgs),
+        "packages args",
+    );
 }
 
 #[test]
@@ -107,6 +122,11 @@ fn every_tool_result_type_has_a_derived_schema() {
     assert_schema_is_meaningful(&schema_for!(QueryResult), "graph_query result");
     assert_schema_is_meaningful(&schema_for!(SchemaResult), "graph_schema result");
     assert_schema_is_meaningful(&schema_for!(DiffVersionsResult), "diff_versions result");
+    assert_schema_is_meaningful(&schema_for!(RefsResult), "refs result");
+    assert_schema_is_meaningful(
+        &schema_for!(nudox_engine::mcp::tools::LoadedPackagesResult),
+        "packages result",
+    );
 }
 
 /// Every tool result schema must declare a root `type` of `"object"`.
@@ -171,6 +191,14 @@ fn every_tool_result_schema_declares_a_root_object_type() {
         (
             "SemanticStatus",
             serde_json::to_value(schema_for!(SemanticStatus)).unwrap(),
+        ),
+        (
+            "RefsResult",
+            serde_json::to_value(schema_for!(RefsResult)).unwrap(),
+        ),
+        (
+            "ReferenceCoverage",
+            serde_json::to_value(schema_for!(ReferenceCoverage)).unwrap(),
         ),
     ];
     for (name, schema) in cases {
@@ -472,18 +500,24 @@ fn sample_timeline() -> Timeline {
 
 #[test]
 fn search_result_serialises() {
-    
     let value = SearchResult {
-        hits: vec![HitRow {
-            key: sample_wire_key(),
-            display_name: nudox_engine::wire::SharedStr::from("serde::de::Deserializer"),
-            sig_preview: sample_sig(),
-            kind: KindTag::Known(KindDiscriminant::from_u16(5).expect("Trait discriminant")),
-            provenance: Provenance::SyncedLocal {
-                generation: GenerationId(7),
+        hits: vec![SearchHitDoc {
+            hit: HitRow {
+                key: sample_wire_key(),
+                display_name: nudox_engine::wire::SharedStr::from("serde::de::Deserializer"),
+                sig_preview: sample_sig(),
+                kind: KindTag::Known(KindDiscriminant::from_u16(5).expect("Trait discriminant")),
+                provenance: Provenance::SyncedLocal {
+                    generation: GenerationId(7),
+                },
+                score: 0.875,
             },
-            score: 0.875,
+            address: Some("cargo:serde@1.0.219::serde::de::Deserializer[trait]".to_owned()),
+            semantic: false,
+            documentation: None,
         }],
+        semantic: None,
+        excluded_kinds: None,
         truncated: true,
         next_cursor: Some("50".to_owned()),
     };
@@ -543,6 +577,9 @@ fn symbol_doc_serialises() {
                         KindDiscriminant::from_u16(3).expect("Function discriminant"),
                     ),
                     visibility: Visibility::Public,
+                    source: SourceLocation::Unlocated {
+                        reason: nudox_engine::wire::UnlocatedReason::Synthesized,
+                    },
                 }]),
             },
             RenderSection::Callout {
@@ -633,11 +670,10 @@ fn symbol_doc_serialises() {
 fn compact_symbol_result_is_flat_and_source_faithful() {
     let value = CompactSymbolDoc {
         key: sample_key_dto(),
+        address: Some("cargo:serde@1.0.219::serde::de::Deserializer[trait]".to_owned()),
         path: "serde::de::Deserializer".to_owned(),
         signature: None,
-        kind: KindTag::Known(
-            KindDiscriminant::from_u16(6).expect("Trait discriminant"),
-        ),
+        kind: KindTag::Known(KindDiscriminant::from_u16(6).expect("Trait discriminant")),
         visibility: Visibility::Public,
         references: vec![CompactSymbolReference {
             text: "Deserializer".to_owned(),
@@ -684,6 +720,7 @@ fn usages_result_round_trips() {
     let value = UsagesResult {
         usages: vec![UsageRow {
             key: sample_key_dto(),
+            address: Some("cargo:serde_json::serde_json::from_str[function]".to_owned()),
             name: "from_str".to_owned(),
             kind: "Function".to_owned(),
             signature: "fn from_str(input: &str) -> Result<T>".to_owned(),
@@ -716,16 +753,24 @@ fn query_result_round_trips() {
         }],
         truncated: true,
         next_cursor: Some("10".to_owned()),
+        edge_coverage: None,
     };
     assert_round_trips(&value, "QueryResult");
 }
 
 #[test]
 fn schema_result_round_trips() {
-    let value = SchemaResult {
+    let full = SchemaResult {
         schema: nudox_engine::mcp::SCHEMA_SDL.to_owned(),
+        full: true,
     };
-    assert_round_trips(&value, "SchemaResult");
+    assert_round_trips(&full, "SchemaResult { full: true }");
+
+    let card = SchemaResult {
+        schema: nudox_engine::mcp::SCHEMA_CARD.to_owned(),
+        full: false,
+    };
+    assert_round_trips(&card, "SchemaResult { full: false }");
 }
 
 #[test]
@@ -768,7 +813,11 @@ fn tool_arguments_round_trip() {
         },
         "GraphQueryArgs",
     );
-    assert_round_trips(&GraphSchemaArgs {}, "GraphSchemaArgs");
+    assert_round_trips(&GraphSchemaArgs::default(), "GraphSchemaArgs");
+    assert_round_trips(
+        &GraphSchemaArgs { full: true },
+        "GraphSchemaArgs { full: true }",
+    );
 }
 
 #[test]

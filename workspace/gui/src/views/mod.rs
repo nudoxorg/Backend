@@ -9,6 +9,8 @@
 
 pub mod omni_search;
 pub mod project_panel;
+pub mod graph;
+pub mod package_browser;
 
 pub use omni_search::{
     Cursor, OmniSearch, OmniSearchEvent, OpenDisposition, PreparedRow, ScopeChip, SearchAccess,

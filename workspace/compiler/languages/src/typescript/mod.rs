@@ -41,10 +41,10 @@
 //! now only `OxcOracle` exists; tsz would implement `TsOracle` and be selected
 //! by constructing `TypescriptProducer::<TszOracle>::new()`.
 
-pub mod entry;
-pub mod graph;
-pub mod extract;
 pub mod emit;
+pub mod entry;
+pub mod extract;
+pub mod graph;
 pub mod id;
 pub mod oracle;
 pub mod producer;

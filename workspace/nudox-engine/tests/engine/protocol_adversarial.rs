@@ -22,11 +22,11 @@
 use std::collections::HashSet;
 use std::time::Duration;
 
+use nudox_engine::store::source::fixtures::rich_lineage;
 use nudox_engine::{
     Engine, EngineConfig,
     wire::{DocEvent, Gen, SectionId, SymbolKey},
 };
-use nudox_engine::store::source::fixtures::rich_lineage;
 
 // ---------------------------------------------------------------------------
 // Helpers

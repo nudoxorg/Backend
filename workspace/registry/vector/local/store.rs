@@ -86,7 +86,8 @@ impl LocalShardStore {
     ) -> Result<Self, StoreError> {
         let rescore = RescorePolicy::for_profile(&schema.quant_profile);
         let name = dir
-            .file_name().map_or_else(|| "shard".to_owned(), |n| n.to_string_lossy().into_owned());
+            .file_name()
+            .map_or_else(|| "shard".to_owned(), |n| n.to_string_lossy().into_owned());
         let dir = dir.to_path_buf();
         let handle =
             StoreHandle::spawn(&name, move || shard::open_or_create(&dir, &schema)).await?;
@@ -101,7 +102,7 @@ impl LocalShardStore {
     /// Graceful close: flush, then drop the last handle so the actor exits
     /// (Edge flushes again on `Drop`).
     pub async fn close(self) -> Result<(), StoreError> {
-        self.handle.flush().await
+        self.handle.close().await
     }
 
     /// The compact-policy counters, shared with the idle scheduler

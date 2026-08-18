@@ -21,12 +21,12 @@
 
 use crate::ecosystem::Language;
 use crate::ecosystem::cpp::listing::parse_ls_remote;
-use heart::identity::derive;
+use crate::enums::SourceKind;
 use crate::ids::{PackageId, PackageStemId};
 use crate::protocol::{
     CatalogOp, FacetWire, PackageStemWire, SourceAcquisitionWire, VersionCoordinates,
 };
-use crate::enums::SourceKind;
+use heart::identity::derive;
 
 use crate::ingest::git::{GitRepository, GitRepositoryError};
 
@@ -56,10 +56,8 @@ pub fn cpp_stem_id(repo_slug: &str) -> PackageStemId {
     // Canonical stem framing: the `(ecosystem_token, slug)` parts under heart's
     // frozen injective law ([`heart::identity::derive`]). Every producer that
     // mints an id for the same slug MUST route here or its rows orphan.
-    let id = derive::package_id_from_parts([
-        Language::Cpp.as_token().as_bytes(),
-        repo_slug.as_bytes(),
-    ]);
+    let id =
+        derive::package_id_from_parts([Language::Cpp.as_token().as_bytes(), repo_slug.as_bytes()]);
     PackageStemId::from_uuid(*id.as_uuid())
 }
 
@@ -69,10 +67,7 @@ pub fn cpp_version_id(stem_id: PackageStemId, version_canonical: &str) -> Packag
     // Version framing: the `(stem_blob, version_canonical)` parts under the same
     // frozen injective law, so a version id is stable and never collides across
     // a stem boundary.
-    derive::package_id_from_parts([
-        stem_id.to_blob().as_slice(),
-        version_canonical.as_bytes(),
-    ])
+    derive::package_id_from_parts([stem_id.to_blob().as_slice(), version_canonical.as_bytes()])
 }
 
 /// The `UpsertPackage` op that registers a cpp direct-git stem before its
@@ -164,18 +159,20 @@ fn enumerate_pseudo_version<Repository: GitRepository>(
     commit_timestamp: u64,
 ) -> Result<Option<CatalogOp>, Error> {
     let Some(head_oid) = git.head_object_id(repo_url)? else {
-        return Err(Error::NoVersions { url: repo_url.to_owned() });
+        return Err(Error::NoVersions {
+            url: repo_url.to_owned(),
+        });
     };
     // The Go pseudo-version grammar takes a 12-hex commit prefix; a short remote
     // HEAD (defensive) is padded/truncated to 12 by the synthesis helper's own
     // validation, so guard here and fall back to Raw when it cannot form one.
     let hash12: String = head_oid.chars().take(12).collect();
-    let synthesized = crate::ecosystem::cpp::synthesize_pseudo_version(None, commit_timestamp, &hash12);
+    let synthesized =
+        crate::ecosystem::cpp::synthesize_pseudo_version(None, commit_timestamp, &hash12);
 
     // If the timestamp/hash could not form a valid Go pseudo-version, fall back
     // to a raw HEAD-pinned version so the stem still gets exactly one version.
-    let version_canonical = synthesized
-        .unwrap_or_else(|| format!("0.0.0-head-{hash12}"));
+    let version_canonical = synthesized.unwrap_or_else(|| format!("0.0.0-head-{hash12}"));
 
     let version_id = cpp_version_id(stem_id, &version_canonical);
     Ok(Some(CatalogOp::UpsertVersion {
@@ -219,7 +216,10 @@ mod tests {
                 ]);
                 PackageStemId::from_uuid(*id.as_uuid())
             };
-            assert_eq!(via_ingestor, via_heart, "stem framing must match for {slug:?}");
+            assert_eq!(
+                via_ingestor, via_heart,
+                "stem framing must match for {slug:?}"
+            );
         }
     }
 
@@ -232,10 +232,8 @@ mod tests {
         let b = cpp_version_id(stem, "v1.3.1");
         assert_eq!(a, b);
 
-        let via_heart = derive::package_id_from_parts([
-            stem.to_blob().as_slice(),
-            b"v1.3.1".as_slice(),
-        ]);
+        let via_heart =
+            derive::package_id_from_parts([stem.to_blob().as_slice(), b"v1.3.1".as_slice()]);
         assert_eq!(a, via_heart, "version framing must match the shared law");
     }
 }

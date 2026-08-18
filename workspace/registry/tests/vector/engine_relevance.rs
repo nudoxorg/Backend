@@ -193,13 +193,17 @@ async fn semantic_rows(
     let mut rows = Vec::new();
     while let Ok(event) = rx.recv_async().await {
         match event {
-            SearchEvent::SectionState { section, state: s, .. } if section == SECTION_SEMANTIC => {
+            SearchEvent::SectionState {
+                section, state: s, ..
+            } if section == SECTION_SEMANTIC => {
                 state = Some(s);
             }
-            SearchEvent::Section { section, rows: r, .. }
-            | SearchEvent::Merge { section, rows: r, .. }
-                if section == SECTION_SEMANTIC =>
-            {
+            SearchEvent::Section {
+                section, rows: r, ..
+            }
+            | SearchEvent::Merge {
+                section, rows: r, ..
+            } if section == SECTION_SEMANTIC => {
                 rows.extend(r.iter().map(|row| row.display_name.to_string()));
             }
             SearchEvent::Done { .. } | SearchEvent::Failed { .. } => break,
@@ -300,7 +304,10 @@ async fn the_semantic_section_ranks_relevant_symbols_above_irrelevant_ones() {
         eprintln!("SKIP: no memchr-2.8.3 checkout under result/");
         return;
     };
-    eprintln!("cost case=semantic_index_memchr dir=. elapsed_ms={}", index_elapsed.as_millis());
+    eprintln!(
+        "cost case=semantic_index_memchr dir=. elapsed_ms={}",
+        index_elapsed.as_millis()
+    );
 
     let mut failures = Vec::new();
     for (i, judgement) in JUDGEMENTS.iter().enumerate() {
@@ -341,10 +348,7 @@ async fn the_semantic_section_ranks_relevant_symbols_above_irrelevant_ones() {
             Some(irrelevant_rank) if irrelevant_rank <= relevant_rank => failures.push(format!(
                 "{:?}: {:?} (rank {irrelevant_rank}) outranked {:?} (rank \
                  {relevant_rank}). {}. Rows: {rows:?}",
-                judgement.query,
-                judgement.irrelevant,
-                judgement.relevant,
-                judgement.why
+                judgement.query, judgement.irrelevant, judgement.relevant, judgement.why
             )),
             // The irrelevant symbol did not make the cut at all, which is a
             // stronger pass than merely ranking below.
@@ -401,11 +405,12 @@ async fn a_search_issued_while_the_index_builds_reports_building_not_empty() {
     // embedded. This is the window the whole incremental design is about.
     let first_usable = std::time::Instant::now();
     for _ in 0..1200 {
-        if !engine.versions(&ir::change::PackageLineageId::new(
-            ir::change::EcosystemId::new("cargo"),
-            ir::change::PackageName::new("memchr"),
-        ))
-        .is_empty()
+        if !engine
+            .versions(&ir::change::PackageLineageId::new(
+                ir::change::EcosystemId::new("cargo"),
+                ir::change::PackageName::new("memchr"),
+            ))
+            .is_empty()
         {
             break;
         }

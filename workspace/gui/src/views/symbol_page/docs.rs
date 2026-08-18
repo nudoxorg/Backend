@@ -54,8 +54,7 @@ use std::time::Instant;
 use gpui::{
     AnyElement, App, ElementId, HighlightStyle, Hsla, InteractiveElement as _, InteractiveText,
     IntoElement, ListAlignment, ListState, ParentElement, Pixels, SharedString,
-    StatefulInteractiveElement as _, Styled, StyledText, Window, div,
-    prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, Styled, StyledText, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_component::{StyledExt as _, skeleton::Skeleton, tooltip::Tooltip};
 use nudox_engine::wire::{
@@ -570,6 +569,7 @@ struct RowView {
     sig: Vec<SigToken>,
     links: Arc<[SymbolKey]>,
     kind: KindChip,
+    source: Option<SharedString>,
 }
 
 impl RowView {
@@ -581,6 +581,7 @@ impl RowView {
             sig: sig_tokens(&row.sig, &mut links),
             links: Arc::from(links),
             kind: KindChip::from_tag(row.kind),
+            source: row.source.jump_target().map(SharedString::from),
         }
     }
 
@@ -592,6 +593,7 @@ impl RowView {
             sig: sig_tokens(&row.ty_tokens, &mut links),
             links: Arc::from(links),
             kind: KindChip::from_tag(row.kind),
+            source: None,
         }
     }
 }
@@ -600,8 +602,13 @@ impl RowView {
 #[derive(Debug)]
 enum BlockView {
     Paragraph(RichText),
-    Heading { level: u8, text: RichText },
-    List { items: Vec<(SharedString, RichText)> },
+    Heading {
+        level: u8,
+        text: RichText,
+    },
+    List {
+        items: Vec<(SharedString, RichText)>,
+    },
     Rule,
     Code(CodeView),
     /// LD-7 fallback for a block variant we do not know.
@@ -680,6 +687,7 @@ impl SectionSlot {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type OpenHandler = Rc<dyn Fn(&SymbolKey, &mut Window, &mut App)>;
+type SourceHandler = Rc<dyn Fn(&SharedString, &mut Window, &mut App)>;
 
 /// The Docs tab: a virtualized `list()` of sections over a fixed skeleton.
 pub struct DocsBody {
@@ -695,6 +703,8 @@ pub struct DocsBody {
     highlighted: Vec<SectionId>,
     /// Where a symbol link goes when clicked.
     on_open: Option<OpenHandler>,
+    /// Where a declared source location goes when its copy affordance is clicked.
+    on_source: Option<SourceHandler>,
 }
 
 impl DocsBody {
@@ -712,12 +722,18 @@ impl DocsBody {
             consumed: 0,
             highlighted: Vec::new(),
             on_open: None,
+            on_source: None,
         }
     }
 
     /// Install the symbol-link navigation handler.
     pub fn on_open(&mut self, f: impl Fn(&SymbolKey, &mut Window, &mut App) + 'static) {
         self.on_open = Some(Rc::new(f));
+    }
+
+    /// Install the declared-source action handler.
+    pub fn on_source(&mut self, f: impl Fn(&SharedString, &mut Window, &mut App) + 'static) {
+        self.on_source = Some(Rc::new(f));
     }
 
     /// The `ListState` the page hands to `list()`.
@@ -945,7 +961,9 @@ impl DocsBody {
             .py(sp.space_3);
 
         let Some(body) = slot.body.as_ref() else {
-            return frame.child(self.render_skeleton(slot, cx)).into_any_element();
+            return frame
+                .child(self.render_skeleton(slot, cx))
+                .into_any_element();
         };
 
         let content: AnyElement = match body {
@@ -1032,7 +1050,8 @@ impl DocsBody {
         // Derive the bar count from the same reserve the content will honour,
         // so the skeleton is the content's silhouette rather than a guess.
         let usable = slot.reserved - m.pad_y - m.slack;
-        let bars = ((f32::from(usable) / f32::from(unit)).round().max(1.0) as usize).min(MAX_SKELETON_BARS);
+        let bars = ((f32::from(usable) / f32::from(unit)).round().max(1.0) as usize)
+            .min(MAX_SKELETON_BARS);
         let bar_h = unit - sp.space_1;
 
         div()
@@ -1192,7 +1211,12 @@ impl DocsBody {
         let styles: Vec<(Range<usize>, HighlightStyle)> = rich
             .styles
             .iter()
-            .map(|(range, style)| (range.clone(), run_highlight_style(*style, &colours, border_width)))
+            .map(|(range, style)| {
+                (
+                    range.clone(),
+                    run_highlight_style(*style, &colours, border_width),
+                )
+            })
             .collect();
 
         let text = StyledText::new(rich.text.clone()).with_highlights(styles);
@@ -1444,6 +1468,8 @@ impl DocsBody {
                 let on_open = self.on_open.clone();
                 let links = row.links.clone();
                 let link_open = self.on_open.clone();
+                let source_handler = self.on_source.clone();
+                let source_target = row.source.clone();
 
                 let badge: AnyElement = match &row.kind {
                     KindChip::Known(k) => {
@@ -1483,22 +1509,40 @@ impl DocsBody {
                             .text_color(colours.fg_default)
                             .child(row.name.clone()),
                     )
-                    .child(
-                        div().flex_1().overflow_hidden().child(
-                            // LR-4: the *only* signature renderer, here as
-                            // everywhere else. Types stay clickable inside rows.
-                            SignatureLine::new(("doc.row.sig", row_id), row.sig.clone())
-                                .on_navigate(move |ui_key, window, cx| {
-                                    if let Some(target) =
-                                        link_ix(ui_key).and_then(|ix| links.get(ix))
-                                    {
-                                        if let Some(open) = link_open.as_ref() {
-                                            open(target, window, cx);
-                                        }
+                    .child(div().flex_1().overflow_hidden().child(
+                        // LR-4: the *only* signature renderer, here as
+                        // everywhere else. Types stay clickable inside rows.
+                        SignatureLine::new(("doc.row.sig", row_id), row.sig.clone()).on_navigate(
+                            move |ui_key, window, cx| {
+                                if let Some(target) = link_ix(ui_key).and_then(|ix| links.get(ix)) {
+                                    if let Some(open) = link_open.as_ref() {
+                                        open(target, window, cx);
                                     }
-                                }),
+                                }
+                            },
                         ),
-                    )
+                    ))
+                    .when_some(source_handler, |el, handler| {
+                        let Some(target) = source_target.clone() else {
+                            return el;
+                        };
+                        let display_target = target.clone();
+                        el.child(
+                            div()
+                                .id(("doc.row.source", row_id))
+                                .flex_shrink_0()
+                                .font_family("monospace")
+                                .text_size(ts.caption.size)
+                                .line_height(ts.dense.line_height)
+                                .text_color(colours.accent)
+                                .cursor_pointer()
+                                .hover(|s| s.underline())
+                                .on_click(move |_, window, cx| {
+                                    handler(&target, window, cx);
+                                })
+                                .child(display_target),
+                        )
+                    })
             }))
             .into_any_element()
     }
@@ -1667,12 +1711,18 @@ mod tests {
     #[test]
     fn rich_text_ranges_are_contiguous_and_ordered() {
         let runs = vec![
-            InlineRun::Text { text: "see ".into() },
+            InlineRun::Text {
+                text: "see ".into(),
+            },
             InlineRun::Code { text: "Vec".into() },
-            InlineRun::Text { text: " and ".into() },
+            InlineRun::Text {
+                text: " and ".into(),
+            },
             InlineRun::Link {
                 text: "HashMap".into(),
-                target: LinkTarget::Url { url: "https://example.invalid".into() },
+                target: LinkTarget::Url {
+                    url: "https://example.invalid".into(),
+                },
                 origin: LinkOrigin::Authored,
             },
         ];
@@ -1685,7 +1735,11 @@ mod tests {
             assert!(range.end > range.start, "empty style range");
             cursor = range.end;
         }
-        assert_eq!(cursor, rich.text.len(), "styles must cover the whole string");
+        assert_eq!(
+            cursor,
+            rich.text.len(),
+            "styles must cover the whole string"
+        );
     }
 
     /// A link's clickable range must address exactly its own text, or clicking
@@ -1693,13 +1747,19 @@ mod tests {
     #[test]
     fn link_ranges_address_their_own_text() {
         let runs = vec![
-            InlineRun::Text { text: "go to ".into() },
+            InlineRun::Text {
+                text: "go to ".into(),
+            },
             InlineRun::Link {
                 text: "Result".into(),
-                target: LinkTarget::Url { url: "https://example.invalid".into() },
+                target: LinkTarget::Url {
+                    url: "https://example.invalid".into(),
+                },
                 origin: LinkOrigin::Authored,
             },
-            InlineRun::Text { text: " now".into() },
+            InlineRun::Text {
+                text: " now".into(),
+            },
         ];
         let rich = RichText::from_runs(&runs);
         assert_eq!(rich.link_ranges.len(), 1);
@@ -1731,10 +1791,14 @@ mod tests {
         let note = "Repaired link — the source reads `[memrchr_iter`] \
                     (transposed backtick and bracket); we linked memrchr_iter.";
         let runs = vec![
-            InlineRun::Text { text: "see ".into() },
+            InlineRun::Text {
+                text: "see ".into(),
+            },
             InlineRun::Link {
                 text: "memrchr_iter".into(),
-                target: LinkTarget::Url { url: "https://example.invalid".into() },
+                target: LinkTarget::Url {
+                    url: "https://example.invalid".into(),
+                },
                 origin: LinkOrigin::Repaired(nudox_engine::wire::LinkRepair {
                     kind: LinkRepairKind::TransposedOpenDelimiter,
                     raw: "`[memrchr_iter`]".into(),
@@ -1762,10 +1826,7 @@ mod tests {
             rich.repair_notes[0].0, rich.link_ranges[0],
             "the note must cover exactly the link's own text"
         );
-        assert_eq!(
-            &rich.text[rich.repair_notes[0].0.clone()],
-            "memrchr_iter"
-        );
+        assert_eq!(&rich.text[rich.repair_notes[0].0.clone()], "memrchr_iter");
         assert_eq!(
             rich.repair_notes[0].1.as_ref(),
             note,
@@ -1836,10 +1897,26 @@ mod tests {
         let mut code = CodeView::new("ab".into(), "rust".into(), 1);
         code.apply_spans(
             &[
-                HighlightSpan { start: 0, end: 99, class: "keyword".into() },
-                HighlightSpan { start: 5, end: 1, class: "string".into() },
-                HighlightSpan { start: 1, end: 1, class: "string".into() },
-                HighlightSpan { start: 0, end: 1, class: "keyword".into() },
+                HighlightSpan {
+                    start: 0,
+                    end: 99,
+                    class: "keyword".into(),
+                },
+                HighlightSpan {
+                    start: 5,
+                    end: 1,
+                    class: "string".into(),
+                },
+                HighlightSpan {
+                    start: 1,
+                    end: 1,
+                    class: "string".into(),
+                },
+                HighlightSpan {
+                    start: 0,
+                    end: 1,
+                    class: "keyword".into(),
+                },
             ],
             &colours,
             &syntax,
@@ -1856,7 +1933,11 @@ mod tests {
         let syntax = palette_syntax();
         let mut code = CodeView::new("é".into(), "rust".into(), 1);
         code.apply_spans(
-            &[HighlightSpan { start: 0, end: 1, class: "keyword".into() }],
+            &[HighlightSpan {
+                start: 0,
+                end: 1,
+                class: "keyword".into(),
+            }],
             &colours,
             &syntax,
             true,
@@ -1872,12 +1953,19 @@ mod tests {
         let syntax = palette_syntax();
         let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
         code.apply_spans(
-            &[HighlightSpan { start: 0, end: 3, class: "keyword".into() }],
+            &[HighlightSpan {
+                start: 0,
+                end: 3,
+                class: "keyword".into(),
+            }],
             &colours,
             &syntax,
             true,
         );
-        assert!(!code.tick(Instant::now()), "a snapped sweep must not animate");
+        assert!(
+            !code.tick(Instant::now()),
+            "a snapped sweep must not animate"
+        );
     }
 
     /// Distinct classes get distinct springs; repeats share one.
@@ -1888,9 +1976,21 @@ mod tests {
         let mut code = CodeView::new("let x = 1;".into(), "rust".into(), 1);
         code.apply_spans(
             &[
-                HighlightSpan { start: 0, end: 3, class: "keyword".into() },
-                HighlightSpan { start: 4, end: 5, class: "variable".into() },
-                HighlightSpan { start: 8, end: 9, class: "keyword".into() },
+                HighlightSpan {
+                    start: 0,
+                    end: 3,
+                    class: "keyword".into(),
+                },
+                HighlightSpan {
+                    start: 4,
+                    end: 5,
+                    class: "variable".into(),
+                },
+                HighlightSpan {
+                    start: 8,
+                    end: 9,
+                    class: "keyword".into(),
+                },
             ],
             &colours,
             &syntax,
@@ -1940,8 +2040,46 @@ mod tests {
             SectionKind::Callout,
             SectionKind::Unknown,
         ] {
-            assert!(!kind_label(kind).is_empty(), "{kind:?} has no outline label");
+            assert!(
+                !kind_label(kind).is_empty(),
+                "{kind:?} has no outline label"
+            );
         }
+    }
+
+    /// Declared member locations must survive projection as a concrete,
+    /// package-relative copy target; displaying only the member name leaves
+    /// the source fact unreachable to the reader.
+    #[test]
+    fn declared_member_source_projects_to_a_copy_target() {
+        use std::num::NonZeroU32;
+
+        use nudox_engine::wire::{EcosystemId, IntroId, PackageLineageId, PackageName};
+
+        let lineage = PackageLineageId::new(EcosystemId::new("test"), PackageName::new("pkg"));
+        let key = SymbolKey::new(lineage, IntroId::from_raw([7_u8; 32]));
+        let row = MemberRow {
+            key,
+            name: "route".into(),
+            sig: Vec::new(),
+            kind: nudox_engine::wire::KindTag::Unknown(1),
+            visibility: nudox_engine::wire::Visibility::Public,
+            source: nudox_engine::wire::SourceLocation::Declared {
+                file: "src/router.rs".into(),
+                bytes: [10, 20],
+                start: nudox_engine::wire::LineCol {
+                    line: NonZeroU32::new(4).unwrap(),
+                    column: NonZeroU32::new(1).unwrap(),
+                },
+                end: nudox_engine::wire::LineCol {
+                    line: NonZeroU32::new(4).unwrap(),
+                    column: NonZeroU32::new(6).unwrap(),
+                },
+            },
+        };
+
+        let view = RowView::from_member(&row);
+        assert_eq!(view.source.as_deref(), Some("src/router.rs:4:1"));
     }
 
     /// A heading refines the outline label; a section without one keeps the
@@ -1952,14 +2090,18 @@ mod tests {
             id: SectionId(1),
             blocks: vec![ProseBlock::Heading {
                 level: 1,
-                runs: vec![InlineRun::Text { text: "Errors".into() }],
+                runs: vec![InlineRun::Text {
+                    text: "Errors".into(),
+                }],
             }],
         });
         assert_eq!(heading_label(&with_heading).as_deref(), Some("Errors"));
 
         let without = project_section(&RenderSection::Prose {
             id: SectionId(2),
-            blocks: vec![ProseBlock::Paragraph { runs: vec![InlineRun::Text { text: "hi".into() }] }],
+            blocks: vec![ProseBlock::Paragraph {
+                runs: vec![InlineRun::Text { text: "hi".into() }],
+            }],
         });
         assert!(heading_label(&without).is_none());
     }

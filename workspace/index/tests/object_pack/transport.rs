@@ -15,11 +15,12 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use heart::deployment::TrustedRemote;
-use iroh::address_lookup::MemoryLookup;
-use index::pack::transport::{
-    ObjectPackFetcher, ObjectPackProvider, PackResponse, ProvideTarget,
+use index::pack::transport::{ObjectPackFetcher, ObjectPackProvider, PackResponse, ProvideTarget};
+use index::pack::{
+    FilesystemObjectPackStore, MemberKey, ObjectPackBuilder, ObjectPackStore, PackError,
+    RelativePath,
 };
-use index::pack::{FilesystemObjectPackStore, MemberKey, ObjectPackBuilder, ObjectPackStore, PackError, RelativePath};
+use iroh::address_lookup::MemoryLookup;
 use smol_str::SmolStr;
 
 // ---------------------------------------------------------------------------
@@ -27,16 +28,23 @@ use smol_str::SmolStr;
 // ---------------------------------------------------------------------------
 
 fn source_key(path: &str) -> MemberKey {
-    MemberKey::Source { path: RelativePath(SmolStr::new(path)) }
+    MemberKey::Source {
+        path: RelativePath(SmolStr::new(path)),
+    }
 }
 
 /// A pack with one big (>1 MiB, gets an outboard) and one small member.
 fn build_mixed_pack() -> ObjectPackBuilder {
     let mut builder = ObjectPackBuilder::new();
     let big: Vec<u8> = (0u8..=255).cycle().take(1024 * 1024 + 321).collect();
-    builder.add_member(source_key("big.bin"), Bytes::from(big)).unwrap();
     builder
-        .add_member(source_key("small.txt"), Bytes::from_static(b"a small member with no outboard"))
+        .add_member(source_key("big.bin"), Bytes::from(big))
+        .unwrap();
+    builder
+        .add_member(
+            source_key("small.txt"),
+            Bytes::from_static(b"a small member with no outboard"),
+        )
         .unwrap();
     builder
 }
@@ -59,7 +67,11 @@ async fn make_pair(
     let provider_id = provider_key.public();
     let fetcher_id = fetcher_key.public();
 
-    let enrolled = if enroll_fetcher { vec![fetcher_id] } else { vec![] };
+    let enrolled = if enroll_fetcher {
+        vec![fetcher_id]
+    } else {
+        vec![]
+    };
 
     let provider = ObjectPackProvider::new_with_key(
         provider_store,
@@ -94,8 +106,12 @@ async fn whole_pack_provide_fetch_installs_byte_identical() {
     assert!(provider_store.has(&id));
     assert!(!fetcher_store.has(&id));
 
-    let (provider, fetcher, provider_id) =
-        make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), true).await;
+    let (provider, fetcher, provider_id) = make_pair(
+        Arc::clone(&provider_store),
+        Arc::clone(&fetcher_store),
+        true,
+    )
+    .await;
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
@@ -124,13 +140,27 @@ async fn whole_pack_provide_fetch_installs_byte_identical() {
 
     // Installed and byte-identical: the id re-derives, members match.
     assert!(fetcher_store.has(&id));
-    let expected_big = provider_store.get_member(&id, &source_key("big.bin")).unwrap();
-    let got_big = fetcher_store.get_member(&id, &source_key("big.bin")).unwrap();
+    let expected_big = provider_store
+        .get_member(&id, &source_key("big.bin"))
+        .unwrap();
+    let got_big = fetcher_store
+        .get_member(&id, &source_key("big.bin"))
+        .unwrap();
     assert_eq!(expected_big, got_big);
 
     // The outboard sidecar travelled too.
-    assert!(fetcher_store.outboard(&id, &source_key("big.bin")).unwrap().is_some());
-    assert!(fetcher_store.outboard(&id, &source_key("small.txt")).unwrap().is_none());
+    assert!(
+        fetcher_store
+            .outboard(&id, &source_key("big.bin"))
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        fetcher_store
+            .outboard(&id, &source_key("small.txt"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -152,8 +182,12 @@ async fn verified_member_range_fetch_middle_slice() {
     let (start, end) = (600_000u64, 600_256u64);
     let expected = whole.slice(start as usize..end as usize);
 
-    let (provider, fetcher, provider_id) =
-        make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), true).await;
+    let (provider, fetcher, provider_id) = make_pair(
+        Arc::clone(&provider_store),
+        Arc::clone(&fetcher_store),
+        true,
+    )
+    .await;
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
@@ -178,8 +212,12 @@ async fn sub_threshold_member_fetched_whole_verifies() {
     // Sub-threshold member has no outboard.
     assert!(provider_store.outboard(&id, &key).unwrap().is_none());
 
-    let (provider, fetcher, provider_id) =
-        make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), true).await;
+    let (provider, fetcher, provider_id) = make_pair(
+        Arc::clone(&provider_store),
+        Arc::clone(&fetcher_store),
+        true,
+    )
+    .await;
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
@@ -246,8 +284,12 @@ async fn fetch_from_non_enrolled_endpoint_is_rejected() {
     let id = provider_store.put_pack(build_mixed_pack()).unwrap();
 
     // enroll_fetcher = false → the provider's allow-list is empty.
-    let (provider, fetcher, provider_id) =
-        make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), false).await;
+    let (provider, fetcher, provider_id) = make_pair(
+        Arc::clone(&provider_store),
+        Arc::clone(&fetcher_store),
+        false,
+    )
+    .await;
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
 
@@ -319,7 +361,8 @@ fn install_with_wrong_id_is_rejected_and_leaves_nothing() {
     let (bytes, real_id, outboards) = build_mixed_pack().seal_with_outboards().unwrap();
 
     // Claim a different id than the bytes actually derive to.
-    let wrong_id = index::pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"not the pack"));
+    let wrong_id =
+        index::pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"not the pack"));
     let result = store.install_pack(&wrong_id, &bytes, &outboards);
     assert!(matches!(result, Err(PackError::FetchedIdMismatch)));
 
@@ -356,8 +399,12 @@ async fn fetch_unknown_pack_is_refused() {
 
     let unknown = index::pack::ObjectPackId(heart::content::ContentHash::of_bytes(b"ghost"));
 
-    let (provider, fetcher, provider_id) =
-        make_pair(Arc::clone(&provider_store), Arc::clone(&fetcher_store), true).await;
+    let (provider, fetcher, provider_id) = make_pair(
+        Arc::clone(&provider_store),
+        Arc::clone(&fetcher_store),
+        true,
+    )
+    .await;
 
     let accept = tokio::spawn(async move { provider.accept_one().await });
     let fetch_result = fetcher.fetch_whole_pack(&unknown, provider_id).await;
@@ -382,7 +429,9 @@ async fn fetch_unknown_pack_is_refused() {
     // The refusal the fetcher decoded is the same wire variant the provider
     // builds for an unservable request.
     assert!(matches!(
-        PackResponse::Refused { reason: String::new() },
+        PackResponse::Refused {
+            reason: String::new()
+        },
         PackResponse::Refused { .. }
     ));
 }

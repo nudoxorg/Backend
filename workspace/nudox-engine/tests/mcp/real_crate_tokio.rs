@@ -46,11 +46,11 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nudox_engine::mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
+use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
 use nudox_engine::{
     Engine, EngineConfig, PackageLoadEvent, PackageSpec, ProducerLanguage, SharedStr,
 };
-use nudox_engine::mcp::tools::{FindUsagesArgs, GetSymbolArgs, GraphQueryArgs, SearchSymbolsArgs};
-use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
 
 // ---------------------------------------------------------------------------
 // Fixture path helpers
@@ -307,7 +307,8 @@ async fn search_symbols_finds_tokio_runtime() {
             kinds: None,
             packages: None,
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for Runtime must not fail");
 
@@ -320,9 +321,9 @@ async fn search_symbols_finds_tokio_runtime() {
     for hit in &result.hits {
         let key_str = format!(
             "{}:{}#{}",
-            hit.key.package.ecosystem.as_str(),
-            hit.key.package.name.as_str(),
-            hit.key.intro.to_hex()
+            hit.hit.key.package.ecosystem.as_str(),
+            hit.hit.key.package.name.as_str(),
+            hit.hit.key.intro.to_hex()
         );
         assert!(
             key_str.starts_with("cargo:tokio#"),
@@ -345,7 +346,8 @@ async fn search_symbols_broad_search_respects_limit() {
             kinds: None,
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("broad search must not fail");
 
@@ -376,29 +378,30 @@ async fn get_symbol_runtime_streams_head_and_sections() {
             kinds: None,
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
     let Some(hit) = search.hits.iter().find(|h| {
         // Accept the main Record or any hit named exactly "Runtime".
-        h.display_name.contains("Runtime")
+        h.hit.display_name.contains("Runtime")
     }) else {
         panic!(
             "tokio::Runtime must appear in search; got: {:?}",
             search
                 .hits
                 .iter()
-                .map(|h| h.display_name.to_string())
+                .map(|h| h.hit.display_name.to_string())
                 .collect::<Vec<_>>()
         );
     };
 
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let doc = tokio::time::timeout(
@@ -447,30 +450,32 @@ async fn find_usages_runtime_has_callers() {
             kinds: None,
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
     let Some(hit) = search
         .hits
         .iter()
-        .find(|h| h.display_name.contains("Runtime"))
+        .find(|h| h.hit.display_name.contains("Runtime"))
     else {
         panic!("tokio::Runtime must appear in search results");
     };
 
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let result = tools
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("find_usages must not fail");
 
@@ -506,7 +511,8 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
@@ -536,7 +542,8 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
             .to_owned(),
             args: None,
             limit: Some(50),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("occurrencesOf → target traversal must succeed");
 
@@ -566,7 +573,10 @@ async fn graph_query_occurrence_target_traversal_returns_rows() {
     } else {
         let name_col = col_names.iter().position(|c| c == "target_name").unwrap();
         for row in &result.rows {
-            let target_name = row.cells.get(name_col).map_or("", std::string::String::as_str);
+            let target_name = row
+                .cells
+                .get(name_col)
+                .map_or("", std::string::String::as_str);
             assert!(
                 !target_name.is_empty(),
                 "target_name must be a real symbol name, not empty; row: {:?}",
@@ -606,7 +616,8 @@ async fn graph_query_target_key_still_works_alongside_target_edge() {
             .to_owned(),
             args: None,
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("targetKey-only query must still work after adding the target edge");
 
@@ -648,7 +659,8 @@ async fn graph_query_variant_coercion_returns_real_rows() {
             .to_owned(),
             args: None,
             limit: Some(50),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("... on Variant { } coercion must succeed");
 
@@ -667,7 +679,10 @@ async fn graph_query_variant_coercion_returns_real_rows() {
         .expect("must have a 'variant_kind' column");
 
     for row in &result.rows {
-        let kind = row.cells.get(kind_col).map_or("", std::string::String::as_str);
+        let kind = row
+            .cells
+            .get(kind_col)
+            .map_or("", std::string::String::as_str);
         assert_eq!(
             kind, "Variant",
             "every row from `... on Variant {{ }}` must have kind=Variant; got {kind:?}"
@@ -709,7 +724,8 @@ async fn graph_query_module_coercion_returns_real_rows() {
             .to_owned(),
             args: None,
             limit: Some(30),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("... on Module { } coercion must succeed");
 
@@ -726,7 +742,10 @@ async fn graph_query_module_coercion_returns_real_rows() {
         .position(|c| c == "mod_kind")
         .expect("must have a 'mod_kind' column");
     for row in &result.rows {
-        let kind = row.cells.get(kind_col).map_or("", std::string::String::as_str);
+        let kind = row
+            .cells
+            .get(kind_col)
+            .map_or("", std::string::String::as_str);
         assert_eq!(
             kind, "Module",
             "every Module row must have kind=Module; got {kind:?}"
@@ -763,7 +782,8 @@ async fn graph_query_symbol_members_traversal_still_works() {
             .to_owned(),
             args: None,
             limit: Some(50),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Symbols → members traversal must succeed after schema changes");
 
@@ -790,7 +810,8 @@ async fn graph_query_trait_implementors_still_work() {
             kinds: Some(vec!["Trait".to_owned()]),
             packages: None,
             limit: Some(5),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
@@ -803,9 +824,9 @@ async fn graph_query_trait_implementors_still_work() {
         let hit = &search.hits[0];
         format!(
             "{}:{}#{}",
-            hit.key.package.ecosystem.as_str(),
-            hit.key.package.name.as_str(),
-            hit.key.intro.to_hex()
+            hit.hit.key.package.ecosystem.as_str(),
+            hit.hit.key.package.name.as_str(),
+            hit.hit.key.intro.to_hex()
         )
     };
 
@@ -814,7 +835,8 @@ async fn graph_query_trait_implementors_still_work() {
             query: nudox_engine::graph::queries::FIND_IMPLEMENTORS.to_owned(),
             args: Some([("key".to_owned(), key_str)].into_iter().collect()),
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("FIND_IMPLEMENTORS must succeed after schema changes");
 
@@ -850,7 +872,8 @@ async fn graph_query_package_members_traversal_still_works() {
                     .collect(),
             ),
             limit: Some(50),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Package → members traversal must succeed");
 
@@ -896,7 +919,8 @@ async fn graph_query_is_deterministic_over_tokio() {
         query: "{ Symbols { name @output kind @output } }".to_owned(),
         args: None,
         limit: Some(30),
-        cursor: None,    };
+        cursor: None,
+    };
 
     let a = tools.do_graph_query(q.clone()).await.expect("first call");
     let b = tools.do_graph_query(q).await.expect("second call");
@@ -958,7 +982,8 @@ async fn graph_query_truncation_is_set_for_large_corpus() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("query must succeed");
 
@@ -986,7 +1011,8 @@ async fn graph_query_max_limit_is_respected_for_tokio() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("unlimited query must succeed");
 

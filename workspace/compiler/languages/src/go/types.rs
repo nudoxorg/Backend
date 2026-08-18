@@ -133,7 +133,11 @@ pub fn qualify(pkg: &str, name: &str) -> String {
 /// `low` and the oracle data are disjoint borrows; the borrow checker can
 /// verify this at each call site (oracle `Type` lives in the oracle output,
 /// `Lowering` owns only its internal index).
-pub fn lower_type_with_lowering(t: &oracle::Type, low: &mut Lowering<GoId>, local: &HashSet<String>) -> Type {
+pub fn lower_type_with_lowering(
+    t: &oracle::Type,
+    low: &mut Lowering<GoId>,
+    local: &HashSet<String>,
+) -> Type {
     lower_type_depth_low(t, low, local, 0)
 }
 
@@ -203,26 +207,23 @@ fn lower_type_depth_low(
         TypeKind::TypeParam => Type::TypeVar(t.name.clone()),
 
         TypeKind::Pointer => {
-            let elem = t
-                .elem
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
+            let elem = t.elem.as_deref().map_or(Type::ORACLE_GAP, |e| {
+                lower_type_depth_low(e, low, local, depth + 1)
+            });
             Type::Primitive(Primitive::MutPointer(Box::new(elem)))
         }
 
         TypeKind::Slice => {
-            let elem = t
-                .elem
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
+            let elem = t.elem.as_deref().map_or(Type::ORACLE_GAP, |e| {
+                lower_type_depth_low(e, low, local, depth + 1)
+            });
             Type::Slice(Box::new(elem))
         }
 
         TypeKind::Array => {
-            let elem = t
-                .elem
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
+            let elem = t.elem.as_deref().map_or(Type::ORACLE_GAP, |e| {
+                lower_type_depth_low(e, low, local, depth + 1)
+            });
             Type::Array {
                 ty: Box::new(elem),
                 length: t.len.max(0) as usize,
@@ -233,14 +234,12 @@ fn lower_type_depth_low(
         // This preserves both type arguments structurally; renderers that understand
         // the "map" sentinel can reconstruct Go map syntax.  Type::Any would lose K/V.
         TypeKind::Map => {
-            let key = t
-                .key
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |k| lower_type_depth_low(k, low, local, depth + 1));
-            let val = t
-                .value
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |v| lower_type_depth_low(v, low, local, depth + 1));
+            let key = t.key.as_deref().map_or(Type::ORACLE_GAP, |k| {
+                lower_type_depth_low(k, low, local, depth + 1)
+            });
+            let val = t.value.as_deref().map_or(Type::ORACLE_GAP, |v| {
+                lower_type_depth_low(v, low, local, depth + 1)
+            });
             Type::Apply {
                 base: Box::new(Type::TypeVar("map".to_string())),
                 args: Box::new([key, val]),
@@ -251,10 +250,9 @@ fn lower_type_depth_low(
         // Direction ("chan", "chan<-", "<-chan") is preserved in the base sentinel.
         TypeKind::Chan => {
             let op = chan_op(t.dir).to_string();
-            let elem = t
-                .elem
-                .as_deref()
-                .map_or(Type::ORACLE_GAP, |e| lower_type_depth_low(e, low, local, depth + 1));
+            let elem = t.elem.as_deref().map_or(Type::ORACLE_GAP, |e| {
+                lower_type_depth_low(e, low, local, depth + 1)
+            });
             Type::Apply {
                 base: Box::new(Type::TypeVar(op)),
                 args: Box::new([elem]),
@@ -285,9 +283,9 @@ fn lower_type_depth_low(
                 .params
                 .iter()
                 .map(|p| {
-                    p.r#type
-                        .as_ref()
-                        .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1))
+                    p.r#type.as_ref().map_or(Type::ORACLE_GAP, |ty| {
+                        lower_type_depth_low(ty, low, local, depth + 1)
+                    })
                 })
                 .collect();
 
@@ -295,10 +293,9 @@ fn lower_type_depth_low(
                 0 => None,
                 1 => {
                     let r = &t.results[0];
-                    let ty = r
-                        .r#type
-                        .as_ref()
-                        .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1));
+                    let ty = r.r#type.as_ref().map_or(Type::ORACLE_GAP, |ty| {
+                        lower_type_depth_low(ty, low, local, depth + 1)
+                    });
                     Some(Box::new(ty))
                 }
                 _ => {
@@ -307,10 +304,9 @@ fn lower_type_depth_low(
                         .results
                         .iter()
                         .map(|r| {
-                            let ty = r
-                                .r#type
-                                .as_ref()
-                                .map_or(Type::ORACLE_GAP, |ty| lower_type_depth_low(ty, low, local, depth + 1));
+                            let ty = r.r#type.as_ref().map_or(Type::ORACLE_GAP, |ty| {
+                                lower_type_depth_low(ty, low, local, depth + 1)
+                            });
                             TupleElement::Positional(ty)
                         })
                         .collect();
@@ -337,10 +333,9 @@ fn lower_type_depth_low(
                 .iter()
                 .map(|f| AnonField {
                     name: f.name.clone(),
-                    ty: f
-                        .r#type
-                        .as_ref()
-                        .map_or(Type::ORACLE_GAP, |ft| lower_type_depth_low(ft, low, local, depth + 1)),
+                    ty: f.r#type.as_ref().map_or(Type::ORACLE_GAP, |ft| {
+                        lower_type_depth_low(ft, low, local, depth + 1)
+                    }),
                     optional: false,
                     readonly: false,
                 })
@@ -369,10 +364,9 @@ fn lower_type_depth_low(
                     .explicit_methods
                     .iter()
                     .map(|m| {
-                        let ty = m
-                            .signature
-                            .as_ref()
-                            .map_or(Type::ORACLE_GAP, |sig| lower_type_depth_low(sig, low, local, depth + 1));
+                        let ty = m.signature.as_ref().map_or(Type::ORACLE_GAP, |sig| {
+                            lower_type_depth_low(sig, low, local, depth + 1)
+                        });
                         AnonField {
                             name: m.name.clone(),
                             ty,
@@ -398,10 +392,9 @@ fn lower_type_depth_low(
                 .terms
                 .iter()
                 .map(|term| {
-                    let inner = term
-                        .r#type
-                        .as_ref()
-                        .map_or(Type::ORACLE_GAP, |inner| lower_type_depth_low(inner, low, local, depth + 1));
+                    let inner = term.r#type.as_ref().map_or(Type::ORACLE_GAP, |inner| {
+                        lower_type_depth_low(inner, low, local, depth + 1)
+                    });
                     if term.tilde {
                         // Encode tilde-approximation: ~T ≠ T
                         Type::Apply {
@@ -420,7 +413,9 @@ fn lower_type_depth_low(
             let parts: Box<[TupleElement]> = t
                 .types
                 .iter()
-                .map(|inner| TupleElement::Positional(lower_type_depth_low(inner, low, local, depth + 1)))
+                .map(|inner| {
+                    TupleElement::Positional(lower_type_depth_low(inner, low, local, depth + 1))
+                })
                 .collect();
             Type::Tuple(parts)
         }
@@ -701,7 +696,10 @@ mod tests {
             name: "any".to_string(),
             ..Default::default()
         };
-        assert!(matches!(lower_type_with_lowering(&t, &mut low, &HashSet::new()), Type::Any));
+        assert!(matches!(
+            lower_type_with_lowering(&t, &mut low, &HashSet::new()),
+            Type::Any
+        ));
     }
 
     #[test]
@@ -905,6 +903,7 @@ mod tests {
                     name: "string".to_string(),
                     ..Default::default()
                 }),
+                pos: None,
             }]),
             results: Box::new([oracle::Param {
                 name: String::new(),
@@ -913,6 +912,7 @@ mod tests {
                     name: "int32".to_string(),
                     ..Default::default()
                 }),
+                pos: None,
             }]),
             ..Default::default()
         };
@@ -952,6 +952,7 @@ mod tests {
                         name: "int32".to_string(),
                         ..Default::default()
                     }),
+                    pos: None,
                 },
                 oracle::Param {
                     name: "_1".to_string(),
@@ -960,6 +961,7 @@ mod tests {
                         name: "bool".to_string(),
                         ..Default::default()
                     }),
+                    pos: None,
                 },
             ]),
             results: Box::new([
@@ -970,6 +972,7 @@ mod tests {
                         name: "string".to_string(),
                         ..Default::default()
                     }),
+                    pos: None,
                 },
                 oracle::Param {
                     name: String::new(),
@@ -978,6 +981,7 @@ mod tests {
                         name: "error".to_string(), // lowered to Any (universe type)
                         ..Default::default()
                     }),
+                    pos: None,
                 },
             ]),
             ..Default::default()
@@ -1171,7 +1175,10 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            matches!(lower_type_with_lowering(&empty, &mut low, &HashSet::new()), Type::Any),
+            matches!(
+                lower_type_with_lowering(&empty, &mut low, &HashSet::new()),
+                Type::Any
+            ),
             "empty interface must remain Type::Any"
         );
 
@@ -1185,6 +1192,7 @@ mod tests {
                     name: "bool".to_string(),
                     ..Default::default()
                 }),
+                pos: None,
             }]),
             ..Default::default()
         };

@@ -151,6 +151,47 @@ impl Disambiguator {
     }
 }
 
+/// Test-only / `seal-census`-gated: the discriminant of a [`Disambiguator`]
+/// with its skeleton/span payload stripped, for tallying which tier actually
+/// minted a declaration's id.
+///
+/// This exists purely for measurement. `SealReport::forced_keys`
+/// (`crate::package::SealReport`) only names declarations that pass 2.5 had
+/// to **escalate**, so it cannot distinguish `Disambiguator::None` from
+/// `FnOverload`/`TraitImpl`, and — because pass 2's own "other collision" arm
+/// can mint `Disambiguator::Span` without ever entering pass 2.5 — it
+/// under-counts `Span` in favor of `Structural`. `DisambiguatorKind` is
+/// recorded directly from the `Disambiguator` that was actually hashed, so it
+/// has neither blind spot. It is never constructed outside `cfg(test)` or the
+/// `seal-census` feature; production code must not depend on it existing.
+#[cfg(any(test, feature = "seal-census"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisambiguatorKind {
+    /// `Disambiguator::None`.
+    None,
+    /// `Disambiguator::FnOverload(_)`.
+    FnOverload,
+    /// `Disambiguator::TraitImpl(_)`.
+    TraitImpl,
+    /// `Disambiguator::Span { .. }`.
+    Span,
+    /// `Disambiguator::Ordinal { .. }`.
+    Ordinal,
+}
+
+#[cfg(any(test, feature = "seal-census"))]
+impl From<&Disambiguator> for DisambiguatorKind {
+    fn from(d: &Disambiguator) -> Self {
+        match d {
+            Disambiguator::None => DisambiguatorKind::None,
+            Disambiguator::FnOverload(_) => DisambiguatorKind::FnOverload,
+            Disambiguator::TraitImpl(_) => DisambiguatorKind::TraitImpl,
+            Disambiguator::Span { .. } => DisambiguatorKind::Span,
+            Disambiguator::Ordinal { .. } => DisambiguatorKind::Ordinal,
+        }
+    }
+}
+
 /// Mint the forever-stable [`IntroId`] for a declaration.
 ///
 /// `segments` is the ancestor name path, root-first (e.g. `["mymod", "MyType"]`

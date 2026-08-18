@@ -26,9 +26,9 @@
 //! `extras` column is authoritative for reads; the split-out columns exist for
 //! catalog-side query/ranking convenience.
 
-use heart::{Phase, ResolutionState, content::ContentHash};
 use crate::enums::ParseState;
 use crate::store::lifecycle::VersionLifecycle;
+use heart::{Phase, ResolutionState, content::ContentHash};
 
 use crate::metadata::SearchFacets;
 
@@ -118,11 +118,10 @@ pub fn state_from_columns(
         }),
         ParseState::InProgress => {
             let token = lifecycle.parse_phase.as_deref().unwrap_or_default();
-            let phase =
-                phase_from_token(token).ok_or_else(|| Error::UnknownPhase {
-                    state: ParseState::InProgress,
-                    token: token.to_owned(),
-                })?;
+            let phase = phase_from_token(token).ok_or_else(|| Error::UnknownPhase {
+                state: ParseState::InProgress,
+                token: token.to_owned(),
+            })?;
             Ok(ResolutionState::Progressing(phase))
         }
         ParseState::Parsed => stored_hash
@@ -184,9 +183,7 @@ pub fn facets_to_row(
 
 /// Raise a facet row back into [`SearchFacets`] via the authoritative
 /// `extras` JSON. `None` extras ⇒ no facets recorded.
-pub fn facets_from_extras(
-    extras_json: Option<&str>,
-) -> Result<Option<SearchFacets>, Error> {
+pub fn facets_from_extras(extras_json: Option<&str>) -> Result<Option<SearchFacets>, Error> {
     extras_json
         .map(serde_json::from_str)
         .transpose()
@@ -205,8 +202,7 @@ mod tests {
             attempts: 0,
             failure: columns.failure_json,
         };
-        let raised =
-            state_from_columns(&lifecycle, columns.stored_hash).expect("raise");
+        let raised = state_from_columns(&lifecycle, columns.stored_hash).expect("raise");
         assert_eq!(raised, state);
     }
 

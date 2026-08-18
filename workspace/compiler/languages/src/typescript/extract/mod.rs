@@ -35,8 +35,12 @@ pub enum PackageError {
     Serialization(#[from] serde_json::Error),
     #[error("extraction error")]
     Extract(#[from] ExtractError),
-    #[error("entry point discovery failed")]
-    EntryPointDiscoveryFailed { path: PathBuf },
+    // No "entry point discovery failed" variant: `entry.rs::discover_entry_points_with`
+    // used to construct one when it found zero entry points, but that made a
+    // genuinely empty package indistinguishable from a broken walk — see the
+    // doc comment at the end of that function for why it now returns `Ok(vec![])`
+    // instead and lets `enforce_yield_contract` reject the package by name
+    // (`NoDeclarationsContributed`).
     #[error("parse failed")]
     ParseFailed { path: PathBuf, detail: String },
 }
@@ -578,6 +582,75 @@ pub struct GenericParamOwned {
     pub variance: Option<nudox_ir::kinds::ty::Variance>,
 }
 
+// ── Reference occurrences ────────────────────────────────────────────────────
+
+/// Producer-local category for a same-module occurrence, distinguishing what
+/// OXC's resolved reference graph can tell apart *without* type inference:
+/// whether the reference site is a call expression's callee, a type-position
+/// use, or an ordinary value read/write. `emit.rs::lower_package` maps each
+/// variant onto `nudox_ir::vocab::ReferenceKind` and picks a `Confidence`
+/// there — that decision lives next to the IR vocabulary it is choosing
+/// between, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OccurrenceKind {
+    /// The reference is exactly the callee of a `CallExpression`:
+    /// `runTool(task)`, not `const f = runTool;` (a plain value read of the
+    /// same binding).
+    Call,
+    /// The reference occurs in a type position — `ReferenceFlags::Type` in
+    /// OXC's binder, a resolution namespace kept separate from values so a
+    /// value and a type can share a name without colliding.
+    Type,
+    /// Any other resolved value reference: a plain read, a write, or a value
+    /// passed around without being called.
+    ValueUse,
+}
+
+/// One resolved same-module reference edge, built from OXC's `Semantic`
+/// symbol/reference graph once `ModuleFacts::declarations` is complete (see
+/// `decl.rs::record_occurrences`).
+///
+/// # Same-module only
+///
+/// `owner` and `target` are indices into *this* module's own
+/// `ModuleFacts::declarations` — nothing else. A reference that crosses a
+/// module boundary (an imported binding used here, or this module's own
+/// export used by another module) is invisible to OXC's per-file `Semantic`:
+/// binding resolution stops at the file's own scope tree. Reaching across an
+/// import to the target module's real declaration needs the same
+/// resolver/export-table machinery `emit.rs` already has for re-exports,
+/// wired up as a deliberate second step, not attempted here. Until it lands,
+/// a cross-module call records nothing — a real, documented gap rather than
+/// a silent wrong answer, which is exactly what `refs`'s coverage-honesty
+/// gate (see the MCP layer) exists to keep from being misread as "no
+/// callers".
+///
+/// Only *top-level* declarations are eligible as `owner`/`target`: a call
+/// between two members of the same namespace (both nested inside one
+/// top-level `Namespace` `DeclFact`, since a namespace's children live in
+/// `NamespaceBody::children`, never flattened into this list) resolves both
+/// ends to that one enclosing `DeclFact` and is dropped by the same
+/// `owner == target` rule that drops direct recursion — see
+/// `decl.rs::record_occurrences`. That under-reports a real edge; it does
+/// not fabricate one, so it errs the same direction every other gap in this
+/// producer already does.
+#[derive(Debug, Clone)]
+pub struct OccurrenceFact {
+    /// Index into `ModuleFacts::declarations` of the top-level declaration
+    /// whose signature or body contains the reference site.
+    pub owner: usize,
+    /// Index into `ModuleFacts::declarations` of the top-level declaration
+    /// the reference resolves to.
+    pub target: usize,
+    /// Byte span of the reference site (the identifier being used), absolute
+    /// within the source file. `emit.rs` converts this to a `RelSpan`
+    /// relative to the owner declaration's own span, matching every other
+    /// span this producer emits.
+    pub span_start: u32,
+    pub span_end: u32,
+    pub kind: OccurrenceKind,
+}
+
 // ── ModuleFacts ────────────────────────────────────────────────────────────────
 
 /// All declarations extracted from one TypeScript module, fully owned.
@@ -591,6 +664,11 @@ pub struct ModuleFacts {
     pub declarations: Vec<DeclFact>,
     pub exports: ExportTable,
     pub imports: Vec<ImportFact>,
+    /// Same-module reference edges between this module's own top-level
+    /// declarations. See [`OccurrenceFact`] for the same-module and
+    /// top-level-only restrictions — a cross-module call is a documented gap,
+    /// not silently answered wrong.
+    pub occurrences: Vec<OccurrenceFact>,
     /// Byte length of the source file (`source.len()` — `str::len()` is
     /// always a byte count in Rust, never a char or UTF-16 count). Used as
     /// the module entry's own span (`0..source_len`), a real, whole-file

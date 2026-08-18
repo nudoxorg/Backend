@@ -45,6 +45,29 @@ pub(crate) enum ArchiveKind {
     Zip,
 }
 
+/// Whether the resolved artifact is intended to be source input or a
+/// binary-only dependency/classpath input.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourcePolicy {
+    /// The archive is the source material that the producer may lower.
+    SourceInput,
+    /// The archive may resolve types but must never be walked or lowered.
+    BinaryClasspathOnly,
+}
+
+/// The explicit source-vs-binary contract for the two JVM/.NET boundaries.
+pub fn source_policy(ty: PurlType) -> SourcePolicy {
+    match ty {
+        // Maven resolution deliberately targets `-sources.jar`.
+        PurlType::Maven => SourcePolicy::SourceInput,
+        // NuGet's `.nupkg` is a package container; compiled assemblies are
+        // dependency inputs and source is only accepted when separately
+        // provisioned by a source-link/source archive policy.
+        PurlType::NuGet => SourcePolicy::BinaryClasspathOnly,
+        _ => SourcePolicy::SourceInput,
+    }
+}
+
 impl ArchiveKind {
     /// The container this ecosystem's source artifact arrives in.
     pub(crate) fn of(ty: PurlType) -> Self {
@@ -84,10 +107,7 @@ pub(crate) enum Error {
         source: io::Error,
     },
     #[error("the archive is not a valid {kind:?}: {detail}")]
-    Malformed {
-        kind: ArchiveKind,
-        detail: String,
-    },
+    Malformed { kind: ArchiveKind, detail: String },
     /// An entry's path escaped the extraction directory.
     ///
     /// Registry artifacts are third-party bytes. A `../../../.ssh/authorized_keys`
@@ -108,12 +128,7 @@ fn io_err(context: impl Into<String>) -> impl FnOnce(io::Error) -> Error {
 ///
 /// `dest` must not exist; it is created. `scratch` is a directory the caller
 /// owns and may hold intermediate output.
-pub(crate) fn unpack(
-    bytes: &[u8],
-    ty: PurlType,
-    scratch: &Path,
-    dest: &Path,
-) -> Result<(), Error> {
+pub(crate) fn unpack(bytes: &[u8], ty: PurlType, scratch: &Path, dest: &Path) -> Result<(), Error> {
     let staging = scratch.join("extracted");
     fs::create_dir_all(&staging).map_err(io_err(format!("creating {}", staging.display())))?;
 
@@ -151,12 +166,10 @@ fn unpack_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), Error> {
     // `set_overwrite(false)` is not enough on its own — `tar` resolves `..`
     // itself only when `set_preserve_permissions`/`unpack_in` are used, so the
     // check below is explicit rather than delegated.
-    let entries = archive
-        .entries()
-        .map_err(|e| Error::Malformed {
-            kind: ArchiveKind::TarGz,
-            detail: e.to_string(),
-        })?;
+    let entries = archive.entries().map_err(|e| Error::Malformed {
+        kind: ArchiveKind::TarGz,
+        detail: e.to_string(),
+    })?;
 
     for entry in entries {
         let mut entry = entry.map_err(|e| Error::Malformed {
@@ -172,8 +185,7 @@ fn unpack_tar_gz(bytes: &[u8], dest: &Path) -> Result<(), Error> {
             .into_owned();
         let target = safe_join(dest, &path)?;
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(io_err(format!("creating {}", parent.display())))?;
+            fs::create_dir_all(parent).map_err(io_err(format!("creating {}", parent.display())))?;
         }
         // `unpack` handles directories, regular files and (on unix) symlinks.
         // A symlink whose *target* escapes is harmless here because nothing
@@ -215,13 +227,11 @@ fn unpack_zip(bytes: &[u8], dest: &Path) -> Result<(), Error> {
             continue;
         }
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(io_err(format!("creating {}", parent.display())))?;
+            fs::create_dir_all(parent).map_err(io_err(format!("creating {}", parent.display())))?;
         }
-        let mut out = fs::File::create(&target)
-            .map_err(io_err(format!("creating {}", target.display())))?;
-        io::copy(&mut file, &mut out)
-            .map_err(io_err(format!("writing {}", target.display())))?;
+        let mut out =
+            fs::File::create(&target).map_err(io_err(format!("creating {}", target.display())))?;
+        io::copy(&mut file, &mut out).map_err(io_err(format!("writing {}", target.display())))?;
     }
     Ok(())
 }
@@ -333,6 +343,15 @@ mod tests {
         assert_eq!(
             safe_join(root, Path::new("src/./lib.rs")).unwrap(),
             root.join("src").join("lib.rs"),
+        );
+    }
+
+    #[test]
+    fn java_sources_are_lowering_input_but_nuget_binaries_are_not() {
+        assert_eq!(source_policy(PurlType::Maven), SourcePolicy::SourceInput);
+        assert_eq!(
+            source_policy(PurlType::NuGet),
+            SourcePolicy::BinaryClasspathOnly
         );
     }
 }

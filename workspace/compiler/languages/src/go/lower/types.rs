@@ -10,6 +10,7 @@ use nudox_ir::build::{
     AttrTok, Enum, Field, FieldAttribute, FieldKey, Function, GenericParam, Lowering, Record,
     RecordForm, Ref, Trait, TraitFlags, Type, Variant, VariantForm,
 };
+use nudox_ir::entry::{SourceLocation, Unlocated};
 
 use super::{GoId, lower_methods, lower_sig_params_into_lowering, sym_for};
 use crate::go::{oracle, types};
@@ -24,7 +25,13 @@ pub(super) fn lower_struct(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
     // Collect field Refs (forward-refer them — declare will happen below).
     let underlying = decl.underlying.as_ref();
@@ -36,6 +43,7 @@ pub(super) fn lower_struct(
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
             member_name: f.name.clone(),
+            promoted_from: None,
         };
         field_refs.push(low.refer(fid));
     }
@@ -69,6 +77,7 @@ pub(super) fn lower_struct(
             import_path: pkg.import_path.clone(),
             type_name: decl.name.clone(),
             member_name: f.name.clone(),
+            promoted_from: None,
         };
         let fdoc = decl.field_docs.get(&f.name).map_or("", String::as_str);
         let mut fsym = sym_for(&f.name, fdoc, f.exported, None, None);
@@ -121,7 +130,13 @@ pub(super) fn lower_interface(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
-    let mut sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let mut sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
     let generics: Vec<GenericParam> = decl
         .type_params
@@ -166,6 +181,7 @@ pub(super) fn lower_interface(
                 import_path: pkg.import_path.clone(),
                 type_name: decl.name.clone(),
                 member_name: sig.name.clone(),
+                promoted_from: None,
             };
             let mdoc = decl
                 .method_docs
@@ -186,6 +202,7 @@ pub(super) fn lower_interface(
                 pkg,
                 &decl.name,
                 &sig.name,
+                None,
                 sig.signature.as_ref(),
                 low,
                 local,
@@ -213,12 +230,19 @@ pub(super) fn lower_newtype(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
     let inner_id = GoId::Member {
         import_path: pkg.import_path.clone(),
         type_name: decl.name.clone(),
         member_name: "(inner)".to_string(),
+        promoted_from: None,
     };
     let inner_ref: Ref<Field> = low.refer(inner_id.clone());
 
@@ -240,12 +264,24 @@ pub(super) fn lower_newtype(
         .underlying
         .as_ref()
         .map(|t| types::lower_type_with_lowering(t, low, local));
-    let inner_sym = sym_for("(inner)", "(underlying type field)", decl.exported, None, None);
+    let inner_sym = sym_for(
+        "(inner)",
+        "(underlying type field)",
+        decl.exported,
+        None,
+        None,
+    );
     let inner_field = Field::builder()
         .key(FieldKey::Positional(0))
         .maybe_ty(underlying_ty)
         .build();
-    low.declare(inner_id, Some(item_id.clone()), inner_sym, inner_field);
+    low.declare_at(
+        inner_id,
+        Some(item_id.clone()),
+        inner_sym,
+        inner_field,
+        SourceLocation::Unlocated(Unlocated::Synthesized),
+    );
 
     lower_methods(pkg, decl, &item_id, low, local);
 }
@@ -261,7 +297,13 @@ pub(super) fn lower_iota_enum(
     low: &mut Lowering<GoId>,
     local: &HashSet<String>,
 ) {
-    let sym = sym_for(&decl.name, &decl.doc, decl.exported, decl.pos.as_ref(), decl.span.as_ref());
+    let sym = sym_for(
+        &decl.name,
+        &decl.doc,
+        decl.exported,
+        decl.pos.as_ref(),
+        decl.span.as_ref(),
+    );
 
     let mut variant_refs: Vec<Ref<Variant>> = Vec::with_capacity(variants.len());
     for v in variants {

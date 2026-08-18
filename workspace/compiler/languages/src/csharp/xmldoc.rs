@@ -399,13 +399,12 @@ fn inline_to_markdown(inner: &str) -> String {
 /// `</name>` and the index past it.
 fn take_until_close(s: &str, from: usize, name: &str) -> (String, usize) {
     let close = format!("</{name}>");
-    s[from..].find(&close).map_or(
-        (s[from..].to_string(), s.len()),
-        |rel| {
+    s[from..]
+        .find(&close)
+        .map_or((s[from..].to_string(), s.len()), |rel| {
             let end = from + rel;
             (s[from..end].to_string(), end + close.len())
-        },
-    )
+        })
 }
 
 /// Trim shared leading blank lines from a code block.

@@ -222,9 +222,7 @@ macro_rules! impl_sea_blob_id {
         }
 
         impl sea_orm::sea_query::ValueType for $ty {
-            fn try_from(
-                v: sea_orm::Value,
-            ) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
+            fn try_from(v: sea_orm::Value) -> Result<Self, sea_orm::sea_query::ValueTypeErr> {
                 match v {
                     sea_orm::Value::Bytes(Some(bytes)) => {
                         <$ty>::from_blob(&bytes).map_err(|_| sea_orm::sea_query::ValueTypeErr)

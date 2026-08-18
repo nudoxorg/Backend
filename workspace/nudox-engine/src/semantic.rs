@@ -61,6 +61,7 @@ use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
 use nudox_ir::change::{IntroId, PackageLineageId};
+use serde::{Deserialize, Serialize};
 
 use crate::wire::SharedStr;
 
@@ -225,27 +226,82 @@ pub enum SectionState {
 /// consumer's match and make each one decide how to render it. A reason that
 /// fell into a `_` arm would render as one of the others, which is precisely
 /// the confusion [`SectionState`] exists to remove.
+///
+/// This is also why `NoEmbedder` does not appear here: it used to, and it
+/// collapsed two states this enum used to keep apart — `NoRuntime` and
+/// [`NoModelConfigured`](Unavailable::NoModelConfigured) — by the same test
+/// [`ModelFailed`](Unavailable::ModelFailed)'s doc comment applies one level
+/// down: the two "send a reader to completely different places" (one was a
+/// rebuild, the other one environment variable), so a reader staring at
+/// `NoEmbedder` could not tell which fix applied.
+///
+/// # `NoRuntime` is gone, not just renamed
+///
+/// The ONNX embedder runtime (`embed::onnx`, `registry` + `ort-sys`) is now a
+/// plain, non-optional dependency of `nudox-engine` — there is no `onnx`
+/// cargo feature, so no build of this crate can lack the runtime. `NoRuntime`
+/// named exactly that unreachable state ("this binary was built without the
+/// runtime — rebuild it"), and an enum member no code path can ever produce is
+/// worse than useless here: every consumer of this exhaustive match would have
+/// had to keep rendering a branch for a state that could never again be
+/// observed. It was removed rather than kept "just in case", on the same rule
+/// that keeps this enum exhaustive in the first place — a reason that cannot
+/// happen is not a reason, it is dead weight in every reader's match. The only
+/// way to have no embedder now is a missing
+/// [`MODEL_DIR_ENV`](crate::embed::MODEL_DIR_ENV), i.e. `NoModelConfigured`.
+/// See [`remedy`](Unavailable::remedy) for the text each remaining variant
+/// tells the reader to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unavailable {
-    /// No [`Embedder`] was installed on this engine.
+    /// No model directory was configured.
     ///
-    /// The honest rendering is "semantic search is not configured in this
-    /// build", not "no results".
-    NoEmbedder,
+    /// `embed::onnx::load_from_env` returns `None` when `NUDOX_EMBED_MODEL_DIR`
+    /// is unset. No rebuild is needed — setting the variable and restarting is
+    /// enough. This is the *only* way `embed::load_from_env` can return no
+    /// embedder: the runtime itself is always compiled in.
+    NoModelConfigured,
     /// An embedder is installed but no package has finished indexing yet, and
     /// the corpus is empty — there is nothing to have indexed.
     EmptyCorpus,
     /// An embedder is installed and it failed on this query.
     ///
-    /// Distinct from [`Unavailable::NoEmbedder`] because the two send a reader
-    /// to completely different places: `NoEmbedder` means *this build was
-    /// assembled without a model* and no amount of retrying will change it,
-    /// while this means *the model is here and something went wrong* — a
-    /// missing weights file, an out-of-memory runtime, a revoked API key —
-    /// which is worth retrying and worth looking in the log for. Collapsing
-    /// them was the first thing this code did, and it would have made a broken
-    /// model indistinguishable from a deliberate configuration.
+    /// Distinct from [`NoModelConfigured`](Unavailable::NoModelConfigured)
+    /// because this one sends a reader somewhere that does not: *the model is
+    /// here and something went wrong* — a missing weights file, an
+    /// out-of-memory runtime, a revoked API key — which is worth retrying and
+    /// worth looking in the log for, not worth reconfiguring anything.
     ModelFailed,
+}
+
+impl Unavailable {
+    /// What a reader should actually do about this.
+    ///
+    /// A bare variant name is only actionable to someone who already knows
+    /// this build system; the whole point of splitting `NoEmbedder` was that
+    /// guessing the wrong remedy between a rebuild and an environment variable
+    /// used to cost the rebuild *and* leave the variable unset. Now there is
+    /// no rebuild remedy left to guess wrong — every remaining arm names a fix
+    /// a reader who has never seen this crate can follow without rebuilding
+    /// anything.
+    pub fn remedy(&self) -> &'static str {
+        match self {
+            Unavailable::NoModelConfigured => {
+                "the embedding runtime is always compiled in, so no rebuild is \
+                 possible or needed — set NUDOX_EMBED_MODEL_DIR to the pinned \
+                 model directory (see embed::MODEL_DIR_ENV for exactly what it \
+                 must contain) and restart"
+            }
+            Unavailable::EmptyCorpus => {
+                "there is nothing in the corpus yet to search — load a package, \
+                 or wait for one already loading to finish indexing"
+            }
+            Unavailable::ModelFailed => {
+                "the model is installed and something went wrong on this query — \
+                 check the log for the embedding backend's error (a missing \
+                 weights file, an out-of-memory runtime, a revoked key) and retry"
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +313,7 @@ pub enum Unavailable {
 /// Normalising once at insert rather than per query is what makes scoring a dot
 /// product: for unit vectors, cosine *is* the dot product, so the query path
 /// does no square roots and no division at all.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct Vector {
     intro: IntroId,
     /// Unit-length. Enforced by [`SemanticIndex::insert_package`], not by
@@ -282,20 +338,102 @@ pub(crate) struct SemanticIndexInner {
     indexed: BTreeSet<PackageLineageId>,
 }
 
-/// The engine's in-memory semantic index.
+#[derive(Deserialize, Serialize)]
+struct PersistedVector {
+    intro: IntroId,
+    values: Vec<f32>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedIndex {
+    model_id: String,
+    dimensions: usize,
+    inner: PersistedIndexInner,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedIndexInner {
+    vectors: Vec<PersistedPackage>,
+    indexed: BTreeSet<PackageLineageId>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedPackage {
+    lineage: PackageLineageId,
+    vectors: Vec<PersistedVector>,
+}
+
+/// The engine's local semantic index.
 ///
-/// Cheap to clone (`Arc` inside). Never persisted: [`EmbedderInfo::durable_canonical`]
-/// is `false` for a dynamically-quantized model, and this type has no way to
-/// know which host it was handed, so it declines to persist for all of them.
-/// That is a deliberate limitation, not an oversight — see docs/LIMITATIONS.md L41.
-#[derive(Clone, Default)]
+/// Cheap to clone (`Arc` inside). When a durable embedder and a state path are
+/// supplied, every completed package is written atomically and reopened only
+/// when the model identity and vector width match.
+#[derive(Clone)]
 pub(crate) struct SemanticIndex {
     inner: Arc<RwLock<SemanticIndexInner>>,
+    persistence: Option<Arc<IndexPersistence>>,
+}
+
+struct IndexPersistence {
+    path: std::path::PathBuf,
+    model_id: String,
+    dimensions: usize,
+}
+
+impl Default for SemanticIndex {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SemanticIndex {
     pub(crate) fn new() -> Self {
-        Self::default()
+        Self {
+            inner: Arc::new(RwLock::new(SemanticIndexInner::default())),
+            persistence: None,
+        }
+    }
+
+    pub(crate) fn open(path: std::path::PathBuf, info: &EmbedderInfo) -> Self {
+        let persistence = (info.durable_canonical).then(|| {
+            Arc::new(IndexPersistence {
+                path,
+                model_id: info.model_id.to_string(),
+                dimensions: info.dimensions,
+            })
+        });
+        let inner = persistence
+            .as_deref()
+            .and_then(|p| load_persisted(p).ok())
+            .filter(|saved| {
+                saved.model_id == info.model_id.to_string() && saved.dimensions == info.dimensions
+            })
+            .map(|saved| SemanticIndexInner {
+                vectors: saved
+                    .inner
+                    .vectors
+                    .into_iter()
+                    .map(|package| {
+                        (
+                            package.lineage,
+                            package
+                                .vectors
+                                .into_iter()
+                                .map(|vector| Vector {
+                                    intro: vector.intro,
+                                    values: Arc::from(vector.values),
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+                indexed: saved.inner.indexed,
+            })
+            .unwrap_or_default();
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+            persistence,
+        }
     }
 
     /// Record that `lineage` has been embedded, with `vectors` as its content.
@@ -336,6 +474,13 @@ impl SemanticIndex {
             .expect("semantic index lock is never held across a panic");
         guard.vectors.insert(lineage.clone(), vectors);
         guard.indexed.insert(lineage);
+        let persisted = self.persistence.as_deref().map(|p| snapshot(p, &guard));
+        drop(guard);
+        if let Some(persisted) = persisted {
+            if let Err(error) = persist(persisted.0, persisted.1) {
+                tracing::warn!(%error, "semantic index persistence failed");
+            }
+        }
         Ok(())
     }
 
@@ -418,6 +563,52 @@ impl SemanticIndex {
             .map(|(index, intro, score)| (lineages[index].clone(), intro, score))
             .collect()
     }
+}
+
+fn snapshot(
+    persistence: &IndexPersistence,
+    inner: &SemanticIndexInner,
+) -> (std::path::PathBuf, String) {
+    let persisted = PersistedIndex {
+        model_id: persistence.model_id.clone(),
+        dimensions: persistence.dimensions,
+        inner: PersistedIndexInner {
+            vectors: inner
+                .vectors
+                .iter()
+                .map(|(lineage, vectors)| PersistedPackage {
+                    lineage: lineage.clone(),
+                    vectors: vectors
+                        .iter()
+                        .map(|vector| PersistedVector {
+                            intro: vector.intro,
+                            values: vector.values.to_vec(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            indexed: inner.indexed.clone(),
+        },
+    };
+    (
+        persistence.path.clone(),
+        serde_json::to_string(&persisted).expect("semantic index state is serializable"),
+    )
+}
+
+fn load_persisted(persistence: &IndexPersistence) -> Result<PersistedIndex, String> {
+    let bytes = std::fs::read(&persistence.path).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+fn persist(path: std::path::PathBuf, contents: String) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("semantic index has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, contents).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
 }
 
 /// Scale `values` to unit length, in place.
@@ -573,7 +764,11 @@ mod tests {
             .unwrap();
 
         let hits = index.nearest(&[1.0, 0.0, 0.0], 10);
-        assert_eq!(hits.len(), 1, "the old generation must be gone, got {hits:?}");
+        assert_eq!(
+            hits.len(),
+            1,
+            "the old generation must be gone, got {hits:?}"
+        );
         assert_eq!(hits[0].1, intro(2));
         assert_eq!(index.covered(), 1, "one lineage, indexed twice, is one");
     }
@@ -637,6 +832,9 @@ mod tests {
             .unwrap();
         let hits = index.nearest(&[1.0, 0.0], 10);
         assert_eq!(hits[0].1, intro(2));
-        assert_eq!(hits[1].2, 0.0, "a zero vector must score exactly 0, not NaN");
+        assert_eq!(
+            hits[1].2, 0.0,
+            "a zero vector must score exactly 0, not NaN"
+        );
     }
 }

@@ -72,11 +72,7 @@ pub trait Reranker: Send + Sync {
     /// Returns scores in descending order (best first). Missing or
     /// zero-score documents may be omitted. The returned ids align with the
     /// input [`RerankDoc::id`] values.
-    async fn rerank(
-        &self,
-        query: &str,
-        docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, Error>;
+    async fn rerank(&self, query: &str, docs: &[RerankDoc]) -> Result<Vec<RerankScore>, Error>;
 }
 
 /// A reranker that posts to the index's own `/v1/rerank` microservice.
@@ -100,11 +96,7 @@ impl HttpReranker {
 
 #[async_trait]
 impl Reranker for HttpReranker {
-    async fn rerank(
-        &self,
-        query: &str,
-        docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, Error> {
+    async fn rerank(&self, query: &str, docs: &[RerankDoc]) -> Result<Vec<RerankScore>, Error> {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
@@ -154,8 +146,7 @@ impl VoyageReranker {
     /// Calls [`assert_licensed`] on `VOYAGE_RERANK_MODEL` — fails at
     /// construction if the model is on the deny-list (I15).
     pub fn new(api_key: String, top_k: usize) -> Result<Self, Error> {
-        assert_licensed(VOYAGE_RERANK_MODEL)
-            .map_err(|e| Error::LicenseDenied(e.to_string()))?;
+        assert_licensed(VOYAGE_RERANK_MODEL).map_err(|e| Error::LicenseDenied(e.to_string()))?;
         Ok(Self {
             client: reqwest::Client::new(),
             api_key,
@@ -166,11 +157,7 @@ impl VoyageReranker {
 
 #[async_trait]
 impl Reranker for VoyageReranker {
-    async fn rerank(
-        &self,
-        query: &str,
-        docs: &[RerankDoc],
-    ) -> Result<Vec<RerankScore>, Error> {
+    async fn rerank(&self, query: &str, docs: &[RerankDoc]) -> Result<Vec<RerankScore>, Error> {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
@@ -470,14 +457,16 @@ mod tests {
     /// Pin: the filter_map contract is correct for out-of-range indices.
     #[test]
     fn voyage_rerank_out_of_range_index_results_in_none() {
-        let docs = [RerankDoc {
+        let docs = [
+            RerankDoc {
                 id: "a".to_owned(),
                 text: "tokio::spawn".to_owned(),
             },
             RerankDoc {
                 id: "b".to_owned(),
                 text: "std::thread".to_owned(),
-            }];
+            },
+        ];
         // Index 5 is out of range for 2 docs.
         assert!(
             docs.get(5).is_none(),
@@ -534,14 +523,16 @@ mod tests {
     #[test]
     fn voyage_rerank_scores_for_unsent_docs_are_dropped() {
         // 2 docs sent, Voyage returns index=0 (valid) and index=99 (never sent).
-        let docs = [RerankDoc {
+        let docs = [
+            RerankDoc {
                 id: "a".to_owned(),
                 text: "first".to_owned(),
             },
             RerankDoc {
                 id: "b".to_owned(),
                 text: "second".to_owned(),
-            }];
+            },
+        ];
         let raw_indices = [(0usize, 0.9f64), (99, 0.8), (1, 0.7)];
         let scores: Vec<RerankScore> = raw_indices
             .iter()

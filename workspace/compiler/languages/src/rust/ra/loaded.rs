@@ -5,7 +5,13 @@
 //! that the output carries `document_private` so that `lower_workspace` can
 //! pass it to `LowerCtx` without threading it through another parameter.
 
-use std::{path::Path, thread, time::Instant};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
+    thread,
+    time::Instant,
+};
 
 use ra_ap_ide_db::RootDatabase;
 use ra_ap_load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
@@ -13,7 +19,7 @@ use ra_ap_paths::AbsPathBuf;
 use ra_ap_proc_macro_api::ProcMacroClient;
 use ra_ap_project_model::{
     CargoConfig, CargoFeatures, CargoWorkspace, ProjectManifest, ProjectWorkspace,
-    ProjectWorkspaceKind, RustLibSource, TargetKind,
+    ProjectWorkspaceKind, RustLibSource, TargetDirectoryConfig, TargetKind,
 };
 use ra_ap_toolchain::Tool;
 use ra_ap_vfs::Vfs;
@@ -21,7 +27,8 @@ use tracing::{debug, warn};
 
 use crate::rust::error::Error;
 
-// ── Policy types ──────────────────────────────────────────────────────────────
+// ── Policy types
+// ──────────────────────────────────────────────────────────────
 
 /// Configuration for a single workspace load.
 #[derive(Debug, Clone)]
@@ -31,11 +38,62 @@ pub struct ExtractConfig {
     pub num_threads: usize,
 }
 
+/// Explicit, deterministic accounting for the fixed work in one load.
+///
+/// The samples are diagnostic only; callers must use the phase names/counts
+/// for contracts rather than making wall-clock assertions.
+#[derive(Debug, Clone, Default)]
+pub struct LoadProfile {
+    phases: Vec<LoadPhase>,
+    cache_prefills: usize,
+    workspace_cache_hits: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LoadPhase {
+    name: &'static str,
+    elapsed_ms: f64,
+}
+
+impl LoadProfile {
+    /// The phases observed in execution order.
+    pub fn phases(&self) -> impl Iterator<Item = (&'static str, f64)> + '_ {
+        self.phases
+            .iter()
+            .map(|phase| (phase.name, phase.elapsed_ms))
+    }
+
+    /// Number of times a named loader phase ran.
+    pub fn phase_count(&self, name: &str) -> usize {
+        self.phases
+            .iter()
+            .filter(|phase| phase.name == name)
+            .count()
+    }
+
+    /// Number of eager salsa cache-priming passes.
+    pub fn cache_prefill_count(&self) -> usize {
+        self.cache_prefills
+    }
+
+    /// Number of Cargo workspace models reused from the process-local cache.
+    pub fn workspace_cache_hit_count(&self) -> usize {
+        self.workspace_cache_hits
+    }
+
+    fn record(&mut self, name: &'static str, elapsed_ms: f64) {
+        self.phases.push(LoadPhase { name, elapsed_ms });
+    }
+}
+
 impl ExtractConfig {
     /// Defaults matched to the rustdoc path (offline, build scripts on).
     pub fn for_extract() -> Self {
         Self {
-            offline: true,
+            // Corpus checks normally use the pinned, offline registry. A
+            // caller with a real Cargo registry may opt into resolving
+            // published metadata when a vendored shim is absent.
+            offline: std::env::var_os("NUDOX_CARGO_ONLINE").is_none(),
             run_build_scripts: true,
             num_threads: thread::available_parallelism()
                 .map(|n| n.get().min(8))
@@ -44,16 +102,17 @@ impl ExtractConfig {
     }
 }
 
-// ── Dependency resolution signal ──────────────────────────────────────────────
+// ── Dependency resolution signal
+// ──────────────────────────────────────────────
 
 /// The `cargo metadata` failure that rust-analyzer swallowed when it fell back
 /// to `--no-deps`.
 ///
 /// It exists as its own type so that the failure can sit in a `#[source]` slot
-/// (see [`crate::rust::error::Error::DependenciesUnresolved`]) and be reached by
-/// walking `std::error::Error::source` — the diagnosis path AGENTS-DOCTRINE §8
-/// prescribes — instead of being flattened into a message the moment it crosses
-/// a layer.
+/// (see [`crate::rust::error::Error::DependenciesUnresolved`]) and be reached
+/// by walking `std::error::Error::source` — the diagnosis path AGENTS-DOCTRINE
+/// §8 prescribes — instead of being flattened into a message the moment it
+/// crosses a layer.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error(
     "`cargo metadata` failed and rust-analyzer substituted `--no-deps` metadata: {cargo_diagnostic}"
@@ -66,9 +125,10 @@ impl NoDepsFallback {
     /// The `cargo metadata` failure chain, rendered.
     ///
     /// A `String` rather than a live error object on purpose: upstream stores
-    /// the cause as `Arc<anyhow::Error>` in `ProjectWorkspaceKind::Cargo::error`,
-    /// and `anyhow::Error` deliberately does not implement `std::error::Error`,
-    /// so it cannot occupy a `#[source]` slot — nor can it be moved out of an
+    /// the cause as `Arc<anyhow::Error>` in
+    /// `ProjectWorkspaceKind::Cargo::error`, and `anyhow::Error`
+    /// deliberately does not implement `std::error::Error`, so it cannot
+    /// occupy a `#[source]` slot — nor can it be moved out of an
     /// `Arc` we only borrow. `{:#}` renders the whole `Caused by` chain, which
     /// is the part a reader actually needs. Keeping the live object instead
     /// would mean taking `anyhow` on as a dependency of this crate.
@@ -115,15 +175,16 @@ impl DependencyResolution {
     /// The `--no-deps` fallback, when that is why the graph is incomplete.
     ///
     /// This exists so that callers outside this crate can ask the question they
-    /// actually have — "is this incomplete, and if so why?" — *totally*, without
-    /// a wildcard match arm. The enum is `#[non_exhaustive]` because a future
-    /// loader could report a third kind of incompleteness (a sysroot that failed
-    /// to load, say); making every call site write `_ => {}` today would mean
-    /// that future variant is silently absorbed everywhere instead of forcing a
-    /// decision. Routing the question through this projection moves the decision
-    /// to one place: whoever adds the variant must classify it here and in
-    /// [`Self::is_degraded`], so the gap the compiler cannot catch is a single
-    /// reviewable function rather than a scattering of `_` arms.
+    /// actually have — "is this incomplete, and if so why?" — *totally*,
+    /// without a wildcard match arm. The enum is `#[non_exhaustive]`
+    /// because a future loader could report a third kind of incompleteness
+    /// (a sysroot that failed to load, say); making every call site write
+    /// `_ => {}` today would mean that future variant is silently absorbed
+    /// everywhere instead of forcing a decision. Routing the question
+    /// through this projection moves the decision to one place: whoever
+    /// adds the variant must classify it here and in [`Self::is_degraded`],
+    /// so the gap the compiler cannot catch is a single reviewable function
+    /// rather than a scattering of `_` arms.
     pub fn no_deps(&self) -> Option<&NoDepsFallback> {
         match self {
             Self::Full => None,
@@ -133,8 +194,8 @@ impl DependencyResolution {
 
     /// Whether the crate graph is missing its dependencies.
     ///
-    /// The predicate half of [`Self::no_deps`], for callers that only branch and
-    /// never report.
+    /// The predicate half of [`Self::no_deps`], for callers that only branch
+    /// and never report.
     pub fn is_degraded(&self) -> bool {
         match self {
             Self::Full => false,
@@ -143,7 +204,8 @@ impl DependencyResolution {
     }
 }
 
-// ── Build-script execution signal ─────────────────────────────────────────────
+// ── Build-script execution signal
+// ─────────────────────────────────────────────
 
 /// Why a package's `build.rs` output never reached the crate graph.
 ///
@@ -162,9 +224,9 @@ impl DependencyResolution {
 /// Option<&str>`; there is no error object left to preserve. The other arm's
 /// cause is an `anyhow::Error`, which — as [`NoDepsFallback`] already records —
 /// deliberately does not implement `std::error::Error` and so cannot occupy a
-/// `#[source]` slot either. `{:#}` renders its whole `Caused by` chain, which is
-/// the part a reader needs. Keeping one arm typed would buy a downcast nobody
-/// performs, at the cost of a shape every reader has to special-case.
+/// `#[source]` slot either. `{:#}` renders its whole `Caused by` chain, which
+/// is the part a reader needs. Keeping one arm typed would buy a downcast
+/// nobody performs, at the cost of a shape every reader has to special-case.
 #[derive(Debug, Clone, thiserror::Error)]
 #[non_exhaustive]
 pub enum BuildScriptFailure {
@@ -214,9 +276,9 @@ impl BuildScriptFailure {
     /// A projection rather than a public field so that
     /// [`Self::DisabledByConfiguration`] — which has no external cause, because
     /// nothing external happened — is answered `None` instead of being handed a
-    /// fabricated string. Callers outside this crate can therefore ask "what did
-    /// cargo say?" totally, without a wildcard arm over a `#[non_exhaustive]`
-    /// enum.
+    /// fabricated string. Callers outside this crate can therefore ask "what
+    /// did cargo say?" totally, without a wildcard arm over a
+    /// `#[non_exhaustive]` enum.
     pub fn diagnostic(&self) -> Option<&str> {
         match self {
             Self::NotRun { diagnostic } | Self::CargoRefusedTheWorkspace { diagnostic } => {
@@ -258,13 +320,13 @@ pub enum BuildScriptExecution {
     /// Not a degradation, and deliberately distinct from [`Self::Ran`]: "we
     /// skipped it because there was none" and "we ran it and it worked" are the
     /// same *outcome* and different *evidence*, and conflating them is how the
-    /// 74 ms `build_scripts` phase in L50 read as "fast" rather than as "did not
-    /// happen".
+    /// 74 ms `build_scripts` phase in L50 read as "fast" rather than as "did
+    /// not happen".
     NotDeclared,
 
     /// The build-script `cargo check` ran and cargo exited 0: every
-    /// `cargo:rustc-cfg` and `OUT_DIR` the workspace's own build scripts emit is
-    /// in the crate graph.
+    /// `cargo:rustc-cfg` and `OUT_DIR` the workspace's own build scripts emit
+    /// is in the crate graph.
     Ran,
 
     /// A build script is declared and its output did not reach the crate graph.
@@ -297,7 +359,26 @@ impl BuildScriptExecution {
     }
 }
 
-// ── The single completeness contract ──────────────────────────────────────────
+/// Whether the proc-macro server was available for this load.
+///
+/// Soft: extraction still succeeds with fewer entries when the server is
+/// missing. Unlike [`DependencyResolution`] and [`BuildScriptExecution`], this
+/// axis does not make [`LoadCompleteness::is_degraded`] true and does not fail
+/// [`LoadCompleteness::require_complete`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcMacroAvailability {
+    Available,
+    Unavailable(String),
+}
+
+impl ProcMacroAvailability {
+    pub fn is_unavailable(&self) -> bool {
+        matches!(self, Self::Unavailable(_))
+    }
+}
+
+// ── The single completeness contract
+// ──────────────────────────────────────────
 
 /// How complete this load is, on every axis that can leave an `Ok` describing a
 /// package that does not exist.
@@ -313,8 +394,8 @@ impl BuildScriptExecution {
 /// `Ok(WorkspaceBuildScripts::default())` without running anything at all when
 /// the workspace was loaded from `--no-deps` metadata. An enum would have made
 /// that pair unrepresentable and the load would have reported whichever
-/// degradation the code happened to check first, which is precisely the class of
-/// under-reporting this file exists to stop.
+/// degradation the code happened to check first, which is precisely the class
+/// of under-reporting this file exists to stop.
 ///
 /// What *is* unified, and what the design constraint actually asked for, is the
 /// **choke point**: [`Self::require_complete`] is the only function that turns
@@ -335,6 +416,9 @@ pub struct LoadCompleteness {
     dependencies: DependencyResolution,
     /// Whether the build scripts' `cargo:rustc-cfg` output reached the graph.
     build_scripts: BuildScriptExecution,
+    /// Whether the proc-macro server was available. Soft: does not refuse the
+    /// load.
+    proc_macros: ProcMacroAvailability,
 }
 
 impl LoadCompleteness {
@@ -348,7 +432,15 @@ impl LoadCompleteness {
         &self.build_scripts
     }
 
+    /// Whether the proc-macro server was available for this load.
+    pub fn proc_macros(&self) -> &ProcMacroAvailability {
+        &self.proc_macros
+    }
+
     /// Whether anything about this load makes its table unsafe to publish.
+    ///
+    /// Proc-macro unavailability is not included: the table still publishes,
+    /// with macro-generated items missing.
     pub fn is_degraded(&self) -> bool {
         self.dependencies.is_degraded() || self.build_scripts.is_degraded()
     }
@@ -358,16 +450,13 @@ impl LoadCompleteness {
     /// The order is causal, not arbitrary. A `--no-deps` load makes
     /// `ProjectWorkspace::run_build_scripts` a silent no-op upstream — it
     /// returns an empty `WorkspaceBuildScripts` whose `error()` is `None`, so
-    /// this load would classify its build scripts as [`BuildScriptExecution::Ran`]
-    /// having run nothing. Reporting the resolution failure first therefore
-    /// names the cause rather than the symptom. A caller who accepts the
-    /// dependency degradation has, by the same token, accepted that the
-    /// build-script axis is not measurable for that load.
-    fn require_complete(
-        &self,
-        package: &str,
-        accepted: AcceptedDegradations,
-    ) -> Result<(), Error> {
+    /// this load would classify its build scripts as
+    /// [`BuildScriptExecution::Ran`] having run nothing. Reporting the
+    /// resolution failure first therefore names the cause rather than the
+    /// symptom. A caller who accepts the dependency degradation has, by the
+    /// same token, accepted that the build-script axis is not measurable
+    /// for that load.
+    fn require_complete(&self, package: &str, accepted: AcceptedDegradations) -> Result<(), Error> {
         if !accepted.dependencies
             && let Some(fallback) = self.dependencies.no_deps()
         {
@@ -392,9 +481,9 @@ impl LoadCompleteness {
 ///
 /// Private, `Default`-to-nothing-accepted, and settable only through the two
 /// consuming `#[must_use]` methods on [`LoadedWorkspace`]. That is the whole
-/// mechanism behind "a caller that does nothing gets the error, not the silence":
-/// there is no constructor, no field, and no config knob that produces an
-/// accepted degradation by accident.
+/// mechanism behind "a caller that does nothing gets the error, not the
+/// silence": there is no constructor, no field, and no config knob that
+/// produces an accepted degradation by accident.
 #[derive(Debug, Clone, Copy, Default)]
 struct AcceptedDegradations {
     /// Set only by `LoadedWorkspace::accept_degraded_dependencies`.
@@ -403,7 +492,8 @@ struct AcceptedDegradations {
     build_scripts: bool,
 }
 
-// ── LoadedWorkspace ───────────────────────────────────────────────────────────
+// ── LoadedWorkspace
+// ───────────────────────────────────────────────────────────
 
 /// One loaded analysis session.
 ///
@@ -425,8 +515,9 @@ struct AcceptedDegradations {
 /// `cargo:rustc-cfg` output reached the crate graph. When either is degraded,
 /// `lower_workspace` **refuses** to walk it and returns
 /// [`crate::rust::error::Error::DependenciesUnresolved`] or
-/// [`crate::rust::error::Error::BuildScriptsFailed`]. A caller that genuinely wants
-/// the degraded lowering says so with [`Self::accept_degraded_dependencies`] or
+/// [`crate::rust::error::Error::BuildScriptsFailed`]. A caller that genuinely
+/// wants the degraded lowering says so with
+/// [`Self::accept_degraded_dependencies`] or
 /// [`Self::accept_missing_build_script_cfgs`]. There is no path from a degraded
 /// load to a lowering that does not pass through
 /// [`LoadCompleteness::require_complete`].
@@ -449,6 +540,9 @@ pub struct LoadedWorkspace {
     /// Carried here rather than on the producer value because `Producer::lower`
     /// receives only the oracle — see the note on [`super::load`].
     pub package_name: String,
+    /// Instrumentation for fixed loader work, including whether cache priming
+    /// was accidentally reintroduced.
+    profile: LoadProfile,
     /// How complete this load is, on every axis that can silently shrink the
     /// table.
     ///
@@ -490,6 +584,11 @@ impl LoadedWorkspace {
         self.completeness.build_scripts()
     }
 
+    /// Fixed-work accounting for this load.
+    pub fn load_profile(&self) -> &LoadProfile {
+        &self.profile
+    }
+
     /// Proceed with a lowering whose dependency graph is known to be empty.
     ///
     /// This is the *only* way to obtain a lowering from a dependency-degraded
@@ -524,46 +623,65 @@ impl LoadedWorkspace {
     /// Gate consulted by `lower_workspace` before any walking happens.
     ///
     /// Returns the first unaccepted degradation as an error — cause chain
-    /// intact — unless the load is complete or the caller opted in. Delegates to
-    /// [`LoadCompleteness::require_complete`], which is the single place in the
-    /// crate where a degraded load becomes a typed failure.
+    /// intact — unless the load is complete or the caller opted in. Delegates
+    /// to [`LoadCompleteness::require_complete`], which is the single place
+    /// in the crate where a degraded load becomes a typed failure.
     pub(crate) fn require_complete_load(&self) -> Result<(), Error> {
         self.completeness
             .require_complete(&self.package_name, self.accepted)
     }
 }
 
-// ── Public load function ──────────────────────────────────────────────────────
+// ── Public load function
+// ──────────────────────────────────────────────────────
 
 /// Load the Cargo workspace at `root` into HIR.
 ///
 /// - Discovers the manifest (or workspace root).
 /// - Runs build scripts for `OUT_DIR` items, but only when the workspace
 ///   actually declares one (see `workspace_has_build_script`).
-/// - Does *not* eagerly prime salsa caches; the caller's HIR walk fills them
-///   on demand, scoped to what it actually visits (see the comment at the end
-///   of this function).
+/// - Does *not* eagerly prime salsa caches; the caller's HIR walk fills them on
+///   demand, scoped to what it actually visits (see the comment at the end of
+///   this function).
 pub(crate) fn load(
     root: &Path,
     package_name: &str,
     document_private: bool,
 ) -> Result<LoadedWorkspace, Error> {
     let cfg = ExtractConfig::for_extract();
+    let mut profile = LoadProfile::default();
 
     let mut cargo_config = build_cargo_config(&cfg, CargoFeatures::All);
     let abs = abs_path(root)?;
 
-    let manifest = time_phase("manifest_discover", || {
+    let manifest = time_phase(&mut profile, "manifest_discover", || {
         ProjectManifest::discover_single(abs.as_ref())
     })
     .map_err(|e| Error::Load(e.into()))?;
 
-    let mut ws = time_phase("workspace_load", || {
-        ProjectWorkspace::load(manifest.clone(), &cargo_config, &|msg| {
-            debug!(target: "ra_load", "{msg}");
+    let cache_key = workspace_cache_key(&manifest);
+    let mut ws = if let Some(cached) = workspace_cache().lock().unwrap().get(&cache_key).cloned() {
+        profile.workspace_cache_hits = 1;
+        cached
+    } else {
+        let loaded = time_phase(&mut profile, "workspace_load", || {
+            ProjectWorkspace::load(manifest.clone(), &cargo_config, &|msg| {
+                debug!(target: "ra_load", "{msg}");
+            })
         })
-    })
-    .map_err(|e| Error::Load(e.into()))?;
+        .map_err(|e| Error::Load(e.into()))?;
+        let mut cache = workspace_cache().lock().unwrap();
+        if cache.len() >= 32 {
+            if let Some(oldest) = cache.keys().next().cloned() {
+                cache.remove(&oldest);
+            }
+        }
+        // Cargo may create/update Cargo.lock while resolving metadata, so
+        // fingerprint after the load rather than caching under the pre-load
+        // key (which would force the next unchanged load to miss).
+        cache.insert(workspace_cache_key(&manifest), loaded.clone());
+        loaded
+    };
 
     // ── Drop std-integration features, then load again ────────────────────────
     //
@@ -624,11 +742,15 @@ pub(crate) fn load(
                 no_default_features: true,
             },
         );
-        ws = time_phase("workspace_reload_without_std_integration", || {
-            ProjectWorkspace::load(manifest, &cargo_config, &|msg| {
-                debug!(target: "ra_load", "{msg}");
-            })
-        })
+        ws = time_phase(
+            &mut profile,
+            "workspace_reload_without_std_integration",
+            || {
+                ProjectWorkspace::load(manifest, &cargo_config, &|msg| {
+                    debug!(target: "ra_load", "{msg}");
+                })
+            },
+        )
         .map_err(|e| Error::Load(e.into()))?;
     }
 
@@ -709,7 +831,7 @@ pub(crate) fn load(
         // `narrowed_build_script_config` is what makes the two L50 packages
         // load correctly rather than merely fail loudly; see its doc comment.
         let build_script_config = narrowed_build_script_config(&ws, &cargo_config);
-        time_phase("build_scripts", || {
+        time_phase(&mut profile, "build_scripts", || {
             match ws.run_build_scripts(&build_script_config, &|msg| {
                 debug!(target: "ra_load", "{msg}");
             }) {
@@ -749,16 +871,23 @@ pub(crate) fn load(
     };
 
     let load_config = build_load_config(&cfg, run_build_scripts);
+    profile.cache_prefills = if load_config.prefill_caches { 1 } else { 0 };
 
-    // Clone so we keep `ws` for package metadata after `load_workspace` consumes a copy.
-    let (db, vfs, proc_macro) = time_phase("load_workspace", || {
+    // Clone so we keep `ws` for package metadata after `load_workspace` consumes a
+    // copy.
+    let (db, vfs, proc_macro) = time_phase(&mut profile, "load_workspace", || {
         load_workspace(ws.clone(), &cargo_config.extra_env, &load_config)
     })
     .map_err(|e| Error::Load(e.into()))?;
 
-    if proc_macro.is_none() {
+    let proc_macros = if proc_macro.is_none() {
         warn!("proc-macro server unavailable; macro-generated items will be missing");
-    }
+        ProcMacroAvailability::Unavailable(
+            "proc-macro server unavailable; macro-generated items will be missing".into(),
+        )
+    } else {
+        ProcMacroAvailability::Available
+    };
 
     // No explicit `parallel_prime_caches` call here — deliberately. It used to
     // eagerly prime salsa caches for *every* crate in the resolved graph, not
@@ -795,16 +924,19 @@ pub(crate) fn load(
         ws,
         document_private,
         package_name: package_name.to_owned(),
+        profile,
         completeness: LoadCompleteness {
             dependencies: resolution,
             build_scripts,
+            proc_macros,
         },
         accepted: AcceptedDegradations::default(),
         _proc_macro: proc_macro,
     })
 }
 
-// ── The narrowed build-script invocation ──────────────────────────────────────
+// ── The narrowed build-script invocation
+// ──────────────────────────────────────
 
 /// A copy of `cargo_config` whose build-script `cargo check` does **not** pass
 /// `--all-targets`.
@@ -815,16 +947,16 @@ pub(crate) fn load(
 /// `cargo check` *unconditionally* whenever the toolchain is new enough for
 /// `--compile-time-deps` (`build_dependencies.rs:530-535`), ignoring
 /// `CargoConfig::all_targets`, which this crate has always set to `false`. Its
-/// stated reason — "we won't actually build the binaries, and as such, this will
-/// succeed even on targets without libtest" — is true of *compilation* and false
-/// of *target resolution*, which happens first and is fatal.
+/// stated reason — "we won't actually build the binaries, and as such, this
+/// will succeed even on targets without libtest" — is true of *compilation* and
+/// false of *target resolution*, which happens first and is fatal.
 ///
-/// That is the whole of docs/LIMITATIONS.md L50. `cargo package` honours `exclude`,
-/// so a published tarball routinely omits `tests/` or `benches/` while the
-/// `Cargo.toml` cargo generated for it still declares `[[test]]`/`[[bench]]`
-/// entries pointing into them. `--all-targets` makes cargo resolve those
-/// targets, cargo cannot find the files, and it exits before running a single
-/// build script. Measured directly in the checkouts:
+/// That is the whole of docs/LIMITATIONS.md L50. `cargo package` honours
+/// `exclude`, so a published tarball routinely omits `tests/` or `benches/`
+/// while the `Cargo.toml` cargo generated for it still declares
+/// `[[test]]`/`[[bench]]` entries pointing into them. `--all-targets` makes
+/// cargo resolve those targets, cargo cannot find the files, and it exits
+/// before running a single build script. Measured directly in the checkouts:
 ///
 /// ```text
 /// $ cargo check --all-targets            # result/log-0.4.17
@@ -888,8 +1020,8 @@ fn narrowed_build_script_config(ws: &ProjectWorkspace, cargo_config: &CargoConfi
 ///
 /// Split out from [`narrowed_build_script_config`] so it can be asserted on
 /// without running cargo: `--all-targets` being absent is the entire point of
-/// this file's change, and a test that had to boot rust-analyzer to see it would
-/// never be run.
+/// this file's change, and a test that had to boot rust-analyzer to see it
+/// would never be run.
 fn narrowed_build_script_argv(cargo: &CargoWorkspace, cargo_config: &CargoConfig) -> Vec<String> {
     // Program resolution goes through the same `ra_ap_toolchain` lookup upstream
     // uses for `Tool::Cargo` (`Sysroot::tool` -> `Tool::prefer_proxy`), so an
@@ -901,6 +1033,14 @@ fn narrowed_build_script_argv(cargo: &CargoWorkspace, cargo_config: &CargoConfig
         "--workspace".to_owned(),
         "--message-format=json".to_owned(),
     ];
+    argv.push("--target-dir".to_owned());
+    argv.push(
+        std::env::temp_dir()
+            .join(format!("nudox-ra-target-{}", std::process::id()))
+            .to_str()
+            .expect("temporary target directory must be UTF-8")
+            .to_owned(),
+    );
     argv.extend(cargo_config.extra_args.iter().cloned());
     argv.push("--manifest-path".to_owned());
     argv.push(cargo.manifest_path().to_string());
@@ -944,7 +1084,8 @@ fn narrowed_build_script_argv(cargo: &CargoWorkspace, cargo_config: &CargoConfig
     argv
 }
 
-// ── Phase instrumentation ─────────────────────────────────────────────────────
+// ── Phase instrumentation
+// ─────────────────────────────────────────────────────
 
 /// Run `f` inside a `tracing` span named `phase`.
 ///
@@ -957,13 +1098,14 @@ fn narrowed_build_script_argv(cargo: &CargoWorkspace, cargo_config: &CargoConfig
 /// numbers were actually measured. It is compiled out of release builds
 /// (`cfg!(debug_assertions)`) so a production load does not gain four
 /// unconditional stderr lines per package it did not have before.
-fn time_phase<R>(phase: &'static str, f: impl FnOnce() -> R) -> R {
+fn time_phase<R>(profile: &mut LoadProfile, phase: &'static str, f: impl FnOnce() -> R) -> R {
     let span = tracing::info_span!("ra_load_phase", phase);
     let _guard = span.enter();
     let started = Instant::now();
     let out = f();
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
     tracing::info!(phase, elapsed_ms, "ra_load phase complete");
+    profile.record(phase, elapsed_ms);
     if cfg!(debug_assertions) {
         eprintln!("ra_load phase={phase} elapsed_ms={elapsed_ms:.1}");
     }
@@ -996,15 +1138,45 @@ fn workspace_has_build_script(ws: &ProjectWorkspace) -> bool {
     })
 }
 
-// ── std-integration feature detection ─────────────────────────────────────────
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct WorkspaceCacheKey {
+    manifest: PathBuf,
+    modified: Option<std::time::SystemTime>,
+    len: u64,
+}
+
+fn workspace_cache() -> &'static Mutex<HashMap<WorkspaceCacheKey, ProjectWorkspace>> {
+    static CACHE: OnceLock<Mutex<HashMap<WorkspaceCacheKey, ProjectWorkspace>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn workspace_cache_key(manifest: &ProjectManifest) -> WorkspaceCacheKey {
+    let path: PathBuf = match manifest {
+        ProjectManifest::ProjectJson(path)
+        | ProjectManifest::CargoToml(path)
+        | ProjectManifest::CargoScript(path) => {
+            <ra_ap_project_model::ManifestPath as AsRef<std::path::Path>>::as_ref(path)
+                .to_path_buf()
+        }
+    };
+    let metadata = std::fs::metadata(&path).ok();
+    WorkspaceCacheKey {
+        manifest: path,
+        modified: metadata.as_ref().and_then(|m| m.modified().ok()),
+        len: metadata.map_or(0, |m| m.len()),
+    }
+}
+
+// ── std-integration feature detection
+// ─────────────────────────────────────────
 
 /// Package-name prefix of the shim crates that exist only to let a crates.io
 /// crate compile inside `rust-lang/rust`'s std workspace.
 ///
-/// `rustc-std-workspace-core`, `-alloc` and `-std` are all published stubs whose
-/// entire job is to stand in for the real sysroot crate of the same name. When
-/// Cargo puts one in the graph under the name `core`, it *shadows* the sysroot
-/// `core` for that package.
+/// `rustc-std-workspace-core`, `-alloc` and `-std` are all published stubs
+/// whose entire job is to stand in for the real sysroot crate of the same name.
+/// When Cargo puts one in the graph under the name `core`, it *shadows* the
+/// sysroot `core` for that package.
 const STD_SHIM_PACKAGE_PREFIX: &str = "rustc-std-workspace-";
 
 /// The `--features` list to load with, and what was dropped from it.
@@ -1019,8 +1191,8 @@ const STD_SHIM_PACKAGE_PREFIX: &str = "rustc-std-workspace-";
 /// The cost of bare names is that a multi-member workspace whose members do not
 /// all declare the same feature would make Cargo reject the list. That path is
 /// only ever reached by a workspace that *also* vendors a
-/// `rustc-std-workspace-*` shim, no fixture exercises it, and it fails loudly as
-/// a `Error::Load` rather than silently mis-lowering.
+/// `rustc-std-workspace-*` shim, no fixture exercises it, and it fails loudly
+/// as a `Error::Load` rather than silently mis-lowering.
 struct FeatureSelection {
     /// Feature names to pass to `--features`.
     selected: Vec<String>,
@@ -1101,8 +1273,8 @@ fn select_features_excluding_std_integration(ws: &ProjectWorkspace) -> FeatureSe
 /// Walks the package's own feature graph transitively, because a feature that
 /// looks innocuous (`std`) can enable one that is not (`rustc-dep-of-std`).
 /// Entries take the forms Cargo allows in a `[features]` value: a bare feature
-/// name, `dep:name`, `name/feat`, and `name?/feat` — all of which are reduced to
-/// the leading token before comparison.
+/// name, `dep:name`, `name/feat`, and `name?/feat` — all of which are reduced
+/// to the leading token before comparison.
 fn feature_activates_any(
     features: &rustc_hash::FxHashMap<String, Vec<String>>,
     feature: &str,
@@ -1155,6 +1327,16 @@ fn build_cargo_config(cfg: &ExtractConfig, features: CargoFeatures) -> CargoConf
         sysroot: Some(RustLibSource::Discover),
         all_targets: false,
         set_test: false,
+        // Real corpus checkouts are immutable Nix-store paths. Cargo metadata
+        // can resolve against their vendored sources, but build-script checks
+        // also need a writable target directory for fingerprints and outputs.
+        target_dir_config: TargetDirectoryConfig::Directory(
+            std::env::temp_dir()
+                .join(format!("nudox-ra-target-{}", std::process::id()))
+                .to_str()
+                .expect("temporary target directory must be UTF-8")
+                .into(),
+        ),
         no_deps: false,
         // `CargoFeatures::default()` — what this field held implicitly before
         // this change — is `Selected { features: [], no_default_features:
@@ -1165,35 +1347,29 @@ fn build_cargo_config(cfg: &ExtractConfig, features: CargoFeatures) -> CargoConf
         //
         // `CargoFeatures::All` is the right default here, not
         // `Selected`-with-an-explicit-list:
-        //   - We are a *documentation* engine, not a build. We are not trying to
-        //     reproduce "what a consumer's `Cargo.toml` would activate" (that is
-        //     an infinite family, one per consumer); we are trying to reproduce
-        //     "what public API exists", which is the union over every feature
-        //     the author gated something behind. `docs.rs` made the identical
-        //     call for the identical reason, and is the bar this product is
-        //     measured against (see docs/AGENTS-DOCTRINE.md §0).
-        //   - The stated risk — enabling mutually-exclusive features together,
-        //     or cfg combinations that never occur in a real build — is real,
-        //     but it is a *lowering-time* risk (duplicate/contradictory items;
-        //     the same class as L4), not a *resolution-time* one: `cargo
-        //     metadata` already has to resolve every optional dependency's
-        //     version to build a valid `Cargo.lock`, regardless of which
-        //     features are later activated for compilation. `All` does not make
-        //     an unresolvable offline dependency any more or less resolvable
-        //     than the previous default did — confirmed empirically: a plain
-        //     `cargo metadata --offline` with *no* `--features` flags at all
-        //     already fails identically to `--all-features` for most
-        //     multi-dependency fixtures under `result/` (checked directly
-        //     with the `cargo metadata` CLI; see the L14 report for the list).
-        //     So `All` costs nothing extra offline that `Selected` was not
-        //     already paying, and it is strictly more correct once resolution
-        //     succeeds.
-        //   - A reader who lands on a feature-gated item and finds it inert or
-        //     mutually-exclusive with another isn't worse off than not being
-        //     shown the item existed at all; `Symbol::cfg` (docs/LIMITATIONS.md L3)
-        //     already carries the gating predicate end-to-end to a GUI chip, so
-        //     the reader is told *which* feature they would need — the same
-        //     disclosure docs.rs makes.
+        //   - We are a *documentation* engine, not a build. We are not trying to reproduce "what a
+        //     consumer's `Cargo.toml` would activate" (that is an infinite family, one per
+        //     consumer); we are trying to reproduce "what public API exists", which is the union
+        //     over every feature the author gated something behind. `docs.rs` made the identical
+        //     call for the identical reason, and is the bar this product is measured against (see
+        //     docs/AGENTS-DOCTRINE.md §0).
+        //   - The stated risk — enabling mutually-exclusive features together, or cfg combinations
+        //     that never occur in a real build — is real, but it is a *lowering-time* risk
+        //     (duplicate/contradictory items; the same class as L4), not a *resolution-time* one:
+        //     `cargo metadata` already has to resolve every optional dependency's version to build
+        //     a valid `Cargo.lock`, regardless of which features are later activated for
+        //     compilation. `All` does not make an unresolvable offline dependency any more or less
+        //     resolvable than the previous default did — confirmed empirically: a plain `cargo
+        //     metadata --offline` with *no* `--features` flags at all already fails identically to
+        //     `--all-features` for most multi-dependency fixtures under `result/` (checked directly
+        //     with the `cargo metadata` CLI; see the L14 report for the list). So `All` costs
+        //     nothing extra offline that `Selected` was not already paying, and it is strictly more
+        //     correct once resolution succeeds.
+        //   - A reader who lands on a feature-gated item and finds it inert or mutually-exclusive
+        //     with another isn't worse off than not being shown the item existed at all;
+        //     `Symbol::cfg` (docs/LIMITATIONS.md L3) already carries the gating predicate
+        //     end-to-end to a GUI chip, so the reader is told *which* feature they would need — the
+        //     same disclosure docs.rs makes.
         //
         // The one carve-out is std-integration features: `All` would activate
         // them too, and they are the opposite of "more API" — they swap `core`
@@ -1230,4 +1406,36 @@ fn abs_path(root: &Path) -> Result<AbsPathBuf, Error> {
             .join(root)
     };
     Ok(AbsPathBuf::assert_utf8(path))
+}
+
+#[cfg(test)]
+mod l51_proc_macro_completeness {
+    use super::*;
+
+    /// docs/LIMITATIONS.md L51: proc-macro server absence is only `warn!`'d
+    /// today. It must be a typed completeness axis, visible on the success
+    /// path, and must not make `require_complete` fail (it is a soft
+    /// degradation: extraction still succeeds with fewer entries).
+    #[test]
+    fn missing_proc_macro_server_is_recorded_and_is_not_a_hard_error() {
+        let completeness = LoadCompleteness {
+            dependencies: DependencyResolution::Full,
+            build_scripts: BuildScriptExecution::NotDeclared,
+            proc_macros: ProcMacroAvailability::Unavailable("proc-macro server unavailable".into()),
+        };
+        assert!(
+            completeness.proc_macros().is_unavailable(),
+            "L51: missing server must be typed Unavailable, not only a tracing warn"
+        );
+        assert!(
+            !completeness.is_degraded(),
+            "proc-macro miss is soft: is_degraded must stay false so the table still publishes"
+        );
+        assert!(
+            completeness
+                .require_complete("demo", AcceptedDegradations::default())
+                .is_ok(),
+            "require_complete must not turn a missing proc-macro server into a load error"
+        );
+    }
 }

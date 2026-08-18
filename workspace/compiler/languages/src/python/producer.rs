@@ -25,14 +25,10 @@
 //! `cfg(feature)` gate for that reason: whichever tier `invoke` dispatches to,
 //! a real package must lower and a missing root must be a typed error.
 
-use nudox_ir::body::Language;
 use crate::{PackageSource, Producer, ProducerError, ProducerId};
+use nudox_ir::body::Language;
 
-use crate::python::{
-    emit::emit_package,
-    oracle::PythonOracle,
-    oracle::PythonId,
-};
+use crate::python::{emit::emit_package, oracle::PythonId, oracle::PythonOracle};
 use nudox_ir::lower::Lowering;
 
 // ---------------------------------------------------------------------------
@@ -162,8 +158,43 @@ mod tests {
                 (!n.is_empty()).then_some(n)
             })
             .collect();
-        assert!(names.contains(&"Greeter"), "expected a `Greeter` class entry; got {names:?}");
-        assert!(names.contains(&"greet"), "expected a `greet` method entry; got {names:?}");
+        assert!(
+            names.contains(&"Greeter"),
+            "expected a `Greeter` class entry; got {names:?}"
+        );
+        assert!(
+            names.contains(&"greet"),
+            "expected a `greet` method entry; got {names:?}"
+        );
+        let greet = produced
+            .table
+            .iter()
+            .find(|(_, e)| e.sym().name == "greet")
+            .expect("the real method entry must be present")
+            .1;
+        // Package-relative, not the absolute temp path: `produce()`
+        // (`crate::produce`, `lib.rs`) calls `Lowering::relativize_sources`
+        // unconditionally after every producer's `lower()` returns — "Absolute
+        // parser paths must never become part of IR identity or cross the
+        // engine/GUI seam" (`nudox_ir::lower::Lowering::relativize_sources`'s
+        // own doc comment). This assertion used to compare against
+        // `pkg_dir.join("__init__.py")` (the absolute path `discover_py_files`
+        // reports before relativization), which made this test's pass/fail
+        // depend on the OS temp directory's path — it could never actually
+        // fail on a machine-specific absolute-path regression, only on the
+        // unrelated, deliberate relativization step. `__init__.py` is the
+        // correct, stable expectation: `greet` is declared directly in the
+        // package root, one path segment, exactly what `strip_prefix(pkg_dir)`
+        // leaves behind.
+        assert_eq!(
+            greet.sym().source,
+            std::path::PathBuf::from("__init__.py"),
+            "declared Python methods must retain their source file, package-relative"
+        );
+        assert!(
+            !greet.sym().span.is_empty(),
+            "declared Python methods must retain a non-empty source span"
+        );
     }
 
     #[test]

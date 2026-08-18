@@ -934,7 +934,8 @@ mod tests {
     fn over_limit_is_the_services_verdict_not_a_local_comparison() {
         // `used >= limit` and `over_limit` can disagree during a plan change.
         // The service's own flag is what counts, in both directions.
-        let under_but_flagged = authorized_at(t0(), QuotaKnowledge::Known(snapshot(10, 1000, true)));
+        let under_but_flagged =
+            authorized_at(t0(), QuotaKnowledge::Known(snapshot(10, 1000, true)));
         assert_eq!(under_but_flagged.posture(t0()).tag(), "over_limit");
 
         let at_limit_but_not_flagged =

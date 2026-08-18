@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::ingest::archive::{EntryAllowlist, ExtractionLimits, ingest_archive};
 use crate::server::registry::blob::creation::BlobBuilder;
 use crate::server::registry::identity::PackageCoordinates;
 use crate::server::registry::queue::LeasedJob;
@@ -21,7 +22,6 @@ use crate::server::registry::{RegistryError, error::ResolveError};
 use futures::StreamExt;
 use heart::Retryable;
 use heart::{ContentHash, FailureKind, JobProgress, PackageId, Percent, Phase, ResolutionState};
-use crate::ingest::archive::{EntryAllowlist, ExtractionLimits, ingest_archive};
 use registry::vector::EmbeddingModel;
 
 use crate::server::error::{BadRequestReason, InternalError, ServerError, ServerResult};
@@ -150,16 +150,19 @@ impl<M: EmbeddingModel> Indexer<M> {
 
         let archive_format =
             crate::ecosystem::spec(record.package.coordinates.ecosystem()).archive();
-        Ok(ingest_archive(
+        let toolchain = identity_toolchain(record.package.coordinates.ecosystem());
+        let builder = ingest_archive(
             package,
-            identity_toolchain(record.package.coordinates.ecosystem()),
+            toolchain.clone(),
             std::io::Cursor::new(archive_bytes),
             archive_format,
             ExtractionLimits::DEFAULT,
             EntryAllowlist::SAFE,
         )
         .await
-        .map_err(RegistryError::from)?)
+        .map_err(RegistryError::from)?;
+        strip_archive_root(package, toolchain, builder)
+            .map_err(|error| RegistryError::from(error).into())
     }
 
     /// Produce IR for the package inside an **ephemeral** SmolvmCage
@@ -341,10 +344,9 @@ impl<M: EmbeddingModel> Indexer<M> {
             );
         }
 
-        let emitted =
-            crate::server::registry::blob::emit::emit(&stores.blobs, &stores.outbox, manifest, sections)
-                .await
-                .map_err(RegistryError::from)?;
+        let emitted = crate::server::registry::blob::emit::emit(&stores.blobs, manifest, sections)
+            .await
+            .map_err(RegistryError::from)?;
 
         stores
             .outbox
@@ -435,58 +437,25 @@ impl<M: EmbeddingModel> Indexer<M> {
     async fn archive_url(&self, coordinates: &PackageCoordinates) -> ServerResult<url::Url> {
         use heart::RegistryOrigin;
 
-        let name = coordinates.name.canonical();
-        let version = coordinates.version.canonical();
+        // PyPI needs a live metadata fetch (sdist filenames are not a
+        // mechanical function of the project name — see `pypi_sdist_url`);
+        // the git-native `cpp` plane has no archive URL at all. Both are
+        // handled here, outside the pure builder below, precisely so that
+        // builder can stay free of `&self`/IO and be unit-tested directly.
+        if matches!(coordinates.origin, RegistryOrigin::PyPi) {
+            let name = coordinates.name.canonical();
+            let version = coordinates.version.canonical();
+            return self.pypi_sdist_url(name, &version).await;
+        }
+        if matches!(coordinates.origin, RegistryOrigin::Git) {
+            return Err(ServerError::Internal(
+                InternalError::GitOriginHasNoArchiveUrl,
+            ));
+        }
 
-        let raw_url_string = match &coordinates.origin {
-            RegistryOrigin::CratesIo => {
-                format!("https://static.crates.io/crates/{name}/{name}-{version}.crate")
-            }
-            RegistryOrigin::NpmPublic => {
-                let leaf = name.rsplit('/').next().unwrap_or(name);
-                format!("https://registry.npmjs.org/{name}/-/{leaf}-{version}.tgz")
-            }
-            RegistryOrigin::PyPi => return self.pypi_sdist_url(name, &version).await,
-            RegistryOrigin::NuGet => {
-                let id = name.to_ascii_lowercase();
-                let ver = version.to_ascii_lowercase();
-                format!("https://api.nuget.org/v3-flatcontainer/{id}/{ver}/{id}.{ver}.nupkg")
-            }
-            RegistryOrigin::FlakeHub => {
-                format!("https://api.flakehub.com/f/{name}/{version}.tar.gz")
-            }
-            RegistryOrigin::GoProxy => {
-                // goproxy capital-escaping on module path.
-                let escaped = crate::ecosystem::escape_module_path(name);
-                format!("https://proxy.golang.org/{escaped}/@v/{version}.zip")
-            }
-            RegistryOrigin::MavenCentral => {
-                // canonical is `group:artifact`; sources jar preferred.
-                if let Some((group, artifact)) = name.split_once(':') {
-                    let group_path = group.replace('.', "/");
-                    format!(
-                        "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}-sources.jar"
-                    )
-                } else {
-                    format!(
-                        "https://repo1.maven.org/maven2/{name}/{version}/{name}-{version}-sources.jar"
-                    )
-                }
-            }
-            RegistryOrigin::Custom { url, .. } => {
-                format!(
-                    "{}archives/{name}/{name}-{version}.tar.gz",
-                    ensure_trailing_slash(url)
-                )
-            }
-            // The registry-less `cpp` plane acquires source by git checkout
-            // (RL-14, §7.4), not by archive download — there is no URL to build.
-            RegistryOrigin::Git => {
-                return Err(ServerError::Internal(
-                    InternalError::GitOriginHasNoArchiveUrl,
-                ));
-            }
-        };
+        let raw_url_string = static_archive_url_string(coordinates).unwrap_or_else(|| {
+            unreachable!("PyPi and Git are handled above; every other origin builds a static url")
+        });
 
         url::Url::parse(&raw_url_string).map_err(|_| {
             ServerError::Internal(InternalError::MalformedArchiveUrl {
@@ -807,6 +776,76 @@ fn not_found(coordinates: &PackageCoordinates) -> ServerError {
     )
 }
 
+/// Strip a shared archive-wrapper directory from every staged file's path,
+/// if one is present.
+///
+/// Registry archives conventionally nest every entry under one top-level
+/// directory that is a property of the *archive format*, not the package's
+/// own source layout: crates.io and PyPI sdists wrap in `{name}-{version}/`,
+/// npm tarballs wrap in `package/`. `ingest_archive` (the untrusted-input
+/// sanitizer) intentionally does not interpret archive semantics — it only
+/// enforces path-jail safety — so that wrapper directory survives into the
+/// staged [`BlobBuilder`] verbatim.
+///
+/// `GET /packages/:id/files/*path` (`Server::source_file`) is answered by an
+/// exact match against the manifest's stored [`FileEntry`] paths using the
+/// caller-supplied, package-relative path (e.g. `src/lib.rs`) — a caller has
+/// no way to know an internal archive-format convention, so a manifest that
+/// still carries the wrapper directory can never be found by path. This
+/// normalizes it away right after extraction, once, so every downstream
+/// consumer (the compile phase's materialized source tree, the emitted
+/// manifest, the download surface) sees package-relative paths.
+///
+/// A builder with no single shared leading directory (i.e. files are already
+/// package-relative, or genuinely have no common wrapper) is returned
+/// unchanged.
+fn strip_archive_root(
+    package: PackageId,
+    toolchain: heart::Toolchain,
+    builder: BlobBuilder,
+) -> Result<BlobBuilder, crate::server::registry::BlobError> {
+    let entries: Vec<(smol_str::SmolStr, bytes::Bytes)> = builder
+        .source_files()
+        .map(|(path, bytes)| (path.clone(), bytes.clone()))
+        .collect();
+
+    let Some(prefix) = shared_leading_segment(&entries) else {
+        return Ok(builder);
+    };
+
+    tracing::debug!(
+        %package,
+        %prefix,
+        files = entries.len(),
+        "stripping shared archive-wrapper directory from staged file paths"
+    );
+    let mut stripped = BlobBuilder::new(package, toolchain);
+    for (path, bytes) in entries {
+        let rest = path.strip_prefix(prefix.as_str()).unwrap_or(path.as_str());
+        stripped.push_file(smol_str::SmolStr::new(rest), bytes)?;
+    }
+    Ok(stripped)
+}
+
+/// The archive-wrapper directory every staged file shares (`"{dir}/"`), or
+/// `None` when there is no such single shared leading segment — either the
+/// files are already package-relative, or they genuinely span more than one
+/// top-level directory (no wrapper to strip).
+fn shared_leading_segment(entries: &[(smol_str::SmolStr, bytes::Bytes)]) -> Option<String> {
+    let (first, _) = entries.first()?;
+    let head = first.split('/').next()?;
+    if head.len() == first.len() {
+        // The candidate "prefix" is the whole path: a bare top-level file,
+        // not something nested under a wrapper directory.
+        return None;
+    }
+    let prefix = format!("{head}/");
+    entries
+        .iter()
+        .all(|(path, _)| path.as_str().starts_with(prefix.as_str()))
+        .then_some(prefix)
+}
+
 /// The [`heart::Toolchain`] value fed into [`BlobBuilder::new`] (and, via the
 /// manifest it produces, into [`crate::blob::BlobManifest::identity_bytes`])
 /// for a package's snapshot identity (W9).
@@ -848,6 +887,99 @@ fn ensure_trailing_slash(url: &url::Url) -> String {
         rendered.push('/');
     }
     rendered
+}
+
+/// Build the raw archive-download URL string for every [`heart::RegistryOrigin`]
+/// whose fetch path is a pure function of `coordinates` — every origin except
+/// PyPI (needs a live metadata fetch; sdist filenames are not a mechanical
+/// function of the project name, see [`Indexer::pypi_sdist_url`]) and the
+/// git-native `cpp` plane (no archive URL exists; see `RegistryOrigin::Git`),
+/// both handled by [`Indexer::archive_url`] before falling here.
+///
+/// `PackageName::canonical()` is the identity/dedup form — lowercased, and for
+/// Rust `_`→`-` collapsed, for Maven both group and artifact lowercased.
+/// That's correct for `PackageId` hashing (crates.io/Maven both treat those
+/// variants as the same package for uniqueness) but **wrong** for a fetch URL
+/// against a registry that serves the publisher's exact spelling.
+/// `PackageName::original()` is the literal string the package was registered
+/// under, which is what those origins' real archive paths are keyed on. Each
+/// arm below picks whichever field actually matches what's on the wire; see
+/// the per-arm comments for why (crates.io/Maven need `original`; npm/Go/
+/// NuGet either preserve case in canonical already or the registry is itself
+/// case-insensitive, so `canonical` — or an explicit lowercase, for NuGet —
+/// is correct there). Unit-tested directly in `tests` below, real names only
+/// (`once_cell`, `parking_lot`, `org.antlr:ST4`).
+fn static_archive_url_string(coordinates: &PackageCoordinates) -> Option<String> {
+    use heart::RegistryOrigin;
+
+    let name = coordinates.name.canonical();
+    let original_name = coordinates.name.original();
+    let version = coordinates.version.canonical();
+
+    Some(match &coordinates.origin {
+        RegistryOrigin::CratesIo => {
+            // crates.io's static CDN keys the path on the exact registered
+            // crate name, `_`/`-` included (`once_cell` is served at
+            // `.../once_cell/once_cell-1.19.0.crate`, NOT `.../once-cell/...`
+            // — that 403s). `canonical()` collapses `_`→`-` for identity/
+            // dedup (crates.io treats them as the same crate), which is
+            // right for `PackageId` hashing but wrong here.
+            format!(
+                "https://static.crates.io/crates/{original_name}/{original_name}-{version}.crate"
+            )
+        }
+        RegistryOrigin::NpmPublic => {
+            // npm requires lowercase names at publish time (parse_name
+            // already lowercases both scope and leaf), so canonical ==
+            // what's on the wire; only the scope needs dropping for the
+            // tarball basename.
+            let leaf = name.rsplit('/').next().unwrap_or(name);
+            format!("https://registry.npmjs.org/{name}/-/{leaf}-{version}.tgz")
+        }
+        RegistryOrigin::NuGet => {
+            // NuGet's flat-container feed *requires* lowercase in both the
+            // path and filename regardless of the registered display casing,
+            // so lowercasing here is correct independent of canonical vs.
+            // original.
+            let id = name.to_ascii_lowercase();
+            let ver = version.to_ascii_lowercase();
+            format!("https://api.nuget.org/v3-flatcontainer/{id}/{ver}/{id}.{ver}.nupkg")
+        }
+        RegistryOrigin::GoProxy => {
+            // Go canonical IS the original (module paths are
+            // identity-preserving — see `ecosystem::go::Go::render_canonical`),
+            // so no case is lost; goproxy needs its own `!`-escaping on top,
+            // applied below.
+            let escaped = crate::ecosystem::escape_module_path(name);
+            format!("https://proxy.golang.org/{escaped}/@v/{version}.zip")
+        }
+        RegistryOrigin::MavenCentral => {
+            // Maven Central's repository path is the literal groupId/
+            // artifactId with dots-as-slashes, case-sensitive (e.g.
+            // `org.antlr:ST4` lives at `.../org/antlr/ST4/...`, not
+            // `.../org/antlr/st4/...`). `canonical()` lowercases both
+            // (`render_canonical` in `ecosystem::java`) for identity, same
+            // class of bug as crates.io above — use `original()`'s
+            // `group:artifact` spelling for the fetch path instead.
+            if let Some((group, artifact)) = original_name.split_once(':') {
+                let group_path = group.replace('.', "/");
+                format!(
+                    "https://repo1.maven.org/maven2/{group_path}/{artifact}/{version}/{artifact}-{version}-sources.jar"
+                )
+            } else {
+                format!(
+                    "https://repo1.maven.org/maven2/{original_name}/{version}/{original_name}-{version}-sources.jar"
+                )
+            }
+        }
+        RegistryOrigin::Custom { url, .. } => {
+            format!(
+                "{}archives/{name}/{name}-{version}.tar.gz",
+                ensure_trailing_slash(url)
+            )
+        }
+        RegistryOrigin::PyPi | RegistryOrigin::Git => return None,
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -892,7 +1024,11 @@ mod tests {
         })
         .await;
         assert!(matches!(result, Err(UpstreamError::NotFound)));
-        assert_eq!(calls.load(Ordering::SeqCst), 1, "NotFound must not consume a retry");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "NotFound must not consume a retry"
+        );
     }
 
     #[tokio::test]
@@ -934,7 +1070,10 @@ mod tests {
     fn manifest_with_toolchain(toolchain: heart::Toolchain) -> BlobManifest {
         let mut builder = BlobBuilder::new(test_package(), toolchain);
         builder
-            .push_file(smol_str::SmolStr::new("src/lib.rs"), bytes::Bytes::from_static(b"fn main() {}"))
+            .push_file(
+                smol_str::SmolStr::new("src/lib.rs"),
+                bytes::Bytes::from_static(b"fn main() {}"),
+            )
             .expect("push file");
         attach_empty_ir_sections(&mut builder);
         builder.finalize().expect("finalize").0
@@ -968,7 +1107,8 @@ mod tests {
     }
 
     #[test]
-    fn w9_a_mutable_per_node_toolchain_would_have_perturbed_identity_this_demonstrates_why_the_fix_is_needed() {
+    fn w9_a_mutable_per_node_toolchain_would_have_perturbed_identity_this_demonstrates_why_the_fix_is_needed()
+     {
         // This is NOT the code path in use after the fix (execute_extract_phase
         // no longer reads a mutable per-node toolchain at all) — it documents
         // *why* routing through `identity_toolchain` matters: the underlying
@@ -993,5 +1133,297 @@ mod tests {
             "blob identity is toolchain-sensitive by construction — which is exactly \
              why execute_extract_phase must never feed it a mutable per-node value"
         );
+    }
+
+    // ── archive-wrapper stripping: `GET /packages/:id/files/*path` must serve
+    // by package-relative path, so a registry archive's own `{name}-{version}/`
+    // (crates.io/pypi) or `package/` (npm) wrapper directory must not leak
+    // into the manifest's stored `FileEntry` paths. ──────────────────────────
+
+    fn builder_with_files(files: &[(&str, &'static [u8])]) -> BlobBuilder {
+        let mut builder = BlobBuilder::new(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+        );
+        for (path, bytes) in files {
+            builder
+                .push_file(
+                    smol_str::SmolStr::new(*path),
+                    bytes::Bytes::from_static(bytes),
+                )
+                .expect("push file");
+        }
+        builder
+    }
+
+    #[test]
+    fn strip_archive_root_removes_a_real_crates_io_style_wrapper() {
+        // Mirrors what `curl -s https://static.crates.io/crates/either/either-1.15.0.crate
+        // | tar -tzf -` actually lists: every entry nested under `either-1.15.0/`.
+        let builder = builder_with_files(&[
+            ("either-1.15.0/Cargo.toml", b"[package]"),
+            ("either-1.15.0/src/lib.rs", b"pub enum Either {}"),
+            ("either-1.15.0/LICENSE-MIT", b"MIT"),
+        ]);
+        let stripped = strip_archive_root(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+            builder,
+        )
+        .expect("stripping succeeds");
+
+        let mut paths: Vec<&str> = stripped
+            .source_files()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(
+            paths,
+            vec!["Cargo.toml", "LICENSE-MIT", "src/lib.rs"],
+            "every file must be package-relative after stripping the shared wrapper directory"
+        );
+    }
+
+    #[test]
+    fn strip_archive_root_is_a_no_op_when_files_are_already_package_relative() {
+        let builder =
+            builder_with_files(&[("Cargo.toml", b"[package]"), ("src/lib.rs", b"fn f() {}")]);
+        let stripped = strip_archive_root(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+            builder,
+        )
+        .expect("stripping succeeds");
+
+        let mut paths: Vec<&str> = stripped
+            .source_files()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(paths, vec!["Cargo.toml", "src/lib.rs"]);
+    }
+
+    #[test]
+    fn strip_archive_root_is_a_no_op_when_there_is_no_single_shared_directory() {
+        // Two genuine top-level directories — nothing to strip; stripping the
+        // first path's leading segment here would silently corrupt `src/`.
+        let builder =
+            builder_with_files(&[("src/lib.rs", b"fn f() {}"), ("tests/it.rs", b"fn t() {}")]);
+        let stripped = strip_archive_root(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+            builder,
+        )
+        .expect("stripping succeeds");
+
+        let mut paths: Vec<&str> = stripped
+            .source_files()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        paths.sort_unstable();
+        assert_eq!(paths, vec!["src/lib.rs", "tests/it.rs"]);
+    }
+
+    #[test]
+    fn strip_archive_root_is_a_no_op_for_a_single_bare_top_level_file() {
+        // A one-file package whose only entry has no `/` at all: the "prefix"
+        // would be the whole filename, not a wrapper directory — never strip.
+        let builder = builder_with_files(&[("lib.rs", b"fn f() {}")]);
+        let stripped = strip_archive_root(
+            test_package(),
+            identity_toolchain(crate::ecosystem::Language::Rust),
+            builder,
+        )
+        .expect("stripping succeeds");
+
+        let paths: Vec<&str> = stripped
+            .source_files()
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert_eq!(paths, vec!["lib.rs"]);
+    }
+
+    // ── Defect: identity canonicalization reused for archive-fetch URLs ────
+    //
+    // `static_archive_url_string` is a pure function of `PackageCoordinates`,
+    // so these are plain unit tests — no network, no server, no live-stack
+    // dependency. Real package names throughout (repo doctrine §4): every
+    // crate/module/artifact/package below is a real, published identifier.
+
+    use crate::ecosystem::{Language, PackageNameExt};
+    use heart::RegistryOrigin;
+    use heart::package::PackageName;
+
+    fn coordinates(
+        origin: RegistryOrigin,
+        ecosystem: Language,
+        raw_name: &str,
+        raw_version: &str,
+    ) -> PackageCoordinates {
+        PackageCoordinates {
+            origin,
+            name: PackageName::new(ecosystem, raw_name).expect("valid fixture name"),
+            version: heart::PackageVersion::try_from((ecosystem, raw_version))
+                .expect("valid fixture version"),
+        }
+    }
+
+    #[test]
+    fn crates_io_url_uses_the_original_underscored_name_not_the_hyphenated_canonical() {
+        // Regression for the defect: `once_cell`'s canonical form is
+        // `once-cell` (crates.io dedups `_`/`-` for identity), but the real
+        // crates.io CDN only serves the exact registered spelling. Fetching
+        // the canonical form 403s (verified against the live registry).
+        let coords = coordinates(
+            RegistryOrigin::CratesIo,
+            Language::Rust,
+            "once_cell",
+            "1.19.0",
+        );
+        assert_eq!(
+            coords.name.canonical(),
+            "once-cell",
+            "sanity: canonical really does collapse the underscore"
+        );
+        let url = static_archive_url_string(&coords).expect("crates.io has a static url");
+        assert_eq!(
+            url, "https://static.crates.io/crates/once_cell/once_cell-1.19.0.crate",
+            "must fetch the underscored name crates.io actually serves, not the canonical hyphenated one"
+        );
+    }
+
+    #[test]
+    fn crates_io_url_handles_a_second_real_underscored_crate() {
+        // A second real, independent underscore crate, so the fix is not
+        // accidentally special-cased to `once_cell`.
+        let coords = coordinates(
+            RegistryOrigin::CratesIo,
+            Language::Rust,
+            "parking_lot",
+            "0.12.1",
+        );
+        let url = static_archive_url_string(&coords).expect("crates.io has a static url");
+        assert_eq!(
+            url,
+            "https://static.crates.io/crates/parking_lot/parking_lot-0.12.1.crate"
+        );
+    }
+
+    #[test]
+    fn crates_io_url_is_unaffected_for_a_name_with_no_underscore() {
+        // Non-regression: a plain hyphenated/lowercase name's canonical and
+        // original forms already coincide, so the fix must not change its URL.
+        let coords = coordinates(RegistryOrigin::CratesIo, Language::Rust, "serde", "1.0.203");
+        let url = static_archive_url_string(&coords).expect("crates.io has a static url");
+        assert_eq!(
+            url,
+            "https://static.crates.io/crates/serde/serde-1.0.203.crate"
+        );
+    }
+
+    #[test]
+    fn maven_url_uses_the_original_case_sensitive_group_and_artifact() {
+        // Real Maven Central coordinate: ANTLR's StringTemplate 4 publishes
+        // its artifactId as `ST4` (uppercase) — `org/antlr/ST4/...` on the
+        // real repository. `render_canonical` for Java lowercases both
+        // group and artifact for identity, which would 404 if used for the
+        // fetch path.
+        let coords = coordinates(
+            RegistryOrigin::MavenCentral,
+            Language::Java,
+            "org.antlr:ST4",
+            "4.3",
+        );
+        assert_eq!(
+            coords.name.canonical(),
+            "org.antlr:st4",
+            "sanity: canonical really does lowercase the artifact"
+        );
+        let url = static_archive_url_string(&coords).expect("maven has a static url");
+        assert_eq!(
+            url, "https://repo1.maven.org/maven2/org/antlr/ST4/4.3/ST4-4.3-sources.jar",
+            "must fetch the real case-sensitive `ST4` path, not the lowercased canonical `st4`"
+        );
+    }
+
+    #[test]
+    fn npm_url_drops_the_scope_in_the_tarball_basename_but_keeps_it_in_the_path() {
+        // Real scoped npm package. npm requires lowercase at publish time, so
+        // there is no canonical/original divergence here (unlike Rust/Maven) —
+        // this pins the already-correct scope-handling behavior so a future
+        // change cannot regress it silently.
+        let coords = coordinates(
+            RegistryOrigin::NpmPublic,
+            Language::Typescript,
+            "@types/node",
+            "20.11.5",
+        );
+        let url = static_archive_url_string(&coords).expect("npm has a static url");
+        assert_eq!(
+            url,
+            "https://registry.npmjs.org/@types/node/-/node-20.11.5.tgz"
+        );
+    }
+
+    #[test]
+    fn nuget_url_lowercases_regardless_of_the_registered_display_casing() {
+        // Real NuGet package with mixed-case display name. NuGet's
+        // flat-container feed requires lowercase in both path and filename
+        // unconditionally, so this must lowercase even though `original()`
+        // preserves the display casing.
+        let coords = coordinates(
+            RegistryOrigin::NuGet,
+            Language::CSharp,
+            "Newtonsoft.Json",
+            "13.0.3",
+        );
+        let url = static_archive_url_string(&coords).expect("nuget has a static url");
+        assert_eq!(
+            url,
+            "https://api.nuget.org/v3-flatcontainer/newtonsoft.json/13.0.3/newtonsoft.json.13.0.3.nupkg"
+        );
+    }
+
+    #[test]
+    fn go_proxy_url_preserves_case_via_bang_escaping() {
+        // Real Go module (BurntSushi/toml) whose path contains uppercase
+        // letters. Go's canonical form IS the original (case-preserving), so
+        // this is not the canonical/original defect — it pins the goproxy
+        // `!`-escaping the real proxy protocol requires for uppercase letters.
+        let coords = coordinates(
+            RegistryOrigin::GoProxy,
+            Language::Go,
+            "github.com/BurntSushi/toml",
+            "v1.3.2",
+        );
+        let url = static_archive_url_string(&coords).expect("goproxy has a static url");
+        assert_eq!(
+            url,
+            "https://proxy.golang.org/github.com/!burnt!sushi/toml/@v/v1.3.2.zip"
+        );
+    }
+
+    #[test]
+    fn pypi_and_git_have_no_static_archive_url() {
+        // Both are handled outside this pure builder by `Indexer::archive_url`
+        // (PyPI needs a live metadata fetch; `cpp`/Git has no archive URL at
+        // all) — asserting `None` here, rather than driving them through a
+        // live network call, is exactly the "URL-construction unit test"
+        // that proves the split without hitting the network.
+        let pypi = coordinates(
+            RegistryOrigin::PyPi,
+            Language::Python,
+            "sqlalchemy",
+            "2.0.29",
+        );
+        assert_eq!(static_archive_url_string(&pypi), None);
+
+        let git_coords = PackageCoordinates {
+            origin: RegistryOrigin::Git,
+            name: PackageName::new(Language::Cpp, "fmtlib/fmt").expect("valid fixture name"),
+            version: heart::PackageVersion::try_from((Language::Cpp, "10.2.1"))
+                .expect("valid fixture version"),
+        };
+        assert_eq!(static_archive_url_string(&git_coords), None);
     }
 }

@@ -37,12 +37,14 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nudox_engine::mcp::tools::{
+    GetSymbolArgs, ListVersionsArgs, SearchSymbolsArgs, SelectVersionArgs,
+};
+use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
 use nudox_engine::{
     Engine, EngineConfig, PackageHistorySpec, PackageLoadEvent, PackageVersionSpec,
     ProducerLanguage, SharedStr,
 };
-use nudox_engine::mcp::tools::{GetSymbolArgs, ListVersionsArgs, SearchSymbolsArgs, SelectVersionArgs};
-use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
 use tokio::runtime::Runtime;
 
 // ---------------------------------------------------------------------------
@@ -169,7 +171,9 @@ fn list_versions_reports_all_three_real_memchr_generations() {
                 wait_for_all_generations(&tools).await;
                 tools
                     .do_list_versions(ListVersionsArgs {
-                        package: nudox_engine::mcp::key::PackageLineageDto("cargo:memchr".to_owned()),
+                        package: nudox_engine::mcp::key::PackageLineageDto(
+                            "cargo:memchr".to_owned(),
+                        ),
                     })
                     .await
                     .expect("list_versions must not fail")
@@ -231,7 +235,9 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
 
                 let switched = tools
                     .do_select_version(SelectVersionArgs {
-                        package: nudox_engine::mcp::key::PackageLineageDto("cargo:memchr".to_owned()),
+                        package: nudox_engine::mcp::key::PackageLineageDto(
+                            "cargo:memchr".to_owned(),
+                        ),
                         version: "2.7.6".to_owned(),
                     })
                     .await
@@ -239,7 +245,9 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
 
                 let not_loaded = tools
                     .do_select_version(SelectVersionArgs {
-                        package: nudox_engine::mcp::key::PackageLineageDto("cargo:memchr".to_owned()),
+                        package: nudox_engine::mcp::key::PackageLineageDto(
+                            "cargo:memchr".to_owned(),
+                        ),
                         version: "0.0.1-never-loaded".to_owned(),
                     })
                     .await
@@ -247,7 +255,9 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
 
                 let relist = tools
                     .do_list_versions(ListVersionsArgs {
-                        package: nudox_engine::mcp::key::PackageLineageDto("cargo:memchr".to_owned()),
+                        package: nudox_engine::mcp::key::PackageLineageDto(
+                            "cargo:memchr".to_owned(),
+                        ),
                     })
                     .await
                     .expect("list_versions must not fail");
@@ -264,7 +274,10 @@ fn select_version_switches_the_current_generation_and_reports_not_loaded_honestl
             ..
         } => {
             assert_eq!(version, "2.7.6");
-            assert!(symbol_count > 100, "real memchr 2.7.6 must have a real symbol count");
+            assert!(
+                symbol_count > 100,
+                "real memchr 2.7.6 must have a real symbol count"
+            );
         }
         other => panic!("expected Switched for a loaded version, got {other:?}"),
     }
@@ -345,7 +358,7 @@ fn get_symbol_timeline_spans_three_real_memchr_generations() {
                 let hit = search
                     .hits
                     .iter()
-                    .find(|h| &*h.display_name == "memchr")
+                    .find(|h| &*h.hit.display_name == "memchr")
                     .unwrap_or_else(|| {
                         panic!(
                             "the top-level `memchr` function must be findable by exact \
@@ -353,16 +366,16 @@ fn get_symbol_timeline_spans_three_real_memchr_generations() {
                             search
                                 .hits
                                 .iter()
-                                .map(|h| h.display_name.to_string())
+                                .map(|h| h.hit.display_name.to_string())
                                 .collect::<Vec<_>>()
                         )
                     });
 
                 let key_str = format!(
                     "{}:{}#{}",
-                    hit.key.package.ecosystem.as_str(),
-                    hit.key.package.name.as_str(),
-                    hit.key.intro.to_hex()
+                    hit.hit.key.package.ecosystem.as_str(),
+                    hit.hit.key.package.name.as_str(),
+                    hit.hit.key.intro.to_hex()
                 );
 
                 tools
@@ -470,8 +483,8 @@ fn get_symbol_timeline_spans_three_real_memchr_generations() {
 #[ignore = "drives rust-analyzer over three real cargo workspaces (~30-90s total); \
             run explicitly with --ignored"]
 fn diffing_two_real_memchr_releases_never_claims_an_unsupported_deletion() {
-    use nudox_engine::wire::{DiffVerdict, KeyTierLabel};
     use nudox_engine::mcp::tools::{DiffVersionsArgs, DiffVersionsResult};
+    use nudox_engine::wire::{DiffVerdict, KeyTierLabel};
 
     if !all_memchr_versions_available() {
         eprintln!(
@@ -483,16 +496,16 @@ fn diffing_two_real_memchr_releases_never_claims_an_unsupported_deletion() {
     let runtime = Runtime::new().expect("test runtime must build");
     let case_dir = memchr_root("2.8.3");
 
-    let (result, _cost) = heart::cost::measured(
-        "mcp_versions/memchr/diff_2.8.0_to_2.8.3",
-        &case_dir,
-        || {
+    let (result, _cost) =
+        heart::cost::measured("mcp_versions/memchr/diff_2.8.0_to_2.8.3", &case_dir, || {
             runtime.block_on(async {
                 let tools = make_memchr_history_tools();
                 wait_for_all_generations(&tools).await;
                 tools
                     .do_diff_versions(DiffVersionsArgs {
-                        package: nudox_engine::mcp::key::PackageLineageDto("cargo:memchr".to_owned()),
+                        package: nudox_engine::mcp::key::PackageLineageDto(
+                            "cargo:memchr".to_owned(),
+                        ),
                         from_version: "2.8.0".to_owned(),
                         to_version: "2.8.3".to_owned(),
                         // The whole diff in one page: this test asserts a
@@ -504,10 +517,12 @@ fn diffing_two_real_memchr_releases_never_claims_an_unsupported_deletion() {
                     .await
                     .expect("diff_versions must not fail")
             })
-        },
-    );
+        });
 
-    let DiffVersionsResult::Diff { diff, truncated, .. } = result else {
+    let DiffVersionsResult::Diff {
+        diff, truncated, ..
+    } = result
+    else {
         panic!("both 2.8.0 and 2.8.3 are loaded; got {result:?}");
     };
 

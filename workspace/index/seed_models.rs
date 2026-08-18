@@ -41,8 +41,7 @@ pub const SYSTEM_AUTHORITY_PREFIX: &str = "system/";
 
 /// The six seed model-package names (without the `system/` prefix), in a stable
 /// order (REGISTRYLESS §3.5).
-pub const SYSTEM_MODEL_NAMES: &[&str] =
-    &["libc", "posix", "stdcpp", "pthread", "openssl", "zlib"];
+pub const SYSTEM_MODEL_NAMES: &[&str] = &["libc", "posix", "stdcpp", "pthread", "openssl", "zlib"];
 
 /// Derive the deterministic stem id for a `system/<name>` model package.
 ///
@@ -54,10 +53,8 @@ pub const SYSTEM_MODEL_NAMES: &[&str] =
 /// *same* stem id).
 pub fn system_stem_id(name: &str) -> PackageStemId {
     let canonical = system_stem_name(name);
-    let id = derive::package_id_from_parts([
-        Language::Cpp.as_token().as_bytes(),
-        canonical.as_bytes(),
-    ]);
+    let id =
+        derive::package_id_from_parts([Language::Cpp.as_token().as_bytes(), canonical.as_bytes()]);
     PackageStemId::from_uuid(*id.as_uuid())
 }
 
@@ -84,8 +81,16 @@ struct SystemAlias {
 /// (REGISTRYLESS §3.5, §8). Tokens are lowercased to match the resolver, which
 /// lowercases `dep_name_canonical` before the lookup.
 const SYSTEM_ALIASES: &[SystemAlias] = &[
-    SystemAlias { alias_kind: "find_package", alias: "threads", system_name: "pthread" },
-    SystemAlias { alias_kind: "find_package", alias: "threads::threads", system_name: "pthread" },
+    SystemAlias {
+        alias_kind: "find_package",
+        alias: "threads",
+        system_name: "pthread",
+    },
+    SystemAlias {
+        alias_kind: "find_package",
+        alias: "threads::threads",
+        system_name: "pthread",
+    },
 ];
 
 /// Build the full set of seed ops: the six `system/*` stems, then the curated
@@ -142,7 +147,10 @@ mod tests {
     #[test]
     fn seed_emits_six_stems_and_the_thread_aliases() {
         let ops = system_model_seed_ops();
-        let stems = ops.iter().filter(|op| matches!(op, CatalogOp::UpsertPackage { .. })).count();
+        let stems = ops
+            .iter()
+            .filter(|op| matches!(op, CatalogOp::UpsertPackage { .. }))
+            .count();
         assert_eq!(stems, 6, "six system model stems");
 
         let threads_to_pthread = ops.iter().any(|op| {
@@ -170,7 +178,10 @@ mod tests {
             ]);
             PackageStemId::from_uuid(*id.as_uuid())
         };
-        assert_eq!(via_seeder, via_heart, "system/pthread must derive identically");
+        assert_eq!(
+            via_seeder, via_heart,
+            "system/pthread must derive identically"
+        );
 
         // A cpp git slug through the shared law is deterministic and distinct.
         let zlib = {

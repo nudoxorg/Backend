@@ -416,7 +416,10 @@ mod tests {
 
         let mut ext = every_theme().remove(0);
         ext.motion_scale = 0.0;
-        assert_eq!(ext.scale_duration(Duration::from_millis(160)), Duration::ZERO);
+        assert_eq!(
+            ext.scale_duration(Duration::from_millis(160)),
+            Duration::ZERO
+        );
 
         ext.motion_scale = 0.5;
         assert_eq!(

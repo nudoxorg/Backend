@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::key::{PackageLineageDto, SymbolKeyDto};
 
+/// `skip_serializing_if` predicate for a `bool` that defaults to `false`.
+///
+/// Matches the "boolean-omission discipline" the rest of the MCP surface
+/// already follows for result payloads (§2.10 of `docs/MCP-SURFACE-PLAN.md`):
+/// a `false`/default value is never printed, so absence *is* the false case
+/// rather than a redundant explicit one.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
 // ---------------------------------------------------------------------------
 // Tool arguments
 // ---------------------------------------------------------------------------
@@ -22,7 +32,13 @@ pub struct SearchSymbolsArgs {
     /// Restrict results to these kinds. Valid values are `Module`, `Record`,
     /// `Field`, `Function`, `Alias`, `Trait`, `Impl`, `Enum`, `Variant`,
     /// `Const`, `Static`, `Reexport` and `Param` (case-insensitive). Omit to
-    /// search all kinds.
+    /// search the default scope: every kind above *except* `Field`,
+    /// `Variant` and `Param` — those three are members (only meaningful
+    /// through the type that owns them) and vastly outnumber the
+    /// declarations a reader is usually browsing for. The response's
+    /// `excluded_kinds` names what was held back; pass any of those kinds
+    /// here explicitly to search them, e.g. `["Param"]` to find where a
+    /// parameter is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kinds: Option<Vec<String>>,
 
@@ -59,7 +75,12 @@ pub struct GetSymbolArgs {
 pub enum SymbolFormat {
     /// Identity and rendered signature only.
     Signature,
-    /// Exact declaration text, including a body when the frontend supplied one.
+    /// Exact declaration text, including a body when the frontend supplied
+    /// one — but only when the producer recorded a real file span for this
+    /// declaration. Declarations that exist only after macro expansion
+    /// (common in std-trait-impl-heavy crates, e.g. serde's `Deserialize`
+    /// impls for built-in types) have no such span, so this silently
+    /// degrades to the same text `Signature` would give.
     #[default]
     Source,
 }
@@ -205,7 +226,170 @@ pub struct GraphQueryArgs {
 
 /// Arguments to `graph_schema`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct GraphSchemaArgs {}
+pub struct GraphSchemaArgs {
+    /// Return the verbatim `schema.graphql` SDL instead of the compact card.
+    /// The card is complete for writing a query and names what it omits;
+    /// ask for the SDL only for one of those cases.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub full: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Consolidated tool arguments (docs/MCP-SURFACE-PLAN.md §5.1)
+//
+// These back the merged tool surface (`search`, `read`, `refs`, `packages`).
+// The pre-merge types above (`SearchSymbolsArgs`, `SemanticSearchArgs`,
+// `GetSymbolArgs`, `GetSymbolsArgs`, `FindUsagesArgs`, `GetOccurrencesArgs`,
+// `ListPackagesArgs`, `ListVersionsArgs`) are kept: they remain the stable
+// internal surface `NudoxTools::do_*` is built on (see `tests/mcp_dump_responses.rs`'s
+// own doctrine — it is deliberately written against that layer, not the MCP
+// tool names, so it stays comparable across a redesign), and the merged
+// tools below delegate to them rather than duplicating their logic.
+// ---------------------------------------------------------------------------
+
+/// One or more symbol keys/addresses. Deserializes from a JSON array (the
+/// documented, schema-visible form) or from a bare string for a single read —
+/// the latter is accepted for robustness but not advertised in the schema, so
+/// a client reading the schema sees one clear shape.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(transparent)]
+pub struct KeysArg(#[schemars(with = "Vec<SymbolKeyDto>")] pub Vec<SymbolKeyDto>);
+
+impl From<Vec<SymbolKeyDto>> for KeysArg {
+    fn from(keys: Vec<SymbolKeyDto>) -> Self {
+        Self(keys)
+    }
+}
+
+impl<'de> Deserialize<'de> for KeysArg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum OneOrMany {
+            One(SymbolKeyDto),
+            Many(Vec<SymbolKeyDto>),
+        }
+        Ok(match OneOrMany::deserialize(deserializer)? {
+            OneOrMany::One(key) => KeysArg(vec![key]),
+            OneOrMany::Many(keys) => KeysArg(keys),
+        })
+    }
+}
+
+/// Arguments to `read` (merges `get_symbol` + `get_symbols`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReadArgs {
+    /// 1-32 keys or addresses to read, in one round trip.
+    pub keys: KeysArg,
+    /// Select the compact representation once for the whole batch. Defaults
+    /// to `source`.
+    #[serde(default)]
+    pub format: SymbolFormat,
+}
+
+/// Which direction of reference `refs` follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RefsDirection {
+    /// Symbols that hold a resolved reference to `key` — "who calls this?".
+    #[default]
+    In,
+    /// Exact references owned by `key`'s own declaration body.
+    Out,
+}
+
+/// Arguments to `refs` (merges `find_usages` + `get_occurrences`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RefsArgs {
+    /// The symbol to follow references for, as a key or an address.
+    pub key: SymbolKeyDto,
+    /// `in` (default): symbols referencing `key`. `out`: exact references
+    /// owned by `key`'s own body.
+    #[serde(default)]
+    pub direction: RefsDirection,
+    /// Maximum number of rows. Defaults to 50, capped at 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    /// Opaque pagination cursor from a previous `refs` call's `next_cursor`.
+    /// Omit for the first page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+/// Arguments to `packages` (merges `list_packages` + `list_versions`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PackagesArgs {
+    /// Narrow to one package's loaded generations, as `ecosystem:name`. Omit
+    /// to list every loaded package, each with its loaded versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<PackageLineageDto>,
+}
+
+/// Arguments to `index`.
+///
+/// # Why this supersedes [`IndexPackageArgs`] rather than extending it
+///
+/// `index_package` takes one `purl`, and a PURL is by construction a registry
+/// coordinate. Three things followed from that single field that no additional
+/// optional argument could have fixed:
+///
+/// * a package in a checkout could not be indexed at all — a local root
+///   reached the corpus only through `Engine::start_with_producer`, at process
+///   start, from `NUDOX_PACKAGE_ROOT`;
+/// * indexing two packages meant two round trips, each paying the full
+///   bounded-wait deadline;
+/// * following a dependency edge was not expressible.
+///
+/// `IndexPackageArgs` is kept and still works: it remains the single-target
+/// registry shape, and `do_index_package` still serves it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct IndexArgs {
+    /// The packages to index. Each entry is **either**:
+    ///
+    /// * a package URL — `pkg:<type>/[<namespace>/]<name>@<version>`, with
+    ///   `type` one of `cargo`, `npm`, `pypi`, `golang`, `maven`, `nuget`; or
+    /// * a filesystem path to a package root — the directory holding
+    ///   `Cargo.toml`, `package.json`, `go.mod`, `pom.xml`, `build.gradle`,
+    ///   `pyproject.toml`, a `*.csproj`, `CMakeLists.txt` or
+    ///   `compile_commands.json`. The language is read from which manifest is
+    ///   there, so it does not have to be named.
+    ///
+    /// A target that fails is reported on its own row; the others still land.
+    pub targets: Vec<String>,
+
+    /// Also index the packages these targets declare as dependencies.
+    ///
+    /// **Off by default, deliberately.** Indexing costs seconds to minutes per
+    /// package and a dependency closure is unbounded — a mid-sized npm package
+    /// reaches several hundred. Following it on every call would make the
+    /// cheap question impossible to ask.
+    ///
+    /// Dependencies declared by path (a cargo `path = "../lib"`, an npm
+    /// `"file:../lib"` or `"workspace:*"`) resolve on this filesystem with no
+    /// registry involved, which is what makes this affordable in a monorepo.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dependencies: bool,
+
+    /// How many dependency hops to follow. Defaults to 1; capped at 3.
+    ///
+    /// Ignored unless `dependencies` is set. One hop is what answers "open the
+    /// type this function returns"; the full closure is rarely what was meant
+    /// and always what costs most.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<u32>,
+
+    /// How long to wait, in seconds, before returning with jobs still
+    /// running. Defaults to 120, capped at 600.
+    ///
+    /// The deadline covers the whole batch, not each target. Returning early
+    /// is not a failure: the jobs keep running, and calling `index` again with
+    /// the same targets attaches to them rather than starting a second set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_seconds: Option<u32>,
+}
 
 /// Arguments to `index_package`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

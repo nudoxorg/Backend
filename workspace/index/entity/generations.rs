@@ -2,11 +2,11 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
+use crate::enums::IrStatus;
 use crate::ids::ChannelTip;
 use crate::ids::GenerationStamp;
-use crate::enums::IrStatus;
 use crate::ids::JobKeyHash;
+use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -45,4 +45,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type GenerationRow = Model;
 
 pub const TABLE: &str = "generations";
-

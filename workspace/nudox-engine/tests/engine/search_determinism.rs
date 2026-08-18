@@ -53,6 +53,10 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 
+use nudox_engine::store::{
+    package::{PackageView, Provenance},
+    source::{Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -61,10 +65,6 @@ use nudox_ir::{
     kind::Kind,
     kinds::{Function, Module},
     view::IrView,
-};
-use nudox_engine::store::{
-    package::{PackageView, Provenance},
-    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error},
 };
 
 use nudox_engine::{
@@ -168,32 +168,146 @@ enum Insertion {
 // derivable from the ids.
 
 const AAA_DECLS: &[Decl] = &[
-    Decl { id: 0xF0, name: "aaa-pkg", parent: None, kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xC1, name: "m1", parent: Some(0xF0), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xC2, name: "m2", parent: Some(0xF0), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xC3, name: "m3", parent: Some(0xF0), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xC4, name: "m4", parent: Some(0xF0), kind: DeclKind::Module, visibility: Visibility::Public },
+    Decl {
+        id: 0xF0,
+        name: "aaa-pkg",
+        parent: None,
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xC1,
+        name: "m1",
+        parent: Some(0xF0),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xC2,
+        name: "m2",
+        parent: Some(0xF0),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xC3,
+        name: "m3",
+        parent: Some(0xF0),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xC4,
+        name: "m4",
+        parent: Some(0xF0),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
     // The tie set. Ids deliberately unsorted with respect to their module names.
-    Decl { id: 0x40, name: "dup", parent: Some(0xC1), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0x10, name: "dup", parent: Some(0xC2), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0x70, name: "dup", parent: Some(0xC3), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0x20, name: "dup", parent: Some(0xC4), kind: DeclKind::Function, visibility: Visibility::Public },
+    Decl {
+        id: 0x40,
+        name: "dup",
+        parent: Some(0xC1),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x10,
+        name: "dup",
+        parent: Some(0xC2),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x70,
+        name: "dup",
+        parent: Some(0xC3),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x20,
+        name: "dup",
+        parent: Some(0xC4),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
     // Unicode: two entries whose names differ only by case under Unicode
     // folding, so they share one `NameIndex` bucket and tie exactly like `dup`.
-    Decl { id: 0x33, name: "Ünïcödé", parent: Some(0xC1), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0x11, name: "ünïcödé", parent: Some(0xC2), kind: DeclKind::Function, visibility: Visibility::Public },
+    Decl {
+        id: 0x33,
+        name: "Ünïcödé",
+        parent: Some(0xC1),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x11,
+        name: "ünïcödé",
+        parent: Some(0xC2),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
     // A uniquely-named entry, to prove the collision machinery is selective.
-    Decl { id: 0x55, name: "solo", parent: Some(0xF0), kind: DeclKind::Function, visibility: Visibility::Public },
+    Decl {
+        id: 0x55,
+        name: "solo",
+        parent: Some(0xF0),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
 ];
 
 const ZZZ_DECLS: &[Decl] = &[
-    Decl { id: 0xF1, name: "zzz-pkg", parent: None, kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xD1, name: "n1", parent: Some(0xF1), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xD2, name: "n2", parent: Some(0xF1), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0xD3, name: "n3", parent: Some(0xF1), kind: DeclKind::Module, visibility: Visibility::Public },
-    Decl { id: 0x90, name: "dup", parent: Some(0xD1), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0x50, name: "dup", parent: Some(0xD2), kind: DeclKind::Function, visibility: Visibility::Public },
-    Decl { id: 0xB0, name: "dup", parent: Some(0xD3), kind: DeclKind::Function, visibility: Visibility::Public },
+    Decl {
+        id: 0xF1,
+        name: "zzz-pkg",
+        parent: None,
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xD1,
+        name: "n1",
+        parent: Some(0xF1),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xD2,
+        name: "n2",
+        parent: Some(0xF1),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xD3,
+        name: "n3",
+        parent: Some(0xF1),
+        kind: DeclKind::Module,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x90,
+        name: "dup",
+        parent: Some(0xD1),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0x50,
+        name: "dup",
+        parent: Some(0xD2),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
+    Decl {
+        id: 0xB0,
+        name: "dup",
+        parent: Some(0xD3),
+        kind: DeclKind::Function,
+        visibility: Visibility::Public,
+    },
 ];
 
 /// The ranking a query for `dup` must produce, in every process, forever.
@@ -328,7 +442,8 @@ async fn name_rows(
     let q = SearchQuery {
         text: text.to_owned(),
         kinds: Vec::new(),
-            packages: Vec::new(),
+        exclude_kinds: Vec::new(),
+        packages: Vec::new(),
         limit: 0,
     };
     let (_h, rx) = engine.search(q, generation);
@@ -463,6 +578,7 @@ async fn corpora_built_in_different_orders_rank_identically() {
         let q = SearchQuery {
             text: "fn".to_owned(),
             kinds: Vec::new(),
+            exclude_kinds: Vec::new(),
             packages: Vec::new(),
             limit: 0,
         };
@@ -523,14 +639,38 @@ fn type_section_expected_len() -> usize {
 #[tokio::test]
 async fn public_api_outranks_same_named_private_module() {
     const DECLS: &[Decl] = &[
-        Decl { id: 0x01, name: "vis-pkg", parent: None, kind: DeclKind::Module, visibility: Visibility::Public },
-        Decl { id: 0x02, name: "arch", parent: Some(0x01), kind: DeclKind::Module, visibility: Visibility::Public },
+        Decl {
+            id: 0x01,
+            name: "vis-pkg",
+            parent: None,
+            kind: DeclKind::Module,
+            visibility: Visibility::Public,
+        },
+        Decl {
+            id: 0x02,
+            name: "arch",
+            parent: Some(0x01),
+            kind: DeclKind::Module,
+            visibility: Visibility::Public,
+        },
         // The private implementation-detail module. Its id sorts *first*, so
         // under identity-only tiebreaking it would lead — only the visibility
         // weight can demote it.
-        Decl { id: 0x03, name: "target", parent: Some(0x02), kind: DeclKind::Module, visibility: Visibility::Private },
+        Decl {
+            id: 0x03,
+            name: "target",
+            parent: Some(0x02),
+            kind: DeclKind::Module,
+            visibility: Visibility::Private,
+        },
         // The public API the reader is actually looking for.
-        Decl { id: 0x04, name: "target", parent: Some(0x01), kind: DeclKind::Function, visibility: Visibility::Public },
+        Decl {
+            id: 0x04,
+            name: "target",
+            parent: Some(0x01),
+            kind: DeclKind::Function,
+            visibility: Visibility::Public,
+        },
     ];
 
     let pkg = build_package("vis-pkg", DECLS, Insertion::Forward);
@@ -538,7 +678,11 @@ async fn public_api_outranks_same_named_private_module() {
     wait_for_packages(&engine, 1).await;
 
     let rows = name_rows(&engine, "target", Gen(200)).await;
-    assert_eq!(rows.len(), 2, "both `target` entries must be returned: {rows:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "both `target` entries must be returned: {rows:?}"
+    );
 
     let public_intro = intro(0x04).to_hex();
     let private_intro = intro(0x03).to_hex();
@@ -582,7 +726,9 @@ async fn empty_query_produces_no_name_rows() {
         assert!(
             rows.is_empty(),
             "query {text:?} must match nothing; got {:?}",
-            rows.iter().map(|r| r.display_name.to_string()).collect::<Vec<_>>()
+            rows.iter()
+                .map(|r| r.display_name.to_string())
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -662,7 +808,8 @@ async fn unicode_case_folded_collisions_are_ordered_and_keep_their_casing() {
     // declared spelling of each symbol.
     let joined: Vec<String> = rows.iter().map(|r| r.display_name.to_string()).collect();
     assert!(
-        joined.iter().any(|n| n.ends_with("ünïcödé")) && joined.iter().any(|n| n.ends_with("Ünïcödé")),
+        joined.iter().any(|n| n.ends_with("ünïcödé"))
+            && joined.iter().any(|n| n.ends_with("Ünïcödé")),
         "both declared spellings must be recoverable from the rows; got {joined:?}"
     );
 }

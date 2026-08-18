@@ -412,7 +412,8 @@ fn good_key() -> ApiKey {
 /// Panics rather than skipping, for the same reason the live suite panics on a
 /// missing key: a suite that quietly tests nothing is worse than one that stops.
 fn require_a_clean_environment() {
-    assert!(std::env::var_os(nudox_engine::mcp::account::API_KEY_ENV).is_none(), 
+    assert!(
+        std::env::var_os(nudox_engine::mcp::account::API_KEY_ENV).is_none(),
         "{} is set in this environment. This suite's subject is a gate with NO \
          credential, and the gate reads that variable before the store it is given, so \
          every 'fresh machine' assertion below would silently be testing something \
@@ -458,7 +459,10 @@ fn the_suite_never_points_at_production() {
             "the fake must be loopback, got {}",
             fake.base_url()
         );
-        assert_ne!(fake.base_url(), nudox_engine::mcp::account::DEFAULT_BASE_URL);
+        assert_ne!(
+            fake.base_url(),
+            nudox_engine::mcp::account::DEFAULT_BASE_URL
+        );
     });
 }
 
@@ -480,7 +484,11 @@ fn a_valid_key_is_accepted_and_signs_the_user_in() {
             let posture = gate.sign_in(good_key()).await.expect("the fake accepts it");
 
             match &posture {
-                Posture::Active { account, quota, source } => {
+                Posture::Active {
+                    account,
+                    quota,
+                    source,
+                } => {
                     assert_eq!(account.user, UserId(GOOD_USER));
                     assert_eq!(*source, KeySource::Keychain);
                     assert!(
@@ -492,7 +500,9 @@ fn a_valid_key_is_accepted_and_signs_the_user_in() {
                 other => panic!("expected Active after a successful sign-in, got {other:?}"),
             }
 
-            let summary = gate.account_summary().expect("a signed-in gate has a summary");
+            let summary = gate
+                .account_summary()
+                .expect("a signed-in gate has a summary");
             assert_eq!(summary.user, UserId(GOOD_USER));
             assert_eq!(summary.key_hint, "ndx_…4517");
             assert!(
@@ -528,7 +538,9 @@ fn a_revoked_key_is_refused_and_the_refusal_is_sticky() {
 
             // Sign in while healthy, so there is a real verified state and a
             // real grace window for a revocation to have to override.
-            gate.sign_in(good_key()).await.expect("accepted while healthy");
+            gate.sign_in(good_key())
+                .await
+                .expect("accepted while healthy");
             assert_eq!(gate.posture().tag(), "active");
 
             fake.set_mode(Mode::Revoked);
@@ -741,7 +753,10 @@ fn an_unreachable_service_keeps_a_verified_account_working() {
                 "a developer on a plane must keep working; got {posture:?}"
             );
             assert!(
-                matches!(posture, Posture::Active { .. } | Posture::GraceOffline { .. }),
+                matches!(
+                    posture,
+                    Posture::Active { .. } | Posture::GraceOffline { .. }
+                ),
                 "an unreachable service must not downgrade a verified account to \
                  unauthorised; got {}",
                 posture.tag()

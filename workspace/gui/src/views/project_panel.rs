@@ -48,19 +48,21 @@ use gpui::{
     App, Context, Div, Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString, Stateful,
     StatefulInteractiveElement as _, Styled, Subscription, Task, UniformListScrollHandle, Window,
-    div, px, uniform_list, prelude::FluentBuilder as _,
+    div, prelude::FluentBuilder as _, px, uniform_list,
 };
-use gpui_component::{ActiveTheme as _, IconName, v_flex, h_flex};
-use nudox_engine::wire::{EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList};
-use serde_json::Value as JsonValue;
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
+use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
+use nudox_engine::wire::{
+    EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList,
+};
+use serde_json::Value as JsonValue;
 
 use crate::app::actions::SyncSelected;
 use crate::bridge::drain::drain;
 use crate::bridge::generation::GenSource;
 use crate::motion::tokens::MotionTokens;
 use crate::stores::events::{PackageActivated, PackagesChanged};
-use crate::stores::package::{PackageRow, PackageStatus};
+use crate::stores::package::{PackageAccess, PackageRow, PackageStatus};
 use crate::theme::ext::ThemeExtAccessor as _;
 use crate::ui::EmptyState;
 
@@ -76,74 +78,6 @@ const EMPTY_STATE_DESCRIPTION: &str = concat!(
     "Point lindsey at a package with NUDOX_PACKAGE_ROOT=<path>, ",
     "or use the built-in fixture corpus.",
 );
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Store capability trait
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// The one read capability `ProjectPanel` needs from the package layer.
-///
-/// Narrowed to the smallest possible surface so:
-/// - The panel never sees engine internals or IR types (§14 isolation rule —
-///   a view that can see the IR comes to depend on its shape).
-/// - The trait can be satisfied by a test double with no channel or engine.
-///
-/// The real instantiation is `PackageStore<EngineHandle>` via the blanket
-/// impl at the bottom of this file.
-pub trait PackageAccess: EventEmitter<PackagesChanged> + 'static {
-    /// The current row snapshot.  Returned by value so a render body can hold
-    /// it as a local without keeping a borrow of the store alive.
-    fn rows(&self) -> Vec<PackageRow>;
-
-    /// Summary label (pre-formatted by `PackageStore::summary_label`).
-    fn summary_label(&self) -> SharedString;
-
-    /// Every loaded generation of `package`, newest first.
-    ///
-    /// Delegates synchronously to the engine.  Returns an empty `VersionList`
-    /// when no generation is loaded yet.
-    fn versions(&self, package: &PackageLineageId) -> VersionList;
-
-    /// Switch which generation of `package` the corpus serves.
-    ///
-    /// Returns a one-shot receiver.  The panel drains it into a `VersionEvent`
-    /// handler (LD-18: owned by `_version_drain` field, not detached).
-    fn select_version(
-        &self,
-        package: PackageLineageId,
-        version: &str,
-        generation: Gen,
-    ) -> flume::Receiver<VersionEvent>;
-}
-
-/// Blanket impl: the real `PackageStore<E>` satisfies the trait.
-///
-/// This is a forwarding impl with no conversion — exactly the pattern in
-/// `stores::package::PackageEngine`.
-impl<E: crate::stores::package::PackageEngine> PackageAccess
-    for crate::stores::package::PackageStore<E>
-{
-    fn rows(&self) -> Vec<PackageRow> {
-        self.rows().to_vec()
-    }
-
-    fn summary_label(&self) -> SharedString {
-        self.summary_label()
-    }
-
-    fn versions(&self, package: &PackageLineageId) -> VersionList {
-        self.versions(package)
-    }
-
-    fn select_version(
-        &self,
-        package: PackageLineageId,
-        version: &str,
-        generation: Gen,
-    ) -> flume::Receiver<VersionEvent> {
-        self.select_version(package, version, generation)
-    }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Precomputed row state (§1.1.4)
@@ -198,6 +132,8 @@ struct PreparedPackageRow {
     /// the row and the destination disagree about which symbol a package's
     /// page is.
     root: Option<nudox_engine::SymbolKey>,
+    /// Pre-formatted manifest provenance, if any field is known.
+    provenance_label: Option<SharedString>,
 }
 
 impl PreparedPackageRow {
@@ -212,16 +148,10 @@ impl PreparedPackageRow {
                 status_text: SharedString::from(format!("loading {}…", row.name)),
             },
             PackageStatus::Ready { symbols } => {
-                // Provenance, as far as the wire carries it (GUI-WORKORDER-2
-                // F8). docs.rs shows owner, dependencies, repository, homepage,
-                // licence, release date and a doc-coverage badge; *none* of
-                // those exist on `PackageLoadEvent::Loaded`, which carries
-                // exactly `{ name, ecosystem, version, symbol_count, root }`.
-                // Rather than invent fields the engine cannot fill — an empty
-                // provenance rail is F3 all over again — this shows the two
-                // facts we do hold and have not been showing: which registry
-                // the package came from, and how many of its generations are
-                // resident.
+                // Provenance is projected only from fields the engine actually
+                // extracted. Unknown fields remain absent rather than becoming
+                // guessed labels; the engine also retains this metadata on the
+                // immutable package view for late subscribers.
                 let ecosystem = row
                     .lineage
                     .as_ref()
@@ -246,9 +176,48 @@ impl PreparedPackageRow {
             },
         };
         // Pre-format the current version label once, here, not in render.
-        let current_version_label = versions
-            .current()
-            .map(|v| SharedString::from(format!("v{}", v.version)));
+        let current_version_label = row
+            .current_version
+            .clone()
+            .or_else(|| {
+                versions
+                    .current()
+                    .map(|v| SharedString::from(v.version.to_string()))
+            })
+            .map(|version| SharedString::from(format!("v{version}")));
+        let provenance_label = {
+            let mut fields = Vec::new();
+            if let Some(description) = &row.metadata.description {
+                fields.push(description.clone());
+            }
+            if let Some(repository) = &row.metadata.repository {
+                fields.push(repository.clone());
+            }
+            if let Some(license) = &row.metadata.license {
+                fields.push(format!("license {license}"));
+            }
+            if let Some(owner) = &row.metadata.owner {
+                fields.push(format!("owner {owner}"));
+            }
+            if !row.metadata.dependencies.is_empty() {
+                fields.push(format!("{} dependencies", row.metadata.dependencies.len()));
+            }
+            if let Some(release_date) = &row.metadata.release_date {
+                fields.push(format!("released {release_date}"));
+            }
+            if let Some(homepage) = &row.metadata.homepage {
+                fields.push(format!("homepage {homepage}"));
+            }
+            if let Some(coverage) = &row.metadata.coverage {
+                if coverage.total > 0 {
+                    fields.push(format!(
+                        "docs {}%",
+                        coverage.documented.saturating_mul(100) / coverage.total
+                    ));
+                }
+            }
+            (!fields.is_empty()).then(|| SharedString::from(fields.join(" · ")))
+        };
         PreparedPackageRow {
             name: row.name.clone(),
             status,
@@ -256,6 +225,7 @@ impl PreparedPackageRow {
             current_version_label,
             versions,
             root: row.root.clone(),
+            provenance_label,
         }
     }
 }
@@ -277,7 +247,11 @@ pub fn step_selection(current: Option<usize>, down: bool, len: usize) -> Option<
     }
     let ix = match current {
         None => {
-            if down { 0 } else { len - 1 }
+            if down {
+                0
+            } else {
+                len - 1
+            }
         }
         Some(ix) => {
             if down {
@@ -387,28 +361,31 @@ impl<P: PackageAccess> ProjectPanel<P> {
         // Subscribe to the store.  Fires for every PackagesChanged (engine
         // events arrive in bursts — the drain batches them into one notify and
         // one PackagesChanged per burst, so this fires at most once per frame).
-        let sub = cx.subscribe(&store, |this: &mut Self, store_entity, _: &PackagesChanged, cx| {
-            let s = store_entity.read(cx);
-            let snapshot = s.rows();
-            // We need to call s.versions inside the same read borrow; collect
-            // everything needed into an owned vec before releasing the borrow.
-            let prepared: Vec<PreparedPackageRow> = snapshot
-                .iter()
-                .map(|r| {
-                    let vl = r
-                        .lineage
-                        .as_ref()
-                        .map(|lid| s.versions(lid))
-                        .unwrap_or_else(|| VersionList {
-                            package: default_lineage(),
-                            versions: std::sync::Arc::from(vec![]),
-                        });
-                    PreparedPackageRow::from_row(r, vl)
-                })
-                .collect();
-            drop(s); // release borrow before mutable methods
-            this.refresh_rows(prepared, cx);
-        });
+        let sub = cx.subscribe(
+            &store,
+            |this: &mut Self, store_entity, _: &PackagesChanged, cx| {
+                let s = store_entity.read(cx);
+                let snapshot = s.rows();
+                // We need to call s.versions inside the same read borrow; collect
+                // everything needed into an owned vec before releasing the borrow.
+                let prepared: Vec<PreparedPackageRow> = snapshot
+                    .iter()
+                    .map(|r| {
+                        let vl = r
+                            .lineage
+                            .as_ref()
+                            .map(|lid| s.versions(lid))
+                            .unwrap_or_else(|| VersionList {
+                                package: default_lineage(),
+                                versions: std::sync::Arc::from(vec![]),
+                            });
+                        PreparedPackageRow::from_row(r, vl)
+                    })
+                    .collect();
+                drop(s); // release borrow before mutable methods
+                this.refresh_rows(prepared, cx);
+            },
+        );
 
         Self {
             store,
@@ -547,16 +524,12 @@ impl<P: PackageAccess> ProjectPanel<P> {
         let sp = ext.space;
         let motion = MotionTokens::new(ext.motion_scale);
 
-        div()
-            .w_full()
-            .flex_1()
-            .p(sp.space_4)
-            .child(EmptyState::new(
-                IconName::Inbox,
-                SharedString::from("No packages loaded"),
-                SharedString::from(EMPTY_STATE_DESCRIPTION),
-                motion,
-            ))
+        div().w_full().flex_1().p(sp.space_4).child(EmptyState::new(
+            IconName::Inbox,
+            SharedString::from("No packages loaded"),
+            SharedString::from(EMPTY_STATE_DESCRIPTION),
+            motion,
+        ))
     }
 
     /// Render one package row.
@@ -728,7 +701,18 @@ impl<P: PackageAccess> ProjectPanel<P> {
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .child(status_text),
-                    ),
+                    )
+                    .when_some(row.provenance_label.clone(), |el, label| {
+                        el.child(
+                            div()
+                                .text_size(ts.dense.size)
+                                .line_height(ts.dense.line_height)
+                                .text_color(colours.fg_faint)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .child(label),
+                        )
+                    }),
             )
             // ── Failed badge ──────────────────────────────────────────────────
             // A secondary "FAILED" chip in danger colours to make failures
@@ -991,53 +975,45 @@ impl<P: PackageAccess> Render for ProjectPanel<P> {
         // 32 rows.  A real corpus can easily have hundreds of packages
         // (especially the fixture corpus).  The list is always virtualized.
         let this_for_list = this.clone();
-        let list = uniform_list(
-            "project.packages",
-            row_count,
-            move |range, _window, cx| {
-                range
-                    .map(|ix| {
-                        let Some(row) = rows.get(ix) else {
-                            return div().into_any_element();
-                        };
-                        let selected = selection == Some(ix);
-                        let picker_open = version_picker_open == Some(ix);
-                        let this = this_for_list.clone();
-                        let this_row = this.clone();
+        let list = uniform_list("project.packages", row_count, move |range, _window, cx| {
+            range
+                .map(|ix| {
+                    let Some(row) = rows.get(ix) else {
+                        return div().into_any_element();
+                    };
+                    let selected = selection == Some(ix);
+                    let picker_open = version_picker_open == Some(ix);
+                    let this = this_for_list.clone();
+                    let this_row = this.clone();
 
-                        let root = row.root.clone();
+                    let root = row.root.clone();
 
-                        let row_el = Self::render_row(ix, row, selected, picker_open, this, cx)
-                            .on_click(move |_event, _window, cx| {
-                                let root = root.clone();
-                                let _ = this_row.update(cx, |panel, cx| {
-                                    panel.apply_selection(Some(ix), cx);
-                                    if let Some(root) = root {
-                                        cx.emit(PackageActivated { root });
-                                    }
-                                });
+                    let row_el = Self::render_row(ix, row, selected, picker_open, this, cx)
+                        .on_click(move |_event, _window, cx| {
+                            let root = root.clone();
+                            let _ = this_row.update(cx, |panel, cx| {
+                                panel.apply_selection(Some(ix), cx);
+                                if let Some(root) = root {
+                                    cx.emit(PackageActivated { root });
+                                }
                             });
+                        });
 
-                        // Stack: row + dropdown (when picker is open).
-                        if picker_open {
-                            let dropdown = Self::render_version_dropdown(
-                                ix,
-                                row,
-                                this_for_list.clone(),
-                                cx,
-                            );
-                            v_flex()
-                                .w_full()
-                                .child(row_el)
-                                .child(dropdown)
-                                .into_any_element()
-                        } else {
-                            row_el.into_any_element()
-                        }
-                    })
-                    .collect()
-            },
-        )
+                    // Stack: row + dropdown (when picker is open).
+                    if picker_open {
+                        let dropdown =
+                            Self::render_version_dropdown(ix, row, this_for_list.clone(), cx);
+                        v_flex()
+                            .w_full()
+                            .child(row_el)
+                            .child(dropdown)
+                            .into_any_element()
+                    } else {
+                        row_el.into_any_element()
+                    }
+                })
+                .collect()
+        })
         .h_full()
         .track_scroll(&self.scroll);
 
@@ -1056,12 +1032,7 @@ impl<P: PackageAccess> Render for ProjectPanel<P> {
             .bg(colours.bg_raised)
             .child(header)
             .when_some(error_bar, |el, bar| el.child(bar))
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .child(list),
-            )
+            .child(div().flex_1().overflow_hidden().child(list))
             .into_any_element()
     }
 }
@@ -1150,6 +1121,8 @@ mod tests {
         PackageRow {
             name: SharedString::from(name),
             status: PackageStatus::Pending,
+            metadata: nudox_engine::PackageMetadata::default(),
+            current_version: None,
             lineage: None,
             root: None,
         }
@@ -1159,6 +1132,8 @@ mod tests {
         PackageRow {
             name: SharedString::from(name),
             status: PackageStatus::Ready { symbols },
+            metadata: nudox_engine::PackageMetadata::default(),
+            current_version: None,
             lineage: None,
             root: None,
         }
@@ -1170,6 +1145,8 @@ mod tests {
             status: PackageStatus::Failed {
                 message: SharedString::from(msg),
             },
+            metadata: nudox_engine::PackageMetadata::default(),
+            current_version: None,
             lineage: None,
             root: None,
         }
@@ -1270,6 +1247,37 @@ mod tests {
     }
 
     #[test]
+    fn prepared_row_surfaces_known_provenance_fields() {
+        let mut row = ready("axum", 42);
+        row.metadata = nudox_engine::PackageMetadata {
+            description: Some("HTTP primitives".to_owned()),
+            repository: Some("https://github.com/tokio-rs/axum".to_owned()),
+            license: Some("MIT".to_owned()),
+            owner: Some("tokio-rs".to_owned()),
+            dependencies: vec!["hyper".to_owned(), "tower".to_owned()],
+            release_date: Some("2026-08-01".to_owned()),
+            homepage: Some("https://docs.rs/axum".to_owned()),
+            coverage: Some(nudox_engine::PackageCoverage {
+                documented: 8,
+                total: 10,
+            }),
+        };
+
+        let prepared = PreparedPackageRow::from_row(&row, empty_versions());
+        let label = prepared
+            .provenance_label
+            .expect("known metadata must be prepared for the panel");
+        assert!(label.contains("HTTP primitives"));
+        assert!(label.contains("https://github.com/tokio-rs/axum"));
+        assert!(label.contains("license MIT"));
+        assert!(label.contains("owner tokio-rs"));
+        assert!(label.contains("2 dependencies"));
+        assert!(label.contains("released 2026-08-01"));
+        assert!(label.contains("homepage https://docs.rs/axum"));
+        assert!(label.contains("docs 80%"));
+    }
+
+    #[test]
     fn many_symbols_use_plural() {
         let row = PreparedPackageRow::from_row(&ready("axum", 3060), empty_versions());
         let RowStatus::Ready { symbol_count_label } = &row.status else {
@@ -1352,8 +1360,10 @@ mod tests {
             rows: vec![ready("axum", 10)],
         };
         let raw = store.rows();
-        let prepared: Vec<PreparedPackageRow> =
-            raw.iter().map(|r| PreparedPackageRow::from_row(r, empty_versions())).collect();
+        let prepared: Vec<PreparedPackageRow> = raw
+            .iter()
+            .map(|r| PreparedPackageRow::from_row(r, empty_versions()))
+            .collect();
         // Manual simulation of what refresh_rows does with selection clamping.
         let mut selection: Option<usize> = Some(2);
         if let Some(ix) = selection {
@@ -1370,8 +1380,10 @@ mod tests {
             rows: vec![ready("axum", 10), ready("tower", 5)],
         };
         let raw = store.rows();
-        let prepared: Vec<PreparedPackageRow> =
-            raw.iter().map(|r| PreparedPackageRow::from_row(r, empty_versions())).collect();
+        let prepared: Vec<PreparedPackageRow> = raw
+            .iter()
+            .map(|r| PreparedPackageRow::from_row(r, empty_versions()))
+            .collect();
         let mut selection: Option<usize> = Some(1);
         if let Some(ix) = selection {
             if ix >= prepared.len() {
@@ -1430,10 +1442,7 @@ mod tests {
     #[test]
     fn single_version_chip_is_read_only() {
         use nudox_engine::wire::VersionRow;
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("cargo"),
-            PackageName::new("axum"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("axum"));
         let vlist = VersionList {
             package: lineage.clone(),
             versions: std::sync::Arc::from(vec![VersionRow {
@@ -1455,10 +1464,7 @@ mod tests {
     #[test]
     fn multi_version_picker_is_shown() {
         use nudox_engine::wire::VersionRow;
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("cargo"),
-            PackageName::new("axum"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("axum"));
         let vlist = VersionList {
             package: lineage,
             versions: std::sync::Arc::from(vec![
@@ -1492,10 +1498,7 @@ mod tests {
     fn not_loaded_event_sets_toast() {
         // Simulate what `pick_version` does when the drain receives NotLoaded:
         // it sets `version_not_loaded_toast`.
-        let lineage = PackageLineageId::new(
-            EcosystemId::new("cargo"),
-            PackageName::new("axum"),
-        );
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("axum"));
         let version = nudox_engine::wire::SharedStr::from("9.9.9");
         let generation = Gen(1);
         let event = VersionEvent::NotLoaded {
@@ -1507,15 +1510,16 @@ mod tests {
         //   panel.version_not_loaded_toast = Some(SharedString::from(format!(...)))
         // We verify the formatting here without a full GPUI executor.
         let toast_msg = match &event {
-            VersionEvent::NotLoaded { version, .. } => {
-                Some(SharedString::from(format!("Version {} is not loaded", version)))
-            }
+            VersionEvent::NotLoaded { version, .. } => Some(SharedString::from(format!(
+                "Version {} is not loaded",
+                version
+            ))),
             _ => None,
         };
-        assert!(toast_msg.is_some(), "NotLoaded must produce a toast message");
-        assert_eq!(
-            toast_msg.unwrap().as_ref(),
-            "Version 9.9.9 is not loaded",
+        assert!(
+            toast_msg.is_some(),
+            "NotLoaded must produce a toast message"
         );
+        assert_eq!(toast_msg.unwrap().as_ref(), "Version 9.9.9 is not loaded",);
     }
 }

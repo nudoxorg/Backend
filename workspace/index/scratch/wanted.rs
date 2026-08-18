@@ -83,10 +83,7 @@ pub fn get(connection: &Connection, id: i64) -> Result<Option<WantedRow>> {
 ///
 /// No-ops silently if the id does not exist.
 pub fn mark_fulfilled(connection: &Connection, id: i64) -> Result<()> {
-    connection.execute(
-        "UPDATE wanted SET fulfilled = 1 WHERE id = ?1",
-        params![id],
-    )?;
+    connection.execute("UPDATE wanted SET fulfilled = 1 WHERE id = ?1", params![id])?;
     Ok(())
 }
 

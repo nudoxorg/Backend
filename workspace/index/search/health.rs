@@ -10,12 +10,12 @@ use std::path::PathBuf;
 /// Point-in-time health of a replica-local package Tantivy index.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PackageIndexHealth {
-	/// Schema version the process is currently writing/reading (`SCHEMA_VERSION`).
-	pub schema_version: u32,
-	/// Number of live documents visible to the current searcher.
-	pub num_docs: u64,
-	/// Last absorbed postgres sync watermark position (micros, or 0 if never synced).
-	pub watermark_position: i64,
-	/// On-disk path of the index directory.
-	pub path: PathBuf,
+    /// Schema version the process is currently writing/reading (`SCHEMA_VERSION`).
+    pub schema_version: u32,
+    /// Number of live documents visible to the current searcher.
+    pub num_docs: u64,
+    /// Last absorbed postgres sync watermark position (micros, or 0 if never synced).
+    pub watermark_position: i64,
+    /// On-disk path of the index directory.
+    pub path: PathBuf,
 }

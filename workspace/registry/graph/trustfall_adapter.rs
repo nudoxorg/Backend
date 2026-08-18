@@ -7,9 +7,8 @@
 //!   [`ReversePositionIndex`] for the fast reverse-lookup path.
 //! * Plain-Rust **neighbour methods** on the adapter — these are the load-bearing
 //!   deliverable for this wave.
-//! * [`execute_graph_query`] — a stub with the correct [`trustfall::FieldValue`]
-//!   signature; returns [`Error::Unsupported`] until the Trustfall schema
-//!   is wired in a later wave.
+//! * [`execute_graph_query`] — executes the supported package-local graph
+//!   schema over an [`IrView`].
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -20,6 +19,10 @@ use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::entry::Entry;
 use ir::view::IrView;
 use ir::vocab::Occurrence;
+use trustfall::provider::{
+    AsVertex, BasicAdapter, ContextIterator, ContextOutcomeIterator, EdgeParameters, Typename,
+    VertexIterator, resolve_neighbors_with, resolve_property_with,
+};
 
 use crate::graph::reverse_index::{ReversePositionIndex, typerefs_of_entry};
 
@@ -62,6 +65,12 @@ impl GraphVertex<'_> {
     }
 }
 
+impl Typename for GraphVertex<'_> {
+    fn typename(&self) -> &'static str {
+        self.typename()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Error
 // ---------------------------------------------------------------------------
@@ -69,9 +78,9 @@ impl GraphVertex<'_> {
 /// Errors that can arise from [`execute_graph_query`].
 #[derive(Debug, Error)]
 pub enum Error {
-    /// The Trustfall schema is not yet wired; any query string is unsupported
-    /// in this wave. The string carries the query for diagnostic purposes.
-    #[error("trustfall query is not yet supported: {0}")]
+    /// The query asks for a graph capability that is deliberately not exposed
+    /// by the package-local schema. The string carries the query for diagnostics.
+    #[error("trustfall query is unsupported by the package-local graph schema: {0}")]
     Unsupported(String),
     /// A parse or execution error from the Trustfall runtime.
     #[error("query parse/execute error: {0}")]
@@ -144,9 +153,9 @@ impl<'a> IrTrustfallAdapter<'a> {
     /// Field-type mentions are deferred to a later wave (see the `NOTE` in
     /// `typerefs_of_entry`).
     pub fn type_refs(&self, intro: IntroId) -> Vec<StableRef> {
-        self.ir
-            .entry(intro)
-            .map_or_else(Vec::new, |entry| typerefs_of_entry(entry, self.ir.package()))
+        self.ir.entry(intro).map_or_else(Vec::new, |entry| {
+            typerefs_of_entry(entry, self.ir.package())
+        })
     }
 
     /// The parent (enclosing) entry of `intro`, if any.
@@ -189,28 +198,279 @@ impl<'a> IrTrustfallAdapter<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// execute_graph_query  (stub — correct types, schema wired in later wave)
+// Trustfall schema and adapter
 // ---------------------------------------------------------------------------
+
+/// The graph surface that can be answered from one in-memory [`IrView`].
+///
+/// `DependsOn` is intentionally absent: it requires the catalog-edge join,
+/// which is not available to this package-local adapter. Cross-package targets
+/// also remain scalar `StableRef` values rather than vertices because the
+/// adapter owns exactly one `IrView`.
+const SCHEMA: &str = r#"
+schema { query: RootSchemaQuery }
+
+directive @filter(op: String!, value: [String!]) repeatable on FIELD | INLINE_FRAGMENT
+directive @tag(name: String) on FIELD
+directive @output(name: String) on FIELD
+directive @optional on FIELD
+directive @recurse(depth: Int!) on FIELD
+directive @fold on FIELD
+directive @transform(op: String!) on FIELD
+
+type RootSchemaQuery {
+    Package: Package!
+    Entries: [Entry!]!
+}
+
+type Package {
+    name: String!
+    ecosystem: String!
+    lineage: String!
+    entries: [Entry!]!
+}
+
+type Entry {
+    name: String!
+    stableRef: String!
+    members: [Entry!]!
+    occurrences: [Occ!]!
+    typeRefs: [Entry!]!
+    lineage: Entry
+    usages: [Entry!]!
+}
+
+type Occ {
+    target: String!
+    kind: String!
+    confidence: Int!
+    occTarget: Entry
+}
+"#;
+
+fn schema() -> Result<trustfall::Schema, Error> {
+    trustfall::Schema::parse(SCHEMA).map_err(|error| Error::Execute(error.to_string()))
+}
+
+/// Thin owned wrapper required by Trustfall's `Arc<Adapter>` execution API.
+struct QueryAdapter<'a> {
+    graph: &'a IrTrustfallAdapter<'a>,
+}
+
+impl<'a> QueryAdapter<'a> {
+    fn local_entry(&self, target: &StableRef) -> Option<GraphVertex<'a>> {
+        local_entry(self.graph.ir, target)
+    }
+}
+
+fn local_entry<'a>(ir: &'a IrView, target: &StableRef) -> Option<GraphVertex<'a>> {
+    (target.package == *ir.package())
+        .then(|| ir.entry(target.intro))
+            .flatten()
+            .map(|entry| GraphVertex::Entry {
+                intro: target.intro,
+                entry,
+            })
+}
+
+impl<'a> BasicAdapter<'a> for QueryAdapter<'a> {
+    type Vertex = GraphVertex<'a>;
+
+    fn resolve_starting_vertices(
+        &self,
+        edge_name: &str,
+        parameters: &EdgeParameters,
+    ) -> VertexIterator<'a, Self::Vertex> {
+        debug_assert!(parameters.is_empty());
+        match edge_name {
+            "Package" => Box::new(std::iter::once(GraphVertex::Package(
+                self.graph.ir.package(),
+            ))),
+            "Entries" => Box::new(
+                self.graph
+                    .ir
+                    .entries_sorted()
+                    .map(|(intro, entry)| GraphVertex::Entry { intro, entry }),
+            ),
+            _ => Box::new(std::iter::empty()),
+        }
+    }
+
+    fn resolve_property<V: AsVertex<Self::Vertex> + 'a>(
+        &self,
+        contexts: ContextIterator<'a, V>,
+        type_name: &str,
+        property_name: &str,
+    ) -> ContextOutcomeIterator<'a, V, trustfall::FieldValue> {
+        let package = self.graph.ir.package();
+        match (type_name, property_name) {
+            ("Package", "name") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Package(package) => package.name.as_str().into(),
+                _ => unreachable!("Trustfall supplied a non-Package vertex"),
+            }),
+            ("Package", "ecosystem") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Package(package) => package.ecosystem.as_str().into(),
+                _ => unreachable!("Trustfall supplied a non-Package vertex"),
+            }),
+            ("Package", "lineage") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Package(package) => package.to_string().into(),
+                _ => unreachable!("Trustfall supplied a non-Package vertex"),
+            }),
+            ("Entry", "name") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Entry { entry, .. } => entry.sym().name.as_str().into(),
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            ("Entry", "stableRef") => resolve_property_with(contexts, move |vertex| match vertex {
+                GraphVertex::Entry { intro, .. } => {
+                    StableRef::new(package.clone(), *intro).to_string().into()
+                }
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            ("Occ", "target") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Occ(occ) => occ.target.to_string().into(),
+                _ => unreachable!("Trustfall supplied a non-Occ vertex"),
+            }),
+            ("Occ", "kind") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Occ(occ) => format!("{:?}", occ.kind).into(),
+                _ => unreachable!("Trustfall supplied a non-Occ vertex"),
+            }),
+            ("Occ", "confidence") => resolve_property_with(contexts, |vertex| match vertex {
+                GraphVertex::Occ(occ) => match occ.confidence {
+                    ir::vocab::Confidence::Syntactic => 0_i64.into(),
+                    ir::vocab::Confidence::Suffix => 1_i64.into(),
+                    ir::vocab::Confidence::Index => 2_i64.into(),
+                    ir::vocab::Confidence::Import => 3_i64.into(),
+                    ir::vocab::Confidence::Oracle => 4_i64.into(),
+                },
+                _ => unreachable!("Trustfall supplied a non-Occ vertex"),
+            }),
+            _ => unreachable!("Trustfall requested a schema field without a resolver"),
+        }
+    }
+
+    fn resolve_neighbors<V: AsVertex<Self::Vertex> + 'a>(
+        &self,
+        contexts: ContextIterator<'a, V>,
+        type_name: &str,
+        edge_name: &str,
+        parameters: &EdgeParameters,
+    ) -> ContextOutcomeIterator<'a, V, VertexIterator<'a, Self::Vertex>> {
+        debug_assert!(parameters.is_empty());
+        let graph = self.graph;
+        match (type_name, edge_name) {
+            ("Package", "entries") => resolve_neighbors_with(contexts, move |vertex| {
+                match vertex {
+                    GraphVertex::Package(_) => Box::new(
+                        graph
+                            .ir
+                            .entries_sorted()
+                            .map(|(intro, entry)| GraphVertex::Entry { intro, entry }),
+                    ),
+                    _ => unreachable!("Trustfall supplied a non-Package vertex"),
+                }
+            }),
+            ("Entry", "members") => resolve_neighbors_with(contexts, move |vertex| match vertex {
+                GraphVertex::Entry { intro, .. } => {
+                    Box::new(graph.members(*intro).filter_map(|child| {
+                        graph.ir.entry(child).map(|entry| GraphVertex::Entry {
+                            intro: child,
+                            entry,
+                        })
+                    }))
+                }
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            ("Entry", "occurrences") => {
+                resolve_neighbors_with(contexts, move |vertex| match vertex {
+                    GraphVertex::Entry { intro, .. } => Box::new(
+                        graph
+                            .ir
+                            .occurrences_of(*intro)
+                            .iter()
+                            .filter(|occ| occ.confidence.is_graph_worthy())
+                            .map(GraphVertex::Occ),
+                    ),
+                    _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+                })
+            }
+            ("Occ", "occTarget") => resolve_neighbors_with(contexts, move |vertex| match vertex {
+                GraphVertex::Occ(occ) => Box::new(local_entry(graph.ir, &occ.target).into_iter()),
+                _ => unreachable!("Trustfall supplied a non-Occ vertex"),
+            }),
+            ("Entry", "typeRefs") => resolve_neighbors_with(contexts, move |vertex| match vertex {
+                GraphVertex::Entry { intro, .. } => {
+                    let targets = graph.type_refs(*intro);
+                    Box::new(
+                        targets
+                            .into_iter()
+                            .filter_map(move |target| local_entry(graph.ir, &target)),
+                    )
+                }
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            ("Entry", "lineage") => resolve_neighbors_with(contexts, move |vertex| match vertex {
+                GraphVertex::Entry { intro, .. } => {
+                    Box::new(graph.lineage(*intro).into_iter().filter_map(|parent| {
+                        graph.ir.entry(parent).map(|entry| GraphVertex::Entry {
+                            intro: parent,
+                            entry,
+                        })
+                    }))
+                }
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            ("Entry", "usages") => resolve_neighbors_with(contexts, move |vertex| match vertex {
+                GraphVertex::Entry { intro, .. } => {
+                    let target = StableRef::new(graph.ir.package().clone(), *intro);
+                    Box::new(graph.usages(&target).into_iter().filter_map(|owner| {
+                        graph.ir.entry(owner).map(|entry| GraphVertex::Entry {
+                            intro: owner,
+                            entry,
+                        })
+                    }))
+                }
+                _ => unreachable!("Trustfall supplied a non-Entry vertex"),
+            }),
+            _ => unreachable!("Trustfall requested a schema edge without a resolver"),
+        }
+    }
+
+    fn resolve_coercion<V: AsVertex<Self::Vertex> + 'a>(
+        &self,
+        _contexts: ContextIterator<'a, V>,
+        _type_name: &str,
+        _coerce_to_type: &str,
+    ) -> ContextOutcomeIterator<'a, V, bool> {
+        unreachable!("the package-local graph schema has no subtypes")
+    }
+}
 
 /// Execute a Trustfall query against the IR graph.
 ///
-/// **This wave:** always returns [`Error::Unsupported`].  The full
-/// Trustfall `Adapter` trait implementation, schema `.toml`, and query execution
-/// loop are deferred to a later wave.  The hand-rolled neighbour methods on
-/// [`IrTrustfallAdapter`] are the load-bearing deliverable for INDEX-PLAN §5.5
-/// Wave 1.
+/// The supported schema covers one package's entries, their containment and
+/// lineage, graph-worthy occurrences, local occurrence/type-reference targets,
+/// and reverse usages. See [`SCHEMA`] for the exact public field names.
 ///
-/// The function signature is kept correct so that a later wave can implement the
-/// body without touching any call sites: it already references real
-/// [`trustfall::FieldValue`] and the error type is stable.
-pub fn execute_graph_query(
-    adapter: &IrTrustfallAdapter<'_>,
+/// The catalog-backed `DependsOn` edge is intentionally unavailable here and
+/// returns [`Error::Unsupported`]. Other malformed or schema-invalid queries
+/// return [`Error::Execute`] with Trustfall's diagnostic.
+pub fn execute_graph_query<'a>(
+    adapter: &'a IrTrustfallAdapter<'a>,
     query: &str,
-    _args: BTreeMap<Arc<str>, trustfall::FieldValue>,
+    args: BTreeMap<Arc<str>, trustfall::FieldValue>,
 ) -> Result<Vec<BTreeMap<Arc<str>, trustfall::FieldValue>>, Error> {
-    // Suppress unused-variable lint while the body is a stub.
-    let _ = adapter.ir;
-    Err(Error::Unsupported(query.to_owned()))
+    if query.contains("DependsOn") {
+        return Err(Error::Unsupported(query.to_owned()));
+    }
+
+    let rows = trustfall::execute_query(
+        &schema()?,
+        Arc::new(QueryAdapter { graph: adapter }),
+        query,
+        args,
+    )
+    .map_err(|error| Error::Execute(error.to_string()))?;
+    Ok(rows.collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -416,16 +676,108 @@ mod tests {
         assert_eq!(children.len(), 2);
     }
 
-    /// `execute_graph_query` is a stub returning `Unsupported` this wave.
+    /// The package root and containment edge execute through the Trustfall
+    /// schema, returning the child symbol's name.
     #[test]
-    fn execute_graph_query_is_stub() {
+    fn execute_graph_query_traverses_package_members() {
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("root"), None);
+        table.insert_live(intro(2), function("child"), Some(intro(1)));
+        let ir = IrView::with_package(pkg_id(), table);
+        let adapter = IrTrustfallAdapter::new(&ir);
+
+        let result = execute_graph_query(
+            &adapter,
+            "{ Package { entries { name @filter(op: \"=\", value: [\"root\"]) members { child: name @output } } } }",
+            BTreeMap::new(),
+        )
+        .expect("supported package-local query must execute");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0]["child"],
+            trustfall::FieldValue::String("child".into())
+        );
+    }
+
+    /// Reverse usages use the adapter's graph-worthy occurrence projection.
+    #[test]
+    fn execute_graph_query_traverses_reverse_usages() {
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), function("caller"), None);
+        table.insert_live(intro(2), function("callee"), None);
+        let mut ir = IrView::with_package(pkg_id(), table);
+        ir.add_occurrence(
+            intro(1),
+            Occurrence::new(
+                sref_local(2),
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                RelSpan::new(0, 5),
+            ),
+        );
+        let adapter = IrTrustfallAdapter::new(&ir);
+
+        let result = execute_graph_query(
+            &adapter,
+            "{ Entries { name @filter(op: \"=\", value: [\"callee\"]) usages { caller: name @output } } }",
+            BTreeMap::new(),
+        )
+        .expect("supported reverse-usage query must execute");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0]["caller"],
+            trustfall::FieldValue::String("caller".into())
+        );
+    }
+
+    /// Occurrence targets resolve as local graph vertices, preserving the
+    /// scalar target key for cross-package references that cannot be loaded.
+    #[test]
+    fn execute_graph_query_traverses_occurrence_target() {
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), function("caller"), None);
+        table.insert_live(intro(2), function("callee"), None);
+        let mut ir = IrView::with_package(pkg_id(), table);
+        ir.add_occurrence(
+            intro(1),
+            Occurrence::new(
+                sref_local(2),
+                ReferenceKind::FunctionCall,
+                Confidence::Index,
+                RelSpan::new(0, 5),
+            ),
+        );
+        let adapter = IrTrustfallAdapter::new(&ir);
+
+        let result = execute_graph_query(
+            &adapter,
+            "{ Entries { name @filter(op: \"=\", value: [\"caller\"]) occurrences { occTarget { callee: name @output } } } }",
+            BTreeMap::new(),
+        )
+        .expect("supported occurrence-target query must execute");
+
+        assert_eq!(
+            result[0]["callee"],
+            trustfall::FieldValue::String("callee".into())
+        );
+    }
+
+    /// Catalog-backed dependency edges are explicitly unavailable from one
+    /// package-local IR view rather than being reported as a generic parse error.
+    #[test]
+    fn execute_graph_query_rejects_deferred_dependency_edge() {
         let ir = IrView::with_package(pkg_id(), PristineIntroTable::new());
         let adapter = IrTrustfallAdapter::new(&ir);
-        let result = execute_graph_query(&adapter, "{ Package { name } }", BTreeMap::new());
-        assert!(
-            matches!(result, Err(Error::Unsupported(_))),
-            "execute_graph_query must be a stub returning Unsupported this wave"
+
+        let result = execute_graph_query(
+            &adapter,
+            "{ Package { DependsOn { name } } }",
+            BTreeMap::new(),
         );
+
+        assert!(matches!(result, Err(Error::Unsupported(_))));
     }
 
     /// `GraphVertex::typename` returns the correct type name for each shape.

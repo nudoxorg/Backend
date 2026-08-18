@@ -14,7 +14,7 @@
 //! per-item basis; `Cancelled` panics are re-raised so the top-level driver can
 //! retry the salsa database.  Other panics are logged and the item is skipped.
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 use ra_ap_hir::{Impl, Module, ModuleDef};
 
@@ -52,10 +52,7 @@ where
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 /// Lower every documented item in `ctx.krate` into `out`.
-pub(crate) fn lower_crate(
-    ctx: &mut LowerCtx<'_>,
-    out: &mut Lowering<RaId>,
-) -> Result<(), Error> {
+pub(crate) fn lower_crate(ctx: &mut LowerCtx<'_>, out: &mut Lowering<RaId>) -> Result<(), Error> {
     // ── Same-display-name guard ───────────────────────────────────────────────
     //
     // Cargo lets a `[[bench]]`, `[[test]]`, or `[[example]]` target share its
@@ -107,6 +104,7 @@ pub(crate) fn lower_crate(
         }
     }
 
+    let modules_started = Instant::now();
     for module in &modules {
         let _mod_def = ModuleDef::Module(*module);
         let mod_parent: Option<RaId> = module
@@ -149,6 +147,11 @@ pub(crate) fn lower_crate(
             );
         }
     }
+    super::phase_complete(
+        "lower_modules",
+        modules_started.elapsed(),
+        format!("modules={}", modules.len()),
+    );
 
     // Second pass: lower all impl blocks (including macro-generated ones inside
     // `const _: () = { … }` blocks that `Module::impl_defs` misses).
@@ -189,12 +192,19 @@ pub(crate) fn lower_crate(
         })
         .collect();
 
+    let impls_count = impls.len();
+    let impls_started = Instant::now();
     for (imp, parent_id) in impls {
         let _ = catch_non_cancelled(
             std::panic::AssertUnwindSafe(|| item::lower_impl(ctx, imp, parent_id, out)),
             Ok(()),
         );
     }
+    super::phase_complete(
+        "lower_impls",
+        impls_started.elapsed(),
+        format!("impls={impls_count}"),
+    );
 
     Ok(())
 }

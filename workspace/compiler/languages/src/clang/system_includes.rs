@@ -102,7 +102,9 @@ fn discover() -> Vec<PathBuf> {
                 );
             }
             Err(e) => {
-                eprintln!("nudox-languages: could not run `{driver}` to discover system include paths: {e}");
+                eprintln!(
+                    "nudox-languages: could not run `{driver}` to discover system include paths: {e}"
+                );
             }
         }
     }
@@ -218,7 +220,10 @@ End of search list.
 
     #[test]
     fn missing_search_list_yields_empty_not_a_panic() {
-        assert_eq!(parse_search_list("no useful output here"), Vec::<PathBuf>::new());
+        assert_eq!(
+            parse_search_list("no useful output here"),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]

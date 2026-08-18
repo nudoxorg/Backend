@@ -18,7 +18,9 @@ use smol_str::SmolStr;
 
 /// Build a `MemberKey::Source` from a path string.
 fn source_key(path: &str) -> MemberKey {
-    MemberKey::Source { path: RelativePath(SmolStr::new(path)) }
+    MemberKey::Source {
+        path: RelativePath(SmolStr::new(path)),
+    }
 }
 
 /// Seal a builder to bytes, panicking (test-only) on error.
@@ -61,7 +63,10 @@ fn shuffled_insertion_order_is_byte_identical() {
     };
 
     assert_eq!(forward.1, reversed.1, "ids must match under shuffle");
-    assert_eq!(forward.0, reversed.0, "bytes must be identical under shuffle");
+    assert_eq!(
+        forward.0, reversed.0,
+        "bytes must be identical under shuffle"
+    );
 }
 
 #[test]
@@ -69,7 +74,10 @@ fn same_tree_built_twice_is_identical() {
     let build = || {
         let mut builder = ObjectPackBuilder::new();
         builder
-            .add_member(source_key("src/lib.rs"), Bytes::from_static(b"pub fn a() {}"))
+            .add_member(
+                source_key("src/lib.rs"),
+                Bytes::from_static(b"pub fn a() {}"),
+            )
             .expect("add");
         builder
             .add_member(source_key("Cargo.toml"), Bytes::from_static(b"[package]"))
@@ -135,7 +143,10 @@ fn duplicate_member_is_rejected() {
     let err = builder
         .add_member(source_key("dup.rs"), Bytes::from_static(b"two"))
         .expect_err("duplicate must be rejected");
-    assert!(matches!(err, PackError::DuplicateMember { .. }), "got {err:?}");
+    assert!(
+        matches!(err, PackError::DuplicateMember { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +161,10 @@ fn truncation_at_every_length_never_panics() {
         .add_member(source_key("a.rs"), Bytes::from_static(b"some content here"))
         .expect("add");
     builder
-        .add_member(source_key("b.rs"), Bytes::from_static(b"more content over here"))
+        .add_member(
+            source_key("b.rs"),
+            Bytes::from_static(b"more content over here"),
+        )
         .expect("add");
     let full = seal(builder);
 
@@ -166,10 +180,8 @@ fn truncation_at_every_length_never_panics() {
     // reliable figure is `sealed_bytes`, asserted below.
     let sealed_bytes = full.len();
     let scratch = tempfile::tempdir().expect("tempdir");
-    let (opened_ok, _cost) = heart::cost::measured(
-        "object_pack/truncation_sweep",
-        scratch.path(),
-        || {
+    let (opened_ok, _cost) =
+        heart::cost::measured("object_pack/truncation_sweep", scratch.path(), || {
             let mut opened_ok = 0usize;
             for length in 0..full.len() {
                 let truncated = full.slice(0..length);
@@ -187,8 +199,7 @@ fn truncation_at_every_length_never_panics() {
                 }
             }
             opened_ok
-        },
-    );
+        });
 
     // Assert on content, not just on "it didn't panic": a strict prefix of a
     // well-formed pack must never be mistaken for a complete one, so of the
@@ -225,7 +236,10 @@ fn corrupted_toc_byte_is_detected() {
     let (full, original_id) = {
         let mut builder = ObjectPackBuilder::new();
         builder
-            .add_member(source_key("toc.rs"), Bytes::from_static(b"content for toc test"))
+            .add_member(
+                source_key("toc.rs"),
+                Bytes::from_static(b"content for toc test"),
+            )
             .expect("add");
         builder.seal_to_bytes().expect("seal")
     };
@@ -285,7 +299,12 @@ fn range_read_edge_cases() {
     let total = content.len() as u64;
 
     // Empty range.
-    assert!(reader.get_member_range(&key, 0..0).expect("empty").is_empty());
+    assert!(
+        reader
+            .get_member_range(&key, 0..0)
+            .expect("empty")
+            .is_empty()
+    );
 
     // Range exactly at a chunk boundary.
     let at_boundary = reader
@@ -301,7 +320,10 @@ fn range_read_edge_cases() {
     let err = reader
         .get_member_range(&key, 0..(total + 1))
         .expect_err("past end");
-    assert!(matches!(err, PackError::RangeOutOfBounds { .. }), "got {err:?}");
+    assert!(
+        matches!(err, PackError::RangeOutOfBounds { .. }),
+        "got {err:?}"
+    );
 
     // start > end -> typed error.
     let start = 10_u64;
@@ -309,7 +331,10 @@ fn range_read_edge_cases() {
     let err = reader
         .get_member_range(&key, start..end)
         .expect_err("inverted range");
-    assert!(matches!(err, PackError::RangeOutOfBounds { .. }), "got {err:?}");
+    assert!(
+        matches!(err, PackError::RangeOutOfBounds { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +352,10 @@ fn zero_member_pack_round_trips() {
     let err = reader
         .get_member(&source_key("nope.rs"))
         .expect_err("no members");
-    assert!(matches!(err, PackError::MemberNotFound { .. }), "got {err:?}");
+    assert!(
+        matches!(err, PackError::MemberNotFound { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -364,12 +392,10 @@ fn huge_member_key_round_trips() {
 /// path rejection (covered elsewhere).
 fn arbitrary_members() -> impl Strategy<Value = Vec<(String, Vec<u8>)>> {
     let segment = "[a-z][a-z0-9_]{0,7}";
-    let path = prop::collection::vec(segment, 1..4)
-        .prop_map(|segments| segments.join("/"));
+    let path = prop::collection::vec(segment, 1..4).prop_map(|segments| segments.join("/"));
     let content = prop::collection::vec(any::<u8>(), 0..4096);
     // Dedup by path via a BTreeMap so the builder never sees a duplicate.
-    prop::collection::btree_map(path, content, 0..12)
-        .prop_map(|map| map.into_iter().collect())
+    prop::collection::btree_map(path, content, 0..12).prop_map(|map| map.into_iter().collect())
 }
 
 proptest! {

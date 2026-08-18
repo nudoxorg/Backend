@@ -13,7 +13,7 @@ use heart::object_pack::{MemberKey, ObjectPackId};
 
 use crate::pack::builder::ObjectPackBuilder;
 use crate::pack::error::PackError;
-use crate::pack::outboard::{MemberOutboard, OutboardSidecar, OUTBOARD_FILE_EXTENSION};
+use crate::pack::outboard::{MemberOutboard, OUTBOARD_FILE_EXTENSION, OutboardSidecar};
 use crate::pack::reader::ObjectPackReader;
 
 use super::{EndpointId, ObjectPackStore};
@@ -229,7 +229,9 @@ mod tests {
         let id = store.put_pack(sample_builder()).expect("put");
         assert!(store.has(&id));
 
-        let key = MemberKey::Source { path: RelativePath("src/lib.rs".into()) };
+        let key = MemberKey::Source {
+            path: RelativePath("src/lib.rs".into()),
+        };
         let bytes = store.get_member(&id, &key).expect("get member");
         assert_eq!(&bytes[..], b"fn main() {}\n");
     }
@@ -248,7 +250,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = FilesystemObjectPackStore::open(dir.path()).expect("open store");
         let id = store.put_pack(sample_builder()).expect("put");
-        assert!(matches!(store.provide_iroh(&id), Err(PackError::TransportNotWired)));
+        assert!(matches!(
+            store.provide_iroh(&id),
+            Err(PackError::TransportNotWired)
+        ));
         assert!(matches!(
             store.fetch_iroh(&id, &EndpointId("peer".into())),
             Err(PackError::TransportNotWired)

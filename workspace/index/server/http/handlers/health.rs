@@ -46,13 +46,19 @@ pub async fn readyz<M: EmbeddingModel>(
                 },
             )
         }
-        Health::Down => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            HealthDto {
-                ready: false,
-                degraded: Vec::new(),
-            },
-        ),
+        // `degraded` carries the impaired backends here too. A 503 whose body
+        // said `"degraded":[]` read as "not ready, and nothing is wrong",
+        // which is the one thing that cannot be true.
+        Health::Down(down) => {
+            tracing::error!(?down, "not serving: a required backend is down");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                HealthDto {
+                    ready: false,
+                    degraded: down,
+                },
+            )
+        }
     };
     (status, Json(health))
 }

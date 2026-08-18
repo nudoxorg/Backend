@@ -42,19 +42,20 @@
 
 use std::path::PathBuf;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
 use nudox_ir::kind::Kind;
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
 
 /// Where `scripts/fetch-real-crate.sh bytes 1.11.0` (or this repo's
 /// `result/` checkout) puts the checkout. `NUDOX_PKG_ROOT` overrides it,
 /// matching the convention `real_package.rs` uses.
 fn bytes_root() -> PathBuf {
-    std::env::var("NUDOX_PKG_ROOT").map_or_else(|_| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/bytes-1.11.0")
-        }, PathBuf::from)
+    std::env::var("NUDOX_PKG_ROOT").map_or_else(
+        |_| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/bytes-1.11.0"),
+        PathBuf::from,
+    )
 }
 
 /// Symbols that exist *only* in `benches/bytes.rs` — the target whose crate
@@ -99,7 +100,8 @@ fn bytes_lowers_despite_its_bench_target_matching_the_crate_name() {
                 "bytes must lower despite its bench target sharing its crate \
                  name (docs/LIMITATIONS.md L4):\n{chain}"
             );
-        }).table;
+        })
+        .table;
 
         let ir = nudox_ir::view::IrView::with_package(descriptor.lineage.clone(), table);
         PackageView::build(ir, Provenance::TrustedLocal)

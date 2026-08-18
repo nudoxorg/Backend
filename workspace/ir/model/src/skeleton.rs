@@ -882,7 +882,10 @@ mod tests {
             name: "Ctx".to_owned(),
         });
         assert_eq!(&external[..2], &[0x18, 0x04]);
-        assert_ne!(local, external, "the reason must discriminate, not just the name");
+        assert_ne!(
+            local, external,
+            "the reason must discriminate, not just the name"
+        );
         assert_eq!(
             &bytes(UnknownType::NoIrRepresentation {
                 construct: "complex128".to_owned()
@@ -925,7 +928,10 @@ mod tests {
             &[],
             &[],
         );
-        assert_ne!(a, b, "fromJson(String, Class) and (String, Type) must differ");
+        assert_ne!(
+            a, b,
+            "fromJson(String, Class) and (String, Type) must differ"
+        );
     }
 
     /// An unresolvable local ref (import) encodes as the 0x00 placeholder.

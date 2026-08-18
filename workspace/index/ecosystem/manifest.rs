@@ -45,6 +45,73 @@ pub struct ExtractedFacts {
     pub dependencies: Vec<String>,
 }
 
+impl ExtractedFacts {
+    /// Fold `other` (parsed from a *lower-priority* manifest candidate) into
+    /// `self` (the accumulator, seeded from higher-priority candidates so
+    /// far). Called once per successfully-parsed candidate, in the
+    /// ecosystem's declared priority order (`EcosystemSpec::manifest_candidates`) —
+    /// see `server::coordination::indexing::facets::extract_facets`, the only
+    /// caller.
+    ///
+    /// Merge policy, decided per field kind:
+    ///
+    /// - **Scalars** (`description`, `repository`, `readme_hint`, `license`):
+    ///   first-non-`None` wins, i.e. `self` is left untouched if it's already
+    ///   `Some`. The candidate priority order already encodes which manifest
+    ///   the ecosystem trusts most for these fields (e.g. `vcpkg.json` before
+    ///   `CMakeLists.txt`), so a lower-priority manifest may only fill a gap,
+    ///   never override a value a higher-priority one already supplied.
+    /// - **Booleans** (`documentation`, `has_license_file`): logical OR. Both
+    ///   are *presence* signals ("a homepage/license was declared somewhere"),
+    ///   `false` is "no evidence yet" rather than a claim of absence, so
+    ///   evidence from any manifest should only ever turn a signal on, never
+    ///   off — order-independent by construction, which also keeps the
+    ///   result stable regardless of how many candidates are added later.
+    /// - **Collections** (`keywords`, `categories`, `dependencies`): union,
+    ///   deduped by exact string equality, higher-priority manifest's items
+    ///   first. Each of these lists is a set of independent facts (a keyword,
+    ///   a category, a dependency token) rather than one competing value, so
+    ///   dropping a lower-priority manifest's items (as first-non-empty
+    ///   would) would silently discard real search/dependency signal — e.g.
+    ///   `cpp`'s dependency records span 7 distinct declaration mechanisms
+    ///   (`find_package`, `pkg_config`, submodule, `FetchContent`, meson
+    ///   wrap, vcpkg/conan recipe, `bazel_dep`) precisely because a single
+    ///   package legitimately declares dependencies through more than one of
+    ///   its manifests at once. The dedup guards against the same token
+    ///   surfacing from two manifests (e.g. `zlib` as both a vcpkg recipe dep
+    ///   and a CMake `find_package` name).
+    pub fn merge(&mut self, other: ExtractedFacts) {
+        if self.description.is_none() {
+            self.description = other.description;
+        }
+        if self.repository.is_none() {
+            self.repository = other.repository;
+        }
+        if self.readme_hint.is_none() {
+            self.readme_hint = other.readme_hint;
+        }
+        if self.license.is_none() {
+            self.license = other.license;
+        }
+        self.documentation = self.documentation || other.documentation;
+        self.has_license_file = self.has_license_file || other.has_license_file;
+        merge_union(&mut self.keywords, other.keywords);
+        merge_union(&mut self.categories, other.categories);
+        merge_union(&mut self.dependencies, other.dependencies);
+    }
+}
+
+/// Append items from `new` onto `acc` that aren't already present (exact
+/// string equality), preserving `acc`'s existing order and `new`'s relative
+/// order for the appended tail.
+fn merge_union(acc: &mut Vec<String>, new: Vec<String>) {
+    for item in new {
+        if !acc.contains(&item) {
+            acc.push(item);
+        }
+    }
+}
+
 /// The per-ecosystem manifest type's one obligation: fold into the erased
 /// facts.
 pub trait ManifestFacts {
@@ -56,5 +123,94 @@ pub trait ManifestFacts {
 impl ManifestFacts for ExtractedFacts {
     fn into_facts(self) -> ExtractedFacts {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn facts(f: impl FnOnce(&mut ExtractedFacts)) -> ExtractedFacts {
+        let mut facts = ExtractedFacts::default();
+        f(&mut facts);
+        facts
+    }
+
+    #[test]
+    fn merge_scalars_first_non_none_wins() {
+        let mut acc = facts(|f| f.description = Some("high-priority".into()));
+        acc.merge(facts(|f| f.description = Some("low-priority".into())));
+        assert_eq!(acc.description.as_deref(), Some("high-priority"));
+    }
+
+    #[test]
+    fn merge_scalars_lower_priority_fills_a_gap() {
+        let mut acc = ExtractedFacts::default();
+        acc.merge(facts(|f| {
+            f.repository = Some("https://example.com/repo".into());
+            f.readme_hint = Some("README.rst".into());
+            f.license = Some("MIT".into());
+        }));
+        assert_eq!(acc.repository.as_deref(), Some("https://example.com/repo"));
+        assert_eq!(acc.readme_hint.as_deref(), Some("README.rst"));
+        assert_eq!(acc.license.as_deref(), Some("MIT"));
+    }
+
+    #[test]
+    fn merge_booleans_are_logical_or() {
+        let mut acc = facts(|f| f.has_license_file = false);
+        acc.merge(facts(|f| f.has_license_file = true));
+        assert!(acc.has_license_file, "OR: any manifest setting it wins");
+
+        let mut acc2 = facts(|f| f.documentation = true);
+        acc2.merge(facts(|f| f.documentation = false));
+        assert!(acc2.documentation, "OR: true is sticky regardless of order");
+    }
+
+    #[test]
+    fn merge_collections_union_with_dedup() {
+        let mut acc = facts(|f| f.dependencies = vec!["zlib".into(), "openssl".into()]);
+        acc.merge(facts(|f| {
+            f.dependencies = vec!["zlib".into(), "libpng".into()];
+        }));
+        assert_eq!(
+            acc.dependencies,
+            vec!["zlib".to_owned(), "openssl".to_owned(), "libpng".to_owned()],
+            "higher-priority items first, duplicates dropped, new items appended in order"
+        );
+    }
+
+    #[test]
+    fn merge_keywords_and_categories_also_union() {
+        let mut acc = facts(|f| f.keywords = vec!["http".into()]);
+        acc.merge(facts(|f| {
+            f.keywords = vec!["http".into(), "networking".into()];
+        }));
+        assert_eq!(
+            acc.keywords,
+            vec!["http".to_owned(), "networking".to_owned()]
+        );
+
+        let mut acc = facts(|f| f.categories = vec!["net".into()]);
+        acc.merge(facts(|f| f.categories = vec!["compression".into()]));
+        assert_eq!(
+            acc.categories,
+            vec!["net".to_owned(), "compression".to_owned()]
+        );
+    }
+
+    #[test]
+    fn merge_of_default_into_populated_is_identity() {
+        let mut acc = facts(|f| {
+            f.description = Some("d".into());
+            f.keywords = vec!["k".into()];
+            f.has_license_file = true;
+        });
+        let before = acc.clone();
+        acc.merge(ExtractedFacts::default());
+        assert_eq!(
+            acc, before,
+            "merging an empty/degenerate manifest changes nothing"
+        );
     }
 }

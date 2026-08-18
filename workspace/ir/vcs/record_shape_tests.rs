@@ -1277,20 +1277,14 @@ fn t10_unrecord_round_trip() {
 fn key_of_line(blob: &[u8], line_idx: usize) -> Option<Vec<u8>> {
     let lines: Vec<&[u8]> = blob.split_inclusive(|&b| b == b'\n').collect();
     let line = lines.get(line_idx)?;
-    let key = line
-        .iter()
-        .position(|&b| b == b'\t')
-        .map_or_else(
-            || {
-                // strip trailing newline for keyless lines
-                let end = line
-                    .iter()
-                    .rposition(|&b| b != b'\n')
-                    .map_or(0, |i| i + 1);
-                &line[..end]
-            },
-            |i| &line[..i],
-        );
+    let key = line.iter().position(|&b| b == b'\t').map_or_else(
+        || {
+            // strip trailing newline for keyless lines
+            let end = line.iter().rposition(|&b| b != b'\n').map_or(0, |i| i + 1);
+            &line[..end]
+        },
+        |i| &line[..i],
+    );
     Some(key.to_vec())
 }
 

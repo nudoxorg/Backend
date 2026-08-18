@@ -10,9 +10,11 @@
 
 mod server_common;
 
-use index::server::coordination::initialization::{InitializationDecision, initialization_decision};
 use heart::{ContentHash, Failure, Freshness, Phase, ResolutionState};
 use index::ecosystem::PackageNameExt as _;
+use index::server::coordination::initialization::{
+    InitializationDecision, initialization_decision,
+};
 
 /// An uninitialized library is indexed on first use.
 ///
@@ -91,10 +93,8 @@ async fn ensure_init_returns_or_requests() {
         "a retriable failure re-enqueues"
     );
 
-    let Some((server, _data)) = server_common::assembled_server("ensure_init_returns_or_requests").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("ensure_init_returns_or_requests").await;
     let cap = server_common::write_cap(&server);
     let coordinates = fixture_coordinates();
     let first = server
@@ -121,10 +121,8 @@ async fn ensure_init_returns_or_requests() {
 /// Assert: after init, the catalog holds the package's metadata + status.
 #[tokio::test]
 async fn initialization_loads_into_catalog() {
-    let Some((server, _data)) = server_common::assembled_server("initialization_loads_into_catalog").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("initialization_loads_into_catalog").await;
     let cap = server_common::write_cap(&server);
     let coordinates = fixture_coordinates();
     let initialized = server
@@ -154,10 +152,8 @@ async fn initialization_loads_into_catalog() {
 ///   decision metrics, not a persisted counter.)
 #[tokio::test]
 async fn usage_is_tracked_for_tiering() {
-    let Some((server, _data)) = server_common::assembled_server("usage_is_tracked_for_tiering").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("usage_is_tracked_for_tiering").await;
     let cap = server_common::write_cap(&server);
     let coordinates = fixture_coordinates();
     let first = server

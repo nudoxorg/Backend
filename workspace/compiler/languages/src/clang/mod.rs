@@ -66,12 +66,12 @@
 //!   each overload gets its own distinct USR from libclang, so the Lowering
 //!   sink naturally produces one entry per overload.
 
-pub mod oracle;
 pub(crate) mod compile_commands;
-pub(crate) mod system_includes;
 pub(crate) mod extract;
 pub mod lower;
+pub mod oracle;
 pub mod producer;
+pub(crate) mod system_includes;
 
 #[cfg(test)]
 mod tests;

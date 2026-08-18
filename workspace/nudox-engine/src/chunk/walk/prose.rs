@@ -21,6 +21,7 @@ use super::shortcut::{DelimiterShape, ShortcutOutcome, open_shape};
 /// The heading text is prepended as a `Heading` block when non-empty.
 pub(crate) fn build_prose_blocks(
     events: Vec<Event<'_>>,
+    source_spans: Vec<std::ops::Range<usize>>,
     section_heading: &str,
     doc_link_table: &DocLinkTable,
 ) -> Vec<ProseBlock> {
@@ -104,7 +105,7 @@ pub(crate) fn build_prose_blocks(
         // brackets too. See docs/LIMITATIONS.md for the tracked entry; the real
         // fix is span-accurate link-attempt data from the producer, which
         // does not exist today.
-        let bracket_open = (doc_link_table.has_declared_links()
+        let bracket_open = (doc_link_table.has_declared_link_at(source_spans[i].clone())
             && state != BlockState::Code
             && link_url.is_none())
         .then(|| open_shape(&events[i]))
@@ -128,12 +129,11 @@ pub(crate) fn build_prose_blocks(
         // (a run consumed above may have already accounted for the `[`).
         // Never echo it: a reader has no use for a stray closing bracket,
         // and showing one is the exact symptom this fix exists to remove.
-        // Gated on `has_declared_links()` for the same reason as the opening
-        // bracket above (see the gate's contract doc comment there): with no
-        // declared links there was no link attempt to leave debris, so an
-        // isolated `]` is the author's own text and swallowing it would
-        // silently corrupt prose.
-        if doc_link_table.has_declared_links()
+        // Gated on the same span-aware declaration check as the opening
+        // bracket above: with no declared link at this source position there
+        // was no link attempt to leave debris, so an isolated `]` is the
+        // author's own text and swallowing it would silently corrupt prose.
+        if doc_link_table.has_declared_link_at(source_spans[i].clone())
             && state != BlockState::Code
             && link_url.is_none()
             && matches!(&events[i], Event::Text(t) if t.as_ref() == "]")

@@ -41,6 +41,82 @@ pub struct Output {
     /// non-empty list does not invalidate `packages`.
     #[serde(default)]
     pub errors: Box<[String]>,
+
+    /// The payload schema the *oracle binary* speaks.
+    ///
+    /// `0` when the field is absent, which is what every binary built before
+    /// the handshake emits — see [`Output::staleness`].
+    #[serde(default)]
+    pub schema_version: u32,
+}
+
+/// Why an oracle payload cannot be trusted to be complete.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Staleness {
+    /// The binary predates a field — or a field's scope — this build reads.
+    #[error(
+        "the `nudox-go-oracle` binary is out of date: it speaks payload schema \
+         {found}, but this build reads schema {required}. Data added or widened \
+         since (references; implements, and its scope: schema 2 checks every \
+         package in the module, not just each type's own) is absent or \
+         incomplete in its output, so `refs` and `subtypes` will look empty or \
+         under-report for every Go package. Rebuild the oracle \
+         (`go build ./workspace/compiler/languages/oracle/go`) and point \
+         NUDOX_GO_ORACLE_BIN at the result."
+    )]
+    OlderThanRequired {
+        /// What the binary declared (`0` when it declared nothing).
+        found: u32,
+        /// What this build needs.
+        required: u32,
+    },
+}
+
+impl Output {
+    /// The payload schema this build reads.
+    ///
+    /// Bump this when the Rust side starts *reading* a field the oracle only
+    /// recently started emitting — that is exactly the moment an older binary
+    /// begins under-reporting, and the moment this check has to start firing.
+    ///
+    /// Also bump it when a field's *scope* widens rather than its presence
+    /// changing — v2 did this: `Decl.Implements` started checking a type
+    /// against interfaces in every package the module loaded, not only its
+    /// own. The field was already there on a v1 binary; what it under-reports
+    /// changed. `#[serde(default)]` cannot express that distinction, so the
+    /// handshake is the only thing that can.
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 2;
+
+    /// Whether the binary that produced this payload is older than this build
+    /// expects.
+    ///
+    /// # Why this is not a deserialization error
+    ///
+    /// Every field here is `#[serde(default)]`, deliberately: a *newer* oracle
+    /// adding fields must not break an older reader. The cost is that an
+    /// *older* oracle omitting fields is indistinguishable from a package that
+    /// genuinely has none — both arrive as an empty `Box<[_]>`.
+    ///
+    /// That is not hypothetical. `lindsey.app` ships no oracle, so a user
+    /// pointed `NUDOX_GO_ORACLE_BIN` at a prebuilt binary from the checkout;
+    /// it predated `references`, and every `refs` call for every Go symbol
+    /// answered `not_recorded` while the *source* produced references
+    /// correctly. The sentinel fired truthfully and named the wrong cause.
+    ///
+    /// So the payload still parses — refusing to would strand anyone with an
+    /// old binary — and this is asked separately, so the answer can be "your
+    /// binary is old" rather than "your package has no references".
+    ///
+    /// Returns `None` for a current *or newer* oracle: only older
+    /// under-reports.
+    pub fn staleness(&self) -> Option<Staleness> {
+        (self.schema_version < Self::REQUIRED_SCHEMA_VERSION).then_some(
+            Staleness::OlderThanRequired {
+                found: self.schema_version,
+                required: Self::REQUIRED_SCHEMA_VERSION,
+            },
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,6 +170,51 @@ pub struct Package {
     /// Every package-level declaration — exported AND unexported.
     #[serde(default)]
     pub decls: Box<[Decl]>,
+
+    /// Source files excluded by platform/build constraints, with the exported
+    /// declarations they contain. These declarations are unavailable in the
+    /// active package and therefore cannot appear in `decls`.
+    #[serde(default)]
+    pub build_constraints: Box<[BuildConstraint]>,
+
+    /// Go/types-resolved same-package function calls.
+    #[serde(default)]
+    pub references: Box<[Reference]>,
+}
+
+/// One resolved function-use edge in a package.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reference {
+    pub owner: String,
+    pub target: String,
+    pub file: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+/// Availability information for one source file excluded by build constraints.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildConstraint {
+    /// The excluded source file.
+    pub file: String,
+
+    /// The normalized build-constraint expression (for example `"windows"`).
+    #[serde(default)]
+    pub constraints: Box<[String]>,
+
+    /// Exported declarations found by the source-scan fallback.
+    #[serde(default)]
+    pub exported_decls: Box<[BuildDecl]>,
+}
+
+/// An exported declaration found in an excluded build-tagged file.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildDecl {
+    pub name: String,
+    pub kind: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -476,6 +597,10 @@ pub struct Param {
     /// The param/result type.
     #[serde(default)]
     pub r#type: Option<Type>,
+
+    /// Position of the parameter/result identifier when it is named.
+    #[serde(default)]
+    pub pos: Option<Pos>,
 }
 
 /// One struct field.

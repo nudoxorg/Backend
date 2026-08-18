@@ -25,9 +25,16 @@ pub mod dto;
 #[cfg(feature = "client")]
 pub mod http;
 pub mod query;
+/// The one blanket `Serve<S>` remote client — see [`remote::RemoteClient`].
+/// Behind `client` for the same reason as [`http`]: it is the module where
+/// `reqwest` actually dials out.
+#[cfg(feature = "client")]
+pub mod remote;
 
 #[cfg(feature = "client")]
 pub use http::{ClientError, NudoxClient};
+#[cfg(feature = "client")]
+pub use remote::RemoteClient;
 
 pub use authz::{AdminCap, Principal, ReadCap, TenantId, WriteCap};
 pub use dto::{

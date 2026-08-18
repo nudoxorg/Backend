@@ -19,6 +19,10 @@ use nudox_engine::{
     wire::{DocEvent, EngineError, Gen, KeyTierName},
 };
 
+use nudox_engine::store::{
+    package::{PackageView, Provenance},
+    source::{Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor},
+};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
@@ -26,12 +30,8 @@ use nudox_ir::{
     index::RawRef,
     kind::Kind,
     kinds::Module,
-    package::{Escalation, SealReport},
+    package::{KeyTier, SealReport},
     view::IrView,
-};
-use nudox_engine::store::{
-    package::{PackageView, Provenance},
-    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error},
 };
 
 // ---------------------------------------------------------------------------
@@ -137,10 +137,7 @@ impl IrSource for ScriptedSource {
     }
 }
 
-async fn open_and_drain(
-    engine: &nudox_engine::EngineHandle,
-    key: StableRef,
-) -> Vec<DocEvent> {
+async fn open_and_drain(engine: &nudox_engine::EngineHandle, key: StableRef) -> Vec<DocEvent> {
     let (handle, rx) = engine.open_symbol(key, Gen(1));
     let mut events = Vec::new();
     while let Ok(ev) = rx.recv_async().await {
@@ -171,7 +168,10 @@ async fn package_not_loaded_distinguishes_a_failed_load_from_a_never_requested_o
     let ok_pkg = Arc::new(PackageView::build(ok_view, Provenance::TrustedLocal));
 
     let source = ScriptedSource(vec![
-        Outcome::Failed(broken.clone(), "scripted failure: oracle exited 1".to_owned()),
+        Outcome::Failed(
+            broken.clone(),
+            "scripted failure: oracle exited 1".to_owned(),
+        ),
         Outcome::Ready(ok.clone(), Some("1.0.0".to_owned()), ok_pkg),
     ]);
 
@@ -233,11 +233,13 @@ async fn package_not_loaded_distinguishes_a_failed_load_from_a_never_requested_o
 async fn symbol_not_found_reports_the_tier_and_version_where_a_stale_key_still_resolves() {
     let lid = lineage("churny-crate");
 
-    // v1: intro(1) exists, minted at KeyTier::Ordinal (the seal report records
-    // it as an escalated/forced key).
+    // v1: intro(1) exists, minted at KeyTier::Ordinal. `KeyProvenance::
+    // from_seal_report` reads `non_structural_keys` (MCP-SURFACE-PLAN
+    // §4.14), not `forced_keys` — a hand-built report must populate the
+    // field production actually consumes.
     let v1_view = view_with(&lid, vec![(intro(1), module_entry(make_symbol("Thing")))]);
     let v1_report = SealReport {
-        forced_keys: vec![(intro(1), Escalation::Ordinal)],
+        non_structural_keys: vec![(intro(1), KeyTier::Ordinal)],
         ..Default::default()
     };
     let v1_pkg = Arc::new(PackageView::build_sealed(
@@ -249,7 +251,10 @@ async fn symbol_not_found_reports_the_tier_and_version_where_a_stale_key_still_r
     // v2: intro(1) is gone (a producer reordering could have moved an
     // Ordinal-tiered declaration to a different id entirely); intro(2) is the
     // only entry, so v2 is non-empty and genuinely current.
-    let v2_view = view_with(&lid, vec![(intro(2), module_entry(make_symbol("OtherThing")))]);
+    let v2_view = view_with(
+        &lid,
+        vec![(intro(2), module_entry(make_symbol("OtherThing")))],
+    );
     let v2_pkg = Arc::new(PackageView::build(v2_view, Provenance::TrustedLocal));
 
     let source = ScriptedSource(vec![

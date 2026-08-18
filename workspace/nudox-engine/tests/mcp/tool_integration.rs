@@ -24,14 +24,14 @@
 
 use std::time::Duration;
 
-use nudox_engine::wire::{KindDiscriminant, KindTag};
-use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
 use nudox_engine::mcp::key::PackageLineageDto;
 use nudox_engine::mcp::tools::{
-    FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GraphQueryArgs, ListVersionsArgs,
-    SearchSymbolsArgs, SemanticSearchArgs, SelectVersionArgs, SelectVersionResult,
+    FindUsagesArgs, GetOccurrencesArgs, GetSymbolArgs, GraphQueryArgs, ListVersionsArgs, RefsArgs,
+    RefsDirection, SearchSymbolsArgs, SelectVersionArgs, SelectVersionResult, SemanticSearchArgs,
 };
 use nudox_engine::mcp::{NudoxTools, SymbolKeyDto};
+use nudox_engine::wire::{KindDiscriminant, KindTag};
+use nudox_engine::{Engine, EngineConfig, PackageLoadEvent};
 
 // ---------------------------------------------------------------------------
 // Harness helpers
@@ -216,7 +216,8 @@ async fn search_symbols_finds_known_symbol() {
             kinds: None,
             packages: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for 'Point' must not fail");
 
@@ -228,9 +229,9 @@ async fn search_symbols_finds_known_symbol() {
     for hit in &result.hits {
         let key_str = format!(
             "{}:{}#{}",
-            hit.key.package.ecosystem.as_str(),
-            hit.key.package.name.as_str(),
-            hit.key.intro.to_hex()
+            hit.hit.key.package.ecosystem.as_str(),
+            hit.hit.key.package.name.as_str(),
+            hit.hit.key.intro.to_hex()
         );
         assert!(
             key_str.contains("fixture:nudox-fixture-rich#"),
@@ -251,7 +252,8 @@ async fn search_symbols_nonsense_query_returns_empty() {
             kinds: None,
             packages: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for nonsense must not fail");
 
@@ -272,14 +274,15 @@ async fn search_symbols_kind_filter_restricts_results() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("filtered search must not fail");
 
     // We do not assert it is non-empty because the hit depends on name matching,
     // but we can assert that ALL hits are tagged as functions.
     for hit in &result.hits {
-        match &hit.kind {
+        match &hit.hit.kind {
             KindTag::Known(d) => {
                 assert_eq!(
                     *d,
@@ -324,7 +327,8 @@ async fn search_symbols_invalid_kind_is_rejected() {
             kinds: Some(vec!["NotARealKind".to_owned()]),
             packages: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("invalid kind must be rejected");
 
@@ -347,7 +351,8 @@ async fn search_symbols_empty_packages_list_is_rejected() {
             kinds: None,
             packages: Some(vec![]), // empty — semantically invalid
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("empty packages list must be rejected");
 
@@ -376,7 +381,8 @@ async fn search_symbols_limit_is_respected() {
             kinds: None,
             packages: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search with limit=1 must not fail");
 
@@ -393,7 +399,8 @@ async fn search_symbols_limit_is_respected() {
             kinds: None,
             packages: None,
             limit: Some(0),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search with limit=0 must not fail");
     // We cannot assert an exact count, but we can assert it does not return
@@ -413,7 +420,8 @@ async fn search_symbols_is_deterministic() {
             kinds: None,
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("first search must succeed");
     let b = tools
@@ -422,7 +430,8 @@ async fn search_symbols_is_deterministic() {
             kinds: None,
             packages: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("second search must succeed");
 
@@ -434,9 +443,9 @@ async fn search_symbols_is_deterministic() {
         .map(|h| {
             format!(
                 "{}:{}#{}",
-                h.key.package.ecosystem.as_str(),
-                h.key.package.name.as_str(),
-                h.key.intro.to_hex()
+                h.hit.key.package.ecosystem.as_str(),
+                h.hit.key.package.name.as_str(),
+                h.hit.key.intro.to_hex()
             )
         })
         .collect();
@@ -446,9 +455,9 @@ async fn search_symbols_is_deterministic() {
         .map(|h| {
             format!(
                 "{}:{}#{}",
-                h.key.package.ecosystem.as_str(),
-                h.key.package.name.as_str(),
-                h.key.intro.to_hex()
+                h.hit.key.package.ecosystem.as_str(),
+                h.hit.key.package.name.as_str(),
+                h.hit.key.intro.to_hex()
             )
         })
         .collect();
@@ -473,14 +482,15 @@ async fn get_symbol_returns_doc_for_fixture_symbol() {
             kinds: Some(vec!["Record".to_owned()]),
             packages: None,
             limit: Some(5),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for Point must succeed");
 
     let point_hit = search
         .hits
         .iter()
-        .find(|h| matches!(&h.kind, KindTag::Known(KindDiscriminant::Record)))
+        .find(|h| matches!(&h.hit.kind, KindTag::Known(KindDiscriminant::Record)))
         .unwrap_or_else(|| {
             panic!(
                 "Point record must appear in search results; got {:?}",
@@ -490,9 +500,9 @@ async fn get_symbol_returns_doc_for_fixture_symbol() {
 
     let key_str = format!(
         "{}:{}#{}",
-        point_hit.key.package.ecosystem.as_str(),
-        point_hit.key.package.name.as_str(),
-        point_hit.key.intro.to_hex()
+        point_hit.hit.key.package.ecosystem.as_str(),
+        point_hit.hit.key.package.name.as_str(),
+        point_hit.hit.key.intro.to_hex()
     );
 
     let doc = tools
@@ -566,9 +576,21 @@ async fn get_symbol_malformed_key_is_rejected() {
         .await
         .expect_err("malformed key must be rejected");
 
+    // §4: `key` arguments now accept an address (docs/MCP-SURFACE-PLAN.md),
+    // so a string that fails the legacy `ecosystem:name#introhex` decode
+    // gets a *second* chance as an address before being rejected — this
+    // input fails both, so the address parser's own `ParseError` (wrapped in
+    // `McpError::AddressUnresolved`) is what actually explains why, not the
+    // old `MalformedKey`. Still a structured, actionable rejection — just
+    // under the grammar that is now a strict superset of the legacy one.
     assert!(
-        matches!(err, nudox_engine::mcp::McpError::MalformedKey { .. }),
-        "expected MalformedKey, got {err:?}"
+        matches!(
+            err,
+            nudox_engine::mcp::McpError::AddressUnresolved {
+                outcome: nudox_engine::mcp::address::ResolveOutcome::ParseError { .. }
+            }
+        ),
+        "expected AddressUnresolved(ParseError), got {err:?}"
     );
 }
 
@@ -620,16 +642,17 @@ async fn get_symbol_always_terminates() {
             kinds: None,
             packages: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
     let hit = &search.hits[0];
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     // Apply a wall-clock timeout so the test fails cleanly on a hang rather
@@ -664,12 +687,13 @@ async fn find_usages_returns_oracle_confidence_callers() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(5),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for distance must succeed");
 
     let distance_hit = search.hits.iter().find(|h| {
-        let name = &h.display_name;
+        let name = &h.hit.display_name;
         // The display name may include path prefix; just look for "distance"
         name.contains("distance") && !name.contains("reexport")
     });
@@ -682,23 +706,24 @@ async fn find_usages_returns_oracle_confidence_callers() {
             search
                 .hits
                 .iter()
-                .map(|h| h.display_name.to_string())
+                .map(|h| h.hit.display_name.to_string())
                 .collect::<Vec<_>>()
         );
     };
 
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let result = tools
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("find_usages for distance must not fail");
 
@@ -710,7 +735,174 @@ async fn find_usages_returns_oracle_confidence_callers() {
     );
 }
 
+/// Job 1 (docs/MCP-SURFACE-PLAN.md §9.2, applied via `refs`'s `direction: in`):
+/// calling `refs` with `distance`'s address must resolve to the exact same
+/// rows as calling it with the legacy `ecosystem:name#introhex` key — proving
+/// the two are interchangeable inputs to the merged `find_usages`/
+/// `get_occurrences` tool, not just that an address is *accepted*.
+#[tokio::test]
+async fn refs_accepts_an_address_and_a_key_interchangeably() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let search = tools
+        .do_search(SearchSymbolsArgs {
+            query: "distance".to_owned(),
+            kinds: Some(vec!["Function".to_owned()]),
+            packages: None,
+            limit: Some(5),
+            cursor: None,
+        })
+        .await
+        .expect("search for distance must succeed");
+
+    let hit = search
+        .hits
+        .iter()
+        .find(|h| {
+            h.hit.display_name.contains("distance") && !h.hit.display_name.contains("reexport")
+        })
+        .unwrap_or_else(|| panic!("fixture must have a 'distance' function; got {search:?}"));
+
+    let address = hit
+        .address
+        .clone()
+        .unwrap_or_else(|| panic!("'distance' must render an address; got hit {hit:?}"));
+    let key_str = SymbolKeyDto::from_wire(&hit.hit.key).0;
+    assert_ne!(
+        address, key_str,
+        "the test is only meaningful if the address and the key are two \
+         different strings naming the same declaration"
+    );
+
+    let via_key = tools
+        .do_refs(RefsArgs {
+            key: SymbolKeyDto(key_str),
+            direction: RefsDirection::In,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect("refs(direction: in) by key must succeed");
+    let via_address = tools
+        .do_refs(RefsArgs {
+            key: SymbolKeyDto(address),
+            direction: RefsDirection::In,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect("refs(direction: in) by address must succeed");
+
+    let (
+        nudox_engine::mcp::tools::RefsResult::In {
+            usages: usages_by_key,
+            ..
+        },
+        nudox_engine::mcp::tools::RefsResult::In {
+            usages: usages_by_address,
+            ..
+        },
+    ) = (via_key, via_address)
+    else {
+        panic!("refs(direction: in) must return RefsResult::In");
+    };
+    assert!(
+        !usages_by_key.is_empty(),
+        "the key lookup must find format_point"
+    );
+    assert_eq!(
+        usages_by_key, usages_by_address,
+        "resolving by address must return the identical rows as resolving by key"
+    );
+}
+
+/// Same interchangeability proof for `direction: out` (`get_occurrences`'s
+/// question), over `format_point` — the fixture symbol whose body contains
+/// the `distance(...)` call.
+#[tokio::test]
+async fn refs_out_accepts_an_address_and_a_key_interchangeably() {
+    let tools = make_tools();
+    wait_for_corpus(&tools).await;
+
+    let search = tools
+        .do_search(SearchSymbolsArgs {
+            query: "format_point".to_owned(),
+            kinds: Some(vec!["Function".to_owned()]),
+            packages: None,
+            limit: Some(5),
+            cursor: None,
+        })
+        .await
+        .expect("search for format_point must succeed");
+
+    let hit = search
+        .hits
+        .iter()
+        .find(|h| h.hit.display_name.contains("format_point"))
+        .unwrap_or_else(|| panic!("fixture must have a 'format_point' function; got {search:?}"));
+
+    let address = hit
+        .address
+        .clone()
+        .unwrap_or_else(|| panic!("'format_point' must render an address; got hit {hit:?}"));
+    let key_str = SymbolKeyDto::from_wire(&hit.hit.key).0;
+    assert_ne!(address, key_str);
+
+    let via_key = tools
+        .do_refs(RefsArgs {
+            key: SymbolKeyDto(key_str),
+            direction: RefsDirection::Out,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect("refs(direction: out) by key must succeed");
+    let via_address = tools
+        .do_refs(RefsArgs {
+            key: SymbolKeyDto(address),
+            direction: RefsDirection::Out,
+            limit: None,
+            cursor: None,
+        })
+        .await
+        .expect("refs(direction: out) by address must succeed");
+
+    let (
+        nudox_engine::mcp::tools::RefsResult::Out {
+            owner: owner_by_key,
+            occurrences: occ_by_key,
+            ..
+        },
+        nudox_engine::mcp::tools::RefsResult::Out {
+            owner: owner_by_address,
+            occurrences: occ_by_address,
+            ..
+        },
+    ) = (via_key, via_address)
+    else {
+        panic!("refs(direction: out) must return RefsResult::Out");
+    };
+    assert_eq!(
+        owner_by_key, owner_by_address,
+        "both calls must resolve to the same canonical owner"
+    );
+    assert_eq!(
+        occ_by_key, occ_by_address,
+        "resolving by address must return the identical occurrence rows as resolving by key"
+    );
+}
+
 /// A malformed key is rejected before reaching the graph plane.
+///
+/// Job 1 (docs/MCP-SURFACE-PLAN.md §9.2): `find_usages` now resolves `key`
+/// through [`nudox_engine::mcp::tools::NudoxTools`]'s shared
+/// `resolve_key_or_address` — same as `get_symbol` (see
+/// `get_symbol_malformed_key_is_rejected`'s comment above) — so a string that
+/// fails the legacy `ecosystem:name#introhex` decode gets a second chance as
+/// an address before being rejected. `"bad-key"` fails both, so the address
+/// parser's own `ParseError` (wrapped in `McpError::AddressUnresolved`) is
+/// what explains why now, not the old `MalformedKey`.
 #[tokio::test]
 async fn find_usages_malformed_key_is_rejected() {
     let tools = make_tools();
@@ -719,18 +911,25 @@ async fn find_usages_malformed_key_is_rejected() {
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto("bad-key".to_owned()),
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("malformed key must be rejected");
 
     assert!(
-        matches!(err, nudox_engine::mcp::McpError::MalformedKey { .. }),
-        "expected MalformedKey, got {err:?}"
+        matches!(
+            err,
+            nudox_engine::mcp::McpError::AddressUnresolved {
+                outcome: nudox_engine::mcp::address::ResolveOutcome::ParseError { .. }
+            }
+        ),
+        "expected AddressUnresolved(ParseError), got {err:?}"
     );
 }
 
 /// `get_occurrences` shares the key grammar but must reject malformed input
-/// before opening a Trustfall stream, just like `find_usages`.
+/// before opening a Trustfall stream, just like `find_usages` — same Job 1
+/// address-resolution change as above.
 #[tokio::test]
 async fn get_occurrences_malformed_key_is_rejected() {
     let tools = make_tools();
@@ -745,8 +944,13 @@ async fn get_occurrences_malformed_key_is_rejected() {
         .expect_err("malformed occurrence key must be rejected");
 
     assert!(
-        matches!(err, nudox_engine::mcp::McpError::MalformedKey { .. }),
-        "expected MalformedKey, got {err:?}"
+        matches!(
+            err,
+            nudox_engine::mcp::McpError::AddressUnresolved {
+                outcome: nudox_engine::mcp::address::ResolveOutcome::ParseError { .. }
+            }
+        ),
+        "expected AddressUnresolved(ParseError), got {err:?}"
     );
 }
 
@@ -806,7 +1010,8 @@ async fn find_usages_no_callers_returns_empty() {
             kinds: Some(vec!["Const".to_owned()]),
             packages: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for MAX_SIZE must succeed");
 
@@ -818,16 +1023,17 @@ async fn find_usages_no_callers_returns_empty() {
     let hit = &search.hits[0];
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let result = tools
         .do_find_usages(FindUsagesArgs {
             key: SymbolKeyDto(key_str),
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("find_usages for a symbol with no callers must succeed (not fail)");
 
@@ -855,7 +1061,8 @@ async fn graph_query_list_packages_returns_fixture() {
             query: nudox_engine::mcp::tools::PACKAGES_QUERY.to_owned(),
             args: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("PACKAGES_QUERY must succeed");
 
@@ -894,7 +1101,8 @@ async fn graph_query_symbols_query_returns_rows() {
             query: "{ Symbols { name @output kind @output } }".to_owned(),
             args: None,
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Symbols query must succeed");
 
@@ -916,7 +1124,8 @@ async fn graph_query_empty_query_is_rejected() {
             query: "   ".to_owned(), // whitespace-only
             args: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("empty query must be rejected");
 
@@ -943,7 +1152,8 @@ async fn graph_query_invalid_query_returns_engine_error() {
             query: "{ this is not trustfall syntax !!! }".to_owned(),
             args: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("syntactically invalid query must fail");
 
@@ -970,7 +1180,8 @@ async fn graph_query_unknown_field_returns_error_not_empty_rows() {
             query: "{ Symbols { nonExistentField2b7f @output } }".to_owned(),
             args: None,
             limit: None,
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect_err("unknown field must fail with an error, not silently return empty rows");
 
@@ -993,7 +1204,8 @@ async fn graph_query_limit_is_applied_and_truncated_is_set() {
             query: "{ Symbols { name @output } }".to_owned(),
             args: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("query with limit=1 must succeed");
 
@@ -1016,7 +1228,8 @@ async fn graph_query_column_order_is_stable() {
             query: "{ Packages { name @output ecosystem @output lineage @output } }".to_owned(),
             args: None,
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Packages query with multiple outputs must succeed");
 
@@ -1082,7 +1295,8 @@ async fn graph_query_symbol_members_traversal_is_reachable() {
                 .collect(),
             ),
             limit: Some(20),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Symbols → members traversal must succeed");
 
@@ -1130,24 +1344,26 @@ async fn graph_query_trait_implementors_traversal_is_reachable() {
                         kinds: Some(vec!["Trait".to_owned()]),
                         packages: None,
                         limit: Some(5),
-                        cursor: None,                    })
+                        cursor: None,
+                    })
                     .await
                     .expect("search for Display trait must succeed");
                 let display = search
                     .hits
                     .iter()
-                    .find(|h| matches!(&h.kind, KindTag::Known(KindDiscriminant::Trait)))
+                    .find(|h| matches!(&h.hit.kind, KindTag::Known(KindDiscriminant::Trait)))
                     .unwrap_or_else(|| panic!("Display trait must appear in search results"));
                 let key_str = format!(
                     "{}:{}#{}",
-                    display.key.package.ecosystem.as_str(),
-                    display.key.package.name.as_str(),
-                    display.key.intro.to_hex()
+                    display.hit.key.package.ecosystem.as_str(),
+                    display.hit.key.package.name.as_str(),
+                    display.hit.key.intro.to_hex()
                 );
                 Some([("key".to_owned(), key_str)].into_iter().collect())
             },
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("FIND_IMPLEMENTORS must succeed");
 
@@ -1188,14 +1404,14 @@ async fn graph_query_usages_edge_is_reachable() {
             kinds: Some(vec!["Function".to_owned()]),
             packages: None,
             limit: Some(5),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search for distance must succeed");
 
-    let distance = search
-        .hits
-        .iter()
-        .find(|h| h.display_name.contains("distance") && !h.display_name.contains("reexport"));
+    let distance = search.hits.iter().find(|h| {
+        h.hit.display_name.contains("distance") && !h.hit.display_name.contains("reexport")
+    });
 
     let Some(hit) = distance else {
         return; // corpus not ready
@@ -1203,9 +1419,9 @@ async fn graph_query_usages_edge_is_reachable() {
 
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let result = tools
@@ -1213,7 +1429,8 @@ async fn graph_query_usages_edge_is_reachable() {
             query: nudox_engine::graph::queries::FIND_USAGES.to_owned(),
             args: Some([("key".to_owned(), key_str)].into_iter().collect()),
             limit: Some(10),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("FIND_USAGES query must succeed");
 
@@ -1260,7 +1477,8 @@ async fn graph_query_package_members_traversal_is_reachable() {
                     .collect(),
             ),
             limit: Some(50),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("Package → members traversal must succeed");
 
@@ -1308,7 +1526,8 @@ async fn graph_query_concurrent_calls_do_not_interfere() {
                     query: "{ Symbols { name @output } }".to_owned(),
                     args: None,
                     limit: Some(5),
-                    cursor: None,                })
+                    cursor: None,
+                })
                 .await
                 .expect("concurrent call 1 must succeed");
             assert!(
@@ -1392,7 +1611,8 @@ async fn symbol_key_from_search_round_trips() {
             kinds: None,
             packages: None,
             limit: Some(1),
-            cursor: None,        })
+            cursor: None,
+        })
         .await
         .expect("search must succeed");
 
@@ -1403,9 +1623,9 @@ async fn symbol_key_from_search_round_trips() {
     let hit = &search.hits[0];
     let key_str = format!(
         "{}:{}#{}",
-        hit.key.package.ecosystem.as_str(),
-        hit.key.package.name.as_str(),
-        hit.key.intro.to_hex()
+        hit.hit.key.package.ecosystem.as_str(),
+        hit.hit.key.package.name.as_str(),
+        hit.hit.key.intro.to_hex()
     );
 
     let dto = SymbolKeyDto(key_str.clone());

@@ -17,15 +17,15 @@ pub mod lifecycle;
 pub mod read;
 pub mod writer;
 
-pub use follower::{drain_once, DrainReport, FollowerError, SinkFollower};
+pub use follower::{DrainReport, FollowerError, SinkFollower, drain_once};
 
 use serde::{Deserialize, Serialize};
 
 use heart::query::AsOf;
 
 use crate::codec::CodecError;
-use crate::enums::SinkKind;
 use crate::engine::EngineError;
+use crate::enums::SinkKind;
 use crate::ids::PackageId;
 use crate::protocol::CatalogOp;
 use crate::tables::outbox::OutboxRow;
@@ -114,6 +114,17 @@ pub struct ChangedPage {
     pub next: CatalogCursor,
 }
 
+/// Durable identity and source payload used to reconcile one stem's versions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionSnapshot {
+    /// Stable version identity.
+    pub version_id: crate::ids::PackageId,
+    /// Canonical published version.
+    pub version_canonical: String,
+    /// Upstream source revision/checksum when present.
+    pub source_rev: Option<String>,
+}
+
 /// The write surface of the catalog (INDEX-PLAN §8.1). Implemented by the
 /// single [`writer::CatalogWriter`]; there is no other way to mutate the store.
 pub trait MetaStore: Catalog {
@@ -124,18 +135,13 @@ pub trait MetaStore: Catalog {
 
     /// Register (or update) a generation row (ID-15). Emits no outbox rows by
     /// itself; symbol projection fan-out is driven separately.
-    fn register_generation(&self, registration: GenerationRegistration)
-        -> Result<(), MetaError>;
+    fn register_generation(&self, registration: GenerationRegistration) -> Result<(), MetaError>;
 
     /// Claim up to `limit` unconsumed outbox rows for a sink, in `seq` order,
     /// starting strictly after the sink's recorded watermark. Does not advance
     /// the watermark; the follower calls [`MetaStore::advance_sink_watermark`]
     /// after it has durably applied the projection.
-    fn outbox_claim(
-        &self,
-        sink: SinkKind,
-        limit: usize,
-    ) -> Result<Vec<OutboxRow>, MetaError>;
+    fn outbox_claim(&self, sink: SinkKind, limit: usize) -> Result<Vec<OutboxRow>, MetaError>;
 
     /// Advance a sink's watermark to `last_seq`. Rejects a regression
     /// ([`MetaError::WatermarkRegression`]) so a watermark can never move
@@ -163,10 +169,16 @@ pub trait MetaStore: Catalog {
 pub trait Catalog: Send + Sync {
     /// Fetch a package stem by its version id's stem, or `None` if absent.
     fn get_package(&self, stem: crate::ids::PackageStemId)
-        -> Result<Option<PackageRow>, MetaError>;
+    -> Result<Option<PackageRow>, MetaError>;
 
     /// Page the catalog change stream after `cursor` (INDEX-PLAN §8.1).
     fn changed_since(&self, cursor: CatalogCursor) -> Result<ChangedPage, MetaError>;
+
+    /// Read the durable version identities and source revisions for a stem.
+    fn version_snapshots(
+        &self,
+        stem: crate::ids::PackageStemId,
+    ) -> Result<Vec<VersionSnapshot>, MetaError>;
 
     /// Resolve a read view as of a point in history (INDEX-PLAN §9). The
     /// returned handle pins a commit; a plain-SQLite fake resolves time against

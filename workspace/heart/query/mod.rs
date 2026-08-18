@@ -20,9 +20,9 @@ pub mod search;
 
 use serde::{Deserialize, Serialize};
 
+use self::search::Page;
 use crate::ecosystem::Language;
 use crate::identity::PackageId;
-use self::search::Page;
 
 /// Milliseconds since the Unix epoch, UTC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -207,7 +207,6 @@ pub enum QualityMode {
     Deep,
 }
 
-
 /// What slice of the world a dense query addresses (09-vector §20.5).
 ///
 /// Named `QueryReach` in the wire algebra to avoid colliding with [`Scope`]
@@ -225,7 +224,6 @@ pub enum QueryReach {
     #[default]
     Org,
 }
-
 
 /// The vector-plane routing knobs (09-vector §20.5).
 ///

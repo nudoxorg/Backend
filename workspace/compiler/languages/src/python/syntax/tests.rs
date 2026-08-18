@@ -14,7 +14,12 @@ use super::*;
 
 fn oracle_for(src: &str) -> ModuleData {
     let parsed = ruff_python_parser::parse_module(src).expect("fixture must parse");
-    extract_module(parsed.syntax(), src, "m".to_owned())
+    extract_module(
+        parsed.syntax(),
+        src,
+        "m".to_owned(),
+        std::path::PathBuf::from("fixture.py"),
+    )
 }
 
 fn only_item<'a>(module: &'a ModuleData, name: &str) -> &'a ItemData {
@@ -22,7 +27,12 @@ fn only_item<'a>(module: &'a ModuleData, name: &str) -> &'a ItemData {
         .items
         .iter()
         .find(|i| i.name == name)
-        .unwrap_or_else(|| panic!("no item named {name:?} in {:?}", module.items.iter().map(|i| &i.name).collect::<Vec<_>>()))
+        .unwrap_or_else(|| {
+            panic!(
+                "no item named {name:?} in {:?}",
+                module.items.iter().map(|i| &i.name).collect::<Vec<_>>()
+            )
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -40,7 +50,9 @@ fn free_function_receiver_is_none_even_named_self() {
     // A free function's first parameter is never a receiver, no matter its name.
     let m = oracle_for("def f(self, x):\n    pass\n");
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
     assert_eq!(fd.receiver, ReceiverKind::None);
 }
 
@@ -48,8 +60,11 @@ fn free_function_receiver_is_none_even_named_self() {
 fn param_kinds_cover_positional_only_normal_varargs_keyword_only_kwargs() {
     let m = oracle_for("def f(a, /, b, *args, c, **kwargs):\n    pass\n");
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
-    let kinds: Vec<(String, ParamKind)> = fd.params.iter().map(|p| (p.name.clone(), p.kind)).collect();
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
+    let kinds: Vec<(String, ParamKind)> =
+        fd.params.iter().map(|p| (p.name.clone(), p.kind)).collect();
     assert_eq!(
         kinds,
         vec![
@@ -80,7 +95,10 @@ fn item_span_covers_the_declaration_and_is_a_real_byte_range_past_non_ascii_sour
         text.starts_with("def greet(name):"),
         "span must start at the def statement's own text; got {text:?}"
     );
-    assert!(text.contains("return name"), "span must cover the full def statement; got {text:?}");
+    assert!(
+        text.contains("return name"),
+        "span must cover the full def statement; got {text:?}"
+    );
 }
 
 /// A parameter's span covers the parameter itself (name, annotation, and
@@ -89,11 +107,16 @@ fn item_span_covers_the_declaration_and_is_a_real_byte_range_past_non_ascii_sour
 fn param_span_covers_only_that_parameter() {
     let m = oracle_for("def f(a: int, b: str = \"x\"):\n    pass\n");
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
     let source = "def f(a: int, b: str = \"x\"):\n    pass\n";
     let a_text = &source[fd.params[0].span.clone()];
     let b_text = &source[fd.params[1].span.clone()];
-    assert_eq!(a_text, "a: int", "first param's span must cover only `a: int`; got {a_text:?}");
+    assert_eq!(
+        a_text, "a: int",
+        "first param's span must cover only `a: int`; got {a_text:?}"
+    );
     assert_eq!(
         b_text, "b: str = \"x\"",
         "second param's span must cover name, annotation, and default; got {b_text:?}"
@@ -104,7 +127,9 @@ fn param_span_covers_only_that_parameter() {
 fn async_def_sets_is_async() {
     let m = oracle_for("async def f():\n    pass\n");
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
     assert!(fd.is_async);
 }
 
@@ -112,8 +137,13 @@ fn async_def_sets_is_async() {
 fn stub_body_is_detected_past_a_leading_docstring() {
     let m = oracle_for("def f():\n    \"\"\"Doc.\"\"\"\n    ...\n");
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
-    assert!(fd.is_stub, "a docstring followed by `...` must still count as a stub body");
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
+    assert!(
+        fd.is_stub,
+        "a docstring followed by `...` must still count as a stub body"
+    );
 }
 
 #[test]
@@ -123,7 +153,9 @@ fn function_docstring_param_descriptions_reach_params() {
     );
     let item = only_item(&m, "f");
     assert_eq!(item.documentation.as_deref(), Some("Do a thing."));
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
     assert_eq!(fd.params[0].doc_description.as_deref(), Some("the first."));
     assert_eq!(fd.params[1].doc_description.as_deref(), Some("the second."));
 }
@@ -143,7 +175,9 @@ fn overload_group_keeps_every_branch_as_a_distinct_declaration() {
          def f(x):\n    return x\n",
     );
     let item = only_item(&m, "f");
-    let ItemBody::Overloaded(branches) = &item.body else { panic!("expected Overloaded") };
+    let ItemBody::Overloaded(branches) = &item.body else {
+        panic!("expected Overloaded")
+    };
     assert_eq!(branches.len(), 3);
     assert_eq!(branches[0].overload_index, 0);
     assert_eq!(branches[2].overload_index, 2);
@@ -161,9 +195,17 @@ fn property_setter_pair_collapses_to_the_getter_only() {
          \x20\x20\x20\x20\x20\x20\x20\x20pass\n",
     );
     let item = only_item(&m, "C");
-    let ItemBody::Class(cls) = &item.body else { panic!("expected Class") };
-    assert_eq!(cls.methods.len(), 1, "the setter must not become a second declaration");
-    let ItemBody::Function(fd) = &cls.methods[0].body else { panic!("expected Function") };
+    let ItemBody::Class(cls) = &item.body else {
+        panic!("expected Class")
+    };
+    assert_eq!(
+        cls.methods.len(),
+        1,
+        "the setter must not become a second declaration"
+    );
+    let ItemBody::Function(fd) = &cls.methods[0].body else {
+        panic!("expected Function")
+    };
     assert_eq!(fd.receiver, ReceiverKind::SharedRef);
 }
 
@@ -173,9 +215,13 @@ fn property_setter_pair_collapses_to_the_getter_only() {
 
 #[test]
 fn dataclass_decorator_is_detected_with_or_without_call_args() {
-    let m = oracle_for("import dataclasses\n\n@dataclasses.dataclass(frozen=True)\nclass C:\n    x: int\n");
+    let m = oracle_for(
+        "import dataclasses\n\n@dataclasses.dataclass(frozen=True)\nclass C:\n    x: int\n",
+    );
     let item = only_item(&m, "C");
-    let ItemBody::Class(cls) = &item.body else { panic!("expected Class") };
+    let ItemBody::Class(cls) = &item.body else {
+        panic!("expected Class")
+    };
     assert_eq!(cls.form, ClassForm::Dataclass);
 }
 
@@ -183,7 +229,9 @@ fn dataclass_decorator_is_detected_with_or_without_call_args() {
 fn enum_base_is_detected() {
     let m = oracle_for("from enum import Enum\n\nclass Color(Enum):\n    RED = 1\n    BLUE = 2\n");
     let item = only_item(&m, "Color");
-    let ItemBody::Class(cls) = &item.body else { panic!("expected Class") };
+    let ItemBody::Class(cls) = &item.body else {
+        panic!("expected Class")
+    };
     assert_eq!(cls.form, ClassForm::Enum);
     assert_eq!(cls.fields.len(), 2);
 }
@@ -191,13 +239,19 @@ fn enum_base_is_detected() {
 #[test]
 fn protocol_and_typed_dict_and_named_tuple_bases_are_detected() {
     let proto = oracle_for("from typing import Protocol\n\nclass P(Protocol):\n    pass\n");
-    assert!(matches!(&only_item(&proto, "P").body, ItemBody::Class(c) if c.form == ClassForm::Protocol));
+    assert!(
+        matches!(&only_item(&proto, "P").body, ItemBody::Class(c) if c.form == ClassForm::Protocol)
+    );
 
     let td = oracle_for("from typing import TypedDict\n\nclass D(TypedDict):\n    x: int\n");
-    assert!(matches!(&only_item(&td, "D").body, ItemBody::Class(c) if c.form == ClassForm::TypedDict));
+    assert!(
+        matches!(&only_item(&td, "D").body, ItemBody::Class(c) if c.form == ClassForm::TypedDict)
+    );
 
     let nt = oracle_for("from typing import NamedTuple\n\nclass N(NamedTuple):\n    x: int\n");
-    assert!(matches!(&only_item(&nt, "N").body, ItemBody::Class(c) if c.form == ClassForm::NamedTuple));
+    assert!(
+        matches!(&only_item(&nt, "N").body, ItemBody::Class(c) if c.form == ClassForm::NamedTuple)
+    );
 }
 
 #[test]
@@ -209,7 +263,9 @@ fn class_var_and_final_field_flags_are_extracted_and_unwrapped() {
          \x20\x20\x20\x20name: Final[str] = \"x\"\n",
     );
     let item = only_item(&m, "C");
-    let ItemBody::Class(cls) = &item.body else { panic!("expected Class") };
+    let ItemBody::Class(cls) = &item.body else {
+        panic!("expected Class")
+    };
     let count = cls.fields.iter().find(|f| f.name == "count").unwrap();
     assert!(count.is_class_var);
     assert!(
@@ -225,7 +281,9 @@ fn class_var_and_final_field_flags_are_extracted_and_unwrapped() {
 fn base_classes_become_super_types() {
     let m = oracle_for("class Base:\n    pass\nclass Child(Base):\n    pass\n");
     let item = only_item(&m, "Child");
-    let ItemBody::Class(cls) = &item.body else { panic!("expected Class") };
+    let ItemBody::Class(cls) = &item.body else {
+        panic!("expected Class")
+    };
     assert_eq!(cls.super_types.len(), 1);
     assert!(matches!(&cls.super_types[0], TypeData::Nominal(n) if n == "Base"));
 }
@@ -237,7 +295,9 @@ fn base_classes_become_super_types() {
 fn return_type_of(src: &str) -> TypeData {
     let m = oracle_for(src);
     let item = only_item(&m, "f");
-    let ItemBody::Function(fd) = &item.body else { panic!("expected Function") };
+    let ItemBody::Function(fd) = &item.body else {
+        panic!("expected Function")
+    };
     fd.return_ty.clone().expect("expected a return type")
 }
 
@@ -265,7 +325,10 @@ fn pep604_union_is_flattened() {
 #[test]
 fn list_subscript_becomes_slice() {
     let ty = return_type_of("def f() -> list[int]: ...\n");
-    assert!(matches!(ty, TypeData::Slice(_)), "expected Slice, got {ty:?}");
+    assert!(
+        matches!(ty, TypeData::Slice(_)),
+        "expected Slice, got {ty:?}"
+    );
 }
 
 #[test]
@@ -282,7 +345,8 @@ fn generic_subscript_becomes_apply() {
 
 #[test]
 fn annotated_extracts_inner_type_and_metadata() {
-    let ty = return_type_of("from typing import Annotated\ndef f() -> Annotated[int, \"meta\"]: ...\n");
+    let ty =
+        return_type_of("from typing import Annotated\ndef f() -> Annotated[int, \"meta\"]: ...\n");
     match ty {
         TypeData::Annotated { inner, metadata } => {
             assert!(matches!(*inner, TypeData::Nominal(ref n) if n == "int"));
@@ -294,7 +358,8 @@ fn annotated_extracts_inner_type_and_metadata() {
 
 #[test]
 fn typevar_reference_is_recognized_from_legacy_and_pep695_forms() {
-    let legacy = return_type_of("from typing import TypeVar\nT = TypeVar(\"T\")\ndef f() -> T: ...\n");
+    let legacy =
+        return_type_of("from typing import TypeVar\nT = TypeVar(\"T\")\ndef f() -> T: ...\n");
     assert!(matches!(legacy, TypeData::TypeVar(ref n) if n == "T"));
 
     let pep695 = return_type_of("def f[T]() -> T: ...\n");
@@ -312,7 +377,8 @@ fn self_type_is_recognized() {
 /// source text, never a bare `Any`.
 #[test]
 fn literal_subscript_is_unsupported_with_source_text_not_any() {
-    let ty = return_type_of("from typing import Literal\ndef f() -> Literal[\"GET\", \"POST\"]: ...\n");
+    let ty =
+        return_type_of("from typing import Literal\ndef f() -> Literal[\"GET\", \"POST\"]: ...\n");
     match ty {
         TypeData::Unsupported(text) => {
             assert_eq!(text, "Literal[\"GET\", \"POST\"]");
@@ -356,4 +422,21 @@ fn module_dotted_name_climbs_only_through_init_py_directories() {
     let lone = dir.path().join("six.py");
     std::fs::write(&lone, "").unwrap();
     assert_eq!(module_dotted_name(&lone), "six");
+}
+
+#[test]
+fn lexical_python_calls_resolve_only_declared_targets() {
+    let module = oracle_for(
+        "def callee(): ...\n\ndef caller():\n    return callee()\n\ndef spelling():\n    return \"callee\"\n",
+    );
+    assert_eq!(module.references.len(), 1);
+    assert_eq!(module.references[0].owner.as_str(), "m.caller");
+    assert_eq!(module.references[0].target.as_str(), "m.callee");
+}
+
+#[test]
+fn imported_python_call_keeps_qualified_target_identity() {
+    let module = oracle_for("from .helper import callee\n\ndef caller():\n    return callee()\n");
+    assert_eq!(module.references.len(), 1);
+    assert_eq!(module.references[0].target.as_str(), "helper.callee");
 }

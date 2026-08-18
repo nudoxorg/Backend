@@ -100,6 +100,28 @@ pub struct DocLink {
     pub target: String,
     /// Optional display label for the link.
     pub label: Option<String>,
+    /// Byte range of the complete link spelling in the documentation, when
+    /// supplied by the producer. The range is half-open and includes the
+    /// delimiters (for example, `[Thing]`).
+    #[serde(default)]
+    pub source_span: Option<Range<usize>>,
+}
+
+impl DocLink {
+    /// Construct a link without producer source-location data.
+    pub fn new(target: impl Into<String>, label: Option<String>) -> Self {
+        Self {
+            target: target.into(),
+            label,
+            source_span: None,
+        }
+    }
+
+    /// Attach the producer's byte range to this link.
+    pub fn with_source_span(mut self, source_span: Range<usize>) -> Self {
+        self.source_span = Some(source_span);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -123,6 +145,7 @@ mod tests {
             doc_links: Box::new([DocLink {
                 target: "crate::new_fn".to_owned(),
                 label: Some("new_fn".to_owned()),
+                source_span: None,
             }]),
             attrs: Box::new([
                 AttrTok {

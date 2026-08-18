@@ -2,11 +2,11 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
-use crate::ids::ObjectPackHash;
-use crate::ids::PackageStemId;
 use crate::enums::ParseState;
 use crate::enums::SourceKind;
+use crate::ids::ObjectPackHash;
+use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
@@ -90,4 +90,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type VersionRow = Model;
 
 pub const TABLE: &str = "versions";
-

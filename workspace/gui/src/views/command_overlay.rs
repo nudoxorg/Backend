@@ -55,7 +55,7 @@ use std::rc::Rc;
 use gpui::{
     App, ClickEvent, Context, EventEmitter, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, Keystroke, ParentElement, Render, SharedString, StatefulInteractiveElement as _,
-    Styled, Window, div, px, prelude::FluentBuilder as _,
+    Styled, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::StyledExt as _;
 
@@ -554,8 +554,16 @@ mod tests {
             ((selected as isize + delta).rem_euclid(len)) as usize
         }
         let len = build_rows(CommandOverlayMode::Shortcuts).0.len();
-        assert_eq!(wrapped(0, -1, len), len - 1, "Up from the first row wraps to the last");
-        assert_eq!(wrapped(len - 1, 1, len), 0, "Down from the last row wraps to the first");
+        assert_eq!(
+            wrapped(0, -1, len),
+            len - 1,
+            "Up from the first row wraps to the last"
+        );
+        assert_eq!(
+            wrapped(len - 1, 1, len),
+            0,
+            "Down from the last row wraps to the first"
+        );
     }
 
     /// `humanize_context` never returns an empty label — a blank group

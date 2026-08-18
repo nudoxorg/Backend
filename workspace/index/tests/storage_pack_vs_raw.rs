@@ -58,10 +58,12 @@ fn pack_real_source_tree(
     let store = FilesystemObjectPackStore::open(store_dir).expect("open pack store");
 
     let ((pack_id, member_count), cost) = heart::cost::measured(case, store_dir, || {
-        let builder =
-            TreeIngest::ingest_directory(&src_root).expect("ingest a real, symlink-free source tree");
+        let builder = TreeIngest::ingest_directory(&src_root)
+            .expect("ingest a real, symlink-free source tree");
         let member_count = builder.member_count();
-        let id = store.put_pack(builder).expect("seal + persist the NDPK pack");
+        let id = store
+            .put_pack(builder)
+            .expect("seal + persist the NDPK pack");
         (id, member_count)
     });
 
@@ -85,7 +87,12 @@ fn ndpk_pack_is_smaller_than_raw_for_a_real_small_crate_and_round_trips_a_real_f
     let scratch = tempfile::tempdir().expect("tempdir");
     let store_dir = scratch.path().join("store");
 
-    let result = pack_real_source_tree("index/pack_vs_raw_memchr_2_8_3", "memchr", "2.8.3", &store_dir);
+    let result = pack_real_source_tree(
+        "index/pack_vs_raw_memchr_2_8_3",
+        "memchr",
+        "2.8.3",
+        &store_dir,
+    );
 
     assert!(
         result.member_count >= 40,
@@ -109,11 +116,8 @@ fn ndpk_pack_is_smaller_than_raw_for_a_real_small_crate_and_round_trips_a_real_f
     // identical to the same file read directly off disk right now — proving
     // the pack is not lossy, not just that `put_pack` returned `Ok`.
     let store = FilesystemObjectPackStore::open(&store_dir).expect("reopen store");
-    let on_disk = std::fs::read(
-        real_crates_root()
-            .join("memchr-2.8.3/src/memchr.rs"),
-    )
-    .expect("read the real file directly");
+    let on_disk = std::fs::read(real_crates_root().join("memchr-2.8.3/src/memchr.rs"))
+        .expect("read the real file directly");
     let from_pack: Bytes = store
         .get_member(&result.pack_id, &source_key("memchr.rs"))
         .expect("range-get a real member back out of the pack");
@@ -137,7 +141,12 @@ fn ndpk_pack_bytes_scale_with_a_larger_real_crate_and_stay_deterministic() {
     );
 
     let syn_dir = scratch.path().join("store_syn");
-    let syn = pack_real_source_tree("index/pack_vs_raw_syn_1_0_109_scaling", "syn", "1.0.109", &syn_dir);
+    let syn = pack_real_source_tree(
+        "index/pack_vs_raw_syn_1_0_109_scaling",
+        "syn",
+        "1.0.109",
+        &syn_dir,
+    );
 
     // syn's real src/ is a substantially larger real tree than memchr's; its
     // sealed pack must be larger too, both in raw source and in pack bytes.

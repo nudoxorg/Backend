@@ -25,4 +25,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type OverlayRow = Model;
 
 pub const TABLE: &str = "overlays";
-

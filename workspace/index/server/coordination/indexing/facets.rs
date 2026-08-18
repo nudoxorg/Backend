@@ -1,12 +1,12 @@
 //! Emit-time metadata: listing signals, download counts, and search facets.
 
+use crate::ecosystem::{DynSpec, LanguageExt};
 #[allow(unused_imports)]
 use crate::server::registry;
-use crate::ecosystem::{DynSpec, LanguageExt};
 use crate::server::registry::blob::{BlobManifest, FileEntry, creation::PendingSection};
 use crate::server::registry::identity::PackageCoordinates;
-use crate::server::registry::metadata::rich::{self, ExtractionInput};
 use crate::server::registry::metadata::SearchFacets;
+use crate::server::registry::metadata::rich::{self, ExtractionInput};
 
 /// Fetch the registry listing body and parse release/freshness signals.
 ///
@@ -16,8 +16,8 @@ pub(super) async fn fetch_listing_signals(
     coordinates: &PackageCoordinates,
     client: &registry::upstream::UpstreamClient,
 ) -> Option<(u32, u32, bool, Option<u32>)> {
-    use crate::server::registry::search::listing_signals::listing_signals_from_body;
     use crate::ecosystem::LanguageExt;
+    use crate::server::registry::search::listing_signals::listing_signals_from_body;
 
     let spec = coordinates.ecosystem().spec();
     let name = coordinates.name.canonical();
@@ -200,35 +200,53 @@ pub(super) fn extract_facets(
     };
 
     let facts = {
+        // Merge across *every* matching candidate, in priority order — not just
+        // the first one that parses. Ecosystems with a single manifest kind
+        // (Rust, TypeScript, C#, Java) are unaffected: the loop below still only
+        // ever finds one match, so the merge is a no-op and the result is
+        // byte-identical to the old first-match-wins behavior. Ecosystems with
+        // several manifest kinds (C/C++'s 9, Python's 3, Go's now 9 counting
+        // LICENSE candidates) get real fact-merging: a higher-priority manifest's
+        // fields win, a lower-priority one only fills gaps — see
+        // `ExtractedFacts::merge` for the exact per-field-kind policy.
+        //
+        // Cost: one file read/parse attempt per matching candidate rather than
+        // stopping at the first success, so packages whose earlier candidates
+        // parse but leave later ones unread now pay for those later reads too.
+        // The per-candidate scan itself is unchanged (linear in `manifest.files`);
+        // this only changes how many candidates are visited to completion.
         let candidates = spec.manifest_candidates();
-        let mut found = None;
-        'outer: for candidate in candidates {
+        let mut merged = crate::ecosystem::manifest::ExtractedFacts::default();
+        let mut any_found = false;
+        for candidate in candidates {
             for entry in &manifest.files {
                 if matches_candidate(entry.path.as_str(), candidate.path_suffix)
                     && let Some(bytes) = file_bytes(entry)
+                    && let Some(parsed) = spec.extract_facts(candidate, &bytes)
                 {
-                    found = spec.extract_facts(candidate, &bytes);
-                    if found.is_some() {
-                        tracing::debug!(
-                            package = %manifest.package,
-                            manifest = entry.path.as_str(),
-                            "manifest parsed"
-                        );
-                        break 'outer;
-                    }
+                    tracing::debug!(
+                        package = %manifest.package,
+                        manifest = entry.path.as_str(),
+                        "manifest parsed"
+                    );
+                    merged.merge(parsed);
+                    any_found = true;
+                    // One successful parse per candidate; move on to the next
+                    // candidate rather than re-scanning remaining entries for
+                    // another file matching the same suffix.
+                    break;
                 }
             }
         }
-        match found {
-            Some(f) => f,
-            None => {
-                tracing::debug!(
-                    package = %manifest.package,
-                    ecosystem = ?coordinates.ecosystem(),
-                    "no manifest found; name-only facets"
-                );
-                crate::ecosystem::manifest::ExtractedFacts::default()
-            }
+        if any_found {
+            merged
+        } else {
+            tracing::debug!(
+                package = %manifest.package,
+                ecosystem = ?coordinates.ecosystem(),
+                "no manifest found; name-only facets"
+            );
+            crate::ecosystem::manifest::ExtractedFacts::default()
         }
     };
 
@@ -340,4 +358,193 @@ pub(super) fn extract_facets(
     );
 
     Some(facets)
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────
+//
+// These exercise `extract_facets`'s manifest-merge behavior end to end (real
+// `BlobBuilder`/`BlobManifest`/`PendingSection` plumbing, no mocking of the
+// candidate-matching or parsing) — the multi-candidate-merge change is the
+// point of this test module, so it goes through the exact code path
+// `execute_emit_phase` (`mod.rs`, out of scope for this change) calls.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ecosystem::PackageNameExt as _;
+    use crate::server::registry::blob::BlobBuilder;
+    use crate::server::registry::package::{Coordinates, PackageName};
+    use heart::{Language, PackageVersion, RegistryOrigin, Toolchain};
+
+    /// Build a minimal, valid `(BlobManifest, Vec<PendingSection>)` from
+    /// `(path, bytes)` file entries, attaching empty-but-valid IR/reference
+    /// sections so `finalize()` succeeds without pulling in the cage/IR
+    /// pipeline this module doesn't otherwise depend on.
+    fn build_manifest(
+        toolchain: Toolchain,
+        files: &[(&'static str, &'static [u8])],
+    ) -> (BlobManifest, Vec<PendingSection>) {
+        let package = heart::PackageId::from_uuid(uuid::Uuid::from_bytes([9u8; 16]));
+        let mut builder = BlobBuilder::new(package, toolchain);
+        for (path, bytes) in files {
+            builder
+                .push_file(
+                    smol_str::SmolStr::new(path),
+                    bytes::Bytes::from_static(bytes),
+                )
+                .expect("push file");
+        }
+        super::super::ir_stream::attach_empty_ir_sections(&mut builder);
+        builder.finalize().expect("finalize")
+    }
+
+    fn cpp_coordinates(name: &str) -> PackageCoordinates {
+        Coordinates {
+            origin: RegistryOrigin::Git,
+            name: PackageName::new(Language::Cpp, name).expect("fixture cpp name"),
+            version: PackageVersion::try_from((Language::Cpp, "1.0.0"))
+                .expect("fixture cpp version"),
+        }
+    }
+
+    fn rust_coordinates(name: &str) -> PackageCoordinates {
+        Coordinates {
+            origin: RegistryOrigin::CratesIo,
+            name: PackageName::new(Language::Rust, name).expect("fixture rust name"),
+            version: PackageVersion::try_from((Language::Rust, "1.0.0"))
+                .expect("fixture rust version"),
+        }
+    }
+
+    const CMAKE_WITH_NO_LICENSE: &[u8] =
+        br#"project(demo VERSION 1.0 DESCRIPTION "A demo C++ library" LANGUAGES CXX)
+set(CMAKE_PROJECT_HOMEPAGE_URL "https://example.com/demo")
+"#;
+
+    const MIT_LICENSE_TEXT: &[u8] = b"MIT License\n\n\
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software \
+and associated documentation files (the \"Software\"), to deal in the Software without \
+restriction, including without limitation the rights to use, copy, modify...";
+
+    #[test]
+    fn cpp_cmake_plus_license_merges_a_license_cmake_alone_never_had() {
+        // CMakeLists.txt alone sets description/repository/documentation but
+        // never a `license` expression (only meson/vcpkg/conan do) — the bug
+        // this task fixes: a CMake-only C/C++ repo with a separate LICENSE
+        // file used to end up with `license: None` because facets.rs stopped
+        // at the first manifest that parsed (CMakeLists.txt, priority 4 of
+        // 9) and never looked at the lower-priority LICENSE candidate.
+        let (manifest, sections) = build_manifest(
+            Toolchain::Cpp {
+                compiler: semver::Version::new(17, 0, 0),
+            },
+            &[
+                ("CMakeLists.txt", CMAKE_WITH_NO_LICENSE),
+                ("LICENSE", MIT_LICENSE_TEXT),
+            ],
+        );
+        let coordinates = cpp_coordinates("github.com/example/demo");
+        let facets =
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+
+        assert_eq!(
+            facets.description.as_deref(),
+            Some("A demo C++ library"),
+            "CMakeLists.txt's description must still populate"
+        );
+        assert_eq!(
+            facets.license.as_deref(),
+            Some("mit"),
+            "the LICENSE candidate must now be reached and merged in"
+        );
+    }
+
+    #[test]
+    fn single_manifest_cpp_package_is_unaffected_by_merge() {
+        // A package with exactly one manifest candidate present must behave
+        // identically to the old stop-at-first-match code: the merge loop
+        // still only ever finds one match.
+        let (manifest, sections) = build_manifest(
+            Toolchain::Cpp {
+                compiler: semver::Version::new(17, 0, 0),
+            },
+            &[("CMakeLists.txt", CMAKE_WITH_NO_LICENSE)],
+        );
+        let coordinates = cpp_coordinates("github.com/example/demo");
+        let facets =
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+
+        assert_eq!(facets.description.as_deref(), Some("A demo C++ library"));
+        assert!(
+            facets.license.is_none(),
+            "no LICENSE file present: license must stay unset, not fabricated"
+        );
+    }
+
+    #[test]
+    fn higher_priority_manifest_wins_when_both_set_the_same_field() {
+        // vcpkg.json (candidate priority 1) and meson.build (candidate
+        // priority 5) both carry a `license` expression for this fixture;
+        // vcpkg.json's must win per the documented merge policy (first
+        // non-None, in priority order) even though both parse successfully.
+        let vcpkg_json = br#"{"name":"demo","license":"Apache-2.0"}"#;
+        let meson_build = b"project('demo', license: 'MIT')\n";
+        let (manifest, sections) = build_manifest(
+            Toolchain::Cpp {
+                compiler: semver::Version::new(17, 0, 0),
+            },
+            &[("vcpkg.json", vcpkg_json), ("meson.build", meson_build)],
+        );
+        let coordinates = cpp_coordinates("github.com/example/demo");
+        let facets =
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+
+        assert_eq!(
+            facets.license.as_deref(),
+            Some("apache-2.0"),
+            "vcpkg.json is higher priority than meson.build and must win"
+        );
+    }
+
+    #[test]
+    fn single_manifest_rust_package_unaffected_by_merge() {
+        // Sanity check on an ecosystem with exactly one manifest candidate at
+        // all (Rust: only Cargo.toml) — never touches the merge path.
+        let cargo_toml = br#"
+[package]
+name = "demo"
+version = "1.0.0"
+description = "A demo crate"
+license = "MIT"
+"#;
+        let (manifest, sections) = build_manifest(
+            Toolchain::Rust {
+                compiler: semver::Version::new(1, 85, 0),
+                edition: heart::Edition::E2024,
+            },
+            &[("Cargo.toml", cargo_toml)],
+        );
+        let coordinates = rust_coordinates("demo");
+        let facets =
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+
+        assert_eq!(facets.description.as_deref(), Some("A demo crate"));
+        assert_eq!(facets.license.as_deref(), Some("mit"));
+    }
+
+    #[test]
+    fn no_manifest_at_all_degrades_to_name_only_facets() {
+        let (manifest, sections) = build_manifest(
+            Toolchain::Cpp {
+                compiler: semver::Version::new(17, 0, 0),
+            },
+            &[("README.md", b"# demo\n")],
+        );
+        let coordinates = cpp_coordinates("github.com/example/demo");
+        let facets =
+            extract_facets(&coordinates, &manifest, &sections, &[], None, None).expect("facets");
+
+        assert!(facets.description.is_none());
+        assert!(facets.license.is_none());
+    }
 }

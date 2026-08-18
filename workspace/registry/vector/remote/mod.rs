@@ -15,7 +15,7 @@ pub mod store;
 pub mod voyage;
 
 pub use hedged::{HedgedOutcome, hedged};
-pub use rerank::{HttpReranker, RerankDoc, RerankScore, Reranker, VoyageReranker};
 pub use rerank::Error as RerankError;
+pub use rerank::{HttpReranker, RerankDoc, RerankScore, Reranker, VoyageReranker};
 pub use store::{CollectionConfig, RemoteStore};
 pub use voyage::VoyageEmbedder;

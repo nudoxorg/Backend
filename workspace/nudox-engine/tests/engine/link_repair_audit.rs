@@ -33,11 +33,11 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use nudox_engine::store::package::{PackageView, Provenance};
+use nudox_engine::store::source::producer::PackageDescriptor;
 use nudox_ir::view::IrView;
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::package::{PackageView, Provenance};
-use nudox_engine::store::source::producer::PackageDescriptor;
 
 use nudox_engine::chunk::{self, repair_audit::RepairTally};
 use nudox_engine::wire::{InlineRun, LinkOrigin, LinkRepairKind, ProseBlock, RenderSection};
@@ -47,12 +47,15 @@ const MEMCHR_VERSION: &str = "2.8.3";
 /// Path to the memchr checkout, honouring the same `NUDOX_REAL_CRATE_ROOT`
 /// override every other real-crate test uses.
 fn memchr_root() -> PathBuf {
-    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(|_| {
+    std::env::var("NUDOX_REAL_CRATE_ROOT").map_or_else(
+        |_| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(format!("../../result/memchr-{MEMCHR_VERSION}"))
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from("/nonexistent"))
-        }, PathBuf::from)
+        },
+        PathBuf::from,
+    )
 }
 
 /// Lower the memchr crate at `root` via the real Rust producer.
@@ -292,7 +295,8 @@ fn memchr_repairs_only_transposed_open_delimiters() {
             continue;
         }
         assert_eq!(
-            count, 0,
+            count,
+            0,
             "{} fired {count} time(s) on memchr, which no baseline accounts for. \
              A new repair must be measured and explained before it ships, not \
              discovered later in a diff.",

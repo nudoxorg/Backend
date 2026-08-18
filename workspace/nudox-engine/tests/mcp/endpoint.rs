@@ -15,9 +15,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use nudox_engine::{Engine, EngineConfig, EngineHandle};
 use nudox_engine::mcp::{AccountGate, McpEndpoint, NudoxMcpServer, SessionToken};
 use nudox_engine::store::source::fixtures::FixtureSource;
+use nudox_engine::{Engine, EngineConfig, EngineHandle};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::runtime::Runtime;
@@ -198,9 +198,10 @@ fn a_request_with_the_correct_token_is_not_rejected() {
     let status = runtime.block_on(async {
         let token = SessionToken::generate();
         let secret = token.expose().to_owned();
-        let endpoint = McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone(), test_gate()), token)
-            .await
-            .expect("server must bind");
+        let endpoint =
+            McpEndpoint::start_with_token(NudoxMcpServer::new(engine.clone(), test_gate()), token)
+                .await
+                .expect("server must bind");
         let status = post_status_line(endpoint.addr(), Some(&secret), INITIALIZE).await;
         endpoint.stop().await;
         status

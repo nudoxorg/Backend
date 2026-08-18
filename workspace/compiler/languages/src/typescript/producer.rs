@@ -11,8 +11,8 @@
 
 use nudox_ir::body::Language;
 
-use nudox_ir::lower::Lowering;
 use crate::{PackageSource, Producer, ProducerError, ProducerId};
+use nudox_ir::lower::Lowering;
 
 use crate::typescript::{
     emit::lower_package, entry::discover_entry_points, extract::ModuleFacts,
@@ -135,12 +135,11 @@ where
                 reason: std::io::Error::other(e),
             })?;
 
-        let modules = build_and_extract(&entry_points, &root).map_err(|e| {
-            ProducerError::OracleSpawn {
+        let modules =
+            build_and_extract(&entry_points, &root).map_err(|e| ProducerError::OracleSpawn {
                 command: "oxc-extract".to_string(),
                 reason: std::io::Error::other(e),
-            }
-        })?;
+            })?;
 
         Ok(OwnedOracle { modules }.into())
     }
@@ -148,6 +147,80 @@ where
     fn lower(&self, oracle: &O, out: &mut Lowering<TsId>) -> Result<(), ProducerError> {
         lower_package(oracle.modules(), out);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{PackageSource, ProducerError, YieldContract, produce};
+    use nudox_ir::{
+        change::{EcosystemId, PackageLineageId, PackageName},
+        entry::EntryInner,
+        foreign::Unlinked,
+    };
+
+    #[test]
+    fn commonjs_require_bindings_are_not_fabricated_constants() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"tiny-cjs","version":"1.0.0","main":"index.js"}"#,
+        )
+        .expect("write package manifest");
+        std::fs::write(
+            dir.path().join("index.js"),
+            "const answer = require('./answer');\nmodule.exports = answer;\n",
+        )
+        .expect("write entry module");
+        std::fs::write(
+            dir.path().join("answer.js"),
+            "function answer() { return 42; }\nmodule.exports = answer;\n",
+        )
+        .expect("write exported module");
+
+        let source = PackageSource::new(dir.path(), "tiny-cjs", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("tiny-cjs"));
+        let produced = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect("a CommonJS package with a real export must lower");
+
+        assert!(matches!(produced.contract, YieldContract::Declarations));
+        assert!(
+            produced
+                .table
+                .iter()
+                .any(|(_, entry)| entry.sym().name == "answer"),
+            "the exported function must be discovered and lowered"
+        );
+        assert!(
+            produced.table.iter().all(|(_, entry)| {
+                !matches!(
+                    entry.kind(),
+                    EntryInner::Owned(nudox_ir::kind::Kind::Const(_))
+                ) || entry.sym().name != "answer"
+            }),
+            "require('./answer') must not become a fabricated Const named `answer`"
+        );
+    }
+
+    #[test]
+    fn an_empty_package_is_rejected_instead_of_sealing_the_root_stub() {
+        let dir = tempfile::tempdir().expect("create tempdir");
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"name":"empty-npm","version":"1.0.0"}"#,
+        )
+        .expect("write package manifest");
+
+        let source = PackageSource::new(dir.path(), "empty-npm", "1.0.0");
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("empty-npm"));
+        let error = produce(&TypescriptProducer::new(), &source, &lineage, &Unlinked)
+            .expect_err("a package with no declarations must not count as successful");
+
+        assert!(
+            matches!(error, ProducerError::NoDeclarationsContributed { .. }),
+            "expected the yield-contract refusal, got {error:?}"
+        );
     }
 }
 

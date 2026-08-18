@@ -67,6 +67,7 @@ use nudox_ir::{
         ParamAttribute, Record, RecordForm, Trait, TraitFlags, Variant, VariantForm,
     },
     lower::Lowering,
+    vocab::{Confidence, ReferenceKind, RelSpan},
 };
 
 use crate::python::{
@@ -93,6 +94,23 @@ pub fn emit_package(oracle: &PythonOracle, out: &mut Lowering<PythonId>) {
 
     for module in &oracle.modules {
         emit_module(module, out, &known_ids);
+        for reference in &module.references {
+            if known_ids.contains(reference.target.as_str()) {
+                let Ok(start) = u32::try_from(reference.span.start) else {
+                    continue;
+                };
+                let Ok(end) = u32::try_from(reference.span.end) else {
+                    continue;
+                };
+                out.record_occurrence(
+                    reference.owner.clone(),
+                    reference.target.clone(),
+                    ReferenceKind::FunctionCall,
+                    Confidence::Syntactic,
+                    RelSpan::new(start, end),
+                );
+            }
+        }
     }
 }
 
@@ -155,11 +173,18 @@ fn emit_module(module: &ModuleData, out: &mut Lowering<PythonId>, known_ids: &Kn
         module.deprecation.as_ref(),
         &[],
         module.span.clone(),
+        &module.source,
     );
     out.declare(module_id.clone(), None, sym, Module);
 
     for item in &module.items {
-        emit_item(item, Some(module_id.clone()), out, known_ids);
+        emit_item(
+            item,
+            Some(module_id.clone()),
+            out,
+            known_ids,
+            &module.source,
+        );
     }
 }
 
@@ -172,14 +197,15 @@ fn emit_item(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     match &item.body {
         ItemBody::Module => {
-            let sym = make_sym_item(item);
+            let sym = make_sym_item(item, source);
             out.declare(item.id.clone(), parent, sym, Module);
         }
-        ItemBody::Class(cls) => emit_class(item, cls, parent, out, known_ids),
-        ItemBody::Function(func) => emit_function(item, func, parent, out, known_ids),
+        ItemBody::Class(cls) => emit_class(item, cls, parent, out, known_ids, source),
+        ItemBody::Function(func) => emit_function(item, func, parent, out, known_ids, source),
         ItemBody::Overloaded(branches) => {
             // Each overload is a separate declaration with id = `base#N`,
             // and — unlike `name`/`documentation`/`decorators`, which are
@@ -195,13 +221,14 @@ fn emit_item(
                     item.deprecation.as_ref(),
                     &item.decorators,
                     branch.span.clone(),
+                    source,
                 );
                 let fn_kind = build_function_kind(branch, out, known_ids);
                 out.declare(overload_id, parent.clone(), sym, fn_kind);
             }
         }
-        ItemBody::Const(c) => emit_const(item, c, parent, out, known_ids),
-        ItemBody::Alias(a) => emit_alias(item, a, parent, out, known_ids),
+        ItemBody::Const(c) => emit_const(item, c, parent, out, known_ids, source),
+        ItemBody::Alias(a) => emit_alias(item, a, parent, out, known_ids, source),
     }
 }
 
@@ -215,18 +242,19 @@ fn emit_class(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     let class_id = item.id.clone();
 
     // --- Enum subclass ---
     if cls.form == ClassForm::Enum {
-        emit_enum(item, cls, parent, out, known_ids);
+        emit_enum(item, cls, parent, out, known_ids, source);
         return;
     }
 
     // --- Protocol → Trait ---
     if cls.form == ClassForm::Protocol {
-        emit_protocol(item, cls, parent, out, known_ids);
+        emit_protocol(item, cls, parent, out, known_ids, source);
         return;
     }
 
@@ -241,7 +269,7 @@ fn emit_class(
     let mut field_refs = Vec::with_capacity(cls.fields.len());
     for field in &cls.fields {
         let field_id = PythonId::new(format!("{}.{}", class_id.as_str(), field.name));
-        let field_sym = make_field_sym(field, class_id.as_str());
+        let field_sym = make_field_sym(field, class_id.as_str(), source);
         let field_kind = build_field_kind(field, out, known_ids);
         let field_ref = out.declare(field_id, Some(class_id.clone()), field_sym, field_kind);
         field_refs.push(field_ref);
@@ -257,16 +285,16 @@ fn emit_class(
         .generics(generics)
         .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(class_id.clone(), parent, sym, record);
 
     // Emit methods.
     for method in &cls.methods {
-        emit_item(method, Some(class_id.clone()), out, known_ids);
+        emit_item(method, Some(class_id.clone()), out, known_ids, source);
     }
     // Emit nested classes.
     for nested in &cls.nested {
-        emit_item(nested, Some(class_id.clone()), out, known_ids);
+        emit_item(nested, Some(class_id.clone()), out, known_ids, source);
     }
 }
 
@@ -276,6 +304,7 @@ fn emit_enum(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     let enum_id = item.id.clone();
     let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
@@ -284,7 +313,7 @@ fn emit_enum(
     let mut variant_refs = Vec::with_capacity(cls.fields.len());
     for field in &cls.fields {
         let variant_id = PythonId::new(format!("{}.{}", enum_id.as_str(), field.name));
-        let variant_sym = make_field_sym(field, enum_id.as_str());
+        let variant_sym = make_field_sym(field, enum_id.as_str(), source);
         // Enum fields: unit variants carrying an optional value in `discr`.
         let value_str = field
             .ty
@@ -303,12 +332,12 @@ fn emit_enum(
         .generics(generics)
         .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(enum_id.clone(), parent, sym, enum_kind);
 
     // Enum classes may also have methods (e.g. custom __str__).
     for method in &cls.methods {
-        emit_item(method, Some(enum_id.clone()), out, known_ids);
+        emit_item(method, Some(enum_id.clone()), out, known_ids, source);
     }
 }
 
@@ -318,6 +347,7 @@ fn emit_protocol(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     let trait_id = item.id.clone();
     let generics: Box<[_]> = types::lower_generics(&cls.generics, out, known_ids);
@@ -332,12 +362,12 @@ fn emit_protocol(
         .generics(generics)
         .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(trait_id.clone(), parent, sym, trait_kind);
 
     // Protocol methods.
     for method in &cls.methods {
-        emit_item(method, Some(trait_id.clone()), out, known_ids);
+        emit_item(method, Some(trait_id.clone()), out, known_ids, source);
     }
 }
 
@@ -351,6 +381,7 @@ fn emit_function(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     let fn_id = item.id.clone();
 
@@ -366,7 +397,7 @@ fn emit_function(
             name: param.name.clone(),
             visibility: Visibility::Private,
             documentation: param.doc_description.clone().unwrap_or_default(),
-            source: PathBuf::new(),
+            source: source.to_path_buf(),
             span: param.span.clone(),
             aliases: Box::new([]),
             deprecation: None,
@@ -402,7 +433,7 @@ fn emit_function(
             // attribute existed.
             ParamKind::KeywordOnly => attrs.push(ParamAttribute::KeywordOnly),
             ParamKind::Varargs => attrs.push(ParamAttribute::Variadic),
-            ParamKind::Kwargs => attrs.push(ParamAttribute::Variadic),
+            ParamKind::Kwargs => attrs.push(ParamAttribute::Kwargs),
             ParamKind::Normal => {}
         }
         if param.has_default {
@@ -421,7 +452,7 @@ fn emit_function(
             name: String::new(),
             visibility: Visibility::Private,
             documentation: String::new(),
-            source: PathBuf::new(),
+            source: source.to_path_buf(),
             // `return_span` is `Some` whenever the source itself wrote a
             // `-> ReturnType` annotation (`syntax.rs::function_data`). The
             // one case it can be `None` while `return_ty` is `Some` is the
@@ -430,7 +461,10 @@ fn emit_function(
             // no annotation text to point at, so fall back to the whole
             // function's own span rather than fabricate a more precise
             // location than the source actually has.
-            span: func.return_span.clone().unwrap_or_else(|| item.span.clone()),
+            span: func
+                .return_span
+                .clone()
+                .unwrap_or_else(|| item.span.clone()),
             aliases: Box::new([]),
             deprecation: None,
             doc_links: Box::new([]),
@@ -454,7 +488,7 @@ fn emit_function(
         .generics(fn_kind.generics.iter().cloned())
         .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(fn_id, parent, sym, fn_kind);
 }
 
@@ -497,19 +531,27 @@ fn emit_const(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
     // A module-level constant with no annotation is *unannotated*, not
     // dynamic and not `object`. `Type::Any` here asserted the source had
     // written something it had not.
-    let ty = c
-        .ty
-        .as_ref()
-        .map(|t| types::lower_type(t, out, known_ids))
-        .unwrap_or(nudox_ir::kinds::Type::UNANNOTATED);
+    let ty =
+        c.ty.as_ref()
+            .map(|t| types::lower_type(t, out, known_ids))
+            .unwrap_or(nudox_ir::kinds::Type::UNANNOTATED);
 
-    let const_kind = Const::builder().ty(ty).maybe_value(c.value.clone()).build();
+    let const_kind = Const::builder()
+        .ty(ty.clone())
+        .maybe_value(c.value.clone().map(|source| {
+            nudox_ir::build::ConstExpr::builder()
+                .ty(ty)
+                .source(source)
+                .build()
+        }))
+        .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(item.id.clone(), parent, sym, const_kind);
 }
 
@@ -519,13 +561,20 @@ fn emit_alias(
     parent: Option<PythonId>,
     out: &mut Lowering<PythonId>,
     known_ids: &KnownIds,
+    source: &std::path::Path,
 ) {
-    let target = a.target.as_ref().map(|t| types::lower_type(t, out, known_ids));
+    let target = a
+        .target
+        .as_ref()
+        .map(|t| types::lower_type(t, out, known_ids));
     let generics: Box<[_]> = types::lower_generics(&a.generics, out, known_ids);
 
-    let alias_kind = Alias::builder().maybe_target(target).generics(generics).build();
+    let alias_kind = Alias::builder()
+        .maybe_target(target)
+        .generics(generics)
+        .build();
 
-    let sym = make_sym_item(item);
+    let sym = make_sym_item(item, source);
     out.declare(item.id.clone(), parent, sym, alias_kind);
 }
 
@@ -533,7 +582,7 @@ fn emit_alias(
 // Symbol helpers
 // ---------------------------------------------------------------------------
 
-fn make_sym_item(item: &ItemData) -> Symbol {
+fn make_sym_item(item: &ItemData, source: &std::path::Path) -> Symbol {
     make_sym(
         &item.name,
         item.is_private,
@@ -541,6 +590,7 @@ fn make_sym_item(item: &ItemData) -> Symbol {
         item.deprecation.as_ref(),
         &item.decorators,
         item.span.clone(),
+        source,
     )
 }
 
@@ -551,6 +601,7 @@ fn make_sym(
     deprecation: Option<&DeprecationData>,
     decorators: &[String],
     span: std::ops::Range<usize>,
+    source: &std::path::Path,
 ) -> Symbol {
     let visibility = if is_private {
         Visibility::Private
@@ -572,7 +623,7 @@ fn make_sym(
         name: name.to_owned(),
         visibility,
         documentation: documentation.to_owned(),
-        source: PathBuf::new(),
+        source: source.to_path_buf(),
         span,
         aliases: Box::new([]),
         deprecation,
@@ -582,7 +633,7 @@ fn make_sym(
     }
 }
 
-fn make_field_sym(field: &FieldData, class_name: &str) -> Symbol {
+fn make_field_sym(field: &FieldData, class_name: &str, source: &std::path::Path) -> Symbol {
     let _ = class_name;
     Symbol {
         name: field.name.clone(),
@@ -592,13 +643,14 @@ fn make_field_sym(field: &FieldData, class_name: &str) -> Symbol {
             Visibility::Public
         },
         documentation: field.documentation.clone().unwrap_or_default(),
-        source: PathBuf::new(),
+        source: source.to_path_buf(),
         span: field.span.clone(),
         aliases: Box::new([]),
         deprecation: None,
         doc_links: Box::new([DocLink {
             target: class_name.to_owned(),
             label: None,
+            source_span: None,
         }]),
         attrs: Box::new([]),
         cfg: None,

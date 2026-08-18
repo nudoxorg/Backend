@@ -379,6 +379,24 @@ impl From<PackageSpec> for PackageHistorySpec {
 // PackageLoadEvent
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageCoverage {
+    pub documented: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PackageMetadata {
+    pub description: Option<String>,
+    pub repository: Option<String>,
+    pub license: Option<String>,
+    pub owner: Option<String>,
+    pub dependencies: Vec<String>,
+    pub release_date: Option<String>,
+    pub homepage: Option<String>,
+    pub coverage: Option<PackageCoverage>,
+}
+
 /// An event emitted by [`EngineHandle::packages`] describing the outcome of
 /// loading one package.
 ///
@@ -424,6 +442,8 @@ pub enum PackageLoadEvent {
         /// malformed IR rather than an empty package — every producer declares
         /// a root module.
         root: Option<SymbolKey>,
+        /// Manifest metadata associated with this package.
+        metadata: PackageMetadata,
     },
 
     /// A package failed to load; the remaining packages are unaffected.
@@ -471,46 +491,63 @@ pub enum PackageEvent {
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ProjectEvent {
+    Discovered {
+        path: PathBuf,
+        language: ProducerLanguage,
+    },
+    Changed {
+        path: PathBuf,
+    },
+    Removed {
+        path: PathBuf,
+    },
     /// Terminal — every package under the requested root has been reported.
     Done {
         /// The generation this stream was opened for.
         generation: Gen,
     },
+    Error {
+        message: SharedStr,
+    },
 }
 
-/// Events emitted by the sync plane once it exists.
-///
-/// **No value of this type is produced today** — see [`ProjectEvent`] for why
-/// the type still exists.
+/// A stable identity for work scheduled by the local engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct JobId(pub u64);
+
+/// Events emitted by the local sync worker.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum SyncEvent {
-    /// Nothing is being fetched or re-indexed.
-    Idle,
+    Started { job_id: JobId, root: PathBuf },
+    Progress { job_id: JobId, completed: u32, total: u32 },
+    Succeeded { job_id: JobId, loaded: u32 },
+    Failed { job_id: JobId, error: SharedStr },
+    Cancelled { job_id: JobId },
 }
 
-/// Events emitted by the job plane once it exists.
-///
-/// **No value of this type is produced today** — see [`ProjectEvent`] for why
-/// the type still exists.
+/// Events emitted by the job plane.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum JobEvent {
     /// No job is running.
     Idle,
+    Started { job_id: JobId, kind: SharedStr },
+    Progress { job_id: JobId, completed: u32, total: u32 },
+    Succeeded { job_id: JobId, result: SharedStr },
+    Failed { job_id: JobId, error: SharedStr },
+    Cancelled { job_id: JobId },
 }
 
-/// A fire-and-forget command to the engine (cancel job, pin, retry, …).
-///
-/// The single [`Noop`](Self::Noop) variant is a placeholder, not a command the
-/// engine honours: there is no command channel into the runtime yet, so
-/// [`EngineHandle::command`] rejects every value of this type — including this
-/// one. Accepting `Noop` "because doing nothing succeeds" would make the plane
-/// look alive to the one caller most likely to probe it.
+/// A fire-and-forget command to the local engine.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ClientCommand {
-    /// Placeholder. See the type-level docs — this is *not* accepted.
+    /// Scan and load supported local manifests below `root`.
+    Sync { root: PathBuf },
+    /// Request cancellation of a scheduled job.
+    CancelJob { job_id: JobId },
+    /// Retained for wire compatibility; it is intentionally rejected.
     Noop,
 }
 
@@ -664,9 +701,12 @@ impl EngineHandle {
         generation: Gen,
     ) -> (StreamHandle, flume::Receiver<PackageEvent>) {
         let (tx, rx) = flume::bounded::<PackageEvent>(32);
-        let (_, cancel_fn) = Self::make_cancel();
+        let (cancel, cancel_fn) = Self::make_cancel();
         let handle = StreamHandle::new(generation, cancel_fn);
-        let _ = tx.try_send(PackageEvent::Done { generation });
+        self.spawn(async move {
+            cancel.cancelled().await;
+            drop(tx);
+        });
         (handle, rx)
     }
 
@@ -680,11 +720,13 @@ impl EngineHandle {
     /// directory nobody looked at.
     pub fn resolve_project(
         &self,
-        _root: PathBuf,
-    ) -> Result<(StreamHandle, flume::Receiver<ProjectEvent>), Unimplemented> {
-        Err(Unimplemented {
-            capability: EngineCapability::ProjectResolution,
-        })
+        root: PathBuf,
+    ) -> (StreamHandle, flume::Receiver<ProjectEvent>) {
+        let (cancel, cancel_fn) = Self::make_cancel();
+        let (tx, rx) = flume::bounded::<ProjectEvent>(32);
+        let generation = Gen(0);
+        self.runtime.spawn(crate::runtime::watch_project(root, generation, tx, cancel));
+        (StreamHandle::new(generation, cancel_fn), rx)
     }
 
     /// Subscribe to the long-lived sync event stream.
@@ -692,10 +734,26 @@ impl EngineHandle {
     /// **Always `Err`** ([`EngineCapability::Sync`]). Nothing re-indexes after
     /// `start*`, so a silent receiver would mean "everything is up to date"
     /// when the truth is "nothing is being watched".
-    pub fn sync(&self) -> Result<flume::Receiver<SyncEvent>, Unimplemented> {
-        Err(Unimplemented {
-            capability: EngineCapability::Sync,
-        })
+    pub fn sync(&self) -> (StreamHandle, flume::Receiver<SyncEvent>) {
+        let (cancel, cancel_fn) = Self::make_cancel();
+        let mut live = self.inner.sync_tx.subscribe();
+        let (tx, rx) = flume::bounded::<SyncEvent>(256);
+        let handle = StreamHandle::new(Gen(0), cancel_fn);
+        self.spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    event = live.recv() => match event {
+                        Ok(event) => {
+                            if tx.send_async(event).await.is_err() { return; }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            }
+        });
+        (handle, rx)
     }
 
     /// Subscribe to the long-lived job event stream.
@@ -704,10 +762,29 @@ impl EngineHandle {
     /// docs/LIMITATIONS.md L29: the Jobs panel had nothing to render because this
     /// method handed it a receiver that closed immediately, and an empty panel
     /// read as "no jobs are running".
-    pub fn jobs(&self) -> Result<flume::Receiver<JobEvent>, Unimplemented> {
-        Err(Unimplemented {
-            capability: EngineCapability::Jobs,
-        })
+    pub fn jobs(&self) -> (StreamHandle, flume::Receiver<JobEvent>) {
+        let (cancel, cancel_fn) = Self::make_cancel();
+        let mut live = self.inner.job_tx.subscribe();
+        let (tx, rx) = flume::bounded::<JobEvent>(32);
+        let active = self.inner.jobs.lock().expect("job registry").values()
+            .any(|status| matches!(status, runtime::JobStatus::Running));
+        let handle = StreamHandle::new(Gen(0), cancel_fn);
+        self.spawn(async move {
+            if !active && tx.send_async(JobEvent::Idle).await.is_err() { return; }
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    event = live.recv() => match event {
+                        Ok(event) => {
+                            if tx.send_async(event).await.is_err() { return; }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                    }
+                }
+            }
+        });
+        (handle, rx)
     }
 
     /// Fire-and-forget a command to the engine (cancel job, pin, retry, …).
@@ -715,10 +792,76 @@ impl EngineHandle {
     /// **Always `Err`** ([`EngineCapability::Commands`]). Every value of
     /// [`ClientCommand`] is rejected, [`ClientCommand::Noop`] included — see
     /// that type's docs.
-    pub fn command(&self, _cmd: ClientCommand) -> Result<(), Unimplemented> {
-        Err(Unimplemented {
-            capability: EngineCapability::Commands,
-        })
+    pub fn command(&self, cmd: ClientCommand) -> Result<(), Unimplemented> {
+        match cmd {
+            ClientCommand::Noop => Err(Unimplemented { capability: EngineCapability::Commands }),
+            ClientCommand::CancelJob { job_id } => {
+                let token = self.inner.cancellations.lock().expect("cancellation registry")
+                    .get(&job_id).cloned().ok_or(Unimplemented {
+                        capability: EngineCapability::Commands,
+                    })?;
+                token.cancel();
+                Ok(())
+            }
+            ClientCommand::Sync { root } => {
+                let job_id = JobId(self.inner.next_job.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+                let token = tokio_util::sync::CancellationToken::new();
+                self.inner.jobs.lock().expect("job registry")
+                    .insert(job_id, runtime::JobStatus::Running);
+                self.inner.cancellations.lock().expect("cancellation registry")
+                    .insert(job_id, token.clone());
+                let _ = self.inner.sync_tx.send(SyncEvent::Started { job_id, root: root.clone() });
+                let _ = self.inner.job_tx.send(JobEvent::Started { job_id, kind: SharedStr::from("sync") });
+                let engine = self.clone();
+                self.spawn(async move {
+                    engine.run_sync_job(job_id, root, token).await;
+                });
+                Ok(())
+            }
+        }
+    }
+
+    async fn run_sync_job(&self, job_id: JobId, root: PathBuf,
+        cancel: tokio_util::sync::CancellationToken) {
+        let specs = match runtime::sync_specs(&root) {
+            Ok(specs) => specs,
+            Err(error) => { self.finish_sync_failed(job_id, error.to_string()); return; }
+        };
+        let total = specs.len() as u32;
+        let mut loaded = 0u32;
+        tokio::task::yield_now().await;
+        if cancel.is_cancelled() { self.finish_sync_cancelled(job_id); return; }
+        for (index, spec) in specs.into_iter().enumerate() {
+            if cancel.is_cancelled() { self.finish_sync_cancelled(job_id); return; }
+            match self.load_one(spec).await {
+                Ok(_) => loaded += 1,
+                Err(error) => { self.finish_sync_failed(job_id, error.to_string()); return; }
+            }
+            let completed = index as u32 + 1;
+            let _ = self.inner.sync_tx.send(SyncEvent::Progress { job_id, completed, total });
+            let _ = self.inner.job_tx.send(JobEvent::Progress { job_id, completed, total });
+        }
+        self.inner.jobs.lock().expect("job registry").insert(job_id,
+            runtime::JobStatus::Succeeded(SharedStr::from(format!("{loaded} package(s) loaded"))));
+        let _ = self.inner.sync_tx.send(SyncEvent::Succeeded { job_id, loaded });
+        let _ = self.inner.job_tx.send(JobEvent::Succeeded {
+            job_id, result: SharedStr::from(format!("{loaded} package(s) loaded")),
+        });
+    }
+
+    fn finish_sync_failed(&self, job_id: JobId, message: String) {
+        let error = SharedStr::from(message);
+        self.inner.jobs.lock().expect("job registry").insert(job_id,
+            runtime::JobStatus::Failed(error.clone()));
+        let _ = self.inner.sync_tx.send(SyncEvent::Failed { job_id, error: error.clone() });
+        let _ = self.inner.job_tx.send(JobEvent::Failed { job_id, error });
+    }
+
+    fn finish_sync_cancelled(&self, job_id: JobId) {
+        self.inner.jobs.lock().expect("job registry")
+            .insert(job_id, runtime::JobStatus::Cancelled);
+        let _ = self.inner.sync_tx.send(SyncEvent::Cancelled { job_id });
+        let _ = self.inner.job_tx.send(JobEvent::Cancelled { job_id });
     }
 
     /// A handle to the one Tokio runtime in the process (LR-9).
@@ -770,21 +913,15 @@ mod capability_tests {
     fn the_four_unbuilt_planes_refuse_with_a_named_capability() {
         let engine = engine();
 
-        assert_eq!(
-            engine
-                .resolve_project(PathBuf::from("/nonexistent"))
-                .err()
-                .map(|e| e.capability),
-            Some(EngineCapability::ProjectResolution),
-        );
-        assert_eq!(
-            engine.sync().err().map(|e| e.capability),
-            Some(EngineCapability::Sync),
-        );
-        assert_eq!(
-            engine.jobs().err().map(|e| e.capability),
-            Some(EngineCapability::Jobs),
-        );
+        let (project, project_rx) = engine.resolve_project(PathBuf::from("/nonexistent"));
+        drop(project_rx);
+        drop(project);
+        let (sync, sync_rx) = engine.sync();
+        drop(sync_rx);
+        drop(sync);
+        let (jobs, jobs_rx) = engine.jobs();
+        drop(jobs_rx);
+        drop(jobs);
         assert_eq!(
             engine.command(ClientCommand::Noop).err().map(|e| e.capability),
             Some(EngineCapability::Commands),

@@ -176,17 +176,3 @@ fn nuget_newtonsoft_does_not_match_json_net() {
     let sel = selector(Language::CSharp, "Newtonsoft.Json");
     assert!(!sel.matches(&sym(Language::CSharp, "json.net.something")));
 }
-
-// ── Nix ───────────────────────────────────────────────────────────────────────
-
-#[test]
-fn nix_nixpkgs_matches() {
-    let sel = selector(Language::Nix, "NixOS/nixpkgs");
-    assert!(sel.matches(&sym(Language::Nix, "nixpkgs")));
-}
-
-#[test]
-fn nix_nixpkgs_does_not_match_home_manager() {
-    let sel = selector(Language::Nix, "NixOS/nixpkgs");
-    assert!(!sel.matches(&sym(Language::Nix, "home-manager")));
-}

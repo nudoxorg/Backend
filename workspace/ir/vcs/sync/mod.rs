@@ -22,7 +22,6 @@ pub use repo_glue::{
 };
 pub use transport::{RemoteConfig, SyncService, Syncer};
 pub use types::{
-    ChangeId, ChannelRef, IrohHash, MergeEvent, PackageName, SyncAck, SyncResponse,
-    TipAnnouncement,
+    ChangeId, ChannelRef, IrohHash, MergeEvent, PackageName, SyncAck, SyncResponse, TipAnnouncement,
 };
 pub use types::{SyncError, VerifyError};

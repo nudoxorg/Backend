@@ -355,9 +355,7 @@ impl ApiKeyError {
                 "The paste looks truncated — select the whole value in the dashboard, or use its \
                  copy button."
             }
-            Self::TooLong { .. } => {
-                "Paste only the key itself, not the config file it lives in."
-            }
+            Self::TooLong { .. } => "Paste only the key itself, not the config file it lives in.",
             Self::IllegalCharacter { class, .. } => match class {
                 CharClass::Whitespace => {
                     "There is a space or newline inside the key — the selection picked up more \
@@ -451,13 +449,19 @@ mod tests {
     fn surrounding_whitespace_is_stripped_but_interior_whitespace_is_rejected() {
         let padded = format!("  {}\n", sample());
         assert_eq!(
-            ApiKey::parse(&padded).expect("a trailing newline is a paste, not an error").expose(),
+            ApiKey::parse(&padded)
+                .expect("a trailing newline is a paste, not an error")
+                .expose(),
             sample(),
             "a key pasted with a trailing newline must be accepted verbatim once trimmed"
         );
 
         let split = sample().replacen("41a9", "41 a9", 1);
-        assert_eq!(&split[8..13], "41 a9", "the fixture must place the space at index 10");
+        assert_eq!(
+            &split[8..13],
+            "41 a9",
+            "the fixture must place the space at index 10"
+        );
         match ApiKey::parse(&split) {
             Err(ApiKeyError::IllegalCharacter { position, class }) => {
                 assert_eq!(class, CharClass::Whitespace);
@@ -540,7 +544,8 @@ mod tests {
                 .map(|_| ())
                 .expect_err("must be rejected");
             assert_eq!(
-                err, expected,
+                err,
+                expected,
                 "input of {} characters was rejected with the wrong reason",
                 input.len()
             );
@@ -592,7 +597,12 @@ mod tests {
         );
         assert_ne!(key.fingerprint(), other.fingerprint());
         assert_eq!(key.fingerprint().as_str().len(), 16);
-        assert!(key.fingerprint().as_str().chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(
+            key.fingerprint()
+                .as_str()
+                .chars()
+                .all(|c| c.is_ascii_hexdigit())
+        );
         assert!(
             !key.fingerprint().as_str().contains("2f8c"),
             "a fingerprint that contained a prefix of the key would not be one-way"

@@ -20,7 +20,12 @@
 //! [`IrPackage::build`] is **not replaced** — it remains the right API for
 //! hand-written IR and every existing test.
 
-use std::{collections::HashSet, fmt, hash::Hash};
+use std::{
+    collections::HashSet,
+    fmt,
+    hash::Hash,
+    path::{Path, PathBuf},
+};
 
 use indexmap::IndexMap;
 use triomphe::Arc;
@@ -219,6 +224,156 @@ pub struct Lowering<Id: Eq + Hash> {
 }
 
 impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
+    /// Rewrite frontend-reported paths relative to the package root before
+    /// sealing. Absolute parser paths must never become part of IR identity
+    /// or cross the engine/GUI seam.
+    pub fn relativize_sources(&mut self, root: &Path) {
+        fn relative(root: &Path, path: &Path) -> PathBuf {
+            path.strip_prefix(root).map_or_else(
+                |_| {
+                    if path.is_absolute() {
+                        PathBuf::new()
+                    } else {
+                        path.to_path_buf()
+                    }
+                },
+                Path::to_path_buf,
+            )
+        }
+
+        fn relative_location(
+            root: &Path,
+            source_path: &Path,
+            location: SourceLocation,
+        ) -> SourceLocation {
+            let source_file = if source_path.is_absolute() {
+                source_path
+            } else {
+                Path::new("")
+            };
+            match location {
+                SourceLocation::Declared {
+                    file,
+                    bytes,
+                    start,
+                    end,
+                } => {
+                    let path = relative(
+                        root,
+                        if source_path.is_absolute() {
+                            source_file
+                        } else {
+                            Path::new(file.as_str())
+                        },
+                    );
+                    let Some(file) = crate::entry::SourceFile::new(&path.to_string_lossy()) else {
+                        return SourceLocation::Unlocated(
+                            crate::entry::Unlocated::OutsideDocumentedPackage,
+                        );
+                    };
+                    SourceLocation::Declared {
+                        file,
+                        bytes,
+                        start,
+                        end,
+                    }
+                }
+                SourceLocation::BytesOnly { file, bytes } => {
+                    let path = relative(
+                        root,
+                        if source_path.is_absolute() {
+                            source_file
+                        } else {
+                            Path::new(file.as_str())
+                        },
+                    );
+                    let Some(file) = crate::entry::SourceFile::new(&path.to_string_lossy()) else {
+                        return SourceLocation::Unlocated(
+                            crate::entry::Unlocated::OutsideDocumentedPackage,
+                        );
+                    };
+                    SourceLocation::BytesOnly { file, bytes }
+                }
+                SourceLocation::Unlocated(reason) => SourceLocation::Unlocated(reason),
+            }
+        }
+
+        for slot in self.slots.values_mut().filter_map(Option::as_mut) {
+            match slot {
+                Slot::Owned { sym, location, .. } | Slot::Reference { sym, location, .. } => {
+                    let original = sym.source.clone();
+                    sym.source = relative(root, &original);
+                    *location = relative_location(root, &original, location.clone());
+                }
+            }
+        }
+        self.root_sym.source = relative(root, &self.root_sym.source);
+    }
+
+    /// Complete legacy byte-only locations after frontend paths have been
+    /// normalised.
+    ///
+    /// Older producers still populate `Symbol::source` and `Symbol::span`.
+    /// The pair is enough to identify a declaration, but it cannot carry the
+    /// line/column needed by a source jump.  Completing it here keeps that
+    /// migration at one cross-language boundary: every producer gets the same
+    /// path validation, bounds checking, and line indexing, while synthesized
+    /// `0..0` entries remain explicitly unlocated.
+    pub fn complete_source_locations(&mut self, root: &Path) {
+        fn complete(
+            root: &Path,
+            location: SourceLocation,
+            line_cache: &mut std::collections::HashMap<PathBuf, Option<(u64, Box<[u32]>)>>,
+        ) -> SourceLocation {
+            let SourceLocation::BytesOnly { file, bytes } = location else {
+                return location;
+            };
+            let path = root.join(file.as_str());
+            let end = bytes.end as usize;
+            let starts = line_cache.entry(path.clone()).or_insert_with(|| {
+                let Ok(text) = std::fs::read(&path) else {
+                    return None;
+                };
+                let mut starts = vec![0u32];
+                starts.extend(
+                    text.iter()
+                        .enumerate()
+                        .filter(|(_, byte)| **byte == b'\n')
+                        .filter_map(|(ix, _)| u32::try_from(ix + 1).ok()),
+                );
+                Some((text.len() as u64, starts.into_boxed_slice()))
+            });
+            let Some((file_len, starts)) = starts.as_ref() else {
+                return SourceLocation::Unlocated(crate::entry::Unlocated::ProducerRecordsNoLocation);
+            };
+            if end as u64 > *file_len {
+                return SourceLocation::Unlocated(crate::entry::Unlocated::ProducerRecordsNoLocation);
+            }
+            let line_col = |offset: u32| {
+                let ix = starts.partition_point(|start| *start <= offset).saturating_sub(1);
+                crate::entry::LineCol::from_zero_based(
+                    ix as u32,
+                    offset.saturating_sub(starts[ix]),
+                )
+            };
+            SourceLocation::Declared {
+                file,
+                bytes,
+                start: line_col(bytes.start),
+                end: line_col(bytes.end),
+            }
+        }
+
+        let mut line_cache = std::collections::HashMap::new();
+        for slot in self.slots.values_mut().filter_map(Option::as_mut) {
+            match slot {
+                Slot::Owned { location, .. } | Slot::Reference { location, .. } => {
+                    *location = complete(root, location.clone(), &mut line_cache);
+                }
+            }
+        }
+    }
+
     /// Start a new lowering session for `pkg`; `root` is the symbol of the
     /// implicit root module that wraps the whole package.
     pub fn new(pkg: PackageId, root: Symbol) -> Self {
@@ -342,10 +497,11 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
             return;
         }
         if let (Some(expected), BodyEmbed::Present(facts)) = (self.language, &body)
-            && facts.language != expected {
-                self.rejected_facts.mismatched_body_languages += 1;
-                return;
-            }
+            && facts.language != expected
+        {
+            self.rejected_facts.mismatched_body_languages += 1;
+            return;
+        }
         self.bodies.push(PendingBody { owner, body });
     }
 
@@ -722,13 +878,14 @@ impl<Id: Eq + Hash + Clone + fmt::Debug> Lowering<Id> {
 
         entries.push((
             root_idx,
-            Entry::new(
+            Entry::new_located(
                 root_sym,
                 Node::build(
                     None::<RawRef>,
                     root_children.iter().map(|&p| Ref::Local(idx_of[p])),
                 ),
                 Module.into_kind(),
+                SourceLocation::Unlocated(crate::entry::Unlocated::Synthesized),
             ),
         ));
 
@@ -777,7 +934,7 @@ mod tests {
         test_helpers::sym,
     };
 
-    use super::{Lowering, Error};
+    use super::{Error, Lowering};
     use crate::foreign::Unlinked;
 
     fn lineage() -> PackageLineageId {
@@ -912,7 +1069,8 @@ mod tests {
         let table = low
             .finish()
             .expect("forward-referenced nominal must resolve")
-            .seal(&lineage(), &Unlinked).table;
+            .seal(&lineage(), &Unlinked)
+            .table;
 
         let (_, value) = table
             .iter()

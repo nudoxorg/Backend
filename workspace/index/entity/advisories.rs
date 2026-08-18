@@ -2,9 +2,9 @@
 //!
 //! SeaORM entity (`DeriveEntityModel`): [`Model`], [`ActiveModel`], [`Column`], [`Entity`].
 
-use sea_orm::entity::prelude::*;
 use crate::ids::AdvisoryId;
 use crate::ids::PackageStemId;
+use sea_orm::entity::prelude::*;
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "advisories")]
@@ -30,4 +30,3 @@ impl ActiveModelBehavior for ActiveModel {}
 pub type AdvisoryRow = Model;
 
 pub const TABLE: &str = "advisories";
-

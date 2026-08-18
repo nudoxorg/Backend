@@ -368,16 +368,18 @@ impl Renderer<'_> {
                 self_ty,
                 trait_ref,
                 assoc,
-            } => if let Some(tr) = trait_ref {
-                f.write_str("<")?;
-                self.ty(f, self_ty)?;
-                f.write_str(" as ")?;
-                self.ty(f, tr)?;
-                write!(f, ">::{assoc}")
-            } else {
-                self.nested(f, self_ty)?;
-                write!(f, "::{assoc}")
-            },
+            } => {
+                if let Some(tr) = trait_ref {
+                    f.write_str("<")?;
+                    self.ty(f, self_ty)?;
+                    f.write_str(" as ")?;
+                    self.ty(f, tr)?;
+                    write!(f, ">::{assoc}")
+                } else {
+                    self.nested(f, self_ty)?;
+                    write!(f, "::{assoc}")
+                }
+            }
         }
     }
 

@@ -26,10 +26,10 @@
 use std::future::Future;
 use std::time::Duration;
 
-use heart::{content::ContentHash, PackageId};
-use registry::vector::{EdgepackKey, ModelId, QuantProfile, EDGE_FORMAT_VERSION, QP1};
+use heart::{PackageId, content::ContentHash};
+use registry::vector::{EDGE_FORMAT_VERSION, EdgepackKey, ModelId, QP1, QuantProfile};
 
-use crate::engine::{EngineError, VersioningEngine, Value};
+use crate::engine::{EngineError, Value, VersioningEngine};
 
 /// The embed-text recipe this bakery runs: the symbol's **fully-qualified
 /// name**, exactly like the outbox vector consumer — reuse of the one canonical
@@ -40,7 +40,7 @@ pub const RECIPE_ID: &str = "nudox.fqn.v1";
 
 /// How long a `claimed` row may sit without a terminal status before the reaper
 /// deletes it (a crashed claimer's abandoned claim).
-pub const STALE_CLAIM_AGE: Duration = Duration::from_secs(3600);
+pub const STALE_CLAIM_AGE: Duration = Duration::from_hours(1);
 
 /// One unit of bakery work: bake `package@version` under `edgepack_key`.
 #[derive(Debug, Clone)]
@@ -93,11 +93,20 @@ fn recipe_fingerprint_parts(
 ) -> String {
     let quant_str = match quant_profile {
         QuantProfile::None => "none".to_owned(),
-        QuantProfile::ScalarInt8 { quantile, always_ram } => {
+        QuantProfile::ScalarInt8 {
+            quantile,
+            always_ram,
+        } => {
             format!("scalar-int8/q{quantile}/ram{}", u8::from(*always_ram))
         }
     };
-    format!("{}/{}/{}/{}", model_id.as_str(), recipe_id, quant_str, edge_format_version)
+    format!(
+        "{}/{}/{}/{}",
+        model_id.as_str(),
+        recipe_id,
+        quant_str,
+        edge_format_version
+    )
 }
 
 /// Why a bakery **ledger** operation failed.
@@ -125,10 +134,7 @@ pub use self::Error as BakeryError;
 pub trait ClaimStore: Send + Sync {
     /// Attempt to claim the artifact identified by `request`'s key digest.
     /// Returns `true` iff *this* caller inserted the `claimed` row.
-    fn try_claim(
-        &self,
-        request: &BakeRequest,
-    ) -> impl Future<Output = Result<bool, Error>> + Send;
+    fn try_claim(&self, request: &BakeRequest) -> impl Future<Output = Result<bool, Error>> + Send;
 
     /// Terminal success: record the artifact id + RAM estimate, status `ready`.
     fn mark_ready(
@@ -139,10 +145,7 @@ pub trait ClaimStore: Send + Sync {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 
     /// Terminal failure: status `failed`. The claim stays terminal.
-    fn mark_failed(
-        &self,
-        digest: ContentHash,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
+    fn mark_failed(&self, digest: ContentHash) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 /// One row of `edgepack_artifacts`, as read back for the manifest surface.
@@ -231,7 +234,9 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
         Ok(rows
             .into_iter()
             .filter_map(|(id, version)| {
-                crate::ids::version_id::from_blob(&id).ok().map(|id| (id, version))
+                crate::ids::version_id::from_blob(&id)
+                    .ok()
+                    .map(|id| (id, version))
             })
             .collect())
     }
@@ -276,24 +281,28 @@ impl<E: VersioningEngine + Send + Sync> CatalogEdgepackStore<E> {
                 },
             )
             .map_err(Error::Catalog)?;
-        Ok(rows.pop().and_then(|(digest, status, artifact, ram_estimate)| {
-            Some(EdgepackRow {
-                digest: hash_from_column(&digest)?,
-                status: EdgepackStatus::parse(&status)?,
-                artifact: match artifact {
-                    Some(bytes) => Some(hash_from_column(&bytes)?),
-                    None => None,
-                },
-                ram_estimate,
-            })
-        }))
+        Ok(rows
+            .pop()
+            .and_then(|(digest, status, artifact, ram_estimate)| {
+                Some(EdgepackRow {
+                    digest: hash_from_column(&digest)?,
+                    status: EdgepackStatus::parse(&status)?,
+                    artifact: match artifact {
+                        Some(bytes) => Some(hash_from_column(&bytes)?),
+                        None => None,
+                    },
+                    ram_estimate,
+                })
+            }))
     }
 }
 
 /// Decode a 32-byte BLOB column back into a [`ContentHash`]; `None` on a
 /// malformed width (a corrupt row is skipped, not a panic).
 fn hash_from_column(bytes: &[u8]) -> Option<ContentHash> {
-    <[u8; 32]>::try_from(bytes).ok().map(ContentHash::from_bytes)
+    <[u8; 32]>::try_from(bytes)
+        .ok()
+        .map(ContentHash::from_bytes)
 }
 
 impl<E: VersioningEngine + Send + Sync> ClaimStore for CatalogEdgepackStore<E> {

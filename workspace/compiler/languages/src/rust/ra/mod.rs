@@ -10,7 +10,7 @@ pub mod source;
 pub mod ty;
 pub mod walk;
 
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 use ra_ap_base_db::salsa::Cancelled;
 use ra_ap_hir::{Crate, attach_db};
@@ -40,10 +40,7 @@ use crate::rust::error::Error;
 ///
 /// Taking the name from the `PackageSource` here means it provably describes the
 /// package actually being loaded.
-pub(crate) fn load(
-    src: &PackageSource,
-    document_private: bool,
-) -> Result<LoadedWorkspace, Error> {
+pub(crate) fn load(src: &PackageSource, document_private: bool) -> Result<LoadedWorkspace, Error> {
     loaded::load(src.root(), src.name.as_str(), document_private)
 }
 
@@ -215,7 +212,13 @@ fn lower_all_packages_into(
     root: &ra_ap_paths::AbsPath,
     out: &mut Lowering<RaId>,
 ) -> Result<Vec<ctx::PendingOcc>, Error> {
+    let started = Instant::now();
     let crates = find_local_crates(db, package_names);
+    phase_complete(
+        "find_local_crates",
+        started.elapsed(),
+        format!("packages={}", package_names.len()),
+    );
     if crates.is_empty() {
         return Err(Error::NothingToDocument {
             package: package_names.first().cloned().unwrap_or_default(),
@@ -228,6 +231,7 @@ fn lower_all_packages_into(
     let mut all_occs: Vec<ctx::PendingOcc> = Vec::new();
 
     for krate in crates {
+        let crate_started = Instant::now();
         let crate_name = krate
             .display_name(db)
             .map(|n| n.to_string())
@@ -247,8 +251,20 @@ fn lower_all_packages_into(
                 document_private,
                 self::source::FileMap::new(vfs, root),
             );
+            let aliases_started = Instant::now();
             ctx.collect_aliases();
+            phase_complete(
+                "collect_aliases",
+                aliases_started.elapsed(),
+                format!("crate={crate_name}"),
+            );
+            let modules_started = Instant::now();
             let walk_result = walk::lower_crate(&mut ctx, out);
+            phase_complete(
+                "lower_crate",
+                modules_started.elapsed(),
+                format!("crate={crate_name}"),
+            );
             // Drain occurrence_buf before ctx is dropped.
             let occs = std::mem::take(&mut ctx.occurrence_buf);
             (walk_result, occs)
@@ -268,8 +284,25 @@ fn lower_all_packages_into(
                 warn!(%crate_name, "crate lowering panicked unexpectedly; skipping crate");
             }
         }
+        phase_complete(
+            "lower_package",
+            crate_started.elapsed(),
+            format!("crate={crate_name}"),
+        );
     }
 
     info!(packages = package_names.len(), "RA lowering complete");
     Ok(all_occs)
+}
+
+/// Emit lower-pass timing through the same stderr/tracing convention as the
+/// loader phases.  Real-corpus tests do not install a tracing subscriber, so
+/// the debug-build line is the durable diagnosis; production subscribers still
+/// receive structured timing without unconditional stderr noise.
+pub(crate) fn phase_complete(phase: &'static str, elapsed: std::time::Duration, detail: String) {
+    let elapsed_ms = elapsed.as_secs_f64() * 1_000.0;
+    tracing::info!(phase, elapsed_ms, %detail, "ra lower phase complete");
+    if cfg!(debug_assertions) {
+        eprintln!("ra_lower phase={phase} elapsed_ms={elapsed_ms:.1} {detail}");
+    }
 }

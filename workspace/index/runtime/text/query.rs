@@ -9,19 +9,19 @@ use serde::{Deserialize, Serialize};
 use heart::{Cursor, Enforced, Language, Score, Scored, Symbol, SymbolKind};
 
 use tantivy::{
-    IndexReader, TantivyDocument,
+    IndexReader, TantivyDocument, Term,
     collector::TopDocs,
     query::{BooleanQuery, Occur, Query, RegexQuery, TermQuery},
     schema::{Field, IndexRecordOption},
-    Term,
 };
 
 use crate::runtime::{
     error::{TextError, TextQueryError},
     pagination,
     text::{
-        TextCursorKey, tokenizer,
+        TextCursorKey,
         index::{TextIndex, TextSchema, kind_token, snapshot_hash, symbol_from_document},
+        tokenizer,
     },
 };
 
@@ -37,7 +37,11 @@ pub struct TextQuery {
 
 impl TextQuery {
     pub fn new(terms: impl Into<String>) -> Self {
-        Self { terms: terms.into(), ecosystem: None, kinds: Vec::new() }
+        Self {
+            terms: terms.into(),
+            ecosystem: None,
+            kinds: Vec::new(),
+        }
     }
 }
 
@@ -147,8 +151,7 @@ async fn search_async(
             let live_snapshot = snapshot_hash(&searcher);
             // Arc wrapping lets the query be shared across spawn_blocking tasks
             // without cloning (tantivy queries are Send+Sync but not Clone).
-            let parsed: std::sync::Arc<dyn tantivy::query::Query> =
-                build_query(&schema, &query)?;
+            let parsed: std::sync::Arc<dyn tantivy::query::Query> = build_query(&schema, &query)?;
             Ok::<_, TextError>((live_snapshot, parsed))
         })
         .await
@@ -158,9 +161,10 @@ async fn search_async(
     // A cursor minted against an older snapshot no longer addresses this
     // ranking; reject it so the caller can restart cleanly.
     if let Some(cursor) = &after
-        && cursor.snapshot != live_snapshot {
-            return Err(TextError::Cursor(heart::CursorError::StaleSnapshot));
-        }
+        && cursor.snapshot != live_snapshot
+    {
+        return Err(TextError::Cursor(heart::CursorError::StaleSnapshot));
+    }
 
     let target = limit.get();
     let after_key = after.as_ref().map(|c| c.after);
@@ -211,8 +215,7 @@ async fn search_async(
 /// A tantivy score is finite BM25 (or a constant for regex clauses); clamp the
 /// pathological case rather than panic deep inside a search.
 fn finite_score(raw: f32) -> Score {
-    Score::try_new(raw)
-        .unwrap_or_else(|_| Score::try_new(0.0).expect("zero is finite"))
+    Score::try_new(raw).unwrap_or_else(|_| Score::try_new(0.0).expect("zero is finite"))
 }
 
 /// Lower a [`TextQuery`] into the tantivy query tree:
@@ -337,13 +340,13 @@ fn escape_regex(raw: &str) -> String {
 mod tests {
     use super::*;
     use crate::runtime::text::index::TextIndex;
+    use futures::TryStreamExt;
     use heart::{Language, Name, PackageId, Symbol, SymbolId, SymbolKind};
     use std::num::NonZeroUsize;
-    use futures::TryStreamExt;
 
     fn tmp_dir(label: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir()
-            .join(format!("text-query-test-{label}-{}", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("text-query-test-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("tempdir");
         path
     }
@@ -353,7 +356,10 @@ mod tests {
             id: SymbolId::from_uuid(uuid::Uuid::from_u128(0xBEEF_0000 + u128::from(n))),
             package: PackageId::from_uuid(uuid::Uuid::from_u128(0xCAFE_0000)),
             ecosystem: Language::Rust,
-            name: Name { plain: plain.into(), fully_qualified: fq.into() },
+            name: Name {
+                plain: plain.into(),
+                fully_qualified: fq.into(),
+            },
             kind: SymbolKind::Type,
         }
     }
@@ -364,14 +370,22 @@ mod tests {
     async fn build_query_axum_router_produces_query() {
         let dir = tmp_dir("axum-router");
         let index = TextIndex::open_or_create(&dir).expect("index opens");
-        index.upsert_batch(&[sym(1, "Router", "axum::Router")]).expect("indexed");
+        index
+            .upsert_batch(&[sym(1, "Router", "axum::Router")])
+            .expect("indexed");
         let schema = index.schema();
         let q = TextQuery::new("axum::Router");
         let _built = build_query(schema, &q).expect("Q1: axum::Router must build a query");
         // Regex tier: the contains clause must match through the lowercased fq field.
-        let hits: Vec<_> = index.search(&q, NonZeroUsize::new(10).unwrap(), None)
-            .try_collect().await.expect("search");
-        assert!(!hits.is_empty(), "axum::Router should match itself end-to-end");
+        let hits: Vec<_> = index
+            .search(&q, NonZeroUsize::new(10).unwrap(), None)
+            .try_collect()
+            .await
+            .expect("search");
+        assert!(
+            !hits.is_empty(),
+            "axum::Router should match itself end-to-end"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -381,13 +395,21 @@ mod tests {
         let dir = tmp_dir("react-query");
         let index = TextIndex::open_or_create(&dir).expect("index opens");
         // npm-style: name stored as-is, fq same
-        index.upsert_batch(&[sym(2, "react-query", "react-query")]).expect("indexed");
+        index
+            .upsert_batch(&[sym(2, "react-query", "react-query")])
+            .expect("indexed");
         let schema = index.schema();
         let q = TextQuery::new("react-query");
         let _built = build_query(schema, &q).expect("Q1: react-query must build a query");
-        let hits: Vec<_> = index.search(&q, NonZeroUsize::new(10).unwrap(), None)
-            .try_collect().await.expect("search");
-        assert!(!hits.is_empty(), "react-query should match itself end-to-end");
+        let hits: Vec<_> = index
+            .search(&q, NonZeroUsize::new(10).unwrap(), None)
+            .try_collect()
+            .await
+            .expect("search");
+        assert!(
+            !hits.is_empty(),
+            "react-query should match itself end-to-end"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -396,14 +418,26 @@ mod tests {
     async fn build_query_option_t_produces_query() {
         let dir = tmp_dir("option-t");
         let index = TextIndex::open_or_create(&dir).expect("index opens");
-        index.upsert_batch(&[sym(3, "Option", "core::option::Option<T>")]).expect("indexed");
+        index
+            .upsert_batch(&[sym(3, "Option", "core::option::Option<T>")])
+            .expect("indexed");
         let schema = index.schema();
         let q = TextQuery::new("Option<T>");
         let _built = build_query(schema, &q).expect("Q1: Option<T> must build a query");
         // The exact-name / subtoken tiers should still find the symbol.
-        let hits: Vec<_> = index.search(&TextQuery::new("Option"), NonZeroUsize::new(10).unwrap(), None)
-            .try_collect().await.expect("search");
-        assert!(!hits.is_empty(), "Option subtoken should match the stored symbol");
+        let hits: Vec<_> = index
+            .search(
+                &TextQuery::new("Option"),
+                NonZeroUsize::new(10).unwrap(),
+                None,
+            )
+            .try_collect()
+            .await
+            .expect("search");
+        assert!(
+            !hits.is_empty(),
+            "Option subtoken should match the stored symbol"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

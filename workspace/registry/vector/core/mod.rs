@@ -28,12 +28,12 @@ pub use admission::{
     ram_estimate_bytes,
 };
 pub use embed::{AccelKind, EmbedRole, EmbedRuntimeInfo, Embedder, EmbeddingPurpose};
-pub use embedding::{Embedding, l2_normalize};
 pub use embedding::Error as EmbedError;
+pub use embedding::{Embedding, l2_normalize};
 pub use fusion::{FusedHit, RRF_K, RankedList, rrf_fuse};
 pub use key::{ChangedSymbol, SymbolDelta, SymbolPartHashes, embed_key, tool_digest};
-pub use license::{FORBIDDEN_MODEL_IDS, assert_licensed};
 pub use license::Error as LicenseError;
+pub use license::{FORBIDDEN_MODEL_IDS, assert_licensed};
 pub use model::{
     CANONICAL_WEIGHTS_FILE, EmbeddingModel, JinaCodeV2, Metric, ModelId, NomicEmbedText,
     Quantization, VoyageCode3, WeightsArtifact,
@@ -48,8 +48,8 @@ pub use routing::{
     RoutePlan, Stage2, plan_route,
 };
 pub use shard::{EDGE_FORMAT_VERSION, EdgepackKey, ShardSchema};
+pub use store::Error as StoreError;
 pub use store::{
     FilterClause, NAMESPACE_NUDOX, Payload, PayloadValue, PointId, SearchFilter, SearchHit,
     SearchRequest, SourceTag, StoreCapabilities, VectorPoint, VectorStore,
 };
-pub use store::Error as StoreError;

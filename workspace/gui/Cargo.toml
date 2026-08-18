@@ -72,10 +72,10 @@ nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 # The store, graph, MCP and embedder planes are no longer separate crates: they
 # are now the `store`, `graph`, `mcp` and `embed` modules of `nudox-engine`,
 # reached as `nudox_engine::mcp::McpHost` and `nudox_engine::embed::load_from_env`
-# respectively. The engine's `onnx` feature (forwarded from the embedder plane)
-# still drags in `registry` (483 crates) whose `ort-sys` fetches a runtime at
-# build time, so it stays off by default and is opted into via `-F semantic-onnx`
-# (see `[features]` below).
+# respectively. The engine compiles its ONNX embedder runtime (`registry`, 483
+# crates, whose `ort-sys` fetches a prebuilt runtime at build time) in
+# unconditionally now — there is no feature to gate it behind on either crate,
+# so it comes along with the plain `nudox-engine` dependency above.
 
 # ── The remote-server client lindsey uses for the omni-search "also search a
 # server" section (AGENTS-DOCTRINE §1, capability ports) ────────────────────
@@ -99,6 +99,15 @@ nudox-engine = { path = "../nudox-engine", features = ["fixtures"] }
 # group. `features = ["client"]` is what pulls `reqwest` in at all — bare
 # `heart` (as `index` itself depends on it) carries no transport.
 heart = { path = "../../workspace/heart", features = ["client"] }
+
+# Not an async runtime for the *app* — GPUI's executor remains the only thing
+# that drives lindsey's futures (LR-9). This is the minimum needed to poll one
+# reqwest future: `heart`'s `client` feature puts reqwest (and therefore Tokio)
+# in the graph already, and reqwest's futures panic outright — "there is no
+# reactor running" — unless polled inside a Tokio runtime. The remote escape
+# hatch builds a current-thread runtime on a background thread for the length of
+# one request; see `SearchStore::search_remote_inner`.
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time"] }
 
 # ── Bridge & support ─────────────────────────────────────────────────────────
 # Syntax highlighting. Upstream tree-sitter rather than arborium because
@@ -147,16 +156,14 @@ gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f477
 gpui_platform = { git = "https://github.com/gpui-ce/gpui-ce", rev = "d435891f47743d96bfc6d4ab74c9ecd05af2603e", features = ["wgpu"] }
 
 [features]
-# OFF by default. Turning it on enables the ONNX embedder runtime behind the
-# capability port, so `NUDOX_EMBED_MODEL_DIR` (pointing at the pinned model)
-# gives the omni-search semantic section real ranked results instead of the
-# "not configured in this build" notice. It is opt-in because building it fetches
-# the ort runtime at build time (docs/LIMITATIONS.md L41): a fresh clone, CI, and the
-# screenshot suite build lindsey with this off and remain network-free at build.
-#
-#   cargo build --manifest-path workspace/gui/Cargo.toml -F semantic-onnx
+# `nudox-engine` compiles the ONNX embedder runtime in unconditionally (no
+# `onnx` cargo feature there any more), so there is nothing left for a
+# `semantic-onnx` feature on this crate to forward. `NUDOX_EMBED_MODEL_DIR`
+# (pointing at the pinned model) is the only remaining switch: set it and the
+# omni-search semantic section returns real ranked results; leave it unset
+# and it reports "not configured in this build". The Nix devshell supplies it
+# from its pinned semantic-model store path.
 default = []
-semantic-onnx = ["nudox-engine/onnx"]
 
 [dev-dependencies]
 # `test-support` is what makes GPUI testable without a display: it enables
@@ -222,6 +229,14 @@ harness = false
 [[test]]
 name = "screenshots"
 path = "tests/screenshots.rs"
+harness = false
+
+# Proves the remote escape hatch reaches a real `nudox-serve` and renders what
+# comes back. Same `harness = false` reason as above. Skips (exit 0) when no
+# live index is listening — see docs/TESTING.md.
+[[test]]
+name = "remote_index"
+path = "tests/remote_index.rs"
 harness = false
 
 # Rasterises an authored link and a repaired link and asserts the frames

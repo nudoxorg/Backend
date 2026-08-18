@@ -161,6 +161,29 @@ pub fn next_queued(connection: &Connection, limit: i64) -> Result<Vec<JobRow>> {
     rows.collect()
 }
 
+/// Return a terminal job to `Queued` with a fresh attempt budget.
+///
+/// # Why re-queueing needs its own function
+///
+/// [`set_state`] alone would move a `Failed` row back to `Queued` while leaving
+/// `attempts` at whatever exhausted the retry policy, so the very next failure
+/// would dead-letter it immediately — a "retry" that gets one shot at best and
+/// none at worst. `enqueued_at` is reset too, so the row takes its place at the
+/// back of `next_queued`'s FIFO rather than jumping ahead of work that has been
+/// waiting longer.
+///
+/// Callers must check the current state first: this is for jobs in a *terminal*
+/// state (`Done`/`Failed`). Applying it to a `Claimed`/`Running` job would
+/// hand a second worker a job someone already holds.
+pub fn requeue_terminal(connection: &Connection, job_key: &str, now: i64) -> Result<()> {
+    connection.execute(
+        "UPDATE jobs SET state = ?1, attempts = 0, enqueued_at = ?2, updated_at = ?2
+         WHERE job_key = ?3 AND state IN ('done', 'failed')",
+        params![JobState::Queued.as_token(), now, job_key],
+    )?;
+    Ok(())
+}
+
 /// Increment the attempt counter for a job (call before each execution attempt).
 pub fn increment_attempts(connection: &Connection, job_key: &str, updated_at: i64) -> Result<()> {
     connection.execute(

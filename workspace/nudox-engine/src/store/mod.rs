@@ -43,6 +43,7 @@
 pub mod corpus;
 pub mod index;
 pub mod package;
+pub mod remote;
 pub mod source;
 
 /// Re-exports of the most commonly used types across the L1 layer.
@@ -52,9 +53,9 @@ pub mod prelude {
     pub use crate::store::{
         corpus::{Corpus, EntryRef},
         package::{PackageIndexes, PackageView, Provenance},
+        remote::{IrSnapshot, ObjectKind, RemoteStore, RemoteStoreError},
         source::{
-            IrSource, LoadEvent, LoadRequest, PackageHint, ProduceStage, SourceDescriptor,
-            Error,
+            Error, IrSource, LoadEvent, LoadRequest, PackageHint, ProduceStage, SourceDescriptor,
         },
     };
 }

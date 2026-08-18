@@ -23,10 +23,20 @@
 use std::collections::HashSet;
 
 /// Why semantic search was unavailable.
+///
+/// Mirrors `nudox_engine::semantic::Unavailable` one-for-one rather than
+/// depending on it directly — this module is intentionally independent of the
+/// embedding implementation (see the module docs). The engine's ONNX runtime
+/// is a plain, non-optional dependency now (no `onnx` cargo feature), so the
+/// engine's `Unavailable::NoRuntime` variant is gone — it named a build
+/// configuration ("no runtime compiled in") that can no longer exist — and
+/// this mirror dropped it too, for the same reason: a variant no code path can
+/// produce is a permanently-dead match arm every renderer would otherwise have
+/// to keep carrying.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SemanticUnavailable {
-    /// No embedding model was installed in this build.
-    NoEmbedder,
+    /// No model directory was configured.
+    NoModelConfigured,
     /// There was no corpus to search.
     EmptyCorpus,
     /// The installed model failed while embedding the query.
@@ -246,6 +256,12 @@ pub(crate) fn render_semantic_markdown_with(
             output.push_str("status: unavailable · ");
             output.push_str(unavailable_label(reason));
             output.push('\n');
+            // A label names the state; only the remedy tells an agent what to
+            // do about it. Printed unconditionally — a reason with nothing
+            // useful to say here would be a reason not worth a variant.
+            output.push_str("remedy: ");
+            output.push_str(unavailable_remedy(reason));
+            output.push('\n');
         }
         SemanticStatus::NoMatch => output.push_str("status: no matches\n"),
     }
@@ -365,9 +381,35 @@ fn match_count(count: usize) -> String {
 
 fn unavailable_label(reason: SemanticUnavailable) -> &'static str {
     match reason {
-        SemanticUnavailable::NoEmbedder => "no embedder",
+        SemanticUnavailable::NoModelConfigured => "no model directory configured",
         SemanticUnavailable::EmptyCorpus => "empty corpus",
         SemanticUnavailable::ModelFailed => "model failed",
+    }
+}
+
+/// What an agent reading this should actually do, in the same words as
+/// `nudox_engine::semantic::Unavailable::remedy` — duplicated rather than
+/// called, for the same reason [`SemanticUnavailable`] mirrors its variants
+/// rather than wrapping them: a renderer that cannot see the engine type
+/// still needs to say something correct about it, and this is the one place
+/// that text is allowed to live twice.
+fn unavailable_remedy(reason: SemanticUnavailable) -> &'static str {
+    match reason {
+        SemanticUnavailable::NoModelConfigured => {
+            "the embedding runtime is always compiled in, so no rebuild is \
+             possible or needed — set NUDOX_EMBED_MODEL_DIR to the pinned \
+             model directory (see embed::MODEL_DIR_ENV for exactly what it \
+             must contain) and restart"
+        }
+        SemanticUnavailable::EmptyCorpus => {
+            "there is nothing in the corpus yet to search — load a package, \
+             or wait for one already loading to finish indexing"
+        }
+        SemanticUnavailable::ModelFailed => {
+            "the model is installed and something went wrong on this query — \
+             check the log for the embedding backend's error (a missing \
+             weights file, an out-of-memory runtime, a revoked key) and retry"
+        }
     }
 }
 
@@ -476,21 +518,50 @@ mod tests {
         ));
         let unavailable = render_semantic_markdown(&SemanticResult::unavailable(
             "retry requests",
-            SemanticUnavailable::NoEmbedder,
+            SemanticUnavailable::NoModelConfigured,
         ));
         let no_match = render_semantic_markdown(&SemanticResult::no_match("retry requests"));
 
         assert!(ready.contains("status: ready · 1 match"), "{ready}");
         assert!(building.contains("status: building · 2/5 packages indexed · 1 match"));
-        assert!(unavailable.contains("status: unavailable · no embedder"));
+        assert!(unavailable.contains("status: unavailable · no model directory configured"));
         assert!(no_match.contains("status: no matches"));
         assert!(!unavailable.contains("status: no matches"));
         assert!(!building.contains("status: no matches"));
         assert!(!unavailable.contains("| # | declaration |"));
     }
 
+    /// The remedy is not just named by [`Unavailable::remedy`] — it must land
+    /// in the rendered text an agent actually reads, or fixing the collapsed
+    /// `NoEmbedder` state did nothing observable.
+    ///
+    /// The runtime is always compiled in now (no `onnx` feature), so the one
+    /// remaining rendering guard is that the remedy says plainly that no
+    /// rebuild is involved — a reader who remembers the old feature-gated
+    /// build should not go looking for a rebuild step that no longer exists.
+    #[test]
+    fn the_remedy_reaches_the_rendered_markdown() {
+        let no_model = render_semantic_markdown(&SemanticResult::unavailable(
+            "retry",
+            SemanticUnavailable::NoModelConfigured,
+        ));
+
+        assert!(
+            no_model.contains("NUDOX_EMBED_MODEL_DIR"),
+            "a missing model's remedy names the variable to set: {no_model}"
+        );
+        assert!(
+            no_model.contains("no rebuild"),
+            "the remedy must say plainly that no rebuild is involved: {no_model}"
+        );
+    }
+
     #[test]
     fn unavailable_reasons_remain_distinguishable() {
+        let no_model = render_semantic_markdown(&SemanticResult::unavailable(
+            "retry",
+            SemanticUnavailable::NoModelConfigured,
+        ));
         let empty_corpus = render_semantic_markdown(&SemanticResult::unavailable(
             "retry",
             SemanticUnavailable::EmptyCorpus,
@@ -500,9 +571,11 @@ mod tests {
             SemanticUnavailable::ModelFailed,
         ));
 
+        assert!(no_model.contains("status: unavailable · no model directory configured"));
         assert!(empty_corpus.contains("status: unavailable · empty corpus"));
         assert!(model_failed.contains("status: unavailable · model failed"));
-        assert!(!empty_corpus.contains("no embedder"));
+        assert!(!no_model.contains("empty corpus"));
+        assert!(!empty_corpus.contains("no model directory configured"));
         assert!(!model_failed.contains("empty corpus"));
     }
 

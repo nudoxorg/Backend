@@ -91,10 +91,7 @@ pub struct FastembedOrt {
 impl FastembedOrt {
     /// Load from an explicit, verified model directory. Blocking (file reads
     /// + session build); prefer [`FastembedOrt::load`] on the runtime.
-    pub fn load_blocking(
-        spec: &WeightsSpec,
-        config: &RuntimeConfig,
-    ) -> Result<Self, Error> {
+    pub fn load_blocking(spec: &WeightsSpec, config: &RuntimeConfig) -> Result<Self, Error> {
         // Pinned-artifact policy first: hash before load; a mismatch never
         // reaches ort (I11).
         let verified = spec.verify()?;

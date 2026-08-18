@@ -145,9 +145,10 @@ pub fn typerefs_of_entry(entry: &Entry, package: &PackageLineageId) -> Vec<Stabl
         Kind::Impl(impl_) => {
             // The implemented trait (e.g. `impl Display for T` → trait is load-bearing).
             if let Some(of_ty) = &impl_.of
-                && let Some(sr) = type_to_stable_ref(of_ty, package) {
-                    refs.push(sr);
-                }
+                && let Some(sr) = type_to_stable_ref(of_ty, package)
+            {
+                refs.push(sr);
+            }
         }
         Kind::Trait(trait_) => {
             // Each supertrait (e.g. `trait Foo: Bar + Baz` → Bar and Baz).

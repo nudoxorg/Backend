@@ -120,8 +120,8 @@ pub struct SealReport {
     /// overloads encode to identical skeletons.
     pub forced: Vec<ForcedDisambiguation>,
 
-    /// The minted `IntroId` of every declaration that needed an escalated
-    /// disambiguator, with the tier it landed on. Sorted by `IntroId`.
+    /// The minted `IntroId` of every declaration that needed **pass-2.5
+    /// escalation**, with the tier it landed on. Sorted by `IntroId`.
     ///
     /// # Why this is not derivable from `forced`
     ///
@@ -133,20 +133,72 @@ pub struct SealReport {
     /// else — it cannot reconstruct the ancestor path that minted it, because
     /// the id is a hash.
     ///
-    /// So this field names the declarations, not the groups. It is the half
-    /// that has to survive the `nudox-store` boundary for
-    /// `nudox_store::package::PackageView::key_tier` to answer anything, and
-    /// the reason a stale key was previously indistinguishable from a deleted
-    /// symbol: MCP's `select_version` could disclose that *some* keys churn
-    /// and never which ones.
+    /// So this field names the declarations, not the groups.
     ///
-    /// An `IntroId` **absent** from this list was minted at
-    /// [`KeyTier::Structural`] — from the declaration's own content — and is
-    /// as stable as that content. Absence is meaningful, which is why this is
-    /// the escalated set rather than a row per declaration: a 30k-entry
-    /// package would otherwise pay a 30k-row map to record that nothing
-    /// happened.
+    /// # This field is *not* what a key consumer should read (MCP-SURFACE-PLAN §4.14)
+    ///
+    /// An `IntroId` absent from this list is **not** necessarily
+    /// [`KeyTier::Structural`]: pass 2's "other collision" arm can mint
+    /// `Disambiguator::Span` directly for a non-`Function`, non-`Impl`
+    /// collision, and when the colliding spans already differ that id is
+    /// already unique, so pass 2.5 — the only thing that populates this list
+    /// — never runs for it. Such a declaration is genuinely `Span`-keyed but
+    /// absent here. This used to be exactly the field
+    /// `nudox_store::package::PackageView::key_tier` answered from, and the
+    /// gap is why a stale key was indistinguishable from a deleted symbol for
+    /// 1,044 of the 1,085 truly `Span`-keyed declarations measured on the
+    /// crates.io corpus.
+    ///
+    /// [`SealReport::non_structural_keys`] is the field with no such blind
+    /// spot; it is what `KeyProvenance::from_seal_report` reads. This field
+    /// remains as pass-2.5's own bookkeeping — useful for measuring *how*
+    /// sealing degrades (paired with `forced`), not for answering whether a
+    /// key is trustworthy.
     pub forced_keys: Vec<(IntroId, Escalation)>,
+
+    /// The true [`KeyTier`] of every declaration whose final `IntroId` was
+    /// **not** minted from `Disambiguator::None`/`FnOverload`/`TraitImpl` —
+    /// i.e. every declaration actually keyed at [`KeyTier::Span`] or
+    /// [`KeyTier::Ordinal`]. Sorted by `IntroId`, same convention as
+    /// `forced_keys`.
+    ///
+    /// # This is not `forced_keys`, and the difference is the defect
+    ///
+    /// `forced_keys` only names declarations pass 2.5 **escalated**. Pass 2's
+    /// own "other collision" arm (a same-key collision on a non-`Function`,
+    /// non-`Impl` kind) mints `Disambiguator::Span` **directly**, and if the
+    /// colliding declarations' spans already differ — the common case — the
+    /// resulting ids are already distinct and pass 2.5 never runs for that
+    /// group at all. Such a declaration is genuinely `Span`-keyed but never
+    /// appears in `forced_keys`, so a consumer reading only `forced_keys`
+    /// (as `KeyProvenance::from_seal_report` used to) reports it as
+    /// `Structural`: "content-derived, safe to cache" for a key that is
+    /// nothing of the sort. Measured on the crates.io corpus this hid 1,044
+    /// of 1,085 truly `Span`-keyed declarations behind `Structural`.
+    ///
+    /// This field is computed from the same final `Disambiguator` that
+    /// [`bootstrap_intro_id`](crate::intro::bootstrap_intro_id) actually
+    /// hashed for each entry — the same source of truth
+    /// `disambiguator_census` uses — so it has no such blind spot.
+    /// `KeyProvenance::from_seal_report` reads this field, not `forced_keys`.
+    ///
+    /// `forced_keys` is kept as-is: it is still the right shape for "which
+    /// producer erased something load-bearing" (paired with `forced`), and
+    /// the `seal-census` corpus tooling reads it specifically to *measure*
+    /// this discrepancy.
+    ///
+    /// # Memory tradeoff
+    ///
+    /// Only the non-`Structural` set is stored — measured at 2.68% of
+    /// declarations on the crates.io corpus — rather than one `KeyTier` per
+    /// declaration. `PackageView` holds the projection of this field for the
+    /// life of the process, resident across the whole loaded corpus; a
+    /// row-per-declaration `Vec` would cost every 30k-entry package a
+    /// 30k-row map to record that nothing happened, for a field whose entire
+    /// value proposition is that absence already means `Structural`. This is
+    /// the same shape `forced_keys` already committed to, just fed from the
+    /// correct source.
+    pub non_structural_keys: Vec<(IntroId, KeyTier)>,
 
     /// Arena-local references that had no minted `IntroId` and therefore
     /// survived sealing as `Ref::Local`.
@@ -161,6 +213,28 @@ pub struct SealReport {
     /// therefore **not** inserted. Always a defect; empty in every case the
     /// escalation ladder can reach.
     pub collisions: Vec<IntroCollision>,
+
+    /// Census instrumentation: the exact [`Disambiguator`](crate::intro::Disambiguator)
+    /// variant that minted every declaration's final `IntroId`, paired with
+    /// its `KindDiscriminant`. See [`crate::intro::DisambiguatorKind`] for why
+    /// this is not derivable from `forced_keys`. Sorted by `IntroId`, same
+    /// convention as `forced_keys`.
+    ///
+    /// Gated behind `cfg(test)` / the `seal-census` feature so production
+    /// builds pay nothing for it — this is a measurement seam, not a
+    /// supported API.
+    #[cfg(any(test, feature = "seal-census"))]
+    pub disambiguator_census: Vec<(IntroId, KindDiscriminant, crate::intro::DisambiguatorKind)>,
+
+    /// Census instrumentation: how many rounds of the pass-2.5 escalation
+    /// loop actually ran (0 if no group ever collided). `MAX_ROUNDS` bounds
+    /// this at 8; in practice a group cannot need more than 2 (tier 1 = Span,
+    /// tier 2 = Ordinal, and tier 2 is unconditionally collision-free by
+    /// construction), so any observed value above 2 is itself a finding.
+    ///
+    /// Same gating as `disambiguator_census`.
+    #[cfg(any(test, feature = "seal-census"))]
+    pub escalation_rounds: usize,
 }
 
 impl SealReport {
@@ -267,6 +341,27 @@ impl From<Escalation> for KeyTier {
     }
 }
 
+/// The [`KeyTier`] a [`Disambiguator`] earns its declaration, read directly
+/// off the variant that was actually hashed into the `IntroId` — not off
+/// which escalation round (if any) produced it.
+///
+/// This is the single source of truth [`SealReport::non_structural_keys`] is
+/// built from, so that field cannot develop the same blind spot
+/// `forced_keys` has: `forced_keys` derives from *how* a disambiguator was
+/// reached (pass-2.5 escalation), and pass 2's "other collision" arm reaches
+/// `Span` without ever asking pass 2.5. Matching on the variant itself has no
+/// such path-dependence — unconditional, `O(1)`, and cheap enough to call for
+/// every entry on every seal, not just under `seal-census`.
+fn key_tier_of(d: &Disambiguator) -> KeyTier {
+    match d {
+        Disambiguator::None | Disambiguator::FnOverload(_) | Disambiguator::TraitImpl(_) => {
+            KeyTier::Structural
+        }
+        Disambiguator::Span { .. } => KeyTier::Span,
+        Disambiguator::Ordinal { .. } => KeyTier::Ordinal,
+    }
+}
+
 impl<Id: Eq + Hash> IrPackage<Id> {
     /// Seal this package under `lineage`, minting an [`IntroId`] for every
     /// entry and returning the materialized [`PristineIntroTable`].
@@ -282,11 +377,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
     /// [`Unlinked`](crate::foreign::Unlinked) to state "nothing has been sealed
     /// alongside this package", and the decision is on the record at the call
     /// site rather than absent from it.
-    pub fn seal(
-        self,
-        lineage: &PackageLineageId,
-        imports: &dyn ForeignResolver,
-    ) -> SealOutcome {
+    pub fn seal(self, lineage: &PackageLineageId, imports: &dyn ForeignResolver) -> SealOutcome {
         // Resolution indices over the arena's export-addressed entries.
         let by_idx: HashMap<UntypedEntryIndex, &Entry> =
             self.entries.iter().map(|(idx, e)| (*idx, e)).collect();
@@ -300,13 +391,43 @@ impl<Id: Eq + Hash> IrPackage<Id> {
         let n = self.entries.len();
 
         // ── Pass 0: ancestor segments, leaf name, kind, parent-idx per entry ──
+        // Producers may materialize a field in the enclosing module and only
+        // record its semantic owner in `Record.fields`. Recover that owner
+        // before deriving identity; otherwise same-named fields from sibling
+        // records share one base key and are separated only by order-sensitive
+        // ordinal escalation.
+        let mut field_owner: HashMap<UntypedEntryIndex, UntypedEntryIndex> = HashMap::new();
+        for (owner_idx, entry) in &self.entries {
+            match entry.kind() {
+                EntryInner::Owned(Kind::Record(record)) => {
+                    for field in &record.fields {
+                        if let Some(field_idx) = field.as_local() {
+                            field_owner.entry(field_idx.raw()).or_insert(*owner_idx);
+                        }
+                    }
+                }
+                EntryInner::Owned(Kind::Variant(variant)) => {
+                    for field in &variant.fields {
+                        if let Some(field_idx) = field.as_local() {
+                            field_owner.entry(field_idx.raw()).or_insert(*owner_idx);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         let mut segs: Vec<Vec<String>> = Vec::with_capacity(n);
         let mut names: Vec<String> = Vec::with_capacity(n);
         let mut discs: Vec<KindDiscriminant> = Vec::with_capacity(n);
         let mut parent_idxs: Vec<Option<UntypedEntryIndex>> = Vec::with_capacity(n);
-        for (_, e) in &self.entries {
+        for (entry_idx, e) in &self.entries {
             let mut chain = Vec::new();
-            let mut cur = e.parent().and_then(super::super::index::Ref::as_local);
+            let semantic_parent = field_owner
+                .get(entry_idx)
+                .copied()
+                .or_else(|| e.parent().and_then(super::super::index::Ref::as_local));
+            let mut cur = semantic_parent;
             while let Some(pidx) = cur {
                 match by_idx.get(&pidx) {
                     Some(pe) => {
@@ -324,7 +445,7 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 // A within-arena forwarding alias is a re-export.
                 EntryInner::Reference(_) => KindDiscriminant::Reexport,
             });
-            parent_idxs.push(e.parent().and_then(super::super::index::Ref::as_local));
+            parent_idxs.push(semantic_parent);
         }
 
         // ── Phase A: path ids — one `IntroId` per entry, ref-free ────────────
@@ -367,6 +488,14 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             ..SealReport::default()
         };
         let mut intros: Vec<IntroId> = Vec::with_capacity(n);
+        #[cfg(any(test, feature = "seal-census"))]
+        let mut disamb_tags: Vec<crate::intro::DisambiguatorKind> = Vec::with_capacity(n);
+        // Unconditional (not `seal-census`-gated): the transient per-entry
+        // tier this pass mints, read off the same `disamb` every branch below
+        // already computes. Freed at the end of `seal()` — only the filtered,
+        // non-`Structural` projection survives into `report.non_structural_keys`.
+        // See that field's doc for the memory tradeoff this shape makes.
+        let mut key_tiers: Vec<KeyTier> = Vec::with_capacity(n);
         for i in 0..n {
             let (_, e) = &self.entries[i];
             let count = *counts
@@ -411,6 +540,10 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                 _ => Disambiguator::None,
             };
 
+            #[cfg(any(test, feature = "seal-census"))]
+            disamb_tags.push(crate::intro::DisambiguatorKind::from(&disamb));
+            key_tiers.push(key_tier_of(&disamb));
+
             let seg_refs: Vec<&str> = segs[i].iter().map(String::as_str).collect();
             intros.push(bootstrap_intro_id(
                 lineage, discs[i], &seg_refs, &names[i], &disamb,
@@ -453,6 +586,8 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             // finding would make the report count escalations instead of
             // defects.
             let mut forced_by_group: HashMap<BaseKey, ForcedDisambiguation> = HashMap::new();
+            #[cfg(any(test, feature = "seal-census"))]
+            let mut escalation_rounds: usize = 0;
             for _ in 0..MAX_ROUNDS {
                 let mut groups: HashMap<IntroId, Vec<usize>> = HashMap::new();
                 for (i, id) in intros.iter().enumerate() {
@@ -463,6 +598,10 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                     groups.into_values().filter(|m| m.len() >= 2).collect();
                 if colliding.is_empty() {
                     break;
+                }
+                #[cfg(any(test, feature = "seal-census"))]
+                {
+                    escalation_rounds += 1;
                 }
                 colliding.sort_by_key(|m| m[0]);
 
@@ -475,7 +614,11 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                     };
                     let head = members[0];
                     forced_by_group.insert(
-                        (discs[head].as_u16(), segs[head].clone(), names[head].clone()),
+                        (
+                            discs[head].as_u16(),
+                            segs[head].clone(),
+                            names[head].clone(),
+                        ),
                         ForcedDisambiguation {
                             kind: discs[head],
                             segments: segs[head].clone(),
@@ -500,13 +643,27 @@ impl<Id: Eq + Hash> IrPackage<Id> {
                                 index: ordinal as u32,
                             }
                         };
-                        let seg_refs: Vec<&str> =
-                            segs[i].iter().map(String::as_str).collect();
-                        intros[i] = bootstrap_intro_id(
-                            lineage, discs[i], &seg_refs, &names[i], &disamb,
-                        );
+                        #[cfg(any(test, feature = "seal-census"))]
+                        {
+                            disamb_tags[i] = crate::intro::DisambiguatorKind::from(&disamb);
+                        }
+                        key_tiers[i] = key_tier_of(&disamb);
+
+                        let seg_refs: Vec<&str> = segs[i].iter().map(String::as_str).collect();
+                        intros[i] =
+                            bootstrap_intro_id(lineage, discs[i], &seg_refs, &names[i], &disamb);
                     }
                 }
+            }
+            #[cfg(any(test, feature = "seal-census"))]
+            {
+                report.escalation_rounds = escalation_rounds;
+                report.disambiguator_census = (0..n)
+                    .map(|i| (intros[i], discs[i], disamb_tags[i]))
+                    .collect();
+                report
+                    .disambiguator_census
+                    .sort_unstable_by_key(|(intro, _, _)| *intro);
             }
             // Per-declaration tiers, derived from the same `tier` vector the
             // loop above maintained — never accumulated alongside it. Doctrine
@@ -530,16 +687,30 @@ impl<Id: Eq + Hash> IrPackage<Id> {
             // thing a report of this kind has to support.
             report.forced_keys.sort_unstable_by_key(|(intro, _)| *intro);
 
+            // Unconditional (not `seal-census`-gated) and read off `key_tiers`
+            // — the same variant-derived source `disamb_tags` is, not off
+            // `tier`/`forced_keys`'s escalation bookkeeping — so this set has
+            // no path-dependence on whether pass 2.5 happened to run for a
+            // given declaration. This is the field `KeyProvenance` reads; see
+            // its doc for why `forced_keys` alone under-reports.
+            report.non_structural_keys = (0..n)
+                .filter(|&i| key_tiers[i] != KeyTier::Structural)
+                .map(|i| (intros[i], key_tiers[i]))
+                .collect();
+            report
+                .non_structural_keys
+                .sort_unstable_by_key(|(intro, _)| *intro);
+
             report.forced = forced_by_group.into_values().collect();
             // Deterministic reporting order: a report that reorders between
             // runs is not comparable across generations.
-            report
-                .forced
-                .sort_by(|a, b| (a.kind.as_u16(), &a.segments, &a.name).cmp(&(
+            report.forced.sort_by(|a, b| {
+                (a.kind.as_u16(), &a.segments, &a.name).cmp(&(
                     b.kind.as_u16(),
                     &b.segments,
                     &b.name,
-                )));
+                ))
+            });
         }
 
         // Resolve parent IntroIds from the captured parent indices (owned data —
@@ -763,11 +934,12 @@ fn resolve_param_tys(
 
 #[cfg(test)]
 mod tests {
+    use super::KeyTier;
     use crate::{
         build::*,
-        foreign::Unlinked,
         change::{EcosystemId, PackageName},
         entry::EntryInner,
+        foreign::Unlinked,
         kind::Kind,
         test_helpers::{id_gen, sym},
     };
@@ -885,6 +1057,61 @@ mod tests {
         }
     }
 
+    /// Fields are owned by the record that lists them, even when a producer
+    /// accidentally places the field entry under a broader module scope.
+    /// Identity and parent edges must follow that semantic ownership rather
+    /// than falling back to declaration-order escalation among sibling fields.
+    #[test]
+    fn field_identity_follows_record_membership_not_module_siblings() {
+        let mut id = id_gen();
+        let pkg = IrPackage::build(PackageId::path("demo"), sym("root"), |mut root| {
+            let first = root.create(id(), sym("x"), |_| {
+                Field::builder().key(FieldKey::Named).ty(Type::I32).build()
+            });
+            let second = root.create(id(), sym("x"), |_| {
+                Field::builder().key(FieldKey::Named).ty(Type::I64).build()
+            });
+            root.create(id(), sym("Left"), |_| {
+                Record::builder().fields([first]).build()
+            });
+            root.create(id(), sym("Right"), |_| {
+                Record::builder().fields([second]).build()
+            });
+        });
+
+        let table = pkg.seal(&lineage(), &Unlinked).table;
+        let left = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "Left")
+            .map(|(i, _)| i)
+            .expect("Left record must survive sealing");
+        let right = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "Right")
+            .map(|(i, _)| i)
+            .expect("Right record must survive sealing");
+
+        let fields: Vec<_> = table
+            .iter()
+            .filter(|(_, e)| e.sym().name == "x")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(fields.len(), 2, "both field declarations must survive");
+        assert_ne!(fields[0], fields[1], "field identities must not collide");
+        assert!(
+            fields
+                .iter()
+                .any(|field| table.parent_of(*field) == Some(left)),
+            "Left's field must be parented by Left"
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|field| table.parent_of(*field) == Some(right)),
+            "Right's field must be parented by Right"
+        );
+    }
+
     /// P-A phase gate: two impls whose `self_ty` is a bare local nominal (`Bar`
     /// and `Baz` respectively, no generic args) must seal to DISTINCT IntroIds.
     ///
@@ -944,17 +1171,88 @@ mod tests {
         };
 
         let mut ids_a: Vec<IntroId> = build_pkg()
-            .seal(&lineage(), &Unlinked).table
+            .seal(&lineage(), &Unlinked)
+            .table
             .iter()
             .map(|(i, _)| i)
             .collect();
         let mut ids_b: Vec<IntroId> = build_pkg()
-            .seal(&lineage(), &Unlinked).table
+            .seal(&lineage(), &Unlinked)
+            .table
             .iter()
             .map(|(i, _)| i)
             .collect();
         ids_a.sort();
         ids_b.sort();
         assert_eq!(ids_a, ids_b, "sealing is deterministic");
+    }
+
+    /// **Guard for MCP-SURFACE-PLAN §4.14.** Two `Const`s (neither `Function`
+    /// nor `Impl`) sharing a name under one module collide on the base key
+    /// `(kind, ancestor-path, leaf-name)`. Because neither the `FnOverload`
+    /// nor `TraitImpl` arm applies, pass 2's "other collision" arm mints
+    /// `Disambiguator::Span` **directly** for both. Their spans differ (10..20
+    /// vs 30..40 below), so the resulting ids are already distinct and pass
+    /// 2.5 never runs for this group — `forced_keys` stays empty for it, even
+    /// though both declarations are genuinely `Span`-keyed.
+    ///
+    /// This is the shape `SealReport::non_structural_keys` exists to name
+    /// correctly where `forced_keys` cannot: it is read off the actual
+    /// minted `Disambiguator`, not off whether pass 2.5 happened to run.
+    #[test]
+    fn non_structural_keys_names_a_span_collision_pass_2_mints_without_escalation() {
+        let mut id = id_gen();
+        let pkg = IrPackage::build(PackageId::path("demo"), sym("root"), |mut root| {
+            let mut a = sym("LIMIT");
+            a.span = 10..20;
+            root.create(id(), a, |_| Const::builder().ty(Type::I32).build());
+            let mut b = sym("LIMIT");
+            b.span = 30..40;
+            root.create(id(), b, |_| Const::builder().ty(Type::I32).build());
+        });
+
+        let outcome = pkg.seal(&lineage(), &Unlinked);
+
+        assert!(
+            outcome.report.collisions.is_empty(),
+            "both consts must survive sealing: {:?}",
+            outcome.report.collisions
+        );
+        let limits: Vec<IntroId> = outcome
+            .table
+            .iter()
+            .filter(|(_, e)| e.sym().name == "LIMIT")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            limits.len(),
+            2,
+            "both consts seal to distinct, live IntroIds"
+        );
+
+        // Test premise: pass 2.5 must never have run for this group, or this
+        // is not exercising pass 2's direct-mint arm at all.
+        assert!(
+            outcome.report.forced_keys.is_empty(),
+            "test premise violated: pass 2.5 escalated this group (forced_keys \
+             = {:?}); the collision must resolve directly in pass 2 via \
+             differing spans",
+            outcome.report.forced_keys
+        );
+
+        // The actual guard: `non_structural_keys` must still name both
+        // declarations as `Span`, even though pass 2.5 never ran.
+        let reported: std::collections::HashMap<IntroId, KeyTier> =
+            outcome.report.non_structural_keys.iter().copied().collect();
+        for limit in &limits {
+            assert_eq!(
+                reported.get(limit).copied(),
+                Some(KeyTier::Span),
+                "declaration {limit:?} was minted with Disambiguator::Span by \
+                 pass 2's direct fallback, but non_structural_keys reports {:?} \
+                 — absence here reads as KeyTier::Structural to every consumer",
+                reported.get(limit)
+            );
+        }
     }
 }

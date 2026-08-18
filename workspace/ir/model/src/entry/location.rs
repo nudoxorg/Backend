@@ -64,7 +64,11 @@
 //!   machines and platforms and can be joined against a root the consumer
 //!   already knows.
 
-use std::{num::NonZeroU32, ops::Range, path::PathBuf};
+use std::{
+    num::NonZeroU32,
+    ops::Range,
+    path::{Component, Path, PathBuf},
+};
 
 // ---------------------------------------------------------------------------
 // SourceFile
@@ -78,7 +82,9 @@ use std::{num::NonZeroU32, ops::Range, path::PathBuf};
 /// taken over": non-empty, relative, and platform-independent. A `PathBuf`
 /// admits the empty path, which is exactly the sentinel this module exists to
 /// delete.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct SourceFile(Box<str>);
 
 impl SourceFile {
@@ -95,6 +101,13 @@ impl SourceFile {
     /// identically to a Unix-produced one.
     pub fn new(relative: &str) -> Option<Self> {
         let normalised = relative.replace('\\', "/");
+        let path = Path::new(&normalised);
+        if path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        {
+            return None;
+        }
         let trimmed = normalised.trim_matches('/');
         if trimmed.is_empty() || trimmed == "." {
             return None;
@@ -460,6 +473,7 @@ mod tests {
         assert_eq!(SourceFile::new(""), None);
         assert_eq!(SourceFile::new("."), None);
         assert_eq!(SourceFile::new("/"), None);
+        assert_eq!(SourceFile::new("../lib.rs"), None);
     }
 
     /// Windows-produced IR must hash and compare equal to Unix-produced IR for

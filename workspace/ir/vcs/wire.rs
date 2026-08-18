@@ -481,6 +481,8 @@ pub struct DeprecationWire {
 pub struct DocLinkWire {
     pub target: StableRef,
     pub label: Option<String>,
+    #[serde(default)]
+    pub source_span: Option<(u32, u32)>,
 }
 
 /// Wire form of symbol metadata.

@@ -30,11 +30,11 @@ pub enum ServerError {
     /// as its own concrete variant rather than folded through `RuntimeError`
     /// (which now belongs to `crate::runtime`, a different crate).
     #[error(transparent)]
-    Vector(#[from] crate::server::vector::store::StoreError),
+    Vector(#[from] crate::server::vector::StoreError),
 
     /// The query/document embedder failed (network, cache, or model error).
     #[error(transparent)]
-    Embed(#[from] crate::server::vector::embedding::EmbedError),
+    Embed(#[from] crate::server::vector::EmbedError),
 
     /// The request was malformed or violated an invariant (→ 4xx).
     #[error(transparent)]

@@ -139,8 +139,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::{PackageSource, ProducerError, oracle};
 use crate::java::{producer::PRODUCER_ID, schema::Extraction};
+use crate::{PackageSource, ProducerError, oracle};
 
 /// Run `javadoc` with the vendored doclet over `src`'s sources and
 /// deserialize its JSON document.
@@ -160,13 +160,22 @@ pub(crate) fn invoke(src: &PackageSource) -> Result<Extraction, ProducerError> {
         });
     }
 
-    let sources = discover_java_sources(src.root())?;
+    let legacy = std::env::var("NUDOX_JAVA_LEGACY").ok().as_deref() == Some("8");
+    let sources = discover_java_sources(src.root(), legacy)?;
 
-    let classes_dir = oracle_classes_dir();
+    let classes_dir = if legacy {
+        legacy_oracle_classes_dir()
+    } else {
+        oracle_classes_dir()
+    };
     let mut args: Vec<String> = vec![
         "-quiet".to_owned(),
         "-doclet".to_owned(),
-        "nudox.oracle.Extractor".to_owned(),
+        if legacy {
+            "nudox.oracle.LegacyExtractor".to_owned()
+        } else {
+            "nudox.oracle.Extractor".to_owned()
+        },
         "-docletpath".to_owned(),
         classes_dir,
     ];
@@ -176,33 +185,61 @@ pub(crate) fn invoke(src: &PackageSource) -> Result<Extraction, ProducerError> {
     // are mutually exclusive (`javac`: "cannot specify both --source-path
     // and --module-source-path"), so this is an either/or, not a union.
     // See [`module_source_path_args`].
-    if is_module_root(src.root()) {
+    if !legacy && is_module_root(src.root()) {
         args.extend(module_source_path_args(src.root()));
     } else if let Some(sourcepath) = sourcepath_entries(src.root()) {
         args.push("-sourcepath".to_owned());
         args.push(sourcepath);
     }
-    args.extend(module_path_args(src.root()));
-    args.extend(add_modules_args());
-    if let Ok(release) = std::env::var("NUDOX_JAVA_RELEASE") {
+    if !legacy {
+        args.extend(module_path_args(src.root()));
+        args.extend(add_modules_args());
+    }
+    args.extend(class_path_args(legacy)?);
+    if legacy {
+        args.push("-source".to_owned());
+        args.push("8".to_owned());
+    } else if let Ok(release) = std::env::var("NUDOX_JAVA_RELEASE") {
         args.push("--release".to_owned());
         args.push(release);
+    } else if let Ok(source) = std::env::var("NUDOX_JAVA_SOURCE") {
+        args.push("-source".to_owned());
+        args.push(source);
     }
-    args.extend(add_exports_args());
+    if !legacy {
+        args.extend(add_exports_args());
+    }
     args.extend(sources.iter().map(|p| p.to_string_lossy().into_owned()));
 
-    let javadoc_bin = std::env::var("NUDOX_JAVADOC").unwrap_or_else(|_| "javadoc".to_owned());
+    let javadoc_bin = if legacy {
+        std::env::var("NUDOX_JAVA8_JAVADOC").unwrap_or_else(|_| "javadoc8".to_owned())
+    } else {
+        std::env::var("NUDOX_JAVADOC").unwrap_or_else(|_| "javadoc".to_owned())
+    };
 
     oracle::run_json(PRODUCER_ID, javadoc_bin, args)
+}
+
+/// Overrides the compiled doclet-classes directory (`-docletpath`).
+///
+/// Named once and used both to *read* the override and to *report* it, matching
+/// [`crate::go::producer::ORACLE_BIN_ENV`]. A packaged `lindsey.app` does not
+/// keep Cargo's `$OUT_DIR/classes`, so this is the variable the Nix cargo-bundle
+/// wrapper sets.
+pub const ORACLE_CLASSES_ENV: &str = "NUDOX_JAVA_ORACLE_CLASSES";
+
+fn legacy_oracle_classes_dir() -> String {
+    std::env::var("NUDOX_JAVA8_ORACLE_CLASSES")
+        .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/java8-classes").to_owned())
 }
 
 /// The doclet's compiled `.class` directory.
 ///
 /// Defaults to the path `build.rs` compiled into (baked in at *this crate's*
-/// compile time via `env!("OUT_DIR")`); `NUDOX_JAVA_ORACLE_CLASSES` overrides
+/// compile time via `env!("OUT_DIR")`); [`ORACLE_CLASSES_ENV`] overrides
 /// it at runtime. See this module's doc comment for why the override exists.
 fn oracle_classes_dir() -> String {
-    std::env::var("NUDOX_JAVA_ORACLE_CLASSES")
+    std::env::var(ORACLE_CLASSES_ENV)
         .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/classes").to_owned())
 }
 
@@ -452,9 +489,11 @@ fn module_path_args(root: &Path) -> Vec<String> {
 /// always ≥ 9 on any toolchain this crate can run on (the doclet API it uses
 /// is itself JDK 9+).
 fn module_system_available() -> bool {
-    std::env::var("NUDOX_JAVA_RELEASE").map_or(true, |release| {
-        release.trim().parse::<u32>().ok().is_none_or(|n| n >= 9)
-    })
+    std::env::var("NUDOX_JAVA_RELEASE")
+        .or_else(|_| std::env::var("NUDOX_JAVA_SOURCE"))
+        .map_or(true, |level| {
+            level.trim().parse::<u32>().ok().is_none_or(|n| n >= 9)
+        })
 }
 
 /// `--add-modules <value>` from `NUDOX_JAVA_ADD_MODULES`; unset contributes
@@ -481,6 +520,83 @@ fn add_modules_args() -> Vec<String> {
     }
 }
 
+/// `--class-path <paths>` supplied by a caller that has already decided a
+/// package needs compiled *dependency* declarations to type-check.
+///
+/// The producer never discovers this implicitly. A caller must name every
+/// jar via `NUDOX_JAVA_CLASS_PATH`, using the platform path separator. This
+/// keeps binary dependencies out of the source walk and makes the exceptional
+/// compile environment auditable per package. Each entry must exist and be a
+/// regular file; accepting a missing path would turn a typo into a misleading
+/// "unresolved type" diagnosis from `javadoc`.
+fn class_path_args(legacy: bool) -> Result<Vec<String>, ProducerError> {
+    let Some(raw) = std::env::var_os("NUDOX_JAVA_CLASS_PATH") else {
+        if !legacy {
+            return Ok(Vec::new());
+        }
+        let Some(tools) = std::env::var_os("NUDOX_JAVA8_TOOLS_JAR") else {
+            return Ok(Vec::new());
+        };
+        let path = PathBuf::from(tools);
+        if !path.is_file() {
+            return Err(ProducerError::OracleSpawn {
+                command: format!("javadoc classpath {}", path.display()),
+                reason: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Java 8 tools jar is not a regular file: {}", path.display()),
+                ),
+            });
+        }
+        return Ok(vec!["-classpath".to_owned(), path.display().to_string()]);
+    };
+    let paths: Vec<PathBuf> = std::env::split_paths(&raw).collect();
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    for path in &paths {
+        if !path.is_file() {
+            return Err(ProducerError::OracleSpawn {
+                command: format!("javadoc classpath {}", path.display()),
+                reason: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "NUDOX_JAVA_CLASS_PATH contains a path that is not a regular file: {}",
+                        path.display()
+                    ),
+                ),
+            });
+        }
+    }
+    let mut paths = paths;
+    if legacy {
+        if let Some(tools) = std::env::var_os("NUDOX_JAVA8_TOOLS_JAR") {
+            let path = PathBuf::from(tools);
+            if !path.is_file() {
+                return Err(ProducerError::OracleSpawn {
+                    command: format!("javadoc classpath {}", path.display()),
+                    reason: std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Java 8 tools jar is not a regular file: {}", path.display()),
+                    ),
+                });
+            }
+            paths.push(path);
+        }
+    }
+    let joined = std::env::join_paths(paths).map_err(|e| ProducerError::OracleSpawn {
+        command: "javadoc classpath".to_owned(),
+        reason: std::io::Error::new(std::io::ErrorKind::InvalidInput, e),
+    })?;
+    Ok(vec![
+        if legacy {
+            "-classpath".to_owned()
+        } else {
+            "--class-path".to_owned()
+        },
+        joined.to_string_lossy().into_owned(),
+    ])
+}
+
 /// Recursively collect every `.java` file under `root`, sorted for
 /// deterministic `javadoc` invocations (source order otherwise depends on
 /// directory-read order, which is filesystem-dependent).
@@ -492,9 +608,9 @@ fn add_modules_args() -> Vec<String> {
 /// genuinely has no public API (see `crate::python`'s analogous
 /// discussion, referenced from `ProducerRegistry::with_all_available`'s doc
 /// comment, for the general shape of this trap).
-fn discover_java_sources(root: &Path) -> Result<Vec<PathBuf>, ProducerError> {
+fn discover_java_sources(root: &Path, legacy: bool) -> Result<Vec<PathBuf>, ProducerError> {
     let mut out = Vec::new();
-    walk_java_sources(root, &mut out)?;
+    walk_java_sources(root, &mut out, legacy)?;
     out.sort();
     if out.is_empty() {
         return Err(ProducerError::OracleSpawn {
@@ -508,7 +624,11 @@ fn discover_java_sources(root: &Path) -> Result<Vec<PathBuf>, ProducerError> {
     Ok(out)
 }
 
-fn walk_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ProducerError> {
+fn walk_java_sources(
+    dir: &Path,
+    out: &mut Vec<PathBuf>,
+    legacy: bool,
+) -> Result<(), ProducerError> {
     let entries = std::fs::read_dir(dir).map_err(|e| ProducerError::OracleSpawn {
         command: format!("read_dir {}", dir.display()),
         reason: e,
@@ -525,12 +645,36 @@ fn walk_java_sources(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), ProducerE
                 .file_name()
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.starts_with('.'));
-            if !is_hidden {
-                walk_java_sources(&path, out)?;
+            if !is_hidden && !(legacy && is_legacy_excluded_dir(&path)) {
+                walk_java_sources(&path, out, legacy)?;
             }
         } else if path.extension().and_then(|e| e.to_str()) == Some("java") {
-            out.push(path);
+            if !(legacy && is_legacy_excluded_file(&path)) {
+                out.push(path);
+            }
         }
     }
     Ok(())
+}
+
+fn is_legacy_excluded_dir(path: &Path) -> bool {
+    path.ends_with("lombok/eclipse")
+        || path.ends_with("lombok/bytecode")
+        || path.ends_with("lombok/core/configuration")
+        || path.ends_with("lombok/core/debug")
+        || path.ends_with("lombok/javac/java6")
+        || path.ends_with("lombok/javac/java7")
+        || path.ends_with("lombok/javac/java8")
+        || path.ends_with("lombok/javac/java9")
+}
+
+fn is_legacy_excluded_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            name.starts_with("Test")
+                || name.starts_with("AbstractTest")
+                || (name.starts_with("Run") && name.contains("Test"))
+                || name == "PatchFixesHider.java"
+        })
 }

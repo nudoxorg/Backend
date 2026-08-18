@@ -76,7 +76,9 @@ impl<M: EmbeddingModel> Server<M> {
         let snapshot = self.base().packages.snapshot().await;
         let resumed: Vec<Scored<GlobalPackage>> = items
             .into_iter()
-            .filter(|hit| crate::server::registry::search::keyset_is_after(after, hit.score, hit.value.id))
+            .filter(|hit| {
+                crate::server::registry::search::keyset_is_after(after, hit.score, hit.value.id)
+            })
             .take(limit)
             .collect();
 

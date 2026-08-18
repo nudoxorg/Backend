@@ -134,9 +134,11 @@ fn format_standard_prefixes(token: Cow<str>) -> Cow<str> {
     let token_lower = token.to_ascii_lowercase();
     for prefix in ["rfc", "iso", "iec", "bcp"] {
         if let Some(rest) = token_lower.strip_prefix(prefix)
-            && rest.len() >= 2 && rest.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Cow::Owned(format!("{prefix}-{rest}"));
-            }
+            && rest.len() >= 2
+            && rest.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Cow::Owned(format!("{prefix}-{rest}"));
+        }
     }
     token
 }
@@ -152,9 +154,10 @@ fn truncate_keyword(keyword: &str, target_length: usize, max_length: usize) -> S
     let mut result = SmolStr::from(keyword.trim_matches('-'));
 
     if result.len() > max_length
-        && let Some(truncated) = result.get(..target_length) {
-            result = SmolStr::from(format!("{truncated}…"));
-        }
+        && let Some(truncated) = result.get(..target_length)
+    {
+        result = SmolStr::from(format!("{truncated}…"));
+    }
     result
 }
 
@@ -217,50 +220,42 @@ impl Synonyms {
             }
 
             // 4-col eco form when col0 is a known Language token; else 3-col global.
-            let (eco, find_keyword, replace_keyword, score) =
-                if record.len() >= 4 {
-                    if let Some(lang) = Language::from_token(record.get(0).unwrap_or("")) {
-                        let find = SmolStr::from(record.get(1).unwrap_or(""));
-                        let replace = SmolStr::from(record.get(2).unwrap_or(""));
-                        let score: u8 = record
-                            .get(3)
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("Missing or invalid score in record: {record:?}"),
-                                )
-                            })?;
-                        (Some(lang), find, replace, score)
-                    } else {
-                        // First col not a language — fall through as global 3-col.
-                        let find = SmolStr::from(record.get(0).unwrap_or(""));
-                        let replace = SmolStr::from(record.get(1).unwrap_or(""));
-                        let score: u8 = record
-                            .get(2)
-                            .and_then(|s| s.parse().ok())
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    format!("Missing or invalid score in record: {record:?}"),
-                                )
-                            })?;
-                        (None, find, replace, score)
-                    }
+            let (eco, find_keyword, replace_keyword, score) = if record.len() >= 4 {
+                if let Some(lang) = Language::from_token(record.get(0).unwrap_or("")) {
+                    let find = SmolStr::from(record.get(1).unwrap_or(""));
+                    let replace = SmolStr::from(record.get(2).unwrap_or(""));
+                    let score: u8 =
+                        record.get(3).and_then(|s| s.parse().ok()).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                format!("Missing or invalid score in record: {record:?}"),
+                            )
+                        })?;
+                    (Some(lang), find, replace, score)
                 } else {
+                    // First col not a language — fall through as global 3-col.
                     let find = SmolStr::from(record.get(0).unwrap_or(""));
                     let replace = SmolStr::from(record.get(1).unwrap_or(""));
-                    let score: u8 = record
-                        .get(2)
-                        .and_then(|s| s.parse().ok())
-                        .ok_or_else(|| {
+                    let score: u8 =
+                        record.get(2).and_then(|s| s.parse().ok()).ok_or_else(|| {
                             io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 format!("Missing or invalid score in record: {record:?}"),
                             )
                         })?;
                     (None, find, replace, score)
-                };
+                }
+            } else {
+                let find = SmolStr::from(record.get(0).unwrap_or(""));
+                let replace = SmolStr::from(record.get(1).unwrap_or(""));
+                let score: u8 = record.get(2).and_then(|s| s.parse().ok()).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Missing or invalid score in record: {record:?}"),
+                    )
+                })?;
+                (None, find, replace, score)
+            };
 
             if score > 5 {
                 tracing::error!("synonym borked score: {record:?}");
@@ -374,13 +369,12 @@ impl Synonyms {
     }
 
     fn max_normalize_inner<'a>(&'a self, keyword: &'a str, depth: u8) -> Cow<'a, str> {
-        let mut current_keyword: Cow<str> = Cow::Borrowed(
-            self.mapping.get(keyword).map_or(keyword, |(first_hop, _)| {
+        let mut current_keyword: Cow<str> =
+            Cow::Borrowed(self.mapping.get(keyword).map_or(keyword, |(first_hop, _)| {
                 self.mapping
                     .get(first_hop.as_str())
                     .map_or(first_hop.as_str(), |(second_hop, _)| second_hop.as_str())
-            }),
-        );
+            }));
 
         if depth == 0 {
             return current_keyword;
@@ -404,15 +398,14 @@ impl Synonyms {
             }
         }
 
-        if has_multiple_hyphens
-            && let Some((start, end)) = current_keyword.rsplit_once('-') {
-                let normalized_start = self.max_normalize_inner(start, next_depth);
-                let normalized_end = self.max_normalize_inner(end, next_depth);
+        if has_multiple_hyphens && let Some((start, end)) = current_keyword.rsplit_once('-') {
+            let normalized_start = self.max_normalize_inner(start, next_depth);
+            let normalized_end = self.max_normalize_inner(end, next_depth);
 
-                if normalized_start != start || normalized_end != end {
-                    current_keyword = format!("{normalized_start}-{normalized_end}").into();
-                }
+            if normalized_start != start || normalized_end != end {
+                current_keyword = format!("{normalized_start}-{normalized_end}").into();
             }
+        }
 
         current_keyword
     }
@@ -445,9 +438,7 @@ impl Synonyms {
         min_votes: u8,
     ) -> (&'a str, f32) {
         debug_assert!(min_votes > 0 && min_votes <= 5);
-        if let Some((first_hop, weight1)) =
-            self.get_matching_for(eco, keyword, min_votes.min(5))
-        {
+        if let Some((first_hop, weight1)) = self.get_matching_for(eco, keyword, min_votes.min(5)) {
             if let Some((second_hop, weight2)) =
                 self.get_matching_for(eco, first_hop, (min_votes + 1).clamp(4, 5))
             {
@@ -862,18 +853,17 @@ rust,web-framework,axum,4
 
         // Global path (no eco / normalize)
         assert_eq!(syn.normalize("http-client", 3).0, "reqwest");
-        assert_eq!(
-            syn.normalize_for(None, "http-client", 3).0,
-            "reqwest"
-        );
+        assert_eq!(syn.normalize_for(None, "http-client", 3).0, "reqwest");
 
         // Eco-specific wins over global
         assert_eq!(
-            syn.normalize_for(Some(Language::Python), "http-client", 3).0,
+            syn.normalize_for(Some(Language::Python), "http-client", 3)
+                .0,
             "httpx"
         );
         assert_eq!(
-            syn.normalize_for(Some(Language::Typescript), "http-client", 3).0,
+            syn.normalize_for(Some(Language::Typescript), "http-client", 3)
+                .0,
             "axios"
         );
 
@@ -886,7 +876,8 @@ rust,web-framework,axum,4
         // Rust-only row invisible globally
         assert_eq!(syn.normalize("web-framework", 3).0, "web-framework");
         assert_eq!(
-            syn.normalize_for(Some(Language::Rust), "web-framework", 3).0,
+            syn.normalize_for(Some(Language::Rust), "web-framework", 3)
+                .0,
             "axum"
         );
     }

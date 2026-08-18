@@ -246,7 +246,9 @@ impl AccountPresentation {
             Posture::Revoked { reason, .. } => (
                 "account · key rejected".to_owned(),
                 "Key rejected".to_owned(),
-                format!("nudox says: {reason}. Create a new key in the dashboard and sign in again."),
+                format!(
+                    "nudox says: {reason}. Create a new key in the dashboard and sign in again."
+                ),
                 true,
                 false,
             ),
@@ -272,17 +274,16 @@ impl AccountPresentation {
             key_hint: key_hint.map(SharedString::from),
             source: source.map(|s| SharedString::from(s.label())),
             user: summary.map(|s| SharedString::from(format!("user {}", s.user))),
-            usage: quota.as_ref().map(|q| {
-                SharedString::from(format!("{} of {} tool calls", q.tool_calls, q.limit))
-            }),
+            usage: quota
+                .as_ref()
+                .map(|q| SharedString::from(format!("{} of {} tool calls", q.tool_calls, q.limit))),
             usage_fraction: quota.as_ref().and_then(|q| {
                 (q.limit > 0).then(|| (q.used as f32 / q.limit as f32).clamp(0.0, 1.0))
             }),
             pending: (usage.pending > 0)
                 .then(|| SharedString::from(format!("{} pending", usage.pending))),
-            dropped: (usage.dropped.calls > 0).then(|| {
-                SharedString::from(format!("{} unreported", usage.dropped.calls))
-            }),
+            dropped: (usage.dropped.calls > 0)
+                .then(|| SharedString::from(format!("{} unreported", usage.dropped.calls))),
             can_work,
             can_sign_out: matches!(source, Some(nudox_engine::mcp::KeySource::Keychain))
                 && !matches!(posture, Posture::SignedOut),

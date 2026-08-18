@@ -1,8 +1,8 @@
 //! `JavaProducer` — the `javadoc`-doclet oracle wired to the [`Producer`] contract.
 
+use crate::{PackageSource, Producer, ProducerError, ProducerId};
 use nudox_ir::body::Language;
 use nudox_ir::lower::Lowering;
-use crate::{PackageSource, Producer, ProducerError, ProducerId};
 
 use crate::java::{
     invoke,
@@ -39,7 +39,25 @@ impl Producer for JavaProducer {
     const LANGUAGE: Language = Language::Java;
 
     fn invoke(&self, src: &PackageSource) -> Result<Extraction, ProducerError> {
-        invoke::invoke(src)
+        let extraction = invoke::invoke(src)?;
+
+        // A doclet older than this build under-reports silently: every field
+        // is `#[serde(default)]`, so its missing `references` arrives as an
+        // empty `Box<[_]>` and `refs` answers "nothing here" for the whole
+        // language. Failing loudly is the only way that reads as a stale
+        // classes directory rather than an empty package — see
+        // `schema::Extraction::staleness`, and `crate::go::producer::GoProducer`'s
+        // identical wiring for the incident that made this worth doing before
+        // it happens again in Java.
+        if let Some(stale) = extraction.staleness() {
+            return Err(ProducerError::OracleExit {
+                command: PRODUCER_ID.to_owned(),
+                code: "stale".to_owned(),
+                stderr: stale.to_string(),
+            });
+        }
+
+        Ok(extraction)
     }
 
     fn lower(&self, oracle: &Extraction, out: &mut Lowering<JavaId>) -> Result<(), ProducerError> {

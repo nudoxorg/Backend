@@ -6,10 +6,10 @@ use std::sync::Arc;
 use nudox_ir::change::PackageLineageId;
 
 use crate::{
+    PackageLoadEvent,
     runtime::EngineInner,
     store::source::{IrSource, LoadEvent, LoadRequest},
     wire::SharedStr,
-    PackageLoadEvent,
 };
 
 // ---------------------------------------------------------------------------
@@ -63,7 +63,6 @@ impl LoadFailures {
         guard.get(lineage).cloned()
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // drive_load — the one place a produced package enters the corpus
@@ -164,14 +163,17 @@ pub(crate) async fn drive_load(
                     // would embed symbols that no search can resolve, because
                     // every lookup goes through the corpus.
                     //
-                    // `send` (not `send_async`) on an unbounded channel never
-                    // blocks, which is what keeps this line off the critical
-                    // path. `Err` means the indexer has shut down; the package
-                    // is still fully loaded and searchable by name and type,
-                    // and `SectionState::Building` already reports it as
-                    // uncovered, so there is nothing to recover here.
+                    // Semantic indexing is best-effort and bounded. Never
+                    // wait for the model on the package-load path: dropping
+                    // an over-capacity item preserves name/type liveness and
+                    // makes the residency bound explicit.
                     if let Some(tx) = &inner.semantic_tx {
-                        let _ = tx.send(resident);
+                        if tx.try_send(resident).is_err() {
+                            tracing::warn!(
+                                package = %lineage,
+                                "semantic queue full or closed; package remains searchable without embeddings"
+                            );
+                        }
                     }
                 }
 
@@ -181,6 +183,7 @@ pub(crate) async fn drive_load(
                     version,
                     symbol_count,
                     root: package_root_key(&package),
+                    metadata: crate::PackageMetadata::default(),
                 };
                 // Ignore `Err`: no subscribers yet is fine.
                 let _ = inner.pkg_tx.send(event.clone());
@@ -219,7 +222,6 @@ pub(crate) async fn drive_load(
     outcomes
 }
 
-
 // ---------------------------------------------------------------------------
 // Package root
 // ---------------------------------------------------------------------------
@@ -234,7 +236,9 @@ pub(crate) async fn drive_load(
 ///
 /// Returns `None` for a package with no unparented entry, which would be
 /// malformed rather than merely empty.
-pub(crate) fn package_root_key(pkg: &crate::store::package::PackageView) -> Option<crate::SymbolKey> {
+pub(crate) fn package_root_key(
+    pkg: &crate::store::package::PackageView,
+) -> Option<crate::SymbolKey> {
     let view = pkg.view();
     view.entries()
         .map(|(intro, _)| intro)

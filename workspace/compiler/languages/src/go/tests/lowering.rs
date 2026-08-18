@@ -194,6 +194,35 @@ fn fixture_deserializes() {
 }
 
 #[test]
+fn build_constraint_diagnostic_deserializes_and_survives_lowering() {
+    let json = r#"{
+      "module": { "path": "example.com/m" },
+      "packages": [{
+        "importPath": "example.com/m/probe",
+        "name": "probe",
+        "buildConstraints": [{
+          "file": "/tmp/probe/windows_only.go",
+          "constraints": ["windows"],
+          "exportedDecls": [{ "name": "WindowsOnly", "kind": "type" }]
+        }]
+      }]
+    }"#;
+    let out: oracle::Output = serde_json::from_str(json).expect("build constraint JSON is valid");
+    assert_eq!(out.packages[0].build_constraints.len(), 1);
+    let constraint = &out.packages[0].build_constraints[0];
+    assert_eq!(constraint.constraints[0], "windows");
+    assert_eq!(constraint.exported_decls[0].name, "WindowsOnly");
+
+    GoProducer
+        .lower_bytes(
+            json.as_bytes(),
+            PackageId::path("example.com/m"),
+            &lineage(),
+        )
+        .expect("typed build constraint diagnostics must not break lowering");
+}
+
+#[test]
 fn package_module_declared() {
     let pkg = lower_fixture();
     // There must be an entry named "example.com/m/shapes" (the Go package module).
@@ -402,7 +431,12 @@ fn const_pi_declared() {
         .expect("Pi must be declared");
     assert!(pi.1.downcast::<Const>().is_some(), "Pi must be a Const");
     assert_eq!(
-        pi.1.downcast::<Const>().unwrap().body().value.as_deref(),
+        pi.1.downcast::<Const>()
+            .unwrap()
+            .body()
+            .value
+            .as_ref()
+            .map(|value| value.source.as_str()),
         Some("3.14159265358979323846264338327950288")
     );
 }
@@ -621,9 +655,7 @@ fn type_param_use_lowers_to_typevar_not_self_type() {
         Some(Type::TypeVar(name)) => {
             assert_eq!(name, "T", "TypeVar name must match the type param name");
         }
-        other => panic!(
-            "Value's type (a TypeParam use) must be Type::TypeVar, not {other:?}"
-        ),
+        other => panic!("Value's type (a TypeParam use) must be Type::TypeVar, not {other:?}"),
     }
 }
 

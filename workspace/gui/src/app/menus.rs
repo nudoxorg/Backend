@@ -396,9 +396,11 @@ mod tests {
     fn sample_account() -> nudox_engine::mcp::account::state::Account {
         nudox_engine::mcp::account::state::Account {
             user: nudox_engine::mcp::account::state::UserId(24),
-            fingerprint: nudox_engine::mcp::ApiKey::parse("ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517")
-                .expect("sample key parses")
-                .fingerprint(),
+            fingerprint: nudox_engine::mcp::ApiKey::parse(
+                "ndx_2f8c41a9b60d47e3a5710c9fbe2d836a4517",
+            )
+            .expect("sample key parses")
+            .fingerprint(),
             verified_at: std::time::SystemTime::now(),
         }
     }

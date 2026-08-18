@@ -110,9 +110,7 @@ fn fuse(local: &[SearchHit], remote: &[SearchHit]) -> Vec<FusedHit> {
         ids: local.iter().map(|h| h.id).collect(),
     };
     let remote_list = RankedList {
-        source: remote
-            .first()
-            .map_or(SourceTag::IndexJina, |h| h.source),
+        source: remote.first().map_or(SourceTag::IndexJina, |h| h.source),
         ids: remote.iter().map(|h| h.id).collect(),
     };
     rrf_fuse(&[local_list, remote_list], RRF_K)

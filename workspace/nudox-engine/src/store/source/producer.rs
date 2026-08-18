@@ -22,10 +22,10 @@
 //!
 //! # Runtime contract (LR-9)
 //!
-//! `ProducerSource::load` uses `tokio::task::spawn_blocking` for each
-//! package. The stream itself is created with `futures::stream::unfold`, which
-//! is `Send` and requires no `LocalSet`. Only the caller (the engine) chooses
-//! which runtime to poll this stream on.
+//! `ProducerSource::load` uses `tokio::task::spawn_blocking` for each package,
+//! with a fixed admission bound so producer output cannot accumulate without
+//! limit. The stream is `Send` and requires no `LocalSet`; only the caller
+//! (the engine) chooses which runtime to poll it on.
 //!
 //! # Pilot registration
 //!
@@ -42,11 +42,11 @@ use nudox_ir::{
     change::{EcosystemId, PackageLineageId, PackageName},
     view::IrView,
 };
-use nudox_languages::{PackageSource, ProducerError, produce};
 use nudox_languages::clang::ClangProducer;
 use nudox_languages::csharp::CSharpProducer;
 use nudox_languages::go::GoProducer;
 use nudox_languages::java::JavaProducer;
+use nudox_languages::{PackageSource, ProducerError, produce};
 // Only referenced when the `pyrefly` feature is on — see `with_all_available`.
 // Without it, `PythonProducer` exists but is deliberately never registered,
 // so importing it unconditionally would be an unused-import warning.
@@ -56,9 +56,11 @@ use nudox_languages::rust::RustProducer;
 use nudox_languages::typescript::TypescriptProducer;
 use tokio::task;
 
+use crate::packages::acquire::{ArchiveCache, ArchiveCacheError, ArchiveDigest};
+use crate::packages::purl::{Purl, PurlType};
 use crate::store::{
     package::{PackageView, Provenance},
-    source::{IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error},
+    source::{Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor},
 };
 
 // ---------------------------------------------------------------------------
@@ -362,6 +364,7 @@ impl ProducerRegistry {
             ProducerError::UnsupportedConstruct { .. }
             | ProducerError::DependenciesUnresolved { .. }
             | ProducerError::BuildScriptsFailed { .. }
+            | ProducerError::ProcMacroDegraded { .. }
             | ProducerError::NoDeclarationsContributed { .. } => Error::OracleFailed {
                 package: lineage.clone(),
                 detail: chain(&err),
@@ -524,7 +527,13 @@ impl PackageDescriptor {
         name: impl Into<String>,
         version: impl Into<String>,
     ) -> Self {
-        Self::new(root, name, version, EcosystemId::new("cargo"), Language::Rust)
+        Self::new(
+            root,
+            name,
+            version,
+            EcosystemId::new("cargo"),
+            Language::Rust,
+        )
     }
 
     /// Construct a descriptor for a Go module (manifest: `go.mod`),
@@ -560,7 +569,13 @@ impl PackageDescriptor {
         name: impl Into<String>,
         version: impl Into<String>,
     ) -> Self {
-        Self::new(root, name, version, EcosystemId::new("maven"), Language::Java)
+        Self::new(
+            root,
+            name,
+            version,
+            EcosystemId::new("maven"),
+            Language::Java,
+        )
     }
 
     /// Construct a descriptor for a NuGet package (manifest: `*.csproj`),
@@ -650,17 +665,179 @@ impl PackageDescriptor {
             language,
         }
     }
+
+    /// Read only metadata explicitly present in the package's own manifest.
+    ///
+    /// Missing manifests and unsupported fields remain unknown. In particular,
+    /// this does not infer owners from repository URLs or release dates from
+    /// filesystem timestamps.
+    pub fn metadata(&self) -> crate::PackageMetadata {
+        let path = match self.language {
+            Language::Rust => self.source.root.join("Cargo.toml"),
+            Language::TypeScript => self.source.root.join("package.json"),
+            Language::Python => self.source.root.join("pyproject.toml"),
+            Language::Go => self.source.root.join("go.mod"),
+            _ => return crate::PackageMetadata::default(),
+        };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return crate::PackageMetadata::default();
+        };
+
+        match self.language {
+            Language::TypeScript => metadata_from_json(&text),
+            Language::Rust | Language::Python => metadata_from_toml(&text, self.language),
+            Language::Go => metadata_from_go_mod(&text),
+            _ => crate::PackageMetadata::default(),
+        }
+    }
+}
+
+fn metadata_from_toml(text: &str, language: Language) -> crate::PackageMetadata {
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return crate::PackageMetadata::default();
+    };
+    let package = value.get("package").or_else(|| value.get("project"));
+    let metadata = package
+        .and_then(toml::Value::as_table)
+        .or_else(|| value.as_table());
+    let get = |key: &str| {
+        metadata
+            .and_then(|table| table.get(key))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    };
+    let owner = metadata.and_then(|table| {
+        table
+            .get(if language == Language::Rust {
+                "authors"
+            } else {
+                "authors"
+            })
+            .and_then(toml::Value::as_array)
+            .and_then(|authors| authors.first())
+            .and_then(toml::Value::as_str)
+            .map(|author| author.split('<').next().unwrap_or(author).trim().to_owned())
+    });
+    let repository = get("repository").or_else(|| {
+        metadata
+            .and_then(|table| table.get("urls"))
+            .and_then(toml::Value::as_table)
+            .and_then(|urls| urls.get("Repository").or_else(|| urls.get("Source")))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    });
+    let homepage = get("homepage").or_else(|| {
+        metadata
+            .and_then(|table| table.get("urls"))
+            .and_then(toml::Value::as_table)
+            .and_then(|urls| urls.get("Homepage"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+    });
+    let dependencies = value
+        .get("dependencies")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(|table| table.keys().cloned())
+        .chain(
+            value
+                .get("project")
+                .and_then(|project| project.get("dependencies"))
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flat_map(|deps| {
+                    deps.iter()
+                        .filter_map(toml::Value::as_str)
+                        .map(str::to_owned)
+                }),
+        )
+        .collect();
+    crate::PackageMetadata {
+        description: get("description"),
+        repository,
+        license: get("license"),
+        owner,
+        dependencies,
+        release_date: None,
+        homepage,
+        coverage: None,
+    }
+}
+
+fn metadata_from_json(text: &str) -> crate::PackageMetadata {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return crate::PackageMetadata::default();
+    };
+    let string = |key: &str| value.get(key).and_then(|v| v.as_str()).map(str::to_owned);
+    let repository = string("repository").or_else(|| {
+        value
+            .get("repository")
+            .and_then(|v| v.get("url"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    });
+    let owner = value
+        .get("author")
+        .and_then(|v| v.as_str())
+        .map(|author| author.split('<').next().unwrap_or(author).trim().to_owned())
+        .or_else(|| {
+            value
+                .get("author")
+                .and_then(|v| v.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        });
+    let dependencies = ["dependencies", "devDependencies", "peerDependencies"]
+        .into_iter()
+        .flat_map(|key| {
+            value
+                .get(key)
+                .and_then(|v| v.as_object())
+                .into_iter()
+                .flat_map(|deps| deps.keys().cloned())
+        })
+        .collect();
+    crate::PackageMetadata {
+        description: string("description"),
+        repository,
+        license: string("license"),
+        owner,
+        dependencies,
+        release_date: None,
+        homepage: string("homepage"),
+        coverage: None,
+    }
+}
+
+fn metadata_from_go_mod(text: &str) -> crate::PackageMetadata {
+    let dependencies = text
+        .lines()
+        .map(str::trim)
+        .filter_map(|line| line.strip_prefix("require "))
+        .map(|dep| dep.split_whitespace().next().unwrap_or(dep).to_owned())
+        .collect();
+    crate::PackageMetadata {
+        dependencies,
+        ..crate::PackageMetadata::default()
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ProducerSource
 // ---------------------------------------------------------------------------
 
+/// Maximum number of package productions admitted to the blocking pool.
+///
+/// This bounds both heavyweight producer work and completed package values
+/// retained by the stream while the engine consumes them.
+pub const MAX_CONCURRENT_PACKAGE_LOADS: usize = 4;
+
 /// An `IrSource` that drives real language producers on the Tokio blocking pool.
 ///
 /// Each package is produced on its own `spawn_blocking` call so that slow
-/// oracles (Roslyn, `go doc`, ra) do not block other packages. The stream
-/// emits packages as they complete — order is not guaranteed.
+/// oracles (Roslyn, `go doc`, ra) do not block other packages. At most
+/// [`MAX_CONCURRENT_PACKAGE_LOADS`] productions are admitted at once. The
+/// stream emits packages as they complete — order is not guaranteed.
 pub struct ProducerSource {
     registry: Arc<ProducerRegistry>,
     packages: Vec<PackageDescriptor>,
@@ -678,6 +855,49 @@ impl ProducerSource {
             Arc::new(ProducerRegistry::with_rust_pilot()),
             vec![descriptor],
         )
+    }
+
+    /// Reopen one fetched archive from the durable local cache and make it
+    /// runnable by the normal producer registry.
+    ///
+    /// This deliberately accepts the cache address, rather than a checkout
+    /// path: the extracted root is itself content-addressed and can be reused
+    /// by a later process.
+    pub fn from_archive_cache(
+        cache: &ArchiveCache,
+        digest: &ArchiveDigest,
+        registry: Arc<ProducerRegistry>,
+    ) -> Result<Self, ArchiveCacheError> {
+        let archive = cache.open(digest)?;
+        let source = cache.open_source(digest)?;
+        let name = archive.purl().lineage_name();
+        let version = archive
+            .purl()
+            .version()
+            .ok_or_else(|| ArchiveCacheError::Metadata {
+                digest: digest.clone(),
+                detail: "cached PURL has no version".to_owned(),
+            })?;
+        let descriptor = match archive.purl().ty() {
+            PurlType::Cargo => PackageDescriptor::cargo(&source.root, name, version),
+            PurlType::Golang => PackageDescriptor::go(&source.root, name, version),
+            PurlType::Npm => PackageDescriptor::npm(&source.root, name, version),
+            PurlType::Maven => PackageDescriptor::maven(&source.root, name, version),
+            PurlType::NuGet => PackageDescriptor::nuget(&source.root, name, version),
+            PurlType::PyPi => PackageDescriptor::pypi(&source.root, name, version),
+        };
+        Ok(Self::new(registry, vec![descriptor]))
+    }
+
+    /// Fetch a versioned PURL into the durable cache, then build the normal
+    /// producer source from that cached address.
+    pub async fn from_purl(
+        cache: &ArchiveCache,
+        purl: &Purl,
+        registry: Arc<ProducerRegistry>,
+    ) -> Result<Self, ArchiveCacheError> {
+        let receipt = cache.fetch(purl).await?;
+        Self::from_archive_cache(cache, receipt.digest(), registry)
     }
 }
 
@@ -700,7 +920,7 @@ impl IrSource for ProducerSource {
         // Note: because `spawn_blocking` returns a `JoinHandle`, we use
         // `stream::once(async move { ... })` to wrap each async block, then
         // flatten the results into individual events.
-        let event_stream = stream::iter(packages).then(move |desc| {
+        let event_stream = stream::iter(packages).map(move |desc| {
             let registry = Arc::clone(&registry);
 
             async move {
@@ -708,6 +928,7 @@ impl IrSource for ProducerSource {
                 let language = desc.language;
                 let display_name = desc.source.name.as_str().to_owned();
                 let ecosystem = lineage.ecosystem.as_str().to_owned();
+                let metadata = desc.metadata();
 
                 // Emit Discovered synchronously (no blocking work yet).
                 let discovered = Ok(LoadEvent::Discovered {
@@ -783,6 +1004,20 @@ impl IrSource for ProducerSource {
                         for (owner, body) in produced.bodies {
                             view.set_body(owner, body);
                         }
+                        let mut total = 0u64;
+                        let mut documented = 0u64;
+                        for (_, entry) in view.entries() {
+                            if entry.sym().visibility == nudox_ir::entry::Visibility::Public {
+                                total += 1;
+                                if !entry.sym().documentation.trim().is_empty() {
+                                    documented += 1;
+                                }
+                            }
+                        }
+                        let mut metadata = metadata;
+                        if total > 0 {
+                            metadata.coverage = Some(crate::PackageCoverage { documented, total });
+                        }
                         // `build_sealed`, not `build`: this is the one place
                         // in the system that holds both the table and the
                         // `SealReport` that describes how its keys were
@@ -791,10 +1026,11 @@ impl IrSource for ProducerSource {
                         // shipped for as long as the report died here — and
                         // what made a churned key indistinguishable from a
                         // deleted one at every layer above.
-                        let pkg = Arc::new(PackageView::build_sealed(
+                        let pkg = Arc::new(PackageView::build_sealed_with_metadata(
                             view,
                             Provenance::TrustedLocal,
                             &produced.report,
+                            metadata,
                         ));
                         Ok(LoadEvent::Ready { package: pkg })
                     }
@@ -810,8 +1046,13 @@ impl IrSource for ProducerSource {
             }
         });
 
-        // Flatten each `Vec<Result<LoadEvent, _>>` into individual items.
-        event_stream.flat_map(stream::iter).boxed()
+        // Admission is bounded before `spawn_blocking` starts. This prevents
+        // a large workspace from retaining an unbounded set of producer
+        // outputs while still allowing independent packages to make progress.
+        event_stream
+            .buffer_unordered(MAX_CONCURRENT_PACKAGE_LOADS)
+            .flat_map(stream::iter)
+            .boxed()
     }
 }
 
@@ -850,6 +1091,36 @@ mod tests {
         };
         let desc = src.describe();
         assert_eq!(desc.package_count_hint, Some(2));
+    }
+
+    #[test]
+    fn manifest_metadata_is_explicit_and_ecosystem_scoped() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            r#"
+[package]
+name = "demo"
+description = "A demo package"
+authors = ["Ada Lovelace <ada@example.test>"]
+license = "MIT"
+repository = "https://example.test/demo"
+homepage = "https://example.test/docs"
+[dependencies]
+serde = "1"
+"#,
+        )
+        .expect("manifest");
+
+        let metadata = PackageDescriptor::cargo(dir.path(), "demo", "1.0.0").metadata();
+        assert_eq!(metadata.description.as_deref(), Some("A demo package"));
+        assert_eq!(metadata.owner.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(metadata.dependencies, ["serde"]);
+        assert_eq!(metadata.release_date, None);
+        assert_eq!(
+            metadata.homepage.as_deref(),
+            Some("https://example.test/docs")
+        );
     }
 
     // -----------------------------------------------------------------
@@ -1005,7 +1276,9 @@ mod tests {
         let lineage =
             PackageLineageId::new(EcosystemId::new("test-ecosystem"), PackageName::new("test"));
         match reg.run(language, &src, &lineage) {
-            Err(Error::ToolchainMissing { language: named, .. }) => {
+            Err(Error::ToolchainMissing {
+                language: named, ..
+            }) => {
                 assert_eq!(
                     named, language,
                     "error must name the language that was actually requested"
@@ -1130,8 +1403,16 @@ mod tests {
     #[test]
     fn each_ecosystem_constructor_pairs_the_matching_ecosystem_id_and_language() {
         let cases: [(PackageDescriptor, &str, Language); 7] = [
-            (PackageDescriptor::cargo("/tmp", "a", "0.1"), "cargo", Language::Rust),
-            (PackageDescriptor::go("/tmp", "a", "0.1"), "go", Language::Go),
+            (
+                PackageDescriptor::cargo("/tmp", "a", "0.1"),
+                "cargo",
+                Language::Rust,
+            ),
+            (
+                PackageDescriptor::go("/tmp", "a", "0.1"),
+                "go",
+                Language::Go,
+            ),
             (
                 PackageDescriptor::npm("/tmp", "a", "0.1"),
                 "npm",
@@ -1152,7 +1433,11 @@ mod tests {
                 "pypi",
                 Language::Python,
             ),
-            (PackageDescriptor::cpp("/tmp", "a", "0.1"), "cpp", Language::C),
+            (
+                PackageDescriptor::cpp("/tmp", "a", "0.1"),
+                "cpp",
+                Language::C,
+            ),
         ];
         for (desc, ecosystem, language) in cases {
             assert_eq!(desc.lineage.ecosystem.as_str(), ecosystem);

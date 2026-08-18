@@ -57,16 +57,10 @@ pub fn unescape(s: &str) -> Result<String, Error> {
                         return Err(Error::BadEscape("\\x at end of string".to_owned()));
                     }
                     let hi = hex_val(bytes[i + 1]).ok_or_else(|| {
-                        Error::BadEscape(format!(
-                            "bad \\x hex digit: {}",
-                            bytes[i + 1] as char
-                        ))
+                        Error::BadEscape(format!("bad \\x hex digit: {}", bytes[i + 1] as char))
                     })?;
                     let lo = hex_val(bytes[i + 2]).ok_or_else(|| {
-                        Error::BadEscape(format!(
-                            "bad \\x hex digit: {}",
-                            bytes[i + 2] as char
-                        ))
+                        Error::BadEscape(format!("bad \\x hex digit: {}", bytes[i + 2] as char))
                     })?;
                     out.push(hi << 4 | lo);
                     i += 2;
@@ -147,9 +141,7 @@ pub fn decode_typeref(s: &str) -> Result<TypeRefWire, Error> {
             IntroId::from_raw(hex_to_32(intro_hex)?),
         )))
     } else {
-        Err(Error::Malformed(format!(
-            "unknown typeref prefix: {s}"
-        )))
+        Err(Error::Malformed(format!("unknown typeref prefix: {s}")))
     }
 }
 
@@ -241,9 +233,7 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
                 "s" => true,
                 "u" => false,
                 other => {
-                    return Err(Error::Malformed(format!(
-                        "bad int sign '{other}': {s}"
-                    )));
+                    return Err(Error::Malformed(format!("bad int sign '{other}': {s}")));
                 }
             };
             return Ok(TypeWire::Primitive(PrimitiveWire::Integer {

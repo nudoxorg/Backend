@@ -201,9 +201,7 @@ impl<R: Read> StreamReceiver<R> {
     pub fn recv(&mut self) -> Result<Option<Received>, Error> {
         match self.state {
             ReceiverState::AwaitingHello => {
-                return Err(Error::Protocol(
-                    "next() called before accept()".into(),
-                ));
+                return Err(Error::Protocol("next() called before accept()".into()));
             }
             ReceiverState::Done => {
                 // The peer must close after a terminal frame. Draining here is
@@ -224,9 +222,9 @@ impl<R: Read> StreamReceiver<R> {
         };
 
         match frame {
-            StreamFrame::Hello { .. } => Err(Error::Protocol(
-                "unexpected second Hello frame".into(),
-            )),
+            StreamFrame::Hello { .. } => {
+                Err(Error::Protocol("unexpected second Hello frame".into()))
+            }
 
             StreamFrame::Symbols { batch } => {
                 self.observed += batch.len() as u64;

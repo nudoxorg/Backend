@@ -16,11 +16,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = NudoxClient::connect(&base)?;
 
     let health = client.readyz().await?;
-    println!("readyz: ready={} degraded={:?}", health.ready, health.degraded);
+    println!(
+        "readyz: ready={} degraded={:?}",
+        health.ready, health.degraded
+    );
 
     let query = Query {
         target: Target::Symbols,
-        text: std::env::args().nth(2).unwrap_or_else(|| "serde".to_owned()),
+        text: std::env::args()
+            .nth(2)
+            .unwrap_or_else(|| "serde".to_owned()),
         scope: Default::default(),
         rank: Default::default(),
         mode: QueryMode::default(),

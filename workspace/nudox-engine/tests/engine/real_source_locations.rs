@@ -28,6 +28,13 @@ use std::time::Duration;
 
 use futures::stream::BoxStream;
 
+use nudox_engine::store::{
+    package::{PackageView, Provenance},
+    source::{
+        Error, IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor,
+        producer::PackageDescriptor,
+    },
+};
 use nudox_ir::{
     change::{IntroId, PackageLineageId, StableRef},
     kind::Kind,
@@ -35,13 +42,6 @@ use nudox_ir::{
 };
 use nudox_languages::produce;
 use nudox_languages::rust::RustProducer;
-use nudox_engine::store::{
-    package::{PackageView, Provenance},
-    source::{
-        IrSource, LoadEvent, LoadRequest, PackageHint, SourceDescriptor, Error,
-        producer::PackageDescriptor,
-    },
-};
 
 use nudox_engine::{
     Engine, EngineConfig, Gen,
@@ -52,7 +52,10 @@ const PKG_NAME: &str = "memchr";
 const PKG_VERSION: &str = "2.8.3";
 
 fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result/memchr-2.8.3")
+    let corpus = std::env::var_os("NUDOX_CORPUS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../result"));
+    corpus.join("memchr-2.8.3")
 }
 
 // ---------------------------------------------------------------------------
@@ -102,18 +105,15 @@ fn real_package() -> (PackageLineageId, Arc<PackageView>) {
     );
 
     let descriptor = PackageDescriptor::cargo(&root, PKG_NAME, PKG_VERSION);
-    let (produced, _cost) = heart::cost::measured(
-        &format!("l31/wire/{PKG_NAME}-{PKG_VERSION}"),
-        &root,
-        || {
+    let (produced, _cost) =
+        heart::cost::measured(&format!("l31/wire/{PKG_NAME}-{PKG_VERSION}"), &root, || {
             produce(
                 &RustProducer { direct_repo: false },
                 &descriptor.source,
                 &descriptor.lineage,
                 &nudox_ir::foreign::Unlinked,
             )
-        },
-    );
+        });
     let table = produced
         .unwrap_or_else(|e| panic!("{PKG_NAME} must lower: {e}"))
         .table;
@@ -147,10 +147,7 @@ async fn start_and_settle(
     panic!("engine never settled for {lineage}");
 }
 
-async fn drain(
-    engine: &nudox_engine::EngineHandle,
-    key: StableRef,
-) -> Vec<DocEvent> {
+async fn drain(engine: &nudox_engine::EngineHandle, key: StableRef) -> Vec<DocEvent> {
     let (handle, rx) = engine.open_symbol(key, Gen(1));
     let mut events = Vec::new();
     let _ = tokio::time::timeout(Duration::from_secs(20), async {

@@ -353,9 +353,8 @@ mod tests {
         for (spring, advertised) in presets {
             for travel in travels {
                 let (_, _, settled) = simulate(spring, 0.0, 0.0, travel, 1500);
-                let settled = settled.unwrap_or_else(|| {
-                    panic!("{spring:?} never settled over travel {travel}")
-                });
+                let settled = settled
+                    .unwrap_or_else(|| panic!("{spring:?} never settled over travel {travel}"));
                 let slack = advertised / 10; // ±10 %
                 assert!(
                     settled.abs_diff(advertised) <= slack,
@@ -406,7 +405,10 @@ mod tests {
 
         // Velocity at this point should be positive (moving toward 320).
         let v_before = m.velocity;
-        assert!(v_before > 0.0, "expected positive velocity before retarget, got {v_before}");
+        assert!(
+            v_before > 0.0,
+            "expected positive velocity before retarget, got {v_before}"
+        );
 
         // Retarget to 0 — direction reversal, but velocity should NOT sign-flip
         // instantaneously; it will only change sign once the spring turns it.
@@ -419,11 +421,7 @@ mod tests {
             value_before_retarget,
             "retarget must not move the value"
         );
-        assert_eq!(
-            m.velocity,
-            v_before,
-            "retarget must not change velocity"
-        );
+        assert_eq!(m.velocity, v_before, "retarget must not change velocity");
 
         // Tick once more — velocity will begin to decrease but must not
         // instantaneously flip sign (that would be the classic discontinuity).

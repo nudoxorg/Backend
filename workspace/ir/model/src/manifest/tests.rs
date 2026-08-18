@@ -157,7 +157,7 @@ fn stamp_golden_pin() {
     );
     let hex = generation_stamp(&t).to_hex();
     assert_eq!(
-        hex, "1b3e0372ac6c807ac9281915760103ea8ed2ce535762223f6a386edcf9908563",
+        hex, "e0b044d4fca1c756bcc37d8bbca371022f3d547aa279ae8b8fb4242128d62428",
         "GenerationStamp v2 golden pin moved"
     );
 }

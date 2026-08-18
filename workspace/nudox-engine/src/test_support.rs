@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use crate::store::package::{PackageView, Provenance};
 use nudox_ir::{
     apply::PristineIntroTable,
     change::{EcosystemId, IntroId, PackageLineageId, PackageName},
@@ -27,7 +28,6 @@ use nudox_ir::{
     kinds::{Module, Reexport},
     view::IrView,
 };
-use crate::store::package::{PackageView, Provenance};
 
 /// A `cargo:` lineage for `name`.
 pub(crate) fn lineage(name: &str) -> PackageLineageId {
@@ -214,8 +214,8 @@ impl crate::store::source::IrSource for StaticSource {
         'static,
         Result<crate::store::source::LoadEvent, crate::store::source::Error>,
     > {
-        use futures::StreamExt as _;
         use crate::store::source::{LoadEvent, PackageHint};
+        use futures::StreamExt as _;
 
         let events: Vec<_> = self
             .generations

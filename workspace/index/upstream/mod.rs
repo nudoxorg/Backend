@@ -53,9 +53,15 @@ impl UpstreamClient {
         let mut buckets = HashMap::new();
         for lang in Language::iter() {
             let policy = lang.spec().policy();
-            buckets.insert(lang, Mutex::new(TokenBucket::new(f64::from(policy.max_requests_per_second))));
+            buckets.insert(
+                lang,
+                Mutex::new(TokenBucket::new(f64::from(policy.max_requests_per_second))),
+            );
         }
-        Self { inner, buckets: Arc::new(buckets) }
+        Self {
+            inner,
+            buckets: Arc::new(buckets),
+        }
     }
 
     /// GET `url` on behalf of `language`, applying rate limiting and retry.
@@ -126,7 +132,9 @@ impl UpstreamClient {
 }
 
 impl Default for UpstreamClient {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Error ────────────────────────────────────────────────────────────
@@ -184,7 +192,10 @@ impl TokenBucket {
         } else {
             (1_000_000_000.0 / max_rps) as u64
         };
-        Self { interval_ns, next_available: Instant::now() }
+        Self {
+            interval_ns,
+            next_available: Instant::now(),
+        }
     }
 
     /// Try to consume a token. Returns `None` if one is available immediately,
@@ -209,22 +220,31 @@ impl TokenBucket {
 fn backoff(attempt: u32, url: &str) -> Duration {
     let base_ms = BASE_BACKOFF_MS.saturating_mul(1u64 << attempt.min(6));
     // Simple hash for deterministic jitter: fold url bytes + attempt.
-    let hash: u64 = url.bytes().fold(u64::from(attempt) ^ 0xDEAD_BEEF, |acc, b| {
-        acc.wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(u64::from(b) ^ 0x1405_7B7E_F767_814F)
-    });
+    let hash: u64 = url
+        .bytes()
+        .fold(u64::from(attempt) ^ 0xDEAD_BEEF, |acc, b| {
+            acc.wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(u64::from(b) ^ 0x1405_7B7E_F767_814F)
+        });
     // jitter: ±25% of base_ms.
     let jitter_range = base_ms / 4;
-    let jitter = if jitter_range == 0 { 0 } else { hash % (jitter_range * 2) };
+    let jitter = if jitter_range == 0 {
+        0
+    } else {
+        hash % (jitter_range * 2)
+    };
     let ms = base_ms.saturating_sub(jitter_range).saturating_add(jitter);
     Duration::from_millis(ms)
 }
 
 /// Parse `Retry-After` header as integer seconds, if present.
 fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
-    let val = resp.headers().get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let val = resp
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?;
     val.trim().parse::<u64>().ok()
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
-

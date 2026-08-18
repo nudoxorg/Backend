@@ -31,17 +31,16 @@ use gpui::prelude::*;
 
 use crate::app::actions::{
     ActivateTab1, ActivateTab2, ActivateTab3, ActivateTab4, ActivateTab5, ActivateTab6,
-    ActivateTab7, ActivateTab8, ActivateTab9, CloseTab, CollapseTreeNode, ConfirmOverlay,
-    Copy, CopySymbolUri, Cut, DiffAgainstPrevious, DismissOverlay, DismissWindow,
-    ExpandNeighbors, ExpandRow, ExpandTreeNode, FilterAuto, FilterName, FilterSemantic,
-    FilterType, FitGraphToView, GoToDocsTab, GoToRefsTab,
-    CycleTheme, CycleThemeBack,
-    GoToSourceTab, HideApp, JumpToSection1, JumpToSection2, JumpToSection3,
-    MoveSelectionDown, MoveSelectionUp,
-    NextSection, OpenAccount, OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenProject,
-    OpenSettings, OpenVersionPicker, OpenWithoutClosing, Paste, PinGraphNode,
-    PrevSection, Quit, Redo, SelectAll, ShowWindow, SwitchFocusTreeTable, SyncSelected,
-    ToggleBottomDock, ToggleLeftDock, ToggleShortcutsOverlay, Undo,
+    ActivateTab7, ActivateTab8, ActivateTab9, CloseTab, CollapseTreeNode, ConfirmOverlay, Copy,
+    CopySymbolUri, Cut, CycleTheme, CycleThemeBack, DismissOverlay, DismissWindow,
+    DiffAgainstPrevious, ExpandNeighbors, ExpandRow, ExpandTreeNode, FilterAuto, FilterName,
+    FilterSemantic, FilterType, FitGraphToView, GoToDocsTab, GoToRefsTab, GoToSourceTab, HideApp,
+    JumpToSection1,
+    JumpToSection2, JumpToSection3, MoveSelectionDown, MoveSelectionUp, NextSection, OpenAccount,
+    OpenCommandPalette, OpenInBackgroundTab, OpenOmniSearch, OpenProject, OpenSettings,
+    OpenVersionPicker, OpenWithoutClosing, Paste, PinGraphNode, PrevSection, Quit, Redo, SelectAll,
+    ShowWindow, SwitchFocusTreeTable, SyncSelected, ToggleBottomDock, ToggleLeftDock,
+    ToggleShortcutsOverlay, Undo,
 };
 
 // ── KeymapEntry ───────────────────────────────────────────────────────────────
@@ -759,14 +758,14 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         keystroke: "e",
         linux_keystroke: None,
         context: "GraphView",
-        description: "Expand neighbors of selected node",
+        description: "Expand graph neighbors",
         binding: || KeyBinding::new("e", ExpandNeighbors, Some("GraphView")),
     },
     KeymapEntry {
         keystroke: "p",
         linux_keystroke: None,
         context: "GraphView",
-        description: "Pin / unpin selected graph node",
+        description: "Pin graph node",
         binding: || KeyBinding::new("p", PinGraphNode, Some("GraphView")),
     },
     // ── ProjectPanel ──────────────────────────────────────────────────────────
@@ -789,14 +788,14 @@ pub static KEYMAP_REGISTRY: &[KeymapEntry] = &[
         keystroke: "left",
         linux_keystroke: None,
         context: "PackageBrowser",
-        description: "Collapse tree node",
+        description: "Collapse package tree node",
         binding: || KeyBinding::new("left", CollapseTreeNode, Some("PackageBrowser")),
     },
     KeymapEntry {
         keystroke: "right",
         linux_keystroke: None,
         context: "PackageBrowser",
-        description: "Expand tree node",
+        description: "Expand package tree node",
         binding: || KeyBinding::new("right", ExpandTreeNode, Some("PackageBrowser")),
     },
     KeymapEntry {
@@ -868,9 +867,7 @@ mod tests {
         ];
 
         for kw in keywords {
-            let found = descriptions
-                .iter()
-                .any(|d| d.to_lowercase().contains(kw));
+            let found = descriptions.iter().any(|d| d.to_lowercase().contains(kw));
             assert!(
                 found,
                 "No keymap entry found with description containing {:?}",
@@ -970,23 +967,14 @@ mod tests {
             "Shortcuts",
             "CommandPalette",
             "ProjectPanel",
+            "GraphView",
+            "PackageBrowser",
         ];
-
-        // Contexts whose owning view has not been authored yet, so their
-        // bindings are inert today exactly like `"DebugMode"` was.
-        //
-        // This list is a *disclosure*, not an exemption: every entry in it is a
-        // key the `?` sheet currently teaches and the palette currently offers
-        // that does nothing when pressed. It shrinks when the view lands
-        // (`views::graph`, `views::package_browser`) or when the bindings are
-        // removed the way `f12` and `shift-l` were. It must never grow: a new
-        // binding for a view that does not exist is the same bug again.
-        const PENDING_VIEWS: &[&str] = &["GraphView", "PackageBrowser"];
 
         for entry in KEYMAP_REGISTRY.iter() {
             // `!Foo` is a negation: it matches whenever `Foo` is *absent*, so
             // it needs no declaring element to be reachable.
-            if entry.context.starts_with('!') || PENDING_VIEWS.contains(&entry.context) {
+            if entry.context.starts_with('!') {
                 continue;
             }
             assert!(
@@ -997,6 +985,18 @@ mod tests {
                  remove the binding.",
                 entry.keystroke,
                 entry.context
+            );
+        }
+    }
+
+    /// Graph and package actions are discoverable only because their views
+    /// declare the matching focused contexts.
+    #[test]
+    fn navigable_view_bindings_are_discoverable() {
+        for context in ["GraphView", "PackageBrowser"] {
+            assert!(
+                entries_for_context(context).next().is_some(),
+                "{context} has a real view but no discoverable bindings"
             );
         }
     }

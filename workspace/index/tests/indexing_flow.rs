@@ -11,10 +11,10 @@ mod server_common;
 
 use std::sync::Arc;
 
-use index::server::coordination::indexing::Indexer;
-use index::server::registry::coordination::{OutboxSeq, SinkKind};
 use heart::ResolutionState;
 use index::ecosystem::PackageNameExt as _;
+use index::server::coordination::indexing::Indexer;
+use index::server::registry::coordination::{OutboxSeq, SinkKind};
 
 /// The tiny, dependency-free fixture crate one job indexes.
 const FIXTURE_NAME: &str = "either";
@@ -26,9 +26,8 @@ const FIXTURE_VERSION: &str = "1.15.0";
 ///   `Stored { hash }` — the compile phase's terminal proof.
 #[tokio::test]
 async fn indexing_runs_the_compiler() {
-    let Some((server, _data)) = server_common::assembled_server("indexing_runs_the_compiler").await else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("indexing_runs_the_compiler").await;
     let (package, indexer) = ensured_job(&server).await;
 
     let snapshot = indexer
@@ -54,11 +53,8 @@ async fn indexing_runs_the_compiler() {
 ///   sections) is produced and persisted to the object store.
 #[tokio::test]
 async fn indexing_generates_blob_information() {
-    let Some((server, _data)) =
-        server_common::assembled_server("indexing_generates_blob_information").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("indexing_generates_blob_information").await;
     let (package, indexer) = ensured_job(&server).await;
     let snapshot = indexer
         .run_indexing_job(package)
@@ -84,11 +80,10 @@ async fn indexing_generates_blob_information() {
 ///   watermark, never receives a direct push.
 #[tokio::test]
 async fn indexing_updates_catalog_and_package_index_polls() {
-    let Some((server, _data)) =
-        server_common::assembled_server("indexing_updates_catalog_and_package_index_polls").await
-    else {
-        return;
-    };
+    let (server, _data) = server_common::required_assembled_server(
+        "indexing_updates_catalog_and_package_index_polls",
+    )
+    .await;
     let (package, indexer) = ensured_job(&server).await;
     indexer
         .run_indexing_job(package)
@@ -118,10 +113,8 @@ async fn indexing_updates_catalog_and_package_index_polls() {
 ///   derived sink — parsed once, fanned out by the pollers.
 #[tokio::test]
 async fn one_parse_fans_out_to_all_stores() {
-    let Some((server, _data)) = server_common::assembled_server("one_parse_fans_out_to_all_stores").await
-    else {
-        return;
-    };
+    let (server, _data) =
+        server_common::required_assembled_server("one_parse_fans_out_to_all_stores").await;
     let (package, indexer) = ensured_job(&server).await;
     indexer
         .run_indexing_job(package)
@@ -153,8 +146,11 @@ async fn ensured_job(
 ) -> (heart::PackageId, Indexer<server_common::TestModel>) {
     let coordinates = index::server::registry::package::Coordinates {
         origin: heart::RegistryOrigin::CratesIo,
-        name: index::server::registry::package::PackageName::new(heart::Language::Rust, FIXTURE_NAME)
-            .expect("fixture names are valid"),
+        name: index::server::registry::package::PackageName::new(
+            heart::Language::Rust,
+            FIXTURE_NAME,
+        )
+        .expect("fixture names are valid"),
         version: heart::PackageVersion::try_from((heart::Language::Rust, FIXTURE_VERSION))
             .expect("fixture versions are valid"),
     };
