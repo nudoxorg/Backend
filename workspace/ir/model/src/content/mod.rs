@@ -469,10 +469,50 @@ pub fn entry_content_hash(entry: &Entry) -> ContentBlake3 {
 /// Same as [`entry_content_hash`]: a `debug_assert!` fires on an unlowered
 /// `Ref::Local`, since both hashes share the same `Kind`/`Ref` encoders.
 pub fn entry_storage_hash(entry: &Entry) -> ContentBlake3 {
-    let mut buf = Vec::new();
+    ContentBlake3::from_raw(*blake3::hash(&entry_storage_payload(entry)).as_bytes())
+}
+
+/// The exact byte string [`entry_storage_hash`] digests — and therefore the
+/// bytes that should actually be **stored** for this entry.
+///
+/// # Why this is public, and why it is the payload
+///
+/// `entry_storage_hash` names a content-addressed object; that object's bytes
+/// have to be *something*, and the only choice that keeps a content-addressed
+/// store honest is the hash's own preimage. Then
+/// `blake3(entry_storage_payload(e)) == entry_storage_hash(e)` by construction,
+/// so an ordinary CAS integrity check — "do these bytes hash to the key they
+/// were filed under?" — just works, with no per-payload special case and no
+/// storage-layer knowledge of how IR is encoded.
+///
+/// The domain tag is folded into the returned bytes rather than prepended by
+/// [`ContentBlake3::from_domain`], which is exactly equivalent
+/// (`hash_domain(domain, preimage) = blake3(domain ‖ preimage)`,
+/// `change/hash.rs:14-19`) while leaving the digest a plain, unqualified
+/// `blake3` of the stored bytes.
+///
+/// # The error class this closes
+///
+/// P3's first implementation stored a *different* encoding (a full serde
+/// `Entry`, position included) under this hash. Because the hash deliberately
+/// excludes `sym.source`/`sym.span` (task #17 — including them inflated
+/// apparent churn 58× on a real package pair), a declaration that merely
+/// **moved** produced the same key with different bytes. The CAS integrity
+/// check correctly refused it, and the first response was to route those
+/// sections through an unverified namespace — trading a real content-addressing
+/// violation for a silent one, and blinding `verify_blobs`' corruption audit
+/// for the newest section class in the system.
+///
+/// Storing the preimage removes the contradiction at its source: position is
+/// simply not in these bytes. Location is generation-scoped and lives in
+/// `GenerationRoot`'s `RootEntry` (`source`/`span`), which is rewritten every
+/// generation anyway — the payload dedups, the root carries where each entry
+/// was that time. See `ir/model/tests/storage_hash.rs`.
+pub fn entry_storage_payload(entry: &Entry) -> Vec<u8> {
+    let mut buf = Vec::from(ENTRY_STORAGE_DOMAIN.as_bytes());
     encode_symbol(&mut buf, entry.sym(), SymbolPosition::Excluded);
     encode_entry_inner(&mut buf, entry.kind());
-    ContentBlake3::from_domain(ENTRY_STORAGE_DOMAIN, &buf)
+    buf
 }
 
 // ---------------------------------------------------------------------------

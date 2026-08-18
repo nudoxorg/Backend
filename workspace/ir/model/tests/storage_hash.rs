@@ -52,7 +52,7 @@
 
 use std::path::PathBuf;
 
-use nudox_ir::content::{entry_content_hash, entry_storage_hash};
+use nudox_ir::content::{entry_content_hash, entry_storage_hash, entry_storage_payload};
 use nudox_ir::entry::{Entry, Node, Symbol, Visibility};
 use nudox_ir::index::RawRef;
 use nudox_ir::kind::Kind;
@@ -226,6 +226,49 @@ fn the_storage_hash_is_deterministic() {
     assert_eq!(
         entry_storage_hash(&entry),
         entry_storage_hash(&entry)
+    );
+}
+
+/// THE storage invariant: the hash is a plain `blake3` of the bytes that get
+/// stored. This is what lets an ordinary content-addressed store verify these
+/// objects with no special case — "do these bytes hash to the key they were
+/// filed under?" — and it is what makes the payload position-free, since the
+/// preimage is.
+///
+/// P3's first attempt stored a different encoding (a full serde `Entry`, span
+/// included) under this key, so a *moved* declaration produced the same key
+/// with different bytes. The CAS refused it, correctly, and the fix attempted
+/// was an unverified namespace. Pinning the relationship here means that
+/// contradiction cannot be reintroduced silently.
+#[test]
+fn the_storage_hash_is_the_plain_digest_of_the_stored_payload() {
+    let entry = at_position("src/lib.rs", 42, 99);
+    assert_eq!(
+        entry_storage_hash(&entry).as_bytes(),
+        blake3::hash(&entry_storage_payload(&entry)).as_bytes(),
+        "the stored payload must be exactly the hash's preimage"
+    );
+}
+
+/// …and therefore the payload itself is position-free: a declaration that only
+/// moved must produce byte-identical storage bytes, or one key would name two
+/// different objects.
+#[test]
+fn the_stored_payload_ignores_where_a_declaration_sits() {
+    let early = at_position("src/lib.rs", 100, 200);
+    let moved = at_position("src/lib.rs", 900, 1000);
+    let elsewhere = at_position("src/moved/elsewhere.rs", 100, 200);
+
+    assert_eq!(entry_storage_payload(&early), entry_storage_payload(&moved));
+    assert_eq!(
+        entry_storage_payload(&early),
+        entry_storage_payload(&elsewhere)
+    );
+
+    // …but still separates genuinely different content.
+    assert_ne!(
+        entry_storage_payload(&early),
+        entry_storage_payload(&with_name("beta"))
     );
 }
 
