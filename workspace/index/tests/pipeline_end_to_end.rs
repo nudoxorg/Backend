@@ -12,10 +12,12 @@ mod server_common;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use heart::{PackageId, ResolutionState, Scored, Symbol};
+use heart::surface::SymbolHit;
+use heart::{EntryUri, Name, PackageId, ResolutionState, Scored, Symbol};
 use index::ecosystem::PackageNameExt as _;
 use index::server::registry::coordination::{OutboxSeq, SinkKind};
 use index::server::{BackgroundWorkers, Server};
+use smol_str::SmolStr;
 
 /// The tiny, dependency-free fixture crate the pipeline chews through.
 const FIXTURE_NAME: &str = "either";
@@ -73,7 +75,8 @@ async fn tracked_package_is_semantically_searchable() {
     let found = probe(PIPELINE_DEADLINE, || async {
         let cap = server_common::read_cap(&server);
         let answer = server.search_symbols(&cap, &request).await.ok()?;
-        let hits: Vec<Scored<Symbol>> = server_common::collect_symbol_answer(answer).await.ok()?;
+        let hits: Vec<Scored<SymbolHit>> =
+            server_common::collect_symbol_answer(answer).await.ok()?;
         hits.into_iter().find(|hit| hit.value.package == package)
     })
     .await;
@@ -198,13 +201,13 @@ async fn deferred_external_symbol_resolves_later() {
         .search_symbols(&read_cap, &request)
         .await
         .expect("an empty corpus answers cleanly");
-    let before: Vec<Scored<Symbol>> = server_common::collect_symbol_answer(answer)
+    let before: Vec<Scored<SymbolHit>> = server_common::collect_symbol_answer(answer)
         .await
         .expect("the stream yields");
     assert!(
         before
             .iter()
-            .all(|hit| hit.value.name.plain != FIXTURE_SYMBOL),
+            .all(|hit| hit.value.display_name != FIXTURE_SYMBOL),
         "an untracked library's symbol must not resolve yet"
     );
 
@@ -274,6 +277,15 @@ async fn await_stored(server: &Arc<Server<server_common::TestModel>>, package: P
 }
 
 /// Wait until a text search for `name` yields a hit from `package`.
+///
+/// Returns a hydrated `Scored<Symbol>`, not the raw `Scored<SymbolHit>`
+/// `search_symbols` now answers with, because this helper's one caller that
+/// needs identity (`tracked_package_is_graph_expandable`) feeds the result
+/// straight into `Server::expand`, whose signature is `&Scored<Symbol>` —
+/// `expand` sits outside the `Symbols` surface entirely (a plain JSON
+/// `Page<Symbol>` endpoint, not `Answer<Symbols>`/`Frame<Symbols>`), so it was
+/// never part of this ripple and was not changed. See [`hydrate_symbol`] for
+/// how the id is re-derived.
 async fn await_text_hit(
     server: &Arc<Server<server_common::TestModel>>,
     name: &str,
@@ -283,11 +295,38 @@ async fn await_text_hit(
     probe(PIPELINE_DEADLINE, || async {
         let cap = server_common::read_cap(server);
         let answer = server.search_symbols(&cap, &request).await.ok()?;
-        let hits: Vec<Scored<Symbol>> = server_common::collect_symbol_answer(answer).await.ok()?;
-        hits.into_iter().find(|hit| hit.value.package == package)
+        let hits: Vec<Scored<SymbolHit>> =
+            server_common::collect_symbol_answer(answer).await.ok()?;
+        hits.into_iter()
+            .find(|hit| hit.value.package == package)
+            .map(|hit| hit.map(|symbol_hit| hydrate_symbol(&symbol_hit)))
     })
     .await
     .expect("the text poller materializes the symbol within the deadline")
+}
+
+/// Re-derive the full `heart::Symbol` (durable id included) a `SymbolHit`
+/// projects away, using the same `EntryUri::symbol_id(instance_token)`
+/// derivation `server_common::rust_symbol` uses to mint fixture ids the real
+/// way. This is legitimate re-derivation, not fabrication: `package` and the
+/// fully-qualified `path` are exactly the two facts `SymbolHit` carries and
+/// `EntryUri::symbol_id` needs, and `server_common::TEST_INSTANCE` is the
+/// same instance token every other fixture in this suite mints against.
+fn hydrate_symbol(hit: &SymbolHit) -> Symbol {
+    let uri = EntryUri {
+        package: hit.package,
+        path: hit.path.split("::").map(SmolStr::new).collect(),
+    };
+    Symbol {
+        id: uri.symbol_id(server_common::TEST_INSTANCE),
+        package: hit.package,
+        ecosystem: hit.ecosystem,
+        name: Name {
+            plain: hit.display_name.clone(),
+            fully_qualified: hit.path.clone(),
+        },
+        kind: hit.kind,
+    }
 }
 
 /// A literal search request for `query`.

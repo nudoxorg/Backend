@@ -114,7 +114,7 @@ use std::sync::Arc;
 use ir::change::{IntroId, PackageLineageId, StableRef};
 use ir::view::IrView;
 
-use registry::graph::ReversePositionIndex;
+use registry::graph::{ReverseIndexKey, ReversePositionIndex, SCHEMA_VERSION};
 
 /// The real usage-query backend: answers `Target::Usages` from a loaded IR view
 /// and its disposable [`ReversePositionIndex`] (INDEX-PLAN §5.5).
@@ -326,6 +326,100 @@ fn paginate(uses: Vec<Usage>, page: &PageSpecification) -> Page<Usage> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// build_usage_scope — the compile-pipeline seam.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a loaded usage-query scope from occurrence facts: an [`IrView`] bound
+/// to `package` (with `occurrences` populated) plus its
+/// [`ReversePositionIndex`], ready to hand to [`SharedUsageBackend::store`].
+///
+/// Both compile paths call this after they finish producing IR for one
+/// package:
+///
+/// - the in-process (macOS) path
+///   ([`server::coordination::compile_inprocess::compile_in_process`]) passes
+///   the producer's real sealed `table` plus its `occurrences` field (computed
+///   by every frontend, previously never read);
+/// - the cage (Linux) path
+///   ([`server::coordination::indexing::ir_stream::ingest_ir_bytes`]) has no
+///   sealed table to hand back (the wire stream is decoded, not lowered), so
+///   it passes an empty `table` alongside occurrences projected from the
+///   decoded `Bodies` frames — sufficient because
+///   [`ReverseIndexUsageBackend::usages`] and
+///   [`ReversePositionIndex::build`]'s occurrence pass only ever read
+///   `IrView::package`/`all_occurrences`, never the entry table, to answer
+///   `Target::Usages` (the table only feeds `ReversePositionIndex`'s separate
+///   type-ref pass, which is not exercised by a usages query).
+///
+/// `channel_tip` is this snapshot's generation digest, used only as the
+/// disposable [`ReverseIndexKey`] cache key (never persisted or synced).
+#[must_use]
+pub fn build_usage_scope(
+    package: PackageLineageId,
+    table: ir::apply::PristineIntroTable,
+    occurrences: Vec<(IntroId, ir::vocab::Occurrence)>,
+    channel_tip: [u8; 32],
+) -> (Arc<IrView>, Arc<ReversePositionIndex>) {
+    let mut view = IrView::with_package(package, table);
+    for (owner, occurrence) in occurrences {
+        view.add_occurrence(owner, occurrence);
+    }
+    let key = ReverseIndexKey {
+        channel_tip,
+        schema_version: SCHEMA_VERSION,
+    };
+    let reverse = ReversePositionIndex::build(&view, key);
+    (Arc::new(view), Arc::new(reverse))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SharedUsageBackend — interior-mutable front for the compile pipeline.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Interior-mutable front for [`ReverseIndexUsageBackend`], following the same
+/// precedent as `PackageSearchIndex`
+/// (`workspace/index/server/search/registry.rs`): a `tokio::sync::Mutex`
+/// around the single mutable backend, held as an `Arc` on `SourceStores` and
+/// mutated in place whenever this source's compile pipeline materializes (or
+/// re-materializes) a package's IR.
+///
+/// Queries take the lock only to read the currently-loaded scope; the compile
+/// pipeline takes it once, briefly, to install a freshly built one via
+/// [`Self::store`]. There is no periodic poller here (unlike the package/text
+/// indexes) — the mutation is driven directly by the compile step that just
+/// produced the scope, not by a catalog-outbox tick.
+pub struct SharedUsageBackend {
+    inner: tokio::sync::Mutex<ReverseIndexUsageBackend>,
+}
+
+impl SharedUsageBackend {
+    /// A backend with no scope loaded yet. Every query answers
+    /// [`Error::IndexUnavailable`] until [`Self::store`] installs one.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            inner: tokio::sync::Mutex::new(ReverseIndexUsageBackend::empty()),
+        }
+    }
+
+    /// Install a freshly compiled package's scope, replacing whatever was
+    /// loaded before (single scope, last write wins — matches
+    /// [`ReverseIndexUsageBackend`]'s existing one-scope-at-a-time contract).
+    pub async fn store(&self, view: Arc<IrView>, reverse: Arc<ReversePositionIndex>) {
+        *self.inner.lock().await = ReverseIndexUsageBackend::loaded(view, reverse);
+    }
+
+    /// Answer one usages query against whatever scope is currently loaded.
+    pub async fn usages(
+        &self,
+        symbol: &StableReference,
+        page: &PageSpecification,
+    ) -> Result<Page<Usage>, Error> {
+        self.inner.lock().await.usages(symbol, page)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -499,5 +593,111 @@ mod tests {
             first.items[0].value.within, second.items[0].value.within,
             "pages must not overlap"
         );
+    }
+
+    // ── build_usage_scope + SharedUsageBackend: the compile-pipeline seam ──
+
+    /// `build_usage_scope` wires occurrences into an `IrView` + reverse index
+    /// that answer real content: a caller that calls a callee shows up as a
+    /// usage owned by the caller, with the recorded kind and span intact.
+    #[test]
+    fn build_usage_scope_yields_real_caller_content() {
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("callee"), None);
+        table.insert_live(intro(2), module("caller"), None);
+        let target = StableRef::new(pkg(), intro(1));
+        let occurrences = vec![(
+            intro(2),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::FunctionCall,
+                Confidence::Index,
+                RelSpan::new(3, 7),
+            ),
+        )];
+
+        let (view, reverse) = build_usage_scope(pkg(), table, occurrences, [0u8; 32]);
+        let backend = ReverseIndexUsageBackend::loaded(view, reverse);
+
+        let wire = stable_ref_to_wire(&target);
+        let page = backend
+            .usages(&wire, &PageSpecification::default())
+            .expect("loaded scope answers");
+        assert_eq!(page.items.len(), 1, "one caller uses the callee");
+        let usage = &page.items[0].value;
+        assert_eq!(
+            usage.within,
+            stable_ref_to_wire(&StableRef::new(pkg(), intro(2))),
+            "usage owner must be the caller"
+        );
+        assert_eq!(usage.kind, "call");
+        assert_eq!(usage.relative_span, (3, 7));
+    }
+
+    /// `SharedUsageBackend`: empty until `store` is called (honest
+    /// unavailable, not a fake empty page); after `store`, the real content
+    /// flows through; an unrelated in-scope symbol still answers a real,
+    /// populated-empty page (not unavailable); a different package remains
+    /// unavailable.
+    #[tokio::test]
+    async fn shared_usage_backend_store_then_query_round_trips_content() {
+        let shared = SharedUsageBackend::empty();
+        let mut table = PristineIntroTable::new();
+        table.insert_live(intro(1), module("callee"), None);
+        table.insert_live(intro(2), module("caller"), None);
+        let target = StableRef::new(pkg(), intro(1));
+        let wire = stable_ref_to_wire(&target);
+
+        // Unloaded: the honest unavailable, not a fake empty page.
+        let err = shared
+            .usages(&wire, &PageSpecification::default())
+            .await
+            .expect_err("no scope stored yet");
+        assert_eq!(err, Error::IndexUnavailable);
+
+        let occurrences = vec![(
+            intro(2),
+            Occurrence::new(
+                target.clone(),
+                ReferenceKind::MethodCall,
+                Confidence::Oracle,
+                RelSpan::new(10, 14),
+            ),
+        )];
+        let (view, reverse) = build_usage_scope(pkg(), table, occurrences, [7u8; 32]);
+        shared.store(view, reverse).await;
+
+        let page = shared
+            .usages(&wire, &PageSpecification::default())
+            .await
+            .expect("scope now loaded");
+        assert_eq!(page.items.len(), 1);
+        assert_eq!(page.items[0].value.kind, "mcall");
+        assert_eq!(page.items[0].value.relative_span, (10, 14));
+        assert_eq!(
+            page.items[0].value.within,
+            stable_ref_to_wire(&StableRef::new(pkg(), intro(2))),
+            "usage owner must be the caller"
+        );
+
+        // A well-formed in-scope symbol with no uses is a real, populated
+        // empty page — 200, never IndexUnavailable.
+        let orphan = stable_ref_to_wire(&StableRef::new(pkg(), intro(9)));
+        let empty_page = shared
+            .usages(&orphan, &PageSpecification::default())
+            .await
+            .expect("in-scope symbol with no uses answers");
+        assert!(empty_page.items.is_empty());
+
+        // A different package is still unavailable — this scope holds no
+        // index for it.
+        let other_pkg =
+            PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("elsewhere"));
+        let elsewhere = stable_ref_to_wire(&StableRef::new(other_pkg, intro(1)));
+        let err = shared
+            .usages(&elsewhere, &PageSpecification::default())
+            .await
+            .expect_err("different package scope is unavailable");
+        assert_eq!(err, Error::IndexUnavailable);
     }
 }

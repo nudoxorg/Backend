@@ -45,6 +45,7 @@ pub struct BlobBuilder {
     digest: ContentHasher,
     ir_ref: Option<ContentHash>,
     references_ref: Option<ContentHash>,
+    root_ref: Option<ContentHash>,
 }
 
 /// Hand-written: `ContentHasher` has no `Debug`, and dumping pending bytes
@@ -70,6 +71,7 @@ impl BlobBuilder {
             digest: ContentHash::builder(),
             ir_ref: None,
             references_ref: None,
+            root_ref: None,
         }
     }
 
@@ -124,6 +126,59 @@ impl BlobBuilder {
         Ok(self)
     }
 
+    /// Attach a [`ir::generation::GenerationRoot`] plus the entry payloads it
+    /// names, **alongside** (not instead of) the legacy `ir_ref` section — P3
+    /// of `docs/IR-STORAGE-PLAN.md` (dual-write). `// runs on spawn_blocking`
+    /// (encoding the root + hashing every payload).
+    ///
+    /// The root itself is content-addressed the same way [`Self::set_ir`] and
+    /// [`Self::set_references`] address their own sections: `self.address`
+    /// hashes `root.encode()` and queues the `cas/` write, and that hash
+    /// becomes `root_ref`.
+    ///
+    /// Each entry payload is **keyed by the caller-supplied** `ContentBlake3`
+    /// — the same `entry_storage_hash` the root's `RootEntry::content` names —
+    /// rather than by a freshly computed hash of its bytes, so the root's
+    /// addressing and the object's storage key are the same value (the whole
+    /// point of the root being a fault-in manifest, plan §2.3). Every such
+    /// section still lands in the **same, single, verified `cas/{hash}`
+    /// namespace** as every other section: `entry_storage_hash` is
+    /// domain-separated over a narrower, position-free preimage than the
+    /// stored bytes (it excludes `sym.source`/`sym.span` — see
+    /// `ir::generation`'s module doc, "Moved is not changed"), so
+    /// `crate::cas::Store` cannot verify these sections by recomputing
+    /// `ContentHash::of_bytes` the way it does for `Content`-addressed ones —
+    /// it instead decodes the payload back into an `Entry` and re-derives
+    /// `entry_storage_hash` from that, the same way the addressing itself
+    /// works. See `Store::verify_section_integrity` (`cas.rs`). This is why
+    /// `payloads` is contractually **JSON-encoded semantic `Entry` values**
+    /// (plan §5's "semantic, not wire" payload), not an arbitrary byte string:
+    /// the verifier has to be able to decode it back.
+    ///
+    /// `ContentBlake3` (the `ir` crate's payload-identity hash) and
+    /// `ContentHash` (this crate's `cas/` addressing hash) are distinct
+    /// newtypes over the same 32-byte BLAKE3 digest space — never implicitly
+    /// interchangeable — so each supplied `ContentBlake3` is converted
+    /// explicitly via its raw bytes.
+    pub fn set_generation_root(
+        &mut self,
+        root: &ir::generation::GenerationRoot,
+        payloads: impl IntoIterator<Item = (ir::change::ContentBlake3, bytes::Bytes)>,
+    ) -> Result<&mut Self, BlobError> {
+        if self.root_ref.is_some() {
+            return Err(BlobError::GenerationRootAttachedTwice);
+        }
+        self.root_ref = Some(self.address(bytes::Bytes::from(root.encode())));
+        for (content, bytes) in payloads {
+            // Explicit conversion: `ContentBlake3` -> `ContentHash`, same 32
+            // raw bytes, distinct types (see doc comment above).
+            let hash = ContentHash::from_bytes(*content.as_bytes());
+            self.digest.update(hash.as_bytes());
+            self.pending.push(PendingSection { hash, bytes });
+        }
+        Ok(self)
+    }
+
     /// Finalize into a validated manifest plus the outstanding `cas/` writes.
     ///
     /// The [`Generation`] is the finalized canonical digest; the manifest's
@@ -144,6 +199,7 @@ impl BlobBuilder {
             files,
             ir_ref,
             references_ref,
+            root_ref: self.root_ref,
             toolchain: self.toolchain,
         };
         manifest.validate()?;

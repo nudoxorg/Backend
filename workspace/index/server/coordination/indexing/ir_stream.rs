@@ -71,7 +71,7 @@ use crate::server::registry::blob::creation::BlobBuilder;
 /// use it, but must not report the job as a clean `Stored` success when
 /// `degraded_reason` is `Some`.
 pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrIngestOutcome {
-    use ir::change::IntroId;
+    use ir::change::{IntroId, PackageLineageId};
     use ir_vcs::protocol::{BodyWire, Received, StreamReceiver};
 
     let mut rx = StreamReceiver::new(std::io::Cursor::new(ir_bytes));
@@ -83,6 +83,8 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
         attach_empty_ir_sections(builder);
         return IrIngestOutcome {
             identifiers: Vec::new(),
+            occurrences: Vec::new(),
+            owning_package: None,
             degraded_reason: Some(format!("no Hello frame: {err}")),
         };
     }
@@ -97,6 +99,11 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
     // StableRef on the first WireEntry; if no symbols arrive it stays None
     // and all targets default to External (the conservative choice).
     let mut owning_pkg_key: Option<String> = None;
+    // The same owning package, kept typed (not just the display string above)
+    // so the usage-query scope can be bound to the exact `PackageLineageId`
+    // the wire `StableRef`s carry — captured once, from the same first
+    // WireEntry, alongside `owning_pkg_key`.
+    let mut owning_package: Option<PackageLineageId> = None;
     // Bodies frames: accumulated across all batches for post-loop reference
     // extraction (they can arrive interleaved with Symbols).
     let mut bodies: Vec<BodyWire> = Vec::new();
@@ -119,6 +126,7 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
                         let pkg = &entry.stable.package;
                         owning_pkg_key =
                             Some(format!("{}:{}", pkg.ecosystem.as_str(), pkg.name.as_str()));
+                        owning_package = Some(pkg.clone());
                     }
 
                     identifiers.push(entry.payload.symbol.name.clone());
@@ -188,6 +196,8 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
                 attach_empty_ir_sections(builder);
                 return IrIngestOutcome {
                     identifiers,
+                    occurrences: Vec::new(),
+                    owning_package: None,
                     degraded_reason: Some(
                         degraded_reason.unwrap_or_else(|| format!("set_ir failed: {err}")),
                     ),
@@ -199,6 +209,8 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
             attach_empty_ir_sections(builder);
             return IrIngestOutcome {
                 identifiers,
+                occurrences: Vec::new(),
+                owning_package: None,
                 degraded_reason: Some(
                     degraded_reason
                         .unwrap_or_else(|| format!("IR payload serialization failed: {err}")),
@@ -244,8 +256,23 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
         degraded_reason.get_or_insert_with(|| format!("set_references failed: {err}"));
     }
 
+    // ── Derive usage-query occurrences from the same Bodies frames ───────────
+    // The same oracle-resolved facts that feed `ref_set` above also carry
+    // everything `ir::vocab::Occurrence` needs (owner, target, kind,
+    // confidence, span) — `build_occurrences_from_bodies` projects them the
+    // same way `build_reference_set_from_bodies` projects them into
+    // `Reference`s, just without the by-file grouping. The caller (the Linux
+    // compile-phase driver in `indexing/mod.rs`, which holds `stores`) uses
+    // these plus `owning_package` to build this package's `IrView` and load it
+    // into `SourceStores::usage_backend`. The opaque `Occurrences` stream frame
+    // is intentionally not consulted (see the module docs): it has no public
+    // decoder and nothing in this codebase writes one.
+    let occurrences = build_occurrences_from_bodies(&bodies);
+
     IrIngestOutcome {
         identifiers,
+        occurrences,
+        owning_package,
         degraded_reason,
     }
 }
@@ -261,6 +288,17 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
 /// clean `Stored` success in that case.
 pub(super) struct IrIngestOutcome {
     pub(super) identifiers: Vec<String>,
+    /// Usage-query occurrence facts projected from the stream's `Bodies`
+    /// frames (see [`build_occurrences_from_bodies`]) — empty on every
+    /// degraded outcome above, alongside a real (possibly partial) list on a
+    /// clean `Finish`. Consumed by the caller together with
+    /// [`Self::owning_package`] to load this package's usage-query scope.
+    pub(super) occurrences: Vec<(ir::change::IntroId, ir::vocab::Occurrence)>,
+    /// The package lineage captured from the first `WireEntry`'s `StableRef`
+    /// (`None` if the stream broke before any `Symbols` batch arrived, or
+    /// legitimately emitted zero symbols). The caller needs this to bind the
+    /// usage-query `IrView` to the correct package identity.
+    pub(super) owning_package: Option<ir::change::PackageLineageId>,
     pub(super) degraded_reason: Option<String>,
 }
 
@@ -341,6 +379,69 @@ fn build_reference_set_from_bodies(
         .collect();
 
     ReferenceSet { by_file: file_refs }
+}
+
+/// Derive usage-query [`ir::vocab::Occurrence`]s from the accumulated `Bodies`
+/// frames — the same source data [`build_reference_set_from_bodies`] projects
+/// into `Reference`s, projected instead into the `(owner, Occurrence)` shape
+/// [`ir::view::IrView::add_occurrence`] takes.
+///
+/// # Policy (mirrors `build_reference_set_from_bodies` exactly)
+///
+/// - `OracleCall` contributes an occurrence only when it has a resolved
+///   `target` and its confidence is graph-worthy (`>= Confidence::Index`);
+///   its own reported `kind`/`confidence`/`rel_span` are carried through
+///   unchanged — an `Occurrence` has a confidence field to record exactly
+///   this, unlike the blob `Reference` wire shape.
+/// - `OracleTypeMention` has no confidence field of its own (every mention the
+///   oracle records is already a resolved fact, never a partial one), so it is
+///   recorded at `Confidence::Oracle` — the tier that name reflects — with
+///   `ReferenceKind::TypeReference`.
+/// - The owner is `bw.intro` (the entry the body belongs to) in both cases.
+///
+/// Tree-sitter-only call facts (`BodyEmbed::Present(_).treesitter`) carry no
+/// stable cross-package target and are skipped, same as the reference-set
+/// projection.
+fn build_occurrences_from_bodies(
+    bodies: &[ir_vcs::protocol::BodyWire],
+) -> Vec<(ir::change::IntroId, ir::vocab::Occurrence)> {
+    use ir::body::BodyEmbed;
+    use ir::vocab::{Confidence, Occurrence, ReferenceKind};
+
+    let mut occurrences = Vec::new();
+
+    for bw in bodies {
+        let BodyEmbed::Present(facts) = &bw.body else {
+            continue;
+        };
+
+        for call in &facts.oracle.calls {
+            let Some(ref target) = call.target else {
+                continue;
+            };
+            if !call.confidence.is_graph_worthy() {
+                continue;
+            }
+            occurrences.push((
+                bw.intro,
+                Occurrence::new(target.clone(), call.kind, call.confidence, call.rel_span),
+            ));
+        }
+
+        for mention in &facts.oracle.type_mentions {
+            occurrences.push((
+                bw.intro,
+                Occurrence::new(
+                    mention.ty.clone(),
+                    ReferenceKind::TypeReference,
+                    Confidence::Oracle,
+                    mention.rel_span,
+                ),
+            ));
+        }
+    }
+
+    occurrences
 }
 
 /// Map a [`ir::change::StableRef`] to a [`crate::server::registry::blob::RefTarget`].
@@ -551,7 +652,7 @@ mod tests {
     use super::super::identity_toolchain;
     use super::*;
     use ir_vcs::protocol::{
-        FailureKindWire, FrameWriter, IR_STREAM_VERSION, ProducerId, StreamFrame,
+        BodyWire, FailureKindWire, FrameWriter, IR_STREAM_VERSION, ProducerId, StreamFrame,
     };
 
     // ── W1: ingest_ir_bytes must distinguish producer breakage from a
@@ -948,5 +1049,169 @@ mod tests {
             edges.len(),
             "encode/decode must preserve the exact edge count"
         );
+    }
+
+    // ── build_occurrences_from_bodies: the cage-path usage-query projection ──
+    //
+    // The same Bodies-frame oracle facts `build_reference_set_from_bodies`
+    // projects into `Reference`s (for the reference-set blob section) must
+    // also project into `ir::vocab::Occurrence`s (for the usage-query scope
+    // `indexing/mod.rs` loads via `load_usage_scope`). These tests exercise
+    // that second projection directly, in isolation from the stream decode.
+
+    fn occ_pkg() -> ir::change::PackageLineageId {
+        ir::change::PackageLineageId::new(
+            ir::change::EcosystemId::new("cargo"),
+            ir::change::PackageName::new("fixture"),
+        )
+    }
+
+    fn occ_intro(n: u8) -> ir::change::IntroId {
+        ir::change::IntroId::from_raw([n; 32])
+    }
+
+    fn oracle_body(oracle: ir::body::OracleBody) -> ir::body::BodyEmbed {
+        ir::body::BodyEmbed::Present(ir::body::BodyFacts {
+            language: ir::body::Language::Rust,
+            tree: ir::body::TreesitterBody::default(),
+            oracle,
+            merge: ir::body::BodyMergeNote::oracle_only(),
+        })
+    }
+
+    /// A caller's body with a graph-worthy oracle call to a callee target
+    /// projects into exactly one `Occurrence`, owned by the caller, with the
+    /// call's exact kind/confidence/span preserved — the content a `/usages`
+    /// query on the callee must return.
+    #[test]
+    fn caller_calling_callee_projects_one_occurrence_owned_by_caller() {
+        use ir::body::{OracleBody, OracleCall};
+        use ir::change::StableRef;
+        use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+
+        let caller = occ_intro(2);
+        let callee = StableRef::new(occ_pkg(), occ_intro(1));
+
+        let bodies = vec![BodyWire {
+            intro: caller,
+            body: oracle_body(OracleBody {
+                calls: vec![OracleCall {
+                    target: Some(callee.clone()),
+                    kind: ReferenceKind::FunctionCall,
+                    confidence: Confidence::Index,
+                    rel_span: RelSpan::new(4, 9),
+                }],
+                type_mentions: Vec::new(),
+                reads_writes: Vec::new(),
+            }),
+        }];
+
+        let occurrences = build_occurrences_from_bodies(&bodies);
+        assert_eq!(occurrences.len(), 1, "one call, one occurrence");
+        let (owner, occurrence) = &occurrences[0];
+        assert_eq!(*owner, caller, "occurrence must be owned by the caller");
+        assert_eq!(occurrence.target, callee, "target must be the callee");
+        assert_eq!(occurrence.kind, ReferenceKind::FunctionCall);
+        assert_eq!(occurrence.confidence, Confidence::Index);
+        assert_eq!(occurrence.span, RelSpan::new(4, 9));
+    }
+
+    /// A call with no resolved target (tree-sitter name-only fact riding in
+    /// `OracleCall.target: None`) contributes no occurrence — there is no
+    /// stable cross-package identity to key a usages query on.
+    #[test]
+    fn unresolved_call_target_is_skipped() {
+        use ir::body::{OracleBody, OracleCall};
+        use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+
+        let bodies = vec![BodyWire {
+            intro: occ_intro(2),
+            body: oracle_body(OracleBody {
+                calls: vec![OracleCall {
+                    target: None,
+                    kind: ReferenceKind::FunctionCall,
+                    confidence: Confidence::Oracle,
+                    rel_span: RelSpan::new(0, 3),
+                }],
+                type_mentions: Vec::new(),
+                reads_writes: Vec::new(),
+            }),
+        }];
+
+        assert!(build_occurrences_from_bodies(&bodies).is_empty());
+    }
+
+    /// A call resolved below the graph floor (`Confidence::Suffix`) is
+    /// excluded — same policy as the reference-set projection, and the same
+    /// floor `ReversePositionIndex::build` enforces on the read side.
+    #[test]
+    fn below_floor_confidence_call_is_skipped() {
+        use ir::body::{OracleBody, OracleCall};
+        use ir::change::StableRef;
+        use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+
+        let bodies = vec![BodyWire {
+            intro: occ_intro(2),
+            body: oracle_body(OracleBody {
+                calls: vec![OracleCall {
+                    target: Some(StableRef::new(occ_pkg(), occ_intro(1))),
+                    kind: ReferenceKind::FunctionCall,
+                    confidence: Confidence::Suffix,
+                    rel_span: RelSpan::new(0, 3),
+                }],
+                type_mentions: Vec::new(),
+                reads_writes: Vec::new(),
+            }),
+        }];
+
+        assert!(
+            build_occurrences_from_bodies(&bodies).is_empty(),
+            "Suffix confidence is below the graph floor and must not project"
+        );
+    }
+
+    /// A type mention (no confidence field of its own — every mention the
+    /// oracle records is already resolved) projects at `Confidence::Oracle`
+    /// with `ReferenceKind::TypeReference`.
+    #[test]
+    fn type_mention_projects_at_oracle_confidence() {
+        use ir::body::{OracleBody, OracleTypeMention};
+        use ir::change::StableRef;
+        use ir::vocab::{Confidence, ReferenceKind, RelSpan};
+
+        let owner = occ_intro(5);
+        let ty = StableRef::new(occ_pkg(), occ_intro(6));
+
+        let bodies = vec![BodyWire {
+            intro: owner,
+            body: oracle_body(OracleBody {
+                calls: Vec::new(),
+                type_mentions: vec![OracleTypeMention {
+                    ty: ty.clone(),
+                    rel_span: RelSpan::new(2, 8),
+                }],
+                reads_writes: Vec::new(),
+            }),
+        }];
+
+        let occurrences = build_occurrences_from_bodies(&bodies);
+        assert_eq!(occurrences.len(), 1);
+        let (owner_out, occurrence) = &occurrences[0];
+        assert_eq!(*owner_out, owner);
+        assert_eq!(occurrence.target, ty);
+        assert_eq!(occurrence.kind, ReferenceKind::TypeReference);
+        assert_eq!(occurrence.confidence, Confidence::Oracle);
+        assert_eq!(occurrence.span, RelSpan::new(2, 8));
+    }
+
+    /// An `Absent` body contributes nothing (mirrors the reference-set
+    /// projection's handling of entries with no body facts at all).
+    #[test]
+    fn absent_body_contributes_no_occurrences() {
+        let bodies = vec![BodyWire {
+            intro: occ_intro(2),
+            body: ir::body::BodyEmbed::Absent,
+        }];
+        assert!(build_occurrences_from_bodies(&bodies).is_empty());
     }
 }

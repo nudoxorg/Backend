@@ -148,6 +148,7 @@ impl Package {
 pub use blob::{BlobBuilder, BlobManifest, FileEntry, ReferenceSet};
 pub use cas::Store;
 pub use error::{BlobError, IngestError, QueueError, RegistryError, StoreError};
+pub use heart::content::ContentHash;
 
 /// The final, globally-syndicated package object handed to the global catalog.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

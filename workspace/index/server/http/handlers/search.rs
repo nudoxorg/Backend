@@ -435,9 +435,8 @@ fn symbol_answer_response(answer: Answer<Symbols>, query_id: uuid::Uuid) -> Resp
 #[cfg(test)]
 mod tests {
     use super::{rank_bucket, symbol_answer_response};
-    use heart::surface::{Gen, Residence, Summary, answer_channel};
-    use heart::symbol::Name;
-    use heart::{Scored, Score, Symbol, SymbolKind};
+    use heart::surface::{Gen, Residence, SymbolHit, Summary, answer_channel};
+    use heart::{Scored, Score, SymbolKind};
     use http_body_util::BodyExt;
 
     #[test]
@@ -449,16 +448,18 @@ mod tests {
         assert_eq!(rank_bucket(21), "beyond");
     }
 
-    fn sample_symbol(tag: u8) -> Symbol {
-        Symbol {
-            id: heart::identity::SymbolId::from_uuid(uuid::Uuid::from_bytes([tag; 16])),
+    /// A bare `SymbolHit` fixture — `signature: None`, matching what this
+    /// handler's own real sources ever produce (see `SymbolHit::from`'s doc
+    /// comment: no federated source here has IR).
+    fn sample_symbol(tag: u8) -> SymbolHit {
+        SymbolHit {
             package: heart::identity::PackageId::from_uuid(uuid::Uuid::from_bytes([tag; 16])),
+            path: format!("crate::sym{tag}").into(),
+            display_name: format!("sym{tag}").into(),
             ecosystem: heart::Language::Rust,
-            name: Name {
-                plain: format!("sym{tag}").into(),
-                fully_qualified: format!("crate::sym{tag}").into(),
-            },
             kind: SymbolKind::Function,
+            signature: None,
+            reference: None,
         }
     }
 

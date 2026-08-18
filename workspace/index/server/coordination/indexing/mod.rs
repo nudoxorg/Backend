@@ -283,6 +283,21 @@ impl<M: EmbeddingModel> Indexer<M> {
                 identifiers = identifiers.len(),
                 "cage compile produced IR"
             );
+
+            // Usage-query scope: load the reverse-position index (see
+            // `load_usage_scope`'s doc comment — this call site is
+            // `#[cfg(target_os = "linux")]`-only, so it is only exercised by a
+            // Linux `cargo test -p index --features server` run; the helper
+            // itself is not cfg-gated, so its body is still type-checked on
+            // every host).
+            load_usage_scope(
+                stores,
+                outcome.owning_package,
+                outcome.occurrences,
+                *builder.provisional_generation().as_bytes(),
+            )
+            .await;
+
             identifiers
         };
 
@@ -754,6 +769,40 @@ where
         }
     }
     Err(last_err.unwrap_or(UpstreamError::RetriesExhausted))
+}
+
+/// Load a compile step's occurrence facts into `stores`'s usage-query backend
+/// (`SourceStores::usage_backend`), if the step captured an owning package.
+///
+/// Shared by the cage path (this module's `#[cfg(target_os = "linux")]`
+/// compile branch, which decodes `owning_package`/`occurrences` from
+/// [`ir_stream::IrIngestOutcome`]) — factored out to a free function, rather
+/// than inlined at that call site, specifically so its body is type-checked
+/// on every host: the call site itself only compiles on Linux, but this
+/// function does not carry that `cfg`, so `cargo check`/`cargo test -p index`
+/// on any host still exercises it.
+///
+/// `owning_package` is `None` only when the stream broke before any `Symbols`
+/// batch arrived, or the producer genuinely emitted zero symbols — in either
+/// case there is no package identity to bind a scope to, so whatever scope
+/// this source had loaded before (if any) is left untouched rather than
+/// cleared.
+async fn load_usage_scope<M: EmbeddingModel>(
+    stores: &SourceStores<M>,
+    owning_package: Option<ir::change::PackageLineageId>,
+    occurrences: Vec<(ir::change::IntroId, ir::vocab::Occurrence)>,
+    channel_tip: [u8; 32],
+) {
+    let Some(owning_package) = owning_package else {
+        return;
+    };
+    let (view, reverse) = crate::search::usages::build_usage_scope(
+        owning_package,
+        ir::apply::PristineIntroTable::new(),
+        occurrences,
+        channel_tip,
+    );
+    stores.usage_backend.store(view, reverse).await;
 }
 
 fn progressing(phase: Phase) -> JobProgress {

@@ -60,6 +60,17 @@ pub struct BlobManifest {
     /// (the CST-free cross-reference data), stored separately in `cas/`.
     pub references_ref: ContentHash,
 
+    /// The content hash of the encoded `ir::generation::GenerationRoot` this
+    /// snapshot produced, stored separately in `cas/` — P3 of
+    /// `docs/IR-STORAGE-PLAN.md` (dual-write, `blob/creation.rs`'s
+    /// `set_generation_root`). Written *alongside* `ir_ref`, not instead of
+    /// it: every existing reader still finds `ir_ref` at the hash it expects,
+    /// and nothing reads the root yet (that is P4). `#[serde(default)]` so a
+    /// manifest written before P3 — which has no `root_ref` at all — still
+    /// decodes; see `a_manifest_without_a_root_still_decodes`.
+    #[serde(default)]
+    pub root_ref: Option<ContentHash>,
+
     /// The toolchain this snapshot was produced against (provenance).
     pub toolchain: Toolchain,
 }
@@ -113,6 +124,16 @@ impl BlobManifest {
     /// This encoding is the input to a generation-stamp hash.  It is *not* the
     /// same as [`BlobManifest::manifest_cas_key`] (Hash ②).  See the module-level
     /// comment above for why they must remain distinct.
+    ///
+    /// # `root_ref` is deliberately excluded (P3)
+    ///
+    /// `root_ref` is derived from content `ir_ref` already covers, so folding
+    /// it in here would add no information while re-stamping every package in
+    /// the corpus for a purely additive change — see
+    /// `adding_a_root_does_not_change_the_generation_stamp`
+    /// (`tests/generation_root_dual_write.rs`). The root joins the identity in
+    /// **P4**, when `ir_ref` retires and the root becomes the thing whose
+    /// change actually means "this snapshot changed".
     pub fn identity_bytes(&self) -> Vec<u8> {
         let push = |bytes: &mut Vec<u8>, part: &[u8]| {
             bytes.extend_from_slice(&(part.len() as u64).to_le_bytes());

@@ -51,7 +51,8 @@ pub use ranking::local_enrichment::{
 pub use ranking::popularity::assign_percentiles;
 pub use structured::StructuredQuery;
 pub use usages::{
-    ReverseIndexUsageBackend, Unsupported, Usage, UsageQueryBackend, UsageQueryError,
+    ReverseIndexUsageBackend, SharedUsageBackend, Unsupported, Usage, UsageQueryBackend,
+    UsageQueryError, build_usage_scope,
 };
 
 /// The keyset a registry-search cursor advances over.

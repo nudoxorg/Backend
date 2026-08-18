@@ -140,6 +140,9 @@ pub enum BlobError {
     #[error("references section attached twice")]
     ReferencesSectionAttachedTwice,
 
+    #[error("generation root attached twice")]
+    GenerationRootAttachedTwice,
+
     #[error("reference span is inverted")]
     InvertedReferenceSpan,
 

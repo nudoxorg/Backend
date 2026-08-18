@@ -174,6 +174,18 @@ pub struct SourceStores<M: EmbeddingModel> {
     /// ([`Outbox`], [`GlobalStore`]) are cheap Arc-backed clones taken at
     /// [`Driver::connect_source`] time.
     text_poller: crate::runtime::text::Poller<CatalogEngine>,
+    /// The reverse-position usage-query backend for `Target::Usages`
+    /// ([`registry::graph::ReversePositionIndex`], INDEX-PLAN §5.5), scoped to
+    /// this source. Starts empty at connect time (no package IR is
+    /// materialized yet, so queries answer the honest `IndexUnavailable`/503,
+    /// never a fake empty page) and is mutated in place — the same
+    /// `tokio::sync::Mutex`-behind-an-`Arc` interior-mutability precedent as
+    /// [`Self::packages`] — by this source's own compile pipeline each time it
+    /// materializes a package's IR: the in-process path
+    /// ([`crate::server::coordination::compile_inprocess::compile_in_process`])
+    /// and the cage path
+    /// ([`crate::server::coordination::indexing::ir_stream::ingest_ir_bytes`]).
+    pub usage_backend: Arc<crate::search::usages::SharedUsageBackend>,
 }
 
 /// The assembled server, generic over the embedding-model brand `M` (lifted into
@@ -219,15 +231,6 @@ pub struct Driver<M: EmbeddingModel> {
     /// `edgepack_artifacts` table). `None` when `config.bakery.enabled` is false — callers
     /// check with [`Self::edgepacks`] before using.
     edgepacks: Option<std::sync::Arc<crate::server::bakery::CatalogEdgepackStore>>,
-
-    /// The reverse-position usage-query backend for `Target::Usages`
-    /// ([`registry::graph::ReversePositionIndex`], INDEX-PLAN §5.5). Constructed
-    /// [`empty`](crate::server::registry::search::ReverseIndexUsageBackend::empty) at
-    /// assembly — no package IR is materialized in-process yet — so usage queries
-    /// return the honest `IndexUnavailable` (`503`) until a scope is loaded. The
-    /// wiring is real: swapping in a loaded backend (an IR view + its reverse
-    /// index) makes the route serve live results with no other change.
-    usage_backend: crate::server::registry::search::ReverseIndexUsageBackend,
 }
 
 /// The metadata keyword-normalization tables, loaded once at assembly and shared
@@ -346,21 +349,7 @@ impl<M: EmbeddingModel> Driver<M> {
             heuristics,
             compiled_store,
             edgepacks,
-            // No package IR is materialized in-process at assembly, so the usage
-            // backend starts empty (queries answer `IndexUnavailable`/503, never a
-            // fake empty). A loaded scope is swapped in when IR is materialized.
-            usage_backend: crate::server::registry::search::ReverseIndexUsageBackend::empty(),
         })
-    }
-
-    /// The reverse-position usage-query backend behind `Target::Usages`.
-    /// Empty until a package's IR view + reverse index is loaded; queries then
-    /// answer the honest `IndexUnavailable` rather than a `501` or a fake empty
-    /// page (INDEX-PLAN §5.5).
-    pub(crate) fn usage_backend(
-        &self,
-    ) -> &crate::server::registry::search::ReverseIndexUsageBackend {
-        &self.usage_backend
     }
 
     /// The keyword-normalization heuristics, if a `metadata_data_dir` was
@@ -503,6 +492,10 @@ impl<M: EmbeddingModel> Driver<M> {
             packages,
             text,
             text_poller,
+            // No package IR is materialized for this source at connect time,
+            // so usage queries start honest (`IndexUnavailable`/503) until the
+            // compile pipeline loads a scope.
+            usage_backend: Arc::new(crate::search::usages::SharedUsageBackend::empty()),
         })
     }
 

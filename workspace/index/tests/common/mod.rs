@@ -55,6 +55,23 @@ pub fn gen_stamp(seed: u8) -> index::ids::GenerationStamp {
     index::ids::GenerationStamp::from_bytes(bytes)
 }
 
+/// A deterministic package id for `BlobBuilder`-driven fixtures. Mirrors
+/// `emit_concurrency.rs`'s private helper of the same name/body — shared here
+/// so other blob-builder integration tests (e.g.
+/// `generation_root_dual_write.rs`) don't each hand-roll their own.
+pub fn sample_package_id() -> heart::identity::PackageId {
+    heart::identity::PackageId::from_uuid(uuid::Uuid::from_bytes([0x5A; 16]))
+}
+
+/// Matches `provisional_toolchain(Language::Rust)` — the fleet-wide identity
+/// anchor the emit path already folds into `BlobManifest::identity_bytes()`.
+pub fn sample_toolchain() -> heart::Toolchain {
+    heart::Toolchain::Rust {
+        compiler: semver::Version::new(1, 88, 0),
+        edition: heart::Edition::E2024,
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage-characteristics harness: the real `result/` corpus + an
 // on-disk (not `:memory:`) catalog engine, so integration tests can take real

@@ -156,6 +156,50 @@ impl Store<Live> {
         Path::from(format!("ptr/{}", package.as_uuid()))
     }
 
+    /// Verify a section's bytes against its declared key, in `cas/{hash}` —
+    /// there is exactly one namespace and every object in it is checked,
+    /// never skipped.
+    ///
+    /// Two addressing schemes currently produce objects in that namespace,
+    /// so this accepts either:
+    ///
+    /// - the ordinary physical scheme, `hash == ContentHash::of_bytes(bytes)`
+    ///   — every section except generation-root entry payloads (files,
+    ///   `ir_ref`, `references_ref`, the `GenerationRoot`'s own encoded
+    ///   bytes); or
+    /// - the entry-payload scheme
+    ///   ([`crate::blob::BlobBuilder::set_generation_root`]): `hash` is
+    ///   `ir::content::entry_storage_hash` of the semantic `Entry` the bytes
+    ///   decode to — a domain-separated hash over a narrower, position-free
+    ///   preimage than the bytes themselves (it excludes `sym.source`/
+    ///   `sym.span`; see `ir::generation`'s module doc, "Moved is not
+    ///   changed"), so it cannot be recomputed by rehashing the bytes
+    ///   directly. It is instead recomputed the *same way the addressing
+    ///   itself works*: decode the payload back into an `Entry` (the wire
+    ///   format `set_generation_root`'s payloads commit to — JSON) and ask
+    ///   `ir` for its storage hash.
+    ///
+    /// A section satisfying neither is genuinely corrupt or mis-addressed:
+    /// the physical-scheme mismatch is what's returned in that case, since
+    /// that is the scheme every pre-P3 section still uses.
+    fn verify_section_integrity(
+        path: &Path,
+        bytes: &bytes::Bytes,
+        hash: ContentHash,
+    ) -> Result<(), StoreError> {
+        if ContentHash::of_bytes(bytes) == hash {
+            return Ok(());
+        }
+        if let Ok(entry) = serde_json::from_slice::<ir::entry::Entry>(bytes) {
+            let recomputed =
+                ContentHash::from_bytes(*ir::content::entry_storage_hash(&entry).as_bytes());
+            if recomputed == hash {
+                return Ok(());
+            }
+        }
+        verify_integrity(path.clone(), bytes, hash)
+    }
+
     /// Idempotently store one content-addressed section. If an object already
     /// exists at `cas/{section.hash}`, this is a no-op (returns `false`);
     /// otherwise it writes and returns `true`. `// object-store put may run on
@@ -164,7 +208,7 @@ impl Store<Live> {
         let path = Self::cas_path(section.hash);
         // Refuse to persist bytes that do not hash to their declared key — a
         // mis-addressed put would poison the CAS for every future reader.
-        verify_integrity(path.clone(), &section.bytes, section.hash)?;
+        Self::verify_section_integrity(&path, &section.bytes, section.hash)?;
         match self.backend.head(&path).await {
             Ok(_) => Ok(false),
             Err(object_store::Error::NotFound { .. }) => {
@@ -178,13 +222,13 @@ impl Store<Live> {
         }
     }
 
-    /// Fetch a content-addressed section's bytes, verifying they hash back to the
-    /// key. `// blake3 verification runs on spawn_blocking`.
+    /// Fetch a content-addressed section's bytes, verifying they hash back to
+    /// the key. `// blake3 verification runs on spawn_blocking`.
     pub async fn get_section(&self, hash: ContentHash) -> Result<bytes::Bytes, StoreError> {
         let path = Self::cas_path(hash);
         let result = self.backend.get(&path).await.map_err(|e| keyed(&path, e))?;
         let bytes = result.bytes().await.map_err(|e| keyed(&path, e))?;
-        verify_integrity(path.clone(), &bytes, hash)?;
+        Self::verify_section_integrity(&path, &bytes, hash)?;
         Ok(bytes)
     }
 

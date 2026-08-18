@@ -43,13 +43,14 @@ use std::num::NonZeroUsize;
 use futures::StreamExt;
 use futures::future::join_all;
 use heart::stream::WireError;
-use heart::surface::{Answer, Gen, Residence, Summary, Symbols, answer_channel, merge_bounded};
+use heart::surface::{
+    Answer, Gen, Residence, Summary, SymbolHit, Symbols, answer_channel, merge_bounded,
+};
 use heart::{Scored, Sourced, Symbol, SymbolId};
 
 use crate::ecosystem::FilterExt as _;
 use crate::server::authz::ReadCap;
 use crate::server::error::{BadRequestReason, InternalError, ServerError};
-use crate::server::registry::search::usages::UsageQueryBackend as _;
 use crate::server::search::planner::Plan;
 use crate::server::search::semantic::SemanticSurface;
 use crate::server::search::{AbstractQuery, Filter, Query, Search, SymbolCursor};
@@ -57,9 +58,11 @@ use crate::server::search::{SearchPlanner, SearchTarget, SymbolStore, merge_over
 use crate::server::{Server, SourceStores};
 use registry::vector::EmbeddingModel;
 
-/// Buffer size for each per-source [`answer_channel`]. `answer_channel`'s
-/// channel is unbounded regardless (emission must never block — see that
-/// function's own doc comment); this only states the expected burst size.
+/// Buffer size for each per-source [`answer_channel`]. A genuine bound now
+/// (`answer_channel`'s own doc comment, contract task 9): `precise_source_
+/// answer`/`semantic_source_answer` forward items via `item_async`, so a
+/// consumer slower than a source parks the forwarding task for room instead
+/// of losing results once this buffer fills.
 const SOURCE_ANSWER_CAPACITY: usize = 256;
 
 /// How many `symbol_by_id` hydrations [`semantic_source_answer`] runs at once.
@@ -134,25 +137,48 @@ impl<M: EmbeddingModel> Server<M> {
         Ok(merge_overlay_first(groups, |symbol| symbol.id, usize::MAX))
     }
 
-    /// Query the usage-query backend for every recorded use of one symbol.
-    /// The caller must hold a [`ReadCap`] and supply a query whose target is
-    /// `Target::Usages { of }`. Delegates to the process-local
-    /// [`ReverseIndexUsageBackend`](crate::server::registry::search::usages::ReverseIndexUsageBackend);
-    /// returns `503` when no index is loaded for the requested scope.
+    /// Query every federated source's usage-query backend for recorded uses of
+    /// one symbol. The caller must hold a [`ReadCap`] and supply a query whose
+    /// target is `Target::Usages { of }`. Delegates to each source's
+    /// process-local, interior-mutable
+    /// [`SharedUsageBackend`](crate::server::registry::search::usages::SharedUsageBackend)
+    /// (`SourceStores::usage_backend`), mutated in place by that source's own
+    /// compile pipeline as packages are indexed.
+    ///
+    /// Sources are tried in overlay-first precedence order; the first source
+    /// that holds a loaded scope for `of`'s package answers (whether the page
+    /// is populated or a real, empty one). Only when *every* source reports
+    /// [`Error::IndexUnavailable`](crate::server::registry::search::usages::Error::IndexUnavailable)
+    /// — no source has this package's IR materialized yet — is the honest
+    /// `503` returned; that is distinct from a fake empty page. Any other
+    /// error (a malformed `of`) is a client-input problem common to every
+    /// source, so it is surfaced immediately rather than masked by continuing
+    /// to the next source.
     pub async fn usages(
         &self,
         _cap: &ReadCap,
         query: &heart::query::Query,
     ) -> Result<heart::Page<crate::server::registry::search::usages::Usage>, ServerError> {
+        use crate::server::registry::search::usages::Error as UsageError;
+
         let heart::query::Target::Usages { ref of } = query.target else {
             return Err(crate::server::error::BadRequestReason::MissingField {
                 field: "target must be Usages { of } for /usages",
             }
             .into());
         };
-        self.usage_backend()
-            .usages(of, &query.page)
-            .map_err(Into::into)
+
+        let mut last_unavailable: Option<UsageError> = None;
+        for sourced in self.federation().in_precedence() {
+            match sourced.value.usage_backend.usages(of, &query.page).await {
+                Ok(page) => return Ok(page),
+                Err(UsageError::IndexUnavailable) => {
+                    last_unavailable = Some(UsageError::IndexUnavailable);
+                }
+                Err(other) => return Err(other.into()),
+            }
+        }
+        Err(last_unavailable.unwrap_or(UsageError::IndexUnavailable).into())
     }
 
     fn planner(&self) -> &crate::server::search::SearchPlanner {
@@ -306,7 +332,23 @@ async fn precise_source_answer<M: EmbeddingModel>(
                 // calling client's point of view (contract §1.3; see
                 // `http::handlers::search`'s own doc comment on why that
                 // retagging belongs there and not here).
-                if tx.item(scored, Residence::Local).is_err() {
+                //
+                // `SymbolHit::from(Symbol)` is the projection onto the wire
+                // item `Symbols::Item` now requires — with `signature: None`,
+                // because this source answers from the text index, not IR
+                // (see `SymbolHit::from`'s own doc comment for why that is a
+                // current source limitation, not a permanent one).
+                // Awaited, not the sync `item`: `precise_source_answer` is
+                // always driven inside `join_all` within an async request
+                // handler with a live reactor (never from a sync `Serve::serve`
+                // caller), so it can park for real backpressure instead of
+                // dropping a search result a slow HTTP client was merely slow
+                // to take.
+                if tx
+                    .item_async(scored.map(SymbolHit::from), Residence::Local)
+                    .await
+                    .is_err()
+                {
                     // The paired `Answer` (or the merge consuming it) was
                     // dropped — nothing left to receive further frames.
                     return answer;
@@ -385,7 +427,18 @@ async fn semantic_source_answer<M: EmbeddingModel>(
         match symbol {
             Ok(Some(symbol)) if filter.admits(&symbol) => {
                 items += 1;
-                if tx.item(Scored::new(symbol, score), Residence::Local).is_err() {
+                // See `precise_source_answer`'s matching comment: this arm
+                // projects onto `SymbolHit` the same way, with the same
+                // `signature: None` (qdrant hydration has no IR either).
+                // See `precise_source_answer`'s matching comment: this is
+                // driven inside `join_all` on the request-handling task's
+                // reactor, so it awaits room instead of dropping a hydrated
+                // hit.
+                if tx
+                    .item_async(Scored::new(SymbolHit::from(symbol), score), Residence::Local)
+                    .await
+                    .is_err()
+                {
                     return answer;
                 }
             }

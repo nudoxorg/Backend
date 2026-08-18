@@ -91,21 +91,26 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     // doclet invocation, …) — run on the blocking pool exactly like the cage
     // path does, so heartbeats/other jobs keep flowing.
     let produce_name = name.clone();
-    let produced =
-        tokio::task::spawn_blocking(move || run_language_producer(language, &src, &lineage))
-            .await
-            .map_err(|join| {
-                ServerError::Internal(InternalError::InProcessCompile {
-                    package: produce_name.clone(),
-                    reason: format!("producer task panicked or was cancelled: {join}"),
-                })
-            })?
-            .map_err(|reason| {
-                ServerError::Internal(InternalError::InProcessCompile {
-                    package: name.clone(),
-                    reason,
-                })
-            })?;
+    // Cloned rather than moved: `lineage` is needed again after the producer
+    // returns, to bind the usage-query scope's `IrView` to the same package
+    // identity the sealed table was produced under.
+    let producer_lineage = lineage.clone();
+    let produced = tokio::task::spawn_blocking(move || {
+        run_language_producer(language, &src, &producer_lineage)
+    })
+    .await
+    .map_err(|join| {
+        ServerError::Internal(InternalError::InProcessCompile {
+            package: produce_name.clone(),
+            reason: format!("producer task panicked or was cancelled: {join}"),
+        })
+    })?
+    .map_err(|reason| {
+        ServerError::Internal(InternalError::InProcessCompile {
+            package: name.clone(),
+            reason,
+        })
+    })?;
 
     // ── Stage real symbol rows into the catalog's serving projection ──────────
     // `provisional_generation()` is a valid, deterministic `ContentHash` over
@@ -235,6 +240,28 @@ pub(crate) async fn compile_in_process<M: EmbeddingModel>(
         identifiers = identifiers.len(),
         reference_edges,
         "in-process compile produced catalog symbols + reference graph"
+    );
+
+    // ── Usage-query scope: load the reverse-position index ──────────────────
+    // `produced.occurrences` is the universal-lowering-sink reference plane
+    // every frontend fills in (see `Produced::occurrences`'s doc comment) —
+    // computed above by `run_language_producer` and, until now, never read.
+    // Build an `IrView` from the sealed table plus those occurrences and swap
+    // it into this source's `SharedUsageBackend` (`SourceStores::usage_backend`)
+    // so `Target::Usages` answers real data for this package rather than the
+    // honest `IndexUnavailable` an unloaded scope reports.
+    let occurrence_count = produced.occurrences.len();
+    let (view, reverse) = crate::search::usages::build_usage_scope(
+        lineage,
+        produced.table,
+        produced.occurrences,
+        *generation.as_bytes(),
+    );
+    stores.usage_backend.store(view, reverse).await;
+    tracing::info!(
+        %package,
+        occurrences = occurrence_count,
+        "in-process compile loaded the usage-query scope"
     );
 
     Ok(identifiers)

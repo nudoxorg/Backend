@@ -114,7 +114,7 @@ pub fn page(limit: u32) -> PageSpecification {
 /// sources already partly satisfied.
 pub async fn collect_symbol_answer(
     answer: heart::surface::Answer<heart::surface::Symbols>,
-) -> Result<Vec<heart::Scored<heart::Symbol>>, heart::stream::WireError> {
+) -> Result<Vec<heart::Scored<heart::surface::SymbolHit>>, heart::stream::WireError> {
     let mut hits = Vec::new();
     while let Some(frame) = answer.recv().await {
         match frame {
