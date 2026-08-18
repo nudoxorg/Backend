@@ -25,7 +25,7 @@ use super::types::{
 /// ALPN for the ir-sync announcement/ack control protocol.
 pub const ALPN: &[u8] = b"nudox/ir-sync/1";
 
-const SYNC_TIMEOUT: Duration = Duration::from_secs(60);
+const SYNC_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Cap on a single announcement/ack control frame. Announcements are tiny; the
 /// change bytes ride the blob channel (bounded by [`MAX_CHANGE_BYTES`]).

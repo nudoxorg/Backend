@@ -143,6 +143,7 @@ pub mod content;
 pub mod continuity;
 pub mod entry;
 pub mod foreign;
+pub mod generation;
 pub mod id;
 pub mod index;
 pub mod intro;

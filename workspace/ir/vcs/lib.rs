@@ -35,6 +35,10 @@ pub mod checkpoint;
 pub mod error;
 pub mod f1;
 pub mod lower;
+/// Raising: nudox-ir semantic types → wire-format types (the inverse of
+/// [`lower`]). See that module's docs for why it is needed and its fidelity
+/// caveats.
+pub mod raise;
 pub mod refs;
 pub mod repo;
 pub mod serialize;
