@@ -69,10 +69,32 @@ let
     export ${envNames.goOracle}="''${${envNames.goOracle}:-$resources/nudox-go-oracle}"
     export ${envNames.javaOracle}="''${${envNames.javaOracle}:-$resources/java-oracle}"
     export ${envNames.csharpOracle}="''${${envNames.csharpOracle}:-$resources/csharp-oracle/oracle.dll}"
-    export ${envNames.dotnet}="''${${envNames.dotnet}:-${dotnet}/bin/dotnet}"
+    # This wrapper text is baked verbatim into the shipped .app -- the
+    # ${dotnet}/${libclang}/${goToolchain}/${jdk} store paths below only
+    # exist on the machine that built this derivation (this flake's own nix
+    # store). A distributable download almost never has them: a user
+    # without Nix has no /nix/store at all, and a user *with* Nix almost
+    # never has this exact content-addressed hash cached. Prefer whatever
+    # the end user's own machine already provides (a system dotnet/java
+    # install, or Xcode's libclang) and treat the store path as a
+    # same-machine-only fallback, not the primary source.
+    export ${envNames.dotnet}="''${${envNames.dotnet}:-$(command -v dotnet 2>/dev/null || echo "${dotnet}/bin/dotnet")}"
     export ${envNames.embedModel}="''${${envNames.embedModel}:-$resources/embed-model}"
-    export ${envNames.libclang}="''${${envNames.libclang}:-${libclang}/lib}"
-    export PATH="${toolchainPath}:$PATH"
+    if [ -z "''${${envNames.libclang}:-}" ]; then
+      if [ -f /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib ]; then
+        export ${envNames.libclang}=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+      elif [ -d /opt/homebrew/opt/llvm/lib ]; then
+        export ${envNames.libclang}=/opt/homebrew/opt/llvm/lib
+      elif [ -d /usr/local/opt/llvm/lib ]; then
+        export ${envNames.libclang}=/usr/local/opt/llvm/lib
+      else
+        export ${envNames.libclang}="${libclang}/lib"
+      fi
+    fi
+    # Same reasoning: the bundled Go oracle binary needs no `go` on PATH to
+    # run, but the Java/C# oracles need a real `java`/`dotnet` runtime.
+    # Append the store toolchain last, after whatever the user already has.
+    export PATH="$PATH:${toolchainPath}"
     # Belt for @rpath/libonnxruntime.1.dylib. The Mach-O also has
     # LC_RPATH=@executable_path/../Frameworks; DYLD_FALLBACK is what SIP
     # is less likely to strip than DYLD_LIBRARY_PATH when Finder launches.

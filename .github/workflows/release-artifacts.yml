@@ -157,6 +157,19 @@ jobs:
           ( cd dist && tar -czf "${{ matrix.archive }}" "${{ matrix.artifact }}" )
           ( cd dist && sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256" )
 
+      - name: Build DMG
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="$(mktemp -d)"
+          cp -RL "dist/${{ matrix.artifact }}/lindsey.app" "$staging/lindsey.app"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname lindsey -srcfolder "$staging" -ov -format UDZO \
+            "dist/${{ matrix.artifact }}.dmg"
+          ( cd dist && sha256sum "${{ matrix.artifact }}.dmg" > "${{ matrix.artifact }}.dmg.sha256" )
+          rm -rf "$staging"
+
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
         with:
@@ -165,6 +178,8 @@ jobs:
             dist/${{ matrix.artifact }}/**
             dist/${{ matrix.archive }}
             dist/${{ matrix.archive }}.sha256
+            dist/${{ matrix.artifact }}.dmg
+            dist/${{ matrix.artifact }}.dmg.sha256
           retention-days: 14
           if-no-files-found: error
 
@@ -319,7 +334,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          find artifacts -type f \( -iname '*.tar.gz' -o -iname '*.zip' -o -iname '*.sha256' \) -exec cp {} dist/ \;
+          find artifacts -type f \( -iname '*.tar.gz' -o -iname '*.zip' -o -iname '*.dmg' -o -iname '*.sha256' \) -exec cp {} dist/ \;
           cd dist
           echo "-- verifying checksums --"
           sha256sum -c ./*.sha256
