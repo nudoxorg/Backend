@@ -18,7 +18,7 @@ pkgs.stdenv.mkDerivation {
     owner = "microsoft";
     repo = "onnxruntime";
     rev = "v${version}";
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+    hash = "sha256-SjNUG4pCVHIDxmOQkZ/nWYcdC+CBRLogpwb1AtAKf+M=";
   };
 
   nativeBuildInputs = [
