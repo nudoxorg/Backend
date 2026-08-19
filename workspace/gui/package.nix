@@ -57,7 +57,29 @@ rustPlatform.buildRustPackage {
   buildInputs = [
     pkgs.libiconv
     pkgs.openssl
-  ];
+  ]
+  # GPUI's Linux backend needs libxcb/libxkbcommon (linked) and
+  # wayland/vulkan-loader (dlopened by soname, invisible to the linker but
+  # still resolved through this same pkg-config-built search path at build
+  # time) plus dbus for the keyring's dbus-secret-service chain, and
+  # fontconfig/freetype for font-kit's pkg-config build scripts
+  # (yeslogic-fontconfig-sys, freetype-sys) -- same set flake.nix's devShell
+  # already carries as guiGraphicsLibraries/guiCredentialLibraries/
+  # guiFontLibraries. Without these, pkg-config falls through with "Package
+  # fontconfig was not found in the pkg-config search path" (or the xcb/
+  # xkbcommon equivalent) instead of resolving to the Nix store.
+  ++ lib.optionals pkgs.stdenv.isLinux (
+    with pkgs;
+    [
+      libxcb
+      libxkbcommon
+      wayland
+      vulkan-loader
+      dbus
+      fontconfig
+      freetype
+    ]
+  );
 
   cargoBuildFlags = [
     "--bin"

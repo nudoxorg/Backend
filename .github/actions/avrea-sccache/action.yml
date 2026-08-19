@@ -16,6 +16,7 @@ runs:
         SCCACHE_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
+        sccache_bin=sccache
         case "${RUNNER_OS}-${RUNNER_ARCH}" in
           Linux-X64)
             triple=x86_64-unknown-linux-musl
@@ -46,14 +47,18 @@ runs:
             curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/${archive}" \
               -o /tmp/sccache.zip
             unzip -q -j /tmp/sccache.zip "sccache-${SCCACHE_VERSION}-${triple}/sccache.exe" -d "$install_dir"
+            # $GITHUB_PATH only takes effect in later steps, not this one --
+            # call the just-installed binary by its full path below so
+            # `--version`/`--start-server` don't fail on a stale PATH.
             echo "$install_dir" >> "$GITHUB_PATH"
+            sccache_bin="$install_dir/sccache.exe"
             ;;
           *)
             echo "::warning::No sccache binary for ${RUNNER_OS}-${RUNNER_ARCH}; skipping"
             exit 0
             ;;
         esac
-        sccache --version
-        sccache --start-server
+        "$sccache_bin" --version
+        "$sccache_bin" --start-server
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
