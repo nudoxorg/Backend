@@ -58,13 +58,18 @@ pkgs.buildGoModule {
     elif [ -e "$out/bin/oracle" ]; then
       mv "$out/bin/oracle" "$out/bin/nudox-go-oracle"
     else
-      found="$(find "$out/bin" -maxdepth 1 -type f -perm -u+x | head -n 1)"
+      # A cross GOARCH (goarch != null, so GOARCH != stdenv.hostPlatform's)
+      # makes `go install` nest the binary under $out/bin/<GOOS>_<GOARCH>/
+      # instead of dropping it flat -- that subdirectory-first search catches
+      # both that case and the native flat-layout fallback.
+      found="$(find "$out/bin" -mindepth 1 -type f -perm -u+x | head -n 1)"
       if [ -z "$found" ]; then
         echo "go-oracle install produced no binary under $out/bin" >&2
-        ls -la "$out/bin" >&2 || true
+        find "$out/bin" >&2 || true
         exit 1
       fi
       mv "$found" "$out/bin/nudox-go-oracle"
+      find "$out/bin" -mindepth 1 -type d -empty -delete
     fi
   '';
 
