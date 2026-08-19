@@ -1,9 +1,19 @@
 # Build lindsey desktop artifacts on Avrea (Linux / macOS / Windows).
 #
+# macOS and Linux (both arches) build entirely through `nix build .#lindsey-app`
+# — no brew/apt, no separate cargo build/bundle step; the flake's own
+# rustPlatform.buildRustPackage derivation (workspace/gui/package.nix) does
+# the whole thing hermetically, oracles/embed-model/ORT included (see
+# nix/lindsey-bundle.nix). Windows has no Nix story in this flake at all
+# (lindseyAppPackage's supported-systems list is aarch64-darwin/x86_64-darwin/
+# x86_64-linux/aarch64-linux, nothing Windows), so it stays on the native
+# toolchain + ci-package-lindsey.sh, unchanged.
+#
 # Avrea is a drop-in GitHub Actions runner with colocated caching:
 #   - actions/cache@v4+ is accelerated automatically
 #   - Cargo/NuGet/Go registries use pull-through package cache
-#   - sccache shares Rust compilation artifacts across jobs
+#   - sccache shares Rust compilation artifacts across jobs (windows-x64 only)
+#   - a colocated Nix binary-cache substituter (./.github/actions/avrea-nix-cache)
 #   https://docs.avrea.com/cache/
 #
 # Prerequisites: Avrea GitHub App installed on this repository.
@@ -21,6 +31,7 @@ on:
       - "workspace/nudox-engine/**"
       - "workspace/compiler/languages/**"
       - "nix/lindsey-bundle.nix"
+      - "flake.nix"
   workflow_dispatch:
 
 concurrency:
@@ -34,16 +45,46 @@ env:
   SCCACHE_WEBDAV_ENDPOINT: http://cache.avrea.com:8290/sccache-build/webdav
 
 jobs:
-  package:
-    name: package (${{ matrix.label }})
-    # pull_request.paths (above) includes this workflow and the packaging
-    # script itself, and this job runs the full build+package on Avrea's
-    # custom runner fleet with no review gate — never do that for a PR
-    # whose head is a fork, only for PRs within this repo (same-repo
-    # branches, where the pusher already has write access). Tag pushes and
-    # workflow_dispatch are unaffected — neither is a `pull_request` event,
-    # so the `||` short-circuits true.
+  # `on.push.tags: ["v*"]` is deliberately broad (glob-matches non-release
+  # tags like `vNext`/bare `v`/`v-test`, not just semver) — this step is the
+  # actual gate. Shared by both package jobs below via `needs`/outputs rather
+  # than duplicated, so there is exactly one place a tag is judged valid.
+  version:
+    name: Compute release version
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Compute release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME}"
+            # `${tag#v}` alone would otherwise silently produce an EMPTY
+            # string for a bare `v` tag, which both ci-package-lindsey.sh's
+            # LINDSEY_VERSION and package.nix's `version` default then treat
+            # as unset and coerce to 0.1.0 — a release published under a
+            # meaningless tag with a version string that doesn't even match
+            # it, no error anywhere. Fail loudly instead.
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::tag '$tag' is not a valid release tag (expected vMAJOR.MINOR.PATCH, optionally with -prerelease and/or +build, e.g. v1.2.3 or v1.2.3-rc.1) — refusing to build a release from it" >&2
+              exit 1
+            fi
+            echo "value=${tag#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=0.1.0" >> "$GITHUB_OUTPUT"
+          fi
+
+  # macOS + Linux (x64/arm64): entirely `nix build`. No brew, no apt, no
+  # separate rust-toolchain action, no Cargo/download caching of our own —
+  # Nix's own store + the Avrea Nix substituter is the cache.
+  package-nix:
+    name: package (${{ matrix.label }})
+    needs: version
     permissions:
       contents: read
     strategy:
@@ -53,29 +94,81 @@ jobs:
           - label: macos-arm64
             platform: macos
             runs-on: avrea-macos-26-16-vcpu
-            rust-target: aarch64-apple-darwin
             artifact: lindsey-macos-arm64
             archive: lindsey-macos-arm64.tar.gz
           - label: linux-x64
             platform: linux
             runs-on: avrea-ubuntu-24.04-16-vcpu
-            rust-target: x86_64-unknown-linux-gnu
             artifact: lindsey-linux-x64
             archive: lindsey-linux-x64.tar.gz
           - label: linux-arm64
             platform: linux-arm64
             runs-on: avrea-ubuntu-24.04-arm-16-vcpu
-            rust-target: aarch64-unknown-linux-gnu
             artifact: lindsey-linux-arm64
             archive: lindsey-linux-arm64.tar.gz
-          - label: windows-x64
-            platform: windows
-            runs-on: avrea-windows-2025-16-vcpu
-            rust-target: x86_64-pc-windows-msvc
-            artifact: lindsey-windows-x64
-            archive: lindsey-windows-x64.zip
 
     runs-on: ${{ matrix.runs-on }}
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v17
+        with:
+          diagnostic-endpoint: ""
+
+      - uses: ./.github/actions/avrea-nix-cache
+
+      - name: nix build .#lindsey-app
+        shell: bash
+        env:
+          LINDSEY_VERSION: ${{ needs.version.outputs.value }}
+        run: nix build .#lindsey-app --impure -L
+
+      - name: Push built path to Avrea Nix cache
+        if: success()
+        shell: bash
+        run: |
+          out="$(nix path-info ./result)"
+          nix copy --to http://cache.avrea.com:8290/nix-build/cache "$out" || true
+
+      - name: Package archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/${{ matrix.artifact }}"
+          if [ "${{ matrix.platform }}" = macos ]; then
+            # result/lindsey.app -> dist/<artifact>/lindsey.app
+            cp -RL result/lindsey.app "dist/${{ matrix.artifact }}/lindsey.app"
+          else
+            # result/{bin,lib,share} -> dist/<artifact>/{bin,lib,share}
+            cp -RL result/. "dist/${{ matrix.artifact }}/"
+          fi
+          ( cd dist && tar -czf "${{ matrix.archive }}" "${{ matrix.artifact }}" )
+          ( cd dist && sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256" )
+
+      - name: Upload platform artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}/**
+            dist/${{ matrix.archive }}
+            dist/${{ matrix.archive }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+  # Windows: no Nix target exists for it anywhere in this flake, so it stays
+  # on the native toolchain + ci-package-lindsey.sh — the one platform this
+  # migration deliberately leaves alone.
+  package-windows:
+    name: package (windows-x64)
+    needs: version
+    permissions:
+      contents: read
+    runs-on: avrea-windows-2025-16-vcpu
     timeout-minutes: 120
 
     steps:
@@ -85,7 +178,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: ${{ matrix.rust-target }}
+          targets: x86_64-pc-windows-msvc
 
       - uses: ./.github/actions/avrea-sccache
 
@@ -103,61 +196,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: workspace/gui/target
-          key: cargo-lindsey-target-${{ matrix.label }}-${{ hashFiles('workspace/gui/Cargo.lock') }}
+          key: cargo-lindsey-target-windows-x64-${{ hashFiles('workspace/gui/Cargo.lock') }}
           restore-keys: |
-            cargo-lindsey-target-${{ matrix.label }}-
+            cargo-lindsey-target-windows-x64-
 
-      # ── macOS deps ────────────────────────────────────────────────────────
-      - name: Install macOS build dependencies
-        if: matrix.platform == 'macos'
-        run: |
-          brew install llvm go openjdk@21 jq resvg
-          echo "LIBCLANG_PATH_DEFAULT=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-          echo "GO_BIN_DIR=$(brew --prefix go)/bin" >> "$GITHUB_ENV"
-          echo "JAVA_BIN_DIR=$(brew --prefix openjdk@21)/bin" >> "$GITHUB_ENV"
-          echo "PATH=$(brew --prefix go)/bin:$(brew --prefix openjdk@21)/bin:$PATH" >> "$GITHUB_ENV"
-
-      - name: Install .NET 10 SDK (macOS)
-        if: matrix.platform == 'macos'
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "10.0.x"
-
-      - name: Set macOS dotnet path
-        if: matrix.platform == 'macos'
-        run: echo "DOTNET_BIN_DIR=$DOTNET_ROOT" >> "$GITHUB_ENV"
-
-      # ── Linux deps (x64 + arm64) ───────────────────────────────────────────
-      - name: Install Linux build dependencies
-        if: matrix.platform == 'linux' || matrix.platform == 'linux-arm64'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config cmake \
-            libclang-dev clang llvm \
-            libssl-dev libfontconfig1-dev \
-            libxkbcommon-dev libwayland-dev libx11-dev libxcb1-dev \
-            libgtk-3-dev curl jq unzip
-          sudo apt-get install -y golang-go openjdk-21-jdk-headless
-          curl -fsSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
-          echo "$HOME/.dotnet" >> "$GITHUB_PATH"
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-          if [ -d /usr/lib/aarch64-linux-gnu ]; then
-            echo "LIBCLANG_PATH_DEFAULT=/usr/lib/aarch64-linux-gnu" >> "$GITHUB_ENV"
-          else
-            echo "LIBCLANG_PATH_DEFAULT=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
-          fi
-          if [ -d /usr/lib/jvm/java-21-openjdk-arm64/bin ]; then
-            echo "JAVA_BIN_DIR=/usr/lib/jvm/java-21-openjdk-arm64/bin" >> "$GITHUB_ENV"
-          else
-            echo "JAVA_BIN_DIR=/usr/lib/jvm/java-21-openjdk-amd64/bin" >> "$GITHUB_ENV"
-          fi
-          echo "GO_BIN_DIR=/usr/bin" >> "$GITHUB_ENV"
-          echo "DOTNET_BIN_DIR=$HOME/.dotnet" >> "$GITHUB_ENV"
-
-      # ── Windows deps ──────────────────────────────────────────────────────
       - name: Install Windows build dependencies
-        if: matrix.platform == 'windows'
         shell: bash
         run: |
           choco install golang jq llvm --yes
@@ -165,54 +208,27 @@ jobs:
           echo "GO_BIN_DIR=C:/Program Files/Go/bin" >> "$GITHUB_ENV"
 
       - name: Install .NET 10 SDK (Windows)
-        if: matrix.platform == 'windows'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "10.0.x"
 
       - name: Install JDK 21 (Windows)
-        if: matrix.platform == 'windows'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "21"
 
       - name: Set Windows toolchain paths
-        if: matrix.platform == 'windows'
         shell: bash
         run: |
           echo "JAVA_BIN_DIR=$JAVA_HOME/bin" >> "$GITHUB_ENV"
           echo "DOTNET_BIN_DIR=$DOTNET_ROOT" >> "$GITHUB_ENV"
 
-      - name: Compute release version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.ref_type }}" = "tag" ]; then
-            tag="${GITHUB_REF_NAME}"
-            # `on.push.tags: ["v*"]` is deliberately broad (glob-matches
-            # non-release tags like `vNext`/bare `v`/`v-test`, not just
-            # semver) — this is the actual gate. `${tag#v}` alone would
-            # otherwise silently produce an EMPTY string for a bare `v` tag,
-            # which `${LINDSEY_VERSION:-0.1.0}` in ci-package-lindsey.sh
-            # then treats as unset and coerces to 0.1.0 — a release
-            # published under a meaningless tag with a version string that
-            # doesn't even match it, no error anywhere. Fail loudly instead.
-            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-              echo "::error::tag '$tag' is not a valid release tag (expected vMAJOR.MINOR.PATCH, optionally with -prerelease and/or +build, e.g. v1.2.3 or v1.2.3-rc.1) — refusing to build a release from it" >&2
-              exit 1
-            fi
-            echo "value=${tag#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "value=0.1.0" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build and package lindsey
         shell: bash
         env:
-          LINDSEY_VERSION: ${{ steps.version.outputs.value }}
-        run: bash .config/scripts/ci-package-lindsey.sh "${{ matrix.platform }}"
+          LINDSEY_VERSION: ${{ needs.version.outputs.value }}
+        run: bash .config/scripts/ci-package-lindsey.sh windows
 
       - name: Save heavy download caches
         if: success()
@@ -231,20 +247,20 @@ jobs:
       - name: Upload platform artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
+          name: lindsey-windows-x64
           path: |
-            dist/${{ matrix.artifact }}/**
-            dist/${{ matrix.archive }}
-            dist/${{ matrix.archive }}.sha256
+            dist/lindsey-windows-x64/**
+            dist/lindsey-windows-x64.zip
+            dist/lindsey-windows-x64.zip.sha256
           retention-days: 14
           if-no-files-found: error
 
   # Publishes a public GitHub Release only on a `v*` tag push — every other
-  # trigger (main/canonical push, PR, workflow_dispatch) is CI validation
-  # only and stops at the ephemeral 14-day `package` artifacts above.
+  # trigger (PR, workflow_dispatch) is CI validation only and stops at the
+  # ephemeral 14-day package-* artifacts above.
   #
   # Asset filenames are deliberately NOT version-suffixed: they stay exactly
-  # what ci-package-lindsey.sh already produces (lindsey-macos-arm64.tar.gz,
+  # what package-nix/ci-package-lindsey.sh already produce (lindsey-macos-arm64.tar.gz,
   # etc.), so `.../releases/latest/download/<name>` is a stable URL a website
   # can hardcode once and never touch again — the alternative (versioned
   # names) would require every consumer to first query the GitHub API to
@@ -252,7 +268,7 @@ jobs:
   # historical builds stay reachable via that release's own page.
   publish:
     name: Publish GitHub Release
-    needs: package
+    needs: [package-nix, package-windows]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -265,8 +281,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          # Re-validates independently of the `package` job's own check
-          # (belt-and-suspenders: this job only reads `needs: package`'s
+          # Re-validates independently of the `version` job's own check
+          # (belt-and-suspenders: this job only reads `needs: [...]`'s
           # success, not its step outputs, so nothing here actually depends
           # on that earlier check having run — a future refactor that
           # decouples the two jobs must not silently drop this gate).
@@ -311,6 +327,10 @@ jobs:
           prerelease: ${{ steps.meta.outputs.prerelease }}
 
   # Compile gate on every Avrea OS/arch family (no 612MB model download).
+  # Left on raw `cargo check` deliberately — it never used brew/apt/choco to
+  # begin with (just a rust-toolchain action + a raw ORT tarball fetch), so
+  # it isn't the pattern this migration is about, and a full `nix build` per
+  # PR push would be far heavier than the fast check this job exists for.
   compile-check:
     name: compile (${{ matrix.label }})
     if: github.event_name == 'pull_request'
