@@ -26,7 +26,7 @@ ORT_CACHE="${ORT_CACHE_DIR:-$ROOT/.ci-cache/ort/${ORT_VERSION}/${PLATFORM}}"
 EMBED_REV="516f4baf13dec4ddddda8631e019b5737c8bc250"
 EMBED_BASE="https://huggingface.co/jinaai/jina-embeddings-v2-base-code/resolve/${EMBED_REV}"
 
-log() { printf 'ci-package-lindsey: %s\n' "$*"; }
+log() { printf 'ci-package-lindsey: %s\n' "$*" >&2; }
 die() { printf 'ci-package-lindsey: error: %s\n' "$*" >&2; exit 1; }
 
 case "$PLATFORM" in

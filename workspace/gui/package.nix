@@ -117,6 +117,17 @@ rustPlatform.buildRustPackage {
     # is still the release profile (thin LTO in workspace/gui/Cargo.toml).
     CARGO_PROFILE_RELEASE_STRIP = "symbols";
   }
+  # ort-sys's build.rs links openssl dynamically (its own HTTPS fetch path)
+  # and runs as a plain host-arch executable during the build -- OPENSSL_DIR/
+  # OPENSSL_LIB_DIR above only steer openssl-sys's *compile-time* linking of
+  # the final target binary, they say nothing to the dynamic loader that
+  # execs the already-built build-script-main. Without libssl.so.3 on
+  # LD_LIBRARY_PATH that exec fails at the loader level (exit 127, "error
+  # while loading shared libraries") before the script even runs far enough
+  # to read ORT_LIB_LOCATION.
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
+    LD_LIBRARY_PATH = "${pkgs.openssl.out}/lib";
+  }
   # Official ONNX Runtime 1.28 (ort-sys's requested version). nixpkgs ships
   # 1.26; pyke's dist is a raw LZMA2 stream the sandbox cannot unpack.
   # x86_64-darwin has no upstream 1.28 dylib tarball — use ortStaticLink and
