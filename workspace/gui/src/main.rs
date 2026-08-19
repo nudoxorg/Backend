@@ -46,7 +46,7 @@ fn main() {
 
     lindsey::perf::init_from_env();
 
-    // ── Is there a screen? (Linux only failure mode) ─────────────────────────
+    // ── Is there a screen? (Linux/BSD only failure mode) ─────────────────────
     //
     // Asked before the engine so a headless invocation costs nothing and says
     // something. GPUI would otherwise infer the headless backend from the same
@@ -57,14 +57,23 @@ fn main() {
     // (`app::lifecycle`): a process with an MCP endpoint and no possible window
     // is a different product, and if that is ever wanted it should be asked for
     // rather than fallen into by an unset variable.
-    let session = match desktop::from_env() {
-        Ok(session) => session,
+    //
+    // Gated to Linux/BSD, the only platforms where GPUI guesses its backend from
+    // `WAYLAND_DISPLAY`/`DISPLAY` (`app::desktop` mirrors that guess). macOS and
+    // Windows always have a window server and never set those variables, so
+    // running the preflight there reads two always-unset variables and aborts a
+    // perfectly launchable app with `exit(2)` — which is exactly why `lindsey.app`
+    // never appeared when it was started on macOS.
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    match desktop::from_env() {
+        Ok(session) => {
+            tracing::info!(session = session.compositor_name(), "display session");
+        }
         Err(err) => {
             eprintln!("lindsey: {err}");
             std::process::exit(2);
         }
-    };
-    tracing::info!(session = session.compositor_name(), "display session");
+    }
 
     // ── The engine (LR-9: it owns every runtime; lindsey links none) ─────────
     //
