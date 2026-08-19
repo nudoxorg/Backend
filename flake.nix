@@ -364,10 +364,13 @@
                 # producing nothing.
               };
               dist = distBySystem.${system} or null;
+              staticForSystem =
+                if system == "x86_64-darwin" then
+                  import ./nix/onnxruntime-static.nix { pkgs = nixPackages; }
+                else
+                  null;
             in
-            if dist == null then
-              null
-            else
+            if dist != null then
               nixPackages.stdenvNoCC.mkDerivation {
                 name = "onnxruntime-1.28.0-lib";
                 src = nixPackages.fetchurl {
@@ -394,9 +397,13 @@
                     exit 1
                   fi
                 '';
-              };
+              }
+            else
+              staticForSystem;
 
           rustToolchain = (helpersFor nixPackages fenixPackages).rustToolchain;
+
+          ortStaticLink = system == "x86_64-darwin";
 
           # cargo-bundle copies the GUI binary; this wrap is what actually
           # ships the subprocess oracles, toolchains, and embed model.
@@ -406,7 +413,7 @@
             goOracle = goOraclePackage;
             javaOracle = javaOraclePackage;
             csharpOracle = csharpOraclePackage;
-            inherit semanticModel goToolchain;
+            inherit semanticModel goToolchain ortStaticLink;
             jdk = nixPackages.jdk21_headless;
             libclang = nixPackages.libclang.lib;
             dotnet = nixPackages.dotnetCorePackages.sdk_10_0;
@@ -417,11 +424,11 @@
 
           lindseyAppPackage =
             if onnxruntimeLib == null then
-              throw "lindsey-app: no ONNX Runtime 1.28 build for ${system} — upstream publishes no osx-x86_64 (macOS Intel) release for 1.28.0 (supported: aarch64-darwin, x86_64-linux, aarch64-linux)"
+              throw "lindsey-app: no ONNX Runtime 1.28 build for ${system} (supported: aarch64-darwin, x86_64-darwin static, x86_64-linux, aarch64-linux)"
             else
               import ./workspace/gui/package.nix {
                 pkgs = nixPackages;
-                inherit rustToolchain;
+                inherit rustToolchain ortStaticLink;
                 cargoBundle = cargoBundleUnstable;
                 src = ./.;
                 inherit (lindseyBundlePackaging) installWrapper;

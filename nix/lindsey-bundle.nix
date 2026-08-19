@@ -22,6 +22,8 @@
   # Official ONNX Runtime 1.28 lib dir (dylibs). Null on platforms that
   # do not pin a tarball; the wrap then skips Contents/Frameworks.
   onnxruntimeLib ? null,
+  # When true, ORT is linked statically — no Contents/Frameworks copy.
+  ortStaticLink ? false,
 }:
 
 let
@@ -148,7 +150,7 @@ let
 
       chmod u+w "$unwrapped" || true
 
-      ${lib.optionalString (onnxruntimeLib != null) ''
+      ${lib.optionalString (onnxruntimeLib != null && !ortStaticLink) ''
         # The GUI links @rpath/libonnxruntime.1.dylib. cargo-bundle (and the
         # handwritten .app assemble) never copy that dylib, so dyld aborts
         # before main. Ship the loader name + its target; skip .dSYM (48MB of
@@ -177,7 +179,7 @@ let
         # Release profile already ran; this only drops the symbol table so
         # Get Info is not a 73MB unstripped Mach-O next to a 612MB model.
         /usr/bin/strip -x "$unwrapped" || true
-        ${lib.optionalString (onnxruntimeLib != null && pkgs.stdenv.isDarwin) ''
+        ${lib.optionalString (onnxruntimeLib != null && !ortStaticLink && pkgs.stdenv.isDarwin) ''
           if ! /usr/bin/otool -l "$unwrapped" | grep -q '@executable_path/../Frameworks'; then
             /usr/bin/install_name_tool -add_rpath '@executable_path/../Frameworks' "$unwrapped"
           fi

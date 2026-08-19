@@ -12,6 +12,7 @@
   src,
   installWrapper,
   onnxruntimeLib,
+  ortStaticLink ? false,
 }:
 
 let
@@ -67,8 +68,11 @@ rustPlatform.buildRustPackage {
     OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
     # Official ONNX Runtime 1.28 (ort-sys's requested version). nixpkgs ships
     # 1.26; pyke's dist is a raw LZMA2 stream the sandbox cannot unpack.
-    ORT_LIB_LOCATION = "${onnxruntimeLib}";
-    ORT_PREFER_DYNAMIC_LINK = "1";
+    # x86_64-darwin has no upstream 1.28 dylib tarball — use ortStaticLink and
+    # a source-built static archive tree instead (ORT_LIB_PATH).
+    ORT_LIB_PATH = lib.optionalString ortStaticLink "${onnxruntimeLib}/lib";
+    ORT_LIB_LOCATION = lib.optionalString (!ortStaticLink) "${onnxruntimeLib}";
+    ORT_PREFER_DYNAMIC_LINK = lib.optionalString (!ortStaticLink) "1";
     DOTNET_CLI_TELEMETRY_OPTOUT = "1";
     # rustc strip of the symbol table. The 73MB unstripped Mach-O next to a
     # 612MB embed model is what makes Get Info look like a debug build; this

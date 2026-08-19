@@ -328,9 +328,9 @@
 # forces it to be tracked. Named explicitly rather than a `*.sh` glob,
 # matching this file's existing per-script convention above.
 !/.config/scripts/ci-package-lindsey.sh
-!/.forgejo/
-!/.forgejo/workflows/
-!/.forgejo/workflows/*.yml
+# The macOS x64 static-ONNX-Runtime build helper ci-package-lindsey.sh's
+# fetch_ort() shells out to for the macos-x64 platform. Same gap, same fix.
+!/.config/scripts/build-ort-static-macos.sh
 # GitHub Actions (ci.yml, release-artifacts.yml, and the composite actions
 # they use) — the exact same class of gap the .forgejo rule above already
 # covers, just never added here. Confirmed via `git ls-files` that every

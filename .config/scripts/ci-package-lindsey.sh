@@ -5,13 +5,13 @@
 # subprocess oracles, embed model sidecars, ONNX Runtime beside the binary, and a
 # launcher that sets NUDOX_* / LIBCLANG_PATH before exec'ing the release binary.
 #
-# Usage: ci-package-lindsey.sh <macos|linux|linux-arm64|windows>
+# Usage: ci-package-lindsey.sh <macos|macos-x64|linux|linux-arm64|windows>
 # Env: LINDSEY_VERSION (optional) — stamped into the macOS Info.plist; defaults to 0.1.0.
 # Output: dist/<artifact-name>/, dist/<artifact-name>.{tar.gz,zip}, and dist/<archive>.sha256
 
 set -euo pipefail
 
-PLATFORM="${1:?usage: ci-package-lindsey.sh <macos|linux|linux-arm64|windows>}"
+PLATFORM="${1:?usage: ci-package-lindsey.sh <macos|macos-x64|linux|linux-arm64|windows>}"
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 ORT_VERSION="${ORT_VERSION:-1.28.0}"
 DIST="$ROOT/dist"
@@ -30,8 +30,15 @@ log() { printf 'ci-package-lindsey: %s\n' "$*"; }
 die() { printf 'ci-package-lindsey: error: %s\n' "$*" >&2; exit 1; }
 
 case "$PLATFORM" in
-  macos|linux|linux-arm64|windows) ;;
+  macos|macos-x64|linux|linux-arm64|windows) ;;
   *) die "unknown platform: $PLATFORM" ;;
+esac
+
+RUST_TARGET=""
+ORT_STATIC=0
+case "$PLATFORM" in
+  macos) RUST_TARGET="aarch64-apple-darwin" ;;
+  macos-x64) RUST_TARGET="x86_64-apple-darwin"; ORT_STATIC=1 ;;
 esac
 
 # ── Known-good hashes for fetched inputs ────────────────────────────────────
@@ -112,6 +119,13 @@ fetch_embed() {
 
 # ── ONNX Runtime 1.28 (ort-sys pin) ─────────────────────────────────────────
 fetch_ort() {
+  if [ "$ORT_STATIC" = 1 ]; then
+    bash "$ROOT/.config/scripts/build-ort-static-macos.sh" x86_64
+    ORT_DIR="$ROOT/.ci-cache/ort-static/${ORT_VERSION}/macos-x86_64"
+    mkdir -p "$STAGE"
+    return
+  fi
+
   if [ -d "$ORT_CACHE/lib" ] && { find "$ORT_CACHE/lib" -name 'libonnxruntime*' | grep -q . || find "$ORT_CACHE/lib" -name 'onnxruntime.dll' | grep -q .; }; then
     log "using cached ONNX Runtime at $ORT_CACHE"
     cp -a "$ORT_CACHE/." "$ORT_DIR/"
@@ -221,13 +235,19 @@ build_lindsey() {
   [ -n "$ort_lib" ] || ort_lib="$ORT_DIR/lib"
   [ -d "$ort_lib" ] || die "ORT lib dir not found under $ORT_DIR"
 
-  export ORT_LIB_LOCATION="$ort_lib"
-  export ORT_PREFER_DYNAMIC_LINK=1
+  if [ "$ORT_STATIC" = 1 ]; then
+    export ORT_LIB_PATH="$ort_lib"
+    unset ORT_LIB_LOCATION ORT_PREFER_DYNAMIC_LINK
+  else
+    export ORT_LIB_LOCATION="$ort_lib"
+    export ORT_PREFER_DYNAMIC_LINK=1
+    unset ORT_LIB_PATH
+  fi
   export CARGO_PROFILE_RELEASE_STRIP=symbols
 
   if [ -z "${LIBCLANG_PATH:-}" ]; then
     case "$PLATFORM" in
-      macos)
+      macos|macos-x64)
         if [ -d /opt/homebrew/opt/llvm/lib ]; then
           export LIBCLANG_PATH=/opt/homebrew/opt/llvm/lib
         elif [ -d /usr/local/opt/llvm/lib ]; then
@@ -253,7 +273,18 @@ build_lindsey() {
     esac
   fi
 
-  log "building lindsey (ORT_LIB_LOCATION=$ORT_LIB_LOCATION)"
+  if [ -n "$RUST_TARGET" ]; then
+    log "building lindsey for $RUST_TARGET (ORT_STATIC=$ORT_STATIC ORT_LIB=${ORT_LIB_PATH:-${ORT_LIB_LOCATION:-unset}})"
+    (
+      cd "$gui"
+      rustup target add "$RUST_TARGET" >/dev/null 2>&1 || true
+      cargo build --release --locked --bin lindsey --target "$RUST_TARGET"
+    )
+    echo "$gui/target/$RUST_TARGET/release"
+    return
+  fi
+
+  log "building lindsey (ORT_LIB_LOCATION=${ORT_LIB_LOCATION:-unset})"
   (
     cd "$gui"
     cargo build --release --locked --bin lindsey
@@ -264,6 +295,7 @@ build_lindsey() {
 # ── macOS .app ──────────────────────────────────────────────────────────────
 package_macos() {
   local release_dir="$1"
+  local artifact="${2:-lindsey-macos-arm64}"
   local bin="$release_dir/lindsey"
   [ -x "$bin" ] || die "missing release binary $bin"
 
@@ -276,17 +308,21 @@ package_macos() {
   cp "$bin" "$macos/.lindsey-wrapped"
   chmod +x "$macos/.lindsey-wrapped"
 
-  # ORT dylibs into Frameworks (skip dSYM).
-  cp -a "$ORT_DIR/lib/libonnxruntime.1.dylib" "$frameworks/" 2>/dev/null \
-    || cp -a "$ORT_DIR/lib/"libonnxruntime*.dylib "$frameworks/" 2>/dev/null
-  if [ -L "$ORT_DIR/lib/libonnxruntime.1.dylib" ]; then
-    local target
-    target="$(readlink "$ORT_DIR/lib/libonnxruntime.1.dylib")"
-    cp -a "$ORT_DIR/lib/$target" "$frameworks/" 2>/dev/null || true
-  fi
+  if [ "$ORT_STATIC" != 1 ]; then
+    # ORT dylibs into Frameworks (skip dSYM).
+    cp -a "$ORT_DIR/lib/libonnxruntime.1.dylib" "$frameworks/" 2>/dev/null \
+      || cp -a "$ORT_DIR/lib/"libonnxruntime*.dylib "$frameworks/" 2>/dev/null
+    if [ -L "$ORT_DIR/lib/libonnxruntime.1.dylib" ]; then
+      local target
+      target="$(readlink "$ORT_DIR/lib/libonnxruntime.1.dylib")"
+      cp -a "$ORT_DIR/lib/$target" "$frameworks/" 2>/dev/null || true
+    fi
 
-  if ! otool -l "$macos/.lindsey-wrapped" | grep -q '@executable_path/../Frameworks'; then
-    install_name_tool -add_rpath '@executable_path/../Frameworks' "$macos/.lindsey-wrapped" || true
+    if ! otool -l "$macos/.lindsey-wrapped" | grep -q '@executable_path/../Frameworks'; then
+      install_name_tool -add_rpath '@executable_path/../Frameworks' "$macos/.lindsey-wrapped" || true
+    fi
+  elif otool -L "$macos/.lindsey-wrapped" | grep -q libonnxruntime; then
+    die "expected static ORT link but binary still references libonnxruntime dylib"
   fi
   strip -x "$macos/.lindsey-wrapped" 2>/dev/null || true
 
@@ -352,10 +388,10 @@ exec "$here/.lindsey-wrapped" "$@"
 WRAP
   chmod +x "$macos/lindsey"
 
-  local out="$DIST/lindsey-macos-arm64"
+  local out="$DIST/$artifact"
   rm -rf "$out"
   cp -R "$app" "$out/lindsey.app"
-  ( cd "$DIST" && tar -czf lindsey-macos-arm64.tar.gz lindsey-macos-arm64 )
+  ( cd "$DIST" && tar -czf "${artifact}.tar.gz" "$artifact" )
 }
 
 # ── Linux portable tree (x64 and arm64 share layout; names differ) ───────────
@@ -472,7 +508,7 @@ smoke_oracles() {
   fi
   local fixture="$STAGE/go-fixture"
   mkdir -p "$fixture"
-  printf 'module example.com/fixture\ngo 1.23\n' > "$fixture/go.mod"
+  printf 'module example.com/fixture\ngo 1.23.0\n' > "$fixture/go.mod"
   printf 'package fixture\nfunc Hello() string { return "ok" }\n' > "$fixture/hello.go"
   local schema
   schema="$("$go_bin" "$fixture" | jq -r '.schemaVersion')"
@@ -497,7 +533,8 @@ smoke_oracles
 release_dir="$(build_lindsey)"
 
 case "$PLATFORM" in
-  macos) package_macos "$release_dir"; checksum_archive lindsey-macos-arm64.tar.gz ;;
+  macos) package_macos "$release_dir" lindsey-macos-arm64; checksum_archive lindsey-macos-arm64.tar.gz ;;
+  macos-x64) package_macos "$release_dir" lindsey-macos-x64; checksum_archive lindsey-macos-x64.tar.gz ;;
   linux) package_linux "$release_dir" lindsey-linux-x64; checksum_archive lindsey-linux-x64.tar.gz ;;
   linux-arm64) package_linux "$release_dir" lindsey-linux-arm64; checksum_archive lindsey-linux-arm64.tar.gz ;;
   windows) package_windows "$release_dir"; checksum_archive lindsey-windows-x64.zip ;;
