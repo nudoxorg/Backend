@@ -12,7 +12,6 @@ name: Release Artifacts
 
 on:
   push:
-    branches: [canonical, main]
     tags: ["v*"]
   pull_request:
     paths:
@@ -41,9 +40,9 @@ jobs:
     # script itself, and this job runs the full build+package on Avrea's
     # custom runner fleet with no review gate — never do that for a PR
     # whose head is a fork, only for PRs within this repo (same-repo
-    # branches, where the pusher already has write access). Tag pushes,
-    # main/canonical pushes, and workflow_dispatch are unaffected — none of
-    # those are `pull_request` events, so the `||` short-circuits true.
+    # branches, where the pusher already has write access). Tag pushes and
+    # workflow_dispatch are unaffected — neither is a `pull_request` event,
+    # so the `||` short-circuits true.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       contents: read
@@ -84,7 +83,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: ${{ matrix.rust-target }}
 
@@ -346,7 +345,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: ${{ matrix.rust-target }}
 

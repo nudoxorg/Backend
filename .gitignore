@@ -77,6 +77,17 @@
 !/workspace/vendor/**/cpp/**/*.c
 !/workspace/vendor/**/cpp/**/*.h
 
+# Same failure, same fix, different vendor dir: `zstd-seekable`'s build.rs
+# compiles `zstd/contrib/seekable_format/{zstdseek_compress,zstdseek_decompress}.c`
+# and a top-level `xxh64.c` directly (not under a `cpp/` subdirectory, so the
+# rule above doesn't reach them). Absent from a clean checkout, this fails at
+# CI's build.rs step with `clang: error: no such file or directory` for all
+# three files rather than a link-time undefined symbol, but it's the same
+# "committed source silently dropped by the blanket rule" gap.
+!/workspace/vendor/zstd-seekable/zstd/contrib/seekable_format/*.c
+!/workspace/vendor/zstd-seekable/zstd/contrib/seekable_format/*.h
+!/workspace/vendor/zstd-seekable/xxh64.c
+
 # The Vaporetto tokenizer model `japanese.rs` pulls in via `include_bytes!`.
 # What was on disk was a 4-byte file containing the ASCII text `STUB`, which
 # compiles cleanly and then panics inside `Model::read_slice(MODEL).unwrap()`
