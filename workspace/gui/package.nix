@@ -236,7 +236,20 @@ rustPlatform.buildRustPackage {
       # embed model, and ORT .so tree around it -- cargo-bundle has no
       # Linux packaging story to route around here, there just was no
       # equivalent wrap step for this platform before.
-      install -Dm755 target/release/lindsey "$out/bin/lindsey"
+      #
+      # A flat target/release/lindsey assumption broke here the same way the
+      # equivalent Darwin assumption broke before it: nixpkgs' rustc/cargo
+      # setup hook can build under a target-triple subdirectory
+      # (target/<triple>/release/) even for a "native" build depending on how
+      # the fenix toolchain reports its host, so search for the binary
+      # instead of hardcoding the flat layout.
+      bin="$(find . -name lindsey -type f -path '*/release/lindsey' ! -path '*/deps/*' | head -n 1)"
+      if [ -z "$bin" ]; then
+        echo "no release lindsey binary after cargoBuildHook" >&2
+        find . -name lindsey -type f >&2 || true
+        exit 1
+      fi
+      install -Dm755 "$bin" "$out/bin/lindsey"
       lindsey-install-wrapper-linux "$out"
     ''}
     runHook postInstall
