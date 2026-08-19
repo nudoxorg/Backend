@@ -10,6 +10,9 @@
   pkgs,
   goToolchain,
   src,
+  # Cross-compile Mach-O (e.g. "amd64" on aarch64-darwin for a universal
+  # oracle). Null keeps the host GOARCH and the schema handshake check.
+  goarch ? null,
 }:
 
 pkgs.buildGoModule {
@@ -20,6 +23,23 @@ pkgs.buildGoModule {
   inherit src;
 
   go = goToolchain;
+
+  env = pkgs.lib.optionalAttrs (goarch != null) {
+    GOARCH = goarch;
+    CGO_ENABLED = "0";
+  };
+
+  # buildGoModule also derives GOARCH from stdenv.hostPlatform and would
+  # overwrite the env above during `go install`. Re-export immediately
+  # before both the build and install `go` invocations.
+  preBuild = pkgs.lib.optionalString (goarch != null) ''
+    export GOARCH=${goarch}
+    export CGO_ENABLED=0
+  '';
+  preInstall = pkgs.lib.optionalString (goarch != null) ''
+    export GOARCH=${goarch}
+    export CGO_ENABLED=0
+  '';
 
   # Recompute by pointing this at `pkgs.lib.fakeHash`, building, and reading
   # the real digest off the hash-mismatch error. Bump it the same way
@@ -48,7 +68,7 @@ pkgs.buildGoModule {
     fi
   '';
 
-  doCheck = true;
+  doCheck = goarch == null;
   checkPhase = ''
     runHook preCheck
     go vet -mod=vendor ./...

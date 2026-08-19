@@ -82,6 +82,116 @@ let
     exec "$here/.lindsey-wrapped" "$@"
   '';
 
+  # Linux analogue of macosWrapper: a relocatable bin/lib/share tree instead
+  # of a .app bundle. LD_LIBRARY_PATH stands in for DYLD_FALLBACK_LIBRARY_PATH.
+  linuxWrapper = pkgs.writeText "lindsey-linux-wrapper" ''
+    #!/bin/sh
+    set -eu
+    here="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
+    root="$(CDPATH= cd -- "$here/.." && pwd)"
+    resources="$root/share/nudox"
+    export ${envNames.goOracle}="''${${envNames.goOracle}:-$resources/nudox-go-oracle}"
+    export ${envNames.javaOracle}="''${${envNames.javaOracle}:-$resources/java-oracle}"
+    export ${envNames.csharpOracle}="''${${envNames.csharpOracle}:-$resources/csharp-oracle/oracle.dll}"
+    export ${envNames.dotnet}="''${${envNames.dotnet}:-${dotnet}/bin/dotnet}"
+    export ${envNames.embedModel}="''${${envNames.embedModel}:-$resources/embed-model}"
+    export ${envNames.libclang}="''${${envNames.libclang}:-${libclang}/lib}"
+    export PATH="${toolchainPath}:$PATH"
+    export LD_LIBRARY_PATH="$root/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    exec "$here/.lindsey-wrapped" "$@"
+  '';
+
+  # In-place wrap of one Linux bin/lib/share tree (mirrors installWrapper
+  # below, for the .app layout). $1 is the tree root, which must already
+  # contain bin/lindsey — the raw release binary, unwrapped.
+  installWrapperLinux = pkgs.writeShellApplication {
+    name = "lindsey-install-wrapper-linux";
+    runtimeInputs = [
+      pkgs.coreutils
+      pkgs.file
+    ];
+    text = ''
+      set -euo pipefail
+
+      if [ "$#" -lt 1 ]; then
+        echo "usage: lindsey-install-wrapper-linux <tree-root>" >&2
+        exit 2
+      fi
+
+      tree="$1"
+      bin="$tree/bin/lindsey"
+      if [ ! -e "$bin" ]; then
+        echo "lindsey-install-wrapper-linux: no bin/lindsey in $tree" >&2
+        exit 1
+      fi
+
+      resources="$tree/share/nudox"
+      mkdir -p "$resources" "$tree/lib"
+
+      cp -L "${goOracle}/bin/nudox-go-oracle" "$resources/nudox-go-oracle"
+      chmod +x "$resources/nudox-go-oracle"
+      rm -rf "$resources/java-oracle"
+      mkdir -p "$resources/java-oracle"
+      cp -R "${javaOracle}/." "$resources/java-oracle/"
+
+      rm -rf "$resources/csharp-oracle"
+      mkdir -p "$resources/csharp-oracle"
+      csharp_root="${csharpOracle}"
+      if [ -d "$csharp_root/lib" ]; then
+        csharp_lib="$(find "$csharp_root/lib" -name oracle.dll | head -n 1)"
+        if [ -n "$csharp_lib" ]; then
+          cp -R "$(dirname "$csharp_lib")/." "$resources/csharp-oracle/"
+        fi
+      fi
+      if [ ! -e "$resources/csharp-oracle/oracle.dll" ]; then
+        echo "lindsey-install-wrapper-linux: csharp oracle package has no oracle.dll" >&2
+        find "$csharp_root" -type f >&2 || true
+        exit 1
+      fi
+
+      rm -rf "$resources/embed-model"
+      mkdir -p "$resources/embed-model"
+      cp -R "${semanticModel}/." "$resources/embed-model/"
+      if [ ! -e "$resources/embed-model/model.onnx" ]; then
+        echo "lindsey-install-wrapper-linux: embed model is missing model.onnx" >&2
+        exit 1
+      fi
+
+      ${lib.optionalString (onnxruntimeLib != null && !ortStaticLink) ''
+        # The GUI links libonnxruntime.so via ORT_LIB_LOCATION at build time;
+        # ship the runtime .so tree beside the binary so it resolves at
+        # runtime too, the same reasoning as Contents/Frameworks on macOS.
+        ort="${onnxruntimeLib}"
+        if ! (cp -aL "$ort/"libonnxruntime*.so* "$tree/lib/" 2>/dev/null); then
+          echo "lindsey-install-wrapper-linux: $ort has no libonnxruntime*.so*" >&2
+          ls -la "$ort" >&2 || true
+          exit 1
+        fi
+        cp -aL "$ort/"libonnxruntime_providers*.so* "$tree/lib/" 2>/dev/null || true
+        chmod -R u+w "$tree/lib"
+      ''}
+
+      unwrapped="$tree/bin/.lindsey-wrapped"
+      if [ -e "$unwrapped" ]; then
+        rm -f "$bin"
+        cp "$unwrapped" "$bin"
+        chmod +x "$bin"
+      else
+        mv "$bin" "$unwrapped"
+      fi
+      chmod u+w "$unwrapped" || true
+
+      if file "$unwrapped" | grep -q 'ELF'; then
+        # Release profile already ran; this only drops the symbol table,
+        # same reasoning as the macOS strip -x below.
+        strip "$unwrapped" || true
+      fi
+
+      cp ${linuxWrapper} "$bin"
+      chmod +x "$bin"
+    '';
+  };
+
   # In-place wrap of one .app. Copies oracle artifacts and the embed model
   # into Resources/nudox so the bundle is not a dangling pointer at a
   # build-machine OUT_DIR or a Nix store path the user never installed.
@@ -263,6 +373,8 @@ in
     envNames
     macosWrapper
     installWrapper
+    linuxWrapper
+    installWrapperLinux
     lindseyBundle
     wrapLindseyApp
     toolchainPath

@@ -11,8 +11,17 @@
   cargoBundle,
   src,
   installWrapper,
+  installWrapperLinux,
   onnxruntimeLib,
   ortStaticLink ? false,
+  # When set (e.g. "x86_64-apple-darwin"), cargo cross-compiles and this
+  # derivation only installs the Mach-O — the universal .app lipo lives in
+  # nix/lindsey-universal.nix. Null is the native `lindsey-app` path.
+  crossTarget ? null,
+  # Stamped into Info.plist below and into this derivation's own version.
+  # Defaults to "0.1.0" (same default ci-package-lindsey.sh's LINDSEY_VERSION
+  # env var has) when the caller — a tagged release build — doesn't pass one.
+  version ? "0.1.0",
 }:
 
 let
@@ -22,11 +31,6 @@ let
   };
 
   inherit (pkgs) lib;
-
-  # Single source for the version stamped into Info.plist below — was two
-  # independently hardcoded "0.1.0" literals inside the installPhase heredoc,
-  # decoupled from this derivation's own `version` and from Cargo.toml.
-  version = "0.1.0";
 in
 rustPlatform.buildRustPackage {
   pname = "lindsey";
@@ -47,6 +51,7 @@ rustPlatform.buildRustPackage {
     pkgs.libclang
     pkgs.resvg
     installWrapper
+    installWrapperLinux
   ];
 
   buildInputs = [
@@ -57,32 +62,75 @@ rustPlatform.buildRustPackage {
   cargoBuildFlags = [
     "--bin"
     "lindsey"
+  ]
+  ++ lib.optionals (crossTarget != null) [
+    "--target"
+    crossTarget
   ];
 
   doCheck = false;
+
+  preConfigure = lib.optionalString (crossTarget == "x86_64-apple-darwin") ''
+    sdk="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
+    export SDKROOT="$sdk"
+    export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_darwin="--target=x86_64-apple-darwin -isysroot $sdk"
+    export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-apple-darwin -isysroot $sdk"
+    export CC_x86_64_apple_darwin="$(/usr/bin/xcrun --sdk macosx -f clang)"
+    export CXX_x86_64_apple_darwin="$(/usr/bin/xcrun --sdk macosx -f clang++)"
+    export CFLAGS_x86_64_apple_darwin="-target x86_64-apple-darwin -isysroot $sdk"
+    export MACOSX_DEPLOYMENT_TARGET=14.0
+    if [ -f /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib ]; then
+      export LIBCLANG_PATH=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+    fi
+  '';
 
   env = {
     LIBCLANG_PATH = "${pkgs.libclang.lib}/lib";
     OPENSSL_DIR = "${pkgs.openssl.dev}";
     OPENSSL_LIB_DIR = "${pkgs.openssl.out}/lib";
     OPENSSL_INCLUDE_DIR = "${pkgs.openssl.dev}/include";
-    # Official ONNX Runtime 1.28 (ort-sys's requested version). nixpkgs ships
-    # 1.26; pyke's dist is a raw LZMA2 stream the sandbox cannot unpack.
-    # x86_64-darwin has no upstream 1.28 dylib tarball — use ortStaticLink and
-    # a source-built static archive tree instead (ORT_LIB_PATH).
-    ORT_LIB_PATH = lib.optionalString ortStaticLink "${onnxruntimeLib}/lib";
-    ORT_LIB_LOCATION = lib.optionalString (!ortStaticLink) "${onnxruntimeLib}";
-    ORT_PREFER_DYNAMIC_LINK = lib.optionalString (!ortStaticLink) "1";
     DOTNET_CLI_TELEMETRY_OPTOUT = "1";
     # rustc strip of the symbol table. The 73MB unstripped Mach-O next to a
     # 612MB embed model is what makes Get Info look like a debug build; this
     # is still the release profile (thin LTO in workspace/gui/Cargo.toml).
     CARGO_PROFILE_RELEASE_STRIP = "symbols";
-  };
+  }
+  # Official ONNX Runtime 1.28 (ort-sys's requested version). nixpkgs ships
+  # 1.26; pyke's dist is a raw LZMA2 stream the sandbox cannot unpack.
+  # x86_64-darwin has no upstream 1.28 dylib tarball — use ortStaticLink and
+  # a source-built static archive tree instead (ORT_LIB_PATH).
+  #
+  # ort-sys's SYSTEM_LIB_PATH lookup checks ORT_LIB_PATH *before*
+  # ORT_LIB_LOCATION (build/vars.rs: `&["ORT_LIB_PATH", "ORT_LIB_LOCATION"]`,
+  # first Ok(..) wins regardless of content) — `lib.optionalString` on the
+  # non-selected branch only empties the *value*, it still exports the key,
+  # so an empty ORT_LIB_PATH silently pre-empted a perfectly good
+  # ORT_LIB_LOCATION and produced `cargo:rustc-link-search=native=` (an
+  # empty `-L` argument, rejected by the linker) on every non-static
+  # platform. `lib.optionalAttrs` omits the key entirely instead of just
+  # blanking it, so only one of the two is ever actually set.
+  // (
+    if ortStaticLink then
+      { ORT_LIB_PATH = "${onnxruntimeLib}/lib"; }
+    else
+      {
+        ORT_LIB_LOCATION = "${onnxruntimeLib}";
+        ORT_PREFER_DYNAMIC_LINK = "1";
+      }
+  );
 
   installPhase = ''
     runHook preInstall
-    ${lib.optionalString pkgs.stdenv.isDarwin ''
+    ${lib.optionalString (crossTarget != null) ''
+      bin="$(find . -name lindsey -type f -path '*${crossTarget}/release/lindsey' ! -path '*/deps/*' | head -n 1)"
+      if [ -z "$bin" ]; then
+        echo "no ${crossTarget} release lindsey after cargoBuildHook" >&2
+        find . -name lindsey -type f >&2 || true
+        exit 1
+      fi
+      install -Dm755 "$bin" "$out/bin/lindsey"
+    ''}
+    ${lib.optionalString (crossTarget == null && pkgs.stdenv.isDarwin) ''
       # cargo-bundle re-invokes `cargo build` in installPhase, where cc-rs
       # cannot see libc++ headers (`esaxx-rs` then fails on <cstdint>). The
       # release binary is already here; assemble the .app around it and let
@@ -149,8 +197,14 @@ rustPlatform.buildRustPackage {
       chmod -R u+w "$app"
       lindsey-install-wrapper "$app"
     ''}
-    ${lib.optionalString (!pkgs.stdenv.isDarwin) ''
+    ${lib.optionalString (crossTarget == null && !pkgs.stdenv.isDarwin) ''
+      # Same reasoning as the Darwin branch above: install the raw binary
+      # first, then let lindsey-install-wrapper-linux bundle the oracles,
+      # embed model, and ORT .so tree around it -- cargo-bundle has no
+      # Linux packaging story to route around here, there just was no
+      # equivalent wrap step for this platform before.
       install -Dm755 target/release/lindsey "$out/bin/lindsey"
+      lindsey-install-wrapper-linux "$out"
     ''}
     runHook postInstall
   '';

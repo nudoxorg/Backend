@@ -66,7 +66,6 @@
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [
         "aarch64-darwin"
-        "x86_64-darwin"
         "aarch64-linux"
         "x86_64-linux"
       ];
@@ -356,21 +355,12 @@
                   url = "https://github.com/microsoft/onnxruntime/releases/download/v1.28.0/onnxruntime-linux-aarch64-1.28.0.tgz";
                   hash = "sha256-4V/4tdha/mwUTZfG/UMiVL92ohnarxdlgIfW7LPo8Ls=";
                 };
-                # x86_64-darwin (macOS Intel) has no entry: ONNX Runtime 1.28.0
-                # ships no osx-x86_64 build at all — not in the GitHub release
-                # assets, not as a PyPI wheel (checked both 2026-08-18). This
-                # is an upstream gap, not an oversight here; `lindseyAppPackage`
-                # below throws a clear error on this system instead of quietly
-                # producing nothing.
               };
               dist = distBySystem.${system} or null;
-              staticForSystem =
-                if system == "x86_64-darwin" then
-                  import ./nix/onnxruntime-static.nix { pkgs = nixPackages; }
-                else
-                  null;
             in
-            if dist != null then
+            if dist == null then
+              null
+            else
               nixPackages.stdenvNoCC.mkDerivation {
                 name = "onnxruntime-1.28.0-lib";
                 src = nixPackages.fetchurl {
@@ -397,13 +387,35 @@
                     exit 1
                   fi
                 '';
-              }
-            else
-              staticForSystem;
+              };
 
           rustToolchain = (helpersFor nixPackages fenixPackages).rustToolchain;
+          rustToolchainWithTargets = (helpersFor nixPackages fenixPackages).rustToolchainWithTargets;
 
-          ortStaticLink = system == "x86_64-darwin";
+          # Intel macOS has no upstream ORT 1.28 dylib and nixpkgs 26.11
+          # dropped x86_64-darwin. Compile the dylib on aarch64-darwin with
+          # `--osx_arch x86_64`, then lipo it into lindsey-app-universal.
+          onnxruntimeOsxX86_64 =
+            if system == "aarch64-darwin" then
+              import ./nix/onnxruntime-osx-x86_64.nix { pkgs = nixPackages; }
+            else
+              null;
+
+          goOracleAmd64Package =
+            if system == "aarch64-darwin" then
+              import ./workspace/compiler/languages/oracle/go/package.nix {
+                pkgs = nixPackages;
+                inherit goToolchain;
+                goarch = "amd64";
+                src = builtins.path {
+                  path = ./workspace/compiler/languages/oracle/go;
+                  name = "nudox-go-oracle-amd64";
+                };
+              }
+            else
+              null;
+
+          ortStaticLink = false;
 
           # cargo-bundle copies the GUI binary; this wrap is what actually
           # ships the subprocess oracles, toolchains, and embed model.
@@ -424,16 +436,59 @@
 
           lindseyAppPackage =
             if onnxruntimeLib == null then
-              throw "lindsey-app: no ONNX Runtime 1.28 build for ${system} (supported: aarch64-darwin, x86_64-darwin static, x86_64-linux, aarch64-linux)"
+              throw "lindsey-app: no ONNX Runtime 1.28 build for ${system} (supported: aarch64-darwin, x86_64-linux, aarch64-linux; Intel macOS is `nix build .#lindsey-app-universal` on aarch64-darwin)"
             else
               import ./workspace/gui/package.nix {
                 pkgs = nixPackages;
                 inherit rustToolchain ortStaticLink;
                 cargoBundle = cargoBundleUnstable;
                 src = ./.;
-                inherit (lindseyBundlePackaging) installWrapper;
+                inherit (lindseyBundlePackaging) installWrapper installWrapperLinux;
                 inherit onnxruntimeLib;
+                # LINDSEY_VERSION, when the caller (a tagged release build)
+                # sets one — same env var ci-package-lindsey.sh already reads.
+                # `builtins.getEnv` is "" (not null) when unset, hence the
+                # explicit fallback rather than relying on package.nix's own
+                # `version ? "0.1.0"` default, which only fires on a missing
+                # attr, not an empty string.
+                version =
+                  let
+                    v = builtins.getEnv "LINDSEY_VERSION";
+                  in
+                  if v != "" then v else "0.1.0";
               };
+
+          lindseyGuiX86_64 =
+            if system == "aarch64-darwin" && onnxruntimeOsxX86_64 != null then
+              import ./workspace/gui/package.nix {
+                pkgs = nixPackages;
+                rustToolchain = rustToolchainWithTargets [ "x86_64-apple-darwin" ];
+                cargoBundle = cargoBundleUnstable;
+                src = ./.;
+                inherit (lindseyBundlePackaging) installWrapper installWrapperLinux;
+                onnxruntimeLib = onnxruntimeOsxX86_64;
+                ortStaticLink = false;
+                crossTarget = "x86_64-apple-darwin";
+                version =
+                  let
+                    v = builtins.getEnv "LINDSEY_VERSION";
+                  in
+                  if v != "" then v else "0.1.0";
+              }
+            else
+              null;
+
+          lindseyAppUniversal =
+            if system == "aarch64-darwin" then
+              import ./nix/lindsey-universal.nix {
+                pkgs = nixPackages;
+                arm64App = lindseyAppPackage;
+                x86_64Bin = lindseyGuiX86_64;
+                x86_64Ort = onnxruntimeOsxX86_64;
+                goOracleAmd64 = goOracleAmd64Package;
+              }
+            else
+              null;
 
           # Build the reproducible corpus from the Nix-owned corpus catalog
           # (`nix/corpus.nix`), across all seven declared ecosystems —
@@ -839,6 +894,18 @@
               lindsey-bundle = lindseyBundlePackaging.lindseyBundle;
               lindsey-install-wrapper = lindseyBundlePackaging.installWrapper;
               lindsey-app = lindseyAppPackage;
+            }
+            // nixPackages.lib.optionalAttrs (lindseyGuiX86_64 != null) {
+              lindsey-gui-x86_64 = lindseyGuiX86_64;
+            }
+            // nixPackages.lib.optionalAttrs (lindseyAppUniversal != null) {
+              lindsey-app-universal = lindseyAppUniversal;
+            }
+            // nixPackages.lib.optionalAttrs (goOracleAmd64Package != null) {
+              go-oracle-amd64 = goOracleAmd64Package;
+            }
+            // nixPackages.lib.optionalAttrs (onnxruntimeOsxX86_64 != null) {
+              onnxruntime-osx-x86_64 = onnxruntimeOsxX86_64;
             };
 
           checks =
@@ -1238,6 +1305,7 @@
                     csharpOraclePackage
                     lindseyBundlePackaging.lindseyBundle
                     lindseyBundlePackaging.installWrapper
+                    lindseyBundlePackaging.installWrapperLinux
                     libclang.lib
                     nil
                     jsonfmt
@@ -1303,7 +1371,9 @@
                     # soname — libwayland-client by `wayland-client`, libvulkan
                     # by wgpu — so they are invisible to the linker and must be
                     # findable at run time or the window never opens.
-                    export LD_LIBRARY_PATH="${nixPackages.lib.makeLibraryPath (guiGraphicsLibraries ++ guiCredentialLibraries)}:$LD_LIBRARY_PATH"
+                    export LD_LIBRARY_PATH="${
+                      nixPackages.lib.makeLibraryPath (guiGraphicsLibraries ++ guiCredentialLibraries)
+                    }:$LD_LIBRARY_PATH"
 
                     # The Vulkan *driver* cannot come from the store on a
                     # non-NixOS host: its ICD manifest names the vendor library

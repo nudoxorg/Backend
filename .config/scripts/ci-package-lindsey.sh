@@ -5,13 +5,13 @@
 # subprocess oracles, embed model sidecars, ONNX Runtime beside the binary, and a
 # launcher that sets NUDOX_* / LIBCLANG_PATH before exec'ing the release binary.
 #
-# Usage: ci-package-lindsey.sh <macos|macos-x64|linux|linux-arm64|windows>
+# Usage: ci-package-lindsey.sh <macos|macos-x64|macos-universal|linux|linux-arm64|windows>
 # Env: LINDSEY_VERSION (optional) — stamped into the macOS Info.plist; defaults to 0.1.0.
 # Output: dist/<artifact-name>/, dist/<artifact-name>.{tar.gz,zip}, and dist/<archive>.sha256
 
 set -euo pipefail
 
-PLATFORM="${1:?usage: ci-package-lindsey.sh <macos|macos-x64|linux|linux-arm64|windows>}"
+PLATFORM="${1:?usage: ci-package-lindsey.sh <macos|macos-x64|macos-universal|linux|linux-arm64|windows>}"
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)"
 ORT_VERSION="${ORT_VERSION:-1.28.0}"
 DIST="$ROOT/dist"
@@ -30,15 +30,16 @@ log() { printf 'ci-package-lindsey: %s\n' "$*"; }
 die() { printf 'ci-package-lindsey: error: %s\n' "$*" >&2; exit 1; }
 
 case "$PLATFORM" in
-  macos|macos-x64|linux|linux-arm64|windows) ;;
+  macos|macos-x64|macos-universal|linux|linux-arm64|windows) ;;
   *) die "unknown platform: $PLATFORM" ;;
 esac
 
 RUST_TARGET=""
 ORT_STATIC=0
+MACOS_CROSS=0
 case "$PLATFORM" in
-  macos) RUST_TARGET="aarch64-apple-darwin" ;;
-  macos-x64) RUST_TARGET="x86_64-apple-darwin"; ORT_STATIC=1 ;;
+  macos) ;;
+  macos-x64) RUST_TARGET="x86_64-apple-darwin"; MACOS_CROSS=1 ;;
 esac
 
 # ── Known-good hashes for fetched inputs ────────────────────────────────────
@@ -119,9 +120,9 @@ fetch_embed() {
 
 # ── ONNX Runtime 1.28 (ort-sys pin) ─────────────────────────────────────────
 fetch_ort() {
-  if [ "$ORT_STATIC" = 1 ]; then
-    bash "$ROOT/.config/scripts/build-ort-static-macos.sh" x86_64
-    ORT_DIR="$ROOT/.ci-cache/ort-static/${ORT_VERSION}/macos-x86_64"
+  if [ "$PLATFORM" = "macos-x64" ]; then
+    bash "$ROOT/.config/scripts/build-ort-macos-x64.sh"
+    ORT_DIR="$ROOT/.ci-cache/ort/${ORT_VERSION}/macos-x64"
     mkdir -p "$STAGE"
     return
   fi
@@ -245,6 +246,22 @@ build_lindsey() {
   fi
   export CARGO_PROFILE_RELEASE_STRIP=symbols
 
+  if [ "$MACOS_CROSS" = 1 ]; then
+    local sdk clang clangxx
+    sdk="$(xcrun --sdk macosx --show-sdk-path)"
+    clang="$(xcrun --sdk macosx -f clang)"
+    clangxx="$(xcrun --sdk macosx -f clang++)"
+    export BINDGEN_EXTRA_CLANG_ARGS="--target=x86_64-apple-darwin -isysroot $sdk"
+    export BINDGEN_EXTRA_CLANG_ARGS_x86_64_apple_darwin="--target=x86_64-apple-darwin -isysroot $sdk"
+    export CC_x86_64_apple_darwin="$clang"
+    export CXX_x86_64_apple_darwin="$clangxx"
+    export CFLAGS_x86_64_apple_darwin="-target x86_64-apple-darwin -isysroot $sdk"
+    export MACOSX_DEPLOYMENT_TARGET=14.0
+    if [ -z "${LIBCLANG_PATH:-}" ]; then
+      export LIBCLANG_PATH="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib"
+    fi
+  fi
+
   if [ -z "${LIBCLANG_PATH:-}" ]; then
     case "$PLATFORM" in
       macos|macos-x64)
@@ -275,10 +292,17 @@ build_lindsey() {
 
   if [ -n "$RUST_TARGET" ]; then
     log "building lindsey for $RUST_TARGET (ORT_STATIC=$ORT_STATIC ORT_LIB=${ORT_LIB_PATH:-${ORT_LIB_LOCATION:-unset}})"
+    local cargo_home="${CARGO_HOME:-$ROOT/.ci-cache/cargo}"
+    local rustup_home="${RUSTUP_HOME:-$ROOT/.ci-cache/rustup}"
+    mkdir -p "$cargo_home" "$rustup_home"
     (
       cd "$gui"
-      rustup target add "$RUST_TARGET" >/dev/null 2>&1 || true
-      cargo build --release --locked --bin lindsey --target "$RUST_TARGET"
+      if ! command -v rustup >/dev/null 2>&1; then
+        die "macos-x64 cross-build needs rustup on PATH (e.g. nix shell nixpkgs#rustup)"
+      fi
+      export CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home"
+      rustup toolchain install stable --profile minimal --target "$RUST_TARGET" >/dev/null
+      rustup run stable cargo build --release --locked --bin lindsey --target "$RUST_TARGET"
     )
     echo "$gui/target/$RUST_TARGET/release"
     return
@@ -392,6 +416,47 @@ WRAP
   rm -rf "$out"
   cp -R "$app" "$out/lindsey.app"
   ( cd "$DIST" && tar -czf "${artifact}.tar.gz" "$artifact" )
+}
+
+# ── Universal macOS .app (arm64 + x86_64 lipo) ──────────────────────────────
+package_macos_universal() {
+  local arm_app="$DIST/lindsey-macos-arm64/lindsey.app"
+  local x86_app="$DIST/lindsey-macos-x64/lindsey.app"
+  [ -d "$arm_app" ] || die "missing $arm_app (build macos first)"
+  [ -d "$x86_app" ] || die "missing $x86_app (build macos-x64 first)"
+
+  local out="$DIST/lindsey-macos-universal"
+  rm -rf "$out"
+  mkdir -p "$out" "$STAGE"
+  cp -R "$arm_app" "$out/lindsey.app"
+  local app="$out/lindsey.app"
+  local wrapped="$app/Contents/MacOS/.lindsey-wrapped"
+  [ -f "$wrapped" ] || die "arm64 app missing .lindsey-wrapped"
+
+  local x86_bin="$x86_app/Contents/MacOS/.lindsey-wrapped"
+  [ -f "$x86_bin" ] || x86_bin="$x86_app/Contents/MacOS/lindsey"
+  /usr/bin/lipo -create "$wrapped" "$x86_bin" -output "$STAGE/lindsey.fat"
+  mv "$STAGE/lindsey.fat" "$wrapped"
+  chmod +x "$wrapped"
+
+  local arm_ort x86_ort
+  arm_ort="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$app/Contents/Frameworks/libonnxruntime.1.dylib")"
+  x86_ort="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$x86_app/Contents/Frameworks/libonnxruntime.1.dylib")"
+  /usr/bin/lipo -create "$arm_ort" "$x86_ort" -output "$STAGE/ort.fat"
+  rm -f "$app/Contents/Frameworks/"libonnxruntime*.dylib
+  cp "$STAGE/ort.fat" "$app/Contents/Frameworks/libonnxruntime.1.dylib"
+
+  local go_arm="$app/Contents/Resources/nudox/nudox-go-oracle"
+  local go_x86="$x86_app/Contents/Resources/nudox/nudox-go-oracle"
+  if [ -f "$go_arm" ] && [ -f "$go_x86" ]; then
+    /usr/bin/lipo -create "$go_arm" "$go_x86" -output "$STAGE/go.fat" \
+      && mv "$STAGE/go.fat" "$go_arm" && chmod +x "$go_arm" \
+      || log "go oracle lipo skipped (likely same arch in both trees)"
+  fi
+
+  /usr/bin/lipo -info "$wrapped"
+  /usr/bin/lipo -info "$app/Contents/Frameworks/libonnxruntime.1.dylib"
+  ( cd "$DIST" && tar -czf lindsey-macos-universal.tar.gz lindsey-macos-universal )
 }
 
 # ── Linux portable tree (x64 and arm64 share layout; names differ) ───────────
@@ -526,6 +591,17 @@ smoke_oracles() {
 }
 
 # ── Main ────────────────────────────────────────────────────────────────────
+if [ "$PLATFORM" = "macos-universal" ]; then
+  log "building arm64 + x86_64 then lipo"
+  bash "$0" macos
+  bash "$0" macos-x64
+  package_macos_universal
+  checksum_archive lindsey-macos-universal.tar.gz
+  log "done — artifacts in $DIST"
+  ls -la "$DIST"
+  exit 0
+fi
+
 log "platform=$PLATFORM root=$ROOT"
 fetch_ort
 copy_resources

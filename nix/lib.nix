@@ -34,6 +34,13 @@ let
   rustToolchainDev = rustToolchain;
   rustToolchainHooks = mkRustToolchain rustComponents.hooks;
 
+  # Host fenix toolchain plus extra rust-std targets (universal macOS).
+  rustToolchainWithTargets =
+    extraTargets:
+    fenixPackages.combine (
+      [ rustToolchain ] ++ map (t: fenixPackages.targets.${t}.stable.rust-std) extraTargets
+    );
+
   # ── Repository-local Rust service package helper ──────────────────────────
   # Keep the package recipe contract small and implement it entirely with
   # nixpkgs. This replaces the former private MachineConfigurations helper.
@@ -275,6 +282,7 @@ in
     rustToolchain
     rustToolchainDev
     rustToolchainHooks
+    rustToolchainWithTargets
     mkRustService
     optionalEnvStorePath
     mkServiceImage
