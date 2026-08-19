@@ -69,32 +69,21 @@ let
     export ${envNames.goOracle}="''${${envNames.goOracle}:-$resources/nudox-go-oracle}"
     export ${envNames.javaOracle}="''${${envNames.javaOracle}:-$resources/java-oracle}"
     export ${envNames.csharpOracle}="''${${envNames.csharpOracle}:-$resources/csharp-oracle/oracle.dll}"
-    # This wrapper text is baked verbatim into the shipped .app -- the
-    # ${dotnet}/${libclang}/${goToolchain}/${jdk} store paths below only
-    # exist on the machine that built this derivation (this flake's own nix
-    # store). A distributable download almost never has them: a user
-    # without Nix has no /nix/store at all, and a user *with* Nix almost
-    # never has this exact content-addressed hash cached. Prefer whatever
-    # the end user's own machine already provides (a system dotnet/java
-    # install, or Xcode's libclang) and treat the store path as a
-    # same-machine-only fallback, not the primary source.
-    export ${envNames.dotnet}="''${${envNames.dotnet}:-$(command -v dotnet 2>/dev/null || echo "${dotnet}/bin/dotnet")}"
+    # oracle.dll is already compiled -- running it needs only the .NET
+    # *runtime* (lindsey-install-wrapper bundles dotnetCorePackages.runtime_10_0
+    # into $resources/dotnet, 84MB, not the 707MB SDK). The bundled copy is
+    # a real file inside this .app, not a build-machine-only /nix/store
+    # path, so unlike the previous stopgap this needs no system-tool
+    # fallback -- it works identically on every Mac the .app is copied to.
+    export ${envNames.dotnet}="''${${envNames.dotnet}:-$resources/dotnet/bin/dotnet}"
     export ${envNames.embedModel}="''${${envNames.embedModel}:-$resources/embed-model}"
-    if [ -z "''${${envNames.libclang}:-}" ]; then
-      if [ -f /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/libclang.dylib ]; then
-        export ${envNames.libclang}=/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
-      elif [ -d /opt/homebrew/opt/llvm/lib ]; then
-        export ${envNames.libclang}=/opt/homebrew/opt/llvm/lib
-      elif [ -d /usr/local/opt/llvm/lib ]; then
-        export ${envNames.libclang}=/usr/local/opt/llvm/lib
-      else
-        export ${envNames.libclang}="${libclang}/lib"
-      fi
-    fi
-    # Same reasoning: the bundled Go oracle binary needs no `go` on PATH to
-    # run, but the Java/C# oracles need a real `java`/`dotnet` runtime.
-    # Append the store toolchain last, after whatever the user already has.
-    export PATH="$PATH:${toolchainPath}"
+    export ${envNames.libclang}="''${${envNames.libclang}:-$resources/libclang}"
+    # javadoc -- the command NUDOX_JAVADOC actually runs the Java oracle
+    # through (invoke.rs), a JDK development tool no JRE ships -- comes from
+    # the bundled jdk21_headless copy at $resources/jdk (mirrors the dotnet
+    # bundling above; this is the one dependency here with no smaller
+    # runtime-only nixpkgs package to swap in, since javadoc is JDK-only).
+    export PATH="$resources/jdk/bin:$PATH:${toolchainPath}"
     # Belt for @rpath/libonnxruntime.1.dylib. The Mach-O also has
     # LC_RPATH=@executable_path/../Frameworks; DYLD_FALLBACK is what SIP
     # is less likely to strip than DYLD_LIBRARY_PATH when Finder launches.
@@ -115,10 +104,16 @@ let
     export ${envNames.goOracle}="''${${envNames.goOracle}:-$resources/nudox-go-oracle}"
     export ${envNames.javaOracle}="''${${envNames.javaOracle}:-$resources/java-oracle}"
     export ${envNames.csharpOracle}="''${${envNames.csharpOracle}:-$resources/csharp-oracle/oracle.dll}"
-    export ${envNames.dotnet}="''${${envNames.dotnet}:-${dotnet}/bin/dotnet}"
+    # Same reasoning as macosWrapper: ${dotnet}/${libclang} are build-machine
+    # -only /nix/store paths, meaningless once this tree is copied to a
+    # non-Nix Linux box. lindsey-install-wrapper-linux bundles a real dotnet
+    # runtime (not the SDK), libclang.so, and jdk21_headless (javadoc is
+    # JDK-only, no smaller nixpkgs runtime exists for it) into
+    # $resources/{dotnet,libclang,jdk} -- point at those instead.
+    export ${envNames.dotnet}="''${${envNames.dotnet}:-$resources/dotnet/bin/dotnet}"
     export ${envNames.embedModel}="''${${envNames.embedModel}:-$resources/embed-model}"
-    export ${envNames.libclang}="''${${envNames.libclang}:-${libclang}/lib}"
-    export PATH="${toolchainPath}:$PATH"
+    export ${envNames.libclang}="''${${envNames.libclang}:-$resources/libclang}"
+    export PATH="$resources/jdk/bin:${toolchainPath}:$PATH"
     export LD_LIBRARY_PATH="$root/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     exec "$here/.lindsey-wrapped" "$@"
   '';
@@ -176,6 +171,39 @@ let
       cp -R "${semanticModel}/." "$resources/embed-model/"
       if [ ! -e "$resources/embed-model/model.onnx" ]; then
         echo "lindsey-install-wrapper-linux: embed model is missing model.onnx" >&2
+        exit 1
+      fi
+
+      # Runtimes the C/C++, C#, and Java oracles need to actually run on a
+      # box with none of them preinstalled -- linuxWrapper points
+      # LIBCLANG_PATH/NUDOX_DOTNET/PATH at these bundled copies rather than
+      # a build-machine-only /nix/store path or a system install that may
+      # not exist.
+      rm -rf "$resources/libclang"
+      mkdir -p "$resources/libclang"
+      if ! (cp -aL "${libclang}/lib/"libclang.so* "$resources/libclang/" 2>/dev/null); then
+        echo "lindsey-install-wrapper-linux: ${libclang} has no lib/libclang.so*" >&2
+        ls -la "${libclang}/lib" >&2 || true
+        exit 1
+      fi
+
+      rm -rf "$resources/dotnet"
+      mkdir -p "$resources/dotnet"
+      cp -RL "${dotnet}/." "$resources/dotnet/"
+      if [ ! -e "$resources/dotnet/bin/dotnet" ]; then
+        echo "lindsey-install-wrapper-linux: ${dotnet} has no bin/dotnet" >&2
+        exit 1
+      fi
+
+      # javadoc -- the command the Java oracle actually runs through
+      # (invoke.rs's NUDOX_JAVADOC) -- is a JDK development tool no JRE
+      # ships, so this bundles the same jdk21_headless already used to
+      # build the Java oracle's .class files, not a smaller runtime.
+      rm -rf "$resources/jdk"
+      mkdir -p "$resources/jdk"
+      cp -R "${jdk}/." "$resources/jdk/"
+      if [ ! -e "$resources/jdk/bin/javadoc" ]; then
+        echo "lindsey-install-wrapper-linux: ${jdk} has no bin/javadoc" >&2
         exit 1
       fi
 
@@ -268,6 +296,39 @@ let
       cp -R "${semanticModel}/." "$resources/embed-model/"
       if [ ! -e "$resources/embed-model/model.onnx" ]; then
         echo "lindsey-install-wrapper: embed model is missing model.onnx" >&2
+        exit 1
+      fi
+
+      # Runtimes the C/C++, C#, and Java oracles need to actually run on a
+      # Mac with none of them preinstalled -- macosWrapper points
+      # LIBCLANG_PATH/NUDOX_DOTNET/PATH at these bundled copies rather than
+      # a build-machine-only /nix/store path or a system install (Xcode,
+      # a real dotnet SDK) that may not exist.
+      rm -rf "$resources/libclang"
+      mkdir -p "$resources/libclang"
+      if [ ! -e "${libclang}/lib/libclang.dylib" ]; then
+        echo "lindsey-install-wrapper: ${libclang} has no lib/libclang.dylib" >&2
+        exit 1
+      fi
+      cp -aL "${libclang}/lib/libclang.dylib" "$resources/libclang/"
+
+      rm -rf "$resources/dotnet"
+      mkdir -p "$resources/dotnet"
+      cp -RL "${dotnet}/." "$resources/dotnet/"
+      if [ ! -e "$resources/dotnet/bin/dotnet" ]; then
+        echo "lindsey-install-wrapper: ${dotnet} has no bin/dotnet" >&2
+        exit 1
+      fi
+
+      # javadoc -- the command the Java oracle actually runs through
+      # (invoke.rs's NUDOX_JAVADOC) -- is a JDK development tool no JRE
+      # ships, so this bundles the same jdk21_headless already used to
+      # build the Java oracle's .class files, not a smaller runtime.
+      rm -rf "$resources/jdk"
+      mkdir -p "$resources/jdk"
+      cp -R "${jdk}/." "$resources/jdk/"
+      if [ ! -e "$resources/jdk/bin/javadoc" ]; then
+        echo "lindsey-install-wrapper: ${jdk} has no bin/javadoc" >&2
         exit 1
       fi
 

@@ -426,9 +426,17 @@
             javaOracle = javaOraclePackage;
             csharpOracle = csharpOraclePackage;
             inherit semanticModel goToolchain ortStaticLink;
+            # javadoc (the actual command NUDOX_JAVADOC/invoke.rs runs the
+            # Java oracle through) is a JDK development tool, never shipped
+            # in any JRE-only distribution -- jdk21_headless is already the
+            # minimum nixpkgs offers that has it, so unlike dotnet below
+            # there is no smaller runtime-only swap available here.
             jdk = nixPackages.jdk21_headless;
             libclang = nixPackages.libclang.lib;
-            dotnet = nixPackages.dotnetCorePackages.sdk_10_0;
+            # oracle.dll is already-compiled; running it needs the .NET
+            # *runtime*, never the 707MB SDK (compilers/MSBuild/NuGet/
+            # templates) that only `dotnet build`/`dotnet publish` need.
+            dotnet = nixPackages.dotnetCorePackages.runtime_10_0;
             # Pass null on platforms without a pinned ORT tarball; the wrap
             # then skips Contents/Frameworks (Linux .so / macOS .dylib).
             onnxruntimeLib = onnxruntimeLib;
