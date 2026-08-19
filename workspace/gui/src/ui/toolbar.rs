@@ -18,7 +18,6 @@ use gpui::{
 };
 
 use crate::theme::ext::ThemeExtAccessor as _;
-use gpui::prelude::*;
 
 /// One segmented-filter chip.
 pub struct ToolbarChip {

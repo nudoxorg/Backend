@@ -20,7 +20,6 @@
 //! a keyboard path, and that includes the path *back*).
 
 use gpui::SharedString;
-use gpui::prelude::*;
 
 /// Which overlay a stack entry is.
 ///

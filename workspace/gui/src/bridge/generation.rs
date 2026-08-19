@@ -22,8 +22,6 @@
 //! - **No global state.** There is nothing to initialise; the kernel is
 //!   instantiated wherever a slot is declared and dropped with it.
 
-use std::fmt;
-
 /// An opaque monotonically increasing generation token.
 ///
 /// Every stream event that answers a slotted query is tagged with the `Gen`

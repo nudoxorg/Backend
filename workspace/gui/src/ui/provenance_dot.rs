@@ -40,7 +40,6 @@ use gpui::{
 use crate::motion::permits::LoopPermit;
 use crate::motion::tokens::STATUS_BREATHE;
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
-use gpui::prelude::*;
 
 /// Alpha range of the breathing pulse, from GUI-PLAN §5.1 `status.breathe`.
 ///

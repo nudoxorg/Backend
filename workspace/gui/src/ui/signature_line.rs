@@ -82,7 +82,6 @@ impl SigToken {
             Self::Ident(s) | Self::Generic(s) => s.as_ref(),
             Self::Ty { text, .. } => text.as_ref(),
             Self::Ws => " ",
-            _ => "?",
         }
     }
 }

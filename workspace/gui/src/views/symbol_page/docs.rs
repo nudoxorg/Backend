@@ -67,7 +67,7 @@ use crate::motion::declarative::{entrance_id, rise_in};
 use crate::motion::spring::Spring;
 use crate::motion::tokens::{MotionTokens, ROW_CASCADE_WINDOW};
 use crate::theme::ext::ThemeExtAccessor as _;
-use crate::theme::tokens::{ColourRoles, KindColours, SyntaxColours};
+use crate::theme::tokens::{ColourRoles, SyntaxColours};
 use crate::ui::{Badge, SigToken, SignatureLine};
 
 use super::header::{KindChip, link_ix, shared, sig_tokens};
@@ -1267,7 +1267,7 @@ impl DocsBody {
         code: &CodeView,
         cx: &App,
     ) -> AnyElement {
-        let (sp, ts, colours, kinds, syntax) = {
+        let (sp, ts, colours, _kinds, syntax) = {
             let ext = cx.theme_ext();
             (
                 ext.space,

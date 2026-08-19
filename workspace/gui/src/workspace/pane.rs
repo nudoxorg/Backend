@@ -51,9 +51,9 @@ use std::num::NonZeroU32;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, AnyView, App, AppContext as _, Context, Element, ElementId, Entity, EventEmitter,
-    FocusHandle, Focusable, IntoElement, MouseButton, MouseDownEvent, ParentElement, Render,
-    SharedString, Styled, Subscription, Window, div, prelude::FluentBuilder as _, px,
+    AnyElement, AnyView, App, Context, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
+    IntoElement, MouseButton, MouseDownEvent, ParentElement, Render, Styled, Subscription, Window,
+    div, prelude::FluentBuilder as _, px,
 };
 
 use crate::app::actions::{

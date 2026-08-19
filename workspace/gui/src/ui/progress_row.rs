@@ -26,7 +26,6 @@ use gpui::{
 
 use crate::motion::spring::{Motion, Spring};
 use crate::theme::ext::ThemeExtAccessor as _;
-use gpui::prelude::*;
 
 /// The animated fraction backing one progress row.
 ///
@@ -157,7 +156,6 @@ impl RenderOnce for ProgressRow {
             ProgressKind::Determinate(f) => f,
             // A wide sliver that reads as motion rather than completion.
             ProgressKind::Indeterminate => 0.35,
-            _ => 0.0,
         };
 
         let mut row = div()

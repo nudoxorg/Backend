@@ -25,7 +25,6 @@
 use std::time::{Duration, Instant};
 
 use gpui::SharedString;
-use gpui::prelude::*;
 
 /// How many toasts are shown at once before the overflow chip appears (§13.7).
 pub const MAX_VISIBLE: usize = 3;

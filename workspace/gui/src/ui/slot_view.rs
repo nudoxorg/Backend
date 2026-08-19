@@ -206,7 +206,7 @@ fn error_message(error: &Error) -> SharedString {
 }
 
 use gpui::prelude::*;
-use gpui::{IntoElement as _, RenderOnce, SharedString};
+use gpui::{RenderOnce, SharedString};
 
 #[derive(IntoElement)]
 struct SlimErrorBar {

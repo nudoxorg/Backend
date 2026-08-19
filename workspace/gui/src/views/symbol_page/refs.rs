@@ -37,7 +37,7 @@ use gpui::{
     AnyElement, App, Hsla, InteractiveElement as _, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement as _, Styled, UniformListScrollHandle, Window, div, uniform_list,
 };
-use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _};
+use gpui_component::{Icon, IconName, Sizable as _};
 use nudox_engine::wire::{ImplsPage, RefRow, RefsPage, SourceLocation, SymbolKey};
 
 use crate::motion::declarative::{entrance_id, row_enter};
@@ -455,7 +455,7 @@ impl RefsTable {
         let toggle: Rc<dyn Fn(usize, &mut Window, &mut App)> = Rc::new(on_toggle);
 
         // Pre-compute list height — must match the `.h(row_h)` on each row element.
-        let sp = ext.space;
+        let _sp = ext.space;
         let ts = ext.type_scale;
         let row_h = ext.row_height(ts.dense);
         let list_h = gpui::px(count as f32 * f32::from(row_h));
@@ -1270,7 +1270,7 @@ impl ImplsTable {
         // Pre-compute the row height so the `uniform_list` can receive an
         // explicit `h`.  This must match the `.h(...)` on each row element below
         // — if they diverge the list measures at the wrong height and clips rows.
-        let sp = ext.space;
+        let _sp = ext.space;
         let ts = ext.type_scale;
         // Impl rows are set in `mono`, so a row is one mono line tall — taller
         // than the `dense` rows of the references table beside it. Both come

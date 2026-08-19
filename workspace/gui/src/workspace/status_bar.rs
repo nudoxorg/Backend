@@ -29,7 +29,6 @@ use crate::app::account::AccountStatus;
 use crate::app::mcp::McpStatus;
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};
 use crate::ui::ProvenanceDot;
-use gpui::prelude::*;
 
 /// Pre-computed status-bar state.
 ///

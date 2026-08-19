@@ -52,7 +52,6 @@
 use gpui::{AnyElement, Focusable, SharedString};
 
 use crate::theme::ext::Provenance;
-use gpui::prelude::*;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NavEntry

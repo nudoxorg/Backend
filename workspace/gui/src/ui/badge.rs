@@ -20,9 +20,8 @@
 
 use gpui::{
     Animation, AnimationExt, App, ElementId, Hsla, IntoElement, ParentElement, RenderOnce,
-    StyleRefinement, Styled, Window, div, ease_in_out, prelude::FluentBuilder as _,
+    StyleRefinement, Styled, Window, div, ease_in_out,
 };
-use gpui_component::ActiveTheme as _;
 
 use crate::motion::tokens::BADGE_POP;
 use crate::theme::ext::{Provenance, ThemeExtAccessor as _};

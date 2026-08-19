@@ -448,11 +448,6 @@ impl PreparedRow {
                 UiSigToken::Ident(s) | UiSigToken::Generic(s) => out.push_str(s),
                 UiSigToken::Ty { text, .. } => out.push_str(text),
                 UiSigToken::Ws => out.push(' '),
-                // `SigToken` is `#[non_exhaustive]`; an unmatched token still
-                // has to contribute *something*, or a future variant could
-                // make two different signatures compare equal and silently
-                // weaken this guard.
-                other => out.push_str(&format!("{other:?}")),
             }
         }
         out.push('\u{1}');

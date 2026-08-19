@@ -53,7 +53,7 @@ use gpui::{
 use gpui_component::dock::{Panel, PanelEvent, PanelInfo, PanelState};
 use gpui_component::{ActiveTheme as _, IconName, h_flex, v_flex};
 use nudox_engine::wire::{
-    EcosystemId, Gen, PackageLineageId, PackageName, VersionEvent, VersionList,
+    EcosystemId, PackageLineageId, PackageName, VersionEvent, VersionList,
 };
 use serde_json::Value as JsonValue;
 
@@ -382,7 +382,7 @@ impl<P: PackageAccess> ProjectPanel<P> {
                         PreparedPackageRow::from_row(r, vl)
                     })
                     .collect();
-                drop(s); // release borrow before mutable methods
+                let _ = s; // release borrow before mutable methods
                 this.refresh_rows(prepared, cx);
             },
         );

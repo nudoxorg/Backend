@@ -7,7 +7,7 @@
 //! stream wiring is forward-declared as stubs so later milestones can fill
 //! them without restructuring.
 
-use gpui::{Context, Entity};
+use gpui::Context;
 
 /// Opaque newtype for project identity.
 ///

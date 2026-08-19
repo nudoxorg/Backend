@@ -154,7 +154,7 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 use gpui_component::{Icon, IconName, Sizable as _, StyledExt as _, skeleton::Skeleton};
-use nudox_engine::wire::{SourceLocation as WireSourceLocation, SymbolKey, TimelineChange};
+use nudox_engine::wire::{SourceLocation as WireSourceLocation, TimelineChange};
 
 use crate::app::actions::{
     CopySymbolUri, GoToDocsTab, GoToRefsTab, GoToSourceTab, OpenVersionPicker,
