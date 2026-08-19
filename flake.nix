@@ -161,8 +161,23 @@
                   "smolvm"
                 ];
                 doCheck = false;
+                # nixpkgs' `cargoBuildHook` always passes an explicit
+                # `--target`, so cargo writes to
+                # `target/<triple>/release/`, never `target/release/`. The
+                # unqualified path built for 12 minutes and then failed at
+                # install with
+                #
+                #   install: cannot stat 'target/release/smolvm'
+                #
+                # — after the compile succeeded, which is why the log looks
+                # like a success right up to the last line. This derivation is
+                # `if isLinuxSystem`, so macOS never builds it and never saw it.
                 installPhase = ''
-                  install -Dm755 target/release/smolvm $out/bin/smolvm
+                  runHook preInstall
+                  install -Dm755 \
+                    "target/${nixPackages.stdenv.hostPlatform.rust.cargoShortTarget}/release/smolvm" \
+                    "$out/bin/smolvm"
+                  runHook postInstall
                 '';
               }
             else
