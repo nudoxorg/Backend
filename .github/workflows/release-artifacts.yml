@@ -146,6 +146,14 @@ jobs:
             # result/{bin,lib,share} -> dist/<artifact>/{bin,lib,share}
             cp -RL result/. "dist/${{ matrix.artifact }}/"
           fi
+          # `result` is a Nix store path -- everything under it is read-only
+          # by design, and `cp`/`tar` both preserve that mode bit straight
+          # into the shipped archive. Left alone, every file a user extracts
+          # is read-only, so something as simple as `xattr -dr
+          # com.apple.quarantine` (needed just to launch an unsigned .app)
+          # fails with "Permission denied" on every single file in the
+          # bundle. Make the packaged tree normally writable before tarring.
+          chmod -R u+w "dist/${{ matrix.artifact }}"
           ( cd dist && tar -czf "${{ matrix.archive }}" "${{ matrix.artifact }}" )
           ( cd dist && sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256" )
 
