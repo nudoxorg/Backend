@@ -207,6 +207,13 @@ impl ProducerRegistry {
         reg.register(Language::Rust, RustProducer { direct_repo: false });
         #[cfg(feature = "pyrefly")]
         reg.register(Language::Python, PythonProducer);
+        // TypeScript: with the `tsz` feature the enriched checker oracle runs
+        // (inferred returns, cross-module type resolution, Promise unwrapping,
+        // object shapes) on top of the always-on OXC structural tier; without
+        // it, the lean OXC-only producer. Mirrors the `pyrefly` gate above.
+        #[cfg(feature = "tsz")]
+        reg.register(Language::TypeScript, TypescriptProducer::new_tsz());
+        #[cfg(not(feature = "tsz"))]
         reg.register(Language::TypeScript, TypescriptProducer::new());
         reg.register(Language::Go, GoProducer);
         reg.register(Language::Java, JavaProducer::new());

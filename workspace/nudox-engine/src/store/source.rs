@@ -26,6 +26,7 @@
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
 pub mod producer;
+pub mod remote;
 
 use std::sync::Arc;
 
@@ -253,4 +254,19 @@ pub trait IrSource: Send + Sync + 'static {
     /// stream-level failure (distinct from per-package `LoadEvent::Failed`
     /// which is `Ok`).
     fn load(&self, req: LoadRequest) -> BoxStream<'static, Result<LoadEvent, Error>>;
+}
+
+/// Forwarding impl so a `Box<dyn IrSource>` is itself an [`IrSource`]. This is
+/// what lets [`Engine::start`](crate::runtime::Engine::start) erase the source
+/// type to one `Box<dyn IrSource>` after conditionally wrapping it (with the
+/// remote-hydrating [`RemoteSource`](crate::store::source::remote::RemoteSource)
+/// or not) and still hand it to the generic `drive_load`.
+impl IrSource for Box<dyn IrSource> {
+    fn describe(&self) -> SourceDescriptor {
+        (**self).describe()
+    }
+
+    fn load(&self, req: LoadRequest) -> BoxStream<'static, Result<LoadEvent, Error>> {
+        (**self).load(req)
+    }
 }
