@@ -43,7 +43,7 @@
 // direct dependency of this crate.
 use ra_ap_base_db::{CrateOrigin, LangCrateOrigin};
 use ra_ap_hir::{
-    Crate, DisplayTarget, HasVisibility, Module, ModuleDef, ScopeDef, Semantics, Visibility,
+    Adt, Crate, DisplayTarget, HasVisibility, Module, ModuleDef, ScopeDef, Semantics, Visibility,
 };
 use ra_ap_ide_db::RootDatabase;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -491,6 +491,21 @@ impl<'db> LowerCtx<'db> {
         }
         if let ModuleDef::BuiltinType(b) = def {
             return Some(vec![b.name().as_str().to_owned()]);
+        }
+        // An enum variant's defining scope is its *enum*, not the enclosing
+        // module `ModuleDef::module` returns for it — falling through to the
+        // generic path below silently drops the enum's own name segment
+        // (`crate::Rgb` instead of `crate::Color::Rgb`), which does not
+        // match the `{enum_id}::{variant_name}` id `item::lower_enum`
+        // actually declares each variant under. A canonical path that
+        // disagrees with the declared id is exactly how a reference to a
+        // variant (`id_of` → `canonical` → this function) becomes a dangling
+        // `PendingTarget::Local` no entry in the table answers to.
+        if let ModuleDef::EnumVariant(v) = def {
+            let mut segs =
+                self.path_segments(ModuleDef::Adt(Adt::Enum(v.parent_enum(self.db))))?;
+            segs.push(v.name(self.db).as_str().to_owned());
+            return Some(segs);
         }
 
         let mut segs = Vec::new();

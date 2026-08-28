@@ -710,9 +710,22 @@ fn lower_free_function_with_id(
 /// * `MethodCall`: every `recv.method(args)` expression whose target function
 ///   can be resolved via `Semantics::resolve_method_call`.
 /// * `FunctionCall`: every `path(args)` expression whose callee resolves to a
-///   function via `Semantics::resolve_path` on the call's path prefix.
+///   function via `Semantics::resolve_path` on the call's path prefix — this
+///   also covers a tuple-struct or tuple-variant constructor call (`Wrap(1)`,
+///   `Color::Rgb(r, g, b)`), whose callee path resolves to `ModuleDef::Adt`
+///   (a `Struct`) or `ModuleDef::EnumVariant` rather than `ModuleDef::Function`.
 /// * `TypeReference`: every `PathType` in the body whose target is a struct /
-///   enum / union / trait resolved via `Semantics::resolve_path`.
+///   enum / union / trait resolved via `Semantics::resolve_path`, and every
+///   `RecordExpr` (`P { x: 0 }`, `Enum::Variant { x: 0 }`) whose path resolves
+///   the same way (plus `EnumVariant`, for struct-like variant literals).
+/// * `VariableUse`: every bare, non-call value path (`let p = g;`,
+///   `Color::Red` used as a value) whose target resolves to a function,
+///   const, static, enum variant, or unit-struct constructor. A `PathExpr`
+///   that is itself the callee of a `CallExpr` is skipped here — it is
+///   already recorded once, as a `FunctionCall`, by the `CALL_EXPR` arm above.
+///
+/// Calls inside a macro's argument tokens (`vec![g()]`) are, best-effort,
+/// walked too by expanding the macro call — see the `MACRO_CALL` arm.
 ///
 /// # Cost bound
 ///
@@ -858,6 +871,240 @@ fn record_body_occurrences(ctx: &mut LowerCtx<'_>, f: HirFunction, fn_id: &RaId)
                 });
             }
 
+            // ── Struct literal: `P { x: 0 }`, `Enum::Variant { x: 0 }` ───────
+            SyntaxKind::RECORD_EXPR => {
+                let Some(re) = syn_ast::RecordExpr::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(path) = re.path() else {
+                    continue;
+                };
+                let Some(resolution) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.sema.resolve_path(&path)
+                    }))
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+
+                let Some(target_id) = type_ref_target(ctx, resolution, &local_crate) else {
+                    continue;
+                };
+
+                let span = rel_span(fn_span_start, path.syntax().text_range());
+
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::TypeReference,
+                    span,
+                });
+            }
+
+            // ── Bare value path: `let p = g;`, `Color::Red` ──────────────────
+            //
+            // Skip when this node is the callee of a `CallExpr` — that case is
+            // already recorded above, as a `FunctionCall`, by the `CALL_EXPR`
+            // arm. Recording it again here would double-count one source span
+            // under two different `ReferenceKind`s.
+            SyntaxKind::PATH_EXPR => {
+                let Some(pe) = syn_ast::PathExpr::cast(node.clone()) else {
+                    continue;
+                };
+                if is_call_callee(&pe) {
+                    continue;
+                }
+                let Some(path) = pe.path() else {
+                    continue;
+                };
+                let Some(resolution) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.sema.resolve_path(&path)
+                    }))
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+
+                let Some(target_id) = value_path_target(ctx, resolution, &local_crate) else {
+                    continue;
+                };
+
+                let span = rel_span(fn_span_start, path.syntax().text_range());
+
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::VariableUse,
+                    span,
+                });
+            }
+
+            // ── Macro call: best-effort walk of the expanded body ────────────
+            //
+            // `vec![g()]`, `assert_eq!(f(), g())` and similar carry their
+            // arguments as opaque token trees — `body.syntax().descendants()`
+            // never reaches a `CALL_EXPR`/`PATH_EXPR` node inside them, because
+            // none exists until the macro is expanded. `Semantics::expand_macro_call`
+            // yields the expanded syntax tree (registered with `ctx.sema`, so
+            // `resolve_path`/`resolve_method_call` work on it exactly as they do
+            // on real source); we walk it with the same node-kind coverage.
+            //
+            // Expanded nodes live in a synthetic macro-expansion file, not
+            // `src` — computing a `RelSpan` relative to `fn_span_start` (a
+            // position in the *original* file) would either be meaningless or
+            // violate `rel_span`'s "cannot precede its owning function"
+            // invariant. Every occurrence found inside an expansion is instead
+            // given the macro call's own span, in the original source — an
+            // approximation, not a spurious span.
+            SyntaxKind::MACRO_CALL => {
+                let Some(mc) = syn_ast::MacroCall::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(expanded) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    ctx.sema.expand_macro_call(&mc)
+                }))
+                .ok()
+                .flatten() else {
+                    continue;
+                };
+                let span = rel_span(fn_span_start, mc.syntax().text_range());
+                record_expanded_macro_occurrences(
+                    ctx,
+                    &expanded.value,
+                    fn_id,
+                    &local_crate,
+                    span,
+                );
+            }
+
+            _ => {}
+        }
+    }
+}
+
+/// True when `pe` is the callee position of its parent `CallExpr` — i.e.
+/// `pe(..)`, not one of `pe`'s arguments or an unrelated sibling.
+///
+/// `ast::CallExpr::expr()` is `support::child`, the *first* `Expr`-kind direct
+/// child of the `CALL_EXPR` node; the call's arguments live one level deeper,
+/// inside its `ArgList` child. So a `PathExpr` whose direct syntax parent is a
+/// `CALL_EXPR` is, structurally, always the callee — no need to compare node
+/// identity against `CallExpr::expr()`'s result.
+fn is_call_callee(pe: &syn_ast::PathExpr) -> bool {
+    pe.syntax()
+        .parent()
+        .is_some_and(|p| p.kind() == SyntaxKind::CALL_EXPR)
+}
+
+/// Best-effort walk of a macro call's *expanded* syntax tree, recording
+/// occurrences for the same call/value/struct-literal shapes the un-expanded
+/// body walk covers (`record_body_occurrences`'s `CALL_EXPR`/`PATH_EXPR`/
+/// `RECORD_EXPR` arms) — but not nested `MACRO_CALL`s: expansions are, in
+/// practice, shallow (one or two levels), and recursing into a second
+/// expansion multiplies rust-analyzer's already-substantial macro-expansion
+/// cost for a case this producer has no fixture-backed evidence is common.
+///
+/// Every occurrence found is attributed the same `span` (the originating
+/// macro call's span in real source) since expanded nodes carry no span in a
+/// file `rel_span` can subtract against.
+fn record_expanded_macro_occurrences(
+    ctx: &mut LowerCtx<'_>,
+    expanded: &ra_ap_syntax::SyntaxNode,
+    fn_id: &RaId,
+    local_crate: &str,
+    span: RelSpan,
+) {
+    for node in expanded.descendants() {
+        match node.kind() {
+            SyntaxKind::CALL_EXPR => {
+                let Some(call) = syn_ast::CallExpr::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(syn_ast::Expr::PathExpr(pe)) = call.expr() else {
+                    continue;
+                };
+                let Some(path) = pe.path() else {
+                    continue;
+                };
+                let Some(resolution) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.sema.resolve_path(&path)
+                    }))
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                let Some(target_id) = path_resolution_to_target(ctx, resolution, local_crate)
+                else {
+                    continue;
+                };
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::FunctionCall,
+                    span,
+                });
+            }
+            SyntaxKind::RECORD_EXPR => {
+                let Some(re) = syn_ast::RecordExpr::cast(node.clone()) else {
+                    continue;
+                };
+                let Some(path) = re.path() else {
+                    continue;
+                };
+                let Some(resolution) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.sema.resolve_path(&path)
+                    }))
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                let Some(target_id) = type_ref_target(ctx, resolution, local_crate) else {
+                    continue;
+                };
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::TypeReference,
+                    span,
+                });
+            }
+            SyntaxKind::PATH_EXPR => {
+                let Some(pe) = syn_ast::PathExpr::cast(node.clone()) else {
+                    continue;
+                };
+                if is_call_callee(&pe) {
+                    continue;
+                }
+                let Some(path) = pe.path() else {
+                    continue;
+                };
+                let Some(resolution) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        ctx.sema.resolve_path(&path)
+                    }))
+                    .ok()
+                    .flatten()
+                else {
+                    continue;
+                };
+                let Some(target_id) = value_path_target(ctx, resolution, local_crate) else {
+                    continue;
+                };
+                ctx.occurrence_buf.push(PendingOcc {
+                    owner: fn_id.clone(),
+                    target: target_id,
+                    kind: ReferenceKind::VariableUse,
+                    span,
+                });
+            }
             _ => {}
         }
     }
@@ -875,6 +1122,28 @@ fn rel_span(fn_span_start: u32, r: ra_ap_syntax::TextRange) -> RelSpan {
     RelSpan::new(start, end)
 }
 
+/// Shared canonical-path → `PendingTarget` conversion.
+///
+/// Callers have already decided `def` is an acceptable target for their
+/// reference kind (a function for a call, a struct for a type reference, …);
+/// this is just the local-vs-foreign split, factored out because every
+/// `PathResolution`/`HirFunction` → `PendingTarget` conversion in this module
+/// does the exact same `canonical` + `starts_with(local_crate)` + `id_of`
+/// dance.
+fn def_target(ctx: &mut LowerCtx<'_>, def: ModuleDef, local_crate: &str) -> Option<PendingTarget> {
+    let canon = ctx.canonical(def)?;
+    if canon.starts_with(local_crate)
+        && (canon.len() == local_crate.len()
+            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
+    {
+        // Local — but we need the id_of form (with assoc container + ns tag).
+        let full_id = id_of(ctx, def)?;
+        Some(PendingTarget::Local(full_id))
+    } else {
+        Some(PendingTarget::Foreign(ctx.foreign_key(canon.as_str())))
+    }
+}
+
 /// Resolve a method call's target `Function` to a `PendingTarget`.
 ///
 /// Returns `None` when the method has no canonical path (anonymous impl on a
@@ -884,21 +1153,20 @@ fn method_call_target_id(
     target_fn: HirFunction,
     local_crate: &str,
 ) -> Option<PendingTarget> {
-    let ra_def = ModuleDef::Function(target_fn);
-    let canon = ctx.canonical(ra_def)?;
-    if canon.starts_with(local_crate)
-        && (canon.len() == local_crate.len()
-            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
-    {
-        // Local — but we need the id_of form (with assoc container + ns tag).
-        let full_id = id_of(ctx, ra_def)?;
-        Some(PendingTarget::Local(full_id))
-    } else {
-        Some(PendingTarget::Foreign(ctx.foreign_key(canon.as_str())))
-    }
+    def_target(ctx, ModuleDef::Function(target_fn), local_crate)
 }
 
-/// Convert a `PathResolution` to a `PendingTarget` (function-call context).
+/// Convert a `PathResolution` to a `PendingTarget` (call-position context:
+/// `path(args)`).
+///
+/// Accepts functions *and* the two shapes of tuple constructor call syntax
+/// resolves to: a tuple struct (`Wrap(1)`, resolving to `ModuleDef::Adt(Adt::
+/// Struct(_))`) and a tuple or unit enum variant (`Color::Rgb(r, g, b)`,
+/// resolving to `ModuleDef::EnumVariant`). Neither is a `Function` in RA's
+/// model — there is no separate "constructor" item — so without this the
+/// call's target collapses to `None` and the occurrence is dropped, even
+/// though the struct/variant it constructs is declared right there in the
+/// same table.
 fn path_resolution_to_target(
     ctx: &mut LowerCtx<'_>,
     res: PathResolution,
@@ -907,25 +1175,20 @@ fn path_resolution_to_target(
     let PathResolution::Def(def) = res else {
         return None;
     };
-    // Only function-like targets.
-    if !matches!(def, ModuleDef::Function(_)) {
-        return None;
+    match def {
+        ModuleDef::Function(_) | ModuleDef::Adt(Adt::Struct(_)) | ModuleDef::EnumVariant(_) => {}
+        _ => return None,
     }
-    let canon = ctx.canonical(def)?;
-    if canon.starts_with(local_crate)
-        && (canon.len() == local_crate.len()
-            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
-    {
-        let full_id = id_of(ctx, def)?;
-        Some(PendingTarget::Local(full_id))
-    } else {
-        Some(PendingTarget::Foreign(ctx.foreign_key(canon.as_str())))
-    }
+    def_target(ctx, def, local_crate)
 }
 
-/// Convert a `PathResolution` to a `PendingTarget` (type-reference context).
+/// Convert a `PathResolution` to a `PendingTarget` (type-reference context:
+/// `PathType`s and struct-literal paths).
 ///
-/// Returns `None` for non-type-namespace targets (functions, consts, modules).
+/// Returns `None` for non-type-namespace targets (functions, consts,
+/// modules). `EnumVariant` is included alongside the type-namespace kinds
+/// because a struct-like variant literal (`Enum::Variant { x: 0 }`) resolves
+/// its path straight to the variant, not to the enum.
 fn type_ref_target(
     ctx: &mut LowerCtx<'_>,
     res: PathResolution,
@@ -934,21 +1197,41 @@ fn type_ref_target(
     let PathResolution::Def(def) = res else {
         return None;
     };
-    // Type namespace: struct, enum, union, trait, type alias.
     match def {
-        ModuleDef::Adt(_) | ModuleDef::Trait(_) | ModuleDef::TypeAlias(_) => {}
+        ModuleDef::Adt(_)
+        | ModuleDef::Trait(_)
+        | ModuleDef::TypeAlias(_)
+        | ModuleDef::EnumVariant(_) => {}
         _ => return None,
     }
-    let canon = ctx.canonical(def)?;
-    if canon.starts_with(local_crate)
-        && (canon.len() == local_crate.len()
-            || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
-    {
-        let full_id = id_of(ctx, def)?;
-        Some(PendingTarget::Local(full_id))
-    } else {
-        Some(PendingTarget::Foreign(ctx.foreign_key(canon.as_str())))
+    def_target(ctx, def, local_crate)
+}
+
+/// Convert a `PathResolution` to a `PendingTarget` (bare value-path context:
+/// `let p = g;`, `Color::Red` used as a value — not the callee of a call,
+/// which `path_resolution_to_target` already covers).
+///
+/// Value namespace: functions, consts, statics, and enum variants (a unit
+/// variant read as a value, e.g. `Color::Red`) — plus tuple/unit structs,
+/// whose *name* denotes their own implicit constructor function when used
+/// bare (`let ctor = Wrap;`, `let u = UnitStruct;`).
+fn value_path_target(
+    ctx: &mut LowerCtx<'_>,
+    res: PathResolution,
+    local_crate: &str,
+) -> Option<PendingTarget> {
+    let PathResolution::Def(def) = res else {
+        return None;
+    };
+    match def {
+        ModuleDef::Function(_)
+        | ModuleDef::Const(_)
+        | ModuleDef::Static(_)
+        | ModuleDef::EnumVariant(_)
+        | ModuleDef::Adt(Adt::Struct(_)) => {}
+        _ => return None,
     }
+    def_target(ctx, def, local_crate)
 }
 
 /// Lower an impl/trait assoc function where the id is derived from the parent

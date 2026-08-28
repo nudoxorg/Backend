@@ -1,0 +1,65 @@
+---
+source: workspace/compiler/languages/tests/rust/ref_snapshots.rs
+expression: "format!(\"── TABLE ──\\n{table_render}\\n── OCCURRENCES ──\\n{occurrence_render}\")"
+---
+── TABLE ──
+== 0 :: Some(Field) ==
+  ty: Integer(signed=false, Fixed(32))
+== Foo :: Some(Trait) ==
+== Holder :: Some(Record) ==
+  form: Struct
+  field: Intro(`widget` Some(Field))
+== Impl :: Some(Record) ==
+  form: Unit
+== Widget :: Some(Record) ==
+  form: Tuple
+  field: Intro(`0` Some(Field))
+== bar :: Some(Function) ==
+  receiver: true
+  output_param: Intro(`return` Some(Param))
+== bar :: Some(Function) ==
+  receiver: true
+  output_param: Intro(`return` Some(Param))
+== first_item :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`it` Some(Param))
+  output_param: Intro(`return` Some(Param))
+  generic: Type("T", bounds=[Foreign(origin=Package(rust-sysroot/core), path="core::iter::traits::iterator::Iterator", display="Iterator", kind=None, unlinked)], default=None, variance=None)
+== impl Foo for Impl :: Some(Impl) ==
+== input :: Some(Param) ==
+  ty: Apply(Foreign(origin=Package(rust-sysroot/alloc), path="alloc::vec::Vec", display="Vec", kind=None, unlinked)<Foreign(origin=Package(rust-sysroot/alloc), path="alloc::string::String", display="String", kind=None, unlinked)>)
+== it :: Some(Param) ==
+  ty: TypeVar("T")
+== make_dyn :: Some(Function) ==
+  receiver: false
+  output_param: Intro(`return` Some(Param))
+== make_widget :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`x` Some(Param))
+  output_param: Intro(`return` Some(Param))
+== nudox_ref_snapshot_fixture :: Some(Module) ==
+== nudox_ref_snapshot_fixture :: Some(Module) ==
+== parse_all :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`input` Some(Param))
+  output_param: Intro(`return` Some(Param))
+== return :: Some(Param) ==
+  ty: Intro(`Widget` Some(Record))
+== return :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+== return :: Some(Param) ==
+  ty: Apply(Foreign(origin=Package(rust-sysroot/core), path="core::option::Option", display="Option", kind=None, unlinked)<Apply(Foreign(origin=Package(rust-sysroot/alloc), path="alloc::vec::Vec", display="Vec", kind=None, unlinked)<Apply(Foreign(origin=Package(rust-sysroot/core), path="core::result::Result", display="Result", kind=None, unlinked)<Integer(signed=true, Fixed(32)), Foreign(origin=Package(rust-sysroot/core), path="core::num::error::ParseIntError", display="ParseIntError", kind=None, unlinked)>)>)>)
+== return :: Some(Param) ==
+  ty: Apply(Foreign(origin=Package(rust-sysroot/alloc), path="alloc::boxed::Box", display="Box", kind=None, unlinked)<DynTrait(Intro(`Foo` Some(Trait)))>)
+== return :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+== return :: Some(Param) ==
+  ty: Apply(Foreign(origin=Package(rust-sysroot/core), path="core::option::Option", display="Option", kind=None, unlinked)<QualifiedPath(<TypeVar("T") as Foreign(origin=Package(rust-sysroot/core), path="core::iter::traits::iterator::Iterator", display="Iterator", kind=None, unlinked)>::Item)>)
+== widget :: Some(Field) ==
+  ty: Intro(`Widget` Some(Record))
+== x :: Some(Param) ==
+  ty: Integer(signed=false, Fixed(32))
+
+── OCCURRENCES ──
+make_dyn --VariableUse(Oracle)--> package=cargo/nudox_ref_snapshot_fixture target=Impl
+make_widget --FunctionCall(Oracle)--> package=cargo/nudox_ref_snapshot_fixture target=Widget

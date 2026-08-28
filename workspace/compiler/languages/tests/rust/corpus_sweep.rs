@@ -59,7 +59,7 @@ use nudox_ir::foreign::Unlinked;
 use nudox_languages::rust::{Error, RustProducer, error::NothingToDocument};
 use nudox_languages::{PackageSource, ProducerError, produce};
 
-use common::{ENTRIES, Entry, chain, corpus_root, entry_root};
+use common::{ENTRIES, Entry, chain, corpus_root, entry_root, writable_entry_root};
 
 // ── Per-entry outcome ────────────────────────────────────────────────────────
 
@@ -96,8 +96,10 @@ enum Outcome {
 // ── One entry ────────────────────────────────────────────────────────────────
 
 fn run_entry(entry: &Entry) -> Outcome {
-    let root = entry_root(entry);
-    if !root.join("Cargo.toml").is_file() {
+    // Gate on the read-only checkout first so a genuinely absent entry stays a
+    // clean preflight failure rather than a `read_dir` panic inside the copy.
+    let ro_root = entry_root(entry);
+    if !ro_root.join("Cargo.toml").is_file() {
         // A missing checkout is a hard failure, not a skip. `corpus_manifest.rs`
         // is the fast test whose job is to report an unprovisioned corpus; by
         // the time anyone has paid for a rust-analyzer boot, "the package was
@@ -106,10 +108,15 @@ fn run_entry(entry: &Entry) -> Outcome {
             stage: "preflight",
             chain: format!(
                 "no Cargo.toml at {} — run `nix build .#checks.corpus`",
-                root.display()
+                ro_root.display()
             ),
         };
     }
+    // Lower against a writable copy: a build-scripted crate's `cargo check`
+    // writes `Cargo.lock` beside the manifest, which the read-only /nix/store
+    // corpus rejects (`serde`, `syn`, … fail otherwise). See
+    // `common::writable_entry_root`.
+    let root = writable_entry_root(entry);
 
     let src = PackageSource::new(&root, entry.name, entry.version);
     let lineage = PackageLineageId::new(

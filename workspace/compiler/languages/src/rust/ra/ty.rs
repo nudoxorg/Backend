@@ -116,11 +116,18 @@
 //! the post-CC-2 meaning of `Type::Any` (a genuine top type) has no Rust
 //! inhabitant. Every former site now says which kind of gap it is:
 //!
-//! - **Unresolvable path** — `resolve_path_opt` returned `None`, or resolved
-//!   but `ref_for` produced nothing → `UnknownType::UnresolvedExternal`,
-//!   carrying the written path. rust-analyzer resolves everything in the crate
-//!   it loaded, so a failure here names something outside it (or behind a
-//!   macro it declined to expand).
+//! - **Unresolvable path** — `resolve_path_opt` returned `None` entirely →
+//!   `UnknownType::UnresolvedLocalName`, carrying the written path.
+//!   rust-analyzer resolves every item its fully-loaded crate graph can see —
+//!   this crate's own items *and* every dependency's — so a path it cannot
+//!   resolve at all named nothing *outside* the crate either; it is a local
+//!   gap (an unexpanded local macro's output, a misspelling, a name RA's
+//!   incremental pass declined to chase), resolvable without any
+//!   cross-package linking. When `resolve_path_opt` *did* find a real item
+//!   but this module's own `id_of`/`ref_for` machinery could not turn it into
+//!   a `RawRef`, the local/foreign split runs on that resolved def instead
+//!   (`unresolved_path_type`) — `UnknownType::UnresolvedExternal` only when
+//!   the def itself lives outside this crate.
 //! - **Missing AST child / unexpanded macro** — a `PathType` with no path, a
 //!   `SliceType` with no element, a `MacroType` whose call is absent →
 //!   `UnknownType::OracleGap`. The source did not parse; no producer effort
@@ -334,6 +341,27 @@ pub(crate) fn lower_hir_type_fallback(
         let name = attach_db(ctx.db, || ty.display(ctx.db, ctx.display).to_string());
         return Type::unresolved_external(name);
     }
+    // `dyn Trait` reached only through a HIR type (no AST, e.g. `impl Bar for
+    // dyn Foo {}`'s `self_ty`) — `ast::Type::DynTraitType` never applies here
+    // since there is no AST node. `as_dyn_trait` recovers the principal
+    // trait; without this branch a HIR-only `dyn Trait` had no case above the
+    // "no IR variant" catch-all and rendered as `NoIrRepresentation`,
+    // dropping the trait reference (a resolved `Nominal`) entirely.
+    if let Some(tr) = ty.as_dyn_trait() {
+        let def = ModuleDef::Trait(tr);
+        let member = if let Some(key) = id_of(ctx, def)
+            && let Some(raw_ref) = ref_for(&key)
+        {
+            Type::Nominal(raw_ref)
+        } else {
+            // Foreign trait `id_of`/`ref_for` could not resolve — same "no
+            // top type" reasoning as the `as_adt` branch above: keep the
+            // spelling rather than collapsing to a generic gap.
+            let name = attach_db(ctx.db, || ty.display(ctx.db, ctx.display).to_string());
+            Type::unresolved_external(name)
+        };
+        return Type::DynTrait(Box::new([member]));
+    }
     // Last resort: rendered display string.
     let rendered = attach_db(ctx.db, || ty.display(ctx.db, ctx.display).to_string());
     if rendered == "!" {
@@ -354,6 +382,40 @@ pub(crate) fn lower_hir_type_fallback(
 }
 
 // ── Path types ────────────────────────────────────────────────────────────────
+
+/// Classify a path this module could not build a `Type::Nominal` for.
+///
+/// `resolved` is the def rust-analyzer found, when it found one at all
+/// (`None` when `resolve_path_opt` — or the `<T as Trait>::Assoc` trait-ref
+/// sub-resolution — failed outright).
+///
+/// - `resolved: None` — rust-analyzer's fully-loaded crate graph (this
+///   crate's own items plus every dependency's) still could not resolve the
+///   path. Nothing *outside* the crate could have produced it — RA would
+///   have found it if it had — so this is a **local** gap: an unexpanded
+///   local macro's output, a misspelling, a forward reference RA declined to
+///   chase. `UnknownType::UnresolvedLocalName`, not `UnresolvedExternal`.
+/// - `resolved: Some(def)` — RA found a real item, but `id_of`/`ref_for`
+///   could not turn it into a `RawRef`. This *does* need the local/foreign
+///   split: `def`'s own canonical path is checked against the local crate
+///   name, the same `starts_with` test every successful `Nominal` branch in
+///   this file already runs.
+fn unresolved_path_type(ctx: &mut LowerCtx<'_>, resolved: Option<ModuleDef>, written: &str) -> Type {
+    let Some(def) = resolved else {
+        return Type::unresolved_local(written.to_owned());
+    };
+    let local_crate = super::ctx::crate_name(ctx.db, ctx.krate);
+    let is_local = ctx.canonical(def).is_some_and(|canon| {
+        canon.starts_with(local_crate.as_str())
+            && (canon.len() == local_crate.len()
+                || canon.as_bytes().get(local_crate.len()) == Some(&b':'))
+    });
+    if is_local {
+        Type::unresolved_local(written.to_owned())
+    } else {
+        Type::unresolved_external(written.to_owned())
+    }
+}
 
 fn lower_path_type(
     ctx: &mut LowerCtx<'_>,
@@ -381,8 +443,11 @@ fn lower_path_type(
         // absent for `<T>::Assoc` — though the latter is rare in practice).
         let trait_ref_ty: Option<Box<Type>> = trait_ref.and_then(|tr| {
             tr.path().map(|p| {
-                if let Some(res) = resolve_path_opt(ctx, &p)
-                    && let PathResolution::Def(def) = res
+                let resolved_def = resolve_path_opt(ctx, &p).and_then(|res| match res {
+                    PathResolution::Def(def) => Some(def),
+                    _ => None,
+                });
+                if let Some(def) = resolved_def
                     && let Some(key) = id_of(ctx, def)
                     && let Some(raw_ref) = ref_for(&key)
                 {
@@ -397,10 +462,17 @@ fn lower_path_type(
                         })
                     }
                 } else {
-                    // The `as Trait` disambiguator did not resolve. Keep the
-                    // written path — `<T as Iterator>::Item` and
-                    // `<T as Display>::Item` must not collapse together.
-                    Box::new(Type::unresolved_external(path_identifier_text(&p)))
+                    // The `as Trait` disambiguator did not resolve to a
+                    // usable ref. Keep the written path — `<T as Iterator>::
+                    // Item` and `<T as Display>::Item` must not collapse
+                    // together — but whether the gap is local or external
+                    // still depends on whether RA found *any* def at all;
+                    // see `unresolved_path_type`.
+                    Box::new(unresolved_path_type(
+                        ctx,
+                        resolved_def,
+                        &path_identifier_text(&p),
+                    ))
                 }
             })
         });
@@ -466,9 +538,11 @@ fn lower_path_type(
                         args: type_args.into_boxed_slice(),
                     };
                 }
-                // Resolved, but `ref_for` could not produce a ref — an item in
-                // another crate. Keep the written path.
-                return Type::unresolved_external(path_identifier_text(&path));
+                // Resolved to a real item, but `id_of`/`ref_for` could not
+                // turn it into a `RawRef`. Whether that names something
+                // inside this crate or genuinely outside it still needs the
+                // local/foreign check `unresolved_path_type` runs.
+                return unresolved_path_type(ctx, Some(def), &path_identifier_text(&path));
             }
             // Value-ns / attr — fall through.
             PathResolution::Local(_)
@@ -489,12 +563,14 @@ fn lower_path_type(
             return Type::SelfType;
         }
     }
-    // rust-analyzer resolves everything inside the crate it has loaded, so a
-    // path it cannot resolve names something outside it — or something behind
-    // a macro it declined to expand. Keeping the spelling is what stops two
-    // different unresolvable paths in one overload set from producing the same
+    // rust-analyzer resolves every item its fully-loaded crate graph can see —
+    // this crate's own items *and* every dependency's. A path that still
+    // fails to resolve therefore named nothing outside the crate either; it
+    // is a local gap (an unexpanded local macro's output, a misspelling, …),
+    // not a cross-crate one. Keeping the spelling is what stops two different
+    // unresolvable paths in one overload set from producing the same
     // skeleton byte.
-    Type::unresolved_external(written)
+    unresolved_path_type(ctx, None, &written)
 }
 
 // ── ref / ptr / array ─────────────────────────────────────────────────────────

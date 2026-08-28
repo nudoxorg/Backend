@@ -34,7 +34,8 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use nudox_ir::kind::KindDiscriminant;
 
@@ -411,6 +412,54 @@ pub fn corpus_root() -> PathBuf {
 
 pub fn entry_root(entry: &Entry) -> PathBuf {
     corpus_root().join(entry.dir)
+}
+
+/// A writable copy of one corpus entry's checkout.
+///
+/// `result/` is a symlink into `/nix/store`, which is read-only. A crate with a
+/// build script drives `cargo check` during `produce()`, and cargo insists on
+/// writing a `Cargo.lock` beside the manifest it resolves — which fails with
+/// `permission denied` against the read-only store, so 5 of the 23 crates (the
+/// ones with build scripts: `serde`, `syn`, …) cannot lower in place. Every
+/// entry is copied into a scratch dir first — wholesale, not just the ones
+/// known to carry a build script, so the sweep does not depend on which entries
+/// happen to need writability. This mirrors [`writable_entry_root`] in
+/// `tests/go/corpus_sweep.rs` and `real_crate_root`/`copy_tree` in
+/// `workspace/nudox-engine/tests/mcp/address_resolution.rs`, which state the
+/// same problem and fix. Dependency resolution is unaffected: source
+/// replacement is configured globally (`CARGO_HOME`), not per-checkout, so a
+/// crate resolves the corpus the same from a temp dir as from `result/`.
+///
+/// `src` must already be known to exist — callers gate on that first so a
+/// genuinely absent entry (this `result/` is regenerated concurrently by other
+/// in-flight work) stays a clean per-entry failure rather than a `read_dir`
+/// panic here.
+pub fn writable_entry_root(entry: &Entry) -> PathBuf {
+    static SCRATCH: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let scratch = SCRATCH.get_or_init(|| tempfile::tempdir().expect("writable corpus scratch"));
+    let dst = scratch.path().join(entry.dir);
+    if !dst.is_dir() {
+        copy_tree(&entry_root(entry), &dst);
+    }
+    dst
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create scratch dir");
+    for entry in std::fs::read_dir(src).expect("read corpus dir") {
+        let entry = entry.expect("corpus dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy corpus file");
+            let mut perms = std::fs::metadata(&to).expect("stat copy").permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&to, perms).expect("chmod copy");
+        }
+    }
 }
 
 /// Render the whole `std::error::Error` source chain.
