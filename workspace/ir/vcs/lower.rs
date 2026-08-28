@@ -49,7 +49,7 @@ use ir::{
         static_::Static,
         sum::{Enum, Variant, VariantForm},
         trait_::{Trait, TraitFlags},
-        ty::{Primitive, TupleElement, Type, Width},
+        ty::{Primitive, TupleElement, Type, UnknownType, Width},
     },
     view::IrView,
 };
@@ -475,6 +475,14 @@ fn lower_where_pred(wp: &WherePredWire) -> WherePred {
 ///
 /// `TypeRefWire::Same(id)` becomes `Type::Nominal(RawRef::Intro(id))`.
 /// `TypeRefWire::Foreign(sr)` becomes `Type::Nominal(RawRef::Foreign(sr))`.
+/// `TypeRefWire::ForeignUnlinked(key)` becomes `Type::Nominal(RawRef::Foreign
+/// { key, target: None })` — the exact inverse of `raise_type_ref`'s new arm,
+/// so a local-store round trip preserves an unlinked cross-package reference
+/// instead of losing it to the synthetic-intro fallback the way it did before
+/// the wire carried `ForeignKey` at all.
+/// `TypeRefWire::UnresolvedExternal(name)` becomes
+/// `Type::Unknown(UnresolvedExternal { name })`, the inverse of that same
+/// commit's `raise_type_ref` arm.
 pub fn lower_type_ref(tr: &TypeRefWire) -> Type {
     match tr {
         TypeRefWire::Same(id) => Type::Nominal(RawRef::Intro(*id)),
@@ -501,6 +509,13 @@ pub fn lower_type_ref(tr: &TypeRefWire) -> Type {
             )),
             target: Some(sr.clone()),
         }),
+        TypeRefWire::ForeignUnlinked(key) => Type::Nominal(RawRef::Foreign {
+            key: Arc::new(key.clone()),
+            target: None,
+        }),
+        TypeRefWire::UnresolvedExternal(name) => {
+            Type::Unknown(UnknownType::UnresolvedExternal { name: name.clone() })
+        }
     }
 }
 
@@ -525,6 +540,9 @@ pub fn lower_type_wire(tw: &TypeWire) -> Type {
         }
         TypeWire::Never => Type::Never,
         TypeWire::Any => Type::Any,
+        TypeWire::UnresolvedExternal(name) => {
+            Type::Unknown(UnknownType::UnresolvedExternal { name: name.clone() })
+        }
     }
 }
 

@@ -712,6 +712,18 @@ fn push_type_ref(buf: &mut Vec<u8>, tr: &TypeRefWire) {
             buf.push(0x02);
             push_stable_ref(buf, sr);
         }
+        TypeRefWire::ForeignUnlinked(key) => {
+            buf.push(0x03);
+            // `ForeignKey::encode` is already the canonical, endian-stable,
+            // display-excluded encoding identity/content hashing elsewhere
+            // in the tree uses for this exact type — reused rather than
+            // re-derived here.
+            key.encode(buf);
+        }
+        TypeRefWire::UnresolvedExternal(name) => {
+            buf.push(0x04);
+            push_str(buf, name);
+        }
     }
 }
 
@@ -762,6 +774,10 @@ fn push_type_expr(buf: &mut Vec<u8>, tw: &TypeWire) {
             for s in &sorted {
                 buf.extend_from_slice(s);
             }
+        }
+        TypeWire::UnresolvedExternal(name) => {
+            buf.push(0x0A);
+            push_str(buf, name);
         }
     }
 }

@@ -46,13 +46,20 @@ fn map_type_ref(sigma: &Sigma, tr: &TypeRefWire) -> TypeRefWire {
         // Foreign refs address another package; σ (this-package wire ids) never
         // touches them.
         TypeRefWire::Foreign(sr) => TypeRefWire::Foreign(sr.clone()),
+        // Neither carries a same-package `IntroId` at all — an unlinked
+        // foreign key and an unresolved-external name are both entirely
+        // outside this package's wire-id space, exactly like `Foreign` above.
+        TypeRefWire::ForeignUnlinked(key) => TypeRefWire::ForeignUnlinked(key.clone()),
+        TypeRefWire::UnresolvedExternal(name) => TypeRefWire::UnresolvedExternal(name.clone()),
     }
 }
 
 fn map_type_wire(sigma: &Sigma, tw: &TypeWire) -> TypeWire {
     let refs = |xs: &[TypeRefWire]| xs.iter().map(|t| map_type_ref(sigma, t)).collect();
     match tw {
-        TypeWire::SelfType | TypeWire::Never | TypeWire::Any => tw.clone(),
+        TypeWire::SelfType | TypeWire::Never | TypeWire::Any | TypeWire::UnresolvedExternal(_) => {
+            tw.clone()
+        }
         TypeWire::Primitive(p) => TypeWire::Primitive(map_primitive(sigma, p)),
         TypeWire::Tuple(xs) => TypeWire::Tuple(refs(xs)),
         TypeWire::Slice(t) => TypeWire::Slice(Box::new(map_type_ref(sigma, t))),

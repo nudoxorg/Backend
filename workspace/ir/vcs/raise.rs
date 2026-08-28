@@ -99,7 +99,7 @@ use ir::{
         // WireTraitFlags`), so the semantic side is aliased here to keep
         // every call site unqualified and unambiguous.
         trait_::{Trait, TraitFlags as TraitFlagsSemantic},
-        ty::{Primitive, TupleElement, Type, Width},
+        ty::{Primitive, TupleElement, Type, UnknownType, Width},
     },
     view::IrView,
 };
@@ -579,10 +579,22 @@ fn raise_auto_fact(af: &AutoFact) -> WireAutoFact {
 /// types, parameter types, const/static types, trait supertypes, an impl's
 /// `of`, generic bounds).
 ///
-/// A genuinely nominal type raises to the reference it already is. Every
-/// other `Type` is given a [`synthetic_type_intro`] — see the module docs for
-/// why, and for what a reader loses as a result.
+/// A genuinely nominal type raises to the reference it already is — including
+/// an unlinked `Ref::Foreign` (`target: None`), which now raises to
+/// `TypeRefWire::ForeignUnlinked` rather than losing its `ForeignKey` to the
+/// synthetic fallback (C2 host-divergence fix: this is what lets the cage/
+/// Linux decode side, `build_reference_set_from_bodies`'s payload-harvest
+/// sibling in `index`, see the same unresolved cross-package edges the
+/// in-process/macOS table path already reads straight off the live `Entry`).
+/// `Type::Unknown(UnresolvedExternal)` — a mention the producer could not
+/// even build a `ForeignKey` for — raises to `TypeRefWire::UnresolvedExternal`
+/// for the identical reason. `Ref::Local` surviving here is still a seal bug
+/// (see `Ref::Local`'s own doc comment) and still falls to the synthetic
+/// fallback; there is no real value to preserve for it.
 fn raise_type_ref(ty: &Type) -> TypeRefWire {
+    if let Type::Unknown(UnknownType::UnresolvedExternal { name }) = ty {
+        return TypeRefWire::UnresolvedExternal(name.clone());
+    }
     // `Type::Nominal` wraps a `RawRef` (`= Ref<UntypedMarker>`), the same
     // `Ref` used for `Ref<Param>`/`Ref<Field>`/`Ref<Variant>` elsewhere in
     // this file.
@@ -592,7 +604,10 @@ fn raise_type_ref(ty: &Type) -> TypeRefWire {
             Ref::Foreign { target: Some(sr), .. } => {
                 return TypeRefWire::Foreign(sr.clone());
             }
-            Ref::Foreign { target: None, .. } | Ref::Local(_) => {}
+            Ref::Foreign { key, target: None } => {
+                return TypeRefWire::ForeignUnlinked((**key).clone());
+            }
+            Ref::Local(_) => {}
         }
     }
     synthetic_type_ref(ty)
@@ -621,10 +636,20 @@ fn synthetic_type_intro(ty: &Type) -> IntroId {
 /// `self_ty`, an alias's `target`, a where-predicate's `target`, a generic
 /// parameter's `default`).
 ///
-/// See the module docs' fidelity section: only the nine variants `TypeWire`
-/// actually has map across; everything else — including `Type::Nominal`,
+/// See the module docs' fidelity section: only the nine original variants
+/// `TypeWire` had map across; everything else — including `Type::Nominal`,
 /// which has no `TypeWire` variant at all — falls back to [`TypeWire::Any`].
+/// `Type::Unknown(UnresolvedExternal)` is the one exception carved out of
+/// that fallback (C2 host-divergence fix, see `raise_type_ref`'s doc comment
+/// for the reference-position twin of this case): a value-position alias
+/// target / impl self-type / where-target / generic default can be an
+/// unresolved cross-package mention exactly as often as a field or parameter
+/// type can, and collapsing it to `Any` erased the producer's spelling
+/// entirely rather than merely losing linkage.
 fn raise_type_wire(ty: &Type) -> TypeWire {
+    if let Type::Unknown(UnknownType::UnresolvedExternal { name }) = ty {
+        return TypeWire::UnresolvedExternal(name.clone());
+    }
     match ty {
         Type::SelfType => TypeWire::SelfType,
         Type::Primitive(p) => TypeWire::Primitive(raise_primitive(p)),

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use ir::change::{ContentBlake3, IntroId, StableRef};
 use ir::entry::Visibility;
+use ir::foreign::ForeignKey;
 use ir::kind::KindDiscriminant;
 
 // ---------------------------------------------------------------------------
@@ -23,12 +24,33 @@ use ir::kind::KindDiscriminant;
 // ---------------------------------------------------------------------------
 
 /// Wire form of a type reference: same-package intro or cross-package stable ref.
+///
+/// Appended variants (`ForeignUnlinked`, `UnresolvedExternal`) carry the two
+/// cases a producer can name a cross-package target without the seal-time
+/// resolution `Foreign(StableRef)` requires. They are new tail variants, not a
+/// reorder — `Same`/`Foreign`'s existing postcard discriminants are unchanged.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub enum TypeRefWire {
     /// Same-package intro.
     Same(IntroId),
-    /// Cross-package stable reference.
+    /// Cross-package stable reference, resolved at seal time.
     Foreign(StableRef),
+    /// A cross-package reference the producer *named* but `seal` could not
+    /// resolve to a `StableRef` — the wire twin of
+    /// [`ir::index::Ref::Foreign`]`{ key, target: None }`. `ForeignKey` is
+    /// already the self-contained, durable wire-safe encoding of "everything a
+    /// producer knows about a cross-package target" (see its own module
+    /// docs), so it is carried here unprojected: a downstream reader can
+    /// render and re-link it exactly as the in-process/table path
+    /// (`build_reference_set_from_table`) already does from the live `Entry`.
+    ForeignUnlinked(ForeignKey),
+    /// A cross-package type mention the producer could not even build a
+    /// `ForeignKey` for — the wire twin of
+    /// [`ir::kinds::ty::UnknownType::UnresolvedExternal`]`{ name }`. Only the
+    /// producer's spelling is carried; there is no package to name (that is
+    /// exactly why the producer reached for this instead of
+    /// `ForeignUnlinked`).
+    UnresolvedExternal(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +96,15 @@ pub enum PrimitiveWire {
 // ---------------------------------------------------------------------------
 
 /// Wire form of a type expression (used in kind bodies and parameter types).
+///
+/// `UnresolvedExternal` is an appended tail variant (new postcard
+/// discriminant; existing variants keep theirs) — the *value*-position twin
+/// of [`TypeRefWire::UnresolvedExternal`]: an alias target, an impl's
+/// `self_ty`, a where-predicate's target, or a generic default can each be an
+/// unresolved cross-package mention just as easily as a field or parameter
+/// type can. Before this variant existed, `raise_type_wire` had no choice but
+/// to collapse it into `TypeWire::Any`, indistinguishable from a real
+/// top-typed value — see that function's doc comment.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug)]
 pub enum TypeWire {
     SelfType,
@@ -85,6 +116,10 @@ pub enum TypeWire {
     Intersection(Box<[TypeRefWire]>),
     Never,
     Any,
+    /// A cross-package type mention (value position) the producer could not
+    /// build a `ForeignKey` for — the wire twin of
+    /// [`ir::kinds::ty::UnknownType::UnresolvedExternal`]`{ name }`.
+    UnresolvedExternal(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -443,7 +478,153 @@ pub enum KindWire {
     Reexport(ReexportWire),
 }
 
+/// One leaf [`KindWire::for_each_type_mention`] visits: either a full
+/// [`TypeRefWire`] occupying a reference-position slot, or an
+/// unresolved-external name found directly in a *value*-position
+/// [`TypeWire::UnresolvedExternal`] — which is not itself a `TypeRefWire` (a
+/// value-position slot is typed `TypeWire`, not `TypeRefWire`; see that
+/// variant's doc comment on why it had to be added to both enums). A caller
+/// that only cares "is this an unresolved cross-package mention, and what
+/// does it name" — as `index`'s payload-harvest does — matches both arms of
+/// this type uniformly instead of needing two separate visitor methods.
+#[derive(Clone, Copy, Debug)]
+pub enum TypeMention<'a> {
+    Ref(&'a TypeRefWire),
+    UnresolvedExternalValue(&'a str),
+}
+
 impl KindWire {
+    /// Visit every cross-package/unresolved [`TypeMention`] this kind body's
+    /// declaration surface names — field/param/return types, generic bounds
+    /// and defaults, where-clause targets and bounds, trait supertraits, and
+    /// an impl's `of`/`self_ty` — however deeply nested inside a
+    /// tuple/slice/array/union/intersection/pointer/reference wrapper.
+    ///
+    /// The wire-format analogue of [`ir::entry::Entry::for_each_ref`] /
+    /// [`ir::entry::Entry::for_each_unknown`], scoped to what a `KindWire`
+    /// can hold: unlike the semantic walk, no `Node` parent/child structural
+    /// edges are mixed in here, because those live on `WireEntry::parent` /
+    /// `WireEntry::links` (see `ir_vcs::protocol::frame::WireEntry`), never
+    /// inside a `KindWire` body — so every mention this reaches is a genuine
+    /// type-nominal usage, not containment. `RecordWire::fields`,
+    /// `EnumWire::variants` and `VariantWire::fields` are `Box<[IntroId]>`
+    /// (child entry ids, the wire equivalent of those same structural edges)
+    /// and are correctly never visited here for the same reason.
+    ///
+    /// Traversal mirrors [`crate::subst::substitute_and_reseal`]'s
+    /// `map_kind`/`map_type_wire`/`map_primitive` walk — the two must agree
+    /// on which slots hold a `TypeRefWire`/`TypeWire`, so a future
+    /// wire-format addition should update both together.
+    pub fn for_each_type_mention<'a>(&'a self, mut f: impl FnMut(TypeMention<'a>)) {
+        fn visit_generics<'a>(
+            generics: &'a [GenericParamWire],
+            f: &mut impl FnMut(TypeMention<'a>),
+        ) {
+            for g in generics {
+                match g {
+                    GenericParamWire::Lifetime { .. } => {}
+                    GenericParamWire::Type { bounds, default, .. } => {
+                        for b in bounds.iter() {
+                            f(TypeMention::Ref(b));
+                        }
+                        if let Some(ty) = default {
+                            visit_type_wire(ty, f);
+                        }
+                    }
+                    GenericParamWire::Const { ty, .. } => f(TypeMention::Ref(ty)),
+                }
+            }
+        }
+        fn visit_wheres<'a>(wheres: &'a [WherePredWire], f: &mut impl FnMut(TypeMention<'a>)) {
+            for w in wheres {
+                visit_type_wire(&w.target, f);
+                for b in w.bounds.iter() {
+                    f(TypeMention::Ref(b));
+                }
+            }
+        }
+        fn visit_primitive<'a>(p: &'a PrimitiveWire, f: &mut impl FnMut(TypeMention<'a>)) {
+            match p {
+                PrimitiveWire::MutPointer(t) | PrimitiveWire::ConstPointer(t) => {
+                    f(TypeMention::Ref(t));
+                }
+                PrimitiveWire::Reference { ty, .. } => f(TypeMention::Ref(ty)),
+                PrimitiveWire::Integer { .. }
+                | PrimitiveWire::Float(_)
+                | PrimitiveWire::Bool
+                | PrimitiveWire::Char
+                | PrimitiveWire::Str
+                | PrimitiveWire::Builtin(_) => {}
+            }
+        }
+        fn visit_type_wire<'a>(t: &'a TypeWire, f: &mut impl FnMut(TypeMention<'a>)) {
+            match t {
+                TypeWire::Primitive(p) => visit_primitive(p, f),
+                TypeWire::Tuple(ts) | TypeWire::Union(ts) | TypeWire::Intersection(ts) => {
+                    for t in ts.iter() {
+                        f(TypeMention::Ref(t));
+                    }
+                }
+                TypeWire::Slice(t) => f(TypeMention::Ref(t)),
+                TypeWire::Array { ty, .. } => f(TypeMention::Ref(ty)),
+                TypeWire::UnresolvedExternal(name) => {
+                    f(TypeMention::UnresolvedExternalValue(name));
+                }
+                TypeWire::SelfType | TypeWire::Never | TypeWire::Any => {}
+            }
+        }
+
+        match self {
+            KindWire::Module(_) | KindWire::Variant(_) | KindWire::Reexport(_) => {}
+            KindWire::Record(r) => {
+                visit_generics(&r.generics, &mut f);
+                visit_wheres(&r.wheres, &mut f);
+            }
+            KindWire::Field(field) => {
+                if let Some(ty) = &field.ty {
+                    f(TypeMention::Ref(ty));
+                }
+            }
+            KindWire::Function(func) => {
+                for p in func.input_params.iter().chain(func.output_params.iter()) {
+                    f(TypeMention::Ref(&p.ty));
+                }
+                if let SelfKind::Arbitrary(ty) = &func.sig.self_kind {
+                    f(TypeMention::Ref(ty));
+                }
+                visit_generics(&func.generics, &mut f);
+                visit_wheres(&func.wheres, &mut f);
+            }
+            KindWire::Type(alias) => {
+                visit_type_wire(&alias.ty, &mut f);
+                visit_generics(&alias.generics, &mut f);
+                visit_wheres(&alias.wheres, &mut f);
+            }
+            KindWire::Trait(t) => {
+                for s in t.supers.iter() {
+                    f(TypeMention::Ref(s));
+                }
+                visit_generics(&t.generics, &mut f);
+                visit_wheres(&t.wheres, &mut f);
+            }
+            KindWire::Impl(imp) => {
+                if let Some(of) = &imp.of {
+                    f(TypeMention::Ref(of));
+                }
+                visit_type_wire(&imp.self_ty, &mut f);
+                visit_generics(&imp.generics, &mut f);
+                visit_wheres(&imp.wheres, &mut f);
+            }
+            KindWire::Enum(e) => {
+                visit_generics(&e.generics, &mut f);
+                visit_wheres(&e.wheres, &mut f);
+            }
+            KindWire::Const(c) => f(TypeMention::Ref(&c.ty)),
+            KindWire::Static(s) => f(TypeMention::Ref(&s.ty)),
+            KindWire::Param(p) => f(TypeMention::Ref(&p.ty)),
+        }
+    }
+
     /// The frozen discriminant for this wire variant.
     #[inline]
     pub fn discriminant(&self) -> KindDiscriminant {

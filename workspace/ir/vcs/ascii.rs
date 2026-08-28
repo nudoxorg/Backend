@@ -4,6 +4,8 @@
 
 use crate::wire::{PrimitiveWire, TypeRefWire, TypeWire, WidthWire};
 use ir::change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef};
+use ir::foreign::{ForeignKey, ForeignOrigin};
+use ir::kind::KindDiscriminant;
 
 // ---------------------------------------------------------------------------
 // Escaping (§6.3)
@@ -110,6 +112,46 @@ pub fn hex_to_32(s: &str) -> Result<[u8; 32], Error> {
 // TypeRef encoding / decoding (frozen, §6.2 wire contract)
 // ---------------------------------------------------------------------------
 
+/// `origin`'s ASCII encoding for [`encode_typeref`]'s `U:` (`ForeignUnlinked`)
+/// form. Own tag namespace from the `S:`/`F:`/`U:`/`E:` typeref tags — a `P:`/
+/// `N:`/`V:` prefix picks the `ForeignOrigin` variant.
+fn encode_foreign_origin(o: &ForeignOrigin) -> String {
+    match o {
+        ForeignOrigin::Package(l) => format!("P:{}/{}", l.ecosystem.as_str(), l.name.as_str()),
+        ForeignOrigin::Namespace {
+            ecosystem,
+            namespace,
+        } => format!("N:{}/{}", ecosystem.as_str(), escape(namespace)),
+        ForeignOrigin::Universe { ecosystem } => format!("V:{}", ecosystem.as_str()),
+    }
+}
+
+fn decode_foreign_origin(s: &str) -> Result<ForeignOrigin, Error> {
+    if let Some(rest) = s.strip_prefix("P:") {
+        let slash = rest
+            .find('/')
+            .ok_or_else(|| Error::Malformed(format!("no '/' in origin: {s}")))?;
+        Ok(ForeignOrigin::Package(PackageLineageId::new(
+            EcosystemId::new(&rest[..slash]),
+            PackageName::new(&rest[slash + 1..]),
+        )))
+    } else if let Some(rest) = s.strip_prefix("N:") {
+        let slash = rest
+            .find('/')
+            .ok_or_else(|| Error::Malformed(format!("no '/' in origin: {s}")))?;
+        Ok(ForeignOrigin::Namespace {
+            ecosystem: EcosystemId::new(&rest[..slash]),
+            namespace: unescape(&rest[slash + 1..])?.into_boxed_str(),
+        })
+    } else if let Some(rest) = s.strip_prefix("V:") {
+        Ok(ForeignOrigin::Universe {
+            ecosystem: EcosystemId::new(rest),
+        })
+    } else {
+        Err(Error::Malformed(format!("unknown origin prefix: {s}")))
+    }
+}
+
 pub fn encode_typeref(tr: &TypeRefWire) -> String {
     match tr {
         TypeRefWire::Same(id) => format!("S:{}", id.to_hex()),
@@ -119,6 +161,14 @@ pub fn encode_typeref(tr: &TypeRefWire) -> String {
             sr.package.name.as_str(),
             sr.intro.to_hex()
         ),
+        TypeRefWire::ForeignUnlinked(key) => format!(
+            "U:{}|{}|{}|{}",
+            encode_foreign_origin(&key.origin),
+            escape(&key.path),
+            escape(&key.display),
+            key.kind.map(|k| k.as_u16().to_string()).unwrap_or_default()
+        ),
+        TypeRefWire::UnresolvedExternal(name) => format!("E:{}", escape(name)),
     }
 }
 
@@ -140,6 +190,32 @@ pub fn decode_typeref(s: &str) -> Result<TypeRefWire, Error> {
             PackageLineageId::new(EcosystemId::new(eco), PackageName::new(pkg)),
             IntroId::from_raw(hex_to_32(intro_hex)?),
         )))
+    } else if let Some(rest) = s.strip_prefix("U:") {
+        let parts: Vec<&str> = rest.splitn(4, '|').collect();
+        let [origin, path, display, kind] = parts.as_slice() else {
+            return Err(Error::Malformed(format!(
+                "expected 4 '|'-separated fields in unlinked typeref: {s}"
+            )));
+        };
+        let kind = if kind.is_empty() {
+            None
+        } else {
+            let raw: u16 = kind
+                .parse()
+                .map_err(|_| Error::Malformed(format!("bad kind discriminant: {s}")))?;
+            Some(
+                KindDiscriminant::from_u16(raw)
+                    .ok_or_else(|| Error::Malformed(format!("unknown kind discriminant: {s}")))?,
+            )
+        };
+        Ok(TypeRefWire::ForeignUnlinked(ForeignKey {
+            origin: decode_foreign_origin(origin)?,
+            path: unescape(path)?.into_boxed_str(),
+            display: unescape(display)?.into_boxed_str(),
+            kind,
+        }))
+    } else if let Some(rest) = s.strip_prefix("E:") {
+        Ok(TypeRefWire::UnresolvedExternal(unescape(rest)?))
     } else {
         Err(Error::Malformed(format!("unknown typeref prefix: {s}")))
     }
@@ -205,6 +281,7 @@ pub fn encode_typeexpr(tw: &TypeWire) -> String {
             let parts: Vec<_> = refs.iter().map(encode_typeref).collect();
             format!("intersection:{}", parts.join(","))
         }
+        TypeWire::UnresolvedExternal(name) => format!("unresolved-external:{}", escape(name)),
     }
 }
 
@@ -307,6 +384,9 @@ pub fn decode_typeexpr(s: &str) -> Result<TypeWire, Error> {
         let parts = split_comma(r);
         let refs: Result<Vec<_>, _> = parts.iter().map(|p| decode_typeref(p)).collect();
         return Ok(TypeWire::Intersection(refs?.into_boxed_slice()));
+    }
+    if let Some(r) = s.strip_prefix("unresolved-external:") {
+        return Ok(TypeWire::UnresolvedExternal(unescape(r)?));
     }
     Err(Error::Malformed(format!("unknown typeexpr: {s}")))
 }
