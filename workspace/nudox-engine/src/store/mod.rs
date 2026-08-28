@@ -43,6 +43,7 @@
 pub mod corpus;
 pub mod index;
 pub mod package;
+pub mod resolver;
 /// The local libpijul-backed IR store (`ir_repo_root`, IR-STORAGE-PLAN §1a/P5).
 /// Behind the `local-persistence` feature (on by default) because it pulls
 /// `ir-vcs`'s full libpijul/iroh/sanakirja dependency graph — see that
@@ -60,6 +61,7 @@ pub mod prelude {
         corpus::{Corpus, EntryRef},
         package::{PackageIndexes, PackageView, Provenance},
         remote::{IrSnapshot, ObjectKind, RemoteStore, RemoteStoreError},
+        resolver::CorpusResolver,
         source::{
             Error, IrSource, LoadEvent, LoadRequest, PackageHint, ProduceStage, SourceDescriptor,
         },

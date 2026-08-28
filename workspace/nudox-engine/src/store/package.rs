@@ -577,6 +577,22 @@ pub enum Provenance {
     /// a prior snapshot. Still trusted, but the snapshot generation may be
     /// behind the current source.
     SnapshotLocal,
+    /// The package's IR was fetched from a remote generation rather than
+    /// produced locally — the "minimum work when connected" path: the client
+    /// replayed a sealed [`IrSnapshot`](crate::store::remote::IrSnapshot) from
+    /// the remote instead of running the local producer.
+    ///
+    /// Carries the remote [`GenerationId`] the snapshot came from (learned from
+    /// the capability handshake, `Capabilities::generation`), so a reader can
+    /// tell two packages fetched from the same remote snapshot apart from two
+    /// fetched at different generations — and so this lowers to a real
+    /// [`Residence::Remote`](heart::surface::Residence)/`wire::Provenance::Remote`
+    /// instead of the hardcoded `TrustedLocal` that `LOCAL-REMOTE-CONTRACT.md`
+    /// §0.5 flags as dead.
+    Remote {
+        /// The remote corpus generation this package's IR was fetched from.
+        generation: heart::surface::GenerationId,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -942,6 +958,43 @@ impl PackageView {
             KeyProvenance::from_seal_report(report),
             metadata,
         )
+    }
+
+    /// Return a copy of this view with every cross-package `Ref::Foreign` that
+    /// `resolver` can place now carrying its `target` `StableRef`, plus the
+    /// count of references newly linked.
+    ///
+    /// This is the post-load link step at package granularity: a package is
+    /// sealed against [`Unlinked`](nudox_ir::foreign::Unlinked) one at a time
+    /// (its dependencies are not loaded yet), so it arrives with every
+    /// cross-package reference *named but unlinked*. Once the corpus holds the
+    /// siblings, [`Corpus::relink_all`](crate::store::corpus::Corpus::relink_all)
+    /// calls this to fill the targets in.
+    ///
+    /// Filling `target` is **identity-invariant** — [`IntroId`], content hash
+    /// and `generation_stamp` all encode the `ForeignKey`, never the resolved
+    /// `target` (see `nudox_ir`'s `content`/`foreign` docs) — so the rebuilt
+    /// view is the same generation as this one, differing only in which
+    /// references are clickable. Provenance, key-provenance and source metadata
+    /// are carried through unchanged; only the derived [`PackageIndexes`] are
+    /// re-derived (they never depended on `target` either, but rebuilding them
+    /// from the new view keeps the "indexes are always a pure function of the
+    /// view" invariant true by construction).
+    pub fn relinked(&self, resolver: &dyn nudox_ir::foreign::ForeignResolver) -> (Self, usize) {
+        // Clone the WHOLE view, not just the table: bodies, occurrences and
+        // source live on the `IrView` beside the table, and rebuilding from the
+        // table alone would silently drop them (and with them every recorded
+        // caller). `IrView::relink` fills the foreign targets in place, leaving
+        // those maps intact.
+        let mut view = self.view.clone();
+        let linked = view.relink(resolver);
+        let rebuilt = Self::with_keys(
+            view,
+            self.provenance,
+            self.keys.clone(),
+            self.metadata.clone(),
+        );
+        (rebuilt, linked)
     }
 
     /// The shared constructor. After this call the view and its indexes are

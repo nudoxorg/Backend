@@ -45,6 +45,7 @@ use nudox_ir::{
 use tokio::sync::RwLock;
 
 use crate::store::package::PackageView;
+use crate::store::resolver::CorpusResolver;
 
 // ---------------------------------------------------------------------------
 // CorpusInner (private)
@@ -133,6 +134,63 @@ impl Corpus {
     pub async fn packages(&self) -> Vec<Arc<PackageView>> {
         let map = self.inner.packages.read().await;
         map.values().cloned().collect()
+    }
+
+    /// A point-in-time, sync snapshot of this corpus that can resolve
+    /// cross-package [`ForeignKey`](nudox_ir::foreign::ForeignKey)s.
+    ///
+    /// [`nudox_ir::foreign::ForeignResolver::resolve`] is a synchronous trait
+    /// method — `seal` calls it from ordinary, non-async code — while `Corpus`
+    /// guards its package map behind an async `RwLock`. This takes the read
+    /// lock exactly once, clones the map (an O(packages) pointer-clone: each
+    /// value is an `Arc<PackageView>`, not a deep copy), and hands back a
+    /// [`CorpusResolver`] that owns that snapshot and needs no further
+    /// `.await` to answer `resolve`. Like [`Corpus::packages`], the result is
+    /// frozen at the moment of the call — packages inserted afterwards are
+    /// not visible to it.
+    pub async fn foreign_resolver(&self) -> CorpusResolver {
+        let map = self.inner.packages.read().await;
+        CorpusResolver::from_snapshot(map.clone())
+    }
+
+    /// Resolve every loaded package's cross-package `Ref::Foreign` targets
+    /// against the current corpus, in one post-load pass. Returns the total
+    /// number of references newly linked.
+    ///
+    /// Each package is sealed one at a time against
+    /// [`Unlinked`](nudox_ir::foreign::Unlinked) — its dependencies are not
+    /// loaded at seal time — so every cross-package reference arrives *named but
+    /// unlinked*. Once the corpus holds the whole loaded world, this is the
+    /// step that makes those references clickable: it snapshots a
+    /// [`CorpusResolver`] over the current packages, then rebuilds each package
+    /// via [`PackageView::relinked`](crate::store::package::PackageView::relinked),
+    /// swapping the linked view in.
+    ///
+    /// It is safe to call more than once (each incremental load can re-run it):
+    /// already-linked references are left untouched, and because relinking is
+    /// identity-invariant no generation moves and the `versions` registry —
+    /// which tracks generation identity, never `Ref::Foreign.target` — stays
+    /// consistent with the corpus even though it holds the pre-relink `Arc`s.
+    pub async fn relink_all(&self) -> usize {
+        // Snapshot the resolver from the current (possibly still-unlinked)
+        // views first: resolution matches a `ForeignKey.path` against each
+        // package's moniker paths, which do not depend on `target`, so a
+        // pre-relink snapshot resolves identically to a post-relink one.
+        let resolver = self.foreign_resolver().await;
+        let mut map = self.inner.packages.write().await;
+        let mut total = 0usize;
+        let relinked: Vec<(PackageLineageId, Arc<PackageView>)> = map
+            .iter()
+            .map(|(lineage, view)| {
+                let (rebuilt, linked) = view.relinked(&resolver);
+                total += linked;
+                (lineage.clone(), Arc::new(rebuilt))
+            })
+            .collect();
+        for (lineage, view) in relinked {
+            map.insert(lineage, view);
+        }
+        total
     }
 
     /// The number of packages currently in the corpus.
