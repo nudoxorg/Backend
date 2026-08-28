@@ -79,6 +79,14 @@ default = ["dolt-engine"]
 # Cargo.toml and workspace/vendor/README.md). `server` stays off by default
 # regardless, to keep the lean catalog build free of the serving stack's
 # dependency weight (axum/tokio/sandbox/embedrs), not because of this.
+# The serving stack ALSO turns on the tsz-enriched TypeScript producer and the
+# pyrefly Python semantic tier: any server build gets the full in-process
+# producer set by default. These capabilities only exist behind `server` (the
+# `coordination::compile_inprocess` path is server-gated), so "on for every
+# server build" is what "default on" means for them — folding them in here keeps
+# the lean, no-server catalog build (`cargo build -p index`) free of the heavy
+# tsz/pyrefly git deps, which is the whole reason `server` stays off the crate
+# `default`.
 server = [
     "dep:sandbox", "dep:ir-vcs", "dep:axum", "dep:tower", "dep:tower-http",
     "dep:http", "dep:http-body-util", "dep:hyper", "dep:tokio-util",
@@ -87,7 +95,19 @@ server = [
     "dep:rustix", "dep:which", "dep:mimalloc", "dep:tempfile",
     "dep:nudox-languages",
     "heart/telemetry",
+    "tsz", "pyrefly",
 ]
+# The tsz-enriched TypeScript producer in the in-process compile path
+# (`coordination::compile_inprocess`). Implied by `server` (above), and listed
+# separately so a build can also opt in explicitly; enabling it pulls in the
+# server stack because that path only exists under it.
+tsz = ["server", "nudox-languages/tsz"]
+# The Python (pyrefly) semantic tier for the in-process compile path
+# (`coordination::compile_inprocess::run_language_producer`'s `Language::Python`
+# arm). Implied by `server` (above); forwards `nudox-languages/pyrefly` so the
+# Python producer runs its pyrefly semantic tier rather than the syntactic-only
+# fallback.
+pyrefly = ["server", "nudox-languages/pyrefly"]
 
 [dependencies]
 heart = { path = "../heart" }
@@ -108,11 +128,13 @@ ir-vcs  = { path = "../ir/vcs", optional = true }
 # directly here rather than via that crate (which is a different layer —
 # `index` must not depend on the GUI-local `nudox-store`). The former producer
 # plane — one shared contract crate plus seven per-language producer crates —
-# is now consolidated into a single `nudox-languages` crate. Python now
-# travels inside that crate, but `index` still does NOT forward its `pyrefly`
-# feature (not wired here), so its Python producer contributes nothing (see
-# that crate's `YieldContract::RootOnly`) — there is nothing for `index` to
-# gain by enabling it. There is no nix producer in the workspace.
+# is now consolidated into a single `nudox-languages` crate. Python travels
+# inside that crate, and `index` DOES forward its `pyrefly` feature: the
+# `pyrefly` feature above implies `server` and turns on
+# `nudox-languages/pyrefly`, so the in-process compile path's `Language::Python`
+# arm runs the real Python producer (pyrefly semantic tier). Off by default,
+# like `server`, so a plain build stays free of the pyrefly git dependency.
+# There is no nix producer in the workspace.
 nudox-languages = { path = "../compiler/languages", optional = true }
 # axum HTTP server + tower middleware + low-level http.
 axum       = { version = "0.7", features = ["macros"], optional = true }

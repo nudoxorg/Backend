@@ -25,11 +25,11 @@
 //! It also writes a **real** reference section: the cross-symbol usage graph,
 //! recovered from the sealed table's own `Ref` edges via
 //! [`super::indexing::build_reference_set_from_table`] — the in-process twin of
-//! the cage path's `Bodies`-frame reference derivation, landing in the identical
-//! blob `ReferenceSet` format. Before this, the non-Linux path attached an
-//! *empty* reference section, so `Target::Usages` ("who uses this symbol")
-//! returned nothing for every package indexed on a macOS serving node, across
-//! all languages. Now it returns real edges.
+//! the cage path's `Bodies`-frame reference derivation, landing in the
+//! identical blob `ReferenceSet` format. Before this, the non-Linux path
+//! attached an *empty* reference section, so `Target::Usages` ("who uses this
+//! symbol") returned nothing for every package indexed on a macOS serving node,
+//! across all languages. Now it returns real edges.
 //!
 //! # What this does NOT write (the IR payload section)
 //!
@@ -54,11 +54,11 @@ use std::path::Path;
 use heart::identity::EntryUri;
 use smol_str::SmolStr;
 
-use crate::server::SourceStores;
-use crate::server::error::{InternalError, ServerError, ServerResult};
-use crate::server::registry::blob::creation::BlobBuilder;
-use crate::server::registry::identity::PackageCoordinates;
-use crate::server::registry::vector::EmbeddingModel;
+use crate::server::{
+    SourceStores,
+    error::{InternalError, ServerError, ServerResult},
+    registry::{blob::creation::BlobBuilder, identity::PackageCoordinates, vector::EmbeddingModel},
+};
 
 /// Run the matching language producer in-process over `source_root` and
 /// stage the result: real catalog symbol rows (so the existing vector
@@ -68,8 +68,8 @@ use crate::server::registry::vector::EmbeddingModel;
 /// on `builder` (see module docs for why the IR payload stays empty).
 ///
 /// Returns the fully-qualified symbol names contributed — the same shape
-/// [`super::indexing::ir_stream::ingest_ir_bytes`] returns for the cage path, used by
-/// `execute_emit_phase` for facet/keyword extraction.
+/// [`super::indexing::ir_stream::ingest_ir_bytes`] returns for the cage path,
+/// used by `execute_emit_phase` for facet/keyword extraction.
 pub(crate) async fn compile_in_process<M: EmbeddingModel>(
     stores: &SourceStores<M>,
     package: heart::PackageId,
@@ -313,6 +313,99 @@ mod tests {
     fn full_success_is_not_degraded() {
         assert!(!upserts_are_degraded(5, 5));
     }
+
+    /// End-to-end proof that the in-process `Language::Python` arm actually runs
+    /// the real `PythonProducer` (behind `--features pyrefly`) and that its
+    /// output carries **resolved** content — named declarations, and a
+    /// same-package type reference recovered as a `Ref::Intro` edge, not a
+    /// bare count. Mirrors `nudox-store`'s
+    /// `python_runner_is_reachable_when_pyrefly_feature_is_enabled`, but goes one
+    /// layer further: that test proves the engine registry reaches the producer;
+    /// this proves the *server's own* in-process compile path
+    /// (`run_language_producer`) does, and that the reference-section derivation
+    /// the production path uses (`build_reference_set_from_table`) turns the
+    /// producer's cross-symbol type edges into a resolved local reference.
+    ///
+    /// Only meaningful with the `pyrefly` feature on — without it the arm
+    /// returns a typed "no in-process producer" error by construction, so there
+    /// is nothing to resolve.
+    #[test]
+    #[cfg(feature = "pyrefly")]
+    fn python_in_process_arm_produces_resolved_declarations_and_a_resolved_reference() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkg_dir = dir.path().join("tiny_pkg");
+        std::fs::create_dir(&pkg_dir).expect("mkdir");
+        // `make_widget` returns `Widget`, a class declared in the same package:
+        // a same-package type nominal that seal resolves to a `Ref::Intro`, so
+        // the reference-section derivation must yield a Local edge pointing at
+        // Widget's own intro id — the resolved-reference property this asserts.
+        std::fs::write(
+            pkg_dir.join("__init__.py"),
+            "\"\"\"A tiny real package.\"\"\"\n\n\
+             class Widget:\n\
+             \x20\x20\x20\x20\"\"\"A widget.\"\"\"\n\
+             \x20\x20\x20\x20pass\n\n\
+             def make_widget() -> Widget:\n\
+             \x20\x20\x20\x20\"\"\"Make one.\"\"\"\n\
+             \x20\x20\x20\x20return Widget()\n",
+        )
+        .expect("write __init__.py");
+
+        let src =
+            nudox_languages::PackageSource::new(pkg_dir.clone(), "tiny_pkg".to_owned(), "0.1.0");
+        let lineage = ir::change::PackageLineageId::new(
+            ir::change::EcosystemId::new("pypi"),
+            ir::change::PackageName::new("tiny_pkg"),
+        );
+
+        let produced = super::run_language_producer(heart::Language::Python, &src, &lineage)
+            .expect("the pyrefly Python arm must produce a real package, not an error");
+
+        // Resolved declarations: assert on rendered names, not a count.
+        let names: Vec<&str> = produced
+            .table
+            .iter()
+            .map(|(_, e)| e.sym().name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"Widget"),
+            "expected a `Widget` class declaration; got {names:?}"
+        );
+        assert!(
+            names.contains(&"make_widget"),
+            "expected a `make_widget` function declaration; got {names:?}"
+        );
+
+        // The intro id of the `Widget` declaration — the Local reference target
+        // a resolved same-package nominal must name.
+        let widget_hex = produced
+            .table
+            .iter()
+            .find(|(_, e)| e.sym().name == "Widget")
+            .map(|(intro, _)| intro.to_hex())
+            .expect("Widget must be a declared entry with an intro id");
+
+        // Resolved reference: run the exact derivation the production path runs
+        // and assert the resolved Local edge to Widget is present.
+        let ref_set = super::super::indexing::build_reference_set_from_table(
+            &produced.table,
+            &pkg_dir,
+            Some("pypi:tiny_pkg"),
+        );
+        let resolved_to_widget = ref_set.by_file.iter().any(|f| {
+            f.references.iter().any(|r| {
+                matches!(
+                    &r.target,
+                    crate::server::registry::blob::RefTarget::Local(hex) if *hex == widget_hex
+                )
+            })
+        });
+        assert!(
+            resolved_to_widget,
+            "make_widget's `-> Widget` return type must resolve to a Local reference \
+             at Widget's intro id ({widget_hex}); reference set was {ref_set:?}"
+        );
+    }
 }
 
 /// Run the producer registered for `language` (mirrors
@@ -355,24 +448,57 @@ fn run_language_producer(
             lineage,
             &ir::foreign::Unlinked,
         ),
-        Language::Typescript => nudox_languages::produce(
-            &nudox_languages::typescript::TypescriptProducer::new(),
-            src,
-            lineage,
-            &ir::foreign::Unlinked,
-        ),
+        // TypeScript: prefer the tsz-enriched producer when the feature is on
+        // (checker-inferred types on top of the always-on OXC structural tier),
+        // else the lean OXC-only producer.
+        Language::Typescript => {
+            #[cfg(feature = "tsz")]
+            {
+                nudox_languages::produce(
+                    &nudox_languages::typescript::TypescriptProducer::new_tsz(),
+                    src,
+                    lineage,
+                    &ir::foreign::Unlinked,
+                )
+            }
+            #[cfg(not(feature = "tsz"))]
+            {
+                nudox_languages::produce(
+                    &nudox_languages::typescript::TypescriptProducer::new(),
+                    src,
+                    lineage,
+                    &ir::foreign::Unlinked,
+                )
+            }
+        }
         Language::Cpp => nudox_languages::produce(
             &nudox_languages::clang::ClangProducer::new(),
             src,
             lineage,
             &ir::foreign::Unlinked,
         ),
-        // No in-process producer is registered: Python only contributes real
-        // declarations behind the `pyrefly` feature (not wired into `index` —
-        // see `workspace/index/Cargo.toml`).
+        // Python runs the same `PythonProducer` the engine registry constructs
+        // (`crates/nudox-store/src/source/producer.rs`'s `with_all_available`),
+        // behind `index`'s `pyrefly` feature — which implies `server` and
+        // forwards `nudox-languages/pyrefly`, so the producer's pyrefly semantic
+        // tier is active. The producer is stateless (unit struct), constructed
+        // the same way the registry does.
+        #[cfg(feature = "pyrefly")]
+        Language::Python => nudox_languages::produce(
+            &nudox_languages::python::PythonProducer,
+            src,
+            lineage,
+            &ir::foreign::Unlinked,
+        ),
+        // Without the `pyrefly` feature there is no in-process Python producer
+        // wired here: the syntactic-only tier is not forwarded through `index`,
+        // so a Python package on this path fails loudly rather than being
+        // silently reported as empty.
+        #[cfg(not(feature = "pyrefly"))]
         Language::Python => {
             return Err(format!(
-                "no in-process producer available for language {language}"
+                "no in-process producer available for language {language} \
+                 (build `index` with --features pyrefly to enable it)"
             ));
         }
     };
@@ -391,10 +517,11 @@ fn error_chain(err: &nudox_languages::ProducerError) -> String {
     .join(": ")
 }
 
-/// The ecosystem tag used for this producer run's [`ir::change::PackageLineageId`]
-/// (an internal identity used for cross-package unlinked-reference bookkeeping
-/// during lowering — not the wire `heart::RegistryOrigin`). Mirrors the tags
-/// `nudox-store`'s `PackageDescriptor` named constructors use.
+/// The ecosystem tag used for this producer run's
+/// [`ir::change::PackageLineageId`] (an internal identity used for
+/// cross-package unlinked-reference bookkeeping during lowering — not the wire
+/// `heart::RegistryOrigin`). Mirrors the tags `nudox-store`'s
+/// `PackageDescriptor` named constructors use.
 fn lineage_ecosystem_tag(language: heart::Language) -> &'static str {
     use heart::Language;
     match language {
