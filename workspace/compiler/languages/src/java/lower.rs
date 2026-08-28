@@ -247,6 +247,102 @@ fn type_erase(t: &TypeMirror, typevar_bounds: &TypevarBounds<'_>) -> String {
     }
 }
 
+/// Render a `TypeMirror` as javac's own `TypeMirror.toString()` would —
+/// **not** erased, unlike [`type_erase`]. This is what the oracle's
+/// `Extractor.executableId` (`oracle/java/Extractor.java`) actually calls on
+/// each parameter (`e.getParameters().get(i).asType().toString()`) to build
+/// the `owner`/`target` strings on every `references[]` entry, so it is the
+/// only string this producer can compare an occurrence id against.
+///
+/// The two renderings genuinely disagree on two shapes:
+/// - A type-variable parameter renders as its bare name (`"T"`), never its
+///   bound — `type_erase` substitutes the bound via [`TypevarBounds`].
+/// - A parameterized type keeps its type arguments in full
+///   (`"java.util.List<java.lang.String>"`) — `type_erase` always drops them
+///   (`"java.util.List"`), because JVM erasure drops them too.
+///
+/// Verified against the real doclet: `javadoc -doclet nudox.oracle.Extractor`
+/// over `<T extends CharSequence> T caller(T v) { helper(); }` emits
+/// `"owner":"com.example.V#caller(T)"` (bare `T`, unerased) for a call this
+/// producer's own `JavaId::method` would declare under the erased id
+/// `V#caller(java.lang.CharSequence)`; over `void listy(List<String> x) {
+/// helper(); }` it emits `"owner":"...#listy(java.util.List<java.lang.String>)"`
+/// (kept type argument) against the erased declared id `#listy(java.util.List)`.
+/// Both mismatches silently drop every call edge whose owner is such a
+/// method — see [`raw_method_signature_key`] and its use in
+/// `lower_extraction`'s reference loop for the reconciliation.
+///
+/// # Known residual ambiguity
+///
+/// The oracle's own wire format cannot always distinguish two *different*
+/// overloads that share one raw (bound-blind) spelling — e.g. two
+/// same-named, same-arity generic overloads both spelled `foo(T)` because
+/// neither renders its bound. When that happens on the *owner* side (the
+/// scenario `typevar_bounds_map`'s doc comment documents for *declared*
+/// ids), the alias map built from this key collapses onto whichever
+/// overload was lowered last; that is a real limitation of what
+/// `executableId` reports, not something recoverable from the string alone,
+/// and out of scope for this fix (it would need a change on the oracle side).
+fn raw_signature_type(t: &TypeMirror) -> String {
+    match t {
+        TypeMirror::Void => "void".to_owned(),
+        TypeMirror::Array { component, .. } => format!("{}[]", raw_signature_type(component)),
+        TypeMirror::Typevar { name, .. } => name.to_string(),
+        TypeMirror::Wildcard {
+            extends_bound,
+            super_bound,
+        } => match (extends_bound, super_bound) {
+            (Some(bound), _) => format!("? extends {}", raw_signature_type(bound)),
+            (None, Some(bound)) => format!("? super {}", raw_signature_type(bound)),
+            (None, None) => "?".to_owned(),
+        },
+        TypeMirror::Intersection { bounds } => {
+            // Mirrors type_erase's own choice of the leftmost bound; an
+            // intersection type essentially never reaches a top-level
+            // parameter position in real source, so this is best-effort.
+            bounds
+                .first()
+                .map_or_else(|| "java.lang.Object".to_owned(), raw_signature_type)
+        }
+        TypeMirror::Union { alternatives } => alternatives
+            .iter()
+            .map(raw_signature_type)
+            .collect::<Vec<_>>()
+            .join("|"),
+        TypeMirror::Primitive { name, .. }
+        | TypeMirror::Error { name }
+        | TypeMirror::Other { repr: name } => name.to_string(),
+        TypeMirror::Declared { name, args, .. } => {
+            if args.is_empty() {
+                name.to_string()
+            } else {
+                let args_text = args
+                    .iter()
+                    .map(raw_signature_type)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{name}<{args_text}>")
+            }
+        }
+        TypeMirror::None => "<none>".to_owned(),
+        TypeMirror::Null => "null".to_owned(),
+    }
+}
+
+/// The raw (unerased) occurrence-id spelling for one method/constructor
+/// signature — same shape as [`JavaId::method`] but built from
+/// [`raw_signature_type`] instead of [`type_erase`]. Used only as a lookup
+/// key into the raw→declared alias map; never itself a `JavaId` that gets
+/// `declare`d.
+fn raw_method_signature_key(owner_qualified: &str, name: &str, params: &[Param]) -> String {
+    let sig = params
+        .iter()
+        .map(|p| raw_signature_type(&p.ty))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{owner_qualified}#{name}({sig})")
+}
+
 // ── Lowering context ────────────────────────────────────────────────────────
 
 /// Lowering context: wraps `Lowering<JavaId>` and maintains the type-name
@@ -258,8 +354,17 @@ pub struct LoweringCtx<'a> {
     pub resolver: HashMap<String, String>,
     /// Set of all qualified type names declared in this extraction.
     /// Used by `lower_type` to decide whether to `refer()` (in-package) or
-    /// return `Type::Any` (external library type not in scope).
+    /// route through [`refer_import`](nudox_ir::lower::Lowering::refer_import)
+    /// (external library type not in scope).
     pub known_qualified: HashSet<String>,
+    /// Raw (unerased) method/constructor signature spelling → the erased
+    /// `JavaId` actually `declare`d for it. Populated by `lower_method` and
+    /// `lower_constructor`; consulted by `lower_extraction`'s reference loop
+    /// to reconcile the oracle's `references[].owner`/`.target` strings
+    /// (built from javac's own, unerased `TypeMirror.toString()`) against
+    /// this producer's erased declaration ids. See
+    /// [`raw_method_signature_key`]'s doc comment for why the two disagree.
+    occurrence_aliases: HashMap<String, JavaId>,
 }
 
 impl<'a> LoweringCtx<'a> {
@@ -267,6 +372,23 @@ impl<'a> LoweringCtx<'a> {
         let mut resolver = HashMap::with_capacity(types.len());
         let mut known_qualified = HashSet::with_capacity(types.len());
         for t in types {
+            // LOCAL and ANONYMOUS declarations are never `declare`d —
+            // `lower_type_decl` returns immediately for them (they are
+            // implementation details with no stable name outside their
+            // defining block). Before this filter, a LOCAL/ANONYMOUS entry
+            // that nonetheless appeared in the oracle's flat `types` list
+            // still landed in `known_qualified`, so any other reference
+            // naming it took the same-package `low.refer()` branch in
+            // `lower_type_depth` and minted a forward reference that
+            // `lower_type_decl` then never satisfied — a dangling `Intro`
+            // that fails `Lowering::finish` with `Error::Undeclared`. Skipping
+            // them here keeps `known_qualified` in lockstep with what
+            // actually gets declared, so such a reference instead takes the
+            // external branch (`Ref::Foreign`/`Unresolved`), which `finish`
+            // never demands a declaration for.
+            if matches!(t.nesting, NestingKind::Local | NestingKind::Anonymous) {
+                continue;
+            }
             resolver
                 .entry(t.simple_name.to_string())
                 .or_insert_with(|| t.qualified_name.to_string());
@@ -276,6 +398,7 @@ impl<'a> LoweringCtx<'a> {
             low,
             resolver,
             known_qualified,
+            occurrence_aliases: HashMap::new(),
         }
     }
 
@@ -512,23 +635,91 @@ pub fn lower_type(ctx: &mut LoweringCtx<'_>, t: &TypeMirror) -> Type {
     lower_type_depth(ctx.low, &ctx.known_qualified, t, 0)
 }
 
+/// Package-name prefixes that name the Java Platform itself rather than a
+/// published artifact: `java.*`/`javax.*` (the JDK's own API packages —
+/// `javax` retained its name across the Java EE split and is still shipped
+/// *in* the JDK for the packages this producer will ever see: `javax.swing`,
+/// `javax.crypto`, …) and `jdk.*` (JDK-internal modules that are nonetheless
+/// public API, e.g. `jdk.jfr`).
+///
+/// No POM anywhere publishes these names — unlike every *other* type outside
+/// the extraction, tagging one `ForeignOrigin::Namespace(maven, …)` is not
+/// merely imprecise, it is stating a fact that is actively false. See
+/// [`java_foreign_key`].
+const JDK_PACKAGE_PREFIXES: &[&str] = &["java.", "javax.", "jdk."];
+
+/// Whether `fqn` names a type the Java Platform (JDK) itself declares.
+fn is_jdk_type(fqn: &str) -> bool {
+    JDK_PACKAGE_PREFIXES.iter().any(|prefix| fqn.starts_with(prefix))
+}
+
+/// The dotted package that owns a fully-qualified, out-of-extraction type
+/// name — the namespace half of [`java_foreign_key`].
+///
+/// A qualified name alone is ambiguous at the package/class boundary:
+/// `java.util.Map.Entry` cannot be split into `("java.util.Map", "Entry")` by
+/// `rfind('.')` — `Map` is a class, not a package, so that reading makes a
+/// class masquerade as one. `TypeMirror::Declared::owner` resolves this: when
+/// present it names the *enclosing type*, so walking to the outermost owner
+/// and splitting *that* type's own qualified name on its last dot lands on
+/// the real package boundary no matter how many nesting levels deep the
+/// reference is. A top-level type (`owner: None`) needs no walk — `name`
+/// itself is already the outermost type, exactly the previous behavior.
+fn external_package_namespace<'a>(name: &'a str, owner: Option<&'a TypeMirror>) -> &'a str {
+    let mut root_name = name;
+    let mut cursor = owner;
+    while let Some(TypeMirror::Declared {
+        name: outer_name,
+        owner: outer_owner,
+        ..
+    }) = cursor
+    {
+        root_name = outer_name.as_ref();
+        cursor = outer_owner.as_deref();
+    }
+    root_name.rfind('.').map_or("", |i| &root_name[..i])
+}
+
 /// The cross-package key for a Java type outside the current extraction.
 ///
-/// # What Java can and cannot state
+/// # JDK vs. published artifact
+///
+/// A JDK type ([`is_jdk_type`]) still has a real package (`java.util` is a
+/// genuine namespace, unlike Go's fully packageless universe scope — see
+/// `ForeignOrigin::Universe`'s own doc comment, "no package owns it", which
+/// is not true of anything in the JDK) — so it keeps `ForeignOrigin::Namespace`
+/// with `namespace` computed the same way as everything else. What changes is
+/// the *ecosystem*: `"java"`, not `"maven"`. No POM anywhere publishes
+/// `java.util.List`; tagging it `maven` the way this producer's real
+/// `PackageLineageId`s do for actual published artifacts (see
+/// `tests/java/producer_tests.rs`'s `PackageLineageId::new(EcosystemId::new("maven"), …)`)
+/// is not merely imprecise the way every *other* unresolved external type is
+/// — it is stating a fact that is actively false. Keeping the ecosystem ids
+/// disjoint means a resolver can never mistake "the JDK" for "an unloaded
+/// Maven package" by id alone, while `namespace` still carries real,
+/// consumer-useful information (`java.util`, not nothing).
+///
+/// # What Java can and cannot state, for the namespace itself
 ///
 /// The fully-qualified source name is globally stable and unique —
-/// `java.util.List` is that string in every extraction, so the key joins by
-/// construction. What is *not* derivable is the publishing artifact: mapping
-/// `java.util.List` to a Maven `groupId:artifactId` is a POM/classpath fact
-/// javac does not report, and `TypeMirror::Declared` carries no module. So this
-/// emits `ForeignOrigin::Namespace` over the package prefix, which states the
-/// limitation instead of fabricating a coordinate that would render as a
-/// working hyperlink and never resolve.
-fn java_foreign_key(fqn: &str) -> ForeignKey {
-    let (namespace, simple) = fqn
-        .rfind('.')
-        .map_or(("", fqn), |i| (&fqn[..i], &fqn[i + 1..]));
-    ForeignKey::in_namespace(EcosystemId::new("maven"), namespace, fqn, simple)
+/// `com.example.Widget` is that string in every extraction, so the key joins
+/// by construction. What is *not* derivable for a non-JDK type is the
+/// publishing artifact: mapping it to a Maven `groupId:artifactId` is a
+/// POM/classpath fact javac does not report. So this emits
+/// `ForeignOrigin::Namespace` over the real package prefix (via
+/// [`external_package_namespace`], not a naive last-dot split — see its own
+/// doc comment for why `java.util.Map.Entry`'s namespace is `java.util`, not
+/// `java.util.Map`), which states the limitation instead of fabricating a
+/// coordinate that would render as a working hyperlink and never resolve.
+fn java_foreign_key(fqn: &str, owner: Option<&TypeMirror>) -> ForeignKey {
+    let simple = fqn.rsplit('.').next().unwrap_or(fqn);
+    let namespace = external_package_namespace(fqn, owner);
+    let ecosystem = if is_jdk_type(fqn) {
+        EcosystemId::new("java")
+    } else {
+        EcosystemId::new("maven")
+    };
+    ForeignKey::in_namespace(ecosystem, namespace, fqn, simple)
 }
 
 fn lower_type_depth(
@@ -552,53 +743,64 @@ fn lower_type_depth(
         TypeMirror::Declared {
             name,
             args,
+            owner,
             annotations,
-            ..
         } => {
-            // `java.lang.Object` is Java's genuine top type: every reference
-            // value is an `Object`, and nothing narrows out of it without a
-            // cast. This is the one `Type::Any` in this producer that survives
-            // CC-2 — it is a real type with a real method set, not a gap.
-            let base = if name.as_ref() == "java.lang.Object" {
-                Type::Any
+            // `java.lang.Object` used to be special-cased to `Type::Any` here
+            // ("Java's genuine top type… the one `Type::Any` that survives
+            // CC-2"). That reasoning was sound for what `Type::Any` *means*,
+            // but it threw away the one thing distinguishing an `Object`
+            // reference from every other type this branch erases: its name.
+            // `Object` is a JDK type exactly like `java.util.List` is, so it
+            // now takes the same `java_foreign_key` branch below — a named
+            // `Ref::Foreign` (`Universe`, display `Object`) that survives
+            // rendering and keeps overload skeletons distinct, instead of an
+            // erased hole indistinguishable from every other gap.
+            let nominal: RawRef = if known.contains(name.as_ref()) {
+                // Declared in this extraction: a same-package reference.
+                low.refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
+                    .into_raw()
             } else {
-                let nominal: RawRef = if known.contains(name.as_ref()) {
-                    // Declared in this extraction: a same-package reference.
-                    low.refer::<nudox_ir::kinds::record::Record>(JavaId::type_(name.as_ref()))
-                        .into_raw()
-                } else {
-                    // Outside the extraction — a JDK type, or a dependency the
-                    // oracle never loaded.
-                    //
-                    // This used to be `Type::Any`, with a comment explaining
-                    // that `refer()` would fail `finish` with `Undeclared`.
-                    // That reasoning was correct and `refer_import` is the
-                    // method it was looking for: it creates no declaration
-                    // slot, so `finish` never demands one.
-                    //
-                    // It matters far beyond rendering. Erasing every foreign
-                    // parameter type to `Type::Any` is what made Gson's
-                    // `fromJson(String, Class)`, `(String, Type)`,
-                    // `(Reader, Class)` and `(Reader, Type)` encode to four
-                    // byte-identical signature skeletons — one `IntroId`, three
-                    // silent overwrites, 28 real methods gone. Naming the types
-                    // makes the four skeletons structurally distinct, so their
-                    // ids stay signature-stable and seal's span escalation never
-                    // has to fire for them.
-                    low.refer_import::<nudox_ir::kinds::record::Record>(java_foreign_key(name))
-                        .into_raw()
-                };
-                if args.is_empty() {
-                    Type::Nominal(nominal)
-                } else {
-                    let args_lowered: Vec<Type> = args
-                        .iter()
-                        .map(|a| lower_type_depth(low, known, a, depth + 1))
-                        .collect();
-                    Type::Apply {
-                        base: Box::new(Type::Nominal(nominal)),
-                        args: args_lowered.into_boxed_slice(),
-                    }
+                // Outside the extraction — a JDK type, or a dependency the
+                // oracle never loaded.
+                //
+                // This used to be `Type::Any`, with a comment explaining
+                // that `refer()` would fail `finish` with `Undeclared`.
+                // That reasoning was correct and `refer_import` is the
+                // method it was looking for: it creates no declaration
+                // slot, so `finish` never demands one.
+                //
+                // It matters far beyond rendering. Erasing every foreign
+                // parameter type to `Type::Any` is what made Gson's
+                // `fromJson(String, Class)`, `(String, Type)`,
+                // `(Reader, Class)` and `(Reader, Type)` encode to four
+                // byte-identical signature skeletons — one `IntroId`, three
+                // silent overwrites, 28 real methods gone. Naming the types
+                // makes the four skeletons structurally distinct, so their
+                // ids stay signature-stable and seal's span escalation never
+                // has to fire for them.
+                //
+                // `owner` (the enclosing type, for a nested reference like
+                // `java.util.Map.Entry`) is threaded through so
+                // `java_foreign_key` can find the real package boundary
+                // instead of guessing it from the last dot in `name` — see
+                // `external_package_namespace`.
+                low.refer_import::<nudox_ir::kinds::record::Record>(java_foreign_key(
+                    name,
+                    owner.as_deref(),
+                ))
+                .into_raw()
+            };
+            let base = if args.is_empty() {
+                Type::Nominal(nominal)
+            } else {
+                let args_lowered: Vec<Type> = args
+                    .iter()
+                    .map(|a| lower_type_depth(low, known, a, depth + 1))
+                    .collect();
+                Type::Apply {
+                    base: Box::new(Type::Nominal(nominal)),
+                    args: args_lowered.into_boxed_slice(),
                 }
             };
             wrap_annotated(base, annotations)
@@ -656,15 +858,43 @@ fn lower_type_depth(
         TypeMirror::Error { name } => {
             // javac produced an `ErrorType`: it saw the name and could not
             // resolve it, which in practice means a classpath entry the
-            // extraction never loaded. More *cross-package* input is exactly
-            // what closes this, so it is `UnresolvedExternal` and not
-            // `OracleGap`.
+            // extraction never loaded.
             //
-            // The name is now kept. The previous code wrote `let _ = name;`
-            // and returned `Type::Any`, discarding the single most useful
-            // thing it held — and making every unresolvable Java type in an
-            // overload set hash to the same skeleton byte.
-            Type::unresolved_external(name.as_ref())
+            // Two genuinely different situations arrive through this one
+            // variant, distinguished by whether javac could still qualify
+            // the name:
+            //
+            // - A dotted name (`com.absent.Widget`) is exactly as stable and
+            //   joinable as any other cross-package reference this producer
+            //   emits — the only thing missing is that *this* extraction's
+            //   classpath did not include it. That is what `Ref::Foreign`
+            //   exists for, so it takes the same `java_foreign_key` path as
+            //   a resolvable external `Declared` type. Before this, every
+            //   such name — however precisely javac had qualified it — was
+            //   flattened into `UnresolvedExternal`, which carries a bare
+            //   string with none of `ForeignKey`'s join/render structure and
+            //   can never be linked even after the missing package shows up
+            //   in a later corpus sweep.
+            // - A bare name (no dot at all) means javac could not even guess
+            //   a package for it — there is no more structure to state, so
+            //   `UnresolvedExternal` remains the honest answer: more
+            //   *cross-package* input is exactly what would close this, which
+            //   is why it is `UnresolvedExternal` and not `OracleGap`.
+            //
+            // Either way the name is now kept. The previous code wrote
+            // `let _ = name;` and returned `Type::Any`, discarding the single
+            // most useful thing it held — and making every unresolvable Java
+            // type in an overload set hash to the same skeleton byte.
+            if name.contains('.') {
+                Type::Nominal(
+                    low.refer_import::<nudox_ir::kinds::record::Record>(java_foreign_key(
+                        name, None,
+                    ))
+                    .into_raw(),
+                )
+            } else {
+                Type::unresolved_external(name.as_ref())
+            }
         }
         TypeMirror::Other { repr } => {
             // A `TypeKind` with no counterpart in this IR at all — javac's
@@ -803,9 +1033,28 @@ pub fn lower_extraction(ctx: &mut LoweringCtx<'_>, extraction: &Extraction) {
         let Ok(end) = u32::try_from(reference.end) else {
             continue;
         };
+        // `reference.owner`/`.target` are the oracle's raw, unerased
+        // signature spelling (see `raw_signature_type`'s doc comment). Route
+        // each through the alias map `lower_method`/`lower_constructor`
+        // populated so a generic or parameterized-type method resolves to
+        // the same erased `JavaId` its own `declare` call used, instead of a
+        // spelling nothing ever declares. Non-method references (fields,
+        // types) and any method whose raw and erased spellings already
+        // coincide are not in the map and fall back to the literal string,
+        // unchanged from before this alias step existed.
+        let owner_id = ctx
+            .occurrence_aliases
+            .get(reference.owner.as_ref())
+            .cloned()
+            .unwrap_or_else(|| JavaId(reference.owner.to_string()));
+        let target_id = ctx
+            .occurrence_aliases
+            .get(reference.target.as_ref())
+            .cloned()
+            .unwrap_or_else(|| JavaId(reference.target.to_string()));
         ctx.low.record_occurrence(
-            JavaId(reference.owner.to_string()),
-            JavaId(reference.target.to_string()),
+            owner_id,
+            target_id,
             ReferenceKind::FunctionCall,
             Confidence::Oracle,
             RelSpan::new(start, end),
@@ -1455,6 +1704,14 @@ fn lower_method(
 ) {
     let typevar_bounds = typevar_bounds_map(class_type_params, &m.type_params);
     let mid = JavaId::method(owner_qname, m.name.as_ref(), &m.params, &typevar_bounds);
+    // Register the raw (unerased) spelling → erased `JavaId` alias before
+    // anything else can early-return, so every declared method is
+    // reachable from `lower_extraction`'s reference loop regardless of
+    // whether it turns out to be a call owner. See `raw_method_signature_key`.
+    ctx.occurrence_aliases.insert(
+        raw_method_signature_key(owner_qname, m.name.as_ref(), &m.params),
+        mid.clone(),
+    );
     let parsed = ctx.parse_doc(m.doc.as_deref(), m.doc_kind.as_deref(), Some(owner_qname));
     let (src, line) = source_of(m.position.as_ref());
 
@@ -1734,6 +1991,11 @@ fn lower_constructor(
 ) {
     let typevar_bounds = typevar_bounds_map(class_type_params, &m.type_params);
     let mid = JavaId::method(owner_qname, "<init>", &m.params, &typevar_bounds);
+    // See the identical registration in `lower_method`.
+    ctx.occurrence_aliases.insert(
+        raw_method_signature_key(owner_qname, "<init>", &m.params),
+        mid.clone(),
+    );
     let parsed = ctx.parse_doc(m.doc.as_deref(), m.doc_kind.as_deref(), Some(owner_qname));
     let (src, line) = source_of(m.position.as_ref());
 
@@ -2665,11 +2927,23 @@ mod tests {
         )
     }
 
-    /// `java.lang.Object` is the *only* thing in this producer that is
-    /// `Type::Any` — it is Java's genuine top type.
+    /// J5: `java.lang.Object` is a JDK type like any other outside this
+    /// extraction — it now lowers to a named `Ref::Foreign` (`Universe`
+    /// origin, display `Object`), not `Type::Any`.
+    ///
+    /// This supersedes the former `only_java_lang_object_is_the_top_type`,
+    /// which pinned `Type::Any` as Object's *sole* legitimate use in this
+    /// producer. That was a deliberate call at the time — Object really is
+    /// Java's top type — but it meant an `Object`-typed parameter erased to
+    /// the exact same byte `Type::Any` encodes for every *other* gap, so two
+    /// overloads differing only in an `Object` vs. some other erased-away
+    /// parameter could still collide at `Skeleton` — the identical failure
+    /// mode CC-2 fixed for every other external type. Naming it closes the
+    /// last case.
     #[test]
-    fn only_java_lang_object_is_the_top_type() {
+    fn java_lang_object_lowers_to_a_named_foreign_ref_not_any() {
         use crate::java::schema::TypeMirror;
+        use nudox_ir::index::Ref;
         use nudox_ir::kinds::ty::Type;
         let mut low = tv_lowering();
         let mut ctx = tv_ctx(&mut low);
@@ -2679,34 +2953,89 @@ mod tests {
             annotations: vec![],
             owner: None,
         };
-        assert_eq!(lower_type(&mut ctx, &object), Type::Any);
+        let result = lower_type(&mut ctx, &object);
+        assert_ne!(
+            result,
+            Type::Any,
+            "java.lang.Object must no longer erase to Type::Any"
+        );
+        let Type::Nominal(raw) = &result else {
+            panic!("java.lang.Object must lower to a nominal reference, got {result:?}");
+        };
+        let (key, target) = raw
+            .as_foreign()
+            .expect("java.lang.Object is outside the extraction, so it must be Ref::Foreign");
+        assert_eq!(key.path.as_ref(), "java.lang.Object");
+        assert_eq!(key.display.as_ref(), "Object");
+        assert_eq!(
+            key.origin.ecosystem().as_str(),
+            "java",
+            "the JDK's own top type must not be tagged with the maven ecosystem"
+        );
+        assert!(
+            matches!(raw, Ref::Foreign { .. }) && target.is_none(),
+            "nothing was sealed alongside this bare Lowering, so it is named but unlinked"
+        );
     }
 
-    /// An `ErrorType` is `UnresolvedExternal` **and keeps its name**.
+    /// J2 + guard: an `ErrorType` keeps its name either way, but a
+    /// **fully-qualified** one now becomes a named `Ref::Foreign` — exactly
+    /// like a resolvable `Declared` type outside the extraction — while a
+    /// genuinely **bare** one (javac could not even guess a package) stays
+    /// `UnresolvedExternal`, which is still the honest answer for that case.
     ///
-    /// The previous code wrote `let _ = name;` and returned `Type::Any`,
-    /// throwing away the only useful thing it held — and making every
-    /// unresolvable type in an overload set hash to one skeleton byte.
+    /// Before J2, `let _ = name;` (in the original defect) and later a bare
+    /// `Type::unresolved_external(name)` for *every* `Error` mirror both
+    /// discarded the same information a resolvable external `Declared` type
+    /// keeps: `com.absent.Widget` is exactly as stable and joinable as
+    /// `java.util.List` is — the only difference is that *this* extraction's
+    /// classpath happened not to include it.
     #[test]
-    fn error_mirror_keeps_its_name_as_unresolved_external() {
+    fn qualified_error_mirror_becomes_foreign_bare_one_stays_unresolved() {
         use crate::java::schema::TypeMirror;
         use nudox_ir::kinds::{UnknownType, ty::Type};
         let mut low = tv_lowering();
         let mut ctx = tv_ctx(&mut low);
-        let err = TypeMirror::Error {
-            name: "com.example.Missing".into(),
+
+        // Fully-qualified and unresolvable: a named Ref::Foreign.
+        let qualified = TypeMirror::Error {
+            name: "com.absent.Widget".into(),
+        };
+        let result = lower_type(&mut ctx, &qualified);
+        let Type::Nominal(raw) = &result else {
+            panic!(
+                "a fully-qualified ErrorType must lower to a nominal Foreign reference, got {result:?}"
+            );
+        };
+        let (key, target) = raw.as_foreign().expect(
+            "com.absent.Widget is dotted and therefore joinable, so it must be Ref::Foreign, \
+             not UnresolvedExternal",
+        );
+        assert_eq!(key.path.as_ref(), "com.absent.Widget");
+        assert_eq!(key.display.as_ref(), "Widget");
+        assert!(target.is_none());
+
+        // Two different qualified unresolvable types must not collapse.
+        let other_qualified = TypeMirror::Error {
+            name: "com.absent.OtherWidget".into(),
+        };
+        assert_ne!(
+            lower_type(&mut ctx, &qualified),
+            lower_type(&mut ctx, &other_qualified)
+        );
+
+        // Bare (no dot at all): javac could not qualify it further, so this
+        // stays UnresolvedExternal — the previously-only behavior, now scoped
+        // to the case it actually describes.
+        let bare = TypeMirror::Error {
+            name: "Missing".into(),
         };
         assert_eq!(
-            lower_type(&mut ctx, &err),
+            lower_type(&mut ctx, &bare),
             Type::Unknown(UnknownType::UnresolvedExternal {
-                name: "com.example.Missing".to_owned()
+                name: "Missing".to_owned()
             })
         );
-        // Two different unresolvable types must not collapse together.
-        let other = TypeMirror::Error {
-            name: "com.example.AlsoMissing".into(),
-        };
-        assert_ne!(lower_type(&mut ctx, &err), lower_type(&mut ctx, &other));
     }
 
     /// JLS 4.1: the null type is a subtype of every reference type. Mapping it
@@ -3118,5 +3447,851 @@ mod tests {
             &std::fs::read(&sym.source).expect("read fixture")[sym.span],
             b"void run() {}"
         );
+    }
+
+    // --- Sealed-table helpers: J1 and the J6-J10 guards need real IntroIds,
+    //     which only exist post-seal. `Lowering::finish` alone (used by every
+    //     test above) is not enough — it hands back an `IrPackage` whose
+    //     occurrences and parent/child structure are still in producer-local
+    //     `JavaId` space. -----------------------------------------------------
+
+    /// Parse `json`, lower it, `finish`, and `seal` under a throwaway maven
+    /// lineage with nothing else in the corpus (`Unlinked`) — the same
+    /// pipeline `nudox_languages::produce` drives end to end, minus the real
+    /// oracle subprocess `produce` would otherwise shell out to. This is what
+    /// lets a hand-authored fixture reach `SealOutcome::occurrences` and
+    /// same-package `Ref::Intro`s, which nothing pre-seal exposes.
+    fn seal_from_json(json: &str, pkg_name: &str) -> nudox_ir::package::SealOutcome {
+        let extraction: Extraction = serde_json::from_str(json).expect("fixture JSON must parse");
+        let pkg_id = PackageId::path(format!("{pkg_name}:test:1.0"));
+        let root_sym = Symbol {
+            name: pkg_name.to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let mut low: Lowering<JavaId> = Lowering::new(pkg_id, root_sym);
+        let mut ctx = LoweringCtx::new(&mut low, &extraction.types);
+        lower_extraction(&mut ctx, &extraction);
+        let pkg = low.finish().expect("lowering must succeed");
+        let lineage = nudox_ir::change::PackageLineageId::new(
+            nudox_ir::change::EcosystemId::new("maven"),
+            nudox_ir::change::PackageName::new(pkg_name),
+        );
+        pkg.seal(&lineage, &nudox_ir::foreign::Unlinked)
+    }
+
+    /// The sealed `Function` entry named `name`. Panics with the whole entry
+    /// list's names on a miss so a failure says what *was* found, not just
+    /// that the lookup failed.
+    fn find_sealed_function<'a>(
+        table: &'a nudox_ir::apply::PristineIntroTable,
+        name: &str,
+    ) -> &'a nudox_ir::kinds::function::Function {
+        let (_, entry) = table.iter().find(|(_, e)| e.sym().name == name).unwrap_or_else(|| {
+            panic!(
+                "{name} must be lowered; sealed names: {:?}",
+                table.iter().map(|(_, e)| e.sym().name.clone()).collect::<Vec<_>>()
+            )
+        });
+        match entry.kind().as_owned_kind() {
+            Some(nudox_ir::kind::Kind::Function(f)) => f,
+            other => panic!("{name} must be Kind::Function, got {other:?}"),
+        }
+    }
+
+    /// The declared type of `f`'s `idx`-th input parameter, resolved through
+    /// the sealed table. Panics if the ref is not a same-package `Ref::Intro`
+    /// — every guard test below is specifically about same-package targets.
+    fn sealed_param_ty<'a>(
+        table: &'a nudox_ir::apply::PristineIntroTable,
+        f: &nudox_ir::kinds::function::Function,
+        idx: usize,
+    ) -> &'a Type {
+        let Ref::Intro(pid) = &f.input_params[idx] else {
+            panic!(
+                "expected a same-package Ref::Intro param ref, got {:?}",
+                f.input_params[idx]
+            );
+        };
+        let pe = table.get(*pid).expect("param entry must be live");
+        match pe.kind().as_owned_kind() {
+            Some(nudox_ir::kind::Kind::Param(p)) => {
+                p.ty.as_ref().expect("param must carry a declared type")
+            }
+            other => panic!("expected Kind::Param, got {other:?}"),
+        }
+    }
+
+    /// Shared fixture for the J6-J10 guards: one package exercising a
+    /// generic-argument reference, all three wildcard bound forms, a nested
+    /// same-package type, an array element type, and a same-package `throws`
+    /// clause — every one of them a *same-package* target, so each must
+    /// resolve to `Ref::Intro` once sealed.
+    fn guard_fixture_json() -> &'static str {
+        r#"{
+          "format": 1,
+          "javaVersion": "21",
+          "modules": [],
+          "packages": [{"name": "com.example", "doc": null, "docKind": null, "annotations": [], "position": null}],
+          "types": [
+            {
+              "qualifiedName": "com.example.Box",
+              "simpleName": "Box",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [{"name": "T", "bounds": [], "annotations": []}],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": []
+            },
+            {
+              "qualifiedName": "com.example.Shape",
+              "simpleName": "Shape",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": []
+            },
+            {
+              "qualifiedName": "com.example.Outer",
+              "simpleName": "Outer",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": ["com.example.Outer.Inner"]
+            },
+            {
+              "qualifiedName": "com.example.Outer.Inner",
+              "simpleName": "Inner",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": "com.example.Outer",
+              "nesting": "MEMBER",
+              "modifiers": ["public", "static"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": []
+            },
+            {
+              "qualifiedName": "com.example.MyException",
+              "simpleName": "MyException",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": []
+            },
+            {
+              "qualifiedName": "com.example.Holder",
+              "simpleName": "Holder",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [
+                {
+                  "name": "useBox",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "b", "type": {"kind": "declared", "name": "com.example.Box", "args": [{"kind": "declared", "name": "com.example.Shape", "args": [], "owner": null, "annotations": []}], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "wildcardExtends",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "list", "type": {"kind": "declared", "name": "java.util.List", "args": [{"kind": "wildcard", "extends": {"kind": "declared", "name": "com.example.Shape", "args": [], "owner": null, "annotations": []}, "super": null}], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "wildcardSuper",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "list", "type": {"kind": "declared", "name": "java.util.List", "args": [{"kind": "wildcard", "extends": null, "super": {"kind": "declared", "name": "com.example.Shape", "args": [], "owner": null, "annotations": []}}], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "wildcardUnbounded",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "list", "type": {"kind": "declared", "name": "java.util.List", "args": [{"kind": "wildcard", "extends": null, "super": null}], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "useInner",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "inner", "type": {"kind": "declared", "name": "com.example.Outer.Inner", "args": [], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "useArray",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "arr", "type": {"kind": "array", "component": {"kind": "declared", "name": "com.example.Shape", "args": [], "owner": null, "annotations": []}, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "throwsMyException",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [],
+                  "return": {"kind": "void"},
+                  "thrown": [{"kind": "declared", "name": "com.example.MyException", "args": [], "owner": null, "annotations": []}],
+                  "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                }
+              ],
+              "nested": []
+            }
+          ]
+        }"#
+    }
+
+    /// J6 (guard): a same-package generic argument (`Box<Shape>`, both
+    /// declared in this extraction) lowers to `Type::Apply` with **both**
+    /// the base and the argument resolving to `Ref::Intro` once sealed — not
+    /// `Ref::Local` (a build-time-only index that must never survive `seal`)
+    /// and not `Ref::Foreign` (both `Box` and `Shape` are local).
+    #[test]
+    fn same_package_generic_argument_resolves_to_intro_base_and_arg() {
+        let outcome = seal_from_json(guard_fixture_json(), "guard");
+        let table = &outcome.table;
+        let f = find_sealed_function(table, "useBox");
+        let ty = sealed_param_ty(table, f, 0);
+        let Type::Apply { base, args } = ty else {
+            panic!("Box<Shape> must lower to Type::Apply, got {ty:?}");
+        };
+        let Type::Nominal(Ref::Intro(box_intro)) = base.as_ref() else {
+            panic!("Box must resolve to a same-package Ref::Intro base, got {base:?}");
+        };
+        assert_eq!(table.get(*box_intro).expect("live").sym().name, "Box");
+        assert_eq!(args.len(), 1, "Box<Shape> must carry exactly one type argument");
+        let Type::Nominal(Ref::Intro(shape_intro)) = &args[0] else {
+            panic!("Shape argument must resolve to a same-package Ref::Intro, got {:?}", args[0]);
+        };
+        assert_eq!(table.get(*shape_intro).expect("live").sym().name, "Shape");
+    }
+
+    /// J7 (guard): all three wildcard forms (`? extends Shape`, `? super
+    /// Shape`, bare `?`) keep the right `Variance`, and a same-package bound
+    /// resolves to `Ref::Intro` — not just "some `Type::Wildcard`", which is
+    /// all the pre-existing `wildcard_lowers_to_type_wildcard_not_anchor`
+    /// test checked.
+    #[test]
+    fn same_package_wildcard_bounds_resolve_to_intro() {
+        let outcome = seal_from_json(guard_fixture_json(), "guard");
+        let table = &outcome.table;
+
+        let extends_ty = sealed_param_ty(table, find_sealed_function(table, "wildcardExtends"), 0);
+        let Type::Apply { args, .. } = extends_ty else {
+            panic!("List<? extends Shape> must lower to Type::Apply, got {extends_ty:?}");
+        };
+        let Type::Wildcard { variance: Variance::Covariant, bound: Some(bound) } = &args[0] else {
+            panic!("expected a Covariant wildcard, got {:?}", args[0]);
+        };
+        let Type::Nominal(Ref::Intro(shape_intro)) = bound.as_ref() else {
+            panic!("? extends Shape's bound must be a same-package Ref::Intro, got {bound:?}");
+        };
+        assert_eq!(table.get(*shape_intro).expect("live").sym().name, "Shape");
+
+        let super_ty = sealed_param_ty(table, find_sealed_function(table, "wildcardSuper"), 0);
+        let Type::Apply { args, .. } = super_ty else {
+            panic!("List<? super Shape> must lower to Type::Apply, got {super_ty:?}");
+        };
+        let Type::Wildcard { variance: Variance::Contravariant, bound: Some(bound) } = &args[0] else {
+            panic!("expected a Contravariant wildcard, got {:?}", args[0]);
+        };
+        assert!(matches!(bound.as_ref(), Type::Nominal(Ref::Intro(_))));
+
+        let unbounded_ty = sealed_param_ty(table, find_sealed_function(table, "wildcardUnbounded"), 0);
+        let Type::Apply { args, .. } = unbounded_ty else {
+            panic!("List<?> must lower to Type::Apply, got {unbounded_ty:?}");
+        };
+        assert_eq!(
+            args[0],
+            Type::Wildcard { variance: Variance::Invariant, bound: None },
+            "bare ? must stay Invariant with no bound"
+        );
+    }
+
+    /// J8 (guard): a same-package **nested** type (`Outer.Inner`) referenced
+    /// from elsewhere resolves to `Ref::Intro`, not `Ref::Foreign` — nesting
+    /// must not accidentally push a local reference onto the external path.
+    #[test]
+    fn same_package_nested_type_resolves_to_intro() {
+        let outcome = seal_from_json(guard_fixture_json(), "guard");
+        let table = &outcome.table;
+        let f = find_sealed_function(table, "useInner");
+        let ty = sealed_param_ty(table, f, 0);
+        let Type::Nominal(Ref::Intro(inner_intro)) = ty else {
+            panic!("Outer.Inner must resolve to a same-package Ref::Intro, got {ty:?}");
+        };
+        let inner_entry = table.get(*inner_intro).expect("live");
+        assert_eq!(inner_entry.sym().name, "Inner");
+        let parent = table.parent_of(*inner_intro).expect("Inner must have a parent");
+        assert_eq!(table.get(parent).expect("live").sym().name, "Outer");
+    }
+
+    /// J9 (guard): a same-package `throws` type resolves through
+    /// `Function::throws` to `Ref::Intro`, exactly like the existing
+    /// `throws_in_function_throws_not_attrs_or_output_params` test verifies
+    /// for an *external* thrown type resolving to `Ref::Foreign`.
+    #[test]
+    fn same_package_throws_resolves_to_intro() {
+        let outcome = seal_from_json(guard_fixture_json(), "guard");
+        let table = &outcome.table;
+        let f = find_sealed_function(table, "throwsMyException");
+        assert_eq!(f.throws.len(), 1);
+        let Type::Nominal(Ref::Intro(exc_intro)) = &f.throws[0] else {
+            panic!("MyException must resolve to a same-package Ref::Intro, got {:?}", f.throws[0]);
+        };
+        assert_eq!(table.get(*exc_intro).expect("live").sym().name, "MyException");
+    }
+
+    /// J10 (guard): a same-package array element type (`Shape[]`) lowers to
+    /// `Type::Slice(Nominal(Intro))` — the element resolves, it is not
+    /// erased just because it sits inside an array.
+    #[test]
+    fn same_package_array_element_resolves_to_intro() {
+        let outcome = seal_from_json(guard_fixture_json(), "guard");
+        let table = &outcome.table;
+        let f = find_sealed_function(table, "useArray");
+        let ty = sealed_param_ty(table, f, 0);
+        let Type::Slice(elem) = ty else {
+            panic!("Shape[] must lower to Type::Slice, got {ty:?}");
+        };
+        let Type::Nominal(Ref::Intro(shape_intro)) = elem.as_ref() else {
+            panic!("Shape[]'s element must be a same-package Ref::Intro, got {elem:?}");
+        };
+        assert_eq!(table.get(*shape_intro).expect("live").sym().name, "Shape");
+    }
+
+    /// J1: a same-package method whose own parameter is a bounded type
+    /// variable is a reference *owner* — the oracle's real `references[]`
+    /// spells its `owner` id with the bare, unerased type-variable name
+    /// (`"V#caller(T)"`, verified against the real doclet — see
+    /// `raw_signature_type`'s doc comment), while this producer `declare`s it
+    /// under the JVM-erased id (`"V#caller(java.lang.CharSequence)"`, JLS
+    /// 4.6). Before the alias map, `record_occurrence` silently rejected
+    /// every such edge because the owner id it was given never matched
+    /// anything declared. This asserts a *resolved* caller→helper occurrence
+    /// survives all the way through `seal`.
+    #[test]
+    fn generic_method_owner_occurrence_resolves_through_erasure() {
+        let json = r#"{
+          "format": 1,
+          "javaVersion": "21",
+          "modules": [],
+          "packages": [{"name": "com.example", "doc": null, "docKind": null, "annotations": [], "position": null}],
+          "types": [
+            {
+              "qualifiedName": "com.example.V",
+              "simpleName": "V",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [
+                {
+                  "name": "helper",
+                  "modifiers": ["public"], "typeParams": [], "params": [],
+                  "return": {"kind": "declared", "name": "java.lang.String", "args": [], "owner": null, "annotations": []},
+                  "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "caller",
+                  "modifiers": ["public"],
+                  "typeParams": [{"name": "T", "bounds": [{"kind": "declared", "name": "java.lang.CharSequence", "args": [], "owner": null, "annotations": []}], "annotations": []}],
+                  "params": [{"name": "v", "type": {"kind": "typevar", "name": "T", "annotations": []}, "annotations": []}],
+                  "return": {"kind": "typevar", "name": "T", "annotations": []},
+                  "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                }
+              ],
+              "nested": []
+            }
+          ],
+          "references": [
+            {"owner": "com.example.V#caller(T)", "target": "com.example.V#helper()", "file": "V.java", "start": 10, "end": 16}
+          ]
+        }"#;
+        let outcome = seal_from_json(json, "genref");
+        let table = &outcome.table;
+
+        let (caller_intro, _) = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "caller")
+            .expect("caller must be lowered");
+        let (helper_intro, _) = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "helper")
+            .expect("helper must be lowered");
+
+        let resolved = outcome.occurrences.iter().any(|(owner, occ)| {
+            *owner == caller_intro
+                && occ.target.intro == helper_intro
+                && occ.kind == ReferenceKind::FunctionCall
+        });
+        assert!(
+            resolved,
+            "caller -> helper call edge must survive seal despite the oracle's unerased \
+             `T` owner spelling; occurrences seen: {:?}",
+            outcome.occurrences
+        );
+    }
+
+    /// J1 (parameterized-type param variant): the oracle keeps a parameterized
+    /// parameter's type arguments in its raw owner spelling
+    /// (`"listy(java.util.List<java.lang.String>)"`, verified against the
+    /// real doclet), while `type_erase` always drops them
+    /// (`"listy(java.util.List)"`) — JVM erasure drops type arguments
+    /// regardless of any type variable being involved. Same defect, same fix,
+    /// different trigger.
+    #[test]
+    fn parameterized_param_owner_occurrence_resolves_through_erasure() {
+        let json = r#"{
+          "format": 1,
+          "javaVersion": "21",
+          "modules": [],
+          "packages": [{"name": "com.example", "doc": null, "docKind": null, "annotations": [], "position": null}],
+          "types": [
+            {
+              "qualifiedName": "com.example.V",
+              "simpleName": "V",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [
+                {
+                  "name": "helper",
+                  "modifiers": ["public"], "typeParams": [], "params": [],
+                  "return": {"kind": "declared", "name": "java.lang.String", "args": [], "owner": null, "annotations": []},
+                  "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                },
+                {
+                  "name": "listy",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "x", "type": {"kind": "declared", "name": "java.util.List", "args": [{"kind": "declared", "name": "java.lang.String", "args": [], "owner": null, "annotations": []}], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                }
+              ],
+              "nested": []
+            }
+          ],
+          "references": [
+            {"owner": "com.example.V#listy(java.util.List<java.lang.String>)", "target": "com.example.V#helper()", "file": "V.java", "start": 5, "end": 11}
+          ]
+        }"#;
+        let outcome = seal_from_json(json, "genref2");
+        let table = &outcome.table;
+
+        let (listy_intro, _) = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "listy")
+            .expect("listy must be lowered");
+        let (helper_intro, _) = table
+            .iter()
+            .find(|(_, e)| e.sym().name == "helper")
+            .expect("helper must be lowered");
+
+        let resolved = outcome.occurrences.iter().any(|(owner, occ)| {
+            *owner == listy_intro
+                && occ.target.intro == helper_intro
+                && occ.kind == ReferenceKind::FunctionCall
+        });
+        assert!(
+            resolved,
+            "listy -> helper call edge must survive seal despite the oracle's \
+             type-argument-carrying owner spelling; occurrences seen: {:?}",
+            outcome.occurrences
+        );
+    }
+
+    /// J3: a JDK type (`java.util.List`) must not be tagged with the
+    /// `"maven"` ecosystem — no POM anywhere publishes it. It keeps
+    /// `ForeignOrigin::Namespace` (a real package, `java.util`, does own it)
+    /// but under a distinct `"java"` ecosystem id.
+    #[test]
+    fn jdk_type_uses_java_ecosystem_not_maven() {
+        use crate::java::schema::TypeMirror;
+        use nudox_ir::foreign::ForeignOrigin;
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        let list = TypeMirror::Declared {
+            name: "java.util.List".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![],
+        };
+        let result = lower_type(&mut ctx, &list);
+        let Type::Nominal(raw) = &result else {
+            panic!("java.util.List must lower to a nominal reference, got {result:?}");
+        };
+        let (key, _) = raw.as_foreign().expect("java.util.List is outside the extraction");
+        assert_eq!(key.path.as_ref(), "java.util.List");
+        assert_eq!(key.display.as_ref(), "List");
+        assert_ne!(
+            key.origin.ecosystem().as_str(),
+            "maven",
+            "the JDK is not published on maven"
+        );
+        assert_eq!(key.origin.ecosystem().as_str(), "java");
+        match &key.origin {
+            ForeignOrigin::Namespace { namespace, .. } => {
+                assert_eq!(namespace.as_ref(), "java.util");
+            }
+            other => panic!("expected ForeignOrigin::Namespace, got {other:?}"),
+        }
+    }
+
+    /// J4: `java.util.Map.Entry`'s namespace must be the real package
+    /// (`java.util`), not the enclosing class (`java.util.Map`) that a naive
+    /// last-dot split would produce. The `owner` mirror (which the oracle
+    /// populates for a nested type reference) is what makes the real
+    /// boundary recoverable.
+    #[test]
+    fn nested_jdk_type_namespace_is_the_package_not_the_enclosing_class() {
+        use crate::java::schema::TypeMirror;
+        use nudox_ir::foreign::ForeignOrigin;
+        let mut low = tv_lowering();
+        let mut ctx = tv_ctx(&mut low);
+        let map_owner = TypeMirror::Declared {
+            name: "java.util.Map".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![],
+        };
+        let entry = TypeMirror::Declared {
+            name: "java.util.Map.Entry".into(),
+            args: vec![],
+            owner: Some(Box::new(map_owner)),
+            annotations: vec![],
+        };
+        let result = lower_type(&mut ctx, &entry);
+        let Type::Nominal(raw) = &result else {
+            panic!("java.util.Map.Entry must lower to a nominal reference, got {result:?}");
+        };
+        let (key, _) = raw.as_foreign().expect("java.util.Map.Entry is outside the extraction");
+        assert_eq!(key.path.as_ref(), "java.util.Map.Entry");
+        assert_eq!(key.display.as_ref(), "Entry");
+        match &key.origin {
+            ForeignOrigin::Namespace { namespace, .. } => {
+                assert_eq!(
+                    namespace.as_ref(),
+                    "java.util",
+                    "Map.Entry's namespace must be the package java.util, not the class java.util.Map"
+                );
+            }
+            other => panic!("expected ForeignOrigin::Namespace, got {other:?}"),
+        }
+
+        // The owner-chain fix is general, not JDK-specific: a nested type in
+        // a non-JDK external package must get the same treatment (and stay
+        // on the maven ecosystem, since it is not a JDK type).
+        let outer_owner = TypeMirror::Declared {
+            name: "com.external.Outer".into(),
+            args: vec![],
+            owner: None,
+            annotations: vec![],
+        };
+        let inner = TypeMirror::Declared {
+            name: "com.external.Outer.Inner".into(),
+            args: vec![],
+            owner: Some(Box::new(outer_owner)),
+            annotations: vec![],
+        };
+        let inner_result = lower_type(&mut ctx, &inner);
+        let Type::Nominal(inner_raw) = &inner_result else {
+            panic!("com.external.Outer.Inner must lower to a nominal reference");
+        };
+        let (inner_key, _) = inner_raw
+            .as_foreign()
+            .expect("com.external.Outer.Inner is outside the extraction");
+        assert_eq!(inner_key.origin.ecosystem().as_str(), "maven");
+        match &inner_key.origin {
+            ForeignOrigin::Namespace { namespace, .. } => {
+                assert_eq!(namespace.as_ref(), "com.external");
+            }
+            other => panic!("expected ForeignOrigin::Namespace, got {other:?}"),
+        }
+    }
+
+    /// J11: a LOCAL (or ANONYMOUS) `TypeDecl` that nonetheless appears in the
+    /// oracle's flat `types` list must not make `known_qualified` believe it
+    /// is declared. Before this guard, any other reference naming such a type
+    /// took the same-package `low.refer()` branch — a forward reference
+    /// `lower_type_decl` then never satisfies, since it returns immediately
+    /// for `LOCAL`/`ANONYMOUS` nesting — and `Lowering::finish` failed with
+    /// `Error::Undeclared` for a dangling `Intro`. It must instead take the
+    /// external branch and `finish()` must succeed.
+    #[test]
+    fn local_type_in_types_list_does_not_dangle_a_reference() {
+        let json = r#"{
+          "format": 1,
+          "javaVersion": "21",
+          "modules": [],
+          "packages": [{"name": "com.example", "doc": null, "docKind": null, "annotations": [], "position": null}],
+          "types": [
+            {
+              "qualifiedName": "com.example.Ghost",
+              "simpleName": "Ghost",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "LOCAL",
+              "modifiers": [],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [],
+              "nested": []
+            },
+            {
+              "qualifiedName": "com.example.Haunted",
+              "simpleName": "Haunted",
+              "kind": "CLASS",
+              "package": "com.example",
+              "module": null,
+              "enclosing": null,
+              "nesting": "TOP_LEVEL",
+              "modifiers": ["public"],
+              "typeParams": [],
+              "superclass": {"kind": "none"},
+              "interfaces": [],
+              "permits": [],
+              "recordComponents": [],
+              "annotations": [],
+              "deprecated": false,
+              "doc": null,
+              "docKind": null,
+              "position": null,
+              "fields": [],
+              "enumConstants": [],
+              "constructors": [],
+              "methods": [
+                {
+                  "name": "spook",
+                  "modifiers": ["public"], "typeParams": [],
+                  "params": [{"name": "g", "type": {"kind": "declared", "name": "com.example.Ghost", "args": [], "owner": null, "annotations": []}, "annotations": []}],
+                  "return": {"kind": "void"}, "thrown": [], "varargs": false, "default": false, "receiver": null,
+                  "annotationDefault": null, "annotations": [], "deprecated": false, "origin": "EXPLICIT",
+                  "doc": null, "docKind": null, "position": null
+                }
+              ],
+              "nested": []
+            }
+          ]
+        }"#;
+        let extraction: Extraction = serde_json::from_str(json).expect("fixture JSON must parse");
+        let pkg_id = PackageId::path("j11:test:1.0");
+        let root_sym = Symbol {
+            name: "com.example".to_owned(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: std::path::PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        let mut low: Lowering<JavaId> = Lowering::new(pkg_id, root_sym);
+        let mut ctx = LoweringCtx::new(&mut low, &extraction.types);
+        lower_extraction(&mut ctx, &extraction);
+        let pkg = low
+            .finish()
+            .expect("a LOCAL TypeDecl in `types` must not dangle a reference into Undeclared");
+
+        // Ghost itself must never have been declared.
+        assert!(
+            !pkg.iter().any(|(_, e)| e.sym().name == "Ghost"),
+            "a LOCAL TypeDecl must never be declared as an entry"
+        );
+
+        let spook = pkg
+            .iter()
+            .find(|(_, e)| e.sym().name == "spook")
+            .expect("spook must be lowered")
+            .1;
+        let Some(nudox_ir::kind::Kind::Function(f)) = spook.kind().as_owned_kind() else {
+            panic!("spook must lower as Function");
+        };
+        assert!(
+            matches!(f.input_params[0], Ref::Local(_)),
+            "pre-seal, spook's param ref must still be Ref::Local"
+        );
+        let param_entry = pkg
+            .iter()
+            .find(|(_, e)| e.sym().name == "g")
+            .expect("g's param entry must be declared")
+            .1;
+        let Some(nudox_ir::kind::Kind::Param(p)) = param_entry.kind().as_owned_kind() else {
+            panic!("g must lower as Param");
+        };
+        let ty = p.ty.as_ref().expect("g must carry a declared type");
+        let Type::Nominal(raw) = ty else {
+            panic!("Ghost reference must be nominal, got {ty:?}");
+        };
+        let (key, _) = raw
+            .as_foreign()
+            .expect("Ghost must resolve as Ref::Foreign now that it is excluded from known_qualified");
+        assert_eq!(key.path.as_ref(), "com.example.Ghost");
     }
 }

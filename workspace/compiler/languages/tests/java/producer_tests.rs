@@ -517,13 +517,22 @@ fn release_8_genuinely_rejects_java_16_plus_record_syntax() {
     let classes_dir = std::env::var("NUDOX_JAVA_ORACLE_CLASSES")
         .unwrap_or_else(|_| concat!(env!("OUT_DIR"), "/classes").to_owned());
 
+    // Resolve `javadoc` the same way the producer does (`java/invoke.rs`'s
+    // modern path): honor `NUDOX_JAVADOC` before the bare `javadoc` on PATH.
+    // The doclet classes above are compiled to this crate's build-time JDK
+    // level (21), so a bare `javadoc` that resolves to an older JDK on PATH
+    // (JDK 8 is deliberately present too, for `--release 8` targets) cannot
+    // load them — it dies with `UnsupportedClassVersionError` before ever
+    // reaching the `--release 8` behavior this test means to exercise.
+    let javadoc_bin = std::env::var("NUDOX_JAVADOC").unwrap_or_else(|_| "javadoc".to_owned());
+
     let (result, _cost) = heart::cost::measured(
         "release-gate/java8-vs-record",
         &fixture_root("modern"),
         || {
             oracle::run_json::<Extraction, _, _, _>(
                 "java-javadoc-test/1",
-                "javadoc",
+                javadoc_bin,
                 [
                     "-quiet".to_owned(),
                     "-doclet".to_owned(),

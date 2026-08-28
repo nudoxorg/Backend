@@ -1,0 +1,49 @@
+---
+source: workspace/compiler/languages/tests/java/ref_snapshots.rs
+expression: "format!(\"── TABLE ──\\n{table_render}\\n── OCCURRENCES ──\\n{occurrence_render}\")"
+---
+── TABLE ──
+==  :: Some(Param) ==
+  ty: TypeVar("T")
+== Box :: Some(Record) ==
+  form: Struct
+  field: Intro(`value` Some(Field))
+  generic: Type("T", bounds=[], default=None, variance=None)
+== Container :: Some(Record) ==
+  form: Struct
+  field: Intro(`boxOfShape` Some(Field))
+  field: Intro(`shapes` Some(Field))
+  field: Intro(`anything` Some(Field))
+== Inner :: Some(Record) ==
+  form: Struct
+== MathUtils :: Some(Record) ==
+  form: Struct
+== Outer :: Some(Record) ==
+  form: Struct
+== Shape :: Some(Record) ==
+  form: Struct
+== a :: Some(Param) ==
+  ty: TypeVar("T")
+== anything :: Some(Field) ==
+  ty: Foreign(origin=Namespace(java::java.lang), path="java.lang.Object", display="Object", kind=None, unlinked)
+== b :: Some(Param) ==
+  ty: TypeVar("T")
+== boxOfShape :: Some(Field) ==
+  ty: Apply(Intro(`Box` Some(Record))<Intro(`Shape` Some(Record))>)
+== com.example.shapes :: Some(Module) ==
+== max :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`a` Some(Param))
+  input_param: Intro(`b` Some(Param))
+  output_param: Intro(`` Some(Param))
+  generic: Type("T", bounds=[Apply(Foreign(origin=Namespace(java::java.lang), path="java.lang.Comparable", display="Comparable", kind=None, unlinked)<TypeVar("T")>)], default=None, variance=None)
+== shapes :: Some(Module) ==
+== shapes :: Some(Field) ==
+  ty: Apply(Foreign(origin=Namespace(java::java.util), path="java.util.List", display="List", kind=None, unlinked)<Wildcard(Covariant, Intro(`Shape` Some(Record)))>)
+== useMax :: Some(Function) ==
+  receiver: true
+== value :: Some(Field) ==
+  ty: TypeVar("T")
+
+── OCCURRENCES ──
+useMax --FunctionCall(Oracle)--> package=maven/shapes target=max
