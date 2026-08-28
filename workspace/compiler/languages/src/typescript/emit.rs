@@ -33,7 +33,9 @@ use std::{
 };
 
 use nudox_ir::{
+    change::EcosystemId,
     entry::{Symbol, Visibility},
+    foreign::ForeignKey,
     index::Ref,
     kinds::{
         Alias, Const, Enum, Field, FieldAttribute, FieldKey, FnModifier, Function, GenericParam,
@@ -50,9 +52,9 @@ use crate::typescript::{
     entry::{is_ts_module_path, make_resolver},
     extract::{
         Accessibility, ClassBody, ConstBody, DeclBody, DeclFact, DeprecationOwned, EnumBody,
-        FunctionBody, GenericParamOwned, InterfaceBody, LiteralOwned, MemberKind, MemberModifiers,
-        ModuleFacts, NamespaceBody, OccurrenceKind, ReceiverKind, StaticBody, TypeAliasBody,
-        TypeOwned,
+        FunctionBody, GenericParamOwned, ImportFact, ImportName, InterfaceBody, LiteralOwned,
+        MemberKind, MemberModifiers, ModuleFacts, NamespaceBody, OccurrenceKind, ReceiverKind,
+        StaticBody, TypeAliasBody, TypeOwned,
     },
     id::TsId,
 };
@@ -83,8 +85,48 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
     // the real-package failure this fixes.
     let resolver = make_resolver();
 
+    // ── Same-package declared-name index for Nominal type resolution ─────────
+    // Built once, shared by every module's `TypeCtx` below: `lower_nominal`
+    // needs to answer "is `name` a declaration this package emits" both for
+    // the current module (a same-module type reference) and for any other
+    // module reached through a relative import (same package, different
+    // file) — see `TypeCtx`'s doc comment. First-declared-wins per name
+    // mirrors `decl_ts_id`'s own discriminant-0 identity for the ordinary
+    // case; a name with multiple top-level declarations (TS declaration
+    // merging, function overloads) resolves to its first one, the same
+    // resolution every other name-based structural lookup in this file
+    // already uses (extends heritage, alias targets, …).
+    //
+    // Keyed by *dotted* qualified path, not just bare top-level names:
+    // `index_declared_names` recurses into `Namespace` children so
+    // `namespace NS { export interface Foo {} }` is indexed under BOTH
+    // `"NS"` (the namespace itself) and `"NS.Foo"` (the nested member) —
+    // the same dotted spelling a qualified type reference `NS.Foo` produces
+    // (`ts_type_name_to_string`/`import_type_qualifier_to_string` in
+    // `extract/types.rs` join qualified names with `.`). That lets
+    // `lower_nominal`'s tier-1 same-module lookup resolve a namespace-
+    // qualified name with no separate code path: it is just another key in
+    // this map. Before this recursed, only top-level declarations were
+    // indexed, so `NS.Foo` had no entry anywhere and fell all the way
+    // through to `UnresolvedExternal("NS.Foo")` even though `Foo` was
+    // declared right there in the same file.
+    let mut declared_by_module: HashMap<PathBuf, HashMap<String, TsId>> =
+        HashMap::with_capacity(modules.len());
     for module in modules {
         let module_id = module_ts_id(module);
+        let mut names: HashMap<String, TsId> = HashMap::with_capacity(module.declarations.len());
+        index_declared_names(&module.declarations, &module_id, "", &mut names);
+        declared_by_module.insert(module.path.clone(), names);
+    }
+
+    for module in modules {
+        let module_id = module_ts_id(module);
+        let ctx = TypeCtx {
+            declared_by_module: &declared_by_module,
+            imports: &module.imports,
+            resolver: &resolver,
+            current_path: module.path.as_path(),
+        };
 
         // Declare the module itself as a `Module` kind.
         let _module_ref: Ref<Module> = out.declare(
@@ -128,6 +170,7 @@ pub fn lower_package(modules: &[ModuleFacts], out: &mut Lowering<TsId>) {
                 &module_index,
                 &export_index,
                 &resolver,
+                &ctx,
             );
         }
 
@@ -264,6 +307,40 @@ fn decl_ts_id(decl: &DeclFact, parent: Option<&TsId>) -> TsId {
     }
 }
 
+/// Recursively index `decls` into `names`, keyed by dotted qualified path
+/// (`"Foo"` for a top-level declaration, `"NS.Foo"` for a member nested one
+/// level inside namespace `NS`, `"NS.Inner.Foo"` two levels deep, …) —
+/// mirroring the `"::"`-qualified `TsId` names `decl_ts_id`/`emit_namespace`
+/// build for the exact same declarations at emission time, so a lookup here
+/// always matches what actually got `declare()`d.
+///
+/// `parent` is the immediately enclosing id (`module_id` at the top level, a
+/// namespace's own id one level down), threaded straight into `decl_ts_id`
+/// so the id minted here is byte-for-byte identical to the one `emit_decl`
+/// mints later for the same declaration. `prefix` is the dotted path so far
+/// (`""` at the top level); `DeclBody::Namespace` recurses into
+/// `NamespaceBody::children` with `prefix` extended by the namespace's own
+/// name and `parent` narrowed to the namespace's own id.
+fn index_declared_names(
+    decls: &[DeclFact],
+    parent: &TsId,
+    prefix: &str,
+    names: &mut HashMap<String, TsId>,
+) {
+    for decl in decls {
+        let id = decl_ts_id(decl, Some(parent));
+        let key = if prefix.is_empty() {
+            decl.name.clone()
+        } else {
+            format!("{prefix}.{}", decl.name)
+        };
+        names.entry(key.clone()).or_insert_with(|| id.clone());
+        if let DeclBody::Namespace(ns) = &decl.body {
+            index_declared_names(&ns.children, &id, &key, names);
+        }
+    }
+}
+
 // ── Per-declaration emission ──────────────────────────────────────────────────
 
 fn emit_decl(
@@ -273,14 +350,15 @@ fn emit_decl(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    ctx: &TypeCtx<'_>,
 ) {
     let id = decl_ts_id(decl, parent.as_ref());
     let sym = make_sym(decl);
 
     match &decl.body {
-        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out),
-        DeclBody::Class(body) => emit_class(id, parent, sym, body, out),
-        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out),
+        DeclBody::Interface(body) => emit_interface(id, parent, sym, body, out, ctx),
+        DeclBody::Class(body) => emit_class(id, parent, sym, body, out, ctx),
+        DeclBody::TypeAlias(body) => emit_type_alias(id, parent, sym, body, out, ctx),
         DeclBody::Enum(body) => emit_enum(id, parent, sym, body, out),
         DeclBody::Namespace(body) => {
             emit_namespace(
@@ -292,11 +370,12 @@ fn emit_decl(
                 module_index,
                 export_index,
                 resolver,
+                ctx,
             );
         }
-        DeclBody::Function(body) => emit_function(id, parent, sym, body, out),
-        DeclBody::Const(body) => emit_const(id, parent, sym, body, out),
-        DeclBody::Static(body) => emit_static(id, parent, sym, body, out),
+        DeclBody::Function(body) => emit_function(id, parent, sym, body, out, ctx),
+        DeclBody::Const(body) => emit_const(id, parent, sym, body, out, ctx),
+        DeclBody::Static(body) => emit_static(id, parent, sym, body, out, ctx),
         DeclBody::Reexport {
             module_request,
             import_name,
@@ -324,9 +403,10 @@ fn emit_interface(
     sym: Symbol,
     body: &InterfaceBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
-    let generics = lower_generics(&body.generics);
-    let supers: Vec<Type> = body.extends.iter().map(lower_type).collect();
+    let generics = lower_generics(&body.generics, ctx, out);
+    let supers: Vec<Type> = body.extends.iter().map(|t| lower_type(t, ctx, out)).collect();
 
     let _trait_ref: Ref<Trait> = out.declare(
         id.clone(),
@@ -370,7 +450,7 @@ fn emit_interface(
             attrs: Box::new([]),
             cfg: None,
         };
-        emit_function(method_id, Some(id.clone()), method_sym, &method.sig, out);
+        emit_function(method_id, Some(id.clone()), method_sym, &method.sig, out, ctx);
     }
 
     // Emit properties as child Field entries.
@@ -389,13 +469,14 @@ fn emit_interface(
             cfg: None,
         };
         let attrs = field_attrs(&prop.modifiers);
+        let prop_ty = prop.ty.as_ref().map(|t| lower_type(t, ctx, out));
         let _: Ref<Field> = out.declare(
             prop_id,
             Some(id.clone()),
             prop_sym,
             Field::builder()
                 .key(FieldKey::Named)
-                .maybe_ty(prop.ty.as_ref().map(lower_type))
+                .maybe_ty(prop_ty)
                 .attributes(attrs)
                 .build(),
         );
@@ -452,7 +533,7 @@ fn emit_interface(
             span_start: idx_sig.span_start,
             span_end: idx_sig.span_end,
         };
-        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out);
+        emit_function(idx_id, Some(id.clone()), idx_sym, &index_fn_body, out, ctx);
     }
 
     // Emit construct signatures as synthetic `new[_N]` Function entries (item 6).
@@ -479,7 +560,7 @@ fn emit_interface(
             attrs: Box::new([]),
             cfg: None,
         };
-        emit_function(cs_id, Some(id.clone()), cs_sym, cs, out);
+        emit_function(cs_id, Some(id.clone()), cs_sym, cs, out, ctx);
     }
 }
 
@@ -491,12 +572,13 @@ fn emit_class(
     sym: Symbol,
     body: &ClassBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
-    let generics = lower_generics(&body.generics);
-    let super_types: Vec<Type> = body.extends.iter().map(lower_type).collect();
+    let generics = lower_generics(&body.generics, ctx, out);
+    let super_types: Vec<Type> = body.extends.iter().map(|t| lower_type(t, ctx, out)).collect();
     // implements → also super_types (TypeScript models them the same way)
     let mut all_supers = super_types;
-    all_supers.extend(body.implements.iter().map(lower_type));
+    all_supers.extend(body.implements.iter().map(|t| lower_type(t, ctx, out)));
 
     // Collect field refs first (need to declare fields as children).
     // Because Lowering is order-independent we can refer before declaring.
@@ -536,13 +618,14 @@ fn emit_class(
                 {
                     attrs.push(FieldAttribute::Mutable);
                 }
+                let field_ty = ty.as_ref().map(|t| lower_type(t, ctx, out));
                 let _: Ref<Field> = out.declare(
                     field_id,
                     Some(id.clone()),
                     field_sym,
                     Field::builder()
                         .key(FieldKey::Named)
-                        .maybe_ty(ty.as_ref().map(lower_type))
+                        .maybe_ty(field_ty)
                         .attributes(attrs)
                         .build(),
                 );
@@ -598,7 +681,7 @@ fn emit_class(
                         attrs: Box::new([]),
                         cfg: None,
                     };
-                    emit_function(method_id, Some(id.clone()), method_sym, sig, out);
+                    emit_function(method_id, Some(id.clone()), method_sym, sig, out, ctx);
                 }
             }
             MemberKind::Constructor(s) => {
@@ -623,7 +706,7 @@ fn emit_class(
                     attrs: Box::new([]),
                     cfg: None,
                 };
-                emit_function(method_id, Some(id.clone()), method_sym, s, out);
+                emit_function(method_id, Some(id.clone()), method_sym, s, out, ctx);
             }
             // ── Item 4: Static block → synthetic Function (item 4) ────────
             MemberKind::StaticBlock { name: block_name } => {
@@ -655,7 +738,7 @@ fn emit_class(
                     span_start: member.span_start,
                     span_end: member.span_end,
                 };
-                emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out);
+                emit_function(sb_id, Some(id.clone()), sb_sym, &static_fn_body, out, ctx);
             }
             // Fields / Accessors were already emitted above.
             MemberKind::Property { .. } | MemberKind::Accessor { .. } => {}
@@ -671,9 +754,10 @@ fn emit_type_alias(
     sym: Symbol,
     body: &TypeAliasBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
-    let generics = lower_generics(&body.generics);
-    let target = lower_type(&body.target);
+    let generics = lower_generics(&body.generics, ctx, out);
+    let target = lower_type(&body.target, ctx, out);
     let _: Ref<Alias> = out.declare(
         id,
         parent,
@@ -744,6 +828,7 @@ fn emit_namespace(
     module_index: &HashMap<&Path, &str>,
     export_index: &HashMap<&Path, &crate::typescript::extract::ExportTable>,
     resolver: &Resolver,
+    ctx: &TypeCtx<'_>,
 ) {
     let _: Ref<Module> = out.declare(id.clone(), parent, sym, Module);
 
@@ -755,6 +840,7 @@ fn emit_namespace(
             module_index,
             export_index,
             resolver,
+            ctx,
         );
     }
 }
@@ -767,8 +853,9 @@ fn emit_function(
     sym: Symbol,
     body: &FunctionBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
-    let generics = lower_generics(&body.generics);
+    let generics = lower_generics(&body.generics, ctx, out);
 
     let mut modifiers: Vec<FnModifier> = Vec::new();
     if body.is_async {
@@ -822,7 +909,7 @@ fn emit_function(
         param_ids.push((
             param_id,
             Param::builder()
-                .maybe_ty(p.ty.as_ref().map(lower_type))
+                .maybe_ty(p.ty.as_ref().map(|t| lower_type(t, ctx, out)))
                 .attributes(attrs)
                 .build(),
             p.span_start,
@@ -864,11 +951,12 @@ fn emit_function(
             attrs: Box::new([]),
             cfg: None,
         };
+        let ret_ty = lower_type(ret, ctx, out);
         let _: Ref<Param> = out.declare(
             ret_id,
             Some(id.clone()),
             param_sym,
-            Param::builder().ty(lower_type(ret)).build(),
+            Param::builder().ty(ret_ty).build(),
         );
     }
 
@@ -915,10 +1003,14 @@ fn emit_const(
     sym: Symbol,
     body: &ConstBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
+    let ty = body
+        .ty
+        .as_ref()
+        .map_or(Type::UNANNOTATED, |t| lower_type(t, ctx, out));
     let _: Ref<Const> = out.declare(
         id,
         parent,
@@ -941,10 +1033,14 @@ fn emit_static(
     sym: Symbol,
     body: &StaticBody,
     out: &mut Lowering<TsId>,
+    ctx: &TypeCtx<'_>,
 ) {
     // The declaration exists; the type annotation does not. `const x = 1` is
     // not the same claim as `const x: any = 1`.
-    let ty = body.ty.as_ref().map_or(Type::UNANNOTATED, lower_type);
+    let ty = body
+        .ty
+        .as_ref()
+        .map_or(Type::UNANNOTATED, |t| lower_type(t, ctx, out));
     let _: Ref<Static> = out.declare(
         id,
         parent,
@@ -1226,7 +1322,7 @@ fn resolve_module_path(resolver: &Resolver, current: &Path, specifier: &str) -> 
 
 // ── Type lowering: TypeOwned → IR Type ────────────────────────────────────────
 
-pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
+pub(crate) fn lower_type(ty: &TypeOwned, ctx: &TypeCtx<'_>, out: &mut Lowering<TsId>) -> Type {
     match ty {
         // TypeScript is the language that makes the `Any` / `Unknown` split
         // unarguable, because it ships both and they are *not* interchangeable:
@@ -1256,13 +1352,19 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         TypeOwned::Primitive(s) | TypeOwned::Unsupported(s) => {
             Type::Primitive(Primitive::Builtin(s.clone()))
         }
-        TypeOwned::Nominal(name) => {
-            // This helper has no lowering sink, so it cannot mint the local
-            // `Ref` required by `Type::Nominal`. Preserve the unresolved name
-            // explicitly instead of misrepresenting an imported declaration as
-            // a language builtin.
-            Type::unresolved_external(name.clone())
-        }
+        // A reference to a declared type — resolved through the sink and the
+        // module/import context now that both are in scope. See
+        // `lower_nominal`'s doc comment for the same-module / same-package /
+        // cross-package tiering.
+        TypeOwned::Nominal(name) => lower_nominal(name, ctx, out),
+        // `import("mod")` / `import("mod").Member` — see `lower_dynamic_import`
+        // for why this needs its own resolution path rather than routing
+        // through `lower_nominal`: the module specifier lives on the type
+        // itself, not in `ctx.imports`.
+        TypeOwned::DynamicImport {
+            module_request,
+            member,
+        } => lower_dynamic_import(module_request, member.as_deref(), ctx, out),
         TypeOwned::TypeVar(name) => {
             // TypeVar represents a generic type parameter use (e.g. `T` in `Array<T>`).
             // `Type::TypeVar(String)` exists in nudox-ir as of the dual-fidelity body
@@ -1270,8 +1372,8 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             Type::TypeVar(name.clone())
         }
         TypeOwned::Apply { base, args } => {
-            let base_ty = lower_type(base);
-            let arg_tys: Vec<Type> = args.iter().map(lower_type).collect();
+            let base_ty = lower_type(base, ctx, out);
+            let arg_tys: Vec<Type> = args.iter().map(|a| lower_type(a, ctx, out)).collect();
             Type::Apply {
                 base: Box::new(base_ty),
                 args: arg_tys.into_boxed_slice(),
@@ -1279,13 +1381,13 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         }
         TypeOwned::Union(arms) => Type::Union(
             arms.iter()
-                .map(lower_type)
+                .map(|a| lower_type(a, ctx, out))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         ),
         TypeOwned::Intersection(arms) => Type::Intersection(
             arms.iter()
-                .map(lower_type)
+                .map(|a| lower_type(a, ctx, out))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
         ),
@@ -1295,16 +1397,16 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 .map(|m| match m {
                     TypeOwned::NamedTupleElem { label, ty } => TupleElement::Named {
                         label: label.clone(),
-                        ty: lower_type(ty),
+                        ty: lower_type(ty, ctx, out),
                     },
-                    other => TupleElement::Positional(lower_type(other)),
+                    other => TupleElement::Positional(lower_type(other, ctx, out)),
                 })
                 .collect();
             Type::Tuple(elems.into_boxed_slice())
         }
         TypeOwned::Array(inner) => {
             // Model `T[]` as a Slice.
-            Type::Slice(Box::new(lower_type(inner)))
+            Type::Slice(Box::new(lower_type(inner, ctx, out)))
         }
         // ── Named tuple element (item 10) ─────────────────────────────────
         // When NamedTupleElem appears outside a Tuple context (the
@@ -1314,7 +1416,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
         TypeOwned::NamedTupleElem { label, ty } => Type::Tuple(
             [TupleElement::Named {
                 label: label.clone(),
-                ty: lower_type(ty),
+                ty: lower_type(ty, ctx, out),
             }]
             .into(),
         ),
@@ -1330,9 +1432,16 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 // treats it as implicit-any, but the source did not write
                 // `any` — under `--noImplicitAny` this is an error, and the
                 // IR must be able to tell the two apart.
-                .map(|p| p.ty.as_ref().map_or(Type::UNANNOTATED, lower_type))
+                .map(|p| {
+                    p.ty
+                        .as_ref()
+                        .map_or(Type::UNANNOTATED, |t| lower_type(t, ctx, out))
+                })
                 .collect();
-            let ret = body.return_type.as_ref().map(|r| Box::new(lower_type(r)));
+            let ret = body
+                .return_type
+                .as_ref()
+                .map(|r| Box::new(lower_type(r, ctx, out)));
             // TypeScript functions are always managed; no ABI.
             Type::FunctionPointer {
                 params: params.into_boxed_slice(),
@@ -1347,10 +1456,10 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             then_ty,
             else_ty,
         } => Type::Conditional {
-            check: Box::new(lower_type(check)),
-            extends_ty: Box::new(lower_type(extends_ty)),
-            then_ty: Box::new(lower_type(then_ty)),
-            else_ty: Box::new(lower_type(else_ty)),
+            check: Box::new(lower_type(check, ctx, out)),
+            extends_ty: Box::new(lower_type(extends_ty, ctx, out)),
+            then_ty: Box::new(lower_type(then_ty, ctx, out)),
+            else_ty: Box::new(lower_type(else_ty, ctx, out)),
         },
         TypeOwned::Mapped {
             key_var,
@@ -1360,8 +1469,8 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             optional,
         } => Type::Mapped {
             key_var: key_var.clone(),
-            source: Box::new(lower_type(source)),
-            value: Box::new(lower_type(value)),
+            source: Box::new(lower_type(source, ctx, out)),
+            value: Box::new(lower_type(value, ctx, out)),
             readonly: *readonly,
             optional: *optional,
         },
@@ -1374,7 +1483,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                         IrPart::Literal(s.clone())
                     }
                     crate::typescript::extract::TemplatePart::Interpolated(ty) => {
-                        IrPart::Interpolated(Box::new(lower_type(ty)))
+                        IrPart::Interpolated(Box::new(lower_type(ty, ctx, out)))
                     }
                 })
                 .collect();
@@ -1386,7 +1495,7 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
                 .iter()
                 .map(|m| AnonField {
                     name: m.name.clone(),
-                    ty: lower_type(&m.ty),
+                    ty: lower_type(&m.ty, ctx, out),
                     optional: m.optional,
                     readonly: m.readonly,
                 })
@@ -1397,6 +1506,284 @@ pub(crate) fn lower_type(ty: &TypeOwned) -> Type {
             }
         }
     }
+}
+
+/// Everything `lower_type` needs to resolve a `TypeOwned::Nominal(name)` into
+/// a real `Ref` instead of the placeholder `Type::unresolved_external` a
+/// sink-less helper is stuck with.
+///
+/// One `TypeCtx` is built per module in `lower_package` (`current_path` is
+/// that module's own file) and threaded down through every declaration's
+/// emission — interfaces, classes, type aliases, functions, consts/statics —
+/// so a field/param/return/alias-target type position can always ask "is
+/// this name declared here, imported from elsewhere in this package, or
+/// imported from another package entirely?" — the same three-way question
+/// Python's `KnownIds`/`lower_nominal` and Go's `lower_type_with_lowering`
+/// answer for their own languages (see this crate's `python/types.rs` and
+/// `go/types.rs`).
+pub(crate) struct TypeCtx<'a> {
+    /// Every module's own top-level declared names, keyed by that module's
+    /// path. `declared_by_module[current_path]` answers "is `name` a
+    /// same-module declaration" (⇒ `Ref::Intro`); a *different* module's
+    /// entry answers the same question for a relative (`./sibling`) import
+    /// naming another file in this same package.
+    declared_by_module: &'a HashMap<PathBuf, HashMap<String, TsId>>,
+    /// This module's own `import` table — the only source of truth for
+    /// whether a bare identifier is an imported binding at all, and if so,
+    /// from where.
+    imports: &'a [ImportFact],
+    /// The same `.d.ts`-first resolver `lower_package` already built for
+    /// re-export resolution, needed again here to turn a relative import
+    /// specifier into the file it resolves to.
+    resolver: &'a Resolver,
+    /// Absolute path of the module currently being emitted: the key into
+    /// `declared_by_module` for "this module's own declarations", and the
+    /// base a relative import specifier resolves against.
+    current_path: &'a Path,
+}
+
+/// Resolve a bare type name (`TypeOwned::Nominal`) to a real `Type::Nominal`
+/// ref when possible, in three tiers — same-module, same-package-via-import,
+/// cross-package-via-import — falling back to `Type::unresolved_external`
+/// only when none applies. Mirrors Go's `lower_type_with_lowering`
+/// local-vs-foreign split (`go/types.rs`) and Python's tiered `lower_nominal`
+/// (`python/types.rs`); TS additionally needs the *import table*, not just a
+/// known-ids set, because an import's module specifier is the only place
+/// "same package" vs. "cross package" is actually recorded — unlike Go
+/// (whose oracle states each type's owning import path directly) or Python
+/// (whose fully-qualified ids already encode package membership).
+fn lower_nominal(name: &str, ctx: &TypeCtx<'_>, out: &mut Lowering<TsId>) -> Type {
+    // 1. This module's own declaration — the common case
+    // (`interface Wrapper { owner: User }` in the same file as `User`), and
+    // ALSO the namespace-qualified case (`namespace NS { export interface
+    // Foo {} }` used as `NS.Foo`): `declared_by_module` is built by
+    // `index_declared_names`, which recurses into namespace children and
+    // indexes each one under its dotted qualified path (`"NS.Foo"`), so a
+    // dotted `name` matches here with no separate code path needed.
+    if let Some(id) = ctx
+        .declared_by_module
+        .get(ctx.current_path)
+        .and_then(|names| names.get(name))
+    {
+        return out.nominal::<Record>(id.clone());
+    }
+
+    // Split a qualified name into its leading binding and the member path
+    // after it: `"ns.Thing"` → `("ns", Some("Thing"))`, `"Thing"` →
+    // `("Thing", None)`. Every remaining tier below resolves the *binding*
+    // against the import table — `ns` in `ns.Thing`, `m` in `m.Local` — never
+    // the whole dotted string, which is what the pre-fix code did (`ctx
+    // .imports.iter().find(|i| i.local_name == name)` with `name` still
+    // `"ns.Thing"`, matching nothing and falling straight to
+    // `UnresolvedExternal("ns.Thing")`).
+    let (head, tail) = match name.split_once('.') {
+        Some((h, t)) => (h, Some(t)),
+        None => (name, None),
+    };
+
+    // 2. `head` is bound by an import statement in this module.
+    if let Some(import) = ctx.imports.iter().find(|i| i.local_name == head) {
+        if import.module_request.starts_with('.') {
+            // A relative specifier names another file in this same package.
+            // Resolve it through the identical `.d.ts`-first resolver
+            // `emit_reexports` uses for the same job, then look up the
+            // *exported* name — not necessarily `head` itself:
+            // `import { Foo as Bar } from "./m"` binds the local name `Bar`
+            // to `./m`'s own `Foo`; `import * as m from "./m"` used as
+            // `m.Local` looks up `Local` (or, for a doubly-qualified
+            // `m.NS.Local`, the dotted `"NS.Local"`) in `./m`'s own
+            // recursively-indexed declared names.
+            if let Some(target_path) =
+                resolve_module_path(ctx.resolver, ctx.current_path, &import.module_request)
+                && let Some(target_names) = ctx.declared_by_module.get(&target_path)
+            {
+                let exported_name = match (&import.import_name, tail) {
+                    (ImportName::Namespace, Some(member)) => member,
+                    (ImportName::Namespace, None) => name,
+                    (ImportName::Named(n), _) => n.as_str(),
+                    (ImportName::Default, _) => "default",
+                };
+                if let Some(id) = target_names.get(exported_name) {
+                    return out.nominal::<Record>(id.clone());
+                }
+            }
+            // The relative target didn't resolve to a file this pass walked,
+            // or that file doesn't declare the expected name directly (it
+            // may itself re-export it from a third module — chasing
+            // re-export chains here would duplicate `resolve_export_target`'s
+            // job for a type-position reference). Falls through to the
+            // honest unresolved-external case below rather than guessing.
+        } else {
+            // A bare specifier (`"external-dep"`, `"@scope/pkg"`) — an npm
+            // package this producer never loaded. There is no local
+            // declaration to `refer()`; a named, linkable `ForeignKey` is the
+            // honest representation (mirrors Go's `refer_import` branch for
+            // stdlib/out-of-module targets in `go/types.rs`).
+            //
+            // The exported name keyed into the `ForeignKey` — never `head`,
+            // the use-site local binding: `import { Foo as Bar } from "pkg"`
+            // must key on `Foo` (what `pkg` actually exports), not `Bar`
+            // (what this file happens to call it); `import Widget from
+            // "pkg"` must key on `"default"`, TypeScript's own name for the
+            // default export slot, not `Widget`. Keying on the local name
+            // used to let two different files importing the same export
+            // under two different aliases mint two different-looking
+            // `ForeignKey`s for what is provably the same target.
+            let export_name = match (&import.import_name, tail) {
+                (ImportName::Namespace, Some(member)) => member,
+                (ImportName::Namespace, None) => name,
+                (ImportName::Named(n), _) => n.as_str(),
+                (ImportName::Default, _) => "default",
+            };
+            return out.nominal_import(ts_foreign_key(&import.module_request, export_name));
+        }
+    }
+
+    // 3. TypeScript/JS standard-library global types (`Array<T>`,
+    // `Promise<T>`, `Record<K, V>`, …) — ambient, never `import`ed (no
+    // `ImportFact` names them), but real declared types nonetheless. A
+    // dedicated ts-stdlib `ForeignKey` namespace lets a resolver eventually
+    // join these against `lib.es5.d.ts`/`lib.dom.d.ts` declarations instead
+    // of every one of them reporting as a typo-shaped `UnresolvedExternal`.
+    if let Some(key) = ts_stdlib_key(name) {
+        return out.nominal_import(key);
+    }
+
+    // 4. Not declared here, not traceable to any import, not a known
+    // stdlib global: a genuinely free-floating identifier (a typo, or a type
+    // this producer's import-table extraction doesn't yet cover). Keep the
+    // spelling rather than erasing it as a builtin.
+    Type::unresolved_external(name)
+}
+
+/// The TS/JS standard-library global type names this producer recognizes as
+/// real declared types rather than free-floating identifiers — the common
+/// generic containers and utility types every `.d.ts` file can reference
+/// without an `import`, because `lib.es5.d.ts`/`lib.dom.d.ts` declare them
+/// ambiently. Not exhaustive (the full lib surface is large); covers the
+/// names common enough that leaving them as `UnresolvedExternal` would drown
+/// out genuine gaps.
+const TS_STDLIB_GLOBALS: &[&str] = &[
+    "Array",
+    "ReadonlyArray",
+    "Promise",
+    "Record",
+    "Map",
+    "ReadonlyMap",
+    "Set",
+    "ReadonlySet",
+    "WeakMap",
+    "WeakSet",
+    "Partial",
+    "Required",
+    "Readonly",
+    "Pick",
+    "Omit",
+    "Exclude",
+    "Extract",
+    "NonNullable",
+    "Parameters",
+    "ReturnType",
+    "InstanceType",
+    "Awaited",
+    "Date",
+    "RegExp",
+    "Error",
+    "Function",
+    "Iterable",
+    "IterableIterator",
+    "Iterator",
+    "AsyncIterable",
+    "AsyncIterableIterator",
+    "Generator",
+    "AsyncGenerator",
+];
+
+/// Build the ts-stdlib [`ForeignKey`] for `name`, or `None` when `name` is
+/// not one of [`TS_STDLIB_GLOBALS`]. Mirrors [`ts_foreign_key`]'s shape (a
+/// namespace-origin key, not a package one — see that function's doc
+/// comment for why) but under a fixed `"ts-stdlib"` namespace rather than an
+/// import's own module specifier, since these names carry no specifier at
+/// all.
+fn ts_stdlib_key(name: &str) -> Option<ForeignKey> {
+    TS_STDLIB_GLOBALS.contains(&name).then(|| {
+        ForeignKey::in_namespace(
+            EcosystemId::new("npm"),
+            "ts-stdlib",
+            format!("ts-stdlib#{name}"),
+            name,
+        )
+    })
+}
+
+/// Resolve a dynamic `import("mod")` / `import("mod").Member` type
+/// (`TypeOwned::DynamicImport`) the same three-tier way `lower_nominal`
+/// resolves a static import's target: same-package via a relative
+/// specifier, or a named cross-package `ForeignKey` via a bare one. Kept
+/// separate from `lower_nominal` rather than folded in because the module
+/// specifier here comes from the type itself, not from `ctx.imports` — there
+/// is no `ImportFact` to look up by local binding.
+fn lower_dynamic_import(
+    module_request: &str,
+    member: Option<&str>,
+    ctx: &TypeCtx<'_>,
+    out: &mut Lowering<TsId>,
+) -> Type {
+    // A bare `import("mod")` with no qualifier: the whole imported module
+    // used directly as a type. This producer has no `Type` representation
+    // for "a module, used as a type" (the same gap `lower_nominal` documents
+    // for a bare namespace-import binding) — honest unresolved rather than a
+    // guess.
+    let Some(member) = member else {
+        return Type::unresolved_external(module_request);
+    };
+
+    if module_request.starts_with('.') {
+        if let Some(target_path) =
+            resolve_module_path(ctx.resolver, ctx.current_path, module_request)
+            && let Some(id) = ctx
+                .declared_by_module
+                .get(&target_path)
+                .and_then(|names| names.get(member))
+        {
+            return out.nominal::<Record>(id.clone());
+        }
+        Type::unresolved_external(format!("{module_request}.{member}"))
+    } else {
+        out.nominal_import(ts_foreign_key(module_request, member))
+    }
+}
+
+/// Build the cross-package [`ForeignKey`] for a type named `name` imported
+/// from the bare module specifier `module_request` (`"zod"`,
+/// `"@scope/pkg"`) — never a relative path; callers only reach here once
+/// `lower_nominal` has already ruled that out.
+///
+/// # Why `Namespace`, not `Package`
+///
+/// An npm *module specifier* is not the same string as the *package name*
+/// this crate's own lineages are keyed by (`PackageLineageId`): scoped
+/// subpath imports (`"@scope/pkg/subpath"`), deep imports into a package's
+/// internals, and specifiers that don't match the `package.json` `name`
+/// field at all (rare but real) all mean this producer cannot assert "this
+/// key's owning package is exactly `<specifier>`" the way `ForeignOrigin::
+/// Package` requires. `ForeignOrigin::Namespace` states precisely what is
+/// known — the npm ecosystem and the specifier string — without asserting a
+/// lineage identity that hasn't been confirmed. This mirrors Go's
+/// `go_foreign_key`, which makes the identical choice for the same reason
+/// (import path vs. module path).
+///
+/// `path` folds the specifier and the name together (`"external-dep#Foo"`)
+/// so two different packages that happen to export a same-named type never
+/// collide on the join key; `display` is the bare name, what renders when
+/// the reference is not linked.
+fn ts_foreign_key(module_request: &str, name: &str) -> ForeignKey {
+    ForeignKey::in_namespace(
+        EcosystemId::new("npm"),
+        module_request,
+        format!("{module_request}#{name}"),
+        name,
+    )
 }
 
 fn lower_literal(lit: &LiteralOwned) -> Type {
@@ -1414,7 +1801,11 @@ fn lower_literal(lit: &LiteralOwned) -> Type {
 
 // ── Generic param lowering ─────────────────────────────────────────────────────
 
-fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
+fn lower_generics(
+    params: &[GenericParamOwned],
+    ctx: &TypeCtx<'_>,
+    out: &mut Lowering<TsId>,
+) -> Vec<GenericParam> {
     params
         .iter()
         .map(|p| GenericParam::Type {
@@ -1422,10 +1813,10 @@ fn lower_generics(params: &[GenericParamOwned]) -> Vec<GenericParam> {
             bounds: p
                 .bounds
                 .iter()
-                .map(lower_type)
+                .map(|b| lower_type(b, ctx, out))
                 .collect::<Vec<_>>()
                 .into_boxed_slice(),
-            default: p.default.as_ref().map(lower_type),
+            default: p.default.as_ref().map(|d| lower_type(d, ctx, out)),
             // Wire TS 4.7+ `in`/`out` declaration-site variance annotations.
             // `None` when no modifier was present (the common case).
             variance: p.variance,
@@ -1486,6 +1877,42 @@ mod cc2_tests {
     use super::*;
     use nudox_ir::kinds::UnknownType;
 
+    /// Build a minimal `Lowering` sink for tests that only exercise
+    /// `lower_type`'s non-Nominal arms — mirrors Python's `make_sink`
+    /// (`python/types.rs`) and Go's equivalent test setup.
+    fn make_sink() -> Lowering<TsId> {
+        let sym = Symbol {
+            name: "test_pkg".to_string(),
+            visibility: Visibility::Public,
+            documentation: String::new(),
+            source: PathBuf::new(),
+            span: 0..0,
+            aliases: Box::new([]),
+            deprecation: None,
+            doc_links: Box::new([]),
+            attrs: Box::new([]),
+            cfg: None,
+        };
+        Lowering::new(nudox_ir::package::PackageId::path("/tmp/test"), sym)
+    }
+
+    /// Owned backing storage for an empty `TypeCtx` — no declared names, no
+    /// imports. Callers borrow from the returned tuple to build the `TypeCtx`
+    /// itself, since `TypeCtx` only holds references.
+    fn empty_ctx_parts() -> (
+        HashMap<PathBuf, HashMap<String, TsId>>,
+        Vec<ImportFact>,
+        Resolver,
+        PathBuf,
+    ) {
+        (
+            HashMap::new(),
+            Vec::new(),
+            make_resolver(),
+            PathBuf::from("/tmp/test.ts"),
+        )
+    }
+
     /// TypeScript ships both spellings, and they are not interchangeable.
     ///
     /// `unknown` is the genuine top type — assignable *to* from everything,
@@ -1496,8 +1923,16 @@ mod cc2_tests {
     /// exists to let you find.
     #[test]
     fn unknown_is_the_top_type_and_any_is_the_escape_hatch() {
-        let unknown = lower_type(&TypeOwned::Unknown);
-        let any = lower_type(&TypeOwned::Any);
+        let (declared_by_module, imports, resolver, current_path) = empty_ctx_parts();
+        let ctx = TypeCtx {
+            declared_by_module: &declared_by_module,
+            imports: &imports,
+            resolver: &resolver,
+            current_path: &current_path,
+        };
+        let mut out = make_sink();
+        let unknown = lower_type(&TypeOwned::Unknown, &ctx, &mut out);
+        let any = lower_type(&TypeOwned::Any, &ctx, &mut out);
         assert_eq!(unknown, Type::Any, "`unknown` is TypeScript's top type");
         assert_eq!(
             any,
@@ -1514,19 +1949,44 @@ mod cc2_tests {
     /// thing again, and the one `--noImplicitAny` reports.
     #[test]
     fn implicit_any_is_unannotated_not_written_any() {
+        let (declared_by_module, imports, resolver, current_path) = empty_ctx_parts();
+        let ctx = TypeCtx {
+            declared_by_module: &declared_by_module,
+            imports: &imports,
+            resolver: &resolver,
+            current_path: &current_path,
+        };
+        let mut out = make_sink();
         let unannotated = Type::UNANNOTATED;
         assert_ne!(
             unannotated,
-            lower_type(&TypeOwned::Any),
+            lower_type(&TypeOwned::Any, &ctx, &mut out),
             "`(x) => …` and `(x: any) => …` are different source"
         );
-        assert_ne!(unannotated, lower_type(&TypeOwned::Unknown));
+        assert_ne!(unannotated, lower_type(&TypeOwned::Unknown, &ctx, &mut out));
         assert_eq!(unannotated.to_string(), "?unannotated");
     }
 
     #[test]
     fn unresolved_nominal_preserves_external_name() {
-        let ty = lower_type(&TypeOwned::Nominal("ImportedWidget".to_string()));
+        let (declared_by_module, imports, resolver, current_path) = empty_ctx_parts();
+        let ctx = TypeCtx {
+            declared_by_module: &declared_by_module,
+            imports: &imports,
+            resolver: &resolver,
+            current_path: &current_path,
+        };
+        let mut out = make_sink();
+        // No declaration and no import binds "ImportedWidget" in this empty
+        // context, so it must fall all the way through `lower_nominal`'s
+        // three tiers to the honest unresolved-external case — proving that
+        // tier still exists and still preserves the spelling now that the
+        // first two tiers (same-module, same-package-via-import) exist.
+        let ty = lower_type(
+            &TypeOwned::Nominal("ImportedWidget".to_string()),
+            &ctx,
+            &mut out,
+        );
         assert_eq!(
             ty,
             Type::Unknown(nudox_ir::kinds::UnknownType::UnresolvedExternal {

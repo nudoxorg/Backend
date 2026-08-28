@@ -25,21 +25,30 @@ use super::{
 /// are valid TS but have no IR representation, so that callers can continue.
 /// The description string names the construct for diagnostic output.
 ///
-/// # TypeVar heuristic
+/// # TypeVar vs Nominal — default is Nominal
 ///
-/// When a `TSTypeReference` is a bare single identifier with no type arguments
-/// (e.g. `T`, `K`, `U`), it is lowered as `TypeOwned::TypeVar(name)` rather
-/// than `TypeOwned::Nominal(name)`. This heuristic is correct for the common
-/// case where the identifier refers to a type parameter in scope.
+/// A bare single-identifier `TSTypeReference` (`User`, `T`, `Foo`) is only
+/// classified `TypeOwned::TypeVar` when the caller supplies an explicit
+/// in-scope type-parameter set (via [`lower_ts_type_with_params`]) *and* the
+/// name is a member of it. With no set supplied — this function, `None` — the
+/// identifier defaults to `TypeOwned::Nominal`.
 ///
-/// The alternative — tracking in-scope params through the recursive call —
-/// requires threading a `&HashSet<String>` through every recursive call, which
-/// adds noise proportional to the depth of the type tree with minimal benefit:
-/// a misclassification (TypeVar vs Nominal for a top-level type) is corrected
-/// at the Lowering sink when the declared ID is found or not found.
+/// This is deliberately the opposite of the old heuristic ("no type args and
+/// no set ⇒ TypeVar"), which misclassified *every* named type reference —
+/// `owner: User`, `g: Foo`, a function parameter, an alias target — as a
+/// generic type parameter the moment no type-param set was in scope, which in
+/// practice was almost always (most call sites never threaded one). A
+/// reference to a declared interface/class/alias is far more common in real
+/// source than a stray, unresolvable type variable, so Nominal is the safer
+/// default: an unrecognized Nominal degrades to `UnresolvedExternal` at the
+/// `Lowering` sink (see `emit.rs::lower_nominal`), a named, honest gap. A
+/// misclassified TypeVar silently discards the reference identity with no
+/// gap recorded at all — that asymmetry is why the default flipped.
 ///
-/// Callers that have an explicit set of in-scope type parameters should use
-/// `lower_ts_type_with_params` instead.
+/// Callers that have an explicit set of in-scope type parameters — the
+/// enclosing function/class/interface/alias's own declared generics — should
+/// use [`lower_ts_type_with_params`] instead, so a genuine use of `T` in
+/// `function f<T>(x: T)` still lowers to `TypeOwned::TypeVar("T")`.
 pub fn lower_ts_type<'a>(ty: &TSType<'a>, source: &'a str) -> TypeOwned {
     lower_ts_type_impl(ty, source, None)
 }
@@ -88,9 +97,12 @@ fn lower_ts_type_impl<'a>(
             // type arguments. If caller supplied a type-params set, use it;
             // otherwise apply the single-identifier heuristic.
             let is_simple_id = !name.contains('.');
+            // Only an explicit, supplied in-scope set can classify this as a
+            // TypeVar; no set (`None`) means "no generics known here" and
+            // defaults to Nominal — see this module's doc comment above.
             let is_type_var = tr.type_arguments.is_none()
                 && is_simple_id
-                && type_params.is_none_or(|set| set.contains(&name));
+                && type_params.is_some_and(|set| set.contains(&name));
 
             if is_type_var {
                 TypeOwned::TypeVar(name)
@@ -153,7 +165,19 @@ fn lower_ts_type_impl<'a>(
             let generics = f
                 .type_parameters
                 .as_ref()
-                .map(|tp| lower_type_params(tp, source))
+                .map(|tp| {
+                    // Union the caller's in-scope set with this function
+                    // type's own `<...>` list before lowering its bounds/
+                    // defaults, same as every named-declaration call site of
+                    // `lower_type_params` — so a bound referencing a sibling
+                    // param (`<T, U extends T>(x: U) => void`) classifies as
+                    // `TypeVar`, and an enclosing generic (e.g. a method's
+                    // own `<T>` wrapping a function-typed parameter) stays
+                    // visible too.
+                    let mut fn_type_params = type_params.cloned().unwrap_or_default();
+                    fn_type_params.extend(tp.params.iter().map(|p| p.name.name.to_string()));
+                    lower_type_params(tp, source, &fn_type_params)
+                })
                 .unwrap_or_default();
             let span = f.span();
             TypeOwned::Function(Box::new(FunctionBody {
@@ -170,12 +194,31 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Conditional type ───────────────────────────────────────────────
-        TSType::TSConditionalType(c) => TypeOwned::Conditional {
-            check: Box::new(lower_ts_type_impl(&c.check_type, source, type_params)),
-            extends_ty: Box::new(lower_ts_type_impl(&c.extends_type, source, type_params)),
-            then_ty: Box::new(lower_ts_type_impl(&c.true_type, source, type_params)),
-            else_ty: Box::new(lower_ts_type_impl(&c.false_type, source, type_params)),
-        },
+        // `infer U` inside `extends_type` introduces a type parameter that
+        // TypeScript scopes to the true branch only (`then_ty`) — `type
+        // ElementOf<T> = T extends Array<infer U> ? U : never` binds `U` for
+        // the `? U` arm, not for `check_type`/`extends_type` themselves (a
+        // direct `infer X` there already lowers straight to `TypeVar` via
+        // the `TSInferType` arm below, independent of any threaded set) and
+        // not for `else_ty` (TypeScript never binds an inferred name there).
+        // `collect_infer_names` walks `extends_type` to find every such
+        // name — it can nest arbitrarily deep, e.g. `Array<infer U>` — and
+        // unions it into the set threaded into `then_ty` alone. Before this,
+        // `then_ty` reused the caller's set unchanged, so a bare `U` there
+        // fell through to `TypeOwned::Nominal("U")` and then to a sink-less
+        // `UnresolvedExternal` at `emit.rs`, even though `U` is exactly the
+        // kind of in-scope generic name `lower_ts_type_with_params` exists
+        // to classify as `TypeVar`.
+        TSType::TSConditionalType(c) => {
+            let mut then_params = type_params.cloned().unwrap_or_default();
+            collect_infer_names(&c.extends_type, &mut then_params);
+            TypeOwned::Conditional {
+                check: Box::new(lower_ts_type_impl(&c.check_type, source, type_params)),
+                extends_ty: Box::new(lower_ts_type_impl(&c.extends_type, source, type_params)),
+                then_ty: Box::new(lower_ts_type_impl(&c.true_type, source, Some(&then_params))),
+                else_ty: Box::new(lower_ts_type_impl(&c.false_type, source, type_params)),
+            }
+        }
 
         // ── Mapped type ────────────────────────────────────────────────────
         TSType::TSMappedType(m) => {
@@ -276,14 +319,30 @@ fn lower_ts_type_impl<'a>(
         }
 
         // ── Import type ────────────────────────────────────────────────────
-        // `import("mod").Foo` or `import("mod")` — lower to a type reference
-        // using the qualifier name (if present) or the module specifier.
-        // This is item 9: no longer Unsupported where a slot exists.
+        // `import("mod").Foo` or `import("mod")` — a *dynamic* import type,
+        // distinct from a static `import` statement (tracked in
+        // `ImportFact`): the module specifier lives inline here, not in the
+        // module's import table.
+        //
+        // This used to collapse straight to `TypeOwned::Nominal(name)`,
+        // where `name` was *either* the qualifier (`"Foo"`) *or* the module
+        // specifier (`imp.source.value`) — never both. The moment a
+        // qualifier was present, the module specifier was discarded
+        // entirely, so `import("pkg").Foo` and a same-named local `Foo`
+        // became indistinguishable strings by the time `emit.rs` saw them,
+        // and neither `lower_nominal`'s import-table lookup nor a
+        // same-module declaration lookup had any specifier left to resolve
+        // against — an unconditional `UnresolvedExternal`. `DynamicImport`
+        // keeps the specifier and the qualifier as separate fields so
+        // `emit.rs::lower_dynamic_import` can build the same npm
+        // `ForeignKey` a static bare-specifier import gets.
         TSType::TSImportType(imp) => {
-            let name = imp.qualifier.as_ref().map_or_else(
-                || imp.source.value.as_str().to_string(),
-                import_type_qualifier_to_string,
-            );
+            let module_request = imp.source.value.as_str().to_string();
+            let member = imp.qualifier.as_ref().map(import_type_qualifier_to_string);
+            let base = TypeOwned::DynamicImport {
+                module_request,
+                member,
+            };
             if let Some(args) = &imp.type_arguments {
                 let lowered_args: Vec<TypeOwned> = args
                     .params
@@ -291,11 +350,11 @@ fn lower_ts_type_impl<'a>(
                     .map(|p| lower_ts_type_impl(p, source, type_params))
                     .collect();
                 TypeOwned::Apply {
-                    base: Box::new(TypeOwned::Nominal(name)),
+                    base: Box::new(base),
                     args: lowered_args,
                 }
             } else {
-                TypeOwned::Nominal(name)
+                base
             }
         }
 
@@ -411,7 +470,12 @@ fn lower_ts_type_impl<'a>(
             let generics = c
                 .type_parameters
                 .as_ref()
-                .map(|tp| lower_type_params(tp, source))
+                .map(|tp| {
+                    // See the identical union in the `TSFunctionType` arm above.
+                    let mut ctor_type_params = type_params.cloned().unwrap_or_default();
+                    ctor_type_params.extend(tp.params.iter().map(|p| p.name.name.to_string()));
+                    lower_type_params(tp, source, &ctor_type_params)
+                })
                 .unwrap_or_default();
             let span = c.span();
             TypeOwned::Function(Box::new(FunctionBody {
@@ -441,9 +505,22 @@ fn lower_ts_type_impl<'a>(
 /// `TSTypeParameter::r#in` and `TSTypeParameter::out`.  We wire them into
 /// `GenericParamOwned::variance` so `emit.rs` can forward them to
 /// `GenericParam::Type::variance`.
+///
+/// `type_params` is the *full* in-scope generic-parameter set for this
+/// declaration — every caller below already builds this union (its own
+/// `<...>` list plus any outer enclosing scope) before calling this
+/// function, precisely so a bound or default can reference a **sibling**
+/// type parameter: `function f<T, U extends T = T>(x: U)` needs `U`'s own
+/// bound and default to classify `T` as `TypeOwned::TypeVar`, not a nominal
+/// reference to an undeclared type named `T`. Bounds/defaults used to lower
+/// through the plain `lower_ts_type` (no type-params set at all), so this
+/// was the one place in a declaration's own generic list that never learned
+/// about its own type parameters even though every *use site* of them
+/// (params, return type, property types, …) already did.
 pub fn lower_type_params<'a>(
     tp: &TSTypeParameterDeclaration<'a>,
     source: &'a str,
+    type_params: &std::collections::HashSet<String>,
 ) -> Vec<GenericParamOwned> {
     tp.params
         .iter()
@@ -451,9 +528,12 @@ pub fn lower_type_params<'a>(
             let bounds = p
                 .constraint
                 .as_ref()
-                .map(|c| vec![lower_ts_type(c, source)])
+                .map(|c| vec![lower_ts_type_with_params(c, source, type_params)])
                 .unwrap_or_default();
-            let default = p.default.as_ref().map(|d| lower_ts_type(d, source));
+            let default = p
+                .default
+                .as_ref()
+                .map(|d| lower_ts_type_with_params(d, source, type_params));
             // TS 4.7+ `in`/`out` variance annotations.
             // OXC: `p.r#in == true` → contravariant (`in T` means the type is
             // consumed / write-only), `p.out == true` → covariant (`out T` means
@@ -526,6 +606,64 @@ fn lower_ts_literal(lit: &TSLiteral<'_>) -> TypeOwned {
             let span_text = format!("{u:?}");
             TypeOwned::Literal(LiteralOwned::Number(span_text))
         }
+    }
+}
+
+/// Collect every name bound by an `infer` clause reachable from `ty`,
+/// recursing through the structural type-constructors an `infer` can
+/// realistically nest inside: generic type arguments (`Array<infer U>`),
+/// unions/intersections (`infer U | string`), arrays/tuples, parenthesized
+/// types, type operators (`keyof infer U`), indexed access, a function/
+/// constructor type's return position, and a nested conditional's own
+/// check/extends arms.
+///
+/// Used only to extend the type-parameter set `TSConditionalType` lowering
+/// threads into its true-branch (`then_ty`) — see that arm above for why
+/// `infer`'s TypeScript scoping rule (bound in the true branch only) is what
+/// this feeds.
+fn collect_infer_names(ty: &TSType<'_>, out: &mut std::collections::HashSet<String>) {
+    match ty {
+        TSType::TSInferType(i) => {
+            out.insert(i.type_parameter.name.to_string());
+        }
+        TSType::TSTypeReference(tr) => {
+            if let Some(args) = &tr.type_arguments {
+                for p in &args.params {
+                    collect_infer_names(p, out);
+                }
+            }
+        }
+        TSType::TSUnionType(u) => {
+            for t in &u.types {
+                collect_infer_names(t, out);
+            }
+        }
+        TSType::TSIntersectionType(i) => {
+            for t in &i.types {
+                collect_infer_names(t, out);
+            }
+        }
+        TSType::TSArrayType(a) => collect_infer_names(&a.element_type, out),
+        TSType::TSTupleType(t) => {
+            for e in &t.element_types {
+                if let Some(inner) = e.as_ts_type() {
+                    collect_infer_names(inner, out);
+                }
+            }
+        }
+        TSType::TSParenthesizedType(p) => collect_infer_names(&p.type_annotation, out),
+        TSType::TSTypeOperatorType(op) => collect_infer_names(&op.type_annotation, out),
+        TSType::TSIndexedAccessType(ia) => {
+            collect_infer_names(&ia.object_type, out);
+            collect_infer_names(&ia.index_type, out);
+        }
+        TSType::TSFunctionType(f) => collect_infer_names(&f.return_type.type_annotation, out),
+        TSType::TSConstructorType(c) => collect_infer_names(&c.return_type.type_annotation, out),
+        TSType::TSConditionalType(c) => {
+            collect_infer_names(&c.check_type, out);
+            collect_infer_names(&c.extends_type, out);
+        }
+        _ => {}
     }
 }
 

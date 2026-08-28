@@ -551,6 +551,102 @@ fn test_tsz_producer_constructor() {
     // No panic = the tsz producer seam is wired end-to-end.
 }
 
+/// Cross-module type resolution: `svc.ts` imports `User` from `types.ts` and
+/// returns a `User`-typed value with **no** explicit return annotation. OXC
+/// leaves the return `None` (correct — it is not a type checker); tsz must run
+/// the checker with full cross-file context and infer `User`.
+///
+/// This is the load-bearing "refs resolved across modules" case. It exercises
+/// `oracle::tsz::recover_types`, which installs the same cross-file resolution
+/// context `tsz`'s own whole-program checker uses (module-resolution maps, every
+/// file's arena and binder, the global symbol→file index). Before that context
+/// was installed, the per-file `CheckerState` collapsed the imported `User` to
+/// `any`; with it, the checker resolves the import to its declaration in
+/// `types.ts`. We assert the result is *concrete* (not `None`/`Any`/`Unknown`/
+/// `Unsupported`) rather than pinning an exact spelling, since the checker's
+/// printed representation may vary between `Nominal("User")` and an inlined
+/// object shape.
+#[cfg(feature = "tsz")]
+#[test]
+fn test_tsz_resolves_cross_module_return_type() {
+    use nudox_languages::typescript::extract::{DeclBody, TypeOwned};
+    use nudox_languages::typescript::producer::TsOracle;
+    use nudox_languages::typescript::{OwnedOracle, TszOracle};
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+
+    let types_path = dir.path().join("types.ts");
+    {
+        let mut f = std::fs::File::create(&types_path).expect("create types.ts");
+        writeln!(f, "export interface User {{ id: number; name: string; }}").expect("write");
+    }
+
+    // No explicit return annotation — the checker must infer `User`, and to do
+    // so it must resolve the cross-module `import`.
+    let svc_path = dir.path().join("svc.ts");
+    {
+        let mut f = std::fs::File::create(&svc_path).expect("create svc.ts");
+        writeln!(
+            f,
+            "import {{ User }} from \"./types\";\n\
+             export function makeUser(u: User) {{ return u; }}"
+        )
+        .expect("write");
+    }
+
+    // OXC extraction over both entry points.
+    let entry_points = vec![types_path.clone(), svc_path.clone()];
+    let modules = nudox_languages::typescript::graph::build_and_extract(&entry_points, dir.path())
+        .expect("oxc extract");
+
+    // OXC alone leaves the return type unresolved (no annotation, cross-module).
+    let make_oxc = modules
+        .iter()
+        .flat_map(|m| m.declarations.iter())
+        .find(|d| d.name == "makeUser")
+        .expect("OXC should find `makeUser`");
+    let DeclBody::Function(oxc_fn) = &make_oxc.body else {
+        panic!("expected Function body");
+    };
+    assert!(
+        oxc_fn.return_type.is_none(),
+        "OXC should leave the unannotated cross-module return unresolved, got: {:?}",
+        oxc_fn.return_type
+    );
+
+    // Promote to TszOracle (runs cross-module enrichment).
+    let tsz: TszOracle = TszOracle::from(OwnedOracle::new(modules));
+
+    let make_tsz = tsz
+        .modules()
+        .iter()
+        .flat_map(|m| m.declarations.iter())
+        .find(|d| d.name == "makeUser")
+        .expect("TszOracle should still have `makeUser`");
+    let DeclBody::Function(tsz_fn) = &make_tsz.body else {
+        panic!("expected Function body from TszOracle");
+    };
+
+    match &tsz_fn.return_type {
+        None => panic!(
+            "tsz must resolve the cross-module return type of `makeUser`; still None. \
+             Cross-module reference resolution is not running."
+        ),
+        Some(TypeOwned::Any) | Some(TypeOwned::Unknown) | Some(TypeOwned::Unsupported(_)) => {
+            panic!(
+                "tsz produced an opaque return type ({:?}); the checker failed to resolve \
+                 `User` across the module boundary.",
+                tsz_fn.return_type
+            );
+        }
+        Some(_concrete) => {
+            // A concrete type (Nominal("User"), an object shape, etc.) means the
+            // checker resolved the cross-module reference — the point of the test.
+        }
+    }
+}
+
 // ── Test 9: Module-level TSZ seam (OXC) ──────────────────────────────────────
 
 /// This is a compile-time seam test, not a runtime test.
@@ -850,7 +946,7 @@ fn test_constructor_type_in_position() {
 // ── Item 9: Import types ───────────────────────────────────────────────────────
 
 #[test]
-fn test_import_type_lowers_to_nominal() {
+fn test_import_type_lowers_to_dynamic_import() {
     let src = r#"
         export type Foo = import("./bar").Baz;
     "#;
@@ -860,11 +956,29 @@ fn test_import_type_lowers_to_nominal() {
         panic!("expected TypeAlias");
     };
 
+    // `TypeOwned::Nominal(name)` used to collapse this to just the qualifier
+    // (`"Baz"`), discarding the module specifier (`"./bar"`) the moment a
+    // qualifier was present — `emit.rs::lower_nominal` then had no specifier
+    // left to resolve `Baz` against, so this always bottomed out as
+    // `UnresolvedExternal`. `TypeOwned::DynamicImport` keeps both fields so
+    // `emit.rs::lower_dynamic_import` can resolve the specifier like any
+    // other import.
     match &body.target {
-        TypeOwned::Nominal(name) => {
-            assert_eq!(name, "Baz", "import type qualifier should be Baz");
+        TypeOwned::DynamicImport {
+            module_request,
+            member,
+        } => {
+            assert_eq!(
+                module_request, "./bar",
+                "the import type's module specifier must survive"
+            );
+            assert_eq!(
+                member.as_deref(),
+                Some("Baz"),
+                "import type qualifier should be Baz"
+            );
         }
-        other => panic!("expected TypeOwned::Nominal for import type, got {other:?}"),
+        other => panic!("expected TypeOwned::DynamicImport for import type, got {other:?}"),
     }
 }
 

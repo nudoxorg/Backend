@@ -488,6 +488,27 @@ pub enum TypeOwned {
     Primitive(String),
     /// A reference to a declared nominal type (class / interface / alias).
     Nominal(String),
+    /// TypeScript's dynamic import type: `import("mod")` or
+    /// `import("mod").Member`.
+    ///
+    /// Unlike a static `import` statement — tracked per-module in
+    /// `ImportFact` and consulted by `emit.rs::lower_nominal` — the module
+    /// specifier here lives inline in the type position itself, with no
+    /// entry in the module's import table at all. Collapsing this to a bare
+    /// `Nominal(member)` (or `Nominal(module_specifier)` when there is no
+    /// qualifier) discards the specifier the moment a qualifier is present,
+    /// which is exactly the shape `lower_nominal` needs to build the same
+    /// npm `ForeignKey` a static bare-specifier import gets — so the
+    /// specifier is carried through as its own variant instead.
+    DynamicImport {
+        /// The string literal inside `import(...)` — `"mod"`.
+        module_request: String,
+        /// The qualifier after the module, if any: `Thing` in
+        /// `import("mod").Thing`, `Thing.Sub` for a further-qualified path.
+        /// `None` for a bare `import("mod")` type (rare: the whole imported
+        /// module used directly as a type).
+        member: Option<String>,
+    },
     /// A use of a generic type parameter (e.g. `T`, `K`, `V`).
     ///
     /// Emitted as `Type::TypeVar(name)`.  See the seam note on `TypeOwned` above.

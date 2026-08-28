@@ -40,7 +40,7 @@ use super::{
     InterfaceBody, LocalExport, MemberFact, MemberKind, MemberModifiers, MethodFact, ModuleFacts,
     NamespaceBody, OccurrenceFact, OccurrenceKind, ParamFact, PropertyFact, ReceiverKind,
     StarExport, StaticBody, TypeAliasBody, VariantFact, jsdoc,
-    types::{lower_ts_type, lower_type_params},
+    types::{lower_ts_type, lower_ts_type_with_params, lower_type_params},
 };
 
 // ── Entry point ────────────────────────────────────────────────────────────────
@@ -144,7 +144,11 @@ pub fn extract_module<'a>(
             name,
             visibility: nudox_ir::entry::Visibility::Public,
             doc: jsdoc::jsdoc_for_span(semantic, span),
-            body: DeclBody::Function(lower_function(function, source)),
+            body: DeclBody::Function(lower_function(
+                function,
+                source,
+                &std::collections::HashSet::new(),
+            )),
             module: path.to_path_buf(),
             span_start: span.start,
             span_end: span.end,
@@ -797,7 +801,7 @@ fn extract_declaration<'a>(
                 return vec![];
             }
             let discriminant = bump_count(&name, name_counts);
-            let body = lower_function(f, source);
+            let body = lower_function(f, source, &std::collections::HashSet::new());
             vec![DeclFact {
                 name,
                 visibility,
@@ -853,12 +857,19 @@ fn extract_declaration<'a>(
                 return vec![];
             }
             let discriminant = bump_count(&name, name_counts);
+            // `type Box<T> = { value: T };` — the alias's own generics are
+            // the only scope its target type sees (a type alias cannot see
+            // an enclosing declaration's generics; there is no such thing in
+            // TypeScript), so `T` classifies as `TypeOwned::TypeVar` here —
+            // and, via `lower_type_params` below, also inside a sibling type
+            // parameter's own bound/default (`type Pair<T, U = T> = ...`).
+            let alias_type_params = type_param_names(a.type_parameters.as_deref());
             let generics = a
                 .type_parameters
                 .as_ref()
-                .map(|tp| lower_type_params(tp, source))
+                .map(|tp| lower_type_params(tp, source, &alias_type_params))
                 .unwrap_or_default();
-            let target = lower_ts_type(&a.type_annotation, source);
+            let target = lower_ts_type_with_params(&a.type_annotation, source, &alias_type_params);
             vec![DeclFact {
                 name,
                 visibility,
@@ -948,7 +959,7 @@ fn extract_default_export<'a>(
             let span = f.span();
             let doc = jsdoc::jsdoc_for_span(semantic, span);
             let discriminant = bump_count(&name, name_counts);
-            let body = lower_function(f, source);
+            let body = lower_function(f, source, &std::collections::HashSet::new());
             vec![DeclFact {
                 name,
                 visibility: Visibility::Public,
@@ -1005,7 +1016,34 @@ fn extract_default_export<'a>(
 
 // ── Kind-specific lowering ─────────────────────────────────────────────────────
 
-fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
+/// The bare names of a type-parameter list — the set that lets
+/// `lower_ts_type_with_params` tell a genuine generic-parameter *use*
+/// (`T` in `value: T`) apart from a nominal reference to a declared type
+/// that merely happens to share the identifier shape. `None` (no `<...>`
+/// list at all) is the empty set, not a further `Option` — every caller
+/// below already holds an *outer* set it needs to union this into, so
+/// normalizing here keeps every call site a plain `HashSet` union.
+fn type_param_names(
+    tp: Option<&oxc_ast::ast::TSTypeParameterDeclaration<'_>>,
+) -> std::collections::HashSet<String> {
+    tp.map(|tp| tp.params.iter().map(|p| p.name.name.to_string()).collect())
+        .unwrap_or_default()
+}
+
+/// Lower a function/method declaration.
+///
+/// `outer_type_params` is the type-parameter set already in scope from an
+/// enclosing declaration (a class's or interface's own generics) — empty for
+/// a top-level function, which has no enclosing generic scope. This
+/// function's own `<...>` list (if any) is unioned into it before lowering
+/// params/return type, so `function f<T>(x: T): T` classifies `T` as
+/// `TypeOwned::TypeVar` in both positions, and a method on `class Box<T>`
+/// sees `T` even though `T` is not one of *its own* type parameters.
+fn lower_function<'a>(
+    f: &Function<'a>,
+    source: &'a str,
+    outer_type_params: &std::collections::HashSet<String>,
+) -> FunctionBody {
     let has_body = f.body.is_some();
 
     // Detect `this` pseudo-parameter → shared receiver.
@@ -1025,17 +1063,20 @@ fn lower_function<'a>(f: &Function<'a>, source: &'a str) -> FunctionBody {
         ReceiverKind::None
     };
 
-    let params = lower_formal_parameters(&f.params, source, first_param_is_this);
+    let mut type_params = outer_type_params.clone();
+    type_params.extend(type_param_names(f.type_parameters.as_deref()));
+
+    let params = lower_formal_parameters(&f.params, source, first_param_is_this, &type_params);
 
     let return_type = f
         .return_type
         .as_ref()
-        .map(|ann| lower_ts_type(&ann.type_annotation, source));
+        .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &type_params));
 
     let generics = f
         .type_parameters
         .as_ref()
-        .map(|tp| lower_type_params(tp, source))
+        .map(|tp| lower_type_params(tp, source, &type_params))
         .unwrap_or_default();
 
     let is_async = f.r#async;
@@ -1059,6 +1100,7 @@ fn lower_formal_parameters<'a>(
     params: &oxc_ast::ast::FormalParameters<'a>,
     source: &'a str,
     skip_first: bool,
+    type_params: &std::collections::HashSet<String>,
 ) -> Vec<ParamFact> {
     let items = if skip_first && !params.items.is_empty() {
         &params.items[1..]
@@ -1072,7 +1114,7 @@ fn lower_formal_parameters<'a>(
         let ty = param
             .type_annotation
             .as_ref()
-            .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, type_params));
         let is_readonly = param.readonly;
         let span = param.span();
         out.push(ParamFact {
@@ -1089,7 +1131,7 @@ fn lower_formal_parameters<'a>(
         let ty = rest
             .type_annotation
             .as_ref()
-            .map(|ann| lower_ts_type(&ann.type_annotation, source));
+            .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, type_params));
         let name =
             binding_pattern_name(&rest.rest.argument).unwrap_or_else(|| "...rest".to_string());
         let span = rest.span();
@@ -1107,10 +1149,19 @@ fn lower_formal_parameters<'a>(
 }
 
 fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
+    // The class's own declared generics are in scope for every type position
+    // this function lowers below: extends/implements type arguments,
+    // constructor parameter properties, and (unioned with each method's own
+    // generics) every member method — so `class Box<T> { value: T; get(): T
+    // {...} }` classifies every bare `T` as `TypeOwned::TypeVar`, not a
+    // nominal reference to an undeclared type named `T`. Also threaded into
+    // `lower_type_params` itself below, so a sibling type parameter's own
+    // bound/default sees it too (`class Box<T, U extends T>`).
+    let class_type_params = type_param_names(cls.type_parameters.as_deref());
     let generics = cls
         .type_parameters
         .as_ref()
-        .map(|tp| lower_type_params(tp, source))
+        .map(|tp| lower_type_params(tp, source, &class_type_params))
         .unwrap_or_default();
 
     // `super_class` is an Expression (runtime value); extract its identifier name.
@@ -1128,7 +1179,12 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
             let args: Vec<super::TypeOwned> = cls
                 .super_type_arguments
                 .as_ref()
-                .map(|tp| tp.params.iter().map(|t| lower_ts_type(t, source)).collect())
+                .map(|tp| {
+                    tp.params
+                        .iter()
+                        .map(|t| lower_ts_type_with_params(t, source, &class_type_params))
+                        .collect()
+                })
                 .unwrap_or_default();
             if args.is_empty() {
                 vec![super::TypeOwned::Nominal(name)]
@@ -1156,7 +1212,12 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
             let args: Vec<super::TypeOwned> = i
                 .type_arguments
                 .as_ref()
-                .map(|tp| tp.params.iter().map(|t| lower_ts_type(t, source)).collect())
+                .map(|tp| {
+                    tp.params
+                        .iter()
+                        .map(|t| lower_ts_type_with_params(t, source, &class_type_params))
+                        .collect()
+                })
                 .unwrap_or_default();
             if args.is_empty() {
                 super::TypeOwned::Nominal(name)
@@ -1185,7 +1246,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
         .body
         .body
         .iter()
-        .filter_map(|elem| lower_class_element(elem, source))
+        .filter_map(|elem| lower_class_element(elem, source, &class_type_params))
         .collect();
 
     // Build a set of already-declared field names (from PropertyDefinition).
@@ -1227,7 +1288,7 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
             let ty = param
                 .type_annotation
                 .as_ref()
-                .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &class_type_params));
             let span = param.span();
             members.push(MemberFact {
                 name,
@@ -1301,7 +1362,11 @@ fn lower_class<'a>(cls: &Class<'a>, source: &'a str) -> ClassBody {
     }
 }
 
-fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<MemberFact> {
+fn lower_class_element<'a>(
+    elem: &ClassElement<'a>,
+    source: &'a str,
+    class_type_params: &std::collections::HashSet<String>,
+) -> Option<MemberFact> {
     match elem {
         ClassElement::MethodDefinition(m) => {
             let name = property_key_name(&m.key, source);
@@ -1328,7 +1393,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
                     token: d.span.source_text(source).to_string(),
                 })
                 .collect();
-            let sig = lower_function(&m.value, source);
+            let sig = lower_function(&m.value, source, class_type_params);
             let span = m.span();
             Some(MemberFact {
                 name,
@@ -1366,7 +1431,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
             let ty = p
                 .type_annotation
                 .as_ref()
-                .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, class_type_params));
             // Decorators on the property (item 7).
             let decorators: Vec<AttrTok> = p
                 .decorators
@@ -1411,7 +1476,7 @@ fn lower_class_element<'a>(elem: &ClassElement<'a>, source: &'a str) -> Option<M
             let ty = ap
                 .type_annotation
                 .as_ref()
-                .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, class_type_params));
             // Decorators on the accessor (item 7).
             let mut decorators: Vec<AttrTok> = ap
                 .decorators
@@ -1474,10 +1539,18 @@ fn lower_interface<'a>(
     source: &'a str,
     _semantic: &Semantic<'a>,
 ) -> InterfaceBody {
+    // The interface's own declared generics are in scope for every type
+    // position below: extends type arguments, property types, and (unioned
+    // with each signature's own generics) every method/call/construct/index
+    // signature — so `interface Box<T> { value: T }` classifies `T` as
+    // `TypeOwned::TypeVar`, not a nominal reference to an undeclared `T`.
+    // Also threaded into `lower_type_params` itself below, so a sibling type
+    // parameter's own bound/default sees it too (`interface Box<T, U extends T>`).
+    let iface_type_params = type_param_names(iface.type_parameters.as_deref());
     let generics = iface
         .type_parameters
         .as_ref()
-        .map(|tp| lower_type_params(tp, source))
+        .map(|tp| lower_type_params(tp, source, &iface_type_params))
         .unwrap_or_default();
 
     let extends: Vec<_> = iface
@@ -1490,7 +1563,11 @@ fn lower_interface<'a>(
                 other => format!("{:?}", other.span().source_text(source)),
             };
             if let Some(tp) = &h.type_arguments {
-                let args: Vec<_> = tp.params.iter().map(|p| lower_ts_type(p, source)).collect();
+                let args: Vec<_> = tp
+                    .params
+                    .iter()
+                    .map(|p| lower_ts_type_with_params(p, source, &iface_type_params))
+                    .collect();
                 super::TypeOwned::Apply {
                     base: Box::new(super::TypeOwned::Nominal(name)),
                     args,
@@ -1518,15 +1595,17 @@ fn lower_interface<'a>(
                     is_optional: m.optional,
                     is_abstract: false,
                 };
-                let params = lower_formal_parameters(&m.params, source, false);
+                let mut m_type_params = iface_type_params.clone();
+                m_type_params.extend(type_param_names(m.type_parameters.as_deref()));
+                let params = lower_formal_parameters(&m.params, source, false, &m_type_params);
                 let return_type = m
                     .return_type
                     .as_ref()
-                    .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                    .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &m_type_params));
                 let generics = m
                     .type_parameters
                     .as_ref()
-                    .map(|tp| lower_type_params(tp, source))
+                    .map(|tp| lower_type_params(tp, source, &m_type_params))
                     .unwrap_or_default();
                 let m_span = m.span();
                 let sig = FunctionBody {
@@ -1553,7 +1632,7 @@ fn lower_interface<'a>(
                 let ty = p
                     .type_annotation
                     .as_ref()
-                    .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                    .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &iface_type_params));
                 let modifiers = MemberModifiers {
                     accessibility: Accessibility::Public,
                     is_static: false,
@@ -1572,15 +1651,17 @@ fn lower_interface<'a>(
                 });
             }
             TSSignature::TSCallSignatureDeclaration(c) => {
-                let params = lower_formal_parameters(&c.params, source, false);
+                let mut c_type_params = iface_type_params.clone();
+                c_type_params.extend(type_param_names(c.type_parameters.as_deref()));
+                let params = lower_formal_parameters(&c.params, source, false, &c_type_params);
                 let return_type = c
                     .return_type
                     .as_ref()
-                    .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                    .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &c_type_params));
                 let generics = c
                     .type_parameters
                     .as_ref()
-                    .map(|tp| lower_type_params(tp, source))
+                    .map(|tp| lower_type_params(tp, source, &c_type_params))
                     .unwrap_or_default();
                 let c_span = c.span();
                 call_signatures.push(FunctionBody {
@@ -1602,8 +1683,16 @@ fn lower_interface<'a>(
                 // Each parameter has a `name` (BindingIdentifier) and `type_annotation`.
                 if let Some(param) = idx.parameters.first() {
                     let key_name = param.name.as_str().to_string();
-                    let key_ty = lower_ts_type(&param.type_annotation.type_annotation, source);
-                    let value_ty = lower_ts_type(&idx.type_annotation.type_annotation, source);
+                    let key_ty = lower_ts_type_with_params(
+                        &param.type_annotation.type_annotation,
+                        source,
+                        &iface_type_params,
+                    );
+                    let value_ty = lower_ts_type_with_params(
+                        &idx.type_annotation.type_annotation,
+                        source,
+                        &iface_type_params,
+                    );
                     let idx_span = idx.span();
                     index_signatures.push(IndexSignatureFact {
                         key_name,
@@ -1616,15 +1705,17 @@ fn lower_interface<'a>(
             }
             // ── Item 6: Construct signatures (`new (…): T`) ───────────────
             TSSignature::TSConstructSignatureDeclaration(cs) => {
-                let params = lower_formal_parameters(&cs.params, source, false);
+                let mut cs_type_params = iface_type_params.clone();
+                cs_type_params.extend(type_param_names(cs.type_parameters.as_deref()));
+                let params = lower_formal_parameters(&cs.params, source, false, &cs_type_params);
                 let return_type = cs
                     .return_type
                     .as_ref()
-                    .map(|ann| lower_ts_type(&ann.type_annotation, source));
+                    .map(|ann| lower_ts_type_with_params(&ann.type_annotation, source, &cs_type_params));
                 let generics = cs
                     .type_parameters
                     .as_ref()
-                    .map(|tp| lower_type_params(tp, source))
+                    .map(|tp| lower_type_params(tp, source, &cs_type_params))
                     .unwrap_or_default();
                 let cs_span = cs.span();
                 construct_signatures.push(FunctionBody {

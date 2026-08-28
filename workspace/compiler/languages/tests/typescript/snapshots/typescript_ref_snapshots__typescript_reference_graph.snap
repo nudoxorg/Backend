@@ -1,0 +1,34 @@
+---
+source: workspace/compiler/languages/tests/typescript/ref_snapshots.rs
+expression: "format!(\"── TABLE ──\\n{table_render}\\n── OCCURRENCES ──\\n{occurrence_render}\")"
+---
+── TABLE ──
+== C :: Some(Record) ==
+  form: Struct
+  super_type: Foreign(origin=Namespace(npm::external-dep), path="external-dep#Base", display="Base", kind=None, linked(package=npm/external-dep, intro=5555555555555555555555555555555555555555555555555555555555555555))
+== Foo :: Some(Trait) ==
+== Holder :: Some(Trait) ==
+== NS :: Some(Module) ==
+== SiblingLocal :: Some(Trait) ==
+== aliased :: Some(Field) ==
+  ty: Foreign(origin=Namespace(npm::external-dep), path="external-dep#Foo", display="Foo", kind=None, linked(package=npm/external-dep, intro=1111111111111111111111111111111111111111111111111111111111111111))
+== defaulted :: Some(Field) ==
+  ty: Foreign(origin=Namespace(npm::external-dep), path="external-dep#default", display="default", kind=None, linked(package=npm/external-dep, intro=2222222222222222222222222222222222222222222222222222222222222222))
+== dynamic :: Some(Field) ==
+  ty: Foreign(origin=Namespace(npm::external-dep), path="external-dep#Thing", display="Thing", kind=None, linked(package=npm/external-dep, intro=3333333333333333333333333333333333333333333333333333333333333333))
+== id :: Some(Field) ==
+  ty: Float(Fixed(64))
+== id :: Some(Field) ==
+  ty: Float(Fixed(64))
+== index :: Some(Module) ==
+== namespaced :: Some(Field) ==
+  ty: Foreign(origin=Namespace(npm::external-dep), path="external-dep#Thing", display="Thing", kind=None, linked(package=npm/external-dep, intro=3333333333333333333333333333333333333333333333333333333333333333))
+== nested :: Some(Field) ==
+  ty: Intro(`Foo` Some(Trait))
+== refs-fixture :: Some(Module) ==
+== sibling :: Some(Module) ==
+== sibling :: Some(Field) ==
+  ty: Intro(`SiblingLocal` Some(Trait))
+
+── OCCURRENCES ──
+Holder --TypeReference(Index)--> package=npm/refs-fixture target=NS

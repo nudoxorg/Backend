@@ -34,9 +34,12 @@
 //! This entire module is compiled only with `--features tsz`.  The default
 //! build is unaffected.
 
+use std::sync::Arc;
+
 use rustc_hash::FxHashMap;
 
 use tsz_binder::state::BinderState;
+use tsz_checker::module_resolution::build_module_resolution_maps;
 use tsz_checker::state::CheckerState;
 use tsz_core::parallel::{
     self, MergedProgram, create_binder_from_bound_file, ensure_rayon_global_pool,
@@ -49,16 +52,23 @@ use crate::typescript::extract::{DeclBody, FunctionBody, LiteralOwned, ModuleFac
 
 // ── Public runtime switch ─────────────────────────────────────────────────────
 
-/// Environment variable that opts in to the tsz oracle for a run.
+/// Environment variable that can DISABLE the tsz oracle for a run.
 ///
-/// Set to `1` or `true` to enable.  Unset means OXC-only behavior.
+/// When the `tsz` feature is compiled in, enrichment runs by default (tsz is
+/// "always-on").  This variable is a runtime kill-switch for incident response:
+/// set it to `0` or `false` to force OXC-only output for a single process.  Any
+/// other value — or leaving it unset — keeps tsz enabled.
 pub const ORACLE_ENV: &str = "NUDOX_TYPESCRIPT_ORACLE";
 
-/// Returns `true` when the tsz oracle is enabled for this process.
+/// Returns `true` when tsz enrichment should run for this process.
+///
+/// Defaults to `true` whenever the feature is compiled; only an explicit
+/// `NUDOX_TYPESCRIPT_ORACLE=0` / `=false` turns it off.
 pub fn enabled() -> bool {
-    std::env::var(ORACLE_ENV)
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    match std::env::var(ORACLE_ENV) {
+        Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
+        Err(_) => true,
+    }
 }
 
 // ── TszOracle — the enriched oracle type ─────────────────────────────────────
@@ -89,8 +99,15 @@ impl From<crate::typescript::producer::OwnedOracle> for TszOracle {
     /// result is returned transparently — the caller is never penalised.
     fn from(oxc: crate::typescript::producer::OwnedOracle) -> Self {
         let mut modules = oxc.modules;
-        if let Err(reason) = enrich_modules(&mut modules) {
-            tracing::debug!(reason = %reason, "tsz enrichment skipped; using OXC-only output");
+        if enabled() {
+            if let Err(reason) = enrich_modules(&mut modules) {
+                tracing::debug!(reason = %reason, "tsz enrichment skipped; using OXC-only output");
+            }
+        } else {
+            tracing::debug!(
+                env = ORACLE_ENV,
+                "tsz oracle disabled via kill-switch; using OXC-only output"
+            );
         }
         TszOracle { modules }
     }
@@ -296,16 +313,73 @@ fn recover_types(
     FxHashMap<(String, String), RecoveredType>,
     FxHashMap<String, usize>,
 ) {
-    let query_cache =
-        QueryCache::new(&program.type_interner).with_definition_store(&program.definition_store);
-
     let interner: &dyn TypeDatabase = &program.type_interner;
+
+    // ── Cross-file resolution context ─────────────────────────────────────────
+    //
+    // This is the exact set of state `tsz`'s own whole-program checker
+    // (`check_functions_parallel`) installs on every per-file `CheckerState` so
+    // that a name imported from another file resolves to its declaration there.
+    // Omitting ANY of it — as the previous bare `CheckerState::new` did — makes
+    // `get_type_of_symbol` collapse every cross-module import to `any`: the
+    // per-file checker has no map from an import specifier to the target file,
+    // and no handle on that file's arena or binder to read the declaration from.
+    // Installing it is what turns this pass from "structure only" into real
+    // cross-module type resolution (`import { User } from "./types"` now yields
+    // `User`, not `any`).
+    let file_names: Vec<String> = program
+        .files
+        .iter()
+        .map(|file| file.file_name.clone())
+        .collect();
+    // Maps an import specifier (relative to each importing file) to the target
+    // file index, plus the set of resolvable module strings.
+    let (resolved_module_paths, resolved_modules) = build_module_resolution_maps(&file_names);
+    let resolved_module_paths = Arc::new(resolved_module_paths);
+
+    // One binder per file, shared by `Arc` so every checker can look up every
+    // other file's symbols (the checker's binder AND `all_binders[file_idx]` are
+    // the same instance, matching `check_functions_parallel`).
+    let shared_binders: Vec<Arc<BinderState>> = program
+        .files
+        .iter()
+        .enumerate()
+        .map(|(file_idx, file)| Arc::new(create_binder_from_bound_file(file, program, file_idx)))
+        .collect();
+    let all_binders = Arc::new(shared_binders.clone());
+    let all_arenas = Arc::new(
+        program
+            .files
+            .iter()
+            .map(|file| Arc::clone(&file.arena))
+            .collect::<Vec<_>>(),
+    );
+
+    // Symbol → owning-file index, so a symbol reached across arenas resolves to
+    // the right file in O(1). Built via an arena-pointer → file-index reverse map
+    // (O(F)) then one lookup per symbol (O(S)), mirroring the upstream setup.
+    let arena_to_file_idx: FxHashMap<usize, usize> = all_arenas
+        .iter()
+        .enumerate()
+        .map(|(idx, arena)| (Arc::as_ptr(arena) as usize, idx))
+        .collect();
+    let global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>> = Arc::new(
+        program
+            .symbol_arenas
+            .iter()
+            .filter_map(|(sym_id, arena)| {
+                arena_to_file_idx
+                    .get(&(Arc::as_ptr(arena) as usize))
+                    .map(|&file_idx| (*sym_id, file_idx))
+            })
+            .collect(),
+    );
 
     let mut by_key: FxHashMap<(String, String), RecoveredType> = FxHashMap::default();
     let mut name_counts: FxHashMap<String, usize> = FxHashMap::default();
 
     for (file_idx, file) in program.files.iter().enumerate() {
-        let binder: BinderState = create_binder_from_bound_file(file, program, file_idx);
+        let binder = Arc::clone(&shared_binders[file_idx]);
 
         let base = file
             .file_name
@@ -314,13 +388,30 @@ fn recover_types(
             .unwrap_or(file.file_name.as_str());
         let stem = file_stem(base);
 
-        let mut checker = CheckerState::new(
+        // Per-file query cache with the shared definition store (a shared cache
+        // across files would alias per-file evaluation state).
+        let query_cache =
+            QueryCache::new(&program.type_interner).with_definition_store(&program.definition_store);
+
+        let mut checker = CheckerState::new_with_shared_def_store(
             &file.arena,
-            &binder,
+            binder.as_ref(),
             &query_cache,
             file.file_name.clone(),
             Default::default(),
+            Arc::clone(&program.definition_store),
         );
+        checker.ctx.set_all_arenas(Arc::clone(&all_arenas));
+        checker.ctx.set_all_binders(Arc::clone(&all_binders));
+        checker.ctx.set_current_file_idx(file_idx);
+        checker
+            .ctx
+            .set_resolved_module_paths(Arc::clone(&resolved_module_paths));
+        checker.ctx.set_resolved_modules(resolved_modules.clone());
+        checker
+            .ctx
+            .set_global_symbol_file_index(Arc::clone(&global_symbol_file_index));
+
         checker.check_source_file(file.source_file);
 
         // Snapshot the top-level names before the mutable checker queries.
