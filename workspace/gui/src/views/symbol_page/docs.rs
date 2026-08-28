@@ -1635,6 +1635,7 @@ fn heading_label(view: &SectionView) -> Option<SharedString> {
 mod tests {
     use super::*;
     use gpui::px;
+    use crate::theme::KindColours;
 
     fn metrics() -> Metrics {
         Metrics {

@@ -1069,6 +1069,7 @@ fn default_lineage() -> PackageLineageId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bridge::generation::Gen;
     use crate::stores::package::{PackageRow, PackageStatus};
 
     // ── PackageAccess double ─────────────────────────────────────────────────
