@@ -245,7 +245,23 @@ fn lower_type_depth(
         // extraction never loaded. Cross-package input is what closes this, so
         // it is `UnresolvedExternal` — and the name is kept, because two
         // unresolvable types in one overload set must not share an encoding.
-        TypeSig::Error { name } => Type::unresolved_external(name.as_str()),
+        //
+        // That is the right call for a *qualified* name (`Foreign.Pkg.Thing`)
+        // — it genuinely names something outside this extraction. A *bare*
+        // name (`Widget`, no dot) is a different fact: Roslyn failing to bind
+        // a short identifier is what a within-package name-resolution gap
+        // looks like (the type is plausibly declared right here), not a
+        // missing assembly reference. `UnresolvedLocalName` says exactly
+        // that — resolvable by a within-package pass, no cross-package
+        // linking required — instead of overclaiming `UnresolvedExternal`
+        // for a name that never had a dot in it.
+        TypeSig::Error { name } => {
+            if name.contains('.') {
+                Type::unresolved_external(name.as_str())
+            } else {
+                Type::unresolved_local(name.as_str())
+            }
+        }
     }
 }
 
@@ -267,17 +283,64 @@ fn lower_named(
     //
     // C# emits this for inner types of generic outer types, e.g.
     // `System.Collections.Generic.Dictionary<K,V>.KeyCollection`.
-    // The IR now has `Type::QualifiedPath { self_ty, trait_ref: None, assoc }`:
-    // - `self_ty`: the outer type (lowered from `owner`)
-    // - `trait_ref`: `None` — C# dot-qualified paths have no `as Trait` disambiguation
-    // - `assoc`: the simple name of the inner type (arity stripped)
+    //
+    // Two distinct cases:
+    //
+    // 1. The nested type's OWN fully-qualified metadata name is itself
+    //    declared in this extraction (`name_to_doc_id` has it). It is then
+    //    exactly as resolvable as any other same-package named type, and
+    //    routing it through `QualifiedPath` instead of `Type::Nominal` would
+    //    be a strictly lossier encoding of a fact this extraction can state
+    //    precisely — a `Ref::Intro` degraded to an unlinked path. So this
+    //    takes the same generic-application path `lower_named`'s tail below
+    //    takes for a non-nested name, discarding neither the resolution nor
+    //    the type arguments (`Inner<string>`'s `string`).
+    // 2. It is not declared here (cross-package, or genuinely unresolvable).
+    //    `Type::QualifiedPath { self_ty, trait_ref: None, assoc }` preserves
+    //    both the outer type and the inner member's name:
+    //    - `self_ty`: the outer type (lowered from `owner`)
+    //    - `trait_ref`: `None` — C# dot-qualified paths have no `as Trait`
+    //      disambiguation; that slot exists for Rust's `<T as Trait>::Assoc`
+    //    - `assoc`: the simple name of the inner type (arity stripped)
+    //    Its own type arguments must still survive here too — this used to
+    //    return bare, discarding `args` outright regardless of which case
+    //    applied — so this wraps in `Type::Apply` exactly like case 1 does.
     if let Some(owner_sig) = owner {
+        if let Some(doc_id) = name_to_doc_id.get(name) {
+            let r: Ref<Record> = out.refer(doc_id.clone());
+            let base = Type::Nominal(r.into_raw());
+            return if args.is_empty() {
+                base
+            } else {
+                let type_args: Box<[Type]> = args
+                    .iter()
+                    .map(|a| lower_type_depth(a, name_to_doc_id, out, depth + 1))
+                    .collect();
+                Type::Apply {
+                    base: Box::new(base),
+                    args: type_args,
+                }
+            };
+        }
+
         let self_ty = lower_type_depth(owner_sig, name_to_doc_id, out, depth + 1);
         let assoc = simple_name(name); // strips arity backticks, takes last segment
-        return Type::QualifiedPath {
+        let qualified = Type::QualifiedPath {
             self_ty: Box::new(self_ty),
             trait_ref: None,
             assoc,
+        };
+        return if args.is_empty() {
+            qualified
+        } else {
+            let type_args: Box<[Type]> = args
+                .iter()
+                .map(|a| lower_type_depth(a, name_to_doc_id, out, depth + 1))
+                .collect();
+            Type::Apply {
+                base: Box::new(qualified),
+                args: type_args,
+            }
         };
     }
 
@@ -337,13 +400,45 @@ fn lower_named(
 /// working hyperlink to a symbol that does not exist, which is strictly worse
 /// than an honest un-linked name.
 ///
+/// # BCL types are not a NuGet package
+///
+/// `System.*` ships with the .NET runtime itself; no NuGet package publishes
+/// `System.IO.Stream`. Tagging it `ForeignOrigin::Namespace { ecosystem:
+/// "nuget", .. }` would claim a publisher that does not exist and would
+/// collide, in a resolver's eyes, with a real NuGet package that happened to
+/// share the `System` top-level namespace. So a `System`-rooted FQN routes to
+/// a distinct `"dotnet-bcl"` ecosystem instead — same `Namespace` precision,
+/// but a tag a resolver can key differently from actual NuGet lookups. This
+/// mirrors the Python producer's `"python-stdlib"` vs `"pypi"` split (see
+/// `crate::python::types::lower_nominal`) and Go's `"go-stdlib"` vs `"go"`.
+///
+/// # The global namespace is not the empty namespace
+///
+/// A type declared with no `namespace` at all (C#'s global namespace) has
+/// `bare.rfind('.')` return `None`. Reporting `namespace: ""` in that case
+/// would silently claim an empty-but-present namespace — a different (false)
+/// fact from "there is none". `<global>` names the gap instead of erasing it
+/// into a blank string a resolver could mistake for real data.
+///
 /// [`ForeignOrigin::Namespace`]: nudox_ir::foreign::ForeignOrigin::Namespace
-fn csharp_foreign_key(fqn: &str) -> ForeignKey {
+///
+/// `pub(crate)` (not private) so `lower.rs`'s post-pass ref-edging of
+/// attribute / explicit-interface / extension-receiver FQNs (CS4/CS5/CS6)
+/// builds the identical cross-package key a same-name `TypeSig::Named` would.
+pub(crate) fn csharp_foreign_key(fqn: &str) -> ForeignKey {
     let bare = strip_arity(fqn);
-    let namespace = bare.rfind('.').map_or("", |i| &bare[..i]);
+    let namespace = bare.rfind('.').map(|i| &bare[..i]);
+
+    let is_bcl = namespace.is_some_and(|ns| ns == "System" || ns.starts_with("System."));
+    let ecosystem = if is_bcl {
+        EcosystemId::new("dotnet-bcl")
+    } else {
+        EcosystemId::new("nuget")
+    };
+
     ForeignKey::in_namespace(
-        EcosystemId::new("nuget"),
-        namespace,
+        ecosystem,
+        namespace.unwrap_or("<global>"),
         fqn,
         // The display name drops the namespace and the arity marker: a reader
         // wants `List`, not ``System.Collections.Generic.List`1``.
@@ -537,7 +632,14 @@ pub fn lower_type_params(
         // bounds with nominal types resolved via the name map.
         for bound_sig in &c.types {
             let bound_ty = lower_type(bound_sig, name_to_doc_id, out);
-            let target = Type::Primitive(Primitive::Builtin(tp.name.clone()));
+            // The predicate's target is a USE of the type parameter (the `T`
+            // in `where T : IFoo`) — the exact role `TypeSig::TypeParam`
+            // lowers to `Type::TypeVar` above. `Primitive::Builtin` is the
+            // marker `synthetic_where` uses for its *keyword* bounds
+            // (`csharp:class`, `csharp:new()`, …), which name no real type;
+            // reusing it here for the target mislabels an actual type-var use
+            // as an unresolvable builtin.
+            let target = Type::TypeVar(tp.name.clone());
             wheres.push(WherePred {
                 target,
                 bounds: Box::new([bound_ty]),
@@ -549,9 +651,14 @@ pub fn lower_type_params(
 }
 
 /// A synthetic `WherePred` for a special C# constraint keyword.
+///
+/// `target` is a genuine use of the type parameter (`Type::TypeVar`, same as
+/// every other reference to `T`); only `bounds` is the synthetic
+/// `Primitive::Builtin("csharp:…")` marker, since the keyword itself
+/// (`class`, `new()`, …) names no real type.
 fn synthetic_where(param_name: &str, keyword: &str) -> WherePred {
     WherePred {
-        target: Type::Primitive(Primitive::Builtin(param_name.to_string())),
+        target: Type::TypeVar(param_name.to_string()),
         bounds: Box::new([Type::Primitive(Primitive::Builtin(keyword.to_string()))]),
     }
 }
@@ -924,6 +1031,385 @@ mod tests {
                         && matches!(**inner, Type::Slice(_))
             ),
             "rectangular rank must survive lowering, got {array:?}"
+        );
+    }
+
+    // ── CS1/CS2: nested type of a generic outer ──────────────────────────────
+
+    /// CS1 (RED before the fix): `Outer<int>.Inner<string>` must keep its OWN
+    /// type argument (`string`) even when it is cross-package and falls
+    /// through to the `QualifiedPath` encoding. The old code returned the
+    /// bare `QualifiedPath` the moment `owner: Some(..)` matched, discarding
+    /// `args` outright regardless of whether the nested type resolved.
+    #[test]
+    fn nested_generic_type_keeps_its_own_type_arguments() {
+        let mut sink = make_sink();
+        // Empty map: both the outer and the nested type are cross-package, so
+        // this exercises the `QualifiedPath` fallback branch specifically.
+        let names = HashMap::new();
+
+        let outer = TypeSig::Named {
+            name: "Outer`1".to_owned(),
+            args: vec![TypeSig::Named {
+                name: "System.Int32".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Struct".to_owned(),
+            }],
+            owner: None,
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+        let inner = TypeSig::Named {
+            name: "Outer`1.Inner`1".to_owned(),
+            args: vec![TypeSig::Named {
+                name: "System.String".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            }],
+            owner: Some(Box::new(outer)),
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let lowered = lower_type(&inner, &names, &mut sink);
+        let Type::Apply { base, args } = &lowered else {
+            panic!(
+                "Outer<int>.Inner<string> must keep its own type argument via \
+                 Type::Apply, got {lowered:?} (args silently dropped)"
+            );
+        };
+        assert!(
+            matches!(base.as_ref(), Type::QualifiedPath { .. }),
+            "the cross-package base must still be QualifiedPath, got {base:?}"
+        );
+        assert_eq!(args.len(), 1, "the `string` type argument must survive");
+        assert_eq!(
+            args[0],
+            Type::Primitive(Primitive::Str),
+            "the surviving argument must be `string`, not erased"
+        );
+    }
+
+    /// CS2 (RED before the fix): when the NESTED type's own metadata FQN is
+    /// itself declared in this extraction, it must resolve like any other
+    /// same-package named type — `Type::Nominal` over a `Ref::Local`
+    /// (pre-seal `Intro`) — never a `QualifiedPath`, which the old code
+    /// returned unconditionally whenever `owner` was `Some(..)` regardless of
+    /// whether the nested type itself was resolvable.
+    #[test]
+    fn same_package_nested_type_of_generic_outer_resolves_to_nominal_not_qualified_path() {
+        let mut sink = make_sink();
+        let mut names = HashMap::new();
+        names.insert(
+            "MyLib.Dictionary`2.KeyCollection".to_owned(),
+            "T:MyLib.Dictionary`2.KeyCollection".to_owned(),
+        );
+
+        let outer = TypeSig::Named {
+            name: "MyLib.Dictionary`2".to_owned(),
+            args: vec![],
+            owner: None,
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+        let sig = TypeSig::Named {
+            name: "MyLib.Dictionary`2.KeyCollection".to_owned(),
+            args: vec![],
+            owner: Some(Box::new(outer)),
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let lowered = lower_type(&sig, &names, &mut sink);
+        let Type::Nominal(raw) = &lowered else {
+            panic!(
+                "a same-package nested type must resolve to Type::Nominal, \
+                 got {lowered:?} (a dead QualifiedPath, not a real resolution)"
+            );
+        };
+        assert!(
+            raw.as_local().is_some(),
+            "a same-package nested type must be Ref::Local (pre-seal Intro), \
+             got {raw:?}"
+        );
+        assert!(
+            raw.as_foreign().is_none(),
+            "a same-package nested type must not be Ref::Foreign"
+        );
+    }
+
+    // ── CS7: bare vs. qualified `Error` names ─────────────────────────────────
+
+    /// CS7 (RED before the fix): a bare (undotted) unresolvable name is a
+    /// within-package name-resolution gap (`UnresolvedLocalName`), while a
+    /// dotted/qualified one genuinely names something outside this
+    /// extraction (`UnresolvedExternal`). The old code always produced
+    /// `UnresolvedExternal`, collapsing the two distinct facts onto one.
+    #[test]
+    fn bare_error_name_is_local_qualified_error_name_is_external() {
+        use nudox_ir::kinds::UnknownType;
+        let mut sink = make_sink();
+        let names = HashMap::new();
+
+        let bare = lower_type(
+            &TypeSig::Error {
+                name: "Widget".to_owned(),
+            },
+            &names,
+            &mut sink,
+        );
+        assert_eq!(
+            bare,
+            Type::Unknown(UnknownType::UnresolvedLocalName {
+                name: "Widget".to_owned()
+            }),
+            "a bare unresolvable name must be UnresolvedLocalName, got {bare:?}"
+        );
+
+        let qualified = lower_type(
+            &TypeSig::Error {
+                name: "Foreign.Pkg.Thing".to_owned(),
+            },
+            &names,
+            &mut sink,
+        );
+        assert_eq!(
+            qualified,
+            Type::Unknown(UnknownType::UnresolvedExternal {
+                name: "Foreign.Pkg.Thing".to_owned()
+            }),
+            "a qualified unresolvable name must stay UnresolvedExternal, got {qualified:?}"
+        );
+
+        assert_ne!(
+            bare, qualified,
+            "the two must not share an encoding — that is the whole point"
+        );
+    }
+
+    // ── CS8: where-clause type-param target must be a TypeVar use ────────────
+
+    /// CS8 (RED before the fix): `where T : IComparable` must lower `T`'s
+    /// predicate `target` to `Type::TypeVar("T")` — the same representation
+    /// every other use of `T` gets — not `Primitive::Builtin("T")`, which
+    /// mislabels a real type-parameter use as an unresolvable builtin name.
+    /// The bound itself (`IComparable`) must still resolve normally
+    /// (`Ref::Foreign` here, since it is cross-package).
+    #[test]
+    fn where_clause_target_is_typevar_not_builtin() {
+        let mut sink = make_sink();
+        let names = HashMap::new();
+
+        let type_params = vec![schema::TypeParam {
+            name: "T".to_owned(),
+            variance: "none".to_owned(),
+            constraints: schema::TypeParamConstraints {
+                reference_type: false,
+                value_type: false,
+                not_null: false,
+                unmanaged: false,
+                constructor: false,
+                allows_ref_like: false,
+                types: vec![TypeSig::Named {
+                    name: "System.IComparable".to_owned(),
+                    args: vec![],
+                    owner: None,
+                    nullable: String::new(),
+                    type_kind: "Interface".to_owned(),
+                }],
+            },
+        }];
+
+        let (_, wheres) = lower_type_params(&type_params, &names, &mut sink);
+        assert_eq!(wheres.len(), 1, "one explicit type constraint");
+        assert_eq!(
+            wheres[0].target,
+            Type::TypeVar("T".to_owned()),
+            "the predicate's target must be a TypeVar use of `T`, got {:?}",
+            wheres[0].target
+        );
+        assert!(
+            matches!(wheres[0].bounds[0], Type::Nominal(_)),
+            "the bound (IComparable) must still resolve to a nominal reference, \
+             got {:?}",
+            wheres[0].bounds[0]
+        );
+    }
+
+    // ── CS9 (guard, no code): same-package Intro, including a generic base ───
+
+    /// A same-package generic type (`MyLib.Box<int>` where `Box` is declared
+    /// in this extraction) must resolve its base to `Ref::Local` (pre-seal
+    /// Intro) and never `Ref::Foreign` — locks the existing-correct routing
+    /// in `lower_named`'s tail.
+    #[test]
+    fn same_package_generic_base_resolves_to_intro_not_foreign() {
+        let mut sink = make_sink();
+        let mut names = HashMap::new();
+        names.insert("MyLib.Box`1".to_owned(), "T:MyLib.Box`1".to_owned());
+
+        let sig = TypeSig::Named {
+            name: "MyLib.Box`1".to_owned(),
+            args: vec![TypeSig::Named {
+                name: "System.Int32".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Struct".to_owned(),
+            }],
+            owner: None,
+            nullable: String::new(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let lowered = lower_type(&sig, &names, &mut sink);
+        let Type::Apply { base, args } = &lowered else {
+            panic!("a generic same-package type must lower to Type::Apply, got {lowered:?}");
+        };
+        let Type::Nominal(raw) = base.as_ref() else {
+            panic!("the base of the application must be Type::Nominal, got {base:?}");
+        };
+        assert!(
+            raw.as_local().is_some(),
+            "a same-package generic base must be Ref::Local (pre-seal Intro), got {raw:?}"
+        );
+        assert!(
+            raw.as_foreign().is_none(),
+            "a same-package generic base must not be Ref::Foreign"
+        );
+        assert_eq!(args.len(), 1, "the `int` type argument must survive");
+    }
+
+    // ── CS11 (guard, no code): nullable wrapper preserves the inner Intro ────
+
+    /// `Widget?` (annotated-nullable reference to a same-package type) must
+    /// preserve `Ref::Local` (pre-seal Intro) on the inner `Widget`, not just
+    /// on some erased/foreign placeholder — locks `apply_nullable`'s
+    /// `Union([T, Never])` wrapping against silently degrading `T`.
+    #[test]
+    fn nullable_wrapper_preserves_inner_same_package_intro() {
+        let mut sink = make_sink();
+        let mut names = HashMap::new();
+        names.insert("MyLib.Widget".to_owned(), "T:MyLib.Widget".to_owned());
+
+        let sig = TypeSig::Named {
+            name: "MyLib.Widget".to_owned(),
+            args: vec![],
+            owner: None,
+            nullable: "annotated".to_owned(),
+            type_kind: "Class".to_owned(),
+        };
+
+        let lowered = lower_type(&sig, &names, &mut sink);
+        let Type::Union(members) = &lowered else {
+            panic!("`Widget?` must lower to Type::Union([T, Never]), got {lowered:?}");
+        };
+        assert_eq!(members.len(), 2);
+        let Type::Nominal(raw) = &members[0] else {
+            panic!("the inner member must be Type::Nominal, got {:?}", members[0]);
+        };
+        assert!(
+            raw.as_local().is_some(),
+            "the inner Widget must stay Ref::Local (pre-seal Intro) under the \
+             nullable wrapper, got {raw:?}"
+        );
+        assert_eq!(members[1], Type::Never);
+    }
+
+    // ── CS10: BCL ecosystem tagging + honest global-namespace origin ─────────
+
+    /// CS10 (RED before the fix): a BCL type (`System.*`) must carry a
+    /// framework ecosystem distinct from `"nuget"` — no NuGet package
+    /// publishes it — while a genuine third-party type keeps `"nuget"`. A
+    /// global-namespace type (no `.` in its FQN at all) must report a
+    /// non-empty, honest namespace label rather than silently reporting `""`.
+    #[test]
+    fn bcl_type_is_tagged_a_distinct_ecosystem_from_nuget() {
+        use nudox_ir::foreign::ForeignOrigin;
+        let mut sink = make_sink();
+        let names = HashMap::new();
+
+        let stream = lower_type(
+            &TypeSig::Named {
+                name: "System.IO.Stream".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            },
+            &names,
+            &mut sink,
+        );
+        let Type::Nominal(raw) = stream else {
+            panic!("expected Type::Nominal");
+        };
+        let (key, _) = raw
+            .as_foreign()
+            .expect("System.IO.Stream is cross-package");
+        let ForeignOrigin::Namespace { ecosystem, namespace } = &key.origin else {
+            panic!("expected ForeignOrigin::Namespace, got {:?}", key.origin);
+        };
+        assert_ne!(
+            ecosystem.as_str(),
+            "nuget",
+            "the .NET BCL does not ship as a NuGet package"
+        );
+        assert_eq!(namespace.as_ref(), "System.IO");
+
+        // A genuine third-party NuGet type keeps the real "nuget" ecosystem —
+        // the fix must not overclaim every namespace as framework-owned.
+        let json_serializer = lower_type(
+            &TypeSig::Named {
+                name: "Newtonsoft.Json.JsonSerializer".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            },
+            &names,
+            &mut sink,
+        );
+        let Type::Nominal(raw2) = json_serializer else {
+            panic!("expected Type::Nominal");
+        };
+        let (key2, _) = raw2.as_foreign().expect("cross-package");
+        let ForeignOrigin::Namespace { ecosystem: eco2, .. } = &key2.origin else {
+            panic!("expected ForeignOrigin::Namespace, got {:?}", key2.origin);
+        };
+        assert_eq!(
+            eco2.as_str(),
+            "nuget",
+            "a genuine third-party type must keep the real \"nuget\" ecosystem"
+        );
+
+        // Global-namespace type (no `.` at all): must not silently report an
+        // empty namespace.
+        let global = lower_type(
+            &TypeSig::Named {
+                name: "GlobalWidget".to_owned(),
+                args: vec![],
+                owner: None,
+                nullable: String::new(),
+                type_kind: "Class".to_owned(),
+            },
+            &names,
+            &mut sink,
+        );
+        let Type::Nominal(raw3) = global else {
+            panic!("expected Type::Nominal");
+        };
+        let (key3, _) = raw3.as_foreign().expect("cross-package");
+        let ForeignOrigin::Namespace { namespace: ns3, .. } = &key3.origin else {
+            panic!("expected ForeignOrigin::Namespace, got {:?}", key3.origin);
+        };
+        assert!(
+            !ns3.is_empty(),
+            "a global-namespace type must have an honest non-empty origin, \
+             got an empty namespace string"
         );
     }
 }

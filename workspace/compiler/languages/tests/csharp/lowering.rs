@@ -1943,3 +1943,503 @@ fn out_parameter_is_not_the_same_attribute_as_ref_parameter() {
          both were {out_attrs:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CS3/CS4/CS5/CS6: reference-hardening — occurrences the old lowering dropped
+// ---------------------------------------------------------------------------
+//
+// These fixtures are asserted post-seal, not just post-`lower()`: an
+// `Occurrence` lives on `IrPackage`'s private pending-fact list until
+// `IrPackage::seal` mints `IntroId`s and resolves it into
+// `SealOutcome::occurrences`. `Unlinked` is the correct resolver for a
+// hermetic, single-package fixture — "nothing has been sealed alongside this
+// package" is the honest fact here, and every occurrence exercised below
+// targets an entry *in this same package*, which resolves through the local
+// `intro_of` map regardless of the (foreign) import resolver.
+
+use nudox_ir::{
+    apply::PristineIntroTable,
+    change::{EcosystemId, IntroId, PackageLineageId, PackageName, StableRef},
+    foreign::Unlinked,
+    package::SealOutcome,
+    vocab::ReferenceKind,
+};
+
+fn hardening_lineage() -> PackageLineageId {
+    PackageLineageId::new(EcosystemId::new("nuget"), PackageName::new("test-hardening"))
+}
+
+/// The `IntroId` of the (unique, by name) entry called `name`.
+fn hardening_intro(table: &PristineIntroTable, name: &str) -> IntroId {
+    table
+        .iter()
+        .find(|(_, e)| e.sym().name == name)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("entry `{name}` must be present"))
+}
+
+/// Whether `outcome` recorded an occurrence `owner --kind--> target`, where
+/// both `owner`/`target` are entries *in this same sealed package*.
+fn has_local_occurrence(
+    outcome: &SealOutcome,
+    owner: IntroId,
+    target: IntroId,
+    lineage: &PackageLineageId,
+    kind: ReferenceKind,
+) -> bool {
+    let expected_target = StableRef::new(lineage.clone(), target);
+    outcome
+        .occurrences
+        .iter()
+        .any(|(o, occ)| *o == owner && occ.target == expected_target && occ.kind == kind)
+}
+
+/// CS3: a call inside a CONSTRUCTOR body must be recorded as an occurrence.
+/// Previously `method_starts` was built only from `decl.members.methods`, so
+/// `M:CtorRefLib.Widget.#ctor` never got an entry in that map and every
+/// `references` row whose `owner` was the constructor was silently dropped
+/// (`method_starts.get(&reference.owner)` missed, `continue`d).
+const CTOR_CALL_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "CtorRefLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:CtorRefLib.Widget",
+      "qualifiedName": "CtorRefLib.Widget",
+      "simpleName": "Widget",
+      "kind": "CLASS",
+      "namespace": "CtorRefLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [
+          {
+            "name": ".ctor",
+            "docId": "M:CtorRefLib.Widget.#ctor",
+            "methodKind": "Constructor",
+            "accessibility": "public",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [],
+            "returnType": null,
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null,
+            "location": { "file": "src/Widget.cs", "start": 100, "end": 140, "startLine": 5, "startColumn": 4, "endLine": 5, "endColumn": 44 }
+          }
+        ],
+        "methods": [
+          {
+            "name": "Helper",
+            "docId": "M:CtorRefLib.Widget.Helper",
+            "methodKind": "Ordinary",
+            "accessibility": "private",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [],
+            "returnType": { "kind": "named", "name": "System.Void", "args": [], "owner": null, "nullable": "none", "typeKind": "Void" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": null,
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ],
+  "references": [
+    {
+      "owner": "M:CtorRefLib.Widget.#ctor",
+      "target": "M:CtorRefLib.Widget.Helper",
+      "file": "src/Widget.cs",
+      "start": 110,
+      "end": 116
+    }
+  ]
+}"#;
+
+#[test]
+fn ctor_body_call_is_recorded_as_an_occurrence() {
+    let extraction =
+        parse_extraction(CTOR_CALL_FIXTURE.as_bytes()).expect("ctor-call fixture must parse");
+    let pkg = lower(&extraction).expect("ctor-call fixture must lower");
+
+    let lineage = hardening_lineage();
+    let outcome = pkg.seal(&lineage, &Unlinked);
+
+    let ctor = hardening_intro(&outcome.table, ".ctor");
+    let helper = hardening_intro(&outcome.table, "Helper");
+
+    assert!(
+        has_local_occurrence(
+            &outcome,
+            ctor,
+            helper,
+            &lineage,
+            ReferenceKind::FunctionCall
+        ),
+        "a call from inside a constructor body to `Helper` must be recorded \
+         as a FunctionCall occurrence ctor -> Helper; occurrences were {:?}",
+        outcome.occurrences
+    );
+}
+
+/// CS4: `[MyValidation]` on a type declaration names a real, same-package
+/// attribute class. Previously `render_attrs` flattened it to opaque display
+/// text only (`AttrTok`), with no ref-edge at all — a reader could not
+/// navigate from `Widget` to `MyValidationAttribute`.
+const ATTRIBUTE_APPLICATION_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "AttrRefLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:AttrRefLib.MyValidationAttribute",
+      "qualifiedName": "AttrRefLib.MyValidationAttribute",
+      "simpleName": "MyValidationAttribute",
+      "kind": "CLASS",
+      "namespace": "AttrRefLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:AttrRefLib.Widget",
+      "qualifiedName": "AttrRefLib.Widget",
+      "simpleName": "Widget",
+      "kind": "CLASS",
+      "namespace": "AttrRefLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [ { "type": "AttrRefLib.MyValidationAttribute", "args": [], "named": {} } ],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    }
+  ]
+}"#;
+
+#[test]
+fn attribute_application_is_ref_edged_to_the_attribute_class() {
+    let extraction = parse_extraction(ATTRIBUTE_APPLICATION_FIXTURE.as_bytes())
+        .expect("attribute fixture must parse");
+    let pkg = lower(&extraction).expect("attribute fixture must lower");
+
+    let lineage = hardening_lineage();
+    let outcome = pkg.seal(&lineage, &Unlinked);
+
+    let widget = hardening_intro(&outcome.table, "Widget");
+    let attr_class = hardening_intro(&outcome.table, "MyValidationAttribute");
+
+    assert!(
+        has_local_occurrence(
+            &outcome,
+            widget,
+            attr_class,
+            &lineage,
+            ReferenceKind::TypeReference
+        ),
+        "`[MyValidation]` on Widget must be ref-edged to MyValidationAttribute \
+         as a TypeReference occurrence, not left as display text only; \
+         occurrences were {:?}",
+        outcome.occurrences
+    );
+}
+
+/// CS5: an explicitly-implemented interface method (`void IFoo.Bar() {}`)
+/// names a real, same-package interface. Previously `m.explicit_interface`
+/// only fed `method_display_name`/doc-note prose, with no ref-edge from the
+/// implementing method to the interface it explicitly implements.
+const EXPLICIT_INTERFACE_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "ExplicitIfaceLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:ExplicitIfaceLib.IFoo",
+      "qualifiedName": "ExplicitIfaceLib.IFoo",
+      "simpleName": "IFoo",
+      "kind": "INTERFACE",
+      "namespace": "ExplicitIfaceLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:ExplicitIfaceLib.Impl",
+      "qualifiedName": "ExplicitIfaceLib.Impl",
+      "simpleName": "Impl",
+      "kind": "CLASS",
+      "namespace": "ExplicitIfaceLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [
+        { "kind": "named", "name": "ExplicitIfaceLib.IFoo", "args": [], "owner": null, "nullable": "none", "typeKind": "Interface" }
+      ],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": {
+        "fields": [],
+        "properties": [],
+        "events": [],
+        "constructors": [],
+        "methods": [
+          {
+            "name": "Bar",
+            "docId": "M:ExplicitIfaceLib.Impl.ExplicitIfaceLib#IFoo#Bar",
+            "methodKind": "ExplicitInterfaceImplementation",
+            "accessibility": "private",
+            "isStatic": false,
+            "isAbstract": false,
+            "isVirtual": false,
+            "isOverride": false,
+            "isSealed": false,
+            "isExtern": false,
+            "isAsync": false,
+            "isIterator": false,
+            "isExtensionMethod": false,
+            "isReadonly": false,
+            "typeParams": [],
+            "parameters": [],
+            "returnType": { "kind": "named", "name": "System.Void", "args": [], "owner": null, "nullable": "none", "typeKind": "Void" },
+            "returnsByRef": false,
+            "returnsByRefReadonly": false,
+            "explicitInterface": "ExplicitIfaceLib.IFoo",
+            "operatorKind": null,
+            "attributes": [],
+            "deprecated": null,
+            "hidden": false,
+            "doc": null,
+            "docInherited": false,
+            "docLinks": null
+          }
+        ],
+        "operators": [],
+        "conversions": [],
+        "indexers": [],
+        "nested": []
+      }
+    }
+  ]
+}"#;
+
+#[test]
+fn explicit_interface_implementation_is_ref_edged_to_the_interface() {
+    let extraction = parse_extraction(EXPLICIT_INTERFACE_FIXTURE.as_bytes())
+        .expect("explicit-interface fixture must parse");
+    let pkg = lower(&extraction).expect("explicit-interface fixture must lower");
+
+    let lineage = hardening_lineage();
+    let outcome = pkg.seal(&lineage, &Unlinked);
+
+    // `method_display_name` renders the explicit-impl method as `IFoo.Bar`.
+    let method = hardening_intro(&outcome.table, "IFoo.Bar");
+    let iface = hardening_intro(&outcome.table, "IFoo");
+
+    assert!(
+        has_local_occurrence(&outcome, method, iface, &lineage, ReferenceKind::TypeReference),
+        "`void IFoo.Bar() {{}}`'s explicit interface must be ref-edged to \
+         IFoo as a TypeReference occurrence, not left as display text only; \
+         occurrences were {:?}",
+        outcome.occurrences
+    );
+}
+
+/// CS6: a C# 14 extension block's receiver type names a real, same-package
+/// type. Previously `decl.extension_receiver` only fed a doc-note
+/// (`types::type_display`), with no ref-edge from the extension block to the
+/// type it extends.
+const EXTENSION_RECEIVER_FIXTURE: &str = r#"{
+  "format": 1,
+  "dotnetVersion": "10.0",
+  "roslyn": "5.6.0",
+  "mode": "source",
+  "assembly": { "name": "ExtRefLib", "version": "1.0.0", "tfm": "net10.0" },
+  "diagnostics": { "errorTypeCount": 0, "errorCount": 0 },
+  "namespaces": [],
+  "types": [
+    {
+      "docId": "T:ExtRefLib.Widget",
+      "qualifiedName": "ExtRefLib.Widget",
+      "simpleName": "Widget",
+      "kind": "CLASS",
+      "namespace": "ExtRefLib",
+      "enclosing": null,
+      "modifiers": ["public"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": null,
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    },
+    {
+      "docId": "T:ExtRefLib.WidgetExtensions",
+      "qualifiedName": "ExtRefLib.WidgetExtensions",
+      "simpleName": "WidgetExtensions",
+      "kind": "CLASS",
+      "namespace": "ExtRefLib",
+      "enclosing": null,
+      "modifiers": ["public", "static"],
+      "typeParams": [],
+      "baseType": null,
+      "interfaces": [],
+      "enumUnderlying": null,
+      "delegateSig": null,
+      "attributes": [],
+      "deprecated": null,
+      "hidden": false,
+      "forwarded": false,
+      "doc": null,
+      "docInherited": false,
+      "docLinks": null,
+      "extensionReceiver": { "kind": "named", "name": "ExtRefLib.Widget", "args": [], "owner": null, "nullable": "none", "typeKind": "Class" },
+      "members": { "fields": [], "properties": [], "events": [], "constructors": [], "methods": [], "operators": [], "conversions": [], "indexers": [], "nested": [] }
+    }
+  ]
+}"#;
+
+#[test]
+fn extension_receiver_is_ref_edged_to_the_receiver_type() {
+    let extraction = parse_extraction(EXTENSION_RECEIVER_FIXTURE.as_bytes())
+        .expect("extension-receiver fixture must parse");
+    let pkg = lower(&extraction).expect("extension-receiver fixture must lower");
+
+    let lineage = hardening_lineage();
+    let outcome = pkg.seal(&lineage, &Unlinked);
+
+    let extensions = hardening_intro(&outcome.table, "WidgetExtensions");
+    let widget = hardening_intro(&outcome.table, "Widget");
+
+    assert!(
+        has_local_occurrence(
+            &outcome,
+            extensions,
+            widget,
+            &lineage,
+            ReferenceKind::TypeReference
+        ),
+        "the extension block's receiver must be ref-edged to Widget as a \
+         TypeReference occurrence, not left as display text only; \
+         occurrences were {:?}",
+        outcome.occurrences
+    );
+}

@@ -113,9 +113,21 @@ pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
         lower_type_decl(decl, &name_to_doc_id, out);
     }
 
+    // Every call-owning member kind, not just ordinary methods: a call inside
+    // a constructor body (`M:N.T.#ctor`), an operator body (`op_Addition`),
+    // or a conversion body (`op_Implicit`) is exactly as real a call-site as
+    // one inside an ordinary method — `decl.members.methods` alone silently
+    // dropped every occurrence recorded against those three member kinds.
     let mut method_starts = HashMap::new();
     for decl in &extraction.types {
-        for method in &decl.members.methods {
+        let call_owning_members = decl
+            .members
+            .methods
+            .iter()
+            .chain(&decl.members.constructors)
+            .chain(&decl.members.operators)
+            .chain(&decl.members.conversions);
+        for method in call_owning_members {
             if let Some(location) = &method.location {
                 method_starts.insert(
                     method.doc_id.clone(),
@@ -144,6 +156,105 @@ pub fn lower_extraction(extraction: &Extraction, out: &mut Lowering<String>) {
             Confidence::Oracle,
             RelSpan::new(start, end),
         );
+    }
+
+    // Ref-edge FQNs that were previously kept as display text only:
+    // attribute application (CS4), explicit-interface-implementation (CS5),
+    // and extension-block receiver (CS6). Must run AFTER every type/member is
+    // declared above — `Lowering::record_occurrence` requires both owner and
+    // target to already hold a declared slot at call time (unlike `refer`,
+    // which is order-independent), exactly like the call-reference loop
+    // above.
+    for decl in &extraction.types {
+        if decl.doc_id.is_empty() {
+            continue;
+        }
+
+        // CS4: `[MyValidation]` on a type declaration names a real attribute
+        // class (`N.MyAttrAttribute`). `render_attrs` (used for this and for
+        // every member's attributes) renders it to an opaque `AttrTok`
+        // string with no structural slot for a `Ref` — see the Java
+        // producer's `annotation_attrs` doc for why every language flattens
+        // attribute arguments this way. Ref-edging the *type name itself* as
+        // a `TypeReference` occurrence is additive, not a replacement: it
+        // costs nothing the string rendering already had.
+        for attr in &decl.attributes {
+            record_fqn_occurrence(&decl.doc_id, &attr.ty, &name_to_doc_id, out);
+        }
+
+        // CS6: a C# 14 extension block's receiver type
+        // (`extension(Widget w) { ... }`) is a full `TypeSig`, but only its
+        // named FQN (when it has one — arrays/tuples/etc. have none) is
+        // ref-edge-able through this owner+target occurrence shape; the
+        // structural form is already carried wherever the receiver itself is
+        // lowered via `types::lower_type`.
+        if let Some(receiver) = &decl.extension_receiver
+            && let Some(name) = receiver.named_name()
+        {
+            record_fqn_occurrence(&decl.doc_id, name, &name_to_doc_id, out);
+        }
+
+        // CS5: explicit interface implementation (`void IFoo.Bar() {}`) is a
+        // *method*-level fact — `m.explicit_interface` — distinct from the
+        // type-level `decl.interfaces` list `lower_class_like`/
+        // `lower_interface` already ref-edge into `Record`/`Trait::supers`.
+        // Every call-owning member category can carry it (an explicitly
+        // implemented interface method is still `Ordinary`, never a
+        // constructor/operator/conversion in practice, but iterating all
+        // four uniformly costs nothing: `record_occurrence` no-ops on an
+        // owner id nothing declared).
+        let members = decl
+            .members
+            .methods
+            .iter()
+            .chain(&decl.members.constructors)
+            .chain(&decl.members.operators)
+            .chain(&decl.members.conversions);
+        for m in members {
+            if let Some(iface) = &m.explicit_interface {
+                let method_id = method_doc_id(m, &decl.doc_id);
+                record_fqn_occurrence(&method_id, iface, &name_to_doc_id, out);
+            }
+        }
+    }
+}
+
+/// Ref-edge a bare metadata FQN as a `TypeReference` occurrence from `owner`:
+/// `Ref::Intro` (via `record_occurrence`) when `fqn` is declared in this same
+/// extraction, `Ref::Foreign` (via `record_foreign_occurrence`, the same
+/// `ForeignKey` a `TypeSig::Named` use of the same name would build) when it
+/// is not.
+///
+/// No per-token span exists for an attribute name, an explicit-interface
+/// name, or an extension receiver's name the way a call reference has one —
+/// none of `schema::Attr`/`Method::explicit_interface`/`TypeSig` carries a
+/// dedicated `Location` for just the name. `RelSpan::new(0, 0)` (zero-width,
+/// at the owner's own span start) is the same "closest honest answer" choice
+/// `lower_return_param` already makes for the analogous gap on return types.
+fn record_fqn_occurrence(
+    owner: &str,
+    fqn: &str,
+    name_to_doc_id: &HashMap<String, String>,
+    out: &mut Lowering<String>,
+) {
+    if fqn.is_empty() {
+        return;
+    }
+    match name_to_doc_id.get(fqn) {
+        Some(target_doc_id) => out.record_occurrence(
+            owner.to_string(),
+            target_doc_id.clone(),
+            ReferenceKind::TypeReference,
+            Confidence::Oracle,
+            RelSpan::new(0, 0),
+        ),
+        None => out.record_foreign_occurrence(
+            owner.to_string(),
+            types::csharp_foreign_key(fqn),
+            ReferenceKind::TypeReference,
+            Confidence::Oracle,
+            RelSpan::new(0, 0),
+        ),
     }
 }
 

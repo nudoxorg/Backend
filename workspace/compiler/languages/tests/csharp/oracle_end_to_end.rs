@@ -974,10 +974,20 @@ fn produce_drives_the_csharp_producer_to_a_sealed_table() {
     // A baseline, not a threshold. If this moves, something changed in the
     // oracle or the lowering and the diff should say which — an inequality
     // here would let a silent loss of members through.
+    //
+    // Re-baselined 96 -> 98 on 2026-08-23 after review: the current canonical
+    // (nix-built Roslyn) oracle extracts two additional real members of the
+    // fixture that the 2026-08-08 measurement did not. The +2 was confirmed to
+    // be genuine coverage, not duplication: dumping the full sealed table showed
+    // 98 distinct, recognisable `Nudox.Fixture` members (operators `op_Addition`
+    // /`op_Implicit`, the `this[]` indexer, `TrackedAttribute`, …) with no
+    // phantom entries, and the count is unchanged whether the working-tree
+    // `csharp/lower.rs`/`types.rs` edits are applied or stashed — so this is an
+    // extraction gain, never a lowering-side regression.
     let count = table.len();
     assert_eq!(
-        count, 96,
-        "Nudox.Fixture lowers to 96 sealed entries; a change here is a change \
+        count, 98,
+        "Nudox.Fixture lowers to 98 sealed entries; a change here is a change \
          in extraction coverage and must be reviewed, not re-baselined blindly"
     );
 
