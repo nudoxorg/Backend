@@ -1980,163 +1980,13 @@
     }
     {
       ecosystem = "nuget";
-      name = "Newtonsoft.Json";
-      versions = [
-        {
-          version = "13.0.3";
-          hash = "0xrwysmrn4midrjal8g2hr1bbg38iyisl0svamb11arqws4w2bw7";
-        }
-        {
-          version = "12.0.3";
-          hash = "17dzl305d835mzign8r15vkmav2hq8l6g7942dfjpnzr17wwl89x";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "System.Text.Json";
-      versions = [
-        {
-          version = "8.0.2";
-          hash = "1pi1dkypmn34qqspvwfcp1fx78v0nh78dpdyj4rcaa2qch40y15r";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Serilog";
-      versions = [
-        {
-          version = "3.1.1";
-          hash = "0ck51ndmaqflsri7yyw5792z42wsp91038rx2i6vg7z4r35vfvig";
-        }
-        {
-          version = "2.12.0";
-          hash = "0lqxpc96qcjkv9pr1rln7mi4y7n7jdi4vb36c2fv3845w1vswgr4";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
       name = "AutoMapper";
       versions = [
         {
           version = "13.0.1";
-          hash = "0s23aqxpiv86kx83hlfdkjwwg22n3fss24ix0kvm2g9fm9anrffy";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "FluentValidation";
-      versions = [
-        {
-          version = "11.9.0";
-          hash = "1ayjznpgl891625h60hjjkcpl287ppshzihp33hi4gqgznaqwzwy";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Polly";
-      versions = [
-        {
-          version = "8.3.0";
-          hash = "1pmh6iwkzgbxn62k1g1agwzgqdbq8g0yj5wslyxknpri6pyx9y5c";
-        }
-      ];
-    }
-    # The NuGet artifact above is binary-only. Keep a separate, real upstream
-    # source checkout for Roslyn occurrence/reference coverage; it is never
-    # used as a compiled dependency or a fabricated test target.
-    {
-      ecosystem = "nuget";
-      name = "Polly.Source";
-      versions = [
-        {
-          version = "8.3.0";
-          url = "https://github.com/App-vNext/Polly/archive/refs/tags/8.3.0.tar.gz";
-          hash = "06qk0npv3dm4gyzlsz2v16s0ygbp5xr7ka1dy7jmwvxwwasmh47g";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Dapper";
-      versions = [
-        {
-          version = "2.1.35";
-          hash = "1lxkbiip51bspzkh7xmafdcn5dzka08jmqfn5rrfv53v5k4yisnd";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "MediatR";
-      versions = [
-        {
-          version = "12.2.0";
-          hash = "17s76w5c2gd2mvsdpn02dqifa62q7pn98ff0m3v559w7sna2apv7";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Moq";
-      versions = [
-        {
-          version = "4.20.70";
-          hash = "0jzfxvw5ngxld2rfzq1361lqzi3f8shywqd4546ayz7wgga1vq9v";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "xunit";
-      versions = [
-        {
-          version = "2.7.0";
-          hash = "0qs7yaz8qdhi75is7grgdxwxm09j36wv9c2ifyj2xd5jfzvlkc71";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "NUnit";
-      versions = [
-        {
-          version = "4.1.0";
-          hash = "0fj6xwgqaxq3mrai86bklclfmjkzf038mrslwfqf4ignaz9f7g5j";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "StackExchange.Redis";
-      versions = [
-        {
-          version = "2.7.33";
-          hash = "0hdqw5z95b8f5l8zkgpiv45w6snv9hykv48ywr9ab6gzkr3gi64j";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Microsoft.Extensions.DependencyInjection.Abstractions";
-      versions = [
-        {
-          version = "8.0.1";
-          hash = "1wyhpamm1nqjfi3r463dhxljdlr6rm2ax4fvbgq2s0j3jhpdhd4p";
-        }
-      ];
-    }
-    {
-      ecosystem = "nuget";
-      name = "Humanizer.Core";
-      versions = [
-        {
-          version = "2.14.1";
-          hash = "1ai7hgr0qwd7xlqfd92immddyi41j3ag91h3594yzfsgsy6yhyqi";
+          url = "https://github.com/AutoMapper/AutoMapper/archive/refs/tags/v13.0.1.tar.gz";
+          hash = "1xcg076c2mh9f2nm9k7jvvw4zxmgcd6y5x4b5m690j919k5ykx2w";
+          strip = true;
         }
       ];
     }
@@ -2146,37 +1996,57 @@
       versions = [
         {
           version = "30.0.1";
-          hash = "0v01s672zcrd3fjwzh14dihbal3apzyg3dc80k05a90ljk8yh9wl";
+          url = "https://github.com/JoshClose/CsvHelper/archive/refs/tags/30.0.1.tar.gz";
+          hash = "0wjpgkm52qm0ngy2qmdrmlpnd2knjmcvq63b3c13dhvacha6sanq";
+          strip = true;
         }
       ];
     }
     {
       ecosystem = "nuget";
-      name = "RestSharp";
+      name = "Dapper";
       versions = [
         {
-          version = "111.2.0";
-          hash = "1lsphw5f006qnmf5895g9idifdlbyfqq9l4m27mxhm1c05sz6ykn";
+          version = "2.1.35";
+          url = "https://github.com/DapperLib/Dapper/archive/refs/tags/2.1.35.tar.gz";
+          hash = "1zlnrv5dx9b4qsy724c2zj1012gx181h2sa7b0f93pl6nqfxa708";
+          strip = true;
         }
       ];
     }
     {
       ecosystem = "nuget";
-      name = "NLog";
+      name = "FluentValidation";
       versions = [
         {
-          version = "5.2.8";
-          hash = "1z3h20m5rjnizm1jbf5j0vpdc1f373rzzkg6478p1lxv5j385c12";
+          version = "11.9.0";
+          url = "https://github.com/FluentValidation/FluentValidation/archive/refs/tags/11.9.0.tar.gz";
+          hash = "05mmkk9vqsl55n94b464pqizl8xiwl7n7cg54nxlk7x9y8pg5fnb";
+          strip = true;
         }
       ];
     }
     {
       ecosystem = "nuget";
-      name = "Refit";
+      name = "Humanizer.Core";
       versions = [
         {
-          version = "7.0.0";
-          hash = "16v2yvycjyb2828gyrxfgnn7pmkbd8ycrqpjxpghvqvh9as0gipp";
+          version = "2.14.1";
+          url = "https://github.com/Humanizr/Humanizer/archive/refs/tags/v2.14.1.tar.gz";
+          hash = "1l478ivmgjmwcfjqiwppj2ri29zsrwnk5swr54am8pj22wr9sqlx";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "MediatR";
+      versions = [
+        {
+          version = "12.2.0";
+          url = "https://github.com/jbogard/MediatR/archive/refs/tags/v12.2.0.tar.gz";
+          hash = "1awkq0g9nwj2xdv6p2x564vrj9qgfqp0q94wd9vgdc06dz632rm8";
+          strip = true;
         }
       ];
     }
@@ -2186,7 +2056,171 @@
       versions = [
         {
           version = "8.0.0";
-          hash = "0z4jq5prnxyb4p3163yxx35znpd2msjd8hw8ysmv4ah90f5sd9gm";
+          url = "https://github.com/dotnet/runtime/archive/refs/tags/v8.0.0.tar.gz";
+          hash = "140wbalr050g08q1x19dn3w9azq9kdkg8i3yzrsw80rj49ms7v77";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Microsoft.Extensions.DependencyInjection.Abstractions";
+      versions = [
+        {
+          version = "8.0.1";
+          url = "https://github.com/dotnet/runtime/archive/refs/tags/v8.0.1.tar.gz";
+          hash = "0hzwc1fhlvz9v5rncmxzn513i1xrx4kqwzg8bjj98nm2l3n9yxy8";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Moq";
+      versions = [
+        {
+          version = "4.20.70";
+          url = "https://github.com/devlooped/moq/archive/refs/tags/v4.20.70.tar.gz";
+          hash = "0ir2ps4ixks0ajahdmsk93z3ry28shy9wvv6x9s8jgncagixq2gw";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "NLog";
+      versions = [
+        {
+          version = "5.2.8";
+          url = "https://github.com/NLog/NLog/archive/refs/tags/v5.2.8.tar.gz";
+          hash = "0kbh8dg997398vcyzc6qklyn76hbfr7adwckgi791408vd34wzk7";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "NUnit";
+      versions = [
+        {
+          version = "4.1.0";
+          url = "https://github.com/nunit/nunit/archive/refs/tags/4.1.0.tar.gz";
+          hash = "1gali7m87lj1c1m1pwzv08aaz0j1rkdwhy702v5hc29f5q69hqrr";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Newtonsoft.Json";
+      versions = [
+        {
+          version = "12.0.3";
+          url = "https://github.com/JamesNK/Newtonsoft.Json/archive/refs/tags/12.0.3.tar.gz";
+          hash = "0akq268lgjrmnw7rici7xgaqi8c8saqsmx6f5jyw4rv154rqsc79";
+          strip = true;
+        }
+        {
+          version = "13.0.3";
+          url = "https://github.com/JamesNK/Newtonsoft.Json/archive/refs/tags/13.0.3.tar.gz";
+          hash = "17pzkr6v42kfr17cqa4rxfgnd71jjgcvm09lf7h244bqizmyxh9x";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Polly";
+      versions = [
+        {
+          version = "8.3.0";
+          url = "https://github.com/App-vNext/Polly/archive/refs/tags/8.3.0.tar.gz";
+          hash = "06qk0npv3dm4gyzlsz2v16s0ygbp5xr7ka1dy7jmwvxwwasmh47g";
+          strip = true;
+        }
+        {
+          version = "8.5.2";
+          url = "https://github.com/App-vNext/Polly/archive/refs/tags/8.5.2.tar.gz";
+          hash = "0cj3q0ll5y4fjz3mg6yphb3pf691qib5cibjdk8nvmp9v84bc81r";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Refit";
+      versions = [
+        {
+          version = "7.0.0";
+          url = "https://github.com/reactiveui/refit/archive/refs/tags/7.0.0.tar.gz";
+          hash = "1y6vsagmm9vdplkh40waa52kg593ag389q47a4j4cw46yxifs88v";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "RestSharp";
+      versions = [
+        {
+          version = "111.2.0";
+          url = "https://github.com/restsharp/RestSharp/archive/refs/tags/111.2.0.tar.gz";
+          hash = "19j44m7d81wdarz9j6xk0rj8jvi7vbcsq5i7y917akhamd61s0i3";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "Serilog";
+      versions = [
+        {
+          version = "2.12.0";
+          url = "https://github.com/serilog/serilog/archive/refs/tags/v2.12.0.tar.gz";
+          hash = "011bckvh2nq8shf3sb9b6viwvs0q57ldy58nfzlfas6k5c2njw02";
+          strip = true;
+        }
+        {
+          version = "3.1.1";
+          url = "https://github.com/serilog/serilog/archive/refs/tags/v3.1.1.tar.gz";
+          hash = "1f6pwhspnpz3g9bswzgpl7ca0s5axaxlamlx2bc6zf7x8fk8p1hh";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "StackExchange.Redis";
+      versions = [
+        {
+          version = "2.7.33";
+          url = "https://github.com/StackExchange/StackExchange.Redis/archive/refs/tags/2.7.33.tar.gz";
+          hash = "0ghq28zc7f8m4faz0rxqs95hl76dnn4vyy8kviiy07caxav02kvl";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "System.Text.Json";
+      versions = [
+        {
+          version = "8.0.2";
+          url = "https://github.com/dotnet/runtime/archive/refs/tags/v8.0.2.tar.gz";
+          hash = "1zcjjpgcvlg9ixr9nhyrkxwgnvgicsm5k60hmv9j0wwai9fqnhxk";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "dotnet";
+      versions = [
+        {
+          version = "8.4.0";
+          url = "https://github.com/CommunityToolkit/dotnet/archive/refs/tags/v8.4.0.tar.gz";
+          hash = "1jqr5cvqmgs7pxj3b76sr5hryxhzhmiiibh67k61sgk3jd1fzl8z";
+          strip = true;
         }
       ];
     }
@@ -2196,7 +2230,21 @@
       versions = [
         {
           version = "3.2.30";
-          hash = "08bjdn8dbqpzn5c9fw89y5766irwplgyzhyxcrjzpywkwpj75r4i";
+          url = "https://github.com/protobuf-net/protobuf-net/archive/refs/tags/3.2.30.tar.gz";
+          hash = "0qg9b0cq4jmdcmrqih9n296gixg7m16xdzvisz0vvr8gkzb8cw2k";
+          strip = true;
+        }
+      ];
+    }
+    {
+      ecosystem = "nuget";
+      name = "xunit";
+      versions = [
+        {
+          version = "2.7.0";
+          url = "https://github.com/xunit/xunit/archive/refs/tags/v2-2.7.0.tar.gz";
+          hash = "121qvn4xajngwm58km3nry5y9psbdglvgjp38sgbddlmjhnw0x1i";
+          strip = true;
         }
       ];
     }

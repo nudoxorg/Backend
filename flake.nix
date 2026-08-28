@@ -705,7 +705,17 @@
                     inherit url;
                     sha256 = hash;
                   };
-                  isWrapped = ext != "" && builtins.elem ecosystem wrappedEcosystems;
+                  # A GitHub source archive (`.../archive/refs/tags/<tag>.tar.gz`)
+                  # wraps its contents in one `<repo>-<tag>/` directory, exactly
+                  # like the wrapped ecosystems, and must be stripped to it. But
+                  # its ecosystem tag is `nuget` (the C# source-tier oracle needs
+                  # GitHub source checkouts, not `.nupkg`s — see docs/CORPUS.md),
+                  # which is not in `wrappedEcosystems` because a real `.nupkg`
+                  # puts files at the archive root and must NOT be stripped. A
+                  # per-version `strip = true` resolves the two cases living
+                  # under one ecosystem: set it on GitHub-source entries.
+                  isWrapped =
+                    ext != "" && (builtins.elem ecosystem wrappedEcosystems || (verEntry.strip or false));
                   appendCargoWorkspace = ecosystem == "crates.io";
                 in
                 nixPackages.runCommand "${dirName}-prepared"
