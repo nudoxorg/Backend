@@ -6801,6 +6801,7 @@ dependencies = [
  "keyring",
  "nudox-ir",
  "nudox-languages",
+ "postcard",
  "pulldown-cmark",
  "rand 0.10.2",
  "registry",
