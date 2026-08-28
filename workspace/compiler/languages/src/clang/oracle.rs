@@ -71,6 +71,17 @@ pub enum OracleType {
     /// Reference to a named type; `args` is non-empty for template instantiations.
     Named {
         name: String,
+        /// The declaration's Unified Symbol Resolution id, when libclang
+        /// could resolve one via `ty.get_declaration()`. `None` when the
+        /// type kind has no backing declaration at all (a dependent type,
+        /// some exotic sugar) — `lower::lower_named` treats that absence as
+        /// meaningfully different from "resolved, but not ours or std's".
+        ///
+        /// This is what lets `lower_type` (`lower.rs`) tell a same-package
+        /// reference, a standard-library reference, and a genuinely
+        /// unresolved name apart, instead of collapsing all three into one
+        /// `UnresolvedExternal` spelling.
+        usr: Option<Usr>,
         args: Vec<OracleType>,
     },
     /// A template type-parameter use (e.g. `T` in `template<typename T>`).

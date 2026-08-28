@@ -24,18 +24,46 @@ fn corpus_root() -> PathBuf {
         .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
+/// Recursively copy a corpus checkout into a writable scratch dir, clearing the
+/// read-only bit the /nix/store originals carry so this test can write its
+/// probe twin and `compile_commands.json` beside the sources.
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create scratch dir");
+    for entry in std::fs::read_dir(src).expect("read corpus dir") {
+        let entry = entry.expect("corpus dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy corpus file");
+            let mut perms = std::fs::metadata(&to).expect("stat copy").permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&to, perms).expect("chmod copy");
+        }
+    }
+}
+
 #[test]
 fn nlohmann_json_v3_10_5_lineage_pair_also_resolves() {
     let _guard = CLANG_SINGLETON
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-    let root = corpus_root().join("nlohmann-json-v3.10.5");
+    // `result/` is a read-only /nix/store symlink, but this test writes a probe
+    // twin and `compile_commands.json` into the checkout. Gate on the read-only
+    // source, then lower against a writable copy. Mirrors `writable_entry_root`
+    // in `tests/clang/corpus_sweep.rs`.
+    let ro_root = corpus_root().join("nlohmann-json-v3.10.5");
     assert!(
-        root.is_dir(),
+        ro_root.is_dir(),
         "no checkout at {} — run `nix build .#checks.corpus` from the repo root",
-        root.display()
+        ro_root.display()
     );
+    let scratch = tempfile::tempdir().expect("writable corpus scratch");
+    let root = scratch.path().join("nlohmann-json-v3.10.5");
+    copy_tree(&ro_root, &root);
 
     let header = root.join("single_include/nlohmann/json.hpp");
     let bytes = std::fs::read(&header).expect("read json.hpp");

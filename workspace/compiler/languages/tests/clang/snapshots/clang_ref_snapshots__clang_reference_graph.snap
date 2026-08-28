@@ -1,0 +1,76 @@
+---
+source: workspace/compiler/languages/tests/clang/ref_snapshots.rs
+expression: "format!(\"── TABLE ──\\n{table_render}\\n── OCCURRENCES ──\\n{occurrence_render}\")"
+---
+── TABLE ──
+==  :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+==  :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+== Base :: Some(Record) ==
+  form: Struct
+== Box :: Some(Record) ==
+  form: Struct
+  field: Intro(`inner` Some(Field))
+  generic: Type("T", bounds=[], default=None, variance=None)
+== Color :: Some(Enum) ==
+== Derived :: Some(Record) ==
+  form: Struct
+  super_type: Intro(`Base` Some(Record))
+== Inner :: Some(Record) ==
+  form: Struct
+  field: Intro(`x` Some(Field))
+== Node :: Some(Record) ==
+  form: Struct
+  field: Intro(`val` Some(Field))
+  field: Intro(`next` Some(Field))
+== Outer :: Some(Record) ==
+  form: Struct
+  field: Intro(`in` Some(Field))
+== Pixel :: Some(Record) ==
+  form: Struct
+  field: Intro(`c` Some(Field))
+== Red :: Some(Variant) ==
+== Registry :: Some(Record) ==
+  form: Struct
+  field: Intro(`box_` Some(Field))
+== Row :: Some(Record) ==
+  form: Struct
+  field: Intro(`name` Some(Field))
+== Widget :: Some(Record) ==
+  form: Struct
+== WidgetAlias :: Some(Alias) ==
+  target: Intro(`Widget` Some(Record))
+== box_ :: Some(Field) ==
+  ty: Apply(Intro(`Box` Some(Record))<Intro(`Widget` Some(Record))>)
+== c :: Some(Field) ==
+  ty: Intro(`Color` Some(Enum))
+== caller :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`x` Some(Param))
+  output_param: Intro(`` Some(Param))
+== clang-ref-snapshot-fixture :: Some(Module) ==
+== helper :: Some(Function) ==
+  receiver: false
+  input_param: Intro(`x` Some(Param))
+  output_param: Intro(`` Some(Param))
+== in :: Some(Field) ==
+  ty: Intro(`Inner` Some(Record))
+== inner :: Some(Field) ==
+  ty: TypeVar("type-parameter-0-0")
+== name :: Some(Field) ==
+  ty: Foreign(origin=Namespace(cpp::std), path="c:@N@std@N@__1@string", display="string", kind=None, unlinked)
+== next :: Some(Field) ==
+  ty: MutPointer(Intro(`Node` Some(Record)))
+== val :: Some(Field) ==
+  ty: Integer(signed=true, Fixed(32))
+== x :: Some(Field) ==
+  ty: Integer(signed=true, Fixed(32))
+== x :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+== x :: Some(Param) ==
+  ty: Integer(signed=true, Fixed(32))
+
+── OCCURRENCES ──
+caller --FunctionCall(Oracle)--> package=cpp/clang-ref-snapshot-fixture target=helper
+caller --FunctionCall(Oracle)--> package=cpp/clang-ref-snapshot-fixture target=helper

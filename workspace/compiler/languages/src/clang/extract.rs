@@ -735,6 +735,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 .unwrap_or_else(|| ty.get_display_name());
             OracleType::Named {
                 name,
+                usr: named_decl_usr(ty),
                 args: Vec::new(),
             }
         }
@@ -750,7 +751,11 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
                 .flatten()
                 .map(resolve_type)
                 .collect();
-            OracleType::Named { name, args }
+            OracleType::Named {
+                name,
+                usr: named_decl_usr(ty),
+                args,
+            }
         }
         TypeKind::Unexposed => {
             // Try canonical form first.
@@ -766,6 +771,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
             } else if !name.is_empty() {
                 OracleType::Named {
                     name,
+                    usr: named_decl_usr(ty),
                     args: Vec::new(),
                 }
             } else {
@@ -780,6 +786,7 @@ pub(crate) fn resolve_type(ty: CType<'_>) -> OracleType {
             } else {
                 OracleType::Named {
                     name,
+                    usr: named_decl_usr(ty),
                     args: Vec::new(),
                 }
             }
@@ -807,6 +814,46 @@ fn width_float(ty: CType<'_>) -> OracleType {
 
 fn entity_usr(entity: Entity<'_>) -> Usr {
     entity.get_usr().map(|u| u.0).unwrap_or_default()
+}
+
+/// The USR of `ty`'s declaration, when libclang can resolve one.
+///
+/// This is the id `lower_type` (`lower.rs`) matches against the package's own
+/// declared USRs to decide same-package (`Ref::Intro`) vs standard-library
+/// (`Ref::Foreign`) vs genuinely unresolved. `get_declaration()` returns
+/// `None` for type kinds with no backing declaration at all (a dependent
+/// type, some exotic sugar) — that absence is itself meaningful downstream
+/// (see `lower::lower_named`'s "no USR" branch), so it is preserved as `None`
+/// rather than papered over with an empty string.
+///
+/// # Class-template applications: normalize specialization USR → primary
+///
+/// For a class-TEMPLATE APPLICATION (`Box<Widget>` where `template<class T>
+/// struct Box{};` is declared somewhere), `ty.get_declaration()` returns the
+/// SPECIALIZATION's declaration cursor, not the primary template's — and that
+/// specialization carries its own distinct USR that encodes the argument
+/// (empirically, for `template<class T> struct Box{}; Box<Widget> b;`: the
+/// field's `Record`-kind type's declaration is a `StructDecl` cursor named
+/// "Box" whose USR is `c:@S@Box>#$@S@Widget`), while `known_nominal_usrs`
+/// (`lower.rs`) indexes the PRIMARY template declaration under its own USR
+/// (`c:@ST>1#T@Box`). Those two USRs never match, so a same-package
+/// template's application fell back to `Type::unresolved_external` even
+/// though the template is declared in the same file.
+///
+/// `Entity::get_template` (libclang's `clang_getSpecializedCursorTemplate`)
+/// recovers the primary template's cursor from a specialization's
+/// declaration cursor — verified empirically against the fixture above,
+/// where it returns the `ClassTemplate` cursor named "Box" with USR
+/// `c:@ST>1#T@Box`, exactly the id `known_nominal_usrs` indexes. It returns
+/// `None` for an ordinary (non-template) declaration (verified against a
+/// plain `struct Widget`), so `.unwrap_or(decl)` is a no-op for every
+/// non-template case and changes nothing about `cc1`-`cc9`'s existing
+/// behavior.
+fn named_decl_usr(ty: CType<'_>) -> Option<Usr> {
+    ty.get_declaration()
+        .map(|decl| decl.get_template().unwrap_or(decl))
+        .map(entity_usr)
+        .filter(|u| !u.is_empty())
 }
 
 fn entity_file(entity: Entity<'_>) -> PathBuf {

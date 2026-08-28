@@ -54,6 +54,7 @@
 //! exhaustive extraction of its full surface. This is a real, disclosed
 //! scope limitation, not a silent one.
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use nudox_ir::change::{EcosystemId, PackageLineageId, PackageName};
 use nudox_languages::clang::ClangProducer;
@@ -314,6 +315,46 @@ fn corpus_root() -> PathBuf {
         .expect("no result/ checkout — see docs/CORPUS.md to (re)provision it")
 }
 
+/// A writable copy of one corpus entry's checkout.
+///
+/// `result/` is a symlink into `/nix/store`, which is read-only, and this sweep
+/// *writes into the checkout*: [`provision_shims`] drops same-directory header
+/// twins and [`write_compile_commands`] emits a `compile_commands.json` at the
+/// root, both essential for libclang to resolve angle-bracket includes. Against
+/// the read-only store those writes fail with `permission denied`, so every
+/// entry is copied into a scratch dir first. Mirrors `writable_entry_root` in
+/// `tests/go/corpus_sweep.rs` and `tests/rust/common/mod.rs`.
+///
+/// `src` must already be known to exist — the caller gates on that first so a
+/// genuinely absent entry stays a clean preflight failure.
+fn writable_entry_root(dir: &str, src: &Path) -> PathBuf {
+    static SCRATCH: OnceLock<tempfile::TempDir> = OnceLock::new();
+    let scratch = SCRATCH.get_or_init(|| tempfile::tempdir().expect("writable corpus scratch"));
+    let dst = scratch.path().join(dir);
+    if !dst.is_dir() {
+        copy_tree(src, &dst);
+    }
+    dst
+}
+
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create scratch dir");
+    for entry in std::fs::read_dir(src).expect("read corpus dir") {
+        let entry = entry.expect("corpus dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy corpus file");
+            let mut perms = std::fs::metadata(&to).expect("stat copy").permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&to, perms).expect("chmod copy");
+        }
+    }
+}
+
 // ── Shim provisioning ────────────────────────────────────────────────────────
 
 fn header_extensions(lang: Lang) -> &'static [&'static str] {
@@ -516,16 +557,20 @@ enum Outcome {
 }
 
 fn run_entry(entry: &Entry) -> Outcome {
-    let root = corpus_root().join(entry.dir);
-    if !root.is_dir() {
+    // Gate on the read-only checkout first, then lower against a writable copy:
+    // this sweep writes shim twins and `compile_commands.json` into the root,
+    // which the read-only /nix/store corpus rejects. See `writable_entry_root`.
+    let ro_root = corpus_root().join(entry.dir);
+    if !ro_root.is_dir() {
         return Outcome::Fail {
             stage: "preflight",
             chain: format!(
                 "no checkout at {} — run `nix build .#checks.corpus` from the repo root",
-                root.display()
+                ro_root.display()
             ),
         };
     }
+    let root = writable_entry_root(entry.dir, &ro_root);
 
     let shims = provision_shims(&root, entry.header_roots, entry.lang);
     let shims_written = shims.len();
