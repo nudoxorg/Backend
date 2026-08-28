@@ -39,10 +39,11 @@
 //!
 //! # Fixture provenance
 //!
-//! `result/zap-1.28.0` is an unmodified copy of the
-//! `go.uber.org/zap@v1.28.0` module tree, fetched via `go mod download` and
-//! copied out of the module cache (`go list -m -f '{{.Dir}}'
-//! go.uber.org/zap`). `result/` is gitignored (see
+//! `result/go.uber.org__zap-v1.28.0` is an unmodified copy of the
+//! `go.uber.org/zap@v1.28.0` module tree, provisioned by `nix/corpus.nix`
+//! (`nix build .#checks.corpus`) which fetches the module and lays it out
+//! under `result/` with the `<module-path-with-__>-v<version>` naming this
+//! ecosystem uses. `result/` is gitignored (see
 //! docs/AGENTS-DOCTRINE.md's "hard-won facts" on why: it must be re-derived, not
 //! assumed present, and re-derivation must be verified against a known
 //! measurement — this file's assertions are that measurement).
@@ -71,15 +72,41 @@ use nudox_languages::{PackageSource, produce};
 // Fixture + oracle plumbing
 // ---------------------------------------------------------------------------
 
-/// Where the zap checkout lives, relative to this crate.
+/// Where the zap checkout lives, relative to this crate. This is the read-only
+/// `/nix/store` source; `lower_real_zap` copies it into a writable scratch dir
+/// before lowering (the Go toolchain writes `go.mod`/`go.sum` beside the
+/// package). The dir name is the `nix/corpus.nix` convention — the module path
+/// with `/` replaced by `__` and a `v`-prefixed version — the same name
+/// `corpus_sweep.rs::ENTRIES` uses.
 fn zap_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../result/zap-1.28.0")
+        .join("../../../result/go.uber.org__zap-v1.28.0")
         .canonicalize()
         .expect(
-            "no checkout at result/zap-1.28.0 — see this file's module doc for how \
-             it was built and re-derive it the same way",
+            "no checkout at result/go.uber.org__zap-v1.28.0 — run \
+             `nix build .#checks.corpus` from the repo root to (re)provision it",
         )
+}
+
+/// Recursively copy a corpus checkout into a writable scratch dir, clearing the
+/// read-only bit the `/nix/store` originals carry. Mirrors
+/// `corpus_sweep.rs::copy_tree`.
+fn copy_tree(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create scratch dir");
+    for entry in std::fs::read_dir(src).expect("read corpus dir") {
+        let entry = entry.expect("corpus dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy corpus file");
+            let mut perms = std::fs::metadata(&to).expect("stat copy").permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&to, perms).expect("chmod copy");
+        }
+    }
 }
 
 /// Build the oracle binary once (into Cargo's per-test-binary scratch dir).
@@ -113,16 +140,28 @@ fn lineage() -> PackageLineageId {
 /// to the same path, so parallel `#[test]` execution within this binary
 /// cannot observe a torn or divergent value.
 fn lower_real_zap() -> PristineIntroTable {
-    let root = zap_root();
+    // `result/` is a read-only /nix/store symlink; the Go toolchain writes
+    // `go.mod`/`go.sum` beside the package it loads, so copy to a writable
+    // scratch dir first. Mirrors `corpus_sweep.rs`.
+    let ro_root = zap_root();
+    let scratch = tempfile::tempdir().expect("writable corpus scratch");
+    let root = scratch.path().join("go.uber.org__zap-v1.28.0");
+    copy_tree(&ro_root, &root);
     assert!(
         root.join("go.mod").is_file(),
         "no go.mod at {} — the zap checkout is missing or incomplete",
         root.display()
     );
 
-    // SAFETY: single-value, single-purpose env var; see the function doc.
+    // SAFETY: single-value, single-purpose env vars set immediately before the
+    // subprocess the producer spawns reads them. Force fully-offline resolution
+    // against the pre-populated module cache, exactly as `corpus_sweep.rs` does
+    // — a silent network fall-through would invalidate the offline guarantee.
     unsafe {
         std::env::set_var("NUDOX_GO_ORACLE_BIN", oracle_bin());
+        std::env::set_var("GOPROXY", "off");
+        std::env::set_var("GOSUMDB", "off");
+        std::env::set_var("GOFLAGS", "-mod=mod");
     }
 
     let src = PackageSource::new(&root, "go.uber.org/zap", "1.28.0");

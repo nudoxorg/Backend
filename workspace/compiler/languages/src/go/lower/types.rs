@@ -252,10 +252,25 @@ pub(super) fn lower_newtype(
         .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
+    // G2: populate super_types from the oracle's `implements` list, exactly
+    // like `lower_struct` above. A newtype (`type Celsius float64`) can
+    // satisfy an interface via a method declared on it (`func (c Celsius)
+    // String() string`) just as validly as a struct can — the oracle's
+    // `implementsInterfaces` (oracle/go/serialize.go) does not discriminate
+    // by underlying kind, but this lowering used to: only `lower_struct` read
+    // `decl.implements`, so every newtype's interface satisfaction was
+    // silently dropped on the floor before this fix.
+    let super_types: Vec<Type> = decl
+        .implements
+        .iter()
+        .map(|iface_ty| types::lower_type_with_lowering(iface_ty, low, local))
+        .collect();
+
     let record = Record::builder()
         .form(RecordForm::Tuple)
         .fields([inner_ref])
         .generics(generics)
+        .super_types(super_types)
         .build();
 
     low.declare(item_id.clone(), Some(parent), sym, record);
@@ -321,6 +336,14 @@ pub(super) fn lower_iota_enum(
         .map(|tp| types::lower_type_param_decl(tp, low, local))
         .collect();
 
+    // IR GAP (not fixable from this producer): `decl.implements` is dropped
+    // here too — an iota-enum type can satisfy an interface via a method just
+    // like a struct or newtype can (see the newtype case in `lower_newtype`
+    // above, which this mirrors for structs/newtypes) — but
+    // `nudox_ir::kinds::sum::Enum` has no `super_types` field to populate,
+    // unlike `Record` (`workspace/ir/model/src/kinds/sum.rs`). Fixing this
+    // requires adding that field to the shared IR `Enum` kind, which is
+    // outside `nudox-languages`.
     let enum_kind = Enum::builder()
         .variants(variant_refs)
         .generics(generics)

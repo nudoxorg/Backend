@@ -58,7 +58,9 @@ pub enum Staleness {
         "the `nudox-go-oracle` binary is out of date: it speaks payload schema \
          {found}, but this build reads schema {required}. Data added or widened \
          since (references; implements, and its scope: schema 2 checks every \
-         package in the module, not just each type's own) is absent or \
+         package in the module, not just each type's own; references, and its \
+         scope: schema 3 covers method-body calls and cross-package call \
+         targets, not just same-package free-function calls) is absent or \
          incomplete in its output, so `refs` and `subtypes` will look empty or \
          under-report for every Go package. Rebuild the oracle \
          (`go build ./workspace/compiler/languages/oracle/go`) and point \
@@ -85,7 +87,7 @@ impl Output {
     /// own. The field was already there on a v1 binary; what it under-reports
     /// changed. `#[serde(default)]` cannot express that distinction, so the
     /// handshake is the only thing that can.
-    pub const REQUIRED_SCHEMA_VERSION: u32 = 2;
+    pub const REQUIRED_SCHEMA_VERSION: u32 = 3;
 
     /// Whether the binary that produced this payload is older than this build
     /// expects.
@@ -186,8 +188,26 @@ pub struct Package {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reference {
+    /// The calling function or method's bare name.
     pub owner: String,
+
+    /// The bare receiver type name when `owner` is a method (empty for a
+    /// package-level function).
+    #[serde(default)]
+    pub owner_recv: String,
+
+    /// The called function's bare name. Only free (non-method) package-level
+    /// functions are recorded as targets.
     pub target: String,
+
+    /// The target's defining package's import path, present only when it
+    /// differs from the package this `Reference` was extracted from (empty
+    /// for a same-package call). See `oracle/go/serialize.go`'s doc comment
+    /// on the Go-side field for why routing (same-module `Intro`-eligible vs.
+    /// genuinely foreign) is decided on this side, not the oracle's.
+    #[serde(default)]
+    pub target_pkg: String,
+
     pub file: String,
     pub start: usize,
     pub end: usize,

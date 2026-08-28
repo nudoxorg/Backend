@@ -101,15 +101,36 @@ type Decl struct {
 }
 
 // Reference is a compiler-resolved use of one package-level function from
-// another. Positions are byte offsets in the declaring source file. Keeping
-// this fact in the oracle (rather than rediscovering names in Rust) preserves
-// Go's lexical/type resolution and excludes strings and shadowed identifiers.
+// another — same-package or cross-package, and from a package-level function
+// OR a method body. Positions are byte offsets in the declaring source file.
+// Keeping this fact in the oracle (rather than rediscovering names in Rust)
+// preserves Go's lexical/type resolution and excludes strings and shadowed
+// identifiers.
 type Reference struct {
-	Owner  string `json:"owner"`
+	// Owner is the calling function or method's bare name.
+	Owner string `json:"owner"`
+	// OwnerRecv is the bare receiver type name when Owner is a method
+	// (empty for a package-level function). Lets the Rust side key into
+	// GoId::Member instead of GoId::Item.
+	OwnerRecv string `json:"ownerRecv,omitempty"`
+	// Target is the called function's bare name. Only free (non-method)
+	// package-level functions are tracked as call targets — a call through a
+	// method selector (`x.Foo()`) is out of scope: resolving its receiver's
+	// declared/promoted method identity is a separate problem from a Uses
+	// table walk.
 	Target string `json:"target"`
-	File   string `json:"file"`
-	Start  int    `json:"start"`
-	End    int    `json:"end"`
+	// TargetPkg is the target's defining package's import path, present only
+	// when it differs from the package this Reference was extracted from
+	// (empty for a same-package call). The oracle does not know — and does
+	// not need to know — whether that package is part of the same loaded
+	// module; the Rust side already computes exactly that set (`local` in
+	// `lower_into`) to route named-type references the same way, and reuses
+	// it here to decide between a same-Lowering-pass (`Intro`-eligible)
+	// reference and a genuinely external (`Foreign`) occurrence.
+	TargetPkg string `json:"targetPkg,omitempty"`
+	File      string `json:"file"`
+	Start     int    `json:"start"`
+	End       int    `json:"end"`
 }
 
 // Method is a method attached to a named type (declared or promoted).

@@ -40,7 +40,7 @@
 use std::collections::HashSet;
 
 use nudox_ir::{
-    build::{EcosystemId, Lowering, RawRef},
+    build::{EcosystemId, Lowering, PackageLineageId, PackageName, RawRef},
     foreign::ForeignKey,
     kinds::{
         function::Receiver,
@@ -66,14 +66,36 @@ const MAX_DEPTH: usize = 64;
 /// `sync.Mutex` produces byte-identical bytes in every package that names it,
 /// which is the best raw material any producer in this workspace has.
 ///
-/// What it is *not* is the **module path**, which is what
-/// `PackageDescriptor::go` uses as the lineage name. `go.uber.org/zap/zapcore`
-/// cannot be split into module + subpath without a go.mod answer the oracle does
-/// not currently produce. Emitting `ForeignOrigin::Namespace` states exactly
-/// that, and upgrades to `Package` the day the oracle reports module paths —
-/// whereas the code this replaces synthesised `PackageId::path(import_path)`,
-/// which reads like a resolved package identity and is not one.
-fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
+/// What it is *not* is the **module path** for an arbitrary third-party
+/// dependency: `go.uber.org/zap/zapcore` cannot be split into module + subpath
+/// without a go.mod answer the oracle does not currently produce for packages
+/// outside the loaded module. Those genuinely unplaceable imports keep
+/// `ForeignOrigin::Namespace` — the previous behavior — and can upgrade to
+/// `Package` the day the oracle reports dependency module paths.
+///
+/// The Go **standard library** is a different case, and treating it like an
+/// arbitrary dependency was the bug: `sync`, `context`, `encoding/json`, …
+/// have no go.mod of their own to fail to resolve — they ship with the Go
+/// toolchain at a fixed, well-known import path, so their "module" identity
+/// is exactly that import path. [`is_stdlib_import`] recognizes them and
+/// routes them through `ForeignKey::in_package` with a dedicated
+/// `"go-stdlib"` ecosystem lineage — mirroring how the Rust producer
+/// separates toolchain-shipped crates (`core`, `std`, `alloc`) into their own
+/// `"rust-sysroot"` ecosystem so a future resolver can never confuse
+/// `cargo:core` with a crates.io package literally named `core` (see
+/// `src/rust/ra/ctx.rs::crate_lineage`). Only `ForeignOrigin::Package` has a
+/// `lineage()` a resolver can join against (`ForeignOrigin::lineage`'s doc:
+/// "`None` for `Namespace` and `Universe` — the states that say 'I cannot
+/// place this'"), so `in_package` — not `in_universe` — is what actually
+/// makes stdlib types linkable the day a Go-stdlib corpus package exists at
+/// this same lineage, exactly as `rust-sysroot:core` already does for Rust
+/// (see `workspace/ir/model/tests/foreign_refs.rs` and
+/// `workspace/index/server/coordination/indexing/ir_stream.rs`).
+///
+/// This is deliberately distinct from universe-scope predeclared identifiers
+/// (`error`, `comparable`; `import_path.is_empty()`), which have no package —
+/// stdlib or otherwise — at all; those keep `ForeignOrigin::Universe`.
+pub(crate) fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
     let ecosystem = EcosystemId::new("go");
     if import_path.is_empty() {
         // Universe scope: `error`, `comparable`, `any`. These are declared by
@@ -81,6 +103,17 @@ fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
         // `PackageId::path("")`, which collapsed every predeclared identifier
         // into one empty pseudo-package.
         ForeignKey::in_universe(ecosystem, name, name)
+    } else if is_stdlib_import(import_path) {
+        // Standard library: a real, resolvable "package" whose identity is
+        // simply its import path — no go.mod lookup required. `Namespace`
+        // here would permanently forfeit linkability for `sync.Mutex`,
+        // `context.Context`, and every other stdlib reference, which is
+        // exactly the ROOT bug this routes around.
+        let lineage = PackageLineageId::new(
+            EcosystemId::new("go-stdlib"),
+            PackageName::new(import_path),
+        );
+        ForeignKey::in_package(lineage, format!("{import_path}.{name}"), name)
     } else {
         ForeignKey::in_namespace(
             ecosystem,
@@ -89,6 +122,25 @@ fn go_foreign_key(import_path: &str, name: &str) -> ForeignKey {
             name,
         )
     }
+}
+
+/// Whether `import_path` names a Go standard-library package.
+///
+/// Go's own tooling convention (used by `go list std`, `goimports`'s
+/// import-group classification, and every third-party import linter): a
+/// standard-library import path's **first path segment never contains a
+/// dot**, because every real module path is required by `go.mod`/`go mod`
+/// semantics to start with a resolvable domain (`github.com/...`,
+/// `golang.org/...`, `k8s.io/...`, …). The oracle does not resolve foreign
+/// packages at all, so no exact answer is available without a go.mod for
+/// every dependency; this heuristic is the same signal Go's own tools use,
+/// and a false positive would require a real third-party module whose
+/// *first path segment* both contains no dot and collides with a real
+/// stdlib package name — something `go.mod`'s module-path rules make
+/// vanishingly rare in practice.
+fn is_stdlib_import(import_path: &str) -> bool {
+    let first_segment = import_path.split('/').next().unwrap_or(import_path);
+    !first_segment.contains('.')
 }
 
 /// Qualify a Go identifier as `pkg.Name`.  Universe-scope names (`error`,
@@ -558,6 +610,8 @@ pub fn lower_type_param_decl(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nudox_ir::foreign::ForeignOrigin;
+    use nudox_ir::index::Ref;
     use nudox_ir::kinds::ty::{Primitive, Width};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -724,6 +778,143 @@ mod tests {
             }
             other => panic!("generic named type must lower to Apply, got {other:?}"),
         }
+    }
+
+    // ── G1: stdlib types get a linkable origin, not a bare Namespace ─────────
+    //
+    // `go_foreign_key` used to route EVERY non-empty import path through
+    // `ForeignKey::in_namespace`, including the Go standard library. Per
+    // `ForeignOrigin::lineage`'s doc ("`None` for `Namespace` and `Universe` —
+    // the states that say 'I cannot place this'"), only `ForeignOrigin::Package`
+    // can ever be joined by a resolver — so `sync.Mutex`, `context.Context`,
+    // and every other stdlib reference were permanently unlinkable. This
+    // reproduces that with a real field type (`mu sync.Mutex`) and asserts the
+    // fixed behavior: a `Package`-origin `Ref::Foreign` whose `lineage()` is
+    // `Some`, keyed to a dedicated `"go-stdlib"` ecosystem so it can never
+    // collide with a real Go module happening to be named `sync`.
+
+    #[test]
+    fn stdlib_field_type_is_linkable_foreign_origin() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: "sync".to_string(),
+            name: "Mutex".to_string(),
+            ..Default::default()
+        };
+        let ty = lower_type_with_lowering(&t, &mut low, &HashSet::new());
+        let Type::Nominal(raw) = ty else {
+            panic!("stdlib named type must lower to Nominal, got {ty:?}");
+        };
+        match raw {
+            Ref::Foreign { key, .. } => {
+                assert!(
+                    key.origin.lineage().is_some(),
+                    "sync.Mutex must carry a linkable origin (lineage().is_some()), \
+                     got {:?}",
+                    key.origin
+                );
+                match &key.origin {
+                    ForeignOrigin::Package(lineage) => {
+                        assert_eq!(
+                            lineage.ecosystem.as_str(),
+                            "go-stdlib",
+                            "stdlib lineage must use a dedicated ecosystem, not the \
+                             module-path-bearing \"go\" ecosystem local packages use"
+                        );
+                    }
+                    other => panic!(
+                        "expected ForeignOrigin::Package for sync.Mutex, got {other:?}"
+                    ),
+                }
+                assert_ne!(
+                    key.origin,
+                    ForeignOrigin::Namespace {
+                        ecosystem: EcosystemId::new("go"),
+                        namespace: "sync".into(),
+                    },
+                    "sync.Mutex must not stay a bare unlinkable Namespace origin"
+                );
+            }
+            other => panic!("sync.Mutex must lower to Ref::Foreign, got {other:?}"),
+        }
+    }
+
+    /// A genuinely unresolvable third-party import (no go.mod data available)
+    /// must stay `Namespace` — only the stdlib case upgrades. This locks the
+    /// boundary so the G1 fix does not overreach into `in_package` for
+    /// dependencies the oracle cannot actually place.
+    #[test]
+    fn third_party_field_type_stays_namespace() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: "github.com/some/dep".to_string(),
+            name: "Widget".to_string(),
+            ..Default::default()
+        };
+        let ty = lower_type_with_lowering(&t, &mut low, &HashSet::new());
+        let Type::Nominal(Ref::Foreign { key, .. }) = ty else {
+            panic!("third-party named type must lower to Nominal(Ref::Foreign), got {ty:?}");
+        };
+        assert!(
+            matches!(key.origin, ForeignOrigin::Namespace { .. }),
+            "a third-party import with no go.mod data must stay Namespace \
+             (genuinely unplaceable), got {:?}",
+            key.origin
+        );
+    }
+
+    // ── G5: universe types (`error`, `comparable`) → Nominal(Foreign)/Universe ─
+    //
+    // Guard test: `error`/`comparable` (empty `pkg`, non-"any" name) must lower
+    // to `Type::Nominal(Ref::Foreign)` with `ForeignOrigin::Universe`, never
+    // `Type::Unknown`. Locks the existing-correct behavior of the
+    // `t.pkg.is_empty()` branch in `lower_type_depth_low` against regression.
+
+    #[test]
+    fn universe_error_type_is_nominal_foreign_universe() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: String::new(),
+            name: "error".to_string(),
+            ..Default::default()
+        };
+        let ty = lower_type_with_lowering(&t, &mut low, &HashSet::new());
+        let Type::Nominal(Ref::Foreign { key, .. }) = ty else {
+            panic!(
+                "`error` must lower to Type::Nominal(Ref::Foreign), not Unknown/NoIrRepresentation; got {ty:?}"
+            );
+        };
+        assert!(
+            matches!(key.origin, ForeignOrigin::Universe { .. }),
+            "`error` is universe-scope (predeclared by the language, no owning \
+             package); origin must be Universe, got {:?}",
+            key.origin
+        );
+    }
+
+    #[test]
+    fn universe_comparable_type_is_nominal_foreign_universe() {
+        let mut low = make_low();
+        let t = oracle::Type {
+            kind: TypeKind::Named,
+            pkg: String::new(),
+            name: "comparable".to_string(),
+            ..Default::default()
+        };
+        let ty = lower_type_with_lowering(&t, &mut low, &HashSet::new());
+        let Type::Nominal(Ref::Foreign { key, .. }) = ty else {
+            panic!(
+                "`comparable` must lower to Type::Nominal(Ref::Foreign), not Unknown/NoIrRepresentation; got {ty:?}"
+            );
+        };
+        assert!(
+            matches!(key.origin, ForeignOrigin::Universe { .. }),
+            "`comparable` is universe-scope; origin must be Universe, got {:?}",
+            key.origin
+        );
     }
 
     // ── Item 2: TypeParam → TypeVar, not SelfType ────────────────────────────

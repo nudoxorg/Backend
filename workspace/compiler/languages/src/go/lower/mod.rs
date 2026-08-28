@@ -439,21 +439,86 @@ fn lower_package(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSe
     for decl in &pkg.decls {
         lower_decl(pkg, decl, &enums, low, local);
     }
-    record_references(pkg, low);
+    record_references(pkg, low, local);
 }
 
-fn record_references(pkg: &oracle::Package, low: &mut Lowering<GoId>) {
+/// Lower the oracle's resolved call-graph edges (`oracle::Package::references`)
+/// into occurrences.
+///
+/// # Same-module cross-package vs. genuinely foreign
+///
+/// `reference.target_pkg` only tells us the target's import path; it says
+/// nothing about whether that package is part of the module this oracle
+/// invocation loaded. `local` (computed once in `lower_into` and threaded
+/// through every package) already answers exactly that question for named
+/// TYPE references (`crate::go::types::lower_type_with_lowering`): a package
+/// in `local` gets a same-arena `low.refer(...)` (becomes `Ref::Intro` after
+/// `seal`), and everything else gets `low.refer_import(...)` (`Ref::Foreign`).
+/// Occurrences follow the identical rule here, for the identical reason —
+/// `low` is one shared `Lowering<GoId>` sink across every package `lower_into`
+/// visits, so a same-module cross-package call target's `GoId::Item` really
+/// will be declared somewhere in this same pass, and routing it through
+/// `record_foreign_occurrence` instead would force it through corpus
+/// resolution to re-link back to a target this pass already knows exactly.
+fn record_references(pkg: &oracle::Package, low: &mut Lowering<GoId>, local: &HashSet<String>) {
     for reference in &pkg.references {
-        let Some(owner_decl) = pkg
+        let Some((owner_id, owner_start)) = resolve_reference_owner(pkg, reference) else {
+            continue;
+        };
+        let span = RelSpan::new(
+            u32::try_from(reference.start.saturating_sub(owner_start)).unwrap_or(u32::MAX),
+            u32::try_from(reference.end.saturating_sub(owner_start)).unwrap_or(u32::MAX),
+        );
+        let same_module = reference.target_pkg.is_empty()
+            || reference.target_pkg == pkg.import_path
+            || local.contains(&reference.target_pkg);
+        if same_module {
+            let target_pkg = if reference.target_pkg.is_empty() {
+                pkg.import_path.clone()
+            } else {
+                reference.target_pkg.clone()
+            };
+            low.record_occurrence(
+                owner_id,
+                GoId::Item {
+                    import_path: target_pkg,
+                    name: reference.target.clone(),
+                },
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                span,
+            );
+        } else {
+            let key = go_types::go_foreign_key(&reference.target_pkg, &reference.target);
+            low.record_foreign_occurrence(
+                owner_id,
+                key,
+                ReferenceKind::FunctionCall,
+                Confidence::Oracle,
+                span,
+            );
+        }
+    }
+}
+
+/// Resolve a `Reference`'s owner to a `GoId`, re-validating byte-range
+/// containment against the oracle's own declaration data — the same
+/// defense-in-depth the previous (package-level-function-only) version of
+/// this check performed, extended to cover a method owner too.
+///
+/// Returns the owner `GoId` plus the byte offset its span starts at, so the
+/// caller can compute `RelSpan` relative to whichever declaration (function
+/// or method) actually owns the call site.
+fn resolve_reference_owner(
+    pkg: &oracle::Package,
+    reference: &oracle::Reference,
+) -> Option<(GoId, usize)> {
+    if reference.owner_recv.is_empty() {
+        let owner_decl = pkg
             .decls
             .iter()
-            .find(|decl| decl.kind == DeclKind::Func && decl.name == reference.owner)
-        else {
-            continue;
-        };
-        let Some(owner_span) = owner_decl.span.as_ref() else {
-            continue;
-        };
+            .find(|decl| decl.kind == DeclKind::Func && decl.name == reference.owner)?;
+        let owner_span = owner_decl.span.as_ref()?;
         if owner_decl
             .pos
             .as_ref()
@@ -461,26 +526,43 @@ fn record_references(pkg: &oracle::Package, low: &mut Lowering<GoId>) {
             || reference.start < owner_span.start as usize
             || reference.end > owner_span.end as usize
         {
-            continue;
+            return None;
         }
-        low.record_occurrence(
+        Some((
             GoId::Item {
                 import_path: pkg.import_path.clone(),
                 name: reference.owner.clone(),
             },
-            GoId::Item {
+            owner_span.start as usize,
+        ))
+    } else {
+        let type_decl = pkg
+            .decls
+            .iter()
+            .find(|decl| decl.kind == DeclKind::Type && decl.name == reference.owner_recv)?;
+        let method = type_decl
+            .methods
+            .iter()
+            .find(|m| m.name == reference.owner)?;
+        let method_span = method.span.as_ref()?;
+        if method
+            .pos
+            .as_ref()
+            .is_none_or(|pos| pos.file != reference.file)
+            || reference.start < method_span.start as usize
+            || reference.end > method_span.end as usize
+        {
+            return None;
+        }
+        Some((
+            GoId::Member {
                 import_path: pkg.import_path.clone(),
-                name: reference.target.clone(),
+                type_name: reference.owner_recv.clone(),
+                member_name: reference.owner.clone(),
+                promoted_from: None,
             },
-            ReferenceKind::FunctionCall,
-            Confidence::Oracle,
-            RelSpan::new(
-                u32::try_from(reference.start.saturating_sub(owner_span.start as usize))
-                    .unwrap_or(u32::MAX),
-                u32::try_from(reference.end.saturating_sub(owner_span.start as usize))
-                    .unwrap_or(u32::MAX),
-            ),
-        );
+            method_span.start as usize,
+        ))
     }
 }
 

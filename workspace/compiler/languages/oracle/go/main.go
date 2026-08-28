@@ -62,7 +62,16 @@ import (
 // present either way, but its *scope* changed, which is exactly what this
 // handshake exists to catch (an older binary's narrower answer looks
 // identical to "no cross-package implementers exist").
-const SchemaVersion = 2
+//
+// v3: `references` now covers calls from METHOD bodies (previously skipped
+// entirely — `fn.Recv != nil` short-circuited before the body was ever
+// walked) and calls whose target lives in a DIFFERENT package (previously
+// discarded via a `target.Pkg() != pkg.Types` filter). See
+// `extractReferences` and `Reference.OwnerRecv`/`Reference.TargetPkg` in
+// serialize.go. A pre-v3 binary silently reports an empty same-package,
+// free-function-only call graph, indistinguishable from a package that
+// genuinely makes no such calls.
+const SchemaVersion = 3
 
 // Output is the root of the emitted JSON document.
 type Output struct {
@@ -337,10 +346,21 @@ func extractPackage(pkg *packages.Package, candidates []interfaceCandidate) *Pac
 	return p
 }
 
-// extractReferences walks function bodies with go/types' Uses table. This is
-// deliberately not a spelling scan: Uses excludes strings, comments, and
-// shadowed locals, and only package-level functions in this package are
-// emitted as graph targets.
+// extractReferences walks function AND method bodies with go/types' Uses
+// table, recording calls to free (non-method) package-level functions —
+// same-package or cross-package alike. This is deliberately not a spelling
+// scan: Uses excludes strings, comments, and shadowed locals.
+//
+// Two gaps this closes relative to the previous version:
+//   - Method bodies were skipped entirely (`fn.Recv != nil` returned false
+//     before ever inspecting the body), so a call from inside a method —
+//     `func (s *Server) Handle() { validate() }` — was never recorded, even
+//     though `validate` is an ordinary same-package function call.
+//   - A call target in a different package (`target.Pkg() != pkg.Types`) was
+//     discarded outright, so the cross-package call graph was empty by
+//     construction. `TargetPkg` now carries that package's import path
+//     instead; see `Reference.TargetPkg`'s doc for why the routing decision
+//     belongs on the Rust side, not here.
 func extractReferences(pkg *packages.Package) []*Reference {
 	var refs []*Reference
 	for _, file := range pkg.Syntax {
@@ -349,11 +369,8 @@ func extractReferences(pkg *packages.Package) []*Reference {
 			if !ok || fn.Body == nil || fn.Name == nil {
 				return true
 			}
-			if fn.Recv != nil {
-				return false
-			}
-			owner, ok := pkg.TypesInfo.Defs[fn.Name].(*types.Func)
-			if !ok || owner.Pkg() != pkg.Types {
+			owner, ownerRecv, ok := referenceOwner(pkg, fn)
+			if !ok {
 				return true
 			}
 			ast.Inspect(fn.Body, func(child ast.Node) bool {
@@ -362,14 +379,26 @@ func extractReferences(pkg *packages.Package) []*Reference {
 					return true
 				}
 				target, ok := pkg.TypesInfo.Uses[ident].(*types.Func)
-				if !ok || target.Pkg() != pkg.Types || target == owner {
+				if !ok || target == owner {
 					return true
+				}
+				// Only free functions are tracked as targets; a selector
+				// call through a method (`x.Foo()`) resolves to a *types.Func
+				// whose signature carries a receiver — skip it (see
+				// Reference.Target's doc).
+				if sig, ok := target.Type().(*types.Signature); ok && sig.Recv() != nil {
+					return true
+				}
+				targetPkg := ""
+				if p := target.Pkg(); p != nil && p != pkg.Types {
+					targetPkg = p.Path()
 				}
 				start := pkg.Fset.PositionFor(ident.Pos(), false).Offset
 				end := pkg.Fset.PositionFor(ident.End(), false).Offset
 				file := pkg.Fset.PositionFor(ident.Pos(), false).Filename
 				refs = append(refs, &Reference{
-					Owner: owner.Name(), Target: target.Name(),
+					Owner: owner.Name(), OwnerRecv: ownerRecv,
+					Target: target.Name(), TargetPkg: targetPkg,
 					File: file, Start: start, End: end,
 				})
 				return true
@@ -390,6 +419,35 @@ func extractReferences(pkg *packages.Package) []*Reference {
 		return refs[i].Target < refs[j].Target
 	})
 	return refs
+}
+
+// referenceOwner resolves the *types.Func for a FuncDecl — a package-level
+// function or a method — and, for a method, its bare receiver type name (so
+// the Rust side can key into GoId::Member rather than GoId::Item; see
+// Reference.OwnerRecv). ok is false only when go/types could not resolve the
+// declaration to a *types.Func defined in this package, which should not
+// happen for any *ast.FuncDecl the type-checker accepted.
+func referenceOwner(pkg *packages.Package, fn *ast.FuncDecl) (owner *types.Func, recvType string, ok bool) {
+	obj, ok := pkg.TypesInfo.Defs[fn.Name].(*types.Func)
+	if !ok || obj.Pkg() != pkg.Types {
+		return nil, "", false
+	}
+	if fn.Recv == nil {
+		return obj, "", true
+	}
+	sig, ok := obj.Type().(*types.Signature)
+	if !ok || sig.Recv() == nil {
+		return nil, "", false
+	}
+	t := sig.Recv().Type()
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return nil, "", false
+	}
+	return obj, named.Obj().Name(), true
 }
 
 // scanBuildConstraints is the source-level fallback for declarations that

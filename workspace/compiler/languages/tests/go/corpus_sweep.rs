@@ -15,7 +15,10 @@
 //! oracle's own per-package `decls` count, summed, and re-derived by a
 //! *second*, separate invocation of the oracle binary — not the one
 //! `produce()` made internally) rather than against a bare non-zero check,
-//! and the oracle's own `errors` array is asserted empty.
+//! and the oracle's own `errors` array is asserted to contain no diagnostics in
+//! non-test source (errors confined to `_test.go` files are tolerated, since
+//! example/test files routinely reference undefined placeholder identifiers
+//! that are not part of the package API this sweep lowers).
 //!
 //! This intentionally does not abort on the first failure: the whole point
 //! of a first sweep is to find every defect in one pass, not stop at the
@@ -282,10 +285,22 @@ fn run_entry(entry: &Entry) -> Outcome {
     }
     let root = writable_entry_root(entry, &src);
     if !root.join("go.mod").is_file() {
-        return Outcome::Fail {
-            stage: "preflight",
-            chain: format!("no go.mod at {} (source: {})", root.display(), src.display()),
-        };
+        // Pre-modules packages (`github.com/pkg/errors` v0.8.1/v0.9.1, kept for
+        // lineage testing) ship no `go.mod`. Synthesize a minimal one — exactly
+        // what `go mod init <module>` does, and how a user would index such a
+        // checkout — so the module-aware toolchain can load it. Written into the
+        // writable copy, never the read-only `result/` source. These packages
+        // are dependency-free (stdlib only), so `GOPROXY=off` resolution needs
+        // nothing further.
+        if let Err(e) = std::fs::write(
+            root.join("go.mod"),
+            format!("module {}\n\ngo 1.16\n", entry.module),
+        ) {
+            return Outcome::Fail {
+                stage: "preflight",
+                chain: format!("synthesizing go.mod at {} failed: {e}", root.display()),
+            };
+        }
     }
 
     // SAFETY: single-value env var read immediately by the subprocess this
@@ -318,10 +333,23 @@ fn run_entry(entry: &Entry) -> Outcome {
             };
         }
     };
-    if !oracle_output.errors.is_empty() {
+    // Type errors confined to `_test.go` files are tolerated. Example and test
+    // sources routinely reference undefined placeholder identifiers
+    // (`samber/lo`'s `lo_example_test.go` uses a bare `foo`), which are not
+    // defects in the package's own API surface — the only thing this sweep
+    // lowers. Fail only on diagnostics in non-test source, where an error means
+    // the real declarations this sweep asserts on may be missing or mis-typed.
+    // Error format is `<path>:<line>:<col>: <message>`, so the path is the span
+    // before the first `:`.
+    let non_test_errors: Vec<&String> = oracle_output
+        .errors
+        .iter()
+        .filter(|e| !e.split(':').next().unwrap_or(e).ends_with("_test.go"))
+        .collect();
+    if !non_test_errors.is_empty() {
         return Outcome::Fail {
             stage: "oracle diagnostics",
-            chain: format!("oracle reported errors: {:?}", oracle_output.errors),
+            chain: format!("oracle reported errors in non-test source: {non_test_errors:?}"),
         };
     }
     let oracle_packages = oracle_output.packages.len();

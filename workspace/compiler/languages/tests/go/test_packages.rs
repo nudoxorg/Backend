@@ -215,13 +215,14 @@ fn go_oracle_records_excluded_build_tagged_exported_declarations() {
     );
     let json: serde_json::Value =
         serde_json::from_slice(&oracle_output.stdout).expect("oracle output must be JSON");
+    // `build_tag_fixture` lays the `probe` package at the module root, so its
+    // import path is the module path itself — a root package's import path IS
+    // the module path (verified against both the current and prior oracle). The
+    // earlier `{MODULE}/probe` spelling assumed a `probe/` subdirectory that the
+    // fixture does not create.
     let package = json["packages"]
         .as_array()
-        .and_then(|packages| {
-            packages
-                .iter()
-                .find(|p| p["importPath"] == format!("{MODULE}/probe"))
-        })
+        .and_then(|packages| packages.iter().find(|p| p["importPath"] == MODULE))
         .expect("probe package must be present");
 
     assert!(
