@@ -32,9 +32,16 @@
 //!   defined in another lowers to `TypeData::Nominal("Foo")`, which
 //!   `types::lower_nominal` can only resolve if `"Foo"` (after stripping any
 //!   dotted prefix) is a *string match* against a fully-qualified id this
-//!   same package declared. Import aliasing (`import numpy as np`) is not
-//!   unwound, so `np.ndarray` never matches a same-package id and always
-//!   degrades through the cross-package `Type::Any` fallback.
+//!   same package declared.
+//!
+//!   An **aliased** import (`import numpy as np`, `from .core import
+//!   Context as Ctx`) IS unwound — see [`AliasMap`] — because the `as`
+//!   clause makes the local name a pure syntactic fiction: nothing in a
+//!   later pass, or in the string `"np.ndarray"` itself, can recover that
+//!   `np` means `numpy`. An **unaliased** import is deliberately left alone:
+//!   `from .core import Context` used elsewhere as bare `Context` already
+//!   reaches `types::lower_nominal`'s suffix-index fallback (case 3), and a
+//!   full unaliased-name import graph is still not walked.
 //! - Forward-reference strings (`x: "Foo"`) are recorded as
 //!   `TypeData::Nominal("Foo")` verbatim, without re-parsing the string as a
 //!   nested type expression. A forward reference to something more complex
@@ -296,7 +303,16 @@ fn extract_module(
     let documentation = parsed_doc.as_ref().and_then(ParsedDocstring::documentation);
 
     let typevars = collect_typevar_names(&module.body, source);
-    let items = walk_scope(&module.body, &module_name, source, &typevars, false, true);
+    let aliases = collect_import_aliases(&module.body, &module_name);
+    let items = walk_scope(
+        &module.body,
+        &module_name,
+        source,
+        &typevars,
+        &aliases,
+        false,
+        true,
+    );
     let references = collect_references(&module.body, &items, &module_name, source);
 
     ModuleData {
@@ -424,6 +440,201 @@ fn imported_call_targets(source: &str, module: &str) -> HashMap<String, PythonId
     targets
 }
 
+// ---------------------------------------------------------------------------
+// Import/alias map — canonicalizing an aliased use-site spelling
+// ---------------------------------------------------------------------------
+
+/// Local name → canonical dotted name, built from this module's own **aliased**
+/// `import … as …` / `from … import … as …` statements.
+///
+/// # Why this exists
+///
+/// The syntactic front end otherwise records exactly what the source
+/// spelled: `import numpy as np` then `x: np.ndarray` extracts as
+/// `TypeData::Nominal("np.ndarray")` — grammatically faithful, semantically
+/// wrong. `np` is a local binding this one module invented; the durable
+/// cross-package join key `types::lower_nominal` needs is the real
+/// distribution spelling (`numpy.ndarray`), or a resolver keyed by real
+/// package names can never find `np`. Likewise `from .core import Context as
+/// Ctx` binds `Ctx` to a same-package declaration
+/// (`refs_fixture.core.Context`) that `lower_nominal` can only recognize by
+/// its fully-qualified id — `Ctx` shares no dotted suffix with it at all.
+///
+/// [`collect_import_aliases`] builds this map once per module from its
+/// top-level `import`/`from import` statements; [`rewrite_aliases`] applies
+/// it to a fully-built [`TypeData`] annotation before it is stored, so every
+/// downstream reader (`emit/mod.rs`, `types::lower_nominal`) only ever sees
+/// the canonical spelling — never the local alias.
+///
+/// # What is NOT modeled
+///
+/// - Only **aliased** bindings (an explicit `as` clause) are recorded. A
+///   plain `from .core import Context` (no alias) is left alone: used
+///   elsewhere as bare `Context`, it already reaches
+///   `types::lower_nominal`'s suffix-index fallback (case 3) correctly, and
+///   widening this map to unaliased names risks resolving a genuinely
+///   ambiguous short name (two same-named classes in different modules) with
+///   more confidence than the import graph actually supports — see this
+///   file's module doc, "What this cannot do".
+/// - Only direct module-level statements are walked — one hidden behind `if
+///   TYPE_CHECKING:` or inside a function body is not seen, matching this
+///   file's existing "only direct children of a module … are declarations"
+///   policy.
+/// - A local name rebound after the import (`np = something_else`) is not
+///   tracked; the import is assumed to hold for the rest of the module. Same
+///   "good enough, not a checker" tradeoff the rest of this front end makes.
+/// - `import a.b.c` (no `as`) binds the top name `a` in real Python; since no
+///   `as` clause is present here, no entry is recorded for it. `dotted_name`
+///   already reproduces `a.b.c.Whatever` verbatim in that case, and case 4 in
+///   `lower_nominal` handles an unaliased dotted external name correctly —
+///   only an ALIASED import needs a rewrite.
+#[derive(Debug, Default, Clone)]
+struct AliasMap {
+    names: HashMap<String, String>,
+}
+
+impl AliasMap {
+    fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    /// Rewrite a dotted spelling's head segment through the map, if bound.
+    /// `np.ndarray` with `np → numpy` becomes `numpy.ndarray`; a bare aliased
+    /// name (`Ctx → refs_fixture.core.Context`) rewrites whole.
+    fn resolve(&self, dotted: &str) -> Option<String> {
+        let (head, rest) = match dotted.split_once('.') {
+            Some((h, r)) => (h, Some(r)),
+            None => (dotted, None),
+        };
+        let canonical = self.names.get(head)?;
+        Some(match rest {
+            Some(r) => format!("{canonical}.{r}"),
+            None => canonical.clone(),
+        })
+    }
+}
+
+/// Walk `body`'s direct children for aliased `import`/`from import`
+/// statements and build the local-name → canonical-dotted-name map. See
+/// [`AliasMap`]'s doc for exactly what is and is not recorded.
+///
+/// The relative-import resolution (`level`/dots → package prefix) mirrors
+/// [`imported_call_targets`]'s text-based version, but reads it straight off
+/// the AST's `StmtImportFrom::level` rather than counting leading `.`
+/// characters in a textually re-split line — no risk of the two drifting
+/// apart on an edge case the text scan mishandles.
+fn collect_import_aliases(body: &[Stmt], module: &str) -> AliasMap {
+    let mut names = HashMap::new();
+    let package = module.rsplit_once('.').map_or("", |(p, _)| p);
+
+    for stmt in body {
+        match stmt {
+            Stmt::Import(imp) => {
+                for alias in &imp.names {
+                    if let Some(asname) = &alias.asname {
+                        names.insert(asname.as_str().to_owned(), alias.name.as_str().to_owned());
+                    }
+                }
+            }
+            Stmt::ImportFrom(imp) => {
+                let dots = imp.level as usize;
+                let mut base = package.to_owned();
+                for _ in 1..dots {
+                    base = base
+                        .rsplit_once('.')
+                        .map_or_else(String::new, |(parent, _)| parent.to_owned());
+                }
+                let tail = imp.module.as_ref().map(|m| m.as_str()).unwrap_or("");
+                let origin = if dots > 0 {
+                    if tail.is_empty() {
+                        base
+                    } else if base.is_empty() {
+                        tail.to_owned()
+                    } else {
+                        format!("{base}.{tail}")
+                    }
+                } else {
+                    tail.to_owned()
+                };
+                for alias in &imp.names {
+                    let name = alias.name.as_str();
+                    if name == "*" {
+                        continue;
+                    }
+                    let Some(asname) = &alias.asname else {
+                        continue;
+                    };
+                    let canonical = if origin.is_empty() {
+                        name.to_owned()
+                    } else {
+                        format!("{origin}.{name}")
+                    };
+                    names.insert(asname.as_str().to_owned(), canonical);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    AliasMap { names }
+}
+
+/// Rewrite every `TypeData::Nominal` spelling in a fully-built annotation
+/// through `aliases`, so an aliased use-site spelling (`np.ndarray`, `Ctx`)
+/// reaches `types::lower_nominal` already canonicalized (`numpy.ndarray`,
+/// `refs_fixture.core.Context`) instead of the local binding the author
+/// happened to type.
+///
+/// Applied once, after `expr_to_type`/`tuple_or_single` has already built
+/// the whole tree, rather than threaded as an extra parameter into every
+/// intermediate expression-walking function (`expr_to_type`,
+/// `subscript_to_type`, `tuple_or_single`, `flatten_union`,
+/// `annotated_type`): this recursion mirrors exactly the tree shapes those
+/// functions produce, so one post-pass over the finished `TypeData` reaches
+/// every `Nominal` a threaded parameter would have, for a fraction of the
+/// signature churn.
+fn rewrite_aliases(ty: TypeData, aliases: &AliasMap) -> TypeData {
+    if aliases.is_empty() {
+        return ty;
+    }
+    match ty {
+        TypeData::Nominal(name) => {
+            TypeData::Nominal(aliases.resolve(&name).unwrap_or(name))
+        }
+        TypeData::Apply { base, args } => TypeData::Apply {
+            base: Box::new(rewrite_aliases(*base, aliases)),
+            args: args
+                .into_iter()
+                .map(|a| rewrite_aliases(a, aliases))
+                .collect(),
+        },
+        TypeData::Union(members) => TypeData::Union(
+            members
+                .into_iter()
+                .map(|m| rewrite_aliases(m, aliases))
+                .collect(),
+        ),
+        TypeData::Intersection(members) => TypeData::Intersection(
+            members
+                .into_iter()
+                .map(|m| rewrite_aliases(m, aliases))
+                .collect(),
+        ),
+        TypeData::Tuple(elems) => TypeData::Tuple(
+            elems
+                .into_iter()
+                .map(|e| rewrite_aliases(e, aliases))
+                .collect(),
+        ),
+        TypeData::Slice(inner) => TypeData::Slice(Box::new(rewrite_aliases(*inner, aliases))),
+        TypeData::Annotated { inner, metadata } => TypeData::Annotated {
+            inner: Box::new(rewrite_aliases(*inner, aliases)),
+            metadata,
+        },
+        other => other,
+    }
+}
+
 /// Extract the module/class/function's own leading docstring, if its first
 /// statement is a bare string-literal expression statement.
 fn leading_docstring(body: &[Stmt]) -> Option<&str> {
@@ -502,6 +713,7 @@ fn walk_scope(
     parent: &str,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     is_method_scope: bool,
     include_bindings: bool,
 ) -> Vec<ItemData> {
@@ -519,6 +731,7 @@ fn walk_scope(
                     parent,
                     source,
                     typevars,
+                    aliases,
                     is_method_scope,
                 ));
             }
@@ -539,12 +752,12 @@ fn walk_scope(
             Stmt::ClassDef(c) => {
                 flush(&mut pending, &mut items, &mut declared);
                 if declared.insert(c.name.as_str().to_owned()) {
-                    items.push(extract_class(c, parent, source, typevars));
+                    items.push(extract_class(c, parent, source, typevars, aliases));
                 }
             }
             Stmt::Assign(_) | Stmt::AnnAssign(_) | Stmt::TypeAlias(_) if include_bindings => {
                 flush(&mut pending, &mut items, &mut declared);
-                if let Some(item) = binding_item(stmt, parent, source, typevars)
+                if let Some(item) = binding_item(stmt, parent, source, typevars, aliases)
                     && declared.insert(item.name.clone())
                 {
                     items.push(item);
@@ -583,6 +796,7 @@ fn build_function_group(
     parent: &str,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     is_method_scope: bool,
 ) -> ItemData {
     let first = group[0];
@@ -613,6 +827,7 @@ fn build_function_group(
             effective[0],
             source,
             typevars,
+            aliases,
             is_method_scope,
             doc.as_ref(),
         ))
@@ -622,7 +837,7 @@ fn build_function_group(
             .enumerate()
             .map(|(i, f)| {
                 let doc = leading_docstring(&f.body).map(docstring::parse);
-                let mut fd = function_data(f, source, typevars, is_method_scope, doc.as_ref());
+                let mut fd = function_data(f, source, typevars, aliases, is_method_scope, doc.as_ref());
                 fd.overload_index = i;
                 fd
             })
@@ -657,6 +872,7 @@ fn function_data(
     f: &StmtFunctionDef,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     is_method_scope: bool,
     doc: Option<&ParsedDocstring>,
 ) -> FunctionData {
@@ -674,6 +890,7 @@ fn function_data(
             ParamKind::PositionalOnly,
             source,
             &local_typevars,
+            aliases,
             doc,
         ));
     }
@@ -683,6 +900,7 @@ fn function_data(
             ParamKind::Normal,
             source,
             &local_typevars,
+            aliases,
             doc,
         ));
     }
@@ -692,6 +910,7 @@ fn function_data(
             ParamKind::Varargs,
             source,
             &local_typevars,
+            aliases,
             doc,
         ));
     }
@@ -701,6 +920,7 @@ fn function_data(
             ParamKind::KeywordOnly,
             source,
             &local_typevars,
+            aliases,
             doc,
         ));
     }
@@ -710,6 +930,7 @@ fn function_data(
             ParamKind::Kwargs,
             source,
             &local_typevars,
+            aliases,
             doc,
         ));
     }
@@ -732,8 +953,8 @@ fn function_data(
     let return_ty = f
         .returns
         .as_deref()
-        .map(|e| expr_to_type(e, source, &local_typevars));
-    let generics = pep695_generics(f.type_params.as_deref(), source, &local_typevars);
+        .map(|e| rewrite_aliases(expr_to_type(e, source, &local_typevars), aliases));
+    let generics = pep695_generics(f.type_params.as_deref(), source, &local_typevars, aliases);
     let is_abstract = decorators.iter().any(|d| {
         let last = d.rsplit('.').next().unwrap_or(d);
         last == "abstractmethod" || last == "abstractproperty"
@@ -761,13 +982,14 @@ fn bare_param(
     kind: ParamKind,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     doc: Option<&ParsedDocstring>,
 ) -> ParamData {
     let name = p.name.as_str().to_owned();
     let ty = p
         .annotation
         .as_deref()
-        .map(|e| expr_to_type(e, source, typevars));
+        .map(|e| rewrite_aliases(expr_to_type(e, source, typevars), aliases));
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
     let span = p.range().to_std_range();
     ParamData {
@@ -785,6 +1007,7 @@ fn param_data(
     kind: ParamKind,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     doc: Option<&ParsedDocstring>,
 ) -> ParamData {
     let name = p.parameter.name.as_str().to_owned();
@@ -792,7 +1015,7 @@ fn param_data(
         .parameter
         .annotation
         .as_deref()
-        .map(|e| expr_to_type(e, source, typevars));
+        .map(|e| rewrite_aliases(expr_to_type(e, source, typevars), aliases));
     let has_default = p.default.is_some();
     let doc_description = doc.and_then(|d| d.params.get(&name).cloned());
     // `p.range()` (`ParameterWithDefault`) covers the name, annotation, and
@@ -819,6 +1042,7 @@ fn extract_class(
     parent: &str,
     source: &str,
     module_typevars: &HashSet<String>,
+    aliases: &AliasMap,
 ) -> ItemData {
     let name = c.name.as_str().to_owned();
     let class_id = format!("{parent}.{name}");
@@ -833,11 +1057,11 @@ fn extract_class(
 
     let super_types: Vec<TypeData> = base_exprs
         .iter()
-        .map(|e| expr_to_type(e, source, &typevars))
+        .map(|e| rewrite_aliases(expr_to_type(e, source, &typevars), aliases))
         .collect();
     let base_names: Vec<String> = base_exprs.iter().map(|e| dotted_name(e, source)).collect();
     let form = classify_form(&base_names, &decorators);
-    let generics = pep695_generics(c.type_params.as_deref(), source, &typevars);
+    let generics = pep695_generics(c.type_params.as_deref(), source, &typevars, aliases);
 
     let parsed_doc = leading_docstring(&c.body).map(docstring::parse);
     let documentation = parsed_doc.as_ref().and_then(ParsedDocstring::documentation);
@@ -849,7 +1073,7 @@ fn extract_class(
     // `sqlalchemy`'s `OrderingList._raw_append = collection.adds(1)(_raw_append)`,
     // and both a method and a field declaring the same `PythonId` is a
     // `Lowering::finish` collision, not two distinct members).
-    let scope_items = walk_scope(&c.body, &class_id, source, &typevars, true, false);
+    let scope_items = walk_scope(&c.body, &class_id, source, &typevars, aliases, true, false);
     let method_and_nested_names: HashSet<String> =
         scope_items.iter().map(|i| i.name.clone()).collect();
 
@@ -867,6 +1091,7 @@ fn extract_class(
         &c.body,
         source,
         &typevars,
+        aliases,
         parsed_doc.as_ref(),
         &method_and_nested_names,
     );
@@ -929,6 +1154,7 @@ fn extract_fields(
     body: &[Stmt],
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
     doc: Option<&ParsedDocstring>,
     // Names already claimed by a method or nested class in this same class
     // body. A field whose name collides with one of these is a rebinding of
@@ -951,7 +1177,7 @@ fn extract_fields(
                     continue;
                 }
                 let (ty, is_class_var, is_final) =
-                    annotation_to_field_type(&a.annotation, source, typevars);
+                    annotation_to_field_type(&a.annotation, source, typevars, aliases);
                 fields.push(FieldData {
                     documentation: doc.and_then(|d| d.params.get(&name).cloned()),
                     name,
@@ -1002,20 +1228,27 @@ fn annotation_to_field_type(
     ann: &Expr,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
 ) -> (Option<TypeData>, bool, bool) {
     if let Expr::Subscript(sub) = ann {
         let base_full = dotted_name(&sub.value, source);
         match last_segment(&base_full) {
             "ClassVar" => {
                 return (
-                    Some(expr_to_type(&sub.slice, source, typevars)),
+                    Some(rewrite_aliases(
+                        expr_to_type(&sub.slice, source, typevars),
+                        aliases,
+                    )),
                     true,
                     false,
                 );
             }
             "Final" => {
                 return (
-                    Some(expr_to_type(&sub.slice, source, typevars)),
+                    Some(rewrite_aliases(
+                        expr_to_type(&sub.slice, source, typevars),
+                        aliases,
+                    )),
                     false,
                     true,
                 );
@@ -1028,7 +1261,11 @@ fn annotation_to_field_type(
     {
         return (None, false, true);
     }
-    (Some(expr_to_type(ann, source, typevars)), false, false)
+    (
+        Some(rewrite_aliases(expr_to_type(ann, source, typevars), aliases)),
+        false,
+        false,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,6 +1277,7 @@ fn binding_item(
     parent: &str,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
 ) -> Option<ItemData> {
     match stmt {
         // PEP 695 `type X = ...`.
@@ -1048,8 +1286,11 @@ fn binding_item(
                 return None;
             };
             let name = name_expr.id.as_str().to_owned();
-            let generics = pep695_generics(ta.type_params.as_deref(), source, typevars);
-            let target = Some(expr_to_type(&ta.value, source, typevars));
+            let generics = pep695_generics(ta.type_params.as_deref(), source, typevars, aliases);
+            let target = Some(rewrite_aliases(
+                expr_to_type(&ta.value, source, typevars),
+                aliases,
+            ));
             Some(plain_item(
                 parent,
                 name,
@@ -1071,7 +1312,7 @@ fn binding_item(
                 let target = a
                     .value
                     .as_deref()
-                    .map(|v| expr_to_type(v, source, typevars));
+                    .map(|v| rewrite_aliases(expr_to_type(v, source, typevars), aliases));
                 return Some(plain_item(
                     parent,
                     name,
@@ -1082,7 +1323,10 @@ fn binding_item(
                     span,
                 ));
             }
-            let ty = Some(expr_to_type(&a.annotation, source, typevars));
+            let ty = Some(rewrite_aliases(
+                expr_to_type(&a.annotation, source, typevars),
+                aliases,
+            ));
             let value = a.value.as_deref().map(|v| source[v.range()].to_owned());
             Some(plain_item(
                 parent,
@@ -1186,10 +1430,23 @@ fn pep695_names(tp: Option<&TypeParams>) -> Vec<String> {
         .collect()
 }
 
+/// Lower a PEP 695 `[T: Bound = Default, ...]` clause into [`GenericParamData`].
+///
+/// `aliases` is applied to each bound/default `TypeData` exactly as
+/// [`rewrite_aliases`] is applied to every other type position (param,
+/// return, field, const, alias target, base class) — see that function's
+/// doc. Without this, `def f[T: ac.Base](x: T) -> T` with `import acme as
+/// ac` would lower `T`'s bound to `TypeData::Nominal("ac.Base")`, and
+/// `types::lower_nominal` has no way to know `ac` means `acme`: it would
+/// either resolve to nothing or, worse, collide with an unrelated same-name
+/// local symbol. `expr_to_type` builds the bound/default trees the same way
+/// it builds every other annotation, so the same one-pass rewrite over the
+/// finished `TypeData` reaches them.
 fn pep695_generics(
     tp: Option<&TypeParams>,
     source: &str,
     typevars: &HashSet<String>,
+    aliases: &AliasMap,
 ) -> Vec<GenericParamData> {
     let Some(tp) = tp else { return Vec::new() };
     tp.iter()
@@ -1199,12 +1456,12 @@ fn pep695_generics(
                 bound: v
                     .bound
                     .as_deref()
-                    .map(|b| expr_to_type(b, source, typevars)),
+                    .map(|b| rewrite_aliases(expr_to_type(b, source, typevars), aliases)),
                 constraints: Vec::new(),
                 default: v
                     .default
                     .as_deref()
-                    .map(|d| expr_to_type(d, source, typevars)),
+                    .map(|d| rewrite_aliases(expr_to_type(d, source, typevars), aliases)),
             },
             TypeParam::TypeVarTuple(v) => GenericParamData {
                 name: v.name.as_str().to_owned(),
@@ -1213,7 +1470,7 @@ fn pep695_generics(
                 default: v
                     .default
                     .as_deref()
-                    .map(|d| expr_to_type(d, source, typevars)),
+                    .map(|d| rewrite_aliases(expr_to_type(d, source, typevars), aliases)),
             },
             TypeParam::ParamSpec(v) => GenericParamData {
                 name: v.name.as_str().to_owned(),
@@ -1222,7 +1479,7 @@ fn pep695_generics(
                 default: v
                     .default
                     .as_deref()
-                    .map(|d| expr_to_type(d, source, typevars)),
+                    .map(|d| rewrite_aliases(expr_to_type(d, source, typevars), aliases)),
             },
         })
         .collect()

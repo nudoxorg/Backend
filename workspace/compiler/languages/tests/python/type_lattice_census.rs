@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 use nudox_ir::{
     change::{EcosystemId, PackageLineageId, PackageName},
     entry::EntryInner,
+    index::Ref,
     kind::Kind,
     kinds::{
         Type, UnknownType,
@@ -149,6 +150,22 @@ fn visit(ty: &Type, c: &mut Census) {
                 UnknownType::UnresolvedExternal { .. } => c.external_names += 1,
                 _ => {}
             }
+        }
+        // The "cross-package nominal" fact the census was built to measure used
+        // to arrive as `UnknownType::UnresolvedExternal`. Seal-time corpus
+        // linking (`CorpusResolver`) now lowers those to a *named*
+        // `Ref::Foreign` carrying a real `ForeignKey`, tagged by the target's
+        // ecosystem (`python/types.rs`): `"pypi"` for genuine third-party (the
+        // successor of unresolved-external), `"python-stdlib"` for stdlib,
+        // `"python"` for the builtin universe. Counting them here keeps the
+        // fact observable rather than reporting it as vanished.
+        Type::Nominal(Ref::Foreign { key, .. }) => {
+            let tag = match key.origin.ecosystem().as_str() {
+                "pypi" => "cross-package-foreign",
+                "python-stdlib" => "stdlib-foreign",
+                _ => "builtin-foreign",
+            };
+            *c.reasons.entry(tag).or_default() += 1;
         }
         _ => {}
     }
@@ -299,6 +316,10 @@ fn the_type_lattice_separates_four_real_facts_across_the_pypi_corpus() {
     let unannotated = total.count("unannotated");
     let dynamic = total.count("dynamically-typed");
     let local = total.count("unresolved-local-name");
+    // Once `unresolved-external` (~23.2%); seal-time corpus linking now resolves
+    // these to named pypi `Ref::Foreign`, so the fact is counted under
+    // `cross-package-foreign` and the old gap should have collapsed to near zero.
+    let cross_package = total.count("cross-package-foreign");
     let external = total.count("unresolved-external");
 
     assert!(
@@ -311,8 +332,10 @@ fn the_type_lattice_separates_four_real_facts_across_the_pypi_corpus() {
         "explicit `typing.Any` was 8.7% of the measured census; got {dynamic}"
     );
     assert!(
-        external > 1_000,
-        "cross-package nominals were 23.2% of the measured census; got {external}"
+        cross_package > 1_000,
+        "cross-package nominals (~23.2% of the census; formerly `UnresolvedExternal`, \
+         now named pypi `Ref::Foreign` after seal-time corpus linking) must still \
+         occur in quantity; got {cross_package} (unresolved-external now {external})"
     );
     assert!(
         local > 500,

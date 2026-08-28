@@ -18,8 +18,10 @@
 //! | `Foo[T, U]` (same-pkg)     | `Type::Apply { base: Nominal(..), args }`    |
 //! | `Foo` (same-pkg nominal)   | `Type::Nominal(Ref::Intro(..))`              |
 //! | `int`, `float`, `bool`…    | `Type::Primitive(…)`                         |
+//! | `dict`, `list`, `object`…  | `Type::Nominal(Ref::Foreign{key,..})` (universe) |
 //! | `Foo` (bare, declared here)| `Type::Unknown(UnresolvedLocalName{name})`   |
-//! | `Foo` (nominal, external)  | `Type::Unknown(UnresolvedExternal{name})`    |
+//! | `Foo` (nominal, stdlib)    | `Type::Nominal(Ref::Foreign{key,..})` (python-stdlib) |
+//! | `Foo` (nominal, external)  | `Type::Nominal(Ref::Foreign{key,..})` (pypi) |
 //! | `Annotated[T, meta…]`      | `Type::Annotated { inner: lower(T), …}`      |
 //! | unhandled `Expr` / `Literal[...]` | `Type::Unknown(NoIrRepresentation{construct})` |
 //!
@@ -88,17 +90,21 @@
 //! # Note on unresolved nominals
 //!
 //! A name this package does not declare under that exact id lowers to a
-//! **named unknown**, never to a bare `Type::Any`.  Which one depends on a
-//! fact the old code never checked:
+//! **named** representation, never to a bare `Type::Any`.  Which one depends
+//! on a fact the old code never checked:
 //!
 //! - The name is a dotted suffix of some id this package *does* declare
 //!   (`Context`, where `click.core.Context` exists) →
 //!   `UnknownType::UnresolvedLocalName`.  A within-package import-graph walk
 //!   closes it; no registry is involved.  **13,724 of 20,227 measured
 //!   unresolved nominals — 67.8% — are this case.**
-//! - Otherwise (builtins, stdlib, third-party) →
-//!   `UnknownType::UnresolvedExternal`, which a registry link pass rewrites
-//!   into `Ref::Foreign`.
+//! - Otherwise (builtins, stdlib, third-party) → a *named* `Ref::Foreign`
+//!   carrying a pypi `ForeignKey` (`ForeignOrigin::Namespace`), emitted right
+//!   here through the lowering sink. This used to be
+//!   `UnknownType::UnresolvedExternal`, a bare string with no `ForeignKey`
+//!   behind it anywhere in the Python producer — a cross-package type could
+//!   never actually be linked by a later corpus pass. The key's `target`
+//!   starts `None`; a resolver fills it in.
 //!
 //! Both keep the source spelling.  Erasing it was never a harmless
 //! degradation: `Skeleton` encoded `Type::Any` as a single byte, so every
@@ -106,7 +112,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use nudox_ir::build::EcosystemId;
 use nudox_ir::entry::AttrTok;
+use nudox_ir::foreign::ForeignKey;
 use nudox_ir::kinds::ty::{Primitive, TupleElement, Type, Width};
 use nudox_ir::kinds::{GenericParam, Record};
 use nudox_ir::lower::Lowering;
@@ -181,6 +189,20 @@ pub struct KnownIds {
     /// bound to one of them. Depth is bounded by module nesting, so this is a
     /// small constant factor over `ids`.
     suffixes: HashMap<String, usize>,
+    /// The package's own top-level module segment (`click.core.Group` →
+    /// `click`), if `ids` is non-empty. Every id this package declares shares
+    /// the same first dotted segment — `syntax::module_dotted_name` derives
+    /// every module name from the same package root — so any one id's first
+    /// segment is the package's root for all of them.
+    ///
+    /// This is what lets `lower_nominal` recognize a **root re-export
+    /// spelling**: `mypkg.Context` where the package declares
+    /// `mypkg.core.Context` and re-exports it at the package root (`from
+    /// .core import Context` in `mypkg/__init__.py`). See that function's
+    /// case 3.5 for why the alternative — falling through to case 4 — used to
+    /// mint a self-referential `Ref::Foreign` whose namespace was the
+    /// package's own name.
+    root: Option<String>,
 }
 
 impl KnownIds {
@@ -197,7 +219,21 @@ impl KnownIds {
                 *suffixes.entry(rest.to_owned()).or_default() += 1;
             }
         }
-        Self { ids, suffixes }
+        let root = ids
+            .iter()
+            .next()
+            .map(|id| id.split('.').next().unwrap_or(id).to_owned());
+        Self {
+            ids,
+            suffixes,
+            root,
+        }
+    }
+
+    /// The package's own top-level module segment, or `None` if this
+    /// package declares nothing.
+    pub fn root(&self) -> Option<&str> {
+        self.root.as_deref()
     }
 
     /// Does this package declare exactly this fully-qualified id?
@@ -282,7 +318,7 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
             if let TypeData::Nominal(base_name) = base.as_ref() {
                 let clean = strip_loc(base_name);
                 // First check if it's a builtin — builtins always win.
-                let builtin = lower_builtin(clean);
+                let builtin = lower_builtin(clean, out);
                 if let Some(prim) = builtin {
                     // Builtin base with args: keep Apply wrapper with lowered args.
                     let mut lowered_args = Vec::with_capacity(args.len());
@@ -297,22 +333,28 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
                         args: lowered_args.into_boxed_slice(),
                     };
                 }
-                // Check same-package nominal for generic application.
+                // `lower_nominal` already resolves `base_name` fully — same-
+                // package (`Nominal(Ref::Local)`), a local-short-name gap
+                // (`Unknown(UnresolvedLocalName)`), or cross-package
+                // (`Nominal(Ref::Foreign)`, case 4) — and each of those is
+                // already a complete, correctly-formed `Type`. There is no
+                // second "is this same-package?" branch to take: wrap
+                // whatever it produced in `Apply` when there are args.
+                //
+                // This used to re-derive the same-package case by hand
+                // (`matches!(base_ty, Type::Nominal(_))` then a fresh
+                // `out.apply::<Record>(id, ..)` call), which was already
+                // redundant — `out.apply` is exactly `nominal` + `Apply` —
+                // and broke outright once case 4 started also returning
+                // `Type::Nominal(_)`: `list[int]` with `list` genuinely
+                // external took the "same-package" branch, called
+                // `out.apply::<Record>("list", ..)`, and `finish()` failed
+                // with `Undeclared(["list"])` because nothing declares
+                // `list` in this package. Foreign nominals must never go
+                // through `out.apply`/`out.refer` (same-package only, wants
+                // a declaration); `base_ty` already carries the right `Ref`
+                // kind, so just wrap it.
                 let base_ty = lower_nominal(base_name, out, known_ids);
-                if matches!(base_ty, Type::Nominal(_)) {
-                    // Same-package base: build Apply via out.apply.
-                    let id = PythonId::new(clean.to_owned());
-                    let mut lowered_args = Vec::with_capacity(args.len());
-                    for arg in args {
-                        lowered_args.push(lower_type(arg, out, known_ids));
-                    }
-                    return out.apply::<Record>(id, lowered_args);
-                }
-                // Unresolved base — `lower_nominal` already recorded *why*
-                // (local short name vs. genuinely external) and kept the
-                // spelling. Keep the `Apply` wrapper when there are args, so
-                // `Foo[int]` and `Foo[str]` stay distinguishable even while
-                // `Foo` itself is unresolved.
                 if args.is_empty() {
                     return base_ty;
                 }
@@ -412,10 +454,16 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
 /// Lower a nominal Python type name into the appropriate IR type.
 ///
 /// Resolution priority:
-/// 1. Builtin primitives (int, str, bool, …) → `Type::Primitive`
+/// 1. Builtins (int, str, bool, dict, object, …) → `Type::Primitive` or a
+///    universe `Ref::Foreign`, per [`lower_builtin`] — never pypi.
 /// 2. Exact same-package id → `out.nominal::<Record>(id)`
 /// 3. A dotted **suffix** of some same-package id → [`UnknownType::UnresolvedLocalName`]
-/// 4. Everything else → [`UnknownType::UnresolvedExternal`]
+/// 3.5. The package's own root re-exporting a short name (`mypkg.Context` where
+///    `mypkg.core.Context` is declared) → also [`UnknownType::UnresolvedLocalName`],
+///    never case 4's `Ref::Foreign` — see the check's own comment for why.
+/// 4. Everything else → a named `Ref::Foreign` via `out.nominal_import(..)`,
+///    tagged `"python-stdlib"` for a curated stdlib top-level module (see
+///    [`is_stdlib_top_level_module`]) or `"pypi"` for genuine third-party
 ///
 /// # Why 3 and 4 are different variants
 ///
@@ -426,16 +474,23 @@ pub fn lower_type(ty: &TypeData, out: &mut Lowering<PythonId>, known_ids: &Known
 /// those; walking the import graph is. Reporting them as "needs registry
 /// linking" sent two thirds of the work to the wrong pass.
 ///
-/// Neither case emits a `Ref`. Case 3 knows the name is *recoverable* here,
-/// not *which* declaration it names — `Context` can be declared in several
-/// modules and only the import graph picks one. Guessing would mint a wrong
-/// `IntroId`, which is strictly worse than a named gap.
+/// Case 3 never emits a `Ref`: the name is *recoverable* here, not *which*
+/// declaration it names — `Context` can be declared in several modules and
+/// only the import graph picks one. Guessing would mint a wrong `IntroId`,
+/// which is strictly worse than a named gap.
+///
+/// Case 4 is different in kind, not degree: nothing about *which* Python
+/// module declares `acme.Gadget` is ambiguous the way a same-package suffix
+/// is — the dotted name already names a distribution unambiguously, this
+/// producer just cannot see inside it. So it emits a real `Ref::Foreign`
+/// with `target: None`, not a bare unknown: the gap is "not yet linked", not
+/// "not yet identified".
 fn lower_nominal(name: &str, out: &mut Lowering<PythonId>, known_ids: &KnownIds) -> Type {
     // Strip location suffix that pyrefly appends (`builtins.int@418:7-10`).
     let clean = strip_loc(name);
 
     // 1. Builtins always win.
-    if let Some(prim) = lower_builtin(clean) {
+    if let Some(prim) = lower_builtin(clean, out) {
         return prim;
     }
 
@@ -452,16 +507,106 @@ fn lower_nominal(name: &str, out: &mut Lowering<PythonId>, known_ids: &KnownIds)
         return Type::unresolved_local(clean);
     }
 
-    // 4. Genuinely outside this package (builtins, stdlib, third-party). The
-    // oracle supplies no canonical cross-package path, so the spelling is what
-    // we have — and the spelling is kept, because two distinct external types
-    // must not share an encoding.
-    Type::unresolved_external(clean)
+    // 3.5. A **root re-export spelling**: the package's own top-level module
+    // name qualifies a short name it re-exports at the root, e.g. `mypkg`
+    // declares `mypkg.core.Context` and `mypkg/__init__.py` does `from .core
+    // import Context`, so `mypkg.Context` is a real, common way to spell it —
+    // but `mypkg.Context` is neither a known id (the real one is
+    // `mypkg.core.Context`) nor, per guard 1 above, a suffix of one (suffixes
+    // are cut at `.` boundaries: `core.Context` and `Context` are indexed,
+    // `mypkg.Context` is not). Left unhandled, this fell straight through to
+    // case 4, whose `namespace = clean.split('.').next()` is `mypkg` —
+    // this package's OWN name — minting a `Ref::Foreign` that claims the
+    // package imports from itself. That is not a foreign type under a
+    // plausible name; it is a same-package name under a spelling this
+    // module's suffix index was never built to recognize (the index knows
+    // suffixes, not "qualified by our own root").
+    //
+    // Stripping exactly the package's own root and re-running the same
+    // suffix check catches it: `mypkg.Context` strips to `Context`, which
+    // *is* an indexed suffix. Never a `Ref::Intro` here — the same guard 3
+    // reasoning as case 3 applies (a suffix hit is a candidate, not a
+    // resolution; only a within-package import-graph walk picks a single
+    // declaration when a name is ambiguous) — so this is `UnresolvedLocalName`,
+    // not a guessed id, exactly like case 3.
+    if let Some(root) = known_ids.root()
+        && let Some(rest) = clean.strip_prefix(root).and_then(|r| r.strip_prefix('.'))
+        && known_ids.is_local_short_name(rest)
+    {
+        return Type::unresolved_local(rest);
+    }
+
+    // 4. Genuinely outside this package (stdlib or third-party — builtins
+    // were already peeled off in step 1). This used to lower to
+    // `UnknownType::UnresolvedExternal`, a bare string no later pass could
+    // ever link — Python built no `ForeignKey` anywhere, so a cross-package
+    // type could never join. Emit a *named* `Ref::Foreign` instead, via the
+    // lowering sink, exactly the way `UnresolvedLocalName` (case 3) is
+    // exactly right for a within-package gap: `target: None` here is not a
+    // guess at an `IntroId` — see the doc above for why guessing would be
+    // wrong — it is the honest "named, not yet linked" state that
+    // `Ref::Foreign` exists for, and what the corpus pass expects to resolve.
+    //
+    // pyrefly's oracle gives us the dotted name and nothing else: no distro
+    // name, no wheel metadata, no way to know which pypi package publishes
+    // `acme.Gadget`. So the origin is `ForeignOrigin::Namespace` — the
+    // top-level dotted segment (`acme`) is the best available approximation
+    // of the owning distribution — never `ForeignOrigin::Package`, which
+    // would claim a precision the oracle did not give us.
+    //
+    // `path` carries the FULL cleaned name (`acme.Gadget`), not just the
+    // namespace (`acme`): collapsing to the namespace alone would make
+    // `acme.Gadget` and `acme.Widget` hash identically, which is exactly the
+    // collision this module's doc warns against — two distinct external
+    // types must not share an encoding. `display` keeps the spelling as
+    // written, same as the old `UnresolvedExternal` did.
+    //
+    // A stdlib module (`pathlib.Path`, `os.PathLike`) is not a third-party
+    // distribution the way `acme.Gadget` or `requests.Session` is: it ships
+    // with every CPython install, under no pypi project of that name. Tagging
+    // it `ForeignOrigin::Namespace { ecosystem: "pypi", .. }` would claim a
+    // publisher that does not exist and would collide, in a resolver's eyes,
+    // with a real pypi package that happened to share the module's top-level
+    // name. `is_stdlib_top_level_module` routes it to a distinct
+    // `"python-stdlib"` ecosystem instead — same `Namespace` precision (the
+    // oracle still only gives us the top-level segment, not a wheel), but an
+    // ecosystem tag a resolver can key differently from actual pypi lookups.
+    // Only a name that clears that check falls through to genuine `"pypi"`.
+    let namespace = clean.split('.').next().unwrap_or(clean);
+    let ecosystem = if is_stdlib_top_level_module(namespace) {
+        EcosystemId::new("python-stdlib")
+    } else {
+        EcosystemId::new("pypi")
+    };
+    let key = ForeignKey::in_namespace(ecosystem, namespace, clean, clean);
+    out.nominal_import(key)
 }
 
-/// Map a cleaned (loc-stripped) name to a builtin `Type::Primitive`, if
-/// applicable. Returns `None` for anything that is not a known builtin.
-fn lower_builtin(clean: &str) -> Option<Type> {
+/// Map a cleaned (loc-stripped) name to the IR shape of a Python builtin, if
+/// applicable. Returns `None` for anything that is not a known builtin —
+/// crucially, this is checked **before** [`lower_nominal`]'s cross-package
+/// fallback, so a language builtin can never be mistaken for a pypi
+/// distribution (see that function's step 1 and the module doc's guard 2).
+///
+/// # Two different kinds of "builtin", two different IR shapes
+///
+/// Not every name `builtins` declares is honestly the same *kind* of thing:
+///
+/// - `int`, `str`, `bytes`, `complex`, `range`, `slice`, … are opaque value
+///   types with no declaration a resolver could ever usefully point at —
+///   nothing subclasses `int` in a way that matters here, nothing needs to
+///   *link to* the `int` class. These lower to `Type::Primitive`, extending
+///   the escape hatch `bytes`/`None` already used before this change.
+/// - `dict`, `list`, `set`, `frozenset`, `tuple`, `object`, `type`, and
+///   `Callable` are real declared classes/constructs with genuine identity —
+///   MRO, subclassing, `isinstance` — that a `Primitive` would erase for
+///   good. These mint a named `Ref::Foreign` anchored in
+///   `ForeignOrigin::Universe`: "the language itself declares the name; no
+///   package owns it" — the exact move `go/types.rs::go_foreign_key` makes
+///   for `error`/`comparable`. Never `ForeignOrigin::Namespace { ecosystem:
+///   "pypi", .. }` — `dict` is not a pypi distribution, and collapsing it
+///   into one would be the P1 defect this function exists to close.
+fn lower_builtin(clean: &str, out: &mut Lowering<PythonId>) -> Option<Type> {
     match clean {
         "builtins.int" | "int" => Some(Type::Primitive(Primitive::Integer {
             signed: true,
@@ -476,8 +621,285 @@ fn lower_builtin(clean: &str) -> Option<Type> {
         "builtins.NoneType" | "None" | "NoneType" => {
             Some(Type::Primitive(Primitive::Builtin("None".to_owned())))
         }
+        // Opaque value types — same treatment as `bytes` above: real
+        // primitives with no IR-native representation, but nothing a
+        // resolver needs to place a declaration for.
+        "builtins.complex" | "complex" => {
+            Some(Type::Primitive(Primitive::Builtin("complex".to_owned())))
+        }
+        "builtins.bytearray" | "bytearray" => {
+            Some(Type::Primitive(Primitive::Builtin("bytearray".to_owned())))
+        }
+        "builtins.memoryview" | "memoryview" => {
+            Some(Type::Primitive(Primitive::Builtin("memoryview".to_owned())))
+        }
+        "builtins.range" | "range" => {
+            Some(Type::Primitive(Primitive::Builtin("range".to_owned())))
+        }
+        "builtins.slice" | "slice" => {
+            Some(Type::Primitive(Primitive::Builtin("slice".to_owned())))
+        }
+        // Class-shaped builtins — real declared identity, so a named
+        // universe `Ref::Foreign`, not an erasing `Primitive`. `Callable` is
+        // `typing.Callable`, not `builtins.Callable`, but it is exactly as
+        // much "the language itself declares this, no package owns it" as
+        // `dict` is, and the audit that requested this fix groups it with
+        // `dict`/`type` for exactly that reason.
+        "builtins.dict" | "dict" => Some(universe_builtin(out, "dict")),
+        "builtins.list" | "list" => Some(universe_builtin(out, "list")),
+        "builtins.set" | "set" => Some(universe_builtin(out, "set")),
+        "builtins.frozenset" | "frozenset" => Some(universe_builtin(out, "frozenset")),
+        "builtins.tuple" | "tuple" => Some(universe_builtin(out, "tuple")),
+        "builtins.object" | "object" => Some(universe_builtin(out, "object")),
+        "builtins.type" | "type" => Some(universe_builtin(out, "type")),
+        "typing.Callable" | "Callable" => Some(universe_builtin(out, "Callable")),
         _ => None,
     }
+}
+
+/// Mint a named `Ref::Foreign` for a class-shaped Python builtin: the
+/// language itself declares `name`, no pypi package owns it.
+///
+/// `path` and `display` are both the bare builtin name — there is no dotted
+/// qualification to preserve (unlike a real cross-package `acme.Gadget`),
+/// and the `Universe` origin tag is what keeps `dict` from ever encoding
+/// identically to a hypothetical pypi package literally named `dict` (see
+/// `ForeignOrigin::encode`: the origin's ecosystem/tag byte is hashed before
+/// `path`, so `Namespace{"pypi"}` and `Universe{"python"}` can never collide).
+fn universe_builtin(out: &mut Lowering<PythonId>, name: &str) -> Type {
+    out.nominal_import(ForeignKey::in_universe(
+        EcosystemId::new("python"),
+        name,
+        name,
+    ))
+}
+
+/// Is `top_level` the name of a CPython standard-library top-level module or
+/// package (`os`, `pathlib`, `typing`, `collections`, …)?
+///
+/// # Why this exists, and why it is curated rather than derived
+///
+/// Before this check, every dotted name the local-suffix pass (case 3) could
+/// not place — including `pathlib.Path` and `os.PathLike` — fell straight
+/// through to a `ForeignOrigin::Namespace { ecosystem: "pypi", .. }` key,
+/// claiming `pathlib` is a pypi distribution. It is not: it ships with every
+/// CPython install, under no pypi project of that name, and a resolver that
+/// trusted the `pypi` tag could link it to an unrelated real package that
+/// happens to squat the name `pathlib` on PyPI.
+///
+/// There is no oracle signal for "this is stdlib" — pyrefly reports only the
+/// dotted name — so this is a curated list of CPython 3.12 top-level stdlib
+/// module/package names, not a derived one. It covers the common annotation
+/// surface (`os`, `sys`, `typing`, `collections`, `pathlib`, `datetime`,
+/// `asyncio`, …). A name missing from this list degrades to the `"pypi"`
+/// branch, same as before this fix — a false negative here costs exactly one
+/// ecosystem tag on an already-honest, already-linkable `Ref::Foreign`, never
+/// a wrong identity or a dropped reference.
+fn is_stdlib_top_level_module(top_level: &str) -> bool {
+    matches!(
+        top_level,
+        "__future__"
+            | "abc"
+            | "aifc"
+            | "argparse"
+            | "array"
+            | "ast"
+            | "asynchat"
+            | "asyncio"
+            | "asyncore"
+            | "atexit"
+            | "audioop"
+            | "base64"
+            | "bdb"
+            | "binascii"
+            | "bisect"
+            | "builtins"
+            | "bz2"
+            | "calendar"
+            | "cgi"
+            | "cgitb"
+            | "chunk"
+            | "cmath"
+            | "cmd"
+            | "code"
+            | "codecs"
+            | "codeop"
+            | "collections"
+            | "colorsys"
+            | "compileall"
+            | "concurrent"
+            | "configparser"
+            | "contextlib"
+            | "contextvars"
+            | "copy"
+            | "copyreg"
+            | "cProfile"
+            | "csv"
+            | "ctypes"
+            | "curses"
+            | "dataclasses"
+            | "datetime"
+            | "dbm"
+            | "decimal"
+            | "difflib"
+            | "dis"
+            | "doctest"
+            | "email"
+            | "encodings"
+            | "ensurepip"
+            | "enum"
+            | "errno"
+            | "faulthandler"
+            | "fcntl"
+            | "filecmp"
+            | "fileinput"
+            | "fnmatch"
+            | "fractions"
+            | "ftplib"
+            | "functools"
+            | "gc"
+            | "getopt"
+            | "getpass"
+            | "gettext"
+            | "glob"
+            | "graphlib"
+            | "gzip"
+            | "hashlib"
+            | "heapq"
+            | "hmac"
+            | "html"
+            | "http"
+            | "idlelib"
+            | "imaplib"
+            | "imghdr"
+            | "imp"
+            | "importlib"
+            | "inspect"
+            | "io"
+            | "ipaddress"
+            | "itertools"
+            | "json"
+            | "keyword"
+            | "lib2to3"
+            | "linecache"
+            | "locale"
+            | "logging"
+            | "lzma"
+            | "mailbox"
+            | "mailcap"
+            | "marshal"
+            | "math"
+            | "mimetypes"
+            | "mmap"
+            | "modulefinder"
+            | "msilib"
+            | "msvcrt"
+            | "multiprocessing"
+            | "netrc"
+            | "nis"
+            | "nntplib"
+            | "numbers"
+            | "operator"
+            | "optparse"
+            | "os"
+            | "ossaudiodev"
+            | "pathlib"
+            | "pdb"
+            | "pickle"
+            | "pickletools"
+            | "pipes"
+            | "pkgutil"
+            | "platform"
+            | "plistlib"
+            | "poplib"
+            | "posixpath"
+            | "pprint"
+            | "profile"
+            | "pstats"
+            | "pty"
+            | "pwd"
+            | "py_compile"
+            | "pyclbr"
+            | "pydoc"
+            | "queue"
+            | "quopri"
+            | "random"
+            | "re"
+            | "readline"
+            | "reprlib"
+            | "resource"
+            | "rlcompleter"
+            | "runpy"
+            | "sched"
+            | "secrets"
+            | "select"
+            | "selectors"
+            | "shelve"
+            | "shlex"
+            | "shutil"
+            | "signal"
+            | "site"
+            | "smtplib"
+            | "sndhdr"
+            | "socket"
+            | "socketserver"
+            | "spwd"
+            | "sqlite3"
+            | "ssl"
+            | "stat"
+            | "statistics"
+            | "string"
+            | "stringprep"
+            | "struct"
+            | "subprocess"
+            | "sunau"
+            | "symtable"
+            | "sys"
+            | "sysconfig"
+            | "syslog"
+            | "tabnanny"
+            | "tarfile"
+            | "telnetlib"
+            | "tempfile"
+            | "termios"
+            | "textwrap"
+            | "threading"
+            | "time"
+            | "timeit"
+            | "tkinter"
+            | "token"
+            | "tokenize"
+            | "tomllib"
+            | "trace"
+            | "traceback"
+            | "tracemalloc"
+            | "tty"
+            | "turtle"
+            | "turtledemo"
+            | "types"
+            | "typing"
+            | "unicodedata"
+            | "unittest"
+            | "urllib"
+            | "uu"
+            | "uuid"
+            | "venv"
+            | "warnings"
+            | "wave"
+            | "weakref"
+            | "webbrowser"
+            | "winreg"
+            | "winsound"
+            | "wsgiref"
+            | "xdrlib"
+            | "xml"
+            | "xmlrpc"
+            | "zipapp"
+            | "zipfile"
+            | "zipimport"
+            | "zlib"
+            | "zoneinfo"
+    )
 }
 
 /// Strip pyrefly's `@line:col-col` location suffix from a qualified name.
@@ -530,6 +952,8 @@ mod tests {
     use super::*;
     use nudox_ir::{
         entry::{Symbol, Visibility},
+        foreign::ForeignOrigin,
+        index::Ref,
         kinds::UnknownType,
         lower::Lowering,
         package::PackageId,
@@ -659,27 +1083,43 @@ mod tests {
         );
     }
 
-    /// A genuinely cross-package name is `UnresolvedExternal`, **and keeps its
-    /// spelling**.
+    /// A genuinely cross-package name is a **named `Ref::Foreign`**, never a
+    /// bare `UnresolvedExternal` — and it keeps its spelling.
     ///
-    /// Asserting `matches!(ty, Type::Unknown(_))` here would be the same
-    /// tautology CC-2 exists to remove — the whole change is that a consumer
-    /// can now read *which* gap this is and *what* it names.
+    /// Asserting `matches!(ty, Type::Nominal(_))` here would be the same
+    /// tautology CC-2 exists to remove — the whole point is that a consumer
+    /// can read *which* package this names and *what* it names inside it,
+    /// and — with a resolver — follow it.
     #[test]
-    fn external_nominal_is_unresolved_external_with_its_name() {
+    fn external_nominal_is_a_named_foreign_ref_with_its_spelling() {
         let mut sink = make_sink();
         let lowered = lower_type(
             &TypeData::Nominal("some_lib.SomeClass".to_string()),
             &mut sink,
             &empty_ids(),
         );
-        assert_eq!(
-            lowered,
-            Type::Unknown(UnknownType::UnresolvedExternal {
-                name: "some_lib.SomeClass".to_owned()
-            }),
-            "a cross-package name must say it is external and carry its spelling"
-        );
+        match lowered {
+            Type::Nominal(Ref::Foreign { key, target }) => {
+                assert!(
+                    matches!(key.origin, ForeignOrigin::Namespace { .. }),
+                    "pyrefly gives no distribution identity, so this must be a \
+                     Namespace origin, got {:?}",
+                    key.origin
+                );
+                assert_eq!(
+                    &*key.path, "some_lib.SomeClass",
+                    "the full dotted name is the durable join key, not just the namespace"
+                );
+                assert_eq!(
+                    &*key.display, "some_lib.SomeClass",
+                    "display must keep the source spelling"
+                );
+                assert_eq!(target, None, "no resolver was supplied, so it stays unlinked");
+            }
+            other => panic!(
+                "a cross-package name must lower to a named Ref::Foreign, got {other:?}"
+            ),
+        }
     }
 
     /// **The 67.8% case.** `-> "Context"` inside a package that declares
@@ -710,17 +1150,19 @@ mod tests {
             }),
         );
 
-        // A name the package does not declare at any suffix stays external.
-        assert_eq!(
-            lower_type(
-                &TypeData::Nominal("requests.Session".to_string()),
-                &mut sink,
-                &known
-            ),
-            Type::Unknown(UnknownType::UnresolvedExternal {
-                name: "requests.Session".to_owned()
-            }),
-        );
+        // A name the package does not declare at any suffix is a named
+        // cross-package `Ref::Foreign`, not `UnresolvedExternal`.
+        match lower_type(
+            &TypeData::Nominal("requests.Session".to_string()),
+            &mut sink,
+            &known,
+        ) {
+            Type::Nominal(Ref::Foreign { key, target }) => {
+                assert_eq!(&*key.path, "requests.Session");
+                assert_eq!(target, None);
+            }
+            other => panic!("expected Nominal(Foreign), got {other:?}"),
+        }
     }
 
     /// `TypeData::Unsupported` — the extractor's own gap — must lower to
@@ -1210,6 +1652,183 @@ mod tests {
             Type::Never,
             "empty-metadata Annotated must lower to inner type"
         );
+    }
+
+    // ── New: builtins must not be fabricated pypi Foreign (P1) ───────────────
+
+    /// The value-shaped builtin extension set (`complex`, `bytearray`,
+    /// `memoryview`, `range`, `slice`) lowers to `Type::Primitive::Builtin`,
+    /// exactly like `bytes`/`None` already did — never a `Ref` of any kind.
+    #[test]
+    fn value_shaped_builtins_lower_to_primitive_builtin() {
+        for (name, tag) in [
+            ("complex", "complex"),
+            ("bytearray", "bytearray"),
+            ("memoryview", "memoryview"),
+            ("range", "range"),
+            ("slice", "slice"),
+        ] {
+            let mut sink = make_sink();
+            let lowered = lower_type(&TypeData::Nominal(name.to_string()), &mut sink, &empty_ids());
+            assert_eq!(
+                lowered,
+                Type::Primitive(Primitive::Builtin(tag.to_owned())),
+                "`{name}` must lower to Primitive::Builtin(\"{tag}\"), got {lowered:?}"
+            );
+            // The `builtins.`-prefixed pyrefly spelling must lower identically.
+            let mut sink = make_sink();
+            let prefixed = lower_type(
+                &TypeData::Nominal(format!("builtins.{name}")),
+                &mut sink,
+                &empty_ids(),
+            );
+            assert_eq!(prefixed, lowered, "`builtins.{name}` must match the bare spelling");
+        }
+    }
+
+    /// The class-shaped builtin set (`dict`, `list`, `set`, `frozenset`,
+    /// `tuple`, `object`, `type`, `Callable`) lowers to a named
+    /// `Ref::Foreign` anchored in `ForeignOrigin::Universe { ecosystem:
+    /// "python" }` — real declared identity, never `Primitive` (which would
+    /// erase it) and never `Namespace { ecosystem: "pypi", .. }` (which
+    /// would fabricate a publisher — the exact P1 defect).
+    #[test]
+    fn class_shaped_builtins_lower_to_python_universe_foreign() {
+        for name in ["dict", "list", "set", "frozenset", "tuple", "object", "type", "Callable"] {
+            let mut sink = make_sink();
+            let lowered = lower_type(&TypeData::Nominal(name.to_string()), &mut sink, &empty_ids());
+            match lowered {
+                Type::Nominal(Ref::Foreign { key, target }) => {
+                    assert_eq!(
+                        key.origin,
+                        ForeignOrigin::Universe {
+                            ecosystem: EcosystemId::new("python")
+                        },
+                        "`{name}` must be a python-universe Foreign, got {:?}",
+                        key.origin
+                    );
+                    assert_eq!(&*key.path, name);
+                    assert_eq!(&*key.display, name);
+                    assert_eq!(target, None, "no resolver was supplied");
+                }
+                other => panic!("`{name}` must lower to Nominal(Foreign), got {other:?}"),
+            }
+        }
+    }
+
+    /// `dict[str, Foo]` — a builtin generic base applied to a same-package
+    /// arg. The base must be the universe Foreign (not pypi, not dropped),
+    /// and the arg must still resolve to the same-package Nominal — the
+    /// builtin-base short-circuit in `lower_type`'s `Apply` arm must not
+    /// skip lowering the args.
+    #[test]
+    fn builtin_generic_base_preserves_arg_resolution() {
+        let mut sink = make_sink();
+        let known: KnownIds = std::iter::once("my_pkg.Foo")
+            .map(std::string::ToString::to_string)
+            .collect();
+
+        let applied = lower_type(
+            &TypeData::Apply {
+                base: Box::new(TypeData::Nominal("dict".to_string())),
+                args: vec![
+                    TypeData::Nominal("str".to_string()),
+                    TypeData::Nominal("my_pkg.Foo".to_string()),
+                ],
+            },
+            &mut sink,
+            &known,
+        );
+
+        match &applied {
+            Type::Apply { base, args } => {
+                match base.as_ref() {
+                    Type::Nominal(Ref::Foreign { key, .. }) => {
+                        assert_eq!(
+                            key.origin,
+                            ForeignOrigin::Universe {
+                                ecosystem: EcosystemId::new("python")
+                            },
+                            "dict's base must be the python-universe Foreign, got {:?}",
+                            key.origin
+                        );
+                    }
+                    other => panic!("dict base must be Nominal(Foreign), got {other:?}"),
+                }
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0], Type::Primitive(Primitive::Str)));
+                assert!(
+                    matches!(args[1], Type::Nominal(_)),
+                    "the same-package arg `Foo` must still resolve to a Nominal, got {:?}",
+                    args[1]
+                );
+                if let Type::Nominal(Ref::Foreign { .. }) = &args[1] {
+                    panic!("the same-package arg `Foo` must not degrade to a Foreign ref");
+                }
+            }
+            other => panic!("dict[str, Foo] must lower to Apply, got {other:?}"),
+        }
+    }
+
+    // ── New: stdlib is not third-party pypi (P13) ─────────────────────────────
+
+    /// A stdlib dotted name (`pathlib.Path`, `os.PathLike`, `typing.Optional`)
+    /// must be tagged `"python-stdlib"`, never `"pypi"` — stdlib ships with
+    /// every CPython install under no pypi project of that name.
+    #[test]
+    fn stdlib_dotted_names_are_not_pypi() {
+        for (name, ns) in [
+            ("pathlib.Path", "pathlib"),
+            ("os.PathLike", "os"),
+            ("typing.Optional", "typing"),
+            ("collections.OrderedDict", "collections"),
+        ] {
+            let mut sink = make_sink();
+            let lowered = lower_type(&TypeData::Nominal(name.to_string()), &mut sink, &empty_ids());
+            match lowered {
+                Type::Nominal(Ref::Foreign { key, target }) => {
+                    assert_eq!(
+                        key.origin,
+                        ForeignOrigin::Namespace {
+                            ecosystem: EcosystemId::new("python-stdlib"),
+                            namespace: ns.into(),
+                        },
+                        "`{name}` must be tagged python-stdlib, got {:?}",
+                        key.origin
+                    );
+                    assert_eq!(&*key.path, name);
+                    assert_eq!(target, None);
+                }
+                other => panic!("`{name}` must lower to Nominal(Foreign), got {other:?}"),
+            }
+        }
+    }
+
+    /// A genuinely third-party name keeps the `"pypi"` tag — this is the
+    /// negative case that proves `is_stdlib_top_level_module` discriminates
+    /// rather than swallowing everything into `"python-stdlib"`.
+    #[test]
+    fn genuine_third_party_names_stay_pypi() {
+        let mut sink = make_sink();
+        let lowered = lower_type(
+            &TypeData::Nominal("requests.Session".to_string()),
+            &mut sink,
+            &empty_ids(),
+        );
+        match lowered {
+            Type::Nominal(Ref::Foreign { key, .. }) => {
+                assert_eq!(
+                    key.origin,
+                    ForeignOrigin::Namespace {
+                        ecosystem: EcosystemId::new("pypi"),
+                        namespace: "requests".into(),
+                    },
+                    "`requests.Session` must stay pypi, got {:?}",
+                    key.origin
+                );
+            }
+            other => panic!("expected Nominal(Foreign), got {other:?}"),
+        }
     }
 
     // ── New: Tuple wraps elements as TupleElement::Positional ─────────────────

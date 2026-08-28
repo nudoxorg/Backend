@@ -508,6 +508,11 @@ fn apply_fn(
 /// intent and not a gap — is left exactly as the author wrote it. That makes
 /// the feature monotone: enabling it cannot change an existing lowering, only
 /// add to it.
+///
+/// Case 2 recurses through [`merge_written`] rather than stopping at the
+/// slot's own top level — see that function's doc for why a generic
+/// application (`dict[str, Widget]`) needs the same qualification fix applied
+/// to each argument, not just to a bare whole-slot nominal.
 fn merge_type(slot: &mut Option<TypeData>, inferred: Option<&TypeData>, filled: &mut usize) {
     let Some(inferred) = inferred else { return };
     if matches!(inferred, TypeData::Any) {
@@ -518,13 +523,76 @@ fn merge_type(slot: &mut Option<TypeData>, inferred: Option<&TypeData>, filled: 
             *slot = Some(inferred.clone());
             *filled += 1;
         }
-        Some(TypeData::Nominal(written)) if !written.contains('.') => {
-            if principal_short_name(inferred).as_deref() == Some(written.as_str()) {
-                *slot = Some(inferred.clone());
+        Some(written) => {
+            if merge_written(written, inferred) {
                 *filled += 1;
             }
         }
-        Some(_) => {}
+    }
+}
+
+/// Apply case 2's qualification fix recursively inside a written `TypeData`,
+/// returning whether anything actually changed.
+///
+/// # Why this recurses into `Apply`
+///
+/// Before this, `merge_type`'s case 2 matched only `Some(TypeData::Nominal(_))`
+/// at the slot's own top level — a written `dict[str, Widget]` parses to
+/// `TypeData::Apply { base: Nominal("dict"), args: [Nominal("str"),
+/// Nominal("Widget")] }`, which fell into the `Some(_) => {}` catch-all
+/// untouched, *even though* pyrefly's `inferred` side (built by
+/// `convert`'s `PyType::ClassType` arm) is `Apply { base:
+/// Nominal("builtins.dict"), args: [Nominal("builtins.str"),
+/// Nominal("refs_fixture.models.Widget")] }` — every argument already fully
+/// qualified. The bug this produced: `w: Widget` alone got requalified to
+/// `refs_fixture.models.Widget` and resolved to a same-package `Ref::Intro`,
+/// but the *same* `Widget` nested one level down in `dict[str, Widget]`
+/// stayed bare and only ever reached `UnknownType::UnresolvedLocalName`
+/// (`types.rs::lower_nominal` case 3) — an arbitrary, structural inconsistency
+/// with no source-level justification.
+///
+/// The fix walks `written` and `inferred` in lock-step: as long as an `Apply`
+/// node's own principal short name agrees between the two sides (guarding
+/// against `Sequence[Foo]` written against a `list[Bar]` inferred — a
+/// disagreement at any level means this is not actually "the same generic",
+/// so nothing under it is touched either), it recurses into the base and,
+/// positionally, into each argument, applying exactly the same bare-Nominal
+/// qualification rule at every depth. Mismatched shapes or arities are a
+/// no-op, same as the old top-level catch-all — this can only *add*
+/// qualification, never substitute a different type.
+fn merge_written(written: &mut TypeData, inferred: &TypeData) -> bool {
+    match written {
+        TypeData::Nominal(name) if !name.contains('.') => {
+            if principal_short_name(inferred).as_deref() == Some(name.as_str()) {
+                *written = inferred.clone();
+                true
+            } else {
+                false
+            }
+        }
+        TypeData::Apply { base, args } => {
+            let TypeData::Apply {
+                base: ibase,
+                args: iargs,
+            } = inferred
+            else {
+                return false;
+            };
+            // Refuse unless the two sides agree on which generic this is —
+            // by short name, so a still-unqualified written base (`dict`)
+            // matches an already-qualified inferred one (`builtins.dict`).
+            if principal_short_name(base).as_deref() != principal_short_name(&**ibase).as_deref() {
+                return false;
+            }
+            let mut changed = merge_written(base, ibase);
+            if args.len() == iargs.len() {
+                for (arg, iarg) in args.iter_mut().zip(iargs.iter()) {
+                    changed |= merge_written(arg, iarg);
+                }
+            }
+            changed
+        }
+        _ => false,
     }
 }
 
@@ -753,6 +821,89 @@ mod tests {
             names(&enriched),
             "the semantic tier may only add types, never change the declaration set"
         );
+    }
+
+    /// **The P2/P6/P7 bug, pinned directly.** `dict[str, Widget]` written by
+    /// hand parses to `Apply { base: Nominal("dict"), args: [Nominal("str"),
+    /// Nominal("Widget")] }`. Before `merge_written` existed, `merge_type`'s
+    /// `Some(_) => {}` catch-all left the whole thing untouched even though
+    /// pyrefly's inferred side already carries the fully-qualified arg. This
+    /// asserts the inner `Widget` — not just a bare top-level nominal — gets
+    /// qualified.
+    #[test]
+    fn generic_apply_args_are_qualified_not_just_the_top_level_nominal() {
+        let written = TypeData::Apply {
+            base: Box::new(TypeData::Nominal("dict".to_owned())),
+            args: vec![
+                TypeData::Nominal("str".to_owned()),
+                TypeData::Nominal("Widget".to_owned()),
+            ],
+        };
+        let inferred = TypeData::Apply {
+            base: Box::new(TypeData::Nominal("builtins.dict".to_owned())),
+            args: vec![
+                TypeData::Nominal("builtins.str".to_owned()),
+                TypeData::Nominal("refs_fixture.models.Widget".to_owned()),
+            ],
+        };
+        let mut slot = Some(written);
+        let mut filled = 0;
+        merge_type(&mut slot, Some(&inferred), &mut filled);
+        assert_eq!(filled, 1, "the slot changed, so exactly one fill must be counted");
+        match slot {
+            Some(TypeData::Apply { base, args }) => {
+                assert_eq!(*base, TypeData::Nominal("builtins.dict".to_owned()));
+                assert_eq!(args[0], TypeData::Nominal("builtins.str".to_owned()));
+                assert_eq!(
+                    args[1],
+                    TypeData::Nominal("refs_fixture.models.Widget".to_owned()),
+                    "the nested `Widget` arg must be qualified, not left bare"
+                );
+            }
+            other => panic!("expected Apply to survive as Apply, got {other:?}"),
+        }
+    }
+
+    /// The base-name guard: a written `Sequence[Foo]` must never absorb an
+    /// inferred `list[Bar]`'s qualification just because both are 1-arg
+    /// generics. Disagreement at the base means "not the same generic", and
+    /// nothing under it — base or args — may be touched.
+    #[test]
+    fn mismatched_generic_base_blocks_the_whole_subtree() {
+        let written = TypeData::Apply {
+            base: Box::new(TypeData::Nominal("Sequence".to_owned())),
+            args: vec![TypeData::Nominal("Foo".to_owned())],
+        };
+        let inferred = TypeData::Apply {
+            base: Box::new(TypeData::Nominal("builtins.list".to_owned())),
+            args: vec![TypeData::Nominal("some_pkg.Bar".to_owned())],
+        };
+        let mut slot = Some(written.clone());
+        let mut filled = 0;
+        merge_type(&mut slot, Some(&inferred), &mut filled);
+        assert_eq!(filled, 0, "a base mismatch must fill nothing");
+        assert_eq!(
+            slot,
+            Some(written),
+            "the written Sequence[Foo] must survive completely unchanged"
+        );
+    }
+
+    /// A written annotation with no `TypeData` counterpart in `inferred`
+    /// (mismatched shape, e.g. `Slice` vs `Apply`) is left alone — the
+    /// existing no-op behavior for anything `merge_written` has no case for.
+    #[test]
+    fn shape_mismatch_between_written_and_inferred_is_a_no_op() {
+        let written = TypeData::Slice(Box::new(TypeData::Nominal("Foo".to_owned())));
+        let inferred = TypeData::Apply {
+            base: Box::new(TypeData::Nominal("builtins.list".to_owned())),
+            args: vec![TypeData::Nominal("some_pkg.Foo".to_owned())],
+        };
+        let mut slot = Some(written.clone());
+        let mut filled = 0;
+        merge_type(&mut slot, Some(&inferred), &mut filled);
+        assert_eq!(filled, 0);
+        assert_eq!(slot, Some(written));
     }
 
     fn find_return(oracle: &PythonOracle, id: &str) -> Option<TypeData> {

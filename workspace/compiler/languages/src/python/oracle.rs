@@ -284,7 +284,7 @@ pub struct AliasData {
 /// This mirrors the shape of `nudox_ir::kinds::ty::Type` but lives in owned
 /// string data, with no reference into a pyrefly arena. The `lower` phase
 /// converts these into `nudox_ir::kinds::Type`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeData {
     /// `typing.Any` / unannotated.
     Any,
