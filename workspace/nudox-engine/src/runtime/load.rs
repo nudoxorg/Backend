@@ -245,6 +245,19 @@ pub(crate) async fn drive_load(
             }
         }
     }
+
+    // Post-load cross-package LINK pass. Every package was sealed one at a time
+    // against `Unlinked` (its dependencies were not loaded at seal time), so its
+    // cross-package references arrived named but unlinked. Now the corpus holds
+    // the whole loaded batch, so resolve them — this is what makes a signature
+    // token or graph edge pointing into a sibling package clickable instead of
+    // dead text. Identity-invariant and idempotent (see `Corpus::relink_all`),
+    // so re-running it on each incremental load is safe.
+    let newly_linked = inner.corpus.relink_all().await;
+    if newly_linked > 0 {
+        tracing::debug!(newly_linked, "linked cross-package references post-load");
+    }
+
     outcomes
 }
 

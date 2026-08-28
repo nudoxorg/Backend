@@ -427,18 +427,14 @@ pub fn head(intro: IntroId, entry: &Entry, view: &IrView, package: &PackageView)
 
 /// Convert `crate::store::package::Provenance` to the wire `Provenance`.
 ///
-/// The store has a smaller provenance vocabulary than the wire (which includes
-/// `SyncedLocal`, `Remote`, and `Stale` for distributed corpus scenarios).
-/// Both store variants map to `TrustedLocal` — local IR produced in this
-/// session is always trusted.  Future store variants are handled by `_ =>
-/// TrustedLocal` so that adding a new store tier never silently panics.
+/// Delegates to the single canonical `From<store::Provenance> for
+/// wire::Provenance` impl (in `crate::wire`) so there is exactly one mapping to
+/// keep honest — this used to be a second hardcoded `_ => TrustedLocal` that
+/// silently collapsed `Remote` into local, the very `LOCAL-REMOTE-CONTRACT.md`
+/// §0.5 defect. Local tiers still render `TrustedLocal`; `Remote` now carries
+/// its real generation through.
 fn store_provenance_to_wire(p: crate::store::package::Provenance) -> Provenance {
-    // Local IR produced in this session is always trusted. The store currently
-    // has only trusted tiers (`TrustedLocal`, `SnapshotLocal`); future tiers
-    // fold into `TrustedLocal` here rather than panicking, so there is no
-    // per-variant match arm.
-    let _ = p;
-    Provenance::TrustedLocal
+    p.into()
 }
 
 // ---------------------------------------------------------------------------

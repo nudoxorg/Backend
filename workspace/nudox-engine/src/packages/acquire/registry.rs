@@ -177,6 +177,17 @@ fn crates_index_path(name: &str) -> String {
     }
 }
 
+/// The path (relative to `https://static.crates.io`) at which crates.io serves
+/// a published `.crate` tarball: `crates/<name>/<name>-<version>.crate`.
+///
+/// The `crates/<name>/` prefix is not optional. `static.crates.io` answers
+/// `403 Forbidden` for a bare `<name>-<version>.crate` — the tarball only
+/// exists under the two-segment prefix. This mirrors the `archive` template in
+/// `workspace/index/ecosystem/rust.rs`.
+fn crate_download_path(name: &str, version: &str) -> String {
+    format!("crates/{name}/{name}-{version}.crate")
+}
+
 /// `groupId` → `com/google/guava`, the Maven repository layout.
 fn maven_group_path(group: &str) -> String {
     group.replace('.', "/")
@@ -353,8 +364,8 @@ pub(crate) async fn artifact_with_endpoints(
                 url: endpoint_url(
                     endpoints,
                     "https://static.crates.io",
-                    &format!("{}-{version}.crate", purl.name()),
-                    "crates",
+                    &crate_download_path(purl.name(), version),
+                    "static",
                 ),
                 expected: cksum,
             })
@@ -589,6 +600,45 @@ mod tests {
         assert_eq!(crates_index_path("serde"), "se/rd/serde");
         // Case-folded: the index is lowercase even though crate names are not.
         assert_eq!(crates_index_path("Inflector"), "in/fl/inflector");
+    }
+
+    #[test]
+    fn the_crate_download_url_carries_the_crates_name_prefix() {
+        // Regression: the tarball path was built as a bare `<name>-<ver>.crate`,
+        // so `pkg:cargo/itoa@1.0.11` resolved to
+        // `https://static.crates.io/itoa-1.0.11.crate`, which `static.crates.io`
+        // answers with `403 Forbidden`. The tarball lives under `crates/<name>/`.
+        assert_eq!(
+            crate_download_path("itoa", "1.0.11"),
+            "crates/itoa/itoa-1.0.11.crate",
+        );
+
+        // The canonical URL the resolver actually hands to the fetcher.
+        let canonical = endpoint_url(
+            &RegistryEndpoints { upstream: None },
+            "https://static.crates.io",
+            &crate_download_path("itoa", "1.0.11"),
+            "static",
+        );
+        assert_eq!(
+            canonical,
+            "https://static.crates.io/crates/itoa/itoa-1.0.11.crate",
+        );
+
+        // A mirror serves the same tarball under the `static/` namespace, the
+        // download-host analogue of the `index/` namespace used for the index.
+        let mirror = endpoint_url(
+            &RegistryEndpoints {
+                upstream: Some("http://mirror.test".to_owned()),
+            },
+            "https://static.crates.io",
+            &crate_download_path("itoa", "1.0.11"),
+            "static",
+        );
+        assert_eq!(
+            mirror,
+            "http://mirror.test/static/crates/itoa/itoa-1.0.11.crate",
+        );
     }
 
     #[test]

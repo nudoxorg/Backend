@@ -102,7 +102,7 @@ fn serve_fixture(index: String, archive: Vec<u8>) -> (String, thread::JoinHandle
                 .expect("request path");
             let (content_type, body) = if path == "/index/fi/xt/fixture" {
                 ("application/json", index.as_bytes().to_vec())
-            } else if path == "/crates/fixture-1.0.0.crate" {
+            } else if path == "/static/crates/fixture/fixture-1.0.0.crate" {
                 ("application/gzip", archive.clone())
             } else {
                 ("text/plain", b"not found".to_vec())
