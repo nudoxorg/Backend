@@ -23,7 +23,11 @@ readme = "README.md"
 # `local-persistence` is on by default — see that feature's own comment for
 # why a build that wants to shed libpijul/iroh/sanakirja should build with
 # `--no-default-features --features <whatever else it needs>` instead.
-default = ["local-persistence"]
+# `pyrefly` and `tsz` are on by default: the GUI-local engine registers the
+# semantic Python producer and the tsz-enriched TypeScript producer out of the
+# box. A lean build that wants to shed the pyrefly/tsz git deps should use
+# `--no-default-features --features local-persistence`.
+default = ["local-persistence", "pyrefly", "tsz"]
 # `store::source::fixtures` — deterministic synthetic corpora for tests and dev
 # (LR-5). Same feature NAME as the store plane used, so consumers like
 # `lindsey` keep working unchanged.
@@ -31,6 +35,10 @@ fixtures = []
 # Forwards to `nudox-languages`'s own `pyrefly` feature (off by default there).
 # Without it `PythonProducer::invoke` always returns `Ok(PythonOracle::default())`.
 pyrefly = ["nudox-languages/pyrefly"]
+# Forwards to `nudox-languages`'s own `tsz` feature (off by default there). With
+# it, `with_all_available` registers the tsz-enriched TypeScript producer;
+# without it, the OXC-only one. Off by default so the common build stays lean.
+tsz = ["nudox-languages/tsz"]
 # Forwards to `nudox-languages`'s own `seal-census` feature, which forwards to
 # `nudox-ir`'s: test-only per-declaration disambiguator-tier instrumentation
 # used by the `store_disambiguator_census` corpus measurement (`tests/store/
@@ -95,6 +103,10 @@ schemars = { workspace = true }
 serde = { workspace = true }
 # Used only by `query.rs`'s `find_line_column` to walk a serialized `ParseError`.
 serde_json = { workspace = true }
+# `store::remote::IrSnapshot`'s wire encoding: postcard, not JSON — the IR
+# tree has no `#[serde(skip_serializing_if)]` fields, so it's postcard-safe,
+# and postcard is ~60% smaller and ~6x faster than JSON on this payload.
+postcard = { version = "1.1", features = ["alloc"] }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "macros", "net", "io-util"] }
@@ -251,6 +263,10 @@ name = "engine_non_rust_producer"
 path = "tests/engine/non_rust_producer.rs"
 
 [[test]]
+name = "engine_corpus_link"
+path = "tests/engine/corpus_link.rs"
+
+[[test]]
 name = "mcp_diagnose_source_format"
 path = "tests/mcp/diagnose_source_format.rs"
 
@@ -278,6 +294,10 @@ path = "tests/engine/semantic_failure_modes.rs"
 [[test]]
 name = "engine_semantic_local_mode"
 path = "tests/engine/semantic_local_mode.rs"
+
+[[test]]
+name = "engine_semantic_incremental"
+path = "tests/engine/semantic_incremental.rs"
 
 [[test]]
 name = "engine_semantic_section_contract"

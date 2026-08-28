@@ -1747,10 +1747,56 @@ pub enum QueryEvent {
 
 impl From<crate::store::package::Provenance> for Provenance {
     fn from(p: crate::store::package::Provenance) -> Self {
-        // `crate::store::package::Provenance` is #[non_exhaustive]; both known
-        // variants (and anything future) are local IR, which is always trusted
-        // (LR-10: local is the truth, this is not the exception).
-        let _ = p;
-        Provenance::TrustedLocal
+        use crate::store::package::Provenance as Store;
+        // Same-crate match, so exhaustive despite `Store` being #[non_exhaustive].
+        match p {
+            // Local IR is trusted (LR-10: local is the truth). `SnapshotLocal`
+            // is materialized here from a prior snapshot, so it too renders as
+            // local — a `SyncedLocal` upgrade would need a generation the store
+            // variant does not carry, and is left as a future refinement.
+            Store::TrustedLocal | Store::SnapshotLocal => Provenance::TrustedLocal,
+            // Remote-fetched IR lowers to the real remote badge, carrying the
+            // generation it was fetched from — the fix for the hardcoded
+            // `TrustedLocal` that `LOCAL-REMOTE-CONTRACT.md` §0.5 records as the
+            // reason `Provenance::Remote` was "dead in practice".
+            Store::Remote { generation } => Provenance::Remote {
+                generation: GenerationId(generation.0),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod provenance_mapping_tests {
+    use super::*;
+    use crate::store::package::Provenance as Store;
+
+    #[test]
+    fn remote_store_provenance_lowers_to_the_real_remote_badge() {
+        // The `LOCAL-REMOTE-CONTRACT.md` §0.5 fix: a remotely-fetched package
+        // must render as a real `Remote` badge carrying its generation, NOT
+        // collapse into `TrustedLocal` (the "dead in practice" behaviour).
+        let wire: Provenance = Store::Remote {
+            generation: heart::surface::GenerationId(42),
+        }
+        .into();
+        assert_eq!(
+            wire,
+            Provenance::Remote {
+                generation: GenerationId(42)
+            }
+        );
+    }
+
+    #[test]
+    fn local_store_provenance_stays_trusted_local() {
+        assert_eq!(
+            Provenance::from(Store::TrustedLocal),
+            Provenance::TrustedLocal
+        );
+        assert_eq!(
+            Provenance::from(Store::SnapshotLocal),
+            Provenance::TrustedLocal
+        );
     }
 }
