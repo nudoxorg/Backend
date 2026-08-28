@@ -9,7 +9,7 @@
 mod server_common;
 
 use axum::http::StatusCode;
-use index::server::http::dto::AddPackageDto;
+use index::server::http::dto::{AddPackageDto, AddPackageExt};
 use index::server::http::router::router;
 
 /// Adding a package returns immediately while sync runs in the background.

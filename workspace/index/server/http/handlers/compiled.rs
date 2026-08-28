@@ -35,7 +35,7 @@ use crate::server::Server;
 use crate::server::authz::Principal;
 use crate::server::error::ServerResult;
 use crate::server::http::dto::{
-    CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse,
+    CompiledLookupEntry, CompiledLookupRequest, CompiledLookupResponse, compiled_hit_entry,
 };
 
 /// Names passed to the metrics facade. The Prometheus exporter appends
@@ -63,7 +63,7 @@ pub async fn compiled_lookup<M: EmbeddingModel>(
             Ok(registry::compiled::LookupResult::Hit(hit)) => {
                 metrics::counter!(COMPILE_LOOKUP_HITS_METRIC).increment(1);
                 tracing::debug!(job_key = %key, "compiled lookup: hit");
-                results.push(CompiledLookupEntry::hit(key, &hit));
+                results.push(compiled_hit_entry(key, &hit));
             }
             Ok(registry::compiled::LookupResult::Miss) => {
                 metrics::counter!(COMPILE_LOOKUP_MISSES_METRIC).increment(1);

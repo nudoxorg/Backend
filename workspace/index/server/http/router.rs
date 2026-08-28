@@ -248,6 +248,7 @@ fn write_plane<M: EmbeddingModel>(limits: &Limits) -> Router<Arc<Server<M>>> {
     let operations = Router::new()
         .route("/healthz", get(health::livez))
         .route("/readyz", get(health::readyz))
+        .route("/capabilities", get(health::capabilities))
         .route("/metrics", get(health::metrics));
     mutations.merge(operations)
 }

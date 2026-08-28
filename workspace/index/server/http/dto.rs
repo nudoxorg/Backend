@@ -1,11 +1,33 @@
-//! Request DTOs — the serialized shapes the API *accepts* — and their lowering
-//! into the typed domain vocabulary.
+//! The server's lowering of wire DTOs into the typed domain — and the DTOs
+//! that are genuinely server-local.
 //!
-//! The search surfaces no longer live here: `POST /search`, `/packages/search`,
-//! and `/usages` deserialize the one query algebra ([`heart::query::Query`])
-//! directly (INDEX-PLAN §9), so there is no `SearchRequestDto`. What remains are
-//! the mutation/lookup DTOs (add-package, compiled-lookup, depshard manifest,
-//! rerank) whose shapes are genuinely distinct from any query.
+//! # Single source of truth
+//!
+//! The *wire shapes* the client and server exchange — `AddPackageDto`,
+//! `HealthDto`, `JobKeyHex`, `CompiledLookupRequest`/`Entry`/`Response`,
+//! `RerankRequestDto`/`ResponseDto`, and their bounds — are defined **once**, in
+//! [`heart::client::dto`], and re-exported here so existing `crate::server::
+//! http::dto::…` paths keep resolving. `LOCAL-REMOTE-CONTRACT.md` §0.6 recorded
+//! the defect this closes: these types used to be declared a *second* time in
+//! this file, structurally identical to `heart`'s copy and free to drift from
+//! it silently. There is now nothing to drift.
+//!
+//! What stays here is the half that is genuinely a *composition* concern and
+//! cannot live in `heart` (which is transport- and store-free):
+//!
+//! - **Lowering** a wire DTO into typed domain coordinates — [`AddPackageExt::
+//!   into_coordinates`] resolves an `origin` against the operator's custom-
+//!   registry table; [`compiled_hit_entry`] projects a store hit into the wire
+//!   entry. `heart`'s DTO doc is explicit that this lowering is a composition
+//!   step, not a method on the wire type.
+//! - **`DepshardManifestDto`**, whose fields reference `registry::vector`
+//!   shard/quant types and so cannot cross into `heart`.
+//! - The custom-registry origin table itself.
+//!
+//! Wire validation (`CompiledLookupRequest::validate`, `RerankRequestDto::
+//! validate`) is `heart`'s inherent method; its `heart` error types lower to
+//! [`ServerError`] via `From` impls in [`crate::server::error`], so a handler's
+//! `req.validate()?` still yields the same typed `400` it always did.
 
 #[allow(unused_imports)]
 use crate::server::{registry, vector};
@@ -23,17 +45,37 @@ use url::Url;
 use crate::server::config::CustomRegistry;
 use crate::server::error::{BadRequestReason, ServerError};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AddPackageDto {
-    pub ecosystem: Language,
-    pub name: String,
-    pub version: String,
-    #[serde(default)]
-    pub origin: Option<String>,
+// ── Wire shapes: re-exported from the single source of truth in `heart` ───────
+//
+// Handlers, tests, and the client all name these at `heart::client::dto`; the
+// re-export keeps the `crate::server::http::dto::…` spelling working for the
+// server's own call sites without a second definition to keep in sync.
+pub use heart::client::dto::{
+    AddPackageDto, COMPILED_LOOKUP_MAX_KEYS, CompiledLookupEntry, CompiledLookupRequest,
+    CompiledLookupResponse, HealthDto, JobKeyHex, RERANK_MAX_DOCUMENTS, RerankRequestDto,
+    RerankResponseDto,
+};
+
+// ── Add-package lowering ──────────────────────────────────────────────────────
+
+/// Server-side lowering of an [`AddPackageDto`] into typed package coordinates.
+///
+/// This is an extension trait rather than an inherent method because the DTO
+/// now lives in `heart` (which has no notion of a custom-registry table): the
+/// wire shape is shared vocabulary, the lowering is composition. Bring the
+/// trait into scope (`use crate::server::http::dto::AddPackageExt;`) to call
+/// `dto.into_coordinates()`.
+pub trait AddPackageExt {
+    /// Resolve this request's ecosystem/name/version/origin into the typed
+    /// [`PackageCoordinates`] the indexing pipeline consumes. Validates the
+    /// name and version for the ecosystem and resolves `origin` against the
+    /// operator's custom-registry table (falling back to the ecosystem default
+    /// when absent).
+    fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError>;
 }
 
-impl AddPackageDto {
-    pub fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
+impl AddPackageExt for AddPackageDto {
+    fn into_coordinates(&self) -> Result<PackageCoordinates, ServerError> {
         let name =
             PackageName::new(self.ecosystem, self.name.as_str()).map_err(BadRequestReason::from)?;
         let version = PackageVersion::try_from((self.ecosystem, self.version.as_str()))
@@ -100,161 +142,29 @@ fn resolve_custom_origin(name: &str) -> Result<RegistryOrigin, ServerError> {
         })
 }
 
-// ── Compiled-lookup DTOs ─────────────────────────────────────────────────────
+// ── Compiled-lookup projection ────────────────────────────────────────────────
 
-/// Maximum number of [`JobKeyHex`] values accepted in a single
-/// `POST /v1/compiled/lookup` request (SMOLVM-PLAN §5.1).
-pub const COMPILED_LOOKUP_MAX_KEYS: usize = 1024;
-
-/// A validated, lower-hex-encoded [`heart::JobKey`] as received over the wire.
+/// Project a store hit into the wire [`CompiledLookupEntry`].
 ///
-/// Validation happens at deserialize time:
-/// - Must be exactly 64 lowercase hex characters (a 32-byte BLAKE3 digest).
-/// - Upper-case hex is rejected.
-///
-/// The inner `[u8; 32]` is the raw digest; use [`JobKeyHex::into_bytes`] to
-/// obtain it after deserialization.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-#[serde(transparent)]
-pub struct JobKeyHex(String);
-
-impl JobKeyHex {
-    /// The validated lower-hex string as received from the client.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// Decode into the raw 32-byte digest. Infallible after construction
-    /// (the constructor validates hex).
-    pub fn into_bytes(self) -> [u8; 32] {
-        let mut raw = [0u8; 32];
-        data_encoding::HEXLOWER
-            .decode_mut(self.0.as_bytes(), &mut raw)
-            .expect("hex was validated at deserialize time");
-        raw
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for JobKeyHex {
-    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(de)?;
-        if s.len() != 64 {
-            return Err(serde::de::Error::custom(format!(
-                "job_key must be exactly 64 hex chars, got {}",
-                s.len()
-            )));
-        }
-        // Reject upper-case hex and non-hex bytes.
-        let mut raw = [0u8; 32];
-        data_encoding::HEXLOWER
-            .decode_mut(s.as_bytes(), &mut raw)
-            .map_err(|_| serde::de::Error::custom("job_key is not valid lowercase hex"))?;
-        Ok(JobKeyHex(s))
-    }
-}
-
-impl std::fmt::Display for JobKeyHex {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-/// The request body for `POST /v1/compiled/lookup` (SMOLVM-PLAN §5.1).
-///
-/// Validation:
-/// - `job_keys` must be non-empty.
-/// - `job_keys` must contain ≤ [`COMPILED_LOOKUP_MAX_KEYS`] entries.
-/// - Each key must be exactly 64 lowercase hex characters.
-///
-/// These constraints are enforced lazily (at the `.validate()` call in the
-/// handler) rather than in `Deserialize`, so the handler can return a typed
-/// `400` with a structured error rather than axum's default JSON rejection.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct CompiledLookupRequest {
-    pub job_keys: Vec<JobKeyHex>,
-}
-
-impl CompiledLookupRequest {
-    /// Validate list-level constraints (non-empty; ≤ 1024 keys).
-    /// Per-key validation already happened in `JobKeyHex`'s `Deserialize`.
-    pub fn validate(&self) -> Result<(), ServerError> {
-        if self.job_keys.is_empty() {
-            return Err(BadRequestReason::MissingField { field: "job_keys" }.into());
-        }
-        if self.job_keys.len() > COMPILED_LOOKUP_MAX_KEYS {
-            return Err(BadRequestReason::TooManyJobKeys {
-                count: self.job_keys.len(),
-                max: COMPILED_LOOKUP_MAX_KEYS,
-            }
-            .into());
-        }
-        Ok(())
-    }
-}
-
-/// One entry in the `POST /v1/compiled/lookup` response.
-///
-/// JSON shape:
-/// - hit:  `{"job_key":"…","hit":true,"package":"…","channel":"…","tip":"<64hex>","generation_stamp":"<hex>"}`
-/// - miss: `{"job_key":"…","hit":false}`
+/// The server-only half of the compiled-lookup contract: it reads a
+/// `registry::compiled::CompiledHit` (a store type `heart` cannot see) and
+/// fills the wire entry's parts. The `heart` DTO stays store-type-agnostic.
 ///
 /// The client trusts the mapping because (a) writes are fleet-only (SV-6), and
 /// (b) the referenced change-set is verified AT IMPORT by Pijul content-
-/// addressing when pulled over iroh — the response is a claim, the changes
-/// are the proof.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CompiledLookupEntry {
-    pub job_key: String,
-    pub hit: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub package: Option<String>,
-    /// Pijul channel name. Present on hits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub channel: Option<String>,
-    /// 64-char lowercase hex tip change-hash. Present on hits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tip: Option<String>,
-    /// Hash① of the generation (64-char lower-hex). Present on hits.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generation_stamp: Option<String>,
-}
-
-impl CompiledLookupEntry {
-    /// Construct a miss entry.
-    pub fn miss(job_key: &JobKeyHex) -> Self {
-        Self {
-            job_key: job_key.as_str().to_owned(),
-            hit: false,
-            package: None,
-            channel: None,
-            tip: None,
-            generation_stamp: None,
-        }
-    }
-
-    /// Construct a hit entry from a store hit.
-    pub fn hit(job_key: &JobKeyHex, hit: &registry::compiled::CompiledHit) -> Self {
-        Self {
-            job_key: job_key.as_str().to_owned(),
-            hit: true,
-            package: Some(hit.package.as_uuid().to_string()),
-            channel: Some(hit.channel.as_str().to_owned()),
-            tip: Some(hit.tip.as_str().to_owned()),
-            generation_stamp: Some(hit.generation_stamp.hex()),
-        }
-    }
-}
-
-/// The response body for `POST /v1/compiled/lookup`.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct CompiledLookupResponse {
-    pub results: Vec<CompiledLookupEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HealthDto {
-    pub ready: bool,
-    pub degraded: Vec<heart::BackendKind>,
+/// addressing when pulled over iroh — the response is a claim, the changes are
+/// the proof.
+pub fn compiled_hit_entry(
+    job_key: &JobKeyHex,
+    hit: &registry::compiled::CompiledHit,
+) -> CompiledLookupEntry {
+    CompiledLookupEntry::hit(
+        job_key,
+        hit.package.as_uuid().to_string(),
+        hit.channel.as_str().to_owned(),
+        hit.tip.as_str().to_owned(),
+        hit.generation_stamp.hex(),
+    )
 }
 
 // ── Dep-shard DTOs (09-vector §20.3) ─────────────────────────────────────────
@@ -263,6 +173,9 @@ pub struct HealthDto {
 /// the full edgepack key (so the client can verify it derived the same
 /// identity), the artifact id + RAM estimate once baked, and the lifecycle
 /// status. `artifact_id`/`ram_estimate` are absent until `status == "ready"`.
+///
+/// This DTO stays server-local (not in `heart`) because its fields reference
+/// `registry::vector` shard/quant identity types.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DepshardManifestDto {
     /// The package uuid.
@@ -338,55 +251,6 @@ fn quant_profile_token(profile: &vector::quant::QuantProfile) -> String {
     }
 }
 
-// ── Rerank DTOs (09-vector §20.8) ────────────────────────────────────────────
-
-/// The largest number of documents one rerank call accepts (the deep path
-/// sends the Stage-1 top-100; a generous ceiling bounds abuse).
-pub const RERANK_MAX_DOCUMENTS: usize = 256;
-
-/// The request body for `POST /v1/rerank`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RerankRequestDto {
-    /// The query the documents are scored against.
-    pub query: String,
-    /// The candidate documents.
-    pub documents: Vec<crate::server::rerank::RerankDocument>,
-    /// How many results to return (descending relevance).
-    pub top_k: std::num::NonZeroU32,
-}
-
-impl RerankRequestDto {
-    /// Structural validation, surfaced as typed 400s.
-    pub fn validate(&self) -> Result<(), ServerError> {
-        if self.query.trim().is_empty() {
-            return Err(BadRequestReason::MissingField { field: "query" }.into());
-        }
-        if self.documents.is_empty() {
-            return Err(BadRequestReason::MissingField { field: "documents" }.into());
-        }
-        if self.documents.len() > RERANK_MAX_DOCUMENTS {
-            return Err(BadRequestReason::MalformedQuery(
-                crate::server::error::QueryError::Malformed {
-                    detail: format!(
-                        "too many rerank documents: {} (maximum {RERANK_MAX_DOCUMENTS})",
-                        self.documents.len()
-                    ),
-                    query: String::new(),
-                },
-            )
-            .into());
-        }
-        Ok(())
-    }
-}
-
-/// The response body for `POST /v1/rerank`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RerankResponseDto {
-    /// Scores in descending relevance order, at most `top_k` of them.
-    pub scores: Vec<crate::server::rerank::RerankScore>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,37 +316,5 @@ mod tests {
                 .chars()
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
         );
-    }
-
-    /// Rerank request validation: empty query/documents and oversize batches
-    /// are typed 400s.
-    #[test]
-    fn rerank_request_validation() {
-        let valid = RerankRequestDto {
-            query: "parse a toml file".to_owned(),
-            documents: vec![crate::server::rerank::RerankDocument {
-                id: "a".to_owned(),
-                text: "toml::from_str".to_owned(),
-            }],
-            top_k: std::num::NonZeroU32::new(5).expect("non-zero"),
-        };
-        assert!(valid.validate().is_ok());
-
-        let mut empty_query = valid.clone();
-        empty_query.query = "  ".to_owned();
-        assert!(empty_query.validate().is_err());
-
-        let mut no_documents = valid.clone();
-        no_documents.documents.clear();
-        assert!(no_documents.validate().is_err());
-
-        let mut oversize = valid;
-        oversize.documents = (0..=RERANK_MAX_DOCUMENTS)
-            .map(|i| crate::server::rerank::RerankDocument {
-                id: i.to_string(),
-                text: String::new(),
-            })
-            .collect();
-        assert!(oversize.validate().is_err());
     }
 }
