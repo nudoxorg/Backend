@@ -13,7 +13,7 @@ readme = "README.md"
 workspace = true
 
 [features]
-default = ["pyrefly"]
+default = ["pyrefly", "tsz"]
 
 # The pyrefly semantic tier (`src/python/context.rs`). ON by default as of
 # 2026-08-09 — see `src/python/mod.rs` and the pyrefly decision record for the
@@ -174,12 +174,20 @@ name = "rust_param_identity"
 path = "tests/rust/param_identity.rs"
 
 [[test]]
+name = "rust_reference_hardening"
+path = "tests/rust/reference_hardening.rs"
+
+[[test]]
 name = "rust_source_locations"
 path = "tests/rust/source_locations.rs"
 
 [[test]]
 name = "rust_universal_pipeline"
 path = "tests/rust/universal_pipeline.rs"
+
+[[test]]
+name = "rust_ref_snapshots"
+path = "tests/rust/ref_snapshots.rs"
 
 [[test]]
 name = "go_corpus_sweep"
@@ -198,6 +206,14 @@ name = "go_test_packages"
 path = "tests/go/test_packages.rs"
 
 [[test]]
+name = "go_reference_hardening"
+path = "tests/go/reference_hardening.rs"
+
+[[test]]
+name = "go_ref_snapshots"
+path = "tests/go/ref_snapshots.rs"
+
+[[test]]
 name = "java_corpus_sweep"
 path = "tests/java/corpus_sweep.rs"
 
@@ -208,6 +224,10 @@ path = "tests/java/overload_survival.rs"
 [[test]]
 name = "java_producer_tests"
 path = "tests/java/producer_tests.rs"
+
+[[test]]
+name = "java_ref_snapshots"
+path = "tests/java/ref_snapshots.rs"
 
 [[test]]
 name = "csharp_lowering"
@@ -226,6 +246,10 @@ name = "csharp_real_library"
 path = "tests/csharp/real_library.rs"
 
 [[test]]
+name = "csharp_ref_snapshots"
+path = "tests/csharp/ref_snapshots.rs"
+
+[[test]]
 name = "clang_corpus_sweep"
 path = "tests/clang/corpus_sweep.rs"
 
@@ -236,6 +260,14 @@ path = "tests/clang/lineage_nlohmann_v3_10_5.rs"
 [[test]]
 name = "clang_real_package"
 path = "tests/clang/real_package.rs"
+
+[[test]]
+name = "clang_refs_resolution"
+path = "tests/clang/refs_resolution.rs"
+
+[[test]]
+name = "clang_ref_snapshots"
+path = "tests/clang/ref_snapshots.rs"
 
 [[test]]
 name = "typescript_producer_tests"
@@ -256,3 +288,62 @@ path = "tests/python/pyrefly_inference_spot_check.rs"
 [[test]]
 name = "python_type_lattice_census"
 path = "tests/python/type_lattice_census.rs"
+
+[[test]]
+name = "typescript_refs_resolution"
+path = "tests/typescript/refs_resolution.rs"
+
+[[test]]
+name = "typescript_ref_snapshots"
+path = "tests/typescript/ref_snapshots.rs"
+
+[[test]]
+name = "python_refs_resolution"
+path = "tests/python/refs_resolution.rs"
+
+# --- Previously-orphaned targets: committed 2026-08-18 but never registered as
+# [[test]] targets, so they never compiled or ran. Cargo only auto-discovers
+# tests directly under tests/, not in subdirectories. Wired in 2026-08-23.
+[[test]]
+name = "rust_cfg_on_enum_variants"
+path = "tests/rust/cfg_on_enum_variants.rs"
+
+[[test]]
+name = "rust_disambiguator_census"
+path = "tests/rust/disambiguator_census.rs"
+# `SealReport::disambiguator_census`/`escalation_rounds` are `seal-census`-gated;
+# this guard keeps a plain `cargo test` from trying to compile the file (the
+# test's own module docs assume this entry exists).
+required-features = ["seal-census"]
+
+[[test]]
+name = "rust_serde_json_diagnosis"
+path = "tests/rust/serde_json_diagnosis.rs"
+
+[[test]]
+name = "go_cross_package_implements"
+path = "tests/go/cross_package_implements.rs"
+
+[[test]]
+name = "go_cross_target_build_constraints"
+path = "tests/go/cross_target_build_constraints.rs"
+
+[[test]]
+name = "go_grpc_corpus"
+path = "tests/go/grpc_corpus.rs"
+
+[[test]]
+name = "go_oracle_staleness"
+path = "tests/go/oracle_staleness.rs"
+
+[[test]]
+name = "java_oracle_staleness"
+path = "tests/java/oracle_staleness.rs"
+
+[[test]]
+name = "csharp_oracle_staleness"
+path = "tests/csharp/oracle_staleness.rs"
+
+[[test]]
+name = "python_pyrefly_feature_path"
+path = "tests/python/pyrefly_feature_path.rs"
