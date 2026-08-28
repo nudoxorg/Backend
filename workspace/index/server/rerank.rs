@@ -33,25 +33,16 @@ use url::Url;
 
 use crate::server::config::RerankConfig;
 
-/// One candidate document for reranking: the caller's opaque id plus the text
-/// the cross-encoder scores against the query.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RerankDocument {
-    /// The caller's identity for this document (echoed back on the score).
-    pub id: String,
-    /// The text scored against the query.
-    pub text: String,
-}
-
-/// One reranked result: the document's id and its relevance score, higher is
-/// more relevant. Returned sorted descending.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct RerankScore {
-    /// The id of the scored document (from [`RerankDocument::id`]).
-    pub id: String,
-    /// The cross-encoder relevance score.
-    pub score: f32,
-}
+// The rerank request/response element types are shared wire vocabulary, so they
+// are defined once in `heart::client::dto` and re-exported here — the cross-
+// encoder scorer below consumes and produces exactly the shapes the client
+// sends and receives, with no server-local copy to drift (§0.6 collapse).
+//
+// - `RerankDocument`: one candidate document — the caller's opaque id plus the
+//   text the cross-encoder scores against the query.
+// - `RerankScore`: one reranked result — the document's id and its relevance
+//   score (higher is more relevant); returned sorted descending.
+pub use heart::client::dto::{RerankDocument, RerankScore};
 
 /// Why a rerank call failed. Timeout is its own variant because the HTTP
 /// surface must project it as the explicit `rerank_unavailable` signal

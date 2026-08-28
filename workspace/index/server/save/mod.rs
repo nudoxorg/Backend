@@ -51,6 +51,55 @@ impl<M: EmbeddingModel> Server<M> {
         Ok((entry.hash.to_string(), bytes))
     }
 
+    /// Look up a source file's content hash and size in the current manifest,
+    /// without reading any bytes. The ranged HTTP handler uses this to learn
+    /// the file's size (needed to validate a `Range` header and build a
+    /// correct `Content-Range`) before deciding whether — or how — to read
+    /// from the CAS at all.
+    pub async fn source_file_meta(&self, package: PackageId, path: &str) -> ServerResult<(String, u64)> {
+        let (hash, size) = self.locate_file(package, path).await?;
+        Ok((hash.to_string(), size))
+    }
+
+    /// Read a byte range of one source file from the current package manifest.
+    ///
+    /// Same manifest allow-list as [`Server::source_file`]. `range` is clamped
+    /// to `[0, entry.size)` before the CAS read, so a caller-supplied range that
+    /// overruns the file never turns into an out-of-bounds backend request —
+    /// the clamped slice plus the returned file size is what a caller needs to
+    /// build a correct `Content-Range`. A ranged read trades the whole-object
+    /// integrity check `get_section` performs for bandwidth (see
+    /// [`crate::cas::Store::get_section_range`]).
+    pub async fn source_file_range(
+        &self,
+        package: PackageId,
+        path: &str,
+        range: std::ops::Range<u64>,
+    ) -> ServerResult<(String, u64, bytes::Bytes)> {
+        let (hash, size) = self.locate_file(package, path).await?;
+        let clamped = range.start.min(size)..range.end.min(size);
+        let bytes = self
+            .base()
+            .blobs
+            .get_section_range(hash, clamped)
+            .await
+            .map_err(RegistryError::from)?;
+        Ok((hash.to_string(), size, bytes))
+    }
+
+    /// Shared manifest lookup behind [`Server::source_file_meta`] and
+    /// [`Server::source_file_range`] (`source_file` keeps its own copy rather
+    /// than being rewired onto this, to leave its existing behavior untouched).
+    async fn locate_file(&self, package: PackageId, path: &str) -> ServerResult<(ContentHash, u64)> {
+        let manifest = self.current_manifest(package).await?;
+        let entry = manifest
+            .files
+            .iter()
+            .find(|entry| entry.path.as_str() == path)
+            .ok_or(crate::server::error::ServerError::NotFound)?;
+        Ok((entry.hash, entry.size))
+    }
+
     /// Rebuild a derived store for a package from its blob, at a known snapshot
     /// (the recorded [`ContentHash`] from `ResolutionState::Stored`).
     ///

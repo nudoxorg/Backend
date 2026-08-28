@@ -153,6 +153,48 @@ pub enum BadRequestReason {
     InvalidSourcePath { path: String },
 }
 
+/// Lower `heart`'s compiled-lookup validation error into the server's typed
+/// `400`. The wire type ([`heart::client::dto::CompiledLookupRequest`]) owns the
+/// validation; this preserves the exact [`BadRequestReason`] the handler
+/// returned when the DTO was declared server-side (§0.6 collapse).
+impl From<heart::client::dto::JobKeyHexError> for ServerError {
+    fn from(error: heart::client::dto::JobKeyHexError) -> Self {
+        use heart::client::dto::JobKeyHexError;
+        match error {
+            JobKeyHexError::Empty => BadRequestReason::MissingField { field: "job_keys" },
+            JobKeyHexError::TooMany { count, max } => {
+                BadRequestReason::TooManyJobKeys { count, max }
+            }
+        }
+        .into()
+    }
+}
+
+/// Lower `heart`'s rerank validation error into the server's typed `400`,
+/// preserving the pre-collapse mapping: empty query/documents are missing
+/// fields; an oversize batch is a malformed query carrying the same count/limit
+/// message the client saw before.
+impl From<heart::client::dto::RerankRequestError> for ServerError {
+    fn from(error: heart::client::dto::RerankRequestError) -> Self {
+        use heart::client::dto::RerankRequestError;
+        match error {
+            RerankRequestError::EmptyQuery => {
+                BadRequestReason::MissingField { field: "query" }.into()
+            }
+            RerankRequestError::NoDocuments => {
+                BadRequestReason::MissingField { field: "documents" }.into()
+            }
+            RerankRequestError::TooManyDocuments { count, max } => {
+                BadRequestReason::MalformedQuery(QueryError::Malformed {
+                    detail: format!("too many rerank documents: {count} (maximum {max})"),
+                    query: String::new(),
+                })
+                .into()
+            }
+        }
+    }
+}
+
 /// Reasons a request was denied by the access policy (403).
 #[derive(Debug, thiserror::Error)]
 pub enum ForbiddenReason {
