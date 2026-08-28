@@ -442,3 +442,5 @@ result/
 # cannot. The regeneration command lives in GUI-PROOF.md.
 tests/shots/
 /.ci-cache
+/.ci-cache/cargo/git/checkouts
+/.claude/worktrees
