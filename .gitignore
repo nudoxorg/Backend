@@ -441,3 +441,4 @@ result/
 # committing them would churn on every run while proving nothing a re-run
 # cannot. The regeneration command lives in GUI-PROOF.md.
 tests/shots/
+/.ci-cache
