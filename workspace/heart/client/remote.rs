@@ -63,7 +63,10 @@ use url::Url;
 
 use crate::client::http::Error as ClientError;
 use crate::stream::WireError;
-use crate::surface::{Answer, Emitter, Frame, Gen, Serve, StreamHandle, Surface, answer_channel, decode_frames};
+use crate::surface::{
+    Answer, CAPABILITIES_PATH, Capabilities, Emitter, Frame, Gen, Serve, StreamHandle, Surface,
+    answer_channel, decode_frames,
+};
 
 /// How many frames [`Answer`]'s underlying channel is sized for. A genuine
 /// bound now (`answer_channel`'s own doc comment, contract task 9) — `pump`
@@ -106,6 +109,29 @@ impl RemoteClient {
     /// Parse `base` from a string and bind.
     pub fn connect(base: &str) -> Result<Self, ClientError> {
         Self::new(Url::parse(base)?)
+    }
+
+    /// Probe the node's [`Capabilities`] — the one handshake a router runs
+    /// before it decides what to delegate and what to serve locally
+    /// (LOCAL-REMOTE-CONTRACT.md §6.2).
+    ///
+    /// Unlike [`Serve::serve`], this is an ordinary buffered `GET`: the answer
+    /// is a single small JSON object, not a stream, so none of the incremental
+    /// framing / cancellation machinery applies. A caller uses the connect
+    /// timeout (set in [`RemoteClient::new`]) plus its own `tokio::time::timeout`
+    /// if it wants to bound the probe — a router should, so an unreachable
+    /// remote resolves quickly to "serve locally" rather than stalling startup.
+    ///
+    /// A transport failure or a non-2xx status is an `Err`: to a router that is
+    /// simply "no usable remote", and it falls back to the standalone path —
+    /// the floor the whole contract guarantees.
+    pub async fn capabilities(&self) -> Result<Capabilities, ClientError> {
+        // `CAPABILITIES_PATH` is absolute (`/capabilities`), so `join` replaces
+        // the base path rather than appending — the same discipline the
+        // streaming path uses with `S::PATH`.
+        let url = self.base.join(CAPABILITIES_PATH)?;
+        let response = self.http.get(url).send().await?.error_for_status()?;
+        Ok(response.json::<Capabilities>().await?)
     }
 }
 

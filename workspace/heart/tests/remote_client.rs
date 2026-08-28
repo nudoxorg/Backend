@@ -146,6 +146,64 @@ async fn respond_complete(stream: &mut TcpStream, status: u16, reason: &str, bod
 }
 
 // ---------------------------------------------------------------------------
+// 0. The capability handshake — the probe a router runs before delegating.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn capabilities_probe_decodes_the_handshake() {
+    use heart::surface::{Capabilities, GenerationId, SurfaceId};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let advertised = Capabilities {
+        protocol: heart::surface::PROTOCOL_VERSION,
+        surfaces: vec![SurfaceId::Symbols, SurfaceId::Packages],
+        generation: Some(GenerationId(9)),
+        semantic: true,
+    };
+    let body = serde_json::to_string(&advertised).expect("capabilities serializes");
+
+    let server = tokio::spawn(async move {
+        let (mut stream, path) = accept_one_with_path(&listener).await;
+        assert_eq!(path, "/capabilities", "probe must GET /capabilities");
+        respond_complete(&mut stream, 200, "OK", &body).await;
+    });
+
+    let client = RemoteClient::connect(&format!("http://{addr}")).expect("client binds");
+    let caps = client.capabilities().await.expect("probe decodes");
+    assert_eq!(caps, advertised);
+    assert!(caps.is_compatible());
+    assert!(caps.serves(SurfaceId::Symbols));
+    assert!(!caps.serves(SurfaceId::Usages));
+
+    server.await.expect("server task");
+}
+
+#[tokio::test]
+async fn capabilities_probe_error_is_a_fallback_signal() {
+    // A node that answers a non-2xx to the probe is, to a router, simply "no
+    // usable remote" — the probe is an `Err`, and the caller falls back to the
+    // standalone path. This pins that a 503 does not decode as a degenerate
+    // "empty capabilities" that a router might mistake for a working node.
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local_addr");
+
+    let server = tokio::spawn(async move {
+        let mut stream = accept_one(&listener).await;
+        respond_complete(&mut stream, 503, "Service Unavailable", "not ready").await;
+    });
+
+    let client = RemoteClient::connect(&format!("http://{addr}")).expect("client binds");
+    assert!(
+        client.capabilities().await.is_err(),
+        "a 503 probe must surface as an error a router treats as 'serve locally'"
+    );
+
+    server.await.expect("server task");
+}
+
+// ---------------------------------------------------------------------------
 // 1. The blanket impl compiles and works for two different surfaces.
 // ---------------------------------------------------------------------------
 

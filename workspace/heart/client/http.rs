@@ -224,6 +224,42 @@ impl NudoxClient {
         Ok(())
     }
 
+    /// Fetch one whole source file from a package's stored snapshot
+    /// (`GET /packages/{package}/files/{path}`). Buffered — this is not a
+    /// stream surface; a caller that only needs part of a large file should
+    /// use [`NudoxClient::source_file_range`] instead so the server (and the
+    /// CAS backend behind it) never reads bytes beyond what's needed.
+    pub async fn source_file(&self, package: uuid::Uuid, path: &str) -> Result<bytes::Bytes, Error> {
+        let url = self.base.join(&format!("packages/{package}/files/{path}"))?;
+        let response = self.http.get(url).send().await?;
+        self.checked_bytes(response, reqwest::StatusCode::OK).await
+    }
+
+    /// Fetch a byte range `[start, end_inclusive]` of one source file
+    /// (`GET /packages/{package}/files/{path}` with a `Range: bytes=start-end`
+    /// header) — a snippet read that fetches only the slice it needs rather
+    /// than the whole file. Requires the server to answer **206 Partial
+    /// Content**; any other status (including a 200 from a server that
+    /// silently ignored the `Range` header) is reported as [`Error::Status`]
+    /// rather than quietly handed back as if it were the requested slice.
+    pub async fn source_file_range(
+        &self,
+        package: uuid::Uuid,
+        path: &str,
+        start: u64,
+        end_inclusive: u64,
+    ) -> Result<bytes::Bytes, Error> {
+        let url = self.base.join(&format!("packages/{package}/files/{path}"))?;
+        let response = self
+            .http
+            .get(url)
+            .header(reqwest::header::RANGE, format!("bytes={start}-{end_inclusive}"))
+            .send()
+            .await?;
+        self.checked_bytes(response, reqwest::StatusCode::PARTIAL_CONTENT)
+            .await
+    }
+
     /// Deserialize a single JSON body after checking the status.
     async fn json<T: serde::de::DeserializeOwned>(
         &self,
@@ -231,6 +267,26 @@ impl NudoxClient {
     ) -> Result<T, Error> {
         let body = self.checked(response).await?;
         Ok(serde_json::from_str(&body)?)
+    }
+
+    /// Read a response body as raw bytes, requiring the status to be exactly
+    /// `want` (not merely "2xx" — [`NudoxClient::source_file_range`] uses this
+    /// to insist on 206 specifically, so a 200 whole-file fallback can never
+    /// be mistaken for the requested slice).
+    async fn checked_bytes(
+        &self,
+        response: reqwest::Response,
+        want: reqwest::StatusCode,
+    ) -> Result<bytes::Bytes, Error> {
+        let status = response.status();
+        if status != want {
+            let body = response.text().await.unwrap_or_default();
+            return Err(Error::Status {
+                status: status.as_u16(),
+                body: body.chars().take(2048).collect(),
+            });
+        }
+        Ok(response.bytes().await?)
     }
 
     /// Turn a non-2xx response into a typed [`Error::Status`]; otherwise
