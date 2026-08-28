@@ -1336,12 +1336,16 @@ fn take_line(buffer: &mut BytesMut) -> Option<Bytes> {
     Some(line.freeze())
 }
 
+mod capabilities;
 mod federated;
 mod hit;
 mod merge_impl;
+mod routed;
 mod surfaces;
 
+pub use capabilities::{CAPABILITIES_PATH, Capabilities, PROTOCOL_VERSION, SurfaceId};
 pub use federated::Federated;
+pub use routed::Routed;
 pub use hit::{SigToken, Signature, SymbolHit};
 pub use merge_impl::{MergePump, Timer, merge, merge_bounded, merge_with_deadline};
 pub use surfaces::{Packages, SearchNote, Symbols, UsageHit, Usages};
