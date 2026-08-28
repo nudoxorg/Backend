@@ -60,6 +60,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 
+use heart::ContentHash;
 use nudox_ir::change::{IntroId, PackageLineageId};
 use serde::{Deserialize, Serialize};
 
@@ -316,6 +317,12 @@ impl Unavailable {
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct Vector {
     intro: IntroId,
+    /// Hash of the document text this vector was embedded from.
+    ///
+    /// This is what [`SemanticIndex::snapshot_hashes`] hands back to
+    /// `semantic_indexer` so it can tell an unchanged symbol from a changed
+    /// one without re-embedding either.
+    doc_hash: ContentHash,
     /// Unit-length. Enforced by [`SemanticIndex::insert_package`], not by
     /// convention.
     values: Arc<[f32]>,
@@ -341,6 +348,7 @@ pub(crate) struct SemanticIndexInner {
 #[derive(Deserialize, Serialize)]
 struct PersistedVector {
     intro: IntroId,
+    doc_hash: ContentHash,
     values: Vec<f32>,
 }
 
@@ -394,6 +402,56 @@ impl SemanticIndex {
         }
     }
 
+    /// Reopen a persisted index at `path`, or start empty.
+    ///
+    /// The persisted state is discarded (not an error — just an empty start)
+    /// when the file is missing, unreadable, or was written by a different
+    /// model or vector width: a stale index scored against the wrong model
+    /// is not a smaller index, it is a wrong one. Reusing `model_id`'s exact
+    /// string (not just `durable_canonical`) means a config change that
+    /// swaps models can never silently score old vectors against new ones.
+    pub(crate) fn load_or_new(
+        path: std::path::PathBuf,
+        model_id: String,
+        dimensions: usize,
+    ) -> Self {
+        let persistence = Arc::new(IndexPersistence {
+            path: path.clone(),
+            model_id: model_id.clone(),
+            dimensions,
+        });
+        let inner = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|contents| match serde_json::from_str::<PersistedIndex>(&contents) {
+                Ok(persisted)
+                    if persisted.model_id == model_id && persisted.dimensions == dimensions =>
+                {
+                    Some(reconstitute(persisted.inner))
+                }
+                Ok(_) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        "semantic index model or dimensions changed; discarding persisted state"
+                    );
+                    None
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        path = %path.display(),
+                        %error,
+                        "semantic index persisted state unreadable; starting empty"
+                    );
+                    None
+                }
+            })
+            .unwrap_or_default();
+
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+            persistence: Some(persistence),
+        }
+    }
+
     /// Record that `lineage` has been embedded, with `vectors` as its content.
     ///
     /// Rejects any vector that is not `dimensions` wide or contains a
@@ -409,21 +467,13 @@ impl SemanticIndex {
         dimensions: usize,
     ) -> Result<(), Error> {
         let mut vectors = Vec::with_capacity(entries.len());
-        for (intro, mut values) in entries {
-            if values.len() != dimensions {
-                return Err(Error::DimensionMismatch {
-                    expected: dimensions,
-                    got: values.len(),
-                });
-            }
-            if let Some(index) = values.iter().position(|v| !v.is_finite()) {
-                return Err(Error::NonFinite { index });
-            }
-            normalize(&mut values);
-            vectors.push(Vector {
-                intro,
-                values: Arc::from(values.as_slice()),
-            });
+        for (intro, values) in entries {
+            // No source text reaches this path (it's the whole-package
+            // replace callers use, not the incremental one) — the vector's
+            // own bytes stand in as its hash so the field is always
+            // meaningful rather than a placeholder.
+            let doc_hash = ContentHash::of_bytes(&f32_le_bytes(&values));
+            vectors.push(validated_vector(intro, doc_hash, values, dimensions)?);
         }
 
         let mut guard = self
@@ -432,13 +482,83 @@ impl SemanticIndex {
             .expect("semantic index lock is never held across a panic");
         guard.vectors.insert(lineage.clone(), vectors);
         guard.indexed.insert(lineage);
-        let persisted = self.persistence.as_deref().map(|p| snapshot(p, &guard));
-        drop(guard);
-        if let Some(persisted) = persisted
-            && let Err(error) = persist(persisted.0, persisted.1) {
-                tracing::warn!(%error, "semantic index persistence failed");
-            }
+        self.persist_locked(&guard);
         Ok(())
+    }
+
+    /// The document hash behind every vector currently indexed for
+    /// `lineage`, or an empty map if it has not been indexed at all.
+    ///
+    /// This is the read half of the diff `semantic_indexer` runs before
+    /// embedding: comparing a freshly-computed hash against this map is what
+    /// tells an unchanged symbol from a changed one without asking the model
+    /// about either.
+    pub(crate) fn snapshot_hashes(
+        &self,
+        lineage: &PackageLineageId,
+    ) -> BTreeMap<IntroId, ContentHash> {
+        let guard = self
+            .inner
+            .read()
+            .expect("semantic index lock is never held across a panic");
+        guard
+            .vectors
+            .get(lineage)
+            .map(|vectors| vectors.iter().map(|v| (v.intro, v.doc_hash)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Apply a diff to `lineage`'s vectors: upsert `upserts`, drop `removed`,
+    /// and leave every other symbol's vector untouched.
+    ///
+    /// Unlike [`Self::insert_package`], this never replaces the whole
+    /// lineage — it is the incremental counterpart `semantic_indexer` uses so
+    /// that a package with one changed symbol writes one vector, not the
+    /// package's entire symbol set. Marks `lineage` covered even when both
+    /// `upserts` and `removed` are empty, so a package that embeds to
+    /// nothing still counts as indexed on its first pass.
+    pub(crate) fn apply_delta(
+        &self,
+        lineage: PackageLineageId,
+        upserts: Vec<(IntroId, ContentHash, Vec<f32>)>,
+        removed: &[IntroId],
+        dimensions: usize,
+    ) -> Result<(), Error> {
+        let mut new_vectors = Vec::with_capacity(upserts.len());
+        for (intro, doc_hash, values) in upserts {
+            new_vectors.push(validated_vector(intro, doc_hash, values, dimensions)?);
+        }
+
+        let mut guard = self
+            .inner
+            .write()
+            .expect("semantic index lock is never held across a panic");
+        let existing = guard.vectors.entry(lineage.clone()).or_default();
+        existing.retain(|v| !removed.contains(&v.intro));
+        for vector in new_vectors {
+            match existing.iter_mut().find(|v| v.intro == vector.intro) {
+                Some(slot) => *slot = vector,
+                None => existing.push(vector),
+            }
+        }
+        guard.indexed.insert(lineage);
+        self.persist_locked(&guard);
+        Ok(())
+    }
+
+    /// Write the current state to disk if persistence is configured.
+    ///
+    /// Takes the guard by reference so callers that already hold the write
+    /// lock (both mutators above) don't have to release and reacquire it —
+    /// the snapshot itself is a plain read of what's already locked.
+    fn persist_locked(&self, guard: &SemanticIndexInner) {
+        let Some(persistence) = self.persistence.as_deref() else {
+            return;
+        };
+        let (path, contents) = snapshot(persistence, guard);
+        if let Err(error) = persist(path, contents) {
+            tracing::warn!(%error, "semantic index persistence failed");
+        }
     }
 
     /// How many packages have been embedded.
@@ -539,6 +659,7 @@ fn snapshot(
                         .iter()
                         .map(|vector| PersistedVector {
                             intro: vector.intro,
+                            doc_hash: vector.doc_hash,
                             values: vector.values.to_vec(),
                         })
                         .collect(),
@@ -551,6 +672,65 @@ fn snapshot(
         persistence.path.clone(),
         serde_json::to_string(&persisted).expect("semantic index state is serializable"),
     )
+}
+
+/// Rebuild in-memory state from a deserialized snapshot.
+fn reconstitute(persisted: PersistedIndexInner) -> SemanticIndexInner {
+    SemanticIndexInner {
+        vectors: persisted
+            .vectors
+            .into_iter()
+            .map(|package| {
+                let vectors = package
+                    .vectors
+                    .into_iter()
+                    .map(|v| Vector {
+                        intro: v.intro,
+                        doc_hash: v.doc_hash,
+                        values: Arc::from(v.values.as_slice()),
+                    })
+                    .collect();
+                (package.lineage, vectors)
+            })
+            .collect(),
+        indexed: persisted.indexed,
+    }
+}
+
+/// Validate, normalize, and wrap one vector — shared by
+/// [`SemanticIndex::insert_package`] and [`SemanticIndex::apply_delta`] so
+/// the two entry points can never disagree about what makes a vector
+/// acceptable.
+fn validated_vector(
+    intro: IntroId,
+    doc_hash: ContentHash,
+    mut values: Vec<f32>,
+    dimensions: usize,
+) -> Result<Vector, Error> {
+    if values.len() != dimensions {
+        return Err(Error::DimensionMismatch {
+            expected: dimensions,
+            got: values.len(),
+        });
+    }
+    if let Some(index) = values.iter().position(|v| !v.is_finite()) {
+        return Err(Error::NonFinite { index });
+    }
+    normalize(&mut values);
+    Ok(Vector {
+        intro,
+        doc_hash,
+        values: Arc::from(values.as_slice()),
+    })
+}
+
+/// Flatten `values` to its little-endian byte representation, for hashing.
+fn f32_le_bytes(values: &[f32]) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(values.len() * 4);
+    for value in values {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
 }
 
 fn persist(path: std::path::PathBuf, contents: String) -> Result<(), String> {

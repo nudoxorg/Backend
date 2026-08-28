@@ -208,6 +208,33 @@ pub struct EngineConfig {
     /// has the same shape regardless of which features a caller built this
     /// crate with — but every value is treated as `None`.
     pub ir_repo_root: Option<PathBuf>,
+    /// Directory the semantic index's vectors are written to and reopened
+    /// from, if an embedder is also configured.
+    ///
+    /// `None` (the default) means no persistence: every launch re-embeds
+    /// every resident package from scratch, exactly the behaviour before
+    /// this field existed. `Some` turns on a durable `semantic-index.json`
+    /// under this directory, written atomically after every successful
+    /// embed. Falls back to `NUDOX_SEMANTIC_INDEX_DIR` when unset, the same
+    /// "explicit config wins, then env, then off" shape [`package_cache`]
+    /// uses.
+    ///
+    /// This is what makes re-embedding incremental across a restart, not
+    /// just within a process: each vector is written alongside the content
+    /// hash of the text it came from, so a reload after restart only
+    /// re-embeds symbols whose hash no longer matches (see
+    /// `crate::semantic::SemanticIndex::apply_delta`).
+    pub semantic_index_dir: Option<PathBuf>,
+    /// When `Some`, the engine hydrates a package's IR from a remote generation
+    /// instead of producing it locally — the corpus-level "minimum work when
+    /// connected" path (see [`RemoteSource`](crate::store::source::remote::RemoteSource)).
+    ///
+    /// `None` (the default) is the standalone floor: every package is produced
+    /// locally, exactly as before this field existed. A package the remote does
+    /// not carry still falls back to the local producer, so turning this on
+    /// never drops a package — it only skips production for what the remote
+    /// already has sealed.
+    pub remote: Option<crate::store::source::remote::RemoteBinding>,
 }
 
 impl std::fmt::Debug for EngineConfig {
@@ -221,6 +248,8 @@ impl std::fmt::Debug for EngineConfig {
             .field("embedder", &self.embedder.is_some())
             .field("package_cache", &self.package_cache)
             .field("ir_repo_root", &self.ir_repo_root)
+            .field("semantic_index_dir", &self.semantic_index_dir)
+            .field("remote", &self.remote.is_some())
             .finish()
     }
 }
@@ -372,7 +401,27 @@ impl Engine {
         // only symptom is memory, and `Option` makes "this build does not embed"
         // a fact the type carries rather than one the reader has to reconstruct
         // from whether a task was spawned.
-        let semantic = crate::semantic::SemanticIndex::new();
+        // `semantic_index_dir` falls back to `NUDOX_SEMANTIC_INDEX_DIR`
+        // exactly like `EngineConfig::semantic_index_dir`'s doc explains —
+        // resolved here rather than baked into `Default` because a `PathBuf`
+        // field can't read an environment variable through `#[derive(Default)]`.
+        let semantic = match (
+            &config.embedder,
+            config
+                .semantic_index_dir
+                .clone()
+                .or_else(|| std::env::var_os("NUDOX_SEMANTIC_INDEX_DIR").map(PathBuf::from)),
+        ) {
+            (Some(embedder), Some(dir)) => {
+                let info = embedder.info();
+                crate::semantic::SemanticIndex::load_or_new(
+                    dir.join("semantic-index.json"),
+                    info.model_id.to_string(),
+                    info.dimensions,
+                )
+            }
+            _ => crate::semantic::SemanticIndex::new(),
+        };
         let semantic_tx = config.embedder.as_ref().map(|embedder| {
             let (tx, rx) = flume::unbounded();
             runtime.spawn(semantic_indexer(
@@ -415,6 +464,21 @@ impl Engine {
         // `store::persistence`'s module docs.
         #[cfg(feature = "local-persistence")]
         let source = crate::store::persistence::PersistedSource::new(config.ir_repo_root, source);
+
+        // Wrap with the remote-hydrating source when a remote is configured
+        // (`EngineConfig::remote`). RemoteSource is the OUTERMOST source, so a
+        // package the remote serves is replayed from its sealed IR before either
+        // the local persistence store or a producer is consulted — the corpus
+        // analogue of the query-plane `Routed` delegation. With no remote this
+        // is the identity (the source is boxed, its behaviour unchanged), which
+        // keeps the standalone floor intact. The `Box<dyn IrSource>` erases the
+        // two branches to one type for the generic `drive_load`.
+        let source: Box<dyn crate::store::source::IrSource> = match config.remote {
+            Some(binding) => Box::new(
+                crate::store::source::remote::RemoteSource::from_binding(binding, source),
+            ),
+            None => Box::new(source),
+        };
 
         // Seed the corpus from the source on the runtime's thread pool.
         // We do this eagerly on start so that searches issued immediately

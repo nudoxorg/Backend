@@ -1,6 +1,9 @@
 //! Incremental embedding: consume resident packages off the load path.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
+
+use heart::ContentHash;
 
 // ---------------------------------------------------------------------------
 // Semantic indexing — incremental, off the load path
@@ -52,19 +55,44 @@ pub(crate) async fn semantic_indexer(
         let documents = documents_of(&package);
         let started = std::time::Instant::now();
 
-        let mut vectors: Vec<(nudox_ir::change::IntroId, Vec<f32>)> =
-            Vec::with_capacity(documents.len());
+        // Diff against what's already indexed for this lineage before
+        // touching the embedder at all. A reload of the same generation —
+        // including a plain re-load of an unchanged version, which the
+        // corpus does not distinguish from a genuine new one — must cost
+        // nothing here: no model call, no lock write, no persistence write.
+        let existing = index.snapshot_hashes(&lineage);
+        let mut wanted = BTreeSet::new();
+        let mut to_embed: Vec<(nudox_ir::change::IntroId, String, ContentHash)> = Vec::new();
+        for (intro, text) in &documents {
+            wanted.insert(*intro);
+            let hash = ContentHash::of_bytes(text.as_bytes());
+            if existing.get(intro) != Some(&hash) {
+                to_embed.push((*intro, text.clone(), hash));
+            }
+        }
+        let removed: Vec<nudox_ir::change::IntroId> = existing
+            .keys()
+            .filter(|intro| !wanted.contains(intro))
+            .copied()
+            .collect();
+
+        if to_embed.is_empty() && removed.is_empty() && index.contains(&lineage) {
+            continue;
+        }
+
+        let mut vectors: Vec<(nudox_ir::change::IntroId, ContentHash, Vec<f32>)> =
+            Vec::with_capacity(to_embed.len());
         let mut failed = false;
 
-        for chunk in documents.chunks(batch) {
-            let texts: Vec<String> = chunk.iter().map(|(_, text)| text.clone()).collect();
+        for chunk in to_embed.chunks(batch) {
+            let texts: Vec<String> = chunk.iter().map(|(_, text, _)| text.clone()).collect();
             match embedder
                 .embed_batch(&texts, crate::semantic::EmbedRole::Document)
                 .await
             {
                 Ok(batch_vectors) if batch_vectors.len() == chunk.len() => {
-                    for ((intro, _), vector) in chunk.iter().zip(batch_vectors) {
-                        vectors.push((*intro, vector));
+                    for ((intro, _, hash), vector) in chunk.iter().zip(batch_vectors) {
+                        vectors.push((*intro, *hash, vector));
                     }
                 }
                 Ok(batch_vectors) => {
@@ -96,20 +124,28 @@ pub(crate) async fn semantic_indexer(
             // `SectionState::Building`'s uncovered count, which is exactly true:
             // the semantic section has not searched it and never will this run.
             // Marking it covered would be the silent-repair failure of §8 —
-            // presenting a degraded case as the good one.
+            // presenting a degraded case as the good one. Also deliberately
+            // *not* applied partially: a batch failing partway through leaves
+            // `vectors` short of `to_embed`, and upserting only what succeeded
+            // would persist hashes for symbols the model never actually saw.
             continue;
         }
 
-        let count = vectors.len();
-        match index.insert_package(lineage.clone(), vectors, info.dimensions) {
+        let embedded = vectors.len();
+        let removed_count = removed.len();
+        match index.apply_delta(lineage.clone(), vectors, &removed, info.dimensions) {
             // `info!`, not `debug!`: this is the single most expensive thing the
             // engine does per package (measured at 246.8 s for real `memchr` on
             // a CPU execution provider), and a cost that is only visible at
             // `debug` is a cost nobody measures. It is one line per package, at
-            // the same level as "corpus seeding complete".
+            // the same level as "corpus seeding complete". `embedded` is only
+            // the symbols actually sent to the model this run, not the
+            // package's whole public surface — that's the number that proves
+            // the diff worked.
             Ok(()) => tracing::info!(
                 package = %lineage,
-                symbols = count,
+                embedded,
+                removed = removed_count,
                 elapsed_ms = started.elapsed().as_millis() as u64,
                 "semantic index updated"
             ),
