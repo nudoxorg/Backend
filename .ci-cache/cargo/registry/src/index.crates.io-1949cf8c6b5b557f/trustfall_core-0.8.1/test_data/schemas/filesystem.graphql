@@ -1,0 +1,58 @@
+# This is an old schema used for testing.
+#
+# Consider it DEPRECATED — general purpose tests should target the `numbers` schema instead,
+# whereas specialized tests that need to trigger specific schema-related edge cases should
+# either use one of the other schemas or create their own schema file.
+
+schema {
+    query: RootSchemaQuery
+}
+directive @filter(op: String!, value: [String!]) repeatable on FIELD | INLINE_FRAGMENT
+directive @tag(name: String) on FIELD
+directive @output(name: String) on FIELD
+directive @optional on FIELD
+directive @recurse(depth: Int!) on FIELD
+directive @fold on FIELD
+directive @transform(op: String!) on FIELD
+
+# This is an old and DEPRECATED schema.
+#
+# Consider using the `numbers` schema instead, and see above for more details.
+
+type RootSchemaQuery {
+    OriginDirectory: [Directory]
+}
+
+type Directory {
+    name: String
+    path: String  # relative to origin directory
+
+    out_Directory_Subdirectory: [Directory]
+    out_Directory_ContainsFile: [File]
+}
+
+interface File {
+    name: String
+    extension: String
+    path: String  # relative to origin directory
+    size: Int
+
+    in_Directory_ContainsFile: [Directory]
+}
+
+type TextFile implements File {
+    name: String
+    extension: String
+    path: String  # relative to origin directory
+    size: Int
+    contents: String
+
+    in_Directory_ContainsFile: [Directory]
+    out_TextFile_HasLine: [NumberedTextLine]
+}
+
+type NumberedTextLine {
+    line_number: Int  # 1-indexed, just as it would appear in your text editor
+    contents: String  # the text line as-is, including leading/trailing whitespace
+    trimmed_contents: String  # the text line with leading/trailing whitespace stripped
+}

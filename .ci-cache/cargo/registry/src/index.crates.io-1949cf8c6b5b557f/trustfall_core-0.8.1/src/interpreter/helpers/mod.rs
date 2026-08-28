@@ -1,0 +1,566 @@
+use std::{collections::BTreeSet, fmt::Debug};
+
+use crate::{ir::FieldValue, schema::Schema};
+
+use super::{AsVertex, ContextIterator, ContextOutcomeIterator, Typename, VertexIterator};
+
+mod correctness;
+
+#[cfg(test)]
+mod tests;
+
+pub use correctness::check_adapter_invariants;
+
+/// Helper for implementing [`BasicAdapter::resolve_property`] and equivalents.
+///
+/// Takes a property-resolver function and applies it over each of the vertices
+/// in the input context iterator, one at a time.
+///
+/// Often used with resolvers from the [`field_property!`](crate::field_property) and
+/// [`accessor_property!`](crate::accessor_property) macros.
+///
+/// [`BasicAdapter::resolve_property`]: super::basic_adapter::BasicAdapter::resolve_property
+pub fn resolve_property_with<
+    'vertex,
+    Vertex: Debug + Clone + 'vertex,
+    V: AsVertex<Vertex> + 'vertex,
+>(
+    contexts: ContextIterator<'vertex, V>,
+    mut resolver: impl FnMut(&Vertex) -> FieldValue + 'vertex,
+) -> ContextOutcomeIterator<'vertex, V, FieldValue> {
+    Box::new(contexts.map(move |ctx| match ctx.active_vertex::<Vertex>() {
+        None => (ctx, FieldValue::Null),
+        Some(vertex) => {
+            let value = resolver(vertex);
+            (ctx, value)
+        }
+    }))
+}
+
+/// Helper for implementing [`BasicAdapter::resolve_neighbors`] and equivalents.
+///
+/// Takes a neighbor-resolver function and applies it over each of the vertices
+/// in the input context iterator, one at a time.
+///
+/// [`BasicAdapter::resolve_neighbors`]: super::basic_adapter::BasicAdapter::resolve_neighbors
+pub fn resolve_neighbors_with<
+    'vertex,
+    Vertex: Debug + Clone + 'vertex,
+    V: AsVertex<Vertex> + 'vertex,
+>(
+    contexts: ContextIterator<'vertex, V>,
+    mut resolver: impl FnMut(&Vertex) -> VertexIterator<'vertex, Vertex> + 'vertex,
+) -> ContextOutcomeIterator<'vertex, V, VertexIterator<'vertex, Vertex>> {
+    Box::new(contexts.map(move |ctx| {
+        match ctx.active_vertex::<Vertex>() {
+            None => {
+                // rustc needs a bit of help with the type inference here,
+                // due to the Box<dyn Iterator> conversion.
+                let no_neighbors: VertexIterator<'vertex, Vertex> = Box::new(std::iter::empty());
+                (ctx, no_neighbors)
+            }
+            Some(vertex) => {
+                let neighbors = resolver(vertex);
+                (ctx, neighbors)
+            }
+        }
+    }))
+}
+
+/// Helper for implementing [`BasicAdapter::resolve_coercion`] and equivalents.
+///
+/// Takes a coercion-resolver function and applies it over each of the vertices
+/// in the input context iterator, one at a time.
+///
+/// [`BasicAdapter::resolve_coercion`]: super::basic_adapter::BasicAdapter::resolve_coercion
+pub fn resolve_coercion_with<
+    'vertex,
+    Vertex: Debug + Clone + 'vertex,
+    V: AsVertex<Vertex> + 'vertex,
+>(
+    contexts: ContextIterator<'vertex, V>,
+    mut resolver: impl FnMut(&Vertex) -> bool + 'vertex,
+) -> ContextOutcomeIterator<'vertex, V, bool> {
+    Box::new(contexts.map(move |ctx| match ctx.active_vertex::<Vertex>() {
+        None => (ctx, false),
+        Some(vertex) => {
+            let can_coerce = resolver(vertex);
+            (ctx, can_coerce)
+        }
+    }))
+}
+
+/// Helper for implementing [`BasicAdapter::resolve_coercion`] and equivalents.
+///
+/// Uses the schema to look up all the subtypes of the coercion target type.
+/// Then uses the [`Typename`] trait to look up the exact runtime type of each vertex
+/// and checks if it's equal or a subtype of the coercion target type.
+///
+/// [`BasicAdapter::resolve_coercion`]: super::basic_adapter::BasicAdapter::resolve_coercion
+pub fn resolve_coercion_using_schema<
+    'vertex,
+    Vertex: Debug + Clone + Typename + 'vertex,
+    V: AsVertex<Vertex> + 'vertex,
+>(
+    contexts: ContextIterator<'vertex, V>,
+    schema: &'vertex Schema,
+    coerce_to_type: &str,
+) -> ContextOutcomeIterator<'vertex, V, bool> {
+    // If the vertex's typename is one of these types,
+    // then the coercion's result is `true`.
+    let subtypes: BTreeSet<_> = schema
+        .subtypes(coerce_to_type)
+        .unwrap_or_else(|| panic!("type {coerce_to_type} is not part of this schema"))
+        .collect();
+
+    Box::new(contexts.map(move |ctx| match ctx.active_vertex::<Vertex>() {
+        None => (ctx, false),
+        Some(vertex) => {
+            let typename = vertex.typename();
+            let can_coerce = subtypes.contains(typename);
+            (ctx, can_coerce)
+        }
+    }))
+}
+
+/// Helper for making property resolver functions based on fields.
+///
+/// Generally used with [`resolve_property_with`].
+///
+/// Retrieves a [`FieldValue`] from a vertex by converting it to the proper type,
+/// and then retrieving the field of a struct.
+///
+/// If the property is computed by a function, use
+/// [`accessor_property!`](crate::accessor_property) instead.
+///
+/// # Examples
+/// ```
+/// # use trustfall_core::{
+/// #     field_property,
+/// #     interpreter::{
+/// #         AsVertex,
+/// #         ContextIterator,
+/// #         ContextOutcomeIterator,
+/// #         helpers::resolve_property_with,
+/// #     },
+/// #     ir::FieldValue,
+/// # };
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     id: String
+///     // ...
+/// }
+///
+/// # struct Adapter<'a>(&'a ());
+/// # impl<'a> Adapter<'a> {
+/// // In implementation of `Adapter`
+/// fn resolve_property<V: AsVertex<User> + 'a>(
+///     &self,
+///     contexts: ContextIterator<'a, User>,
+///     type_name: &str,
+///     property_name: &str,
+/// ) -> ContextOutcomeIterator<'a, User, FieldValue> {
+///     match (type_name, property_name) {
+///         ("User", "id") => {
+///             resolve_property_with(contexts, field_property!(id)) // Macro used here
+///         },
+///         // ...
+///         _ => unreachable!()
+///     }
+/// }
+/// # }
+/// ```
+///
+/// Sometimes a vertex may have to be converted to another type before the
+/// property can be accessed. To do this, simply pass a conversion method
+/// implemented on the `Vertex` type (in this case `as_user()`) to the macro like
+/// in the example below.
+/// ```
+/// # use std::rc::Rc;
+/// # use trustfall_core::{
+/// #     field_property,
+/// #     interpreter::{
+/// #         AsVertex,
+/// #         ContextIterator,
+/// #         ContextOutcomeIterator,
+/// #         helpers::resolve_property_with,
+/// #     },
+/// #     ir::FieldValue,
+/// # };
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     id: String,
+///     // ...
+/// }
+///
+/// #[derive(Debug, Clone)]
+/// struct Bot {
+///     user: User,
+///     purpose: String,
+/// }
+///
+/// #[derive(Debug, Clone)]
+/// enum Vertex {
+///     UserVertex(Rc<User>),
+///     BotVertex(Rc<Bot>),
+///     // ...
+/// }
+///
+/// impl Vertex {
+///     pub fn as_user(&self) -> Option<&User> {
+///         match self {
+///             Vertex::UserVertex(u) => Some(u.as_ref()),
+///             Vertex::BotVertex(b) => Some(&b.user),
+///             _ => None,
+///         }
+///     }
+///     // ...
+/// }
+///
+/// # struct Adapter<'a>(&'a ());
+/// # impl<'a> Adapter<'a> {
+/// // In implementation of `Adapter`
+/// fn resolve_property<V: AsVertex<Vertex> + 'a>(
+///    &self,
+///    contexts: ContextIterator<'a, Vertex>,
+///    type_name: &str,
+///    property_name: &str,
+/// ) -> ContextOutcomeIterator<'a, Vertex, FieldValue> {
+///    match (type_name, property_name) {
+///        ("User" | "Bot", "id") => {
+///            resolve_property_with(contexts, field_property!(as_user, id)) // Macro used here
+///        },
+///        // ...
+///        _ => unreachable!()
+///    }
+/// }
+/// # }
+/// ```
+///
+/// By default, this macro calls `.clone().into()` on the field to convert it
+/// to a Trustfall property value. Most often, this is what we want.
+/// However, not all types implement `Into<FieldValue>` — some aren't even `Clone`!
+///
+/// To handle such cases, this macro can take an optional code block that will be called
+/// to convert the field's value into a Trustfall property value:
+/// ```
+/// # use trustfall_core::{
+/// #     field_property,
+/// #     interpreter::{
+/// #         AsVertex,
+/// #         ContextIterator,
+/// #         ContextOutcomeIterator,
+/// #         helpers::resolve_property_with,
+/// #     },
+/// #     ir::FieldValue,
+/// # };
+/// # pub(crate) mod chrono {
+/// #     #[derive(Debug, Clone)]
+/// #     pub(crate) struct DateTime;
+/// #
+/// #     impl DateTime {
+/// #         pub(crate) fn to_rfc3339(&self) -> String {
+/// #             unimplemented!()
+/// #         }
+/// #     }
+/// # }
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     created_at: Option<chrono::DateTime>,
+/// }
+///
+/// # struct Adapter<'a>(&'a ());
+/// # impl<'a> Adapter<'a> {
+/// // Inside implementation of `Adapter`:
+/// fn resolve_property<V: AsVertex<User> + 'a>(
+///     &self,
+///     contexts: ContextIterator<'a, V>,
+///     type_name: &str,
+///     property_name: &str,
+/// ) -> ContextOutcomeIterator<'a, V, FieldValue> {
+///     match (type_name, property_name) {
+///         ("User", "created_at") => { //      \/ Macro used here
+///             resolve_property_with(contexts, field_property!(created_at, {
+///                 // `created_at` in this block refers to the `User.created_at` field.
+///                 created_at.as_ref().map(|dt| dt.to_rfc3339()).into()
+///             }))
+///         }
+///         // ...
+///         _ => unreachable!()
+///     }
+/// }
+/// # }
+/// ```
+#[macro_export]
+macro_rules! field_property {
+    // If the data is a field directly on the vertex type.
+    ($field:ident) => {
+        move |vertex| -> $crate::ir::value::FieldValue { vertex.$field.clone().into() }
+    };
+    // Field on the vertex type + post-processing block.
+    ($field:ident, $b:block) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let $field = &vertex.$field;
+            $b
+        }
+    };
+    // If we need to call a fallible conversion method
+    // (such as `fn as_foo() -> Option<&Foo>`) before getting the field.
+    ($conversion:ident, $field:ident) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let vertex = vertex.$conversion().unwrap_or_else(|| {
+                panic!("conversion failed, unexpected vertex kind: {vertex:#?}")
+            });
+            vertex.$field.clone().into()
+        }
+    };
+    // Supply a block to post-process the field's value.
+    // Use the field's name inside the block.
+    ($conversion:ident, $field:ident, $b:block) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let $field = &vertex
+                .$conversion()
+                .unwrap_or_else(|| panic!("conversion failed, unexpected vertex kind: {vertex:#?}"))
+                .$field;
+            $b
+        }
+    };
+}
+
+/// Helper for making property resolver functions based on accessor methods.
+///
+/// In principle exactly the same as [`field_property!`](crate::field_property),
+/// but where the property is to be accessed using an accessor function instead
+/// of as a field.
+///
+/// # Examples
+///
+/// In the following example, `name` would be accessed using a field, but the
+/// age is accessed using a function:
+/// ```rust
+/// # use trustfall_core::{
+/// #     accessor_property,
+/// #     field_property,
+/// #     interpreter::{
+/// #         AsVertex,
+/// #         ContextIterator,
+/// #         ContextOutcomeIterator,
+/// #         helpers::resolve_property_with,
+/// #     },
+/// #     ir::FieldValue,
+/// # };
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     id: String
+///     // ...
+/// }
+///
+/// impl User {
+///     pub fn age(&self) -> u8 {
+///         // Some calculation
+///         # let age = 69;
+///         age
+///     }
+/// }
+///
+/// # struct Adapter<'a>(&'a ());
+/// # impl<'a> Adapter<'a> {
+/// // In implementation of `Adapter`:
+/// fn resolve_property<V: AsVertex<User> + 'a>(
+///     &self,
+///     contexts: ContextIterator<'a, User>,
+///     type_name: &str,
+///     property_name: &str,
+/// ) -> ContextOutcomeIterator<'a, User, FieldValue> {
+///     match (type_name, property_name) {
+///         ("User", "id") => resolve_property_with(contexts, field_property!(id)),
+///         ("User", "age") => resolve_property_with(contexts, accessor_property!(age)),
+///         // ...
+///         _ => unreachable!()
+///     }
+/// }
+/// # }
+/// ```
+///
+/// If the function to be called requires additional arguments, they can be specified
+/// as part of naming the function and the argument values will be moved into the generated closure.
+/// ```rust
+/// # use trustfall_core::{
+/// #     accessor_property,
+/// #     field_property,
+/// #     interpreter::{
+/// #         AsVertex,
+/// #         ContextIterator,
+/// #         ContextOutcomeIterator,
+/// #         helpers::resolve_property_with,
+/// #     },
+/// #     ir::FieldValue,
+/// # };
+/// #[derive(Debug, Clone)]
+/// struct User {
+///     // ...
+/// }
+///
+/// impl User {
+///     pub fn age(&self, current_year: i64) -> i64 {
+///         // Some calculation
+///         # let age = 69;
+///         age
+///     }
+/// }
+///
+/// # struct Adapter<'a>(&'a ());
+/// # impl<'a> Adapter<'a> {
+/// // In implementation of `Adapter`:
+/// fn resolve_property<V: AsVertex<User> + 'a>(
+///     &self,
+///     contexts: ContextIterator<'a, User>,
+///     type_name: &str,
+///     property_name: &str,
+/// ) -> ContextOutcomeIterator<'a, User, FieldValue> {
+///     match (type_name, property_name) {
+///         ("User", "age") => resolve_property_with(contexts, accessor_property!(age(2024))),
+///         // ...
+///         _ => unreachable!()
+///     }
+/// }
+/// # }
+/// ```
+///
+/// The usage of conversion functions and possible extra processing with a code
+/// block is analogous to the ones used with
+/// [`field_property!`](crate::field_property).
+#[macro_export]
+macro_rules! accessor_property {
+    // If the data is available as an accessor method on the vertex type.
+    ($accessor:ident) => {
+        |vertex| -> $crate::ir::value::FieldValue { vertex.$accessor().clone().into() }
+    };
+    // Same as above, but if the accessor also takes arguments.
+    ($accessor:ident($($arg:expr),* $(,)?)) => {
+        |vertex| -> $crate::ir::value::FieldValue { vertex.$accessor($($arg),*).clone().into() }
+    };
+    // If we need to call a fallible conversion method
+    // (such as `fn as_foo() -> Option<&Foo>`) before using the accessor.
+    ($conversion:ident, $accessor:ident) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let vertex = vertex.$conversion().unwrap_or_else(|| {
+                panic!("conversion failed, unexpected vertex kind: {vertex:#?}")
+            });
+            vertex.$accessor().clone().into()
+        }
+    };
+    // If the function we're calling isn't a plain accessor, but instead takes extra arguments.
+    ($conversion:ident, $accessor:ident($($arg:expr),* $(,)?)) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let vertex = vertex.$conversion().unwrap_or_else(|| {
+                panic!("conversion failed, unexpected vertex kind: {vertex:#?}")
+            });
+            vertex.$accessor($($arg),*).clone().into()
+        }
+    };
+    // Supply a block to post-process the field's value.
+    // The accessor's value is assigned to a variable with the same name as the accessor,
+    // and is available as such inside the block.
+    ($conversion:ident, $accessor:ident, $b:block) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let $accessor = vertex
+                .$conversion()
+                .unwrap_or_else(|| panic!("conversion failed, unexpected vertex kind: {vertex:#?}"))
+                .$accessor();
+            $b
+        }
+    };
+    // Supply a block as above, and also pass extra arguments to the "accessor" function as above.
+    ($conversion:ident, $accessor:ident($($arg:expr),* $(,)?), $b:block) => {
+        move |vertex| -> $crate::ir::value::FieldValue {
+            let $accessor = vertex
+                .$conversion()
+                .unwrap_or_else(|| panic!("conversion failed, unexpected vertex kind: {vertex:#?}"))
+                .$accessor($($arg),*);
+            $b
+        }
+    };
+}
+
+/// Resolver for the `__typename` property that optimizes resolution based on the schema.
+///
+/// Example:
+/// ```rust
+/// # use std::fmt::Debug;
+/// #
+/// # use trustfall_core::schema::Schema;
+/// # use trustfall_core::ir::FieldValue;
+/// # use trustfall_core::interpreter::{
+/// #     ContextIterator, ContextOutcomeIterator, helpers::{resolve_typename}, Typename,
+/// # };
+/// #
+/// # #[derive(Debug, Clone)]
+/// # enum Vertex {
+/// #     Variant,
+/// # }
+/// #
+/// # impl Typename for Vertex {
+/// #     fn typename(&self) -> &'static str {
+/// #         "variant"
+/// #     }
+/// # }
+/// #
+/// # struct Adapter<'vertex> {
+/// #     _marker: std::marker::PhantomData<&'vertex Vertex>,
+/// # }
+/// #
+/// # impl<'vertex> Adapter<'vertex> {
+/// // Inside your `Adapter` or `BasicAdapter` implementation.
+/// fn resolve_property(
+///     // &mut self,
+///     contexts: ContextIterator<'vertex, Vertex>,
+///     type_name: &str,
+///     property_name: &str,
+///     // < other args >
+/// ) -> ContextOutcomeIterator<'vertex, Vertex, FieldValue> {
+///     if property_name == "__typename" {
+/// #       #[allow(non_snake_case)]
+/// #       let SCHEMA = Schema::parse("< imagine this is schema text >").expect("valid schema");
+///         return resolve_typename(contexts, &SCHEMA, type_name);
+///     }
+///
+///     // Resolve all other properties here.
+/// #   todo!()
+/// }
+/// # }
+/// ```
+///
+/// This resolver uses the schema to check whether the type named by `type_name` has any subtypes.
+/// If so, then each vertex must be resolved dynamically since it may be any of those subtypes.
+/// Otherwise, the type must be exactly the value given in `type_name`, and we can take
+/// a faster path.
+///
+/// [`Adapter::resolve_property`]: super::Adapter::resolve_property
+pub fn resolve_typename<'a, Vertex: Typename + Debug + Clone + 'a, V: AsVertex<Vertex> + 'a>(
+    contexts: ContextIterator<'a, V>,
+    schema: &Schema,
+    type_name: &str,
+) -> ContextOutcomeIterator<'a, V, FieldValue> {
+    // `type_name` is the statically-known type. The vertices are definitely *at least* that type,
+    // but could also be one of its subtypes. If there are no subtypes, they *must* be that type.
+    let mut subtypes_iter = match schema.subtypes(type_name) {
+        Some(iter) => iter,
+        None => panic!("type {type_name} is not part of this schema"),
+    };
+
+    // Types are their own subtypes in the Schema::subtypes() method.
+    // Is there a subtype that isn't the starting type itself?
+    if subtypes_iter.any(|name| name != type_name) {
+        // Subtypes exist, we have to check each vertex separately.
+        resolve_property_with::<Vertex, V>(contexts, |vertex| vertex.typename().into())
+    } else {
+        // No other subtypes exist.
+        // All vertices here must be of exactly `type_name` type.
+        let type_name: FieldValue = type_name.into();
+        Box::new(contexts.map(move |ctx| match ctx.active_vertex() {
+            None => (ctx, FieldValue::Null),
+            Some(..) => (ctx, type_name.clone()),
+        }))
+    }
+}
