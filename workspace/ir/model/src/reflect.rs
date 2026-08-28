@@ -219,6 +219,32 @@ pub fn monikers(
     })
 }
 
+/// [`monikers`], joined with `style`'s separator instead of always `.`.
+///
+/// Exists for the corpus-side cross-package link resolver
+/// (`nudox-engine`'s `CorpusResolver`): a [`crate::foreign::ForeignKey::path`]
+/// is written in the *target* ecosystem's own spelling — `core::clone::Clone`
+/// for cargo, `java.util.List` for maven — so joining a sibling package's
+/// monikers with the always-`.` [`monikers`] would fail to match every
+/// `::`-styled key from a cargo or cpp producer. This walks the identical
+/// exported-entry set [`monikers`] does (same `policy`, same
+/// [`exported`] gate) and differs only in the separator, for the same reason
+/// [`moniker_path_styled`] differs from [`moniker_path`]: the two must never
+/// disagree about *which* ancestors exist, only about how the join is
+/// spelled.
+pub fn monikers_styled(
+    table: &PristineIntroTable,
+    policy: ExportPolicy,
+    style: PathStyle,
+) -> impl Iterator<Item = (String, IntroId)> + '_ {
+    table.iter().filter_map(move |(intro, _entry)| {
+        if !exported(table, policy, intro) {
+            return None;
+        }
+        moniker_path_styled(table, intro, style).map(|path| (path, intro))
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

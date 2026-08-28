@@ -350,7 +350,7 @@ pub enum Type {
 ///   and a producer needs no registry handle to build one; a producer reaching
 ///   for [`UnknownType::UnresolvedExternal`] when it holds enough to build a
 ///   `ForeignKey` is erasing information it has.
-#[derive(Debug, Clone, PartialEq, Eq, Visitor, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum UnknownType {
     /// **The source wrote no type here at all.**
     ///
@@ -447,6 +447,19 @@ pub enum UnknownType {
         // The source-level construct, e.g. `"complex128"`, `"unsafe.Pointer"`.
         construct: String,
     },
+}
+
+// The firing leaf of the unknown-walk: an `UnknownType` never nests a `Type`,
+// so `visit_unknowns` reports itself and stops — the exact role `Ref<T>` plays
+// for `visit_mut`. `visit_mut` is a no-op because an `UnknownType` holds no
+// `RawRef`. Hand-written (not `#[derive(Visitor)]`) precisely so `visit_unknowns`
+// *fires* here rather than recursing past it.
+impl crate::visitor::Visitor for UnknownType {
+    fn visit_mut(&mut self, _f: &impl Fn(&mut crate::index::RawRef)) {}
+
+    fn visit_unknowns(&self, f: &mut dyn FnMut(&UnknownType)) {
+        f(self);
+    }
 }
 
 impl UnknownType {
@@ -683,6 +696,37 @@ impl Type {
         probe.visit_mut(&|r| (sink.borrow_mut())(r));
     }
 
+    /// Visit every [`UnknownType`] reachable from this type — the reason at
+    /// this node when it is a [`Type::Unknown`], plus every nested type
+    /// position: generic arguments, tuple / union / intersection members, the
+    /// pointee of a reference or raw pointer, function-pointer params and
+    /// return, and every TypeScript-structural child.
+    ///
+    /// # Why this exists
+    ///
+    /// [`Type::for_each_ref`] surfaces every [`RawRef`] a type mentions, but a
+    /// cross-package mention a producer could not lower into a
+    /// `Type::Nominal(Ref::Foreign { .. })` is carried as
+    /// [`UnknownType::UnresolvedExternal`] — a [`Type::Unknown`], which holds
+    /// no `RawRef` and is therefore invisible to the ref walk. TypeScript,
+    /// Python and Clang emit exactly that for their cross-package type
+    /// mentions, so a reference-set / corpus builder that harvests only
+    /// `for_each_ref` never sees those edges. This is the surface that closes
+    /// that gap.
+    ///
+    /// Like [`Type::for_each_ref`], it rides the `#[derive(Visitor)]` walk — the
+    /// read-only twin [`visit_unknowns`](crate::visitor::Visitor::visit_unknowns)
+    /// traversal whose firing leaf is [`UnknownType`] itself (as [`Ref`] is for
+    /// `visit_mut`). So it visits every field of every variant with no
+    /// hand-written case list to drift out of sync with the enum: a new
+    /// [`Type`]/[`Primitive`] variant, or a new nested-type field on an existing
+    /// one, is walked automatically. Read-only, so unlike `for_each_ref` it
+    /// needs no clone.
+    pub fn for_each_unknown(&self, mut f: impl FnMut(&UnknownType)) {
+        use crate::visitor::Visitor;
+        self.visit_unknowns(&mut f);
+    }
+
     pub const U8: Self = Type::Primitive(Primitive::Integer {
         signed: false,
         width: Width::W8,
@@ -854,6 +898,74 @@ mod tests {
         let json = serde_json::to_string(&fp).expect("serialize");
         let back: Type = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(fp, back);
+    }
+
+    // ── for_each_unknown: nested-reason traversal ────────────────────────────
+
+    /// `for_each_unknown` reaches every [`UnknownType`] in the tree — including
+    /// one buried under `FunctionPointer` → param → `Primitive::Reference`
+    /// pointee, and two more under the return's `Union`/`Apply` — and reports
+    /// each reason, so a consumer can single out `UnresolvedExternal` without
+    /// hand-walking `Type` itself. Concrete types in the same tree contribute
+    /// nothing.
+    #[test]
+    fn for_each_unknown_reaches_every_nested_reason() {
+        let ty = Type::FunctionPointer {
+            params: [
+                // A buried external, behind a primitive reference.
+                Type::Primitive(Primitive::Reference {
+                    lifetime: None,
+                    mutable: false,
+                    ty: Box::new(Type::Unknown(UnknownType::UnresolvedExternal {
+                        name: "numpy.ndarray".to_owned(),
+                    })),
+                }),
+                // Concrete — must NOT be reported.
+                Type::I32,
+            ]
+            .into(),
+            ret: Some(Box::new(Type::Union(
+                [
+                    Type::Apply {
+                        base: Box::new(Type::Any),
+                        args: [Type::Unknown(UnknownType::UnresolvedLocalName {
+                            name: "Context".to_owned(),
+                        })]
+                        .into(),
+                    },
+                    Type::Unknown(UnknownType::Unannotated),
+                ]
+                .into(),
+            ))),
+            abi: None,
+        };
+
+        let mut reasons: Vec<UnknownType> = Vec::new();
+        ty.for_each_unknown(|u| reasons.push(u.clone()));
+
+        // All three unknowns are found; the two concrete types contribute none.
+        assert_eq!(reasons.len(), 3, "found: {reasons:?}");
+
+        // The external is present with its exact name and is distinguishable
+        // from the local-name and unannotated reasons — this is exactly what a
+        // reference-set harvest keys on.
+        let externals: Vec<&str> = reasons
+            .iter()
+            .filter_map(|u| match u {
+                UnknownType::UnresolvedExternal { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(externals, ["numpy.ndarray"]);
+
+        // The within-package name is surfaced too, but under its own variant, so
+        // a harvest that only wants externals never misclassifies it as one.
+        assert!(
+            reasons.iter().any(
+                |u| matches!(u, UnknownType::UnresolvedLocalName { name } if name == "Context")
+            ),
+            "the local name must remain a distinct reason, not an external"
+        );
     }
 
     /// Two FunctionPointers differing only in ABI must have distinct skeletons.

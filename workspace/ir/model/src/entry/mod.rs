@@ -122,6 +122,22 @@ impl Entry {
         probe.visit_mut(&|r| (sink.borrow_mut())(r));
     }
 
+    /// Visit every [`UnknownType`](crate::kinds::ty::UnknownType) this entry
+    /// holds — the reason at every unresolved type position across its signature,
+    /// fields and impl-of, however deeply nested.
+    ///
+    /// The read-only twin of [`for_each_ref`](Self::for_each_ref): a
+    /// cross-package mention a producer could not lower into a `Ref::Foreign`
+    /// is carried as [`UnknownType::UnresolvedExternal`], which holds no
+    /// [`RawRef`] and so is invisible to `for_each_ref`. This is how a
+    /// reference-set / audit pass reaches those edges. Rides the same
+    /// `#[derive(Visitor)]` walk, so it cannot drift out of sync with the type
+    /// graph; being read-only, it needs no clone.
+    pub fn for_each_unknown(&self, mut f: impl FnMut(&crate::kinds::ty::UnknownType)) {
+        use crate::visitor::Visitor;
+        self.visit_unknowns(&mut f);
+    }
+
     /// Construct an owned entry from its symbol, node, and kind.
     ///
     /// The `node` encodes the parent/children structural edges. For tests that

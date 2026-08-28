@@ -1,19 +1,37 @@
 //! Crate-private `Visitor` derive for walking every `Ref`.
 use crate::index::{Indexable, RawRef, Ref, erase_mut};
+use crate::kinds::ty::UnknownType;
 
 // derive macro re-export
 pub(crate) use self::m::Visitor;
 
 /// Walks every [`Ref`] in a value, so a single closure can lower/relocate all
 /// of them at once (e.g. `seal`'s `Local → Intro` lowering).
+///
+/// [`visit_unknowns`](Visitor::visit_unknowns) is the read-only twin: it reaches
+/// every [`UnknownType`] the same structure holds, on the identical
+/// derive-generated recursion. It exists because a cross-package mention a
+/// producer could not lower carries no [`RawRef`] — it is a
+/// [`Type::Unknown`](crate::kinds::Type::Unknown), invisible to `visit_mut` —
+/// so a reference-set / audit pass that harvests only refs never sees it. The
+/// firing leaf is [`UnknownType`] itself (as [`Ref`] is for `visit_mut`); every
+/// other impl merely recurses, so the walk cannot drift out of sync with the
+/// type graph.
 pub(crate) trait Visitor {
     fn visit_mut(&mut self, f: &impl Fn(&mut RawRef));
+
+    /// Visit every [`UnknownType`] reachable from `self`. Read-only, so unlike
+    /// [`visit_mut`](Visitor::visit_mut) it needs no clone.
+    fn visit_unknowns(&self, f: &mut dyn FnMut(&UnknownType));
 }
 
 impl<T: Indexable> Visitor for Ref<T> {
     fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
         f(erase_mut(self));
     }
+
+    // A `Ref` is a handle to another entry; it holds no `UnknownType` inline.
+    fn visit_unknowns(&self, _f: &mut dyn FnMut(&UnknownType)) {}
 }
 
 mod default_impl {
@@ -27,11 +45,19 @@ mod default_impl {
                 it.visit_mut(f);
             }
         }
+        fn visit_unknowns(&self, f: &mut dyn FnMut(&super::UnknownType)) {
+            if let Some(it) = self {
+                it.visit_unknowns(f);
+            }
+        }
     }
 
     impl<T: Visitor + ?Sized> Visitor for Box<T> {
         fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             (**self).visit_mut(f);
+        }
+        fn visit_unknowns(&self, f: &mut dyn FnMut(&super::UnknownType)) {
+            (**self).visit_unknowns(f);
         }
     }
 
@@ -41,12 +67,22 @@ mod default_impl {
                 it.visit_mut(f);
             }
         }
+        fn visit_unknowns(&self, f: &mut dyn FnMut(&super::UnknownType)) {
+            for it in self {
+                it.visit_unknowns(f);
+            }
+        }
     }
 
     impl<T: Visitor> Visitor for Vec<T> {
         fn visit_mut(&mut self, f: &impl Fn(&mut RawRef)) {
             for it in self {
                 it.visit_mut(f);
+            }
+        }
+        fn visit_unknowns(&self, f: &mut dyn FnMut(&super::UnknownType)) {
+            for it in self {
+                it.visit_unknowns(f);
             }
         }
     }
@@ -97,6 +133,11 @@ mod m {
 				fn visit_mut(&mut self, f: &impl Fn(&mut $crate::index::RawRef)) {
 					$(
 					self.$field.visit_mut(f);
+					)*
+				}
+				fn visit_unknowns(&self, f: &mut dyn FnMut(&$crate::kinds::ty::UnknownType)) {
+					$(
+					self.$field.visit_unknowns(f);
 					)*
 				}
 	    	}
@@ -263,6 +304,17 @@ mod m {
 		    			)*
 	    			}
 	    		}
+	    		fn visit_unknowns(&self, f: &mut dyn FnMut(&$crate::kinds::ty::UnknownType)) {
+	    			match self {
+	    				$(
+	    				$variant => {
+	    					$(
+	    					$expr.visit_unknowns(f);
+		    				)*
+	    				}
+		    			)*
+	    			}
+	    		}
 	    	}
 	    },
     }
@@ -272,6 +324,7 @@ mod m {
 	    ($ty:ty) => {
 	        impl $crate::visitor::Visitor for $ty {
 	            fn visit_mut(&mut self, _: &impl Fn(&mut $crate::index::RawRef)) {}
+	            fn visit_unknowns(&self, _: &mut dyn FnMut(&$crate::kinds::ty::UnknownType)) {}
 	        }
 	    },
 		($($ty:ty),*) => {

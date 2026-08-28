@@ -11,12 +11,18 @@
 //! A future `seal` pass will populate this table from a libpijul output tree
 //! and hand it to `nudox-ir-archive` for snapshotting.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+
+use triomphe::Arc;
 
 use crate::{
     change::IntroId,
     entry::{Entry, Symbol},
+    foreign::{ForeignKey, ForeignResolver, Resolution},
+    index::Ref,
     relation::{RelEnd, Relation, RelationSet},
+    visitor::Visitor,
 };
 
 // ---------------------------------------------------------------------------
@@ -250,6 +256,62 @@ impl PristineIntroTable {
     // -----------------------------------------------------------------------
     // Read API
     // -----------------------------------------------------------------------
+
+    /// Fill in the `target` of every cross-package `Ref::Foreign` still
+    /// carrying `target: None`, by consulting `resolver`. This is the post-load
+    /// cross-package LINK pass.
+    ///
+    /// A package is sealed in isolation against
+    /// [`Unlinked`](crate::foreign::Unlinked), so every cross-package reference
+    /// arrives *named but unlinked* (`Ref::Foreign { key, target: None }`): the
+    /// producer stated everything it could about the target but no `StableRef`,
+    /// because that depends on the sibling's own collision counts — knowable
+    /// only once the sibling is loaded. Once it is, a corpus-backed
+    /// [`ForeignResolver`] supplies the sealed identity and this walks the table
+    /// filling `target` in.
+    ///
+    /// # Why this is safe to do post-seal
+    ///
+    /// Filling `target` changes **no identity**. Content and skeleton hashing
+    /// encode the `ForeignKey`, never the resolved `target` (see
+    /// `foreign.rs`/`content.rs`), so a relinked table is byte-identical in
+    /// every `IntroId` and content hash to the same table left unlinked. That
+    /// invariance is the whole reason linking can be deferred here rather than
+    /// forced into `seal`, where the corpus is not yet available. This mirrors
+    /// exactly what `seal`'s Pass 3 does with a populated resolver — the two are
+    /// interchangeable by construction.
+    ///
+    /// `Ref::Intro` is left untouched; a sealed table holds no `Ref::Local`
+    /// (that would be a seal bug, and there is nothing here to lower it to).
+    /// The resolver is consulted once per **distinct key**, not once per
+    /// reference. Returns the number of references newly linked.
+    pub fn relink(&mut self, resolver: &dyn ForeignResolver) -> usize {
+        // `visit_mut` takes a plain `&impl Fn`, so both the per-key resolution
+        // cache and the link counter must live in interior-mutable cells the
+        // closure can borrow across every entry.
+        let cache: RefCell<HashMap<Arc<ForeignKey>, Resolution>> = RefCell::new(HashMap::new());
+        let linked = Cell::new(0usize);
+        for stored in self.map.values_mut() {
+            stored.entry.visit_mut(&|r| {
+                let Ref::Foreign { key, target } = r else {
+                    return;
+                };
+                if target.is_some() {
+                    return;
+                }
+                let resolution = cache
+                    .borrow_mut()
+                    .entry(key.clone())
+                    .or_insert_with(|| resolver.resolve(key))
+                    .clone();
+                if let Resolution::Resolved(sr) = resolution {
+                    *target = Some(sr);
+                    linked.set(linked.get() + 1);
+                }
+            });
+        }
+        linked.into_inner()
+    }
 
     /// Look up a live entry by its `IntroId`. Returns `None` if absent.
     pub fn get(&self, intro: IntroId) -> Option<&Entry> {

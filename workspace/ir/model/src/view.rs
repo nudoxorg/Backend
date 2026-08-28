@@ -48,7 +48,7 @@ use crate::{
 ///
 /// [`set_body`]: IrView::set_body
 /// [`add_occurrence`]: IrView::add_occurrence
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct IrView {
     /// The stable package lineage this view represents.
     ///
@@ -128,6 +128,15 @@ impl IrView {
     #[inline]
     pub fn table(&self) -> &PristineIntroTable {
         &self.table
+    }
+
+    /// Fill in this view's cross-package `Ref::Foreign` targets from `resolver`,
+    /// returning the count newly linked. Delegates to
+    /// [`PristineIntroTable::relink`]; the body, occurrence and source maps are
+    /// untouched (they never carried a foreign `target`). Used by the corpus's
+    /// post-load link pass.
+    pub fn relink(&mut self, resolver: &dyn crate::foreign::ForeignResolver) -> usize {
+        self.table.relink(resolver)
     }
 
     /// Look up a live entry by its [`IntroId`]. Returns `None` if absent.

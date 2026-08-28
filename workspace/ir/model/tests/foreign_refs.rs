@@ -180,6 +180,73 @@ fn a_resolver_links_a_named_reference_to_a_stable_ref() {
     );
 }
 
+/// The post-load `relink` pass fills `Ref::Foreign.target` on an
+/// already-sealed table exactly as sealing *with* the resolver would have —
+/// this is what lets cross-package linking be deferred until the corpus holds
+/// the sibling, instead of being forced into `seal` (which runs one package at
+/// a time, before its dependencies are loaded).
+#[test]
+fn relink_fills_foreign_targets_post_seal_like_sealing_with_the_resolver() {
+    let clone_intro = IntroId::from_raw([0x11; 32]);
+    let mut resolver = TableResolver::new();
+    resolver.link(
+        ForeignKey::in_package(core_lineage(), "core::clone::Clone", "Clone"),
+        StableRef::new(core_lineage(), clone_intro),
+    );
+
+    // Seal WITHOUT the resolver — the production path. Every foreign ref is
+    // named-but-unlinked (`target: None`).
+    let mut table = memchr_like()
+        .finish()
+        .expect("lowering must succeed")
+        .seal(&lineage(), &Unlinked)
+        .table;
+
+    // The post-load LINK pass fills targets from the (corpus-backed) resolver.
+    assert_eq!(
+        table.relink(&resolver),
+        1,
+        "exactly the one trait the resolver knows is newly linked"
+    );
+    // Idempotent: a second pass finds nothing already-`None` left to link.
+    assert_eq!(
+        table.relink(&resolver),
+        0,
+        "an already-linked ref is never re-resolved"
+    );
+
+    // The end state is byte-for-byte the state `a_resolver_links_a_named_
+    // reference_to_a_stable_ref` reaches by sealing WITH the resolver: exactly
+    // one linked to the resolver's StableRef, the other two named-but-unlinked.
+    let mut linked = 0usize;
+    let mut named_only = 0usize;
+    for (_, entry) in table.iter() {
+        let EntryInner::Owned(Kind::Impl(i)) = entry.kind() else {
+            continue;
+        };
+        let Some(Type::Nominal(Ref::Foreign { key, target })) = i.of.as_ref() else {
+            continue;
+        };
+        match target {
+            Some(sr) => {
+                assert_eq!(key.display.as_ref(), "Clone");
+                assert_eq!(
+                    sr,
+                    &StableRef::new(core_lineage(), clone_intro),
+                    "relink must fill exactly the resolver's StableRef, never a fabricated one"
+                );
+                linked += 1;
+            }
+            None => named_only += 1,
+        }
+    }
+    assert_eq!(linked, 1);
+    assert_eq!(
+        named_only, 2,
+        "traits the resolver did not know stay named-but-unlinked"
+    );
+}
+
 /// Linking a reference must not move any identity or content hash.
 ///
 /// This is the invariant that keeps a package's `IntroId`s and its

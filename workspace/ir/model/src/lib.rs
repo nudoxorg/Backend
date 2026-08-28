@@ -190,7 +190,7 @@ pub mod prelude {
         package::{IrPackage, PackageInfo},
         reflect::{
             ExportPolicy, PathStyle, exported, moniker_path, moniker_path_styled, moniker_segments,
-            monikers,
+            monikers, monikers_styled,
         },
         registry::{Registry, RegistryResolver},
         relation::{RelEnd, Relation, RelationKey, RelationSet},
@@ -227,7 +227,7 @@ pub mod build {
         package::{EntryBuilder, IrPackage},
         reflect::{
             ExportPolicy, PathStyle, exported, moniker_path, moniker_path_styled, moniker_segments,
-            monikers,
+            monikers, monikers_styled,
         },
         relation::{RelEnd, Relation, RelationKey, RelationSet},
         skeleton::{function_signature_skeleton, trait_impl_skeleton},
