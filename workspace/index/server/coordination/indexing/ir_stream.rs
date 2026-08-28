@@ -232,8 +232,15 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
     // `TreesitterBody` side have no cross-package stable target and are
     // skipped (they contribute call-site counts, not cross-reference graph
     // edges, per §5.1 merge rule 3 / Confidence::GRAPH_FLOOR).
-    let ref_set =
+    let bodies_ref_set =
         build_reference_set_from_bodies(&bodies, &intro_to_path, owning_pkg_key.as_deref());
+    // ── Unresolved cross-package edges from the Symbols batch (C2 fix) ───────
+    // `bodies_ref_set` above is blind to an unlinked `Ref::Foreign` or an
+    // `UnknownType::UnresolvedExternal` mention — see `build_reference_set_
+    // from_payloads`'s doc comment for exactly why and how this closes the
+    // host-divergence gap against `build_reference_set_from_table`.
+    let payload_ref_set = build_reference_set_from_payloads(&payloads);
+    let ref_set = merge_reference_sets(bodies_ref_set, payload_ref_set);
     tracing::debug!(
         by_file = ref_set.by_file.len(),
         total_refs = ref_set
@@ -241,7 +248,7 @@ pub(super) fn ingest_ir_bytes(builder: &mut BlobBuilder, ir_bytes: &[u8]) -> IrI
             .iter()
             .map(|f| f.references.len())
             .sum::<usize>(),
-        "reference set derived from Bodies frames"
+        "reference set derived from Bodies frames + unresolved Symbols-batch edges"
     );
 
     if let Err(err) = builder.set_references(&ref_set) {
@@ -379,6 +386,123 @@ fn build_reference_set_from_bodies(
         .collect();
 
     ReferenceSet { by_file: file_refs }
+}
+
+/// Derive a [`ReferenceSet`] of *unresolved* cross-package edges from the
+/// accumulated `Symbols`-batch payloads — the cage/Linux-path fix for the
+/// host-divergence [`build_reference_set_from_table`]'s doc comment describes
+/// (adversarial audit C2).
+///
+/// # Why this exists (the gap `build_reference_set_from_bodies` cannot close)
+///
+/// `build_reference_set_from_bodies` only ever sees resolved facts: an
+/// unlinked `Ref::Foreign` (`target: None`) is dropped by `seal`'s
+/// occurrence-resolution loop before an `OracleCall`/`OracleTypeMention` is
+/// ever constructed, and `UnknownType::UnresolvedExternal` has no `Bodies`-
+/// frame representation at all — both are structurally absent from the
+/// `Bodies` stream, regardless of how much of it is harvested. The data these
+/// two facts actually live in is the **declaration surface** carried on the
+/// `Symbols` batch's `OwnedEntryPayload.kind: KindWire` — field types, impl
+/// targets, generic bounds, and so on — which is exactly what
+/// [`ir_vcs::wire::TypeRefWire::ForeignUnlinked`] and
+/// [`ir_vcs::wire::TypeRefWire::UnresolvedExternal`] now carry across the
+/// wire (they raise from the identical `Ref::Foreign`/`UnknownType` the
+/// in-process/table path's `for_each_ref`/`for_each_unknown` walk reads
+/// straight off the live `Entry` — see `ir_vcs::raise::raise_type_ref`).
+/// `KindWire::for_each_type_ref` is the wire-side twin of that walk.
+///
+/// # Scope: unresolved edges only, not full parity
+///
+/// This function does **not** also harvest `TypeRefWire::Same`/`Foreign`
+/// (already-resolved) declaration-position edges. That is a pre-existing,
+/// separate divergence from the one this closes: the table path's
+/// declaration-position walk and the bodies path's body-occurrence walk draw
+/// from disjoint fact sources even in the resolved case (a field's declared
+/// type vs. a function body's call sites), and reconciling *that* is a wider
+/// change than the C2 fix this function is scoped to. Restricting to the two
+/// unresolved variants keeps this a precise, reviewable close of exactly the
+/// divergence the parity test below asserts.
+fn build_reference_set_from_payloads(
+    payloads: &[ir_vcs::wire::OwnedEntryPayload],
+) -> crate::server::registry::blob::ReferenceSet {
+    use crate::server::registry::blob::{FileReferences, Reference, ReferenceSet};
+    use ir::vocab::ReferenceKind;
+    use ir_vcs::wire::{TypeMention, TypeRefWire};
+    use smol_str::SmolStr;
+
+    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+
+    for payload in payloads {
+        let refs = by_file
+            .entry(SmolStr::from(payload.symbol.source_path.as_str()))
+            .or_default();
+
+        // `TypeMention::Ref(TypeRefWire::UnresolvedExternal(_))` (a reference-
+        // position slot) and `TypeMention::UnresolvedExternalValue(_)` (a
+        // value-position `TypeWire::UnresolvedExternal`) carry the identical
+        // fact — a producer's unresolved-external spelling — and become the
+        // same `External` edge; they're kept as separate match arms (rather
+        // than an or-pattern) only because they bind `&String` vs `&str`.
+        payload.kind.for_each_type_mention(|mention| match mention {
+            TypeMention::Ref(TypeRefWire::ForeignUnlinked(key)) => refs.push(Reference {
+                target: external_ref_target_from_key(key),
+                span_start: 0,
+                span_end: 0,
+                kind: ReferenceKind::TypeReference as u8,
+            }),
+            TypeMention::Ref(TypeRefWire::UnresolvedExternal(name)) => refs.push(Reference {
+                target: crate::server::registry::blob::RefTarget::External {
+                    path: name.clone(),
+                    dependency: UNRESOLVED_EXTERNAL_DEPENDENCY.to_owned(),
+                },
+                span_start: 0,
+                span_end: 0,
+                kind: ReferenceKind::TypeReference as u8,
+            }),
+            TypeMention::UnresolvedExternalValue(name) => refs.push(Reference {
+                target: crate::server::registry::blob::RefTarget::External {
+                    path: name.to_owned(),
+                    dependency: UNRESOLVED_EXTERNAL_DEPENDENCY.to_owned(),
+                },
+                span_start: 0,
+                span_end: 0,
+                kind: ReferenceKind::TypeReference as u8,
+            }),
+            // Already-resolved edges: out of scope here, see the doc comment.
+            TypeMention::Ref(TypeRefWire::Same(_) | TypeRefWire::Foreign(_)) => {}
+        });
+    }
+
+    let file_refs: Vec<FileReferences> = by_file
+        .into_iter()
+        .filter(|(_, refs)| !refs.is_empty())
+        .map(|(path, references)| FileReferences { path, references })
+        .collect();
+
+    ReferenceSet { by_file: file_refs }
+}
+
+/// Merge two [`ReferenceSet`](crate::server::registry::blob::ReferenceSet)s
+/// computed from disjoint fact sources over the same package (bodies-derived
+/// and payload-derived edges), unioning references per file path.
+fn merge_reference_sets(
+    a: crate::server::registry::blob::ReferenceSet,
+    b: crate::server::registry::blob::ReferenceSet,
+) -> crate::server::registry::blob::ReferenceSet {
+    use crate::server::registry::blob::{FileReferences, Reference, ReferenceSet};
+    use smol_str::SmolStr;
+
+    let mut by_file: HashMap<SmolStr, Vec<Reference>> = HashMap::new();
+    for f in a.by_file.into_iter().chain(b.by_file) {
+        by_file.entry(f.path).or_default().extend(f.references);
+    }
+
+    ReferenceSet {
+        by_file: by_file
+            .into_iter()
+            .map(|(path, references)| FileReferences { path, references })
+            .collect(),
+    }
 }
 
 /// Derive usage-query [`ir::vocab::Occurrence`]s from the accumulated `Bodies`
@@ -594,6 +718,40 @@ pub(in crate::server::coordination) fn build_reference_set_from_table(
             // rather than emit a reference to a dropped arena index.
             Ref::Local(_) => {}
         });
+
+        // Cross-package type mentions a producer could not lower into a
+        // `Ref::Foreign` are carried as `UnknownType::UnresolvedExternal` — a
+        // `Type::Unknown`, which holds no `RawRef` and so is invisible to
+        // `for_each_ref` above. TypeScript, Python and Clang emit exactly these
+        // for their cross-package types (Rust/Go/Java/C# reach the ref set via
+        // `Ref::Foreign` instead). Harvest them as `External` edges so both
+        // encodings land in the reference set and `Target::Usages` sees them.
+        //
+        // `path` is the producer's spelling — the durable join key a
+        // corpus-side link pass matches against sibling packages' intro tables,
+        // mirroring the `intro_hex`/`key.path` the `Ref::Foreign` arm emits.
+        // `dependency` is the honest "package not named" sentinel: the producer
+        // reached for `UnresolvedExternal` precisely because it could not name
+        // the owning package, and guessing one from the spelling is what that
+        // variant exists to avoid. A resolver treats it as "search broadly".
+        //
+        // `UnresolvedLocalName` is deliberately excluded: it resolves *within*
+        // this package (the import graph is one pass short), so an `External`
+        // edge would misroute it — that closure is a within-package resolution
+        // pass, not this cross-package harvest.
+        entry.for_each_unknown(|reason| {
+            if let ir::kinds::UnknownType::UnresolvedExternal { name } = reason {
+                refs.push(Reference {
+                    target: RefTarget::External {
+                        path: name.clone(),
+                        dependency: UNRESOLVED_EXTERNAL_DEPENDENCY.to_owned(),
+                    },
+                    span_start: 0,
+                    span_end: 0,
+                    kind: ReferenceKind::TypeReference as u8,
+                });
+            }
+        });
     }
 
     let by_file: Vec<FileReferences> = by_file
@@ -604,6 +762,15 @@ pub(in crate::server::coordination) fn build_reference_set_from_table(
 
     ReferenceSet { by_file }
 }
+
+/// The `dependency` slot for an `External` edge harvested from
+/// [`ir::kinds::UnknownType::UnresolvedExternal`]: the producer named a
+/// cross-package type but could **not** name the package that owns it, so there
+/// is no honest `ecosystem:name` to record (unlike the `ForeignKey` path, which
+/// carries one). A corpus-side link pass reads this sentinel as "owner unknown —
+/// match `path` against every sibling", rather than filtering by dependency
+/// first. Distinct, greppable, and never a real `ecosystem:name`.
+const UNRESOLVED_EXTERNAL_DEPENDENCY: &str = "<unresolved-external>";
 
 /// Build an `External` [`RefTarget`](crate::server::registry::blob::RefTarget)
 /// for a named-but-unlinked cross-package reference.
@@ -936,6 +1103,97 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_external_type_mentions_become_external_ref_edges() {
+        // The gap this closes: TypeScript / Python / Clang carry a cross-package
+        // type they could not lower as `UnknownType::UnresolvedExternal` — a
+        // `Type::Unknown` with no `RawRef`, invisible to the `Ref` walk that
+        // harvests the other languages' `Ref::Foreign`. It must still surface as
+        // an `External` usage edge, keyed on the producer's spelling, with the
+        // honest owner-unknown dependency sentinel. And `UnresolvedLocalName` —
+        // which resolves *within* the package — must NOT be harvested as
+        // external (that is a separate within-package resolution pass).
+        use crate::server::registry::blob::RefTarget;
+        use ir::build::{
+            Alias, EcosystemId, Lowering, PackageId, PackageLineageId, PackageName, Symbol, Type,
+            Visibility,
+        };
+        use ir::foreign::Unlinked;
+        use ir::kinds::UnknownType;
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        let lineage = PackageLineageId::new(EcosystemId::new("npm"), PackageName::new("fixture"));
+        let mut low: Lowering<&'static str> =
+            Lowering::new(PackageId::path("fixture"), sym("fixture"));
+        // A cross-package type the producer could not name an owning package for.
+        low.declare(
+            "External",
+            None,
+            sym("External"),
+            Alias::builder()
+                .target(Type::Unknown(UnknownType::UnresolvedExternal {
+                    name: "numpy.ndarray".to_owned(),
+                }))
+                .build(),
+        );
+        // A bare name that resolves WITHIN this package — must be ignored here.
+        low.declare(
+            "Local",
+            None,
+            sym("Local"),
+            Alias::builder()
+                .target(Type::Unknown(UnknownType::UnresolvedLocalName {
+                    name: "Widget".to_owned(),
+                }))
+                .build(),
+        );
+        let table = low
+            .finish()
+            .expect("lowering must succeed")
+            .seal(&lineage, &Unlinked)
+            .table;
+
+        let ref_set =
+            build_reference_set_from_table(&table, std::path::Path::new(""), Some("npm:fixture"));
+        let externals: Vec<(String, String)> = ref_set
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .filter_map(|r| match &r.target {
+                RefTarget::External { path, dependency } => {
+                    Some((path.clone(), dependency.clone()))
+                }
+                RefTarget::Local(_) => None,
+            })
+            .collect();
+
+        // Exactly the external mention is harvested — with its exact spelling and
+        // the owner-unknown sentinel — and the within-package name is not.
+        assert_eq!(
+            externals,
+            vec![(
+                "numpy.ndarray".to_owned(),
+                super::UNRESOLVED_EXTERNAL_DEPENDENCY.to_owned()
+            )],
+            "the unresolved-external type mention must become exactly one External \
+             edge; the unresolved-local name must not appear"
+        );
+    }
+
+    #[test]
     fn adversarial_reference_edges_carry_exact_target_and_degenerate_spans() {
         // Tighter contract than the sanity test: the External edge's `path`
         // must be the foreign key's canonical path (the durable resolver join
@@ -1213,5 +1471,172 @@ mod tests {
             body: ir::body::BodyEmbed::Absent,
         }];
         assert!(build_occurrences_from_bodies(&bodies).is_empty());
+    }
+
+    // ── Host-divergence parity fix (adversarial audit C2) ────────────────────
+    //
+    // `build_reference_set_from_table` harvests External edges from two
+    // Entry-level sources: an unlinked `Ref::Foreign { target: None, .. }`
+    // via `for_each_ref`, and `UnknownType::UnresolvedExternal` via
+    // `for_each_unknown`. Both used to be structurally absent from the wire:
+    // `ir_vcs::wire::TypeRefWire` had only `Same(IntroId)`/`Foreign(StableRef)`
+    // (`ir/vcs/wire.rs`), so a `Ref::Foreign{target:None}` collapsed into a
+    // lossy synthetic same-package intro on raise, and `UnknownType::
+    // UnresolvedExternal` had no wire slot at all.
+    //
+    // The fix: `TypeRefWire` gained `ForeignUnlinked(ForeignKey)` and
+    // `UnresolvedExternal(String)` tail variants (plus `TypeWire::
+    // UnresolvedExternal` for the value-position case), `ir_vcs::raise::
+    // raise_type_ref`/`raise_type_wire` now populate them from the exact
+    // `Ref::Foreign`/`UnknownType` data the table path already reads, and
+    // `KindWire::for_each_type_ref` walks every `TypeRefWire` slot a
+    // `Symbols`-batch payload carries. `build_reference_set_from_payloads`
+    // (this module) harvests the two new variants into the same `External`
+    // edges `build_reference_set_from_table` produces, reusing
+    // `external_ref_target_from_key` / `UNRESOLVED_EXTERNAL_DEPENDENCY`.
+    //
+    // This test proves parity end-to-end: the SAME sealed table, run through
+    // (a) the table path directly, and (b) a genuine `ir_vcs::raise::
+    // raise_view` encode of that table followed by a postcard wire-byte
+    // round trip and `build_reference_set_from_payloads`, must yield the
+    // same External edge set. If this ever regresses, either the encode
+    // (`raise_type_ref`/`raise_type_wire`) or the harvest
+    // (`build_reference_set_from_payloads`/`KindWire::for_each_type_ref`)
+    // has drifted out of sync with the table path.
+    #[test]
+    fn table_path_and_payload_harvest_reach_parity_on_unresolved_cross_package_refs() {
+        use crate::server::registry::blob::RefTarget;
+        use ir::build::{
+            Alias, EcosystemId, Impl, Lowering, PackageId, PackageLineageId, PackageName, Record,
+            Symbol, Type, Visibility,
+        };
+        use ir::foreign::{ForeignKey, Unlinked};
+        use ir::kinds::UnknownType;
+        use ir_vcs::wire::OwnedEntryPayload;
+
+        fn sym(name: &str) -> Symbol {
+            Symbol {
+                name: name.to_owned(),
+                visibility: Visibility::Public,
+                documentation: String::new(),
+                source: std::path::PathBuf::from("src/lib.rs"),
+                span: 0..0,
+                aliases: Box::new([]),
+                deprecation: None,
+                doc_links: Box::new([]),
+                attrs: Box::new([]),
+                cfg: None,
+            }
+        }
+
+        // Same package shape as `in_process_sealed_table_yields_real_reference_edges`
+        // (an unlinked `Ref::Foreign` via an `impl ... for` clause) plus an
+        // `UnknownType::UnresolvedExternal` mention, same as
+        // `unresolved_external_type_mentions_become_external_ref_edges` — both
+        // gaps the table path already closed and the payload-harvest fix now
+        // closes on the wire path too.
+        let lineage = PackageLineageId::new(EcosystemId::new("cargo"), PackageName::new("fixture"));
+        let core =
+            PackageLineageId::new(EcosystemId::new("rust-sysroot"), PackageName::new("core"));
+        let mut low: Lowering<&'static str> =
+            Lowering::new(PackageId::path("fixture"), sym("fixture"));
+        let self_ref = low.refer::<Record>("Widget");
+        low.declare("Widget", None, sym("Widget"), Record::builder().build());
+        let of = low.nominal_import(ForeignKey::in_package(
+            core.clone(),
+            "core::clone::Clone",
+            "Clone",
+        ));
+        low.declare(
+            "impl#clone",
+            None,
+            sym("impl Clone for Widget"),
+            Impl::builder()
+                .of(of)
+                .self_ty(Type::Nominal(self_ref.into_raw()))
+                .build(),
+        );
+        low.declare(
+            "External",
+            None,
+            sym("External"),
+            Alias::builder()
+                .target(Type::Unknown(UnknownType::UnresolvedExternal {
+                    name: "numpy.ndarray".to_owned(),
+                }))
+                .build(),
+        );
+
+        let table = low
+            .finish()
+            .expect("lowering must succeed")
+            .seal(&lineage, &Unlinked)
+            .table;
+
+        // ── Table path (macOS / in-process) ──────────────────────────────────
+        let table_refs =
+            build_reference_set_from_table(&table, std::path::Path::new(""), Some("cargo:fixture"));
+        let mut table_externals: Vec<(String, String)> = table_refs
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .filter_map(|r| match &r.target {
+                RefTarget::External { path, dependency } => {
+                    Some((path.clone(), dependency.clone()))
+                }
+                RefTarget::Local(_) => None,
+            })
+            .collect();
+        table_externals.sort();
+        assert_eq!(
+            table_externals.len(),
+            2,
+            "the table path must see both the unlinked Ref::Foreign (Clone) and \
+             the UnresolvedExternal mention (numpy.ndarray) as External edges; \
+             got {table_externals:?}"
+        );
+
+        // ── Payload-harvest path (cage / Linux): genuine encode → wire bytes →
+        // decode → harvest ───────────────────────────────────────────────────
+        //
+        // `raise_view` is the same in-repo encoder (`ir_vcs::raise`) that
+        // turns a sealed `Entry` into wire `OwnedEntryPayload`s for local-store
+        // persistence — the same `raise_type_ref`/`raise_type_wire` this test
+        // is proving now carry the unresolved cases. The out-of-repo cage
+        // guest producer is a separate binary (see `cage.rs`'s module docs),
+        // but it constructs the identical wire types from the identical
+        // sealed-table data; this is the genuine in-repo half of that
+        // round trip, plus a real postcard encode/decode proving the new
+        // variants actually survive the wire, not just the in-memory raise.
+        let view = ir::view::IrView::new(table);
+        let payload_table = ir_vcs::raise::raise_view(&view);
+        let payloads: Vec<OwnedEntryPayload> = payload_table
+            .live_entries()
+            .map(|(_, payload)| {
+                let bytes = postcard::to_allocvec(payload).expect("payload postcard-encodes");
+                postcard::from_bytes(&bytes).expect("payload postcard-decodes")
+            })
+            .collect();
+
+        let payload_refs = build_reference_set_from_payloads(&payloads);
+        let mut payload_externals: Vec<(String, String)> = payload_refs
+            .by_file
+            .iter()
+            .flat_map(|f| f.references.iter())
+            .filter_map(|r| match &r.target {
+                RefTarget::External { path, dependency } => {
+                    Some((path.clone(), dependency.clone()))
+                }
+                RefTarget::Local(_) => None,
+            })
+            .collect();
+        payload_externals.sort();
+
+        assert_eq!(
+            table_externals, payload_externals,
+            "the table path and the payload-harvest (genuine encode → wire → \
+             decode) path must report the SAME External edge set for the same \
+             package — this is the C2 host-divergence parity fix"
+        );
     }
 }
