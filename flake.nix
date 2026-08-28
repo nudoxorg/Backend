@@ -1303,6 +1303,10 @@
                   ]
                   ++ (with nixPackages; [
                     git
+                    # Conventional-commit assistant. The shell hook below
+                    # installs this repository's prepare-commit-msg hook so
+                    # future interactive commits use .koji.toml by default.
+                    koji
                     cargo-bump
                     nushell
                     rust-analyzer
@@ -1380,6 +1384,14 @@
 
                 shellHook = ''
                   export PRJ_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+
+                  # Keep repository hooks versioned while making the
+                  # conventional-commit prompt the default for contributors
+                  # who enter this Nix shell. `prepare-commit-msg` remains
+                  # deliberately permissive for non-interactive automation.
+                  if git -C "$PRJ_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                    git -C "$PRJ_ROOT" config --local core.hooksPath "$PRJ_ROOT/.githooks"
+                  fi
 
                   export LD_LIBRARY_PATH="${nixPackages.openssl.out}/lib:$LD_LIBRARY_PATH"
                   export DOTNET_CLI_HOME="$TMPDIR/dotnet"

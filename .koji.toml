@@ -1,0 +1,54 @@
+# Conventional commits are the project default. Koji suggests a scope from the
+# staged paths and requires selecting one when it cannot determine it.
+autocomplete = true
+breaking_changes = true
+issues = true
+emoji = false
+sign = false
+force_config_scopes = true
+allow_empty_scope = false
+
+[[commit_scopes]]
+name = "engine"
+description = "NuDox engine, storage, and semantic indexing"
+patterns = "^/workspace/nudox-engine/"
+
+[[commit_scopes]]
+name = "languages"
+description = "Language producers and compiler oracles"
+patterns = "^/workspace/compiler/languages/"
+
+[[commit_scopes]]
+name = "index"
+description = "Index service and HTTP API"
+patterns = "^/workspace/index/"
+
+[[commit_scopes]]
+name = "heart"
+description = "Shared client and surface contracts"
+patterns = "^/workspace/heart/"
+
+[[commit_scopes]]
+name = "ir"
+description = "Intermediate representation and version control model"
+patterns = ["^/workspace/ir/model/", "^/workspace/ir/vcs/"]
+
+[[commit_scopes]]
+name = "gui"
+description = "Lindsey GUI and packaging"
+patterns = "^/workspace/gui/"
+
+[[commit_scopes]]
+name = "nix"
+description = "Nix development environment and reproducibility"
+patterns = ["^/flake\\.nix$", "^/flake\\.lock$", "^/nix/", "^/tests/.*\\.nix$"]
+
+[[commit_scopes]]
+name = "ci"
+description = "Continuous integration automation and cache inputs"
+patterns = ["^/\\.ci-cache/", "^/\\.github/"]
+
+[[commit_scopes]]
+name = "repo"
+description = "Repository-wide tooling and metadata"
+patterns = ["^/\\.gitignore$", "^/Cargo\\.lock$", "^/\\.koji\\.toml$", "^/\\.githooks/"]

@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Installed as core.hooksPath by the Nix development shell. A conventional
+# message supplied with `git commit -m` is intentionally accepted by Koji
+# without opening its prompt.
+if [ -t 1 ] && command -v koji >/dev/null 2>&1; then
+  exec < /dev/tty && koji --hook || true
+fi
