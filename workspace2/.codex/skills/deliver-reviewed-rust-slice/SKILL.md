@@ -164,6 +164,22 @@ asked. The parent owns product completion and any future rubric.
   that compiles, the boundary leaks its invariant. Use `AsRef`, `Borrow`, `From`, and `TryFrom` where
   their standard meaning is exact. Do not add `.get()`, `.wire()`, `.content()`, `from_bytes()`, or
   namespace/stateless structs for discoverability.
+- A `From` conversion is infallible, lossless, value-preserving, and the single obvious conversion.
+  Never use `From<[u8; N]>` to overwrite, normalize, truncate, or inject authority bytes: callers
+  reasonably treat the array as the value's representation. Use `TryFrom` for checked raw decoding
+  and a named constructor for a digest/preimage projection. Do not give `From` and `TryFrom` the same
+  raw input while secretly making one “construction” and the other “decode.”
+
+```rust
+// DON'T: silently discard one caller byte while looking like a raw representation conversion.
+impl From<[u8; 32]> for TypedId {
+    fn from(mut raw: [u8; 32]) -> Self { raw[0] = AUTHORITY; Self(raw) }
+}
+
+// DO: make checked representation and deliberate projection different operations.
+impl TryFrom<[u8; 32]> for TypedId { /* validate the authority cell */ }
+impl TypedId { fn from_digest(digest: Digest) -> Self { /* named projection */ } }
+```
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.
@@ -423,6 +439,7 @@ claim the global plan or rubric complete.
 
 ## Sources behind these laws
 
+- Rust `From` conversion expectations: https://doc.rust-lang.org/std/convert/trait.From.html
 - Inferara's GADT experiment: https://inferara.com/blog/rust-tagless-final-gadt/
 - Adrian Price's software-craftsmanship essays: https://adrianprice.us/category/development/software-craftsmanship/
 - “Logging or Commenting?”: https://www.javacodegeeks.com/2014/07/logging-or-commenting.html

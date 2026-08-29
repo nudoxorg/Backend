@@ -16,12 +16,17 @@ candidate and requires a fresh blind Terra review.
 - A default BLAKE3 output is 256 bits. Reserving one or two bytes therefore changes the collision
   budget and every golden identity; that is a permanent protocol choice, not a refactor detail:
   <https://github.com/BLAKE3-team/BLAKE3>.
+- Rust expects `From` to be lossless, value-preserving, and obvious. An implementation that silently
+  replaces authority cells is not a raw-byte conversion; it needs a named digest projection while
+  raw representation uses checked `TryFrom`:
+  <https://doc.rust-lang.org/std/convert/trait.From.html#when-to-implement-from>.
 
 ## Mandatory falsifiers
 
 | law | executable hostile attempt | rejection condition |
 |---|---|---|
 | negative API | external compile-fail example attempts the former `From<[u8; 32]>` and same-byte cross-authority reconstruction | a runtime test alone cannot prove the trait is absent |
+| conversion semantics | pass an array whose authority cell disagrees with the marker and compare the input to the result | `From` silently overwrites or discards a byte; a named digest projection is required instead |
 | registry closure | replace one registered domain or encoding code with a duplicate and run a compile check | a runtime uniqueness test or lookup table survives the duplicate |
 | routing entropy | hash many values in one domain, derive the public routing word, and inspect every byte/bit used by bucket selection | an authority cell occupies routing entropy or makes low-bit buckets constant |
 | raw decode | test N-1/N/N+1 lengths and every wrong domain/encoding pair; inspect expected authority, observed code, raw bytes when present, and structural source | an error erases the source, input extent, or observed authority |
