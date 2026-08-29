@@ -78,3 +78,46 @@ exactly eleven writable paths; permitted public API/no-extra-public-surface; sta
 exclusion including absent parse_typescript; budgets/forecasts/hard caps/reserves/per-file stop rules;
 literal doctest/rustc/release/find/size evidence commands; and no genuine authority question all pass.
 ```
+
+## C0.1 implementation and independent review
+
+The first builder candidate `66e55d4f08f105270d1977793bf6aab4f87364f2` was rejected before acceptance:
+its registry boundary matched directly to private static methods and therefore failed to prove the
+contractual `drive<ConcreteFrontend>` generic path. The builder replaced that candidate with
+`703269bf9b04cd36505b91a428fca44ef433f027`; the repair is retained by this explicit rejected-commit
+record. The accepted candidate changes exactly the eleven card paths, 196 formatted lines total: 146
+production (including manifests) and 50 tests, leaving 79 production and 90 test lines below hard caps.
+
+Independent manager evidence for `703269bf`:
+
+```text
+Rust: rustc 1.97.1 (8bab26f4f 2026-07-14), host aarch64-apple-darwin.
+Nested fmt, check, test, doctest, and clippy -D warnings all passed with RUSTC_WRAPPER=.
+Normal dependency closure:
+nudox-compile-registry -> nudox-compile-vocab -> nudox-ir-vocab
+No other normal dependency, alloc crate, serde, async, dyn, Box, Arc, or unsafe source match exists.
+Release size output for libnudox_compile_registry-4e2ce46598f8942c.rlib:
+__TEXT,__text = 32 bytes; total object = 64 bytes; metadata totals 7248 + 108 bytes.
+The applicable text delta against an empty control is 32 bytes, below the 8192-byte cap.
+```
+
+The candidate file digests are:
+
+```text
+domains/ir/Cargo.toml ebda83dc3ec8c97ce407a3b26c6fba3d5cd45cea1403b35c15fe4f61b44afb38
+domains/ir/crates/nudox-ir-vocab/Cargo.toml a814b4ae4ba60754cf854dbee07830fd85b6d0193148db5e543923340aa0c329
+domains/ir/crates/nudox-ir-vocab/src/lib.rs 2e8229afee1be4d94d7a8a73fef39108833ed730093d53a49c08d06e0b2e720f
+domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs 615e2f7664315193c558378c661b8c002ba0de96e19dc833709143c37cf5ff2a
+planes/compiler/Cargo.toml ebda83dc3ec8c97ce407a3b26c6fba3d5cd45cea1403b35c15fe4f61b44afb38
+planes/compiler/crates/nudox-compile-vocab/Cargo.toml d0d9dbfeb6cad58db3c5ab673e0c976108b409283e6606feae6deca1f34d5e99
+planes/compiler/crates/nudox-compile-vocab/src/lib.rs a26c48dcc3cbe71b35b83ddf324cc4c961b4a7ffd42e11abcc390e9e60233d55
+planes/compiler/crates/nudox-compile-registry/Cargo.toml b4b0c2de20da05bf917df13e86a01122f8ab637bb2e2762ef79f903badb7b40d
+planes/compiler/crates/nudox-compile-registry/src/lib.rs 0c6c48d81d903e166e42ab23581011000bb344163bda8116dd842489f2bbceb2
+planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs 9682723d932fd26b0cfeac8bbbb97e717163d3b2c4edaa4ee7f21e3f2657b653
+planes/compiler/crates/nudox-compile-registry/tests/subset.rs cb4d87807eb702efc68491dea1bb4cf705f44f7be40b9b6fbe0ed0e307f7ec94
+```
+
+The fresh breaker found no semantic blocker. It issued one MAJOR because raw command/ledger evidence had
+not been committed; this section is the accepted repair and the precise falsifier was re-running the
+listed command set. Nested Cargo commands create untracked lockfiles; they are generated artifacts, not
+contract paths, and are removed after each gate before clean-state inspection.
