@@ -8,7 +8,6 @@ publish = false
 [workspace]
 
 [dependencies]
-nudox-e2e = { path = "../../crates/nudox-e2e" }
 nudox-hydration = { path = "../../crates/nudox-hydration" }
 nudox-observe = { path = "../../crates/nudox-observe" }
 nudox-root = { path = "../../crates/nudox-root" }
@@ -24,6 +23,7 @@ tracing-opentelemetry = "=0.33.0"
 tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 
 [dev-dependencies]
+nudox-e2e = { path = "../../crates/nudox-e2e" }
 opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "testing", "trace"] }
 
 [lints.rust]

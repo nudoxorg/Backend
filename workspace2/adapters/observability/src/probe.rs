@@ -10,7 +10,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 use tracing::{Level, Span};
 
 use crate::{
-    AdapterRunError,
+    MetricReportError,
     metrics::RuntimeMetricReporter,
     names::{
         event_name, hydration_fields, phase_name, runtime_fields, store_name, workflow_disposition,
@@ -49,22 +49,28 @@ impl TracingProbe {
         probe
     }
 
-    /// Runs the shared scenario under the request parent span.
+    /// Runs one operation under this probe's request parent span.
+    pub fn within_request<Output>(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Output,
+    ) -> Output {
+        let request = self.request.clone();
+        request.in_scope(|| operation(self))
+    }
+
+    /// Reports one aggregate runtime snapshot when this probe has a meter.
     ///
     /// # Errors
     ///
-    /// Returns the unchanged typed scenario failure or exact metric conversion failure.
-    #[allow(
-        clippy::result_large_err,
-        reason = "the adapter preserves the scenario's descriptor-rich typed source without allocation"
-    )]
-    pub fn run_scenario(&mut self) -> Result<nudox_e2e::ScenarioEvidence, AdapterRunError> {
-        let request = self.request.clone();
-        let evidence = request.in_scope(|| nudox_e2e::run_wave1_scenario(self))?;
+    /// Returns the exact integer conversion failure when a metric cannot fit its instrument.
+    pub fn record_runtime_metrics(
+        &self,
+        snapshot: nudox_runtime::RuntimeMetrics,
+    ) -> Result<(), MetricReportError> {
         if let Some(metrics) = &self.metrics {
-            metrics.record(evidence.runtime)?;
+            metrics.record(snapshot)?;
         }
-        Ok(evidence)
+        Ok(())
     }
 }
 

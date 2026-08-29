@@ -37,7 +37,10 @@ fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
     let subscriber = dispatch(&trace_provider, &logger_provider, nudox_interest());
 
     let evidence = tracing::dispatcher::with_default(&subscriber, || {
-        TracingProbe::with_meter(&meter_provider).run_scenario()
+        let mut probe = TracingProbe::with_meter(&meter_provider);
+        let evidence = probe.within_request(nudox_e2e::run_wave1_scenario)?;
+        probe.record_runtime_metrics(evidence.runtime)?;
+        Ok::<_, AdapterTestError>(evidence)
     })?;
     assert_eq!(
         evidence.workflow_phase,

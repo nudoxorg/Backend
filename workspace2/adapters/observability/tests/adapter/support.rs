@@ -2,14 +2,16 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
-use nudox_observability_adapter::{AdapterRunError, BatchLimitsError};
+use nudox_observability_adapter::{BatchLimitsError, MetricReportError};
 
 #[derive(Debug, Error)]
 pub(super) enum AdapterTestError {
     #[error("invalid batch test configuration")]
     Limits(#[from] BatchLimitsError),
-    #[error("adapter scenario failed")]
-    Run(#[from] AdapterRunError),
+    #[error("portable scenario failed")]
+    Scenario(#[from] nudox_e2e::ScenarioError),
+    #[error("runtime metric reporting failed")]
+    Metrics(#[from] MetricReportError),
     #[error("OpenTelemetry SDK operation failed")]
     Sdk(#[from] opentelemetry_sdk::error::OTelSdkError),
     #[error("export omitted span {name}")]
