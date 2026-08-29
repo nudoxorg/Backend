@@ -11,8 +11,10 @@
 - Closed discriminants round-trip through `From`/`TryFrom`; every unnamed raw bit pattern rejects with
   the original value preserved.
 - Error tests match structured fields and causal `source`, not formatted strings alone.
-- Identity conversions test `From<[u8; N]>` and standard `TryFrom<&[u8]>` at N-1/N/N+1; no custom
-  fixed-width length error is reimplemented.
+- Identity representation tests use standard checked `TryFrom<[u8; N]>`/`TryFrom<&[u8]>` at
+  N-1/N/N+1 and every wrong authority cell. A named digest projection is tested separately.
+  `From<[u8; N]>` is allowed only when all bytes are preserved as the same value; it never normalizes
+  or overwrites a tag.
 - Typed wire record tests prove read/write share the same bytes, exact size/alignment has no padding,
   borrowed descriptor pointers lie inside the input, and semantic access performs no scalar reparse.
 
@@ -46,6 +48,8 @@ one accessor is documentation, not acceptance evidence.
   one-shot canonical hashing. Application crates contain no raw `b"nudox..."` personalization
   literals. Semantic-root identity is invariant under locality-only changes, while a semantic
   object/parent/key change alters it.
+- Compile-fail the former unchecked raw identity constructor/cross-authority conversion. Also prove
+  routing and partition words exclude fixed authority/version cells from their entropy.
 
 ## Foundation fabric
 

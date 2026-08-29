@@ -153,6 +153,15 @@ VCS code has no compatibility standing.
   changing operation semantics. Local work expands during remote inconsistency and contracts again
   when remote service is healthy.
 
+## Parallel prototype portfolio
+
+[`SOL_PROTOTYPE_ORCHESTRATOR_HANDOFFS.md`](SOL_PROTOTYPE_ORCHESTRATOR_HANDOFFS.md) contains nine
+self-contained Sol-session prompts for canonical root/hydration, durable publication, authenticated
+partial storage, real index, real compiler/IR, declarative registries, the local-first heart, lean
+GUI/component delivery, and the unified proof harness. These sessions commit isolated controls and
+alternatives but never merge or close roadmap boxes. Root extracts evidence and re-derives a smaller
+integration card on current shared state; prototype APIs have no compatibility standing.
+
 ## Next-batch readiness
 
 | Capability | State and prerequisite | Root integration concern |

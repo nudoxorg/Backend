@@ -55,7 +55,6 @@ domains/ir/
     nudox-ir-view/           borrowed validated fragments and typed cursors
     nudox-ir-build/          alloc caller-arena builders and canonical preparation
     nudox-ir-diff/           borrowed manifest/fragment delta and closure proofs
-    nudox-ir-testkit/        non-shipping generators, mutation and semantic oracles
 
 planes/compiler/
   Cargo.toml
@@ -65,7 +64,6 @@ planes/compiler/
     nudox-compile-driver/    sync typed stage graph over concrete frontend families
     nudox-compile-schedule/  std owner scheduler and physical-credit admission
     nudox-compile-publish/   std artifact/publication integration
-    nudox-compile-testkit/   deterministic fake I/O, crash/cancel/conformance corpus
   frontends/
     rust/
     typescript/
@@ -80,7 +78,9 @@ planes/compiler/
 
 Frontend crates depend inward on compile/IR vocabulary and builder contracts. IR never depends on a
 frontend, compiler, registry, sandbox, filesystem, GUI, or index. Sandbox is a replaceable execution
-adapter, not the definition of a compile job.
+adapter, not the definition of a compile job. Generators, mutation corpora, deterministic schedules,
+and independent semantic oracles live in ordinary owning crates' top-level `tests/` trees. There are
+no test-only crates or shipping fixture APIs.
 
 ## Identity and compile recipe
 

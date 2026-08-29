@@ -78,9 +78,11 @@ IndexRecipeId      = ContentId<IndexRecipeDomain>
 EmbeddingModelId   = ContentId<ModelDomain>
 ```
 
-`SegmentFamily` is a closed protocol enum: `Exact`, `Lexical`, `Relation`, `Usage`, and `Vector`.
-Family-specific marker types prevent passing a vector segment to an exact lookup. Raw codes use
-`From<SegmentFamily>` and `TryFrom<SegmentFamilyCode>`. `SnapshotOrdinal`, `SegmentOrdinal`,
+Family-specific identity domains prevent passing a vector segment to an exact lookup. The first
+phase exposes only families with current manifest/query consumers; later relation, usage, and vector
+families enter as versioned registry extensions with their own evidence. A common `SegmentFamily`
+enum/raw code exists only when a manifest wire record actually consumes it, and a generic family
+projection trait requires two current algorithms that it simplifies. `SnapshotOrdinal`, `SegmentOrdinal`,
 `DocumentOrdinal`, `TermOrdinal`, `PostingBlock`, `TopK`, `Score`, `ByteRange`, `PartitionKey`, and
 `CompactionLevel` are semantic newtypes with direct representation ergonomics. Decorative `.get()`
 wrappers are forbidden.
@@ -260,9 +262,10 @@ Each phase is independently useful, has one Terra manager, and is implemented by
 real-Luna workers in isolated branches. Plan completion is 8/10; 9–10 require measured same-direction
 stretch, never extra features.
 
-### I0 — greenfield vocabulary and snapshot manifest
+### I0 — minimal identity vocabulary and snapshot manifest
 
-Build the nested workspace, typed identities, segment families, packed snapshot manifest builder/view,
+After foundation raw identity integrity closes, build the nested workspace, only currently consumed
+typed identities/family codes, packed snapshot manifest builder/view,
 binary-searchable segment directory, exact mutation corpus, zero-allocation borrowed validation, and
 one local manifest scan. No query engine, publication adapter, text/vector backend, or async I/O.
 
