@@ -36,8 +36,10 @@ The remaining gaps are architectural, not polish:
 - [x] Common craft, domain, hostile-review, layout, dispatch, and provisional rubric skills.
 - [x] Manager skill with scoped worker evidence, independent breaking, churn accounting, and skill
   feedback.
-- [ ] Forward-test the manager cycle on the server-only tracing/OTEL adapter and record where worker
+- [x] Forward-test the manager cycle on the server-only tracing/OTEL adapter and record where worker
   prompts, budgets, or review packets caused avoidable turns.
+- [x] Put the from-scratch workspace under a path-scoped Git baseline; workers now commit passing
+  checkpoints on isolated branches and Terra managers cherry-pick only reviewed increments.
 - [ ] Split the current reusable scenario driver from shipping adapter dependencies; keep public
   cross-crate journeys in a test-support/integration boundary.
 - [ ] Add one deterministic system driver whose commands can later run against memory, file, and
@@ -54,14 +56,18 @@ The remaining gaps are architectural, not polish:
 - [ ] Bind operation requests once at the `GenerationView` boundary; delete provider/request equality
   rechecks and make the ready capability reach the publication/operation consumer that requires it.
 
-### 2. Server observability adapter — manager trial in progress
+### 2. Server observability adapter — bounded seam proven; health plane remains
 
 - [x] Portable lazy typed `Probe`, bounded allocation-free flight recorder, server-only nested adapter.
-- [ ] Close exact trace/log correlation, metric snapshots, bounded overload, flush/shutdown ownership,
+- [x] Close exact trace/log correlation, metric snapshots, bounded overload, flush/shutdown ownership,
   disabled-interest laziness, and production-dependency negative space under the manager trial.
-- [ ] Preserve raw exporter queue/drop evidence without recursive telemetry or data-plane ownership.
+- [x] Preserve exact SDK queue/drop evidence without recursive telemetry or data-plane ownership.
+- [ ] Expose background span/log exporter failure through one bounded caller-owned health/lifecycle
+  capability. Test-private exporter counters and SDK error text are not operational visibility.
+- [ ] Exercise a real collector/OTLP outage and recovery in a nested server harness without adding its
+  runtime, transport, TLS, or protobuf graph to portable crates.
 
-### 3. Packed object plane — next managed component
+### 3. Packed object plane — active managed component
 
 - [x] Exact caller-output writer, compact count header, borrowed ordered directory validation, and
   representative non-empty zero-allocation evidence.
@@ -125,16 +131,18 @@ The remaining gaps are architectural, not polish:
 ## Manager/worker execution cycle
 
 One fresh Terra manager owns one capability and its progressively loaded skill. It commissions narrow
-read-only scouting, a smallest-proof builder, an independent breaker, and targeted repair. Available
-workers in the current runtime are Terra/Sol—not Luna—so the topology is being tested without claiming
-an unavailable model. The manager returns a single evidence packet only after exact falsifiers and
-full owned gates pass. The root then performs the cross-crate architectural review, updates this graph,
-and generalizes only lessons that actually prevented a repeatable failure.
+read-only scouting, a smallest-proof builder, an independent breaker, and targeted repair. Every
+writing worker starts from a frozen digest/LOC ledger in an isolated branch and commits each passing
+checkpoint; rejected work remains auditable without contaminating the manager branch. Available
+workers in the current runtime are Terra/Sol—not Luna—so the topology is being tested with explicit
+Sol substitution rather than a false Luna claim. The manager returns a single evidence packet only
+after exact falsifiers and full owned gates pass. The root then performs the cross-crate architectural
+review, updates this graph, and generalizes only lessons that actually prevented a repeatable failure.
 
-The next large trial is capability 3, after the observability trial closes. It will be split by public
-behavior (lookup, body lending/verification, partial binding, end-to-end leased range) while retaining
-one manager and a stable artifact contract; it will not be split into agents that independently invent
-four incompatible abstractions.
+The active large trial is capability 3. The program is split by public behavior while retaining one
+stable artifact contract: the current manager owns lookup plus complete-body lending/verification;
+later managers own authenticated partial binding and leased range transport. It will not be split
+into agents that independently invent incompatible representations.
 
 ## Research decisions carried forward
 
