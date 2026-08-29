@@ -75,5 +75,30 @@ Baseline Rust LOC: production 659; tests 778; total 1,437.
 
 ## Decision log and closure ledger
 
-Pending scout, builder, and independent breaker evidence. The final section records accepted and
-rejected commits, candidate digests/LOC, gates, counterexample, and remaining limitation.
+### Checkpoint 1 — approved smallest proof
+
+The read-only scout (`packed_scout`, no edits) established that retaining the zerocopy borrowed
+directory is the only accepted lookup representation: it avoids lookup reparsing and the resulting
+impossible-error leak. On 64-bit, a directory borrow replaces two derived scalar facts without
+growing the current 40-byte/8-aligned index; on 32-bit it is 20-byte/4-aligned rather than 24/4.
+Public plain facts may remain direct only where they do not duplicate the retained directory.
+
+Approved result shape: a complete borrowed pack view, `Option` for genuine absent identity only, and
+a selected borrowed object containing typed descriptor/range/body facts. Verification returns a
+plain `Result` whose mismatch preserves expected and actual `ContentId<ObjectDomain>`; it is one
+consumer/effect and does not warrant typestate. Lookup compares the query against each raw directory
+`[u8; 32]` content cell; body endpoints derive from the typed cumulative end, declared length, and
+typed index extent. No direct BLAKE3 dependency is permitted: `ContentId::from_canonical_bytes` is
+the already-authoritative scalar path.
+
+Builder ownership is limited to `src/error.rs`, `src/format.rs`, `src/index.rs`, `src/view.rs`,
+`src/lib.rs`, and top-level crate tests/support. Skeleton forecast: +179 production and +210 tests,
+leaving 51/50 lines before the card's 230/260 ceilings. Stop if any new future-phase API, manifest
+change, unsafe/SIMD, allocation, or failed 60%-remaining-contract forecast appears.
+
+Known environment constraint: baseline executable cargo gates cannot link because `clang` is absent;
+workers must still run and report format/diff checks plus the exact linker failure rather than claim a
+green test. The final closure distinguishes this external gate blocker from code findings.
+
+Pending builder and independent breaker evidence. The final section records accepted and rejected
+commits, candidate digests/LOC, gates, counterexample, and remaining limitation.
