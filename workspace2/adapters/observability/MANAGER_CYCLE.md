@@ -97,3 +97,68 @@ formatted production lines: it exceeded this cycle's 100-line ceiling and consum
   The breaker required a distinct producer completion channel before release.
 - A shared string fixture hid a real SDK mapping difference. A closed semantic fixture now makes the
   trace-string/log-integer boundary visible rather than coercing both paths to text.
+
+## Root-review cycle record
+
+The Sol implementation worker committed
+`eb3726898ac4c266263340a2cf6474f288cf641d` from contract commit
+`3edfdc0c`. Its adapter-only churn is 176 additions and 58 deletions: production is two additions and
+seven deletions (net -5), while relocated and strengthened tests are 174 additions and 51 deletions
+(net +123). No manifest, lockfile, dependency, unsafe, allocator, core API, exporter-health, or OTLP
+surface changed.
+
+The outer-only `Targets` experiment passed. The exact public journey retained three spans, fifteen
+logs, and seven unlabeled gauges after removing both per-layer filters and their clones; the same
+external test binary proved a disabled `nudox.root` target does not execute its typed builder. Fixed
+`Option<&SpanData>` slots now reject every missing expected span and every duplicate expected span
+without a lookup allocation. Cleanup coordination retains receive, release, and join outcomes before
+applying the documented receive → release → join → producer-send source priority. Missing log fields
+and present fields with unsupported representations have distinct typed errors.
+
+All closure commands passed from `adapters/observability`: `cargo fmt --all -- --check`, Nix-clang
+`cargo test` (seven integration tests plus empty unit/doc suites), Nix-clang
+`cargo clippy --all-targets --all-features -- -D warnings -W clippy::pedantic`,
+`cargo doc --no-deps`, and `git diff --check`.
+
+### Baseline file digests
+
+SHA-256 digests at frozen baseline `699b7cca71c78de8afebc1cee9e2a26a3ca46fdc`
+(Git adapter tree `2f9792d79b2d3c5f6002e2d2b886c5d3edb13c4b`):
+
+| File | SHA-256 |
+|---|---|
+| `Cargo.lock` | `9b33daedcd90146fb609836097a9eae90ec4a4f382fc6d1b2e22e00f0530c4bf` |
+| `Cargo.toml` | `c22651b3d1e6271a2ed244b3fdb2531fa2d90c6707d375f605da784b297da119` |
+| `MANAGER_CYCLE.md` | `50a4eb8bddbfdacf944269ab872489f5524ecc4df885fce519ed72d2e564b4f8` |
+| `src/batch.rs` | `ce182123eaab591f2e92da77cdd7ded0e59c8de26fd33b5485c323740188fc82` |
+| `src/dispatch.rs` | `8e653e91c38581b8a6721d4737bcbb403fce9bf73fbbe69cc8ae7d443528747e` |
+| `src/lib.rs` | `9b652daa296a99deaf54f61c9218e91c9e916a4bf81a15b6aba3bff6e91cdde3` |
+| `src/metrics.rs` | `5bfd6db5d206d415332cc163633c917bbeb87814293cdeeaaf7d19383572630f` |
+| `src/names.rs` | `d3c14b84f392866a8ac06d754d65dfaf97dc2f353f441513a084af7e106e7a5e` |
+| `src/probe.rs` | `24e32f4e307862f23a41b63c54ddc4419dfa094f12ee6ef2759ce03bdfc829c8` |
+| `src/tests.rs` | `dc204d32c3e7d96583a502c5254cb371ec65ce82dfe725bc8757fda63a57320c` |
+| `src/tests/overload.rs` | `af6377def21104c3292fdfa9bcda182cedef1eb3c0108ca29d046131f5a54cff` |
+| `src/tests/signal_contract.rs` | `41af972fb9fac7d04cb2c42a4f25c042221ab338e8038581fd8c304e773707a5` |
+| `src/tests/support.rs` | `a671e89b87fc3a0f24fc59ecaf437992b445b8158ac356e1f9f7bb0bb8743b2e` |
+
+### Implementation-candidate file digests
+
+SHA-256 digests at accepted implementation `eb3726898ac4c266263340a2cf6474f288cf641d`
+before this cycle-record-only commit (Git adapter tree
+`cc1a435f9c762198a22571582807072cd016499b`):
+
+| File | SHA-256 |
+|---|---|
+| `Cargo.lock` | `9b33daedcd90146fb609836097a9eae90ec4a4f382fc6d1b2e22e00f0530c4bf` |
+| `Cargo.toml` | `c22651b3d1e6271a2ed244b3fdb2531fa2d90c6707d375f605da784b297da119` |
+| `MANAGER_CYCLE.md` | `8e1105e4b635e9410fdd78aa4818d441341cf603307d6a00be8613ffbdc59df3` |
+| `src/batch.rs` | `ce182123eaab591f2e92da77cdd7ded0e59c8de26fd33b5485c323740188fc82` |
+| `src/dispatch.rs` | `b49d3262a56c859628c5d86df611fd038680593bf42e008623d5eaed8bef5d71` |
+| `src/lib.rs` | `ceec5d312b671f4bfec34ab5cc30f394ecc8d1931acd75effad8bd7e90845ea9` |
+| `src/metrics.rs` | `5bfd6db5d206d415332cc163633c917bbeb87814293cdeeaaf7d19383572630f` |
+| `src/names.rs` | `d3c14b84f392866a8ac06d754d65dfaf97dc2f353f441513a084af7e106e7a5e` |
+| `src/probe.rs` | `24e32f4e307862f23a41b63c54ddc4419dfa094f12ee6ef2759ce03bdfc829c8` |
+| `tests/adapter.rs` | `fde8675d88b294854981df72c8d84e5492b93799dc3294b8cabad93599429f81` |
+| `tests/adapter/overload.rs` | `189b55433e7de072e809d04e39ad9edb6649e04c0aa5d01b9608f8f38847a26a` |
+| `tests/adapter/signal_contract.rs` | `1a9404dd19e36b64292567f894b06dbf4721adce96e348e27b5f80feb35cb0ce` |
+| `tests/adapter/support.rs` | `840088599fdd4d3a90c9abe6fc516e73ae9009bb8e6b9d27acea484334b05841` |
