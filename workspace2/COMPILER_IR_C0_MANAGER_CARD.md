@@ -44,9 +44,9 @@ gets that row's concrete synchronous borrowed result. `RustSubset` accepts `Pars
 route. The only `Language` variants are `RustSubset` and `TypeScriptSubset`; the only `Stage` variants
 are `Parse` and `LowerIr`; `FrontendError` has only that one variant and both fields have those enum
 types. The manual frontend contract lends the caller's source as
-`fn drive(source: &[u8]) -> Result<&[u8], FrontendError>`. Public tests drive both full rows, prove
-successful paths return the identical borrowed region, assert the exact rejection, and use compile-fail
-doctests for owner mixing and the missing subset member. This is one boundary dispatch proof, not
+`fn drive(stage: Stage, source: &[u8]) -> Result<&[u8], FrontendError>`. Public tests drive both full
+rows, prove successful paths return the identical borrowed region, assert the exact rejection, and use
+compile-fail doctests for owner mixing and the missing subset member. This is one boundary dispatch proof, not
 lowering, fragment construction, canonical bytes, recipe/job identity, scheduling, bundles, or a real
 frontend.
 
