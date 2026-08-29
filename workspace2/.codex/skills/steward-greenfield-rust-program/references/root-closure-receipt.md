@@ -1,8 +1,10 @@
 # Root closure receipt
 
-Fill this receipt for the exact candidate commit. It is an evidence index, not a retrospective. Link
-raw files or quote compact command facts; never replace them with “all green.” Delete inapplicable
-rows only after recording the contract reason.
+Fill this receipt for the exact source-candidate commit and tree. The receipt is a later evidence-only
+artifact and cannot self-name its own commit. Link raw files or quote compact command facts; never
+replace them with “all green.” Keep every row. An inapplicable row states the contract reason and the
+exact source search or executable experiment establishing inapplicability; otherwise it is
+`UNVERIFIED`.
 
 ## Identity and custody
 
@@ -10,8 +12,11 @@ rows only after recording the contract reason.
 capability:
 canonical contract path and digest:
 calibration artifact digests and post-calibration contract edits:
-candidate commit:
-candidate tree digest:
+source-candidate commit:
+source-candidate tree digest:
+receipt-containing commit: SELF (record exact commit in acceptance/roadmap after commit)
+paths changed from source candidate through receipt:
+source/test/manifest/lock/fixture/generated-consumer equivalence proof:
 review worktree and branch:
 manager baseline and commit range:
 manager model proof:
@@ -22,7 +27,11 @@ root-owned changed paths:
 unrelated dirty paths:
 ```
 
-Model proof is runtime spawn/session evidence. A role name or prose assertion is insufficient.
+Model proof is the retained successful orchestration call with an explicit non-inheriting `model`
+argument plus its returned task/session identity; a role name or worker self-report is insufficient.
+If the runtime exposes a selected-model field, retain and compare it. If it does not, state that
+limitation rather than inventing a second attestation; a successful explicit selection remains
+transport evidence under the orchestration API contract.
 
 ## Law ledger
 
@@ -31,6 +40,9 @@ Use one row for every contract law, including negative space.
 ```text
 law | public terminal | falsifier | pre-fix result | candidate result | evidence state | artifact
 ```
+
+The artifact cell identifies the source-candidate commit/tree, immutable command-log digest, and
+exact path/line or test name. Prose summaries are not artifacts.
 
 Allowed evidence states:
 
@@ -97,7 +109,7 @@ strongest surviving counterexample:
 ```
 
 Every applicable attempt names the mutation or fixture and its exact observed result. “Covered by
-tests” is not a hostile attempt.
+tests” is not a hostile attempt. `N/A` without the establishing search/experiment is `UNVERIFIED`.
 
 ## Clean closure
 
@@ -107,12 +119,13 @@ complete commands pass one and immediate status:
 complete commands pass two and immediate status:
 unverified platform/tooling:
 zero blockers/majors confirmed against:
-post-gate source/evidence edits: none | closure reopened
+post-gate source edits: none | closure reopened
+post-gate evidence edits and current receipt identity:
 root concurrent durable artifact:
 roadmap/skill changes caused by observed misses:
 verdict: ACCEPTED | REJECTED | OPEN
 ```
 
-`ACCEPTED` requires the exact committed candidate, every law `REPRODUCED`, zero blocker/major, unused
-reserve, two clean full passes, and no later edit. Otherwise choose `REJECTED` or `OPEN`; do not
-average missing proof into a score.
+`ACCEPTED` requires the exact committed source candidate, every law `REPRODUCED`, zero blocker/major,
+unused reserve, two clean full passes, a later receipt whose intervening diff is evidence-only, and no
+later source edit. Otherwise choose `REJECTED` or `OPEN`; do not average missing proof into a score.

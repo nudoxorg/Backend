@@ -145,12 +145,16 @@ When a Terra manager returns:
 6. Update roadmap, plans, and at most three generalized skill clauses from observed repeatable
    failures. Never encode task SHAs, live agent IDs, or temporary worktree facts as doctrine.
 
-Acceptance is a two-observation operation, never the last line of a repair turn. First freeze and
-commit the root-reviewed candidate; then reread that exact commit as a reviewer, fill the closure
-receipt, run the complete gates from clean state, and inspect status immediately. Make no source or
-evidence edit between the second clean gate and the acceptance verdict. Any edit reopens closure and
-requires a new receipt. A copied manager summary, omitted raw reviewer output, unexplained tripwire,
-or command result without commit/worktree/status identity is `UNVERIFIED`, not evidence.
+Acceptance is a two-observation operation, never the last line of a repair turn. Freeze a **source
+candidate** commit and tree first. Run both clean passes on that exact source candidate and capture
+immutable raw outputs/digests. Commit the closure receipt later as an evidence-only commit that names
+the source candidate, its tree, the raw artifacts, and every path changed since it. Prove that no
+shipping source, test, manifest, lockfile, fixture, or generated consumer differs; evidence/roadmap
+prose is not a new source candidate. The receipt cannot self-name its own Git commit, so acceptance
+records the containing receipt commit externally or in a later roadmap entry. Any non-evidence edit
+after either clean pass reopens source closure; any receipt edit invalidates the earlier receipt
+verdict until reread. A copied manager summary, omitted raw reviewer output, unexplained tripwire, or
+command result without source-candidate/worktree/status identity is `UNVERIFIED`, not evidence.
 
 Root acceptance has three non-negotiable self-falsifiers:
 

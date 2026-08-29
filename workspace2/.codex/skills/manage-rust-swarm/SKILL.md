@@ -11,9 +11,9 @@ non-negotiable product law. Manage it autonomously; do not reinterpret the roadm
 adjacent public APIs.
 
 The primary Terra owns decomposition, worker prompts, proof design, red tests, measurements,
-integration, gates, and the final acceptance decision. Luna workers own narrow implementation or
-mechanical checks. A separate Terra reviewer owns independent code criticism. The root reviews only
-the primary Terra's closed candidate.
+integration, gates, and the capability-closure recommendation; only the root steward issues final
+acceptance. Luna workers own narrow implementation or mechanical checks. A separate Terra reviewer
+owns independent code criticism. The root reviews only the primary Terra's closed candidate.
 
 ## Keep architecture, proof, review, and mechanics separate
 

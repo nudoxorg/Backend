@@ -150,7 +150,7 @@ VCS code has no compatibility standing.
 
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
-| Index I0 manifest | Typed vocabulary accepted; the next child is one fixed-width borrowed one-entry manifest | Begin without FST/rank-select/mmap ownership; require golden bytes, every truncation, pointer containment, zero allocation, and exact empty/one layout before compression. |
+| Index I0 manifest | Implementation candidate is root-reviewed, but closure evidence is reopened; do not dispatch the manifest child yet | Rebuild the receipt against the exact source candidate with raw model custody, full law/resource rows, immutable gate evidence, and a conforming independent review. |
 | Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
 | Leased range T0 | Autonomous Terra calibration active; implementation follows its separate Terra review | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
 | Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |
@@ -169,8 +169,8 @@ performs the cross-crate architectural review, updates this graph, and generaliz
 actually prevented a repeatable failure.
 
 The next object-plane trial is authenticated partial binding followed by leased range transport.
-Index I0 vocabulary and compiler C0.1 are accepted; leased range T0 is being recalibrated after its
-first builder proved the original card could not fit its production ceiling. Primary Terras own
+Index I0 vocabulary is evidence-open, compiler C0.1 is accepted, and leased range T0 is being
+recalibrated after its first builder proved the original card could not fit its production ceiling. Primary Terras own
 architecture and proof, reviewer Terras remain read-only, and narrowly scoped Luna workers implement
 one checkpoint at a time.
 Parallelism never permits agents to invent incompatible artifact, lease, or terminal representations.
