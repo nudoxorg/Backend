@@ -25,6 +25,14 @@ LOC, deleted APIs, and unrelated dirty files. Review is read-only except parent-
 experiments. Check wildcard workspace members for orphan/incomplete crate directories before running
 gates. Never repair code while compiling the findings; that hides causal evidence.
 
+Before interpretation, run a mechanical tripwire inventory over changed production and test paths:
+panic/`unwrap`/`expect`/`unreachable!`, source-dropping `map_err`, `dyn`/`Box`/`Vec`/`Arc`, public tuple
+fields, unit/stateless structs, public local traits, one-letter generic parameters, numeric
+discriminants/matches, and test-only `Option`/discarded results. Account for every hit as required,
+cold-only, or a finding; an empty prose claim is not a scan. For each public marker-to-associated-type
+trait, try deleting the wrapper marker and using the already branded associated/domain type directly.
+If the mapping adds no behavior or invalid-state exclusion, it is duplicate representation.
+
 Recompute the remaining forecast with the shared skill's uncertainty reserve. A claim that technically
 fits only by consuming the reserve is a scope failure and must split before further implementation.
 Compare planned and actual formatted LOC for every file before reviewing semantics. A variance above
