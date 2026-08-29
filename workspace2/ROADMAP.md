@@ -143,6 +143,16 @@ VCS code has no compatibility standing.
   changing operation semantics. Local work expands during remote inconsistency and contracts again
   when remote service is healthy.
 
+## Next-batch readiness
+
+| Capability | State and prerequisite | Root integration concern |
+|---|---|---|
+| Index I0 | Terra calibration active; implementation follows on the same transcript | I0 and C0 may each propose minimal sealed identity rows; root serializes the shared registry diff and re-proves global uniqueness. |
+| Compiler C0 | Terra calibration active; implementation follows on the same transcript | Static dispatch must show two genuinely distinct concrete consumers before any macro or generic surface is accepted. |
+| Leased range T0 | Queued behind one free Terra-plus-Luna pair; complete object-pack view is available | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
+| Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |
+| Observability health | Adapter seam is green after removing the dedicated scenario crate | A future lifecycle capability must expose real exporter failure without reintroducing a test-support package or portable SDK dependency. |
+
 ## Manager/worker execution cycle
 
 One fresh Terra manager owns one capability and its progressively loaded skill. It commissions narrow
