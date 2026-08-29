@@ -102,18 +102,32 @@ The remaining gaps are architectural, not polish:
 
 ### 6. Horizontally scalable remote index
 
+The full greenfield contract and manager slices live in
+[`INDEX_GREENFIELD_PLAN.md`](INDEX_GREENFIELD_PLAN.md). Legacy `workspace/index` is inspiration and
+anti-pattern evidence only; none of its APIs, schemas, stores, or search behavior is a compatibility
+constraint.
+
 - [ ] Partition immutable generation/object metadata by canonical key with rendezvous placement only
   as an efficiency hint; durable object/change bytes plus atomic publication remain truth.
 - [ ] Build indexes from sealed deltas, publish compact immutable segments once, and share compaction
   output across replicas. Popular segments reside on NVMe/RAM by measured demand; cold segments age
   to object storage without changing IDs or query semantics.
+- [ ] Keep exact, lexical, relation, usage, and vector projections as separate typed segment families
+  over one snapshot/publication/range substrate; no universal registry DTO or mutable index authority.
 - [ ] Exercise node loss, stale routing, rebalance, hot-key demand, and remote outage while local
   proven facts remain usable.
 
 ### 7. Vertically elastic compiler plane
 
+The full greenfield compiler and compact semantic-IR contract lives in
+[`COMPILER_IR_GREENFIELD_PLAN.md`](COMPILER_IR_GREENFIELD_PLAN.md). Legacy compiler, IR model, and IR
+VCS code has no compatibility standing.
+
 - [ ] Content-address compiler inputs/toolchain/environment; schedule idempotent jobs under typed
   rate and byte credits; stream artifacts/logs rather than staging object graphs.
+- [ ] Emit compact borrowed semantic fragments through compile-time-selected concrete frontends;
+  package IR is an immutable manifest, and history/diff is ordinary fragment publication rather than
+  a second VCS subsystem.
 - [ ] Scale worker size vertically and fleet width independently. Demand and cost choose compilation
   placement; index correctness never depends on compiler availability.
 - [ ] Cache only reusable immutable compiler products with measured recomputation cost; do not cache
@@ -160,3 +174,9 @@ into agents that independently invent incompatible representations.
   reporter paths are not copied into the lean core.
 - iroh-blobs/Bao demonstrates hash-and-range-described verified streams; the protocol shape is useful,
   while connection/runtime/store choices remain replaceable adapters.
+- Tantivy and Quickwit demonstrate immutable segments, mmap/range-readable search, pruning metadata,
+  and shared compaction output; Qdrant demonstrates useful segment and vector experiments. Their
+  document APIs, metadata databases, consistency tradeoffs, and cluster types are not adopted.
+- OXC, rust-analyzer/Salsa, and Cranelift demonstrate arena ASTs, change-aware stable summaries, typed
+  dense entity maps, and pooled lists. These are measured techniques or frontend-local choices, not a
+  universal compiler database or IR ownership model.
