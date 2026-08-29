@@ -169,4 +169,20 @@ pub enum ObjectPackError {
         /// Exact encoded cumulative end.
         observed: ObjectPackBytes,
     },
+    /// A complete-pack view was not exactly the validated index plus all bodies.
+    #[error("pack has {actual:?} bytes but requires exactly {expected:?}")]
+    PackExtent {
+        /// Validated complete pack extent.
+        expected: ObjectPackBytes,
+        /// Complete supplied pack extent.
+        actual: ObjectPackBytes,
+    },
+    /// A selected borrowed body did not reproduce its validated content identity.
+    #[error("pack object {expected:?} hashes to {actual:?}")]
+    ObjectContent {
+        /// Identity claimed by the selected validated descriptor.
+        expected: ContentId<nudox_id::ObjectDomain>,
+        /// Identity calculated from the selected borrowed body.
+        actual: ContentId<nudox_id::ObjectDomain>,
+    },
 }

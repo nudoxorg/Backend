@@ -9,10 +9,12 @@ mod error;
 mod format;
 mod header;
 mod index;
+mod view;
 mod write;
 
 pub use error::ObjectPackError;
 pub use format::{ObjectPackBytes, ObjectPackObjectCount};
 pub use header::{OBJECT_PACK_HEADER_BYTES, ObjectPackHeader, ObjectPackHeaderFacts};
 pub use index::{ObjectPackIndex, ObjectPackIndexFacts};
+pub use view::{ObjectPackObject, ObjectPackView};
 pub use write::{ObjectPackFacts, PackInput, PreparedObjectPack};

@@ -1,13 +1,27 @@
 use core::fmt;
+use zerocopy::{Immutable, IntoBytes, KnownLayout, TryFromBytes};
 
 /// Compact closed Wave 1 schema registry with explicit stable wire tags.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Immutable,
+    IntoBytes,
+    KnownLayout,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    TryFromBytes,
+)]
 pub enum SchemaId {
     /// Canonical immutable object bytes described by `nudox-object`.
-    Object = 1,
+    Object = 1_u32.to_be(),
     /// Canonical bounded batch frame body described by this crate.
-    Frame = 0x0001_0001,
+    Frame = 0x0001_0001_u32.to_be(),
 }
 
 impl From<SchemaId> for u32 {
@@ -47,10 +61,23 @@ pub struct UnknownSchemaId(pub u32);
 
 /// Compact closed Wave 1 operation registry.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Immutable,
+    IntoBytes,
+    KnownLayout,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    TryFromBytes,
+)]
 pub enum OperationId {
     /// Static pinned-object operation defined by `nudox-operation`.
-    PinnedObject = 1,
+    PinnedObject = 1_u32.to_be(),
 }
 
 impl From<OperationId> for u32 {
@@ -88,16 +115,13 @@ pub struct UnknownOperationId(pub u32);
 #[cfg(test)]
 mod tests {
     use core::mem::{align_of, size_of};
+    use zerocopy::IntoBytes;
 
     use super::{OperationId, SchemaId, UnknownOperationId, UnknownSchemaId};
 
     #[test]
     fn closed_tags_are_unique_compact_and_round_trip() {
         assert_ne!(u32::from(SchemaId::Object), u32::from(SchemaId::Frame));
-        assert_eq!(size_of::<SchemaId>(), 4);
-        assert_eq!(align_of::<SchemaId>(), 4);
-        assert_eq!(size_of::<OperationId>(), 4);
-        assert_eq!(align_of::<OperationId>(), 4);
         assert_eq!(
             SchemaId::try_from(u32::from(SchemaId::Frame)),
             Ok(SchemaId::Frame)
@@ -105,5 +129,17 @@ mod tests {
         assert_eq!(OperationId::try_from(1), Ok(OperationId::PinnedObject));
         assert_eq!(SchemaId::try_from(99), Err(UnknownSchemaId(99)));
         assert_eq!(OperationId::try_from(99), Err(UnknownOperationId(99)));
+    }
+
+    #[test]
+    fn closed_tags_are_native_types_with_canonical_big_endian_memory() {
+        assert_eq!((size_of::<SchemaId>(), align_of::<SchemaId>()), (4, 4));
+        assert_eq!(
+            (size_of::<OperationId>(), align_of::<OperationId>()),
+            (4, 4)
+        );
+        assert_eq!(SchemaId::Object.as_bytes(), 1_u32.to_be_bytes());
+        assert_eq!(SchemaId::Frame.as_bytes(), 0x0001_0001_u32.to_be_bytes());
+        assert_eq!(OperationId::PinnedObject.as_bytes(), 1_u32.to_be_bytes());
     }
 }

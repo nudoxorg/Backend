@@ -3,8 +3,8 @@
 use core::mem::size_of;
 
 use fearless_simd::Level;
-use nudox_object::{ObjectDescriptorWireRecord, ProviderSet};
-use nudox_schema::SchemaId;
+use nudox_id::ObjectDomain;
+use nudox_object::{ObjectDescriptorDecodeError, ObjectRef, ProviderSet};
 use zerocopy::FromBytes;
 
 use super::{
@@ -241,15 +241,18 @@ fn validate_descriptor_schemas(
     let mut ordinal = 0;
     while ordinal < present_count {
         let bytes = descriptor_bytes(descriptors, ordinal);
-        let record = ObjectDescriptorWireRecord::ref_from_bytes(bytes).map_err(|source| {
-            LocalityError::Truncated {
-                region: LocalityRegion::PresentOverlays,
-                required: source.into_src().len().into(),
-                available: descriptors.len().into(),
+        match ObjectRef::<ObjectDomain>::try_from(bytes) {
+            Ok(_) => {}
+            Err(ObjectDescriptorDecodeError::Schema(source)) => {
+                return Err(LocalityError::PresentOverlaySchema { ordinal, source });
             }
-        })?;
-        if let Err(source) = SchemaId::try_from(record.schema.get()) {
-            return Err(LocalityError::PresentOverlaySchema { ordinal, source });
+            Err(ObjectDescriptorDecodeError::Width { actual }) => {
+                return Err(LocalityError::Truncated {
+                    region: LocalityRegion::PresentOverlays,
+                    required: size_of::<nudox_object::ObjectDescriptorWireRecord>().into(),
+                    available: actual.into(),
+                });
+            }
         }
         ordinal += 1;
     }
