@@ -63,12 +63,18 @@ invalidate the run.
 Use only cases applicable to the specimen, but do not omit an applicable case:
 
 - a public multi-field witness assembled from unrelated valid owners;
+- a `From` conversion that silently overwrites/normalizes raw cells while `TryFrom` treats the same
+  input as checked representation bytes;
+- a stateful public method whose pending/cancelled/terminal/fused results are missing, ambiguous, or
+  require phase facts the representation discarded;
 - a checked arithmetic failure collapsed into a sentinel, saturation, generic budget error, or value
   that cannot retain the original operands/owners;
 - validation followed by raw-tag redecoding, `unreachable!`, fallback, omission, or unchecked cast;
 - a green happy-path test that never falsifies exact error/source/owner behavior;
 - a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all
   public tests stay green;
+- a content-addressed representation whose authority/version prefix is accidentally reused as routing
+  entropy, making common low-bit buckets constant;
 - a claimed clean/reproducible gate that creates an untracked lockfile or deletes generated state only
   after status inspection;
 - an unapproved manifest, reexport, future-phase type, backend enum, or compatibility shim;

@@ -15,6 +15,11 @@ Before the first production edit in a new phase, the manager applies
 The plan is greenfield. Legacy `workspace/index` can supply counterexamples and candidate product
 ideas only. Never preserve an old trait, table, DTO, query behavior, backend, or test by default.
 
+No index identity boundary closes while foundation raw identity decode can rebrand identical bytes.
+Index prototypes may use a private experimental representation, but shared I0/I1 integration waits
+for fixed-width checked domain/encoding authority, compile-fail negative API evidence, and routing-word
+entropy over digest cells rather than authority prefixes.
+
 ## One phase at a time
 
 The root names one `I0`–`I6` capability. The Terra manager autonomously selects its smallest
@@ -57,6 +62,9 @@ explicit legacy ideas rejected
 - Manifest metadata prunes before segment I/O. Plans reserve fan-out/range/TopK credits up front.
 - Views validate once and borrow original bytes. Lookup does not deserialize documents or build IDs in
   comparisons.
+- Segment family types exist only for current family consumers. Do not ship relation/usage/vector
+  variants, projection traits, raw codes, or errors during an exact/lexical slice merely because the
+  architecture plan names later phases.
 - A missing segment/range produces an exact partial terminal; it is never zero hits or empty success.
 - Compaction output is built once, equivalence-checked, and published atomically. Replicas download it.
 - Rendezvous placement is cache affinity only. A stale route can waste one attempt, never change truth.

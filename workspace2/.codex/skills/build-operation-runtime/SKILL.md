@@ -30,11 +30,16 @@ commit; diagnostic questions/events/correlation/flight trigger; adapter-only dep
 
 ## Operation-plane invariants
 
+- Freeze a public method×phase matrix before implementing a stateful cursor/runtime owner. Every cell
+  names exact result, owner/credit movement, and next phase. An error may not claim completion after
+  cancellation, and a phase may not answer using facts it discarded.
 - One permit owns one payload cell; work becomes terminal in place and credits return exactly once.
 - Slots, bytes, waiters, terminals, queues, batches, and exporter buffers are separately bounded.
 - Runtime/epoch identity prevents stale or cross-runtime handles.
 - Core is concrete and `no_std` where intended; platform I/O/runtime/tracing stays in adapters.
 - Replay retains no log and releases only the next idempotent effect.
+- A synchronous ready cursor and an asynchronous/pending source use truthful distinct poll vocabularies.
+  `None` means fused exhaustion only; it never means “not ready yet.”
 - A real file test covers persistence/reopen/corruption; private fault seams cover write/sync/read;
   Loom covers the production atomic state machine; Miri covers initialized-slot reuse/drop.
 - Top-level tests assert concurrency, zero/one/full/+1, every pending cancellation, disk/full/permission

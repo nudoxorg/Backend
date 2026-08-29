@@ -28,7 +28,8 @@ gates. Never repair code while compiling the findings; that hides causal evidenc
 Before interpretation, run a mechanical tripwire inventory over changed production and test paths:
 panic/`unwrap`/`expect`/`unreachable!`, source-dropping `map_err`, `dyn`/`Box`/`Vec`/`Arc`, public tuple
 fields, unit/stateless structs, public local traits, one-letter generic parameters, numeric
-discriminants/matches, and test-only `Option`/discarded results. Account for every hit as required,
+discriminants/matches, lossy or dual-meaning `From`/`TryFrom`, raw authority reconstruction, and
+test-only `Option`/discarded results. Account for every hit as required,
 cold-only, or a finding; an empty prose claim is not a scan. For each public marker-to-associated-type
 trait, try deleting the wrapper marker and using the already branded associated/domain type directly.
 If the mapping adds no behavior or invalid-state exclusion, it is duplicate representation.
@@ -44,6 +45,7 @@ The final review must include this literal table with every row present, includi
 tripwire | count | exact locations | disposition | evidence or finding ID
 panic/unwrap/expect/unreachable
 source-dropping conversion or map_err
+lossy/ambiguous From/TryFrom or raw authority bypass
 checked-arithmetic sentinel/saturation or operand loss
 dyn/Box/Vec/Arc/Rc
 public tuple fields or positional semantic tuples
@@ -86,7 +88,8 @@ Run all applicable passes in this order:
    or statement packing used to manufacture a low-LOC claim.
 4. **Types:** inspect raw primitives, tuple coordinates, optional correlated state, string stages,
    catch-all variants, generic ledgers, lifetime truth, conversions, field visibility, and invalid
-   states. Demand descriptive generic names.
+   states. Demand descriptive generic names. Cross every public method with every reachable phase;
+   each cell must have a truthful result and complete owner/credit transition.
 5. **Ownership/layout:** account for owner plus backing, peak live memory, pointer depth, allocation,
    copies, stable-address need, rejection/drop, `Arc` churn, stack/thread-stack cost, fragmentation,
    and text-size monomorphs. Compare the real lifetime alternatives.
@@ -100,7 +103,8 @@ Run all applicable passes in this order:
    in libraries. Require Loom on production transitions and Miri for unsafe ownership.
 8. **Protocol/durability:** recompute every byte and preimage. Mutate every cell. Trace write/sync/
    directory/receipt/crash/replay semantics and partial operations. Reject duplicated metadata and
-   undefined authentication.
+   undefined authentication. When authority/version cells occupy digest bytes, verify routing and
+   partition words draw from actual digest entropy rather than the fixed prefix.
 9. **Diagnostics:** ask the promised operator questions using only emitted typed events. Prove no-op
    laziness, exact chronology/correlation, bounded retention/export, triggered dump, and core/client
    exclusion from server machinery.
@@ -143,6 +147,7 @@ Do not approve when:
 - an allocation/generic/unsafe/SIMD/dependency ledger is incomplete;
 - concurrency is modeled in analogous test code rather than production transitions;
 - tests assert only success/no panic or use `expect`/`unwrap` as reporting;
+- a runtime test is offered as proof that an unwanted constructor/trait/transition cannot compile;
 - an LOC or simplicity claim depends on suppressed formatting or compressed logical statements;
 - diagnostics exist only in an outer demo;
 - a coherence-dependent public struct literal can combine unrelated valid fields, or validated input

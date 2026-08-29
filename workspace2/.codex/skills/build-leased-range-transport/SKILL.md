@@ -47,6 +47,8 @@ cache tier, retry, or physical range-placement facts.
   presentation uses an explicitly bounded reorder owner and never an unbounded collection.
 - `Complete`, `Partial`, `Degraded`, `Cancelled`, and `Failed` are distinct typed terminal facts.
   Terminal appears exactly once. Exhaustion after terminal is fused; `None` never means success.
+- A source that can be not-ready cannot expose `Option<Event>` as its poll result: pending, terminal,
+  and fused must remain distinguishable even in the runtime-independent semantic control.
 - Pending registers its waker before returning and rechecks state after registration. Cancellation
   and readiness have a named linearization order; stale wakes and repeated polls cannot duplicate a
   lease or terminal.
@@ -98,6 +100,11 @@ positional `.0` as the API. Use a self-referential owner only when the view must
 and measured removal of a copy or revalidation pays for construction, drop, code size, and dependency.
 `Arc` must prove shared lifetime ownership that cannot be expressed by transfer, scope, arena, slab,
 or completion-owned buffer.
+
+Do not invent scalar validity merely to justify a newtype. If range key zero is invalid, the product
+contract names why and tests the adjacent semantic law; otherwise use the full raw domain. When lease
+key and buffer are independently valid, expose named fields rather than a trivial constructor/getter
+pair. Private construction is reserved for coherence that a mixed-owner falsifier can actually break.
 
 ## First vertical proof
 

@@ -67,6 +67,7 @@ Record every row even when the count is zero. Locations are exact paths and line
 tripwire | count | locations | disposition | law/measurement
 panic/unwrap/expect/unreachable
 source-dropping conversion or map_err
+lossy/ambiguous From/TryFrom or raw authority bypass
 checked-arithmetic sentinel/saturation or operand loss
 dyn/Box/Vec/Arc/Rc
 public tuple fields or positional semantic tuples

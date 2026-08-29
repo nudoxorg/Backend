@@ -11,6 +11,10 @@ Read it completely before a domain skill. Domain skills add scope; they do not r
 Deliver one capability, not an interpretation of the roadmap. The parent owns architecture and the
 eventual rubric. The agent owns one proof, reports early, and waits before broadening.
 
+When the parent explicitly requests a prototype, these craft/evidence laws still apply. Prototype
+code stays on an isolated branch, keeps the simplest control, and ends in retain/reject/promote-for-
+integration evidence; it never earns shared merge, roadmap closure, or a product score by being bold.
+
 ## Contract before code
 
 No production edit is allowed until the responsible manager supplies and approves every row for its

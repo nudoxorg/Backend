@@ -15,6 +15,12 @@ integration, gates, and the capability-closure recommendation; only the root ste
 acceptance. Luna workers own narrow implementation or mechanical checks. A separate Terra reviewer
 owns independent code criticism. The root reviews only the primary Terra's closed candidate.
 
+When invoked under `../orchestrate-greenfield-rust-prototype/SKILL.md`, “closure” means a closed
+experiment, not an integrated product candidate. Keep the safe control, compare at most three
+candidate representations one changed axis at a time, commit losing evidence, and return exactly
+`RETAIN BASELINE`, `REJECT PROTOTYPE`, or `PROMOTE FOR FUTURE INTEGRATION REVIEW`. Never merge,
+update the shared roadmap, or issue a product score from prototype mode.
+
 ## Keep architecture, proof, review, and mechanics separate
 
 The manager is the capability architect and verifier. A Luna worker is a focused instrument, not a
@@ -136,6 +142,11 @@ The canonical card and every evidence ledger live in the manager's isolated trac
 branch. A card in the parent checkout, home directory, or unrelated dirty workspace is not a durable
 specimen and grants no edit authority even when its digest is known. Commit each canonical card before
 calibration so a worker can prove both content digest and repository custody.
+
+Before each card commit, reopen the entire file from byte zero through EOF and perform the structural
+preflight from `calibrate-rust-agent-contract`: one title first, balanced fences, stable table columns,
+complete phase/closure matrix, and one final next decision. Review the rendered whole, not only the
+patched hunk. Mechanical corruption is manager work and may not consume a cold-reader turn.
 
 The parent and sibling managers freeze the target's transitive production dependency paths for the
 duration of the build/break cycle. If an unavoidable parent edit changes one, stop the worker,
@@ -311,6 +322,11 @@ The boundary pass must attempt two concrete breaks rather than merely mention en
 
 Either break is a blocker. A comment saying construction proved the invariant is not evidence; the
 private representation and a downstream falsifier must carry it.
+
+For every stateful public type, enumerate public methods across every reachable phase before edit
+authority. Each cell names the exact result, owner movement, credit movement, and next phase. Reject
+an API where `None` means both not-ready and fused, an error says “already completed” after mere
+cancellation, or terminal/fused calls require facts the phase no longer owns.
 
 Concurrency/liveness evidence must observe the producer independently. For a bounded nonblocking
 claim, require producer completion under its own deadline while the consumer/exporter remains

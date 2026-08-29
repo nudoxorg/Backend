@@ -24,6 +24,10 @@ Do not write the rubric until all exist:
 If any is absent, return a readiness gap list and the smallest calibration work. Never invent weights
 to create a feeling of completeness.
 
+Prototype branches are rubric inputs, not scoreable products. They return retain/reject/promote
+evidence under `orchestrate-greenfield-rust-prototype`; they cannot be labeled 8/10, stretch, complete,
+or production-ready until rebuilt on current shared state and the readiness gate above closes.
+
 ## Criterion schema
 
 Every criterion is independently observable:

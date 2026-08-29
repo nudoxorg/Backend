@@ -29,6 +29,10 @@ For `C0`, the default surface is complete nested workspaces under `workspace2/do
 synthetic concrete frontends to prove generated dispatch; do not import a real SDK, sandbox, runtime,
 object store, serde, or server.
 
+Tests and deterministic drivers stay in ordinary owning crates' top-level `tests/` trees. Do not
+create `*-testkit` crates or expose shipping fixture APIs; a genuinely reusable simulator is an
+adapter capability and must earn a production consumer independently.
+
 Each C0 synthetic frontend must contribute a distinct checked registry row: its own closed language
 tag and a capability or supported-stage difference exercised by a compile-time subset/failure case.
 Two nominal types with identical no-op/delegating behavior, or one concrete frontend routed under two
@@ -148,3 +152,11 @@ Read only for a concrete choice and record what is rejected:
   <https://inferara.com/blog/rust-tagless-final-gadt/>
 
 A source is evidence for a mechanism, never permission to import its entire ownership model.
+
+## Closure
+
+Return the shared handoff plus recipe/stage/IR layout diagrams, exact invalidation and physical-credit
+ledgers, arena/copy/high-water and monomorphized text evidence, strongest illegal-stage/kind/owner
+counterexample, rejected legacy/framework ideas, and the next smallest parent decision. In prototype
+mode return retain/reject/promote only; never claim another frontend, scheduler, sandbox, bundle,
+publication, or index integration capability from vocabulary/format evidence.

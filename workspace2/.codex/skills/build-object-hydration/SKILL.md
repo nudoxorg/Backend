@@ -26,7 +26,9 @@ actually satisfy the lifetime.
 ## Object-plane invariants
 
 - Identity is independent of locality, pack placement, cache tier, and promotion.
-- Owned root construction and borrowed canonical-root reading are distinct paths sharing one grammar.
+- Canonical root/locality bytes are primary. Owned construction and borrowed/mmap/leased reading are
+  distinct adapters over one grammar; a retained native `Box<[Row]>` is a measured control, not the
+  presumed semantic owner.
 - Arbitrary-order construction may allocate to sort; range read/validation does not.
 - Payload owners transfer or return unchanged. Store metadata policy is static and first-write-wins.
 - Scratch is caller-owned/reusable where lifetimes align. Construction input is released before
@@ -36,6 +38,13 @@ actually satisfy the lifetime.
 - Boundary tests prove pointer identity, zero/one/limit/+1, exact rejection ownership, malformed and
   collision cases, allocation failure sources, lifetime compile-fail, unchanged root identity across
   locality/tier movement, bounded work, and exact aggregate events.
+- Verification and publication are distinct authorities only when publication consumes a real stable
+  receipt. Prefer one `Generation<State>` representation when both states have consumers; otherwise
+  keep one non-forgeable verified fact and delete effect-free marker transitions.
+
+Prototype owner work compares borrowed callback, caller-retained bytes, exact heap bytes, mmap/lease,
+and a self-referential adapter only when a view must escape. Measure validation repetition, pointer
+depth, construction/drop, peak simultaneous owners, and code size before promoting any shape.
 
 ## Packed range progression
 

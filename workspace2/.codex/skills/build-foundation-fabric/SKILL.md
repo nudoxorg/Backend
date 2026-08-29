@@ -28,6 +28,13 @@ collection/range task.
 ## Foundation invariants
 
 - Foundation owns all domain/encoding tags; applications never hash string literals.
+- Serialized typed identities carry enough closed authority to reject same-byte cross-domain or
+  cross-encoding decode. Registry codes are assigned once and checked for uniqueness at compile time;
+  no runtime map owns the protocol. `TryFrom` validates representation bytes, while a deliberate
+  digest projection has a named constructor—`From<[u8; N]>` never rewrites caller bytes.
+- Reserving identity cells changes collision budget and routing geometry. Record the permanent
+  security tradeoff and prove routing/partition words consume digest entropy rather than fixed
+  authority/version prefixes.
 - One typed record declaration owns fixed wire geometry.
 - A complete validated view borrows; ownership is an outer adapter.
 - Sparse packs do not require absent root objects. Typed consumers join root descriptors to present
@@ -35,6 +42,8 @@ collection/range task.
 - Public format tests live under top-level `tests/` and include golden bytes, every truncation and
   structural-cell mutation, N-1/N/N+1 immutable output, range/order/duplicate faults, exact errors,
   pointer identity, allocation/copy evidence, and explicit next-version behavior.
+- Negative API laws use external compile-fail evidence: runtime rejection cannot prove that an
+  unchecked constructor or cross-authority conversion is absent.
 
 ## Closure
 

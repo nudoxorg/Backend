@@ -115,6 +115,15 @@ commands, or follow-up cards after dispatch, record that as manager autonomy fai
 manager skill before the next cycle. Root feedback is reserved for genuine authority forks and the
 single final hostile review.
 
+## Prototype portfolio intake
+
+Parallel Sol prototype sessions use `../orchestrate-greenfield-rust-prototype/SKILL.md`. They are
+research branches, never delegated merge authorities. Give each a disjoint objective and hard laws,
+not a preselected representation. Track prerequisites and overlapping paths in the next-batch ledger.
+On return, read losing as well as chosen commits; extract measurements, counterexamples, and deletion
+opportunities. Re-derive the smallest integration card on current shared state. Never cherry-pick a
+prototype wholesale, preserve its API for convenience, or call its branch-local gates acceptance.
+
 ## Cross-cutting abstraction review
 
 Before accepting a new type or mechanism, ask across every plane:
