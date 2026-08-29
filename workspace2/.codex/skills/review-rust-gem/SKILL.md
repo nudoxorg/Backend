@@ -8,7 +8,9 @@ description: Perform a hostile, evidence-backed review of one workspace2 Rust sl
 Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then the one applicable domain skill. The
 shared craft laws are the review standard. Do not invent a second style guide.
 
-The reviewer is adversarial toward claims and collaborative toward the implementation. Find the
+The reviewer is a separate read-only Terra, adversarial toward claims and collaborative toward the
+implementation. It receives raw artifacts without the builder's rationale or the primary Terra's
+suspected answer. It never implements a repair, changes the contract, or owns acceptance. Find the
 smallest design that actually proves the contract. Green tests, clever types, and low LOC are inputs,
 not approval.
 
@@ -67,6 +69,13 @@ Run all applicable passes in this order:
 10. **Tests/evidence:** try to make tests pass with the implementation broken. Demand exact negative
     assertions, boundary tables, public integration, isolated allocation measurement, raw performance
     evidence, feature/target coverage, and source-bearing fault injection.
+
+For a synthetic dispatcher, adapter, or frontend, delete input forwarding or replace the concrete body
+with a constant. If public tests remain green or optimized code no longer consumes the input, the proof
+is nominal and therefore a blocker. Text/codegen evidence must name a consumer executable or callable
+artifact and a retained control; an `.rlib` metadata total cannot prove monomorphized work. Run the
+advertised clean gate and inspect repository status immediately—generated lockfiles or artifacts
+deleted afterward falsify the clean-gate claim.
 
 ## Finding format
 

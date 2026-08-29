@@ -17,7 +17,8 @@ Do not write the rubric until all exist:
 - approved contract cards for each coherent plane;
 - reproducible client and remote baselines;
 - named public integration/fault/performance evidence;
-- a reviewer skill forward-tested on deficient, complete, and stretch implementations;
+- a separate read-only Terra reviewer and reviewer skill forward-tested on deficient, complete, and
+  stretch implementations without receiving the intended answer;
 - definitions for “plan complete” and “same-direction extra mile.”
 
 If any is absent, return a readiness gap list and the smallest calibration work. Never invent weights
@@ -65,6 +66,9 @@ Apply explicit maximums before weighted aggregation:
 - missing raw performance evidence for a performance claim: that criterion cap 4;
 - green tests with weak assertions: testing criterion cap 2;
 - unresolved reviewer blocker/major: no final score.
+- missing or role-mixed proof chain—builder self-review, Luna substituted for the required Terra
+  reviewer, reviewer edits, or primary Terra delegating acceptance: affected evidence is inadmissible
+  and no final score is issued.
 
 LOC reduction, generics, SIMD, unsafe, dependency count, and allocation count are never standalone
 points. They matter only through the contract's memory/work/simplicity/correctness evidence.

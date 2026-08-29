@@ -39,8 +39,11 @@ permanent protocol identity/compatibility choice, a new dependency/unsafe/SIMD a
 external state, or work outside the named capability. The root decides once and returns the smallest
 additional law, not an implementation recipe.
 
-Explicitly select `gpt-5.6-terra` for managers and require them to select `gpt-5.6-luna` with a
-non-inheriting fork for workers. Runtime evidence proves model choice; agent names do not.
+Explicitly select `gpt-5.6-terra` for managers. Require each manager to select `gpt-5.6-luna` with a
+non-inheriting fork for implementation/check workers and a separate `gpt-5.6-terra` with a
+non-inheriting fork for independent review. The primary Terra owns proof and acceptance; the reviewer
+Terra stays read-only and attacks elegance/rubric compliance; Luna implements exact cards. Runtime
+evidence proves every model choice; agent names do not.
 
 ## Continuous root lane
 
@@ -68,6 +71,12 @@ plan, a shared skill law, a next-batch prerequisite, or an already accepted abst
 an invitation to re-open old assumptions: search all crates for duplicated invariant ownership,
 weaker predecessor types, stale adapters, and tests that can now be deleted or strengthened. Never
 let a new case widen an old abstraction with optional fields or leakage merely to preserve it.
+
+Observe each manager's durable artifacts and raw role handoffs, not just its final summary. After every
+cycle, audit whether the primary Terra authored the contract/oracles, the reviewer Terra remained
+independent/read-only, and Luna stayed inside implementation/mechanical checks. A role leak invalidates
+the affected evidence. Record the smallest generalized skill correction before the next dispatch;
+do not compensate by quietly performing the missing manager work at root.
 
 Root work never edits a live manager's frozen transitive dependency. Use a separate branch/fork. If a
 root correction invalidates a manager baseline, stop it once, rebase explicitly, and preserve the
@@ -120,7 +129,8 @@ not add optional fields or a universal backend enum.
 
 When a Terra manager returns:
 
-1. Read the complete commit range, cards, raw Luna evidence, churn ledger, and exact gates.
+1. Read the complete commit range, cards, raw Luna and reviewer-Terra evidence, churn ledger, and exact
+   gates. Verify the actual model overrides and reject renamed-role evidence.
 2. Recompute paths, dependencies, formatted production/test LOC, unused reserve, allocations, work,
    and text. A green over-budget candidate is rejected or re-scoped, not merged.
 3. Fork an isolated root-review branch. Apply every pass in `review-rust-gem`; attempt owner mixing,
@@ -133,6 +143,15 @@ When a Terra manager returns:
    only zero-blocker/zero-major work that still has reserve.
 6. Update roadmap, plans, and at most three generalized skill clauses from observed repeatable
    failures. Never encode task SHAs, live agent IDs, or temporary worktree facts as doctrine.
+
+Root acceptance has three non-negotiable self-falsifiers:
+
+- mutate or remove input use in every synthetic/public journey; if the test remains green, it proves
+  only routing theater and the candidate is rejected;
+- run each advertised terminal command and inspect status immediately afterward; cleanup performed
+  after the command does not make that command a clean gate;
+- measure optimized code through the named consumer executable or callable artifact against a retained
+  control; library metadata size and prose summaries are not codegen evidence.
 
 ## Root self-review
 

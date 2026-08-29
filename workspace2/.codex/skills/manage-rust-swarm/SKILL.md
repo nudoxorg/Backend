@@ -10,10 +10,12 @@ Read `../deliver-reviewed-rust-slice/SKILL.md`, the applicable domain skill, and
 non-negotiable product law. Manage it autonomously; do not reinterpret the roadmap or broaden
 adjacent public APIs.
 
-The manager owns decomposition, worker prompts, review, integration, gates, and the final candidate.
-Workers own narrow evidence or patches. The parent reviews only the manager's closed candidate.
+The primary Terra owns decomposition, worker prompts, proof design, red tests, measurements,
+integration, gates, and the final acceptance decision. Luna workers own narrow implementation or
+mechanical checks. A separate Terra reviewer owns independent code criticism. The root reviews only
+the primary Terra's closed candidate.
 
-## Keep architecture with Terra and mechanics with Luna
+## Keep architecture, proof, review, and mechanics separate
 
 The manager is the capability architect and verifier. A Luna worker is a focused instrument, not a
 smaller manager. Its turn may be long-running when the proof boundary is coherent; narrow scope means
@@ -32,8 +34,30 @@ Do not ask Luna to design the architecture, restate an entire phase, write a bro
 product contracts, self-score, or declare the capability complete. Do not consume a worker turn on an
 essay when an owned-path patch, executable experiment, or counterexample was possible.
 
-Terra maintains the live queue and issues the next card without root prompting. After every worker
-return it must reproduce the evidence, inspect the exact commit/diff, and choose exactly one:
+The primary Terra does not review its own taste. It explicitly spawns a separate reviewer with
+`model = gpt-5.6-terra` and a non-inheriting fork. That reviewer is read-only and receives the frozen
+card, applicable skills/rubric, baseline, candidate, and consumer evidence—but not the builder's
+rationale or the primary Terra's suspected answer. It attacks deletion opportunities, standard-library
+alternatives, source readability, abstraction leakage, weak tests, resource claims, and every
+do/don't/stop rule. It never implements repairs, changes the contract, accepts the capability, or
+substitutes style preference for a measured cost. A Luna breaker is not an independent architecture
+reviewer.
+
+Use the separate Terra reviewer throughout the cycle at these proof boundaries:
+
+1. after calibration, to attack the card and normally formatted skeleton before edit authority;
+2. after the first material implementation checkpoint, before the representation hardens; and
+3. after repairs, against the exact closure candidate and raw evidence.
+
+Resume the same reviewer with a compact current artifact packet when continuity helps, but start a
+fresh blind reviewer if its earlier rationale would compromise the counterexample. Each review returns
+ranked `review-rust-gem` findings and explicit cleared suspicions. The primary Terra turns accepted
+findings into one frozen falsifier; Luna receives only the resulting repair card. This separation is a
+hard evidence prerequisite, not process points in a product rubric.
+
+The primary Terra maintains the live queue and issues the next card without root prompting. After every
+worker or reviewer return it must reproduce the evidence, inspect the exact commit/diff, and choose
+exactly one:
 
 ```text
 accept checkpoint -> issue next smallest uncovered law
@@ -47,11 +71,13 @@ Never ask the root what to do next because a worker finished. Never keep a green
 because it took effort. “Relentless” means every turn attacks a remaining rubric row; repeating broad
 review or polishing unmeasured style is churn.
 
-While Luna implements, Terra researches every mechanism the checkpoint actually touches using
+While Luna implements, the primary Terra researches every mechanism the checkpoint actually touches using
 primary source, upstream code, and local experiments. It converts that research into concise red
-tests or measurements before reviewing the patch. Research that cannot alter a falsifier, budget,
-or representation decision is background reading and must not delay the worker. Terra never hands
-the research conclusion to an independence-sensitive breaker; it hands over the law and falsifier.
+tests or measurements before accepting the patch. Research that cannot alter a falsifier, budget,
+or representation decision is background reading and must not delay the worker. The primary Terra
+never hands its research conclusion to the independent Terra reviewer; it hands over the law and raw
+artifact. Luna may mechanically expand an already-frozen case table, but the primary Terra owns the
+test oracle and proves that each red test fails a plausible weakened implementation.
 
 ## Freeze the trial
 
@@ -133,15 +159,16 @@ worktree.
 
 ## Model and continuity preflight
 
-Treat the requested manager/worker topology as part of the capability contract. Before commissioning
-real work, spawn one no-edit probe with the exact requested worker model. If the runtime rejects that
-model, return the exact error and stop. Never substitute another model unless the parent explicitly
-changes the contract for this cycle.
+Treat the requested manager/reviewer/worker topology as part of the capability contract. Before
+commissioning real work, probe the exact requested Luna worker model and separate Terra reviewer
+model. If the runtime rejects either, retain the exact error and pause that role; never relabel or
+silently substitute another model unless the parent explicitly changes the cycle contract.
 
 An explicit worker-model override requires `fork_turns = "none"` or a bounded positive turn count.
 Do not use an omitted/full-history fork: it inherits the manager model and can make a worker nickname
 look correct while the actual model is wrong. Verify the spawned child model from live tool/session
-evidence when available; task names are not model evidence.
+evidence when available; task names are not model evidence. The closure packet records raw
+spawn/transport proof separately for the reviewer and each writing worker.
 
 Durable continuity lives in shared skills, the manager card, digest/LOC ledgers, isolated commits,
 and closure evidence. A transcript or hand-written compaction note is navigation only and must not be
@@ -163,34 +190,37 @@ condition. Do not leak the manager's suspected answer into an independent audit.
 
 Prefer this sequence:
 
-1. **Scout, read-only:** find current call graph, invariants, measurements, simplest baseline, and
-   counterexamples. It may run isolated experiments but cannot touch production.
-2. **Builder:** implement the manager-approved smallest vertical proof. It stops on an unplanned
-   public item, dependency, unsafe, SIMD, allocation policy, or budget breach.
-3. **Breaker, read-only:** receive the frozen contract and resulting artifact, not the builder's
-   rationale. Try to falsify semantics, resource laws, diagnostics, and tests.
-4. **Repair:** receive only accepted findings with exact falsifiers. Delete/redesign before adding
-   machinery. A second failure of the same law returns to decomposition rather than another patch.
+1. **Luna scout, read-only:** collect named repository facts or run one isolated measurement; it does
+   not choose the architecture or approve the card.
+2. **Terra reviewer, read-only:** attack the calibrated card and skeleton before edit authority.
+3. **Luna builder:** implement the primary-Terra-approved smallest vertical proof. It stops on an
+   unplanned public item, dependency, unsafe, SIMD, allocation policy, or budget breach.
+4. **Terra reviewer, read-only:** receive the frozen contract and resulting artifact, not the builder's
+   rationale. Try to falsify semantics, simplicity, resource laws, diagnostics, tests, and skill use.
+5. **Luna repair:** receive only primary-Terra-accepted findings with exact falsifiers. Delete or
+   redesign before adding machinery. A second failure of the same law returns to decomposition.
 
 This is a loop, not a four-turn ceiling. A typical proof-bearing sequence is:
 
 ```text
+Primary Terra: calibrated card, concise red tests, raw baseline measurements
+Reviewer Terra: blind card/skeleton critique; no edits
 Luna A: smallest public vertical implementation, committed
-Terra: reproduce, inspect, reject or accept
-Luna B: one independent adversarial/fault test against the accepted commit, committed if test-only
-Terra: reproduce failure, narrow the invariant correction
-Luna C: deletion-first repair, committed
-Terra: measure budgets/layout/work and run owned gates
-Luna D: independent simplification pass with all falsifiers frozen, committed only if strictly smaller
-Terra: hostile final review and two clean integration runs
+Primary Terra: reproduce proof and run the prewritten falsifiers
+Reviewer Terra: blind artifact critique; no edits
+Luna B: one deletion-first repair against accepted findings, committed
+Primary Terra: measure budgets/layout/work and run owned gates
+Reviewer Terra: closure critique and explicit cleared suspicions
+Primary Terra: two clean integration runs and acceptance decision
 ```
 
 The same Luna may receive a compact follow-up when continuity is useful, but each card remains one
-checkpoint and carries the current frozen SHA. Use a fresh Luna for independence-sensitive breaker
-or cold-reader evidence.
+checkpoint and carries the current frozen SHA. Use a fresh Luna for a cold repository-fact read. Use
+a separate real Terra for every independence-sensitive architecture or code review.
 
-With two worker slots, scout and test-breaker may run concurrently only when paths are disjoint and
-both are read-only. Never have two builders edit the same abstraction.
+With two child slots, a Luna scout and Terra reviewer may run concurrently only when both are
+read-only. A reviewer checkpoint takes precedence over starting another implementation turn. Never
+have two builders edit the same abstraction.
 
 Every worker starts from an evidence rubric, not an open-ended request:
 
@@ -204,9 +234,9 @@ contract property improves.
 
 Use `../write-evidence-rubric/SKILL.md` when the capability is mature enough for a calibrated 0-10
 rubric. Mandatory pass/fail rows remain hard caps: plan-complete is exactly 8, and 9-10 require a
-measured same-direction stretch. Workers never self-score. The independent breaker and manager apply
-the rubric only after reproducing evidence; no aggregate score compensates for a missing mandatory
-law.
+measured same-direction stretch. Workers never self-score. The independent Terra reviewer applies
+the rubric read-only; the primary Terra reproduces its evidence and owns acceptance. No aggregate
+score compensates for a missing mandatory law.
 
 A builder's first turn after edit authority must either produce the first owned-path patch/checkpoint
 or report one concrete contract blocker with file/line evidence. Repeating the brief, proposing more
@@ -228,8 +258,9 @@ Bad builder card:
 Implement C0 elegantly, explore the best abstractions, add comprehensive tests, and report back.
 ```
 
-Good breaker card names one law and a plausible broken candidate. Bad breaker cards ask for a general
-review, invite style commentary, or disclose the builder's rationale before an independent read.
+Good Terra-reviewer cards name the frozen laws and artifacts but withhold the suspected answer and
+builder rationale. Bad reviewer cards ask for approval, leak earlier conclusions, permit edits, or
+delegate acceptance to the reviewer.
 
 Before promising a wrapper around a foreign trait or SDK lifecycle, the scout must compile or fully
 enumerate the current trait surface—including resource/configuration forwarding, enablement,
@@ -243,7 +274,8 @@ At every handoff:
 
 1. Re-read the patch from the named baseline; never review prose in place of code.
 2. Recompute formatted production/test LOC and unused reserve.
-3. Run the hostile review passes in `review-rust-gem`.
+3. Send the frozen packet to the separate Terra reviewer, then reproduce its applicable
+   `review-rust-gem` findings independently.
 4. Rank findings by invalid state or user-visible cost. Reject speculative cleanup.
 5. Send one coherent finding packet. Do not drip style comments across repeated turns.
 6. After repair, rerun exact falsifiers first, then owned gates, then integration gates.

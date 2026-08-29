@@ -34,6 +34,13 @@ tag and a capability or supported-stage difference exercised by a compile-time s
 Two nominal types with identical no-op/delegating behavior, or one concrete frontend routed under two
 tags, do not prove two consumers or generated dispatch.
 
+The public C0 journey must make source forwarding observable. A constant result that lets optimized
+code erase the input pointer/length is routing theater even when two tags return different constants.
+Prefer lending the exact caller input or another semantic zero-copy result, then prove pointer/region
+identity and exact unsupported-stage operands externally. If a registry/subset is represented by a
+zero-sized type, consume or borrow it as a first-class capability value; a struct used only as an
+associated-function namespace is not an earned abstraction.
+
 The wildcards above are architecture, never edit authority. The manager enumerates each writable
 manifest/source/test/registry file, compiles a normally formatted manual expansion/skeleton, names the
 public cross-crate journey and literal commands, and derives numeric LOC/resource/text reserves. It
@@ -61,6 +68,8 @@ explicit legacy ideas rejected
 - Complete recipe facts determine output; host, retry, priority, path, worker, and deadline do not.
 - Acquisition and sealed compute are different real capabilities. Typestate must name the actual effect.
 - Language dispatch happens once through a compile-time closed registry into concrete generic code.
+- Codegen evidence uses a named release consumer plus retained control and confirms the input reaches
+  the concrete path; `.rlib` metadata or a symbol name alone is insufficient.
 - A macro requires two real concrete consumers, an auditable manual expansion, compile-fail diagnostics,
   and code-size evidence. Declarative wins unless source-spanned parsing truly needs a proc macro.
 - Frontends borrow native parser arenas. They lower directly into caller-owned typed builders without a

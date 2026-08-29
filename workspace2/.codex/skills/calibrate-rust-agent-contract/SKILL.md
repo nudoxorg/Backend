@@ -36,12 +36,14 @@ Run all three against the same frozen specimen:
 1. **Independent reader:** restates the schema above and the first checkpoint without proposing code.
 2. **Plausible misreader:** chooses the cheapest interpretation that could still look compliant and
    describes the patch it would attempt. Seed no answer; reward finding permission gaps.
-3. **Reviewer calibration:** receives the frozen contract plus small candidate artifacts and must
-   reject each seeded defect with the exact cap and falsifier.
+3. **Reviewer calibration:** a separate explicitly selected Terra receives the frozen contract plus
+   small candidate artifacts and must reject each seeded defect with the exact cap and falsifier. It
+   remains read-only and is not shown the intended rejection.
 
 For high-risk binary, durability, concurrency, unsafe, or cross-crate contracts, use two independent
-readers. A manager may use inexpensive implementation models for these trials, but must explicitly
-select the real requested model; inherited manager models and role-like task names invalidate the run.
+readers. A manager may use Luna for reader/misreader trials, but reviewer calibration uses a separate
+real Terra. Every role must be explicitly selected; inherited manager models and role-like task names
+invalidate the run.
 
 ## Required adversarial deck
 
@@ -50,6 +52,10 @@ Use only cases applicable to the specimen, but do not omit an applicable case:
 - a public multi-field witness assembled from unrelated valid owners;
 - validation followed by raw-tag redecoding, `unreachable!`, fallback, omission, or unchecked cast;
 - a green happy-path test that never falsifies exact error/source/owner behavior;
+- a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all
+  public tests stay green;
+- a claimed clean/reproducible gate that creates an untracked lockfile or deletes generated state only
+  after status inspection;
 - an unapproved manifest, reexport, future-phase type, backend enum, or compatibility shim;
 - a generic, macro, unsafe block, SIMD kernel, allocation, `Arc`, or dependency justified by imagined
   future users instead of two current consumers and measured/deleted cost;
