@@ -360,6 +360,9 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
   `Debug`; derive or reshape the data.
 - Validation error priority is part of the contract. Tests mutate every structural class and assert
   the first exact variant plus operands/source.
+- Checked arithmetic never reports a saturated/sentinel result as the requested value. Either a
+  bounded input type makes overflow unrepresentable, or the error names the operation and retains the
+  exact original operands plus every rejected owner; a later budget error is a different variant.
 - Avoid branchless theater. In hot loops, predictable branches can beat extra allocations or scans.
   Reshape invalid states and split cold validation from trusted traversal; then profile.
 - Early returns are fine for rare failures when they clarify the happy path. Repeated near-identical

@@ -39,6 +39,7 @@ The final review must include this literal table with every row present, includi
 tripwire | count | exact locations | disposition | evidence or finding ID
 panic/unwrap/expect/unreachable
 source-dropping conversion or map_err
+checked-arithmetic sentinel/saturation or operand loss
 dyn/Box/Vec/Arc/Rc
 public tuple fields or positional semantic tuples
 unit/stateless namespace structs

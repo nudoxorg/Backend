@@ -29,6 +29,11 @@ budgets and reserve
 questions requiring parent authority
 ```
 
+Reject append-only amendment chains. An active card must be understandable from one canonical body;
+terms such as “clarifies,” “supersedes,” or “all earlier declarations remain” are a structural
+failure when an earlier declaration still exists. The manager may retain old cards in Git, but every
+cold reader receives exactly one current digest. A post-trial semantic edit makes the trial stale.
+
 ## Cold trials
 
 Run all three against the same frozen specimen:
@@ -50,6 +55,8 @@ invalidate the run.
 Use only cases applicable to the specimen, but do not omit an applicable case:
 
 - a public multi-field witness assembled from unrelated valid owners;
+- a checked arithmetic failure collapsed into a sentinel, saturation, generic budget error, or value
+  that cannot retain the original operands/owners;
 - validation followed by raw-tag redecoding, `unreachable!`, fallback, omission, or unchecked cast;
 - a green happy-path test that never falsifies exact error/source/owner behavior;
 - a synthetic adapter/frontend whose constants let optimized code ignore the supplied input while all

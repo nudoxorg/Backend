@@ -8,6 +8,8 @@ rows only after recording the contract reason.
 
 ```text
 capability:
+canonical contract path and digest:
+calibration artifact digests and post-calibration contract edits:
 candidate commit:
 candidate tree digest:
 review worktree and branch:
@@ -50,6 +52,7 @@ Record every row even when the count is zero. Locations are exact paths and line
 tripwire | count | locations | disposition | law/measurement
 panic/unwrap/expect/unreachable
 source-dropping conversion or map_err
+checked-arithmetic sentinel/saturation or operand loss
 dyn/Box/Vec/Arc/Rc
 public tuple fields or positional semantic tuples
 unit/stateless namespace structs

@@ -108,6 +108,12 @@ slice. If the architecture phase contains several terminals, split it into order
 calibrate only the first; this is manager decomposition, not a request for the root to rewrite the
 plan.
 
+The card has one canonical body and one digest. A calibration repair replaces the ambiguous body;
+never append “clarification,” “supersedes,” or “final replacement” sections that require a reader to
+merge conflicting declarations. Any semantic edit changes the digest, invalidates every earlier
+reader/reviewer result, and requires a fresh cold trial before edit authority. Preserve obsolete
+versions in commits or a churn ledger, not inside the active card.
+
 Freeze the named baseline independently of version control. Record every writable file's relative
 path, formatted LOC, and content digest; record absent paths explicitly. A dirty, untracked, nested,
 or from-scratch tree makes `git diff` an unreliable baseline. Reviewers compare the candidate to this
@@ -146,6 +152,12 @@ and owned tests pass; it then reports the commit ID and exact remaining failure.
 commit ranges and cherry-picks only accepted checkpoints. Rejected prototypes remain inspectable on
 the worker branch and count as written-then-rejected churn; they never become anonymous edits in the
 manager tree.
+
+Every writing card names the absolute worktree, the literal working directory, and allowed paths
+relative to the repository root. Its preflight records `git rev-parse --show-toplevel`, current SHA,
+and clean/known-dirty status before the first edit. A duplicated workspace prefix or file created
+outside the enumerated root-relative paths is an immediate stop: remove that attempt, record its LOC
+as churn, and restart from the frozen candidate rather than moving the stray file into place.
 
 Each worker commit stages only its explicit owned paths with `git add -- <paths>`, checks the staged
 diff, and records the baseline/candidate digests in its handoff. Never use `git add -A`, `git commit
