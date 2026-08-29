@@ -40,7 +40,7 @@ The remaining gaps are architectural, not polish:
   prompts, budgets, or review packets caused avoidable turns.
 - [x] Put the from-scratch workspace under a path-scoped Git baseline; workers now commit passing
   checkpoints on isolated branches and Terra managers cherry-pick only reviewed increments.
-- [ ] Split the current reusable scenario driver from shipping adapter dependencies; keep public
+- [x] Split the current reusable scenario driver from shipping adapter dependencies; keep public
   cross-crate journeys in a test-support/integration boundary.
 - [ ] Add one deterministic system driver whose commands can later run against memory, file, and
   simulated-network adapters without shadow state.
@@ -72,9 +72,9 @@ The remaining gaps are architectural, not polish:
 
 - [x] Exact caller-output writer, compact count header, borrowed ordered directory validation, and
   representative non-empty zero-allocation evidence.
-- [ ] Binary-search a descriptor into a typed body range without allocation, reparsing, or constructing
+- [x] Binary-search a descriptor into a typed body range without allocation, reparsing, or constructing
   temporary identities inside comparisons.
-- [ ] Lend body bytes from the original owner and perform optional selected BLAKE3 verification with
+- [x] Lend body bytes from the original owner and perform optional selected BLAKE3 verification with
   exact mismatch/source evidence.
 - [ ] Add sparse authenticated range binding: header/directory first, requested bodies second, missing
   ranges explicit in typestate. Evaluate `bao-tree`/iroh-blobs range proofs without making transport
@@ -154,10 +154,11 @@ single evidence packet only after exact falsifiers and full owned gates pass. Th
 the cross-crate architectural review, updates this graph, and generalizes only lessons that actually
 prevented a repeatable failure.
 
-The active large trial is capability 3. The program is split by public behavior while retaining one
-stable artifact contract: the current manager owns lookup plus complete-body lending/verification;
-later managers own authenticated partial binding and leased range transport. It will not be split
-into agents that independently invent incompatible representations.
+The next object-plane trial is authenticated partial binding followed by leased range transport.
+Index I0 and compiler C0 are being independently calibrated as greenfield nested-workspace trials;
+their managers own architecture and verification while narrowly scoped Luna workers implement or
+falsify one checkpoint at a time. Parallelism never permits agents to invent incompatible artifact,
+lease, or terminal representations.
 
 ## Research decisions carried forward
 
