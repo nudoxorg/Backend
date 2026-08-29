@@ -369,8 +369,11 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
 
 ## Code and test structure
 
-- `src/` contains shipping behavior. Public cross-crate scenarios live in top-level `tests/` or a
-  nested test-support crate. Shared fixtures use `tests/support`; never ship `src/scenario.rs`.
+- `src/` contains shipping behavior. Public cross-crate scenarios live in an ordinary owning crate's
+  top-level `tests/` tree; shared fixtures remain private under that tree. Never create a dedicated
+  test-support crate and never ship `src/scenario.rs`. If two crates appear to need the same driver,
+  keep each boundary test concise or identify a genuine shipping capability rather than inventing a
+  public test API.
 - Tests name one law and show input, action, exact result/error, and exact diagnostic trace. Use
   tables/rstest for homogeneous cases; avoid 700-line runners and helpers that hide the assertion.
 - Test coordination returns exact setup, timeout, release, join, and observed failures. Do not erase
