@@ -14,10 +14,19 @@
 //! let lexical = IndexSegmentId::<Lexical>::from_canonical_bytes(b"segment");
 //! let _: IndexSegmentId<Exact> = lexical.into();
 //! ```
+//!
+//! ```compile_fail
+//! use nudox_id::RootDomain;
+//! use nudox_index_vocab::IndexSegmentId;
+//! let _ = IndexSegmentId::<RootDomain>::from_canonical_bytes(b"not an index segment");
+//! ```
 
-use nudox_id::{
-    ContentId, Domain, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
-};
+use nudox_id::{ContentId, Domain, IndexSnapshotDomain};
+
+#[doc = "Identity brand for exact index segments."]
+pub use nudox_id::IndexExactSegmentDomain as Exact;
+#[doc = "Identity brand for lexical index segments."]
+pub use nudox_id::IndexLexicalSegmentDomain as Lexical;
 
 /// The closed family vocabulary for index segments.
 #[repr(u8)]
@@ -37,7 +46,10 @@ pub enum SegmentFamily {
 
 /// An unrecognized raw segment-family code.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct UnknownSegmentFamily(pub u8);
+pub struct UnknownSegmentFamily {
+    /// Rejected code, retained without narrowing or substitution.
+    pub code: u8,
+}
 
 impl From<SegmentFamily> for u8 {
     fn from(family: SegmentFamily) -> Self {
@@ -55,7 +67,7 @@ impl TryFrom<u8> for SegmentFamily {
             3 => Ok(Self::Relation),
             4 => Ok(Self::Usage),
             5 => Ok(Self::Vector),
-            other => Err(UnknownSegmentFamily(other)),
+            code => Err(UnknownSegmentFamily { code }),
         }
     }
 }
@@ -68,33 +80,23 @@ mod sealed {
 pub trait IndexSegmentFamily: sealed::IndexSegmentFamily {
     /// The centrally registered domain used for this family identity.
     type IdentityDomain: Domain;
-
-    /// The closed vocabulary value represented by this marker.
-    const FAMILY: SegmentFamily;
 }
-
-/// Marker for exact segment identities.
-pub enum Exact {}
 
 impl sealed::IndexSegmentFamily for Exact {}
 
 impl IndexSegmentFamily for Exact {
-    type IdentityDomain = IndexExactSegmentDomain;
-    const FAMILY: SegmentFamily = SegmentFamily::Exact;
+    type IdentityDomain = Self;
 }
-
-/// Marker for lexical segment identities.
-pub enum Lexical {}
 
 impl sealed::IndexSegmentFamily for Lexical {}
 
 impl IndexSegmentFamily for Lexical {
-    type IdentityDomain = IndexLexicalSegmentDomain;
-    const FAMILY: SegmentFamily = SegmentFamily::Lexical;
+    type IdentityDomain = Self;
 }
 
 /// Identity of one immutable index snapshot.
 pub type IndexSnapshotId = ContentId<IndexSnapshotDomain>;
 
 /// Identity of one immutable index segment in a statically known family.
-pub type IndexSegmentId<Family> = ContentId<<Family as IndexSegmentFamily>::IdentityDomain>;
+pub type IndexSegmentId<FamilyBrand> =
+    ContentId<<FamilyBrand as IndexSegmentFamily>::IdentityDomain>;

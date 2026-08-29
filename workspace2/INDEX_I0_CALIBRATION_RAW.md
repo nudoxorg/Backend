@@ -183,9 +183,96 @@ with zero blockers/majors. Live model inspection exposes no selected-model field
 explicit model-override invocations and the reviewers' recorded limitation are the durable transport
 evidence, not task names.
 
-Actual normally formatted Rust delta versus `f9419673`: production 118 lines
+The manager's `16c8993f` closure ledger reported production 118 lines
 (`marker.rs` +17, `lib.rs` +1, vocabulary +100) under the 230 ceiling with 112 lines unused; tests
 73 lines after the deletion repair under the 120 ceiling with 47 lines unused. The +5-line marker
 forecast variance is recorded as normal formatting within the protected phase reserve. Nested
 lockfile registry packages/version/checksum entries all occur in `workspace2/Cargo.lock`; the only
-new package is local `nudox-index-vocab`.
+new package is local `nudox-index-vocab`. Root later disproved the test count, so these numbers are
+historical manager evidence rather than the final candidate ledger.
+
+## Root hostile review
+
+The manager acceptance was rejected before integration:
+
+```text
+MAJOR — vocabulary.rs and the closed-code evidence row
+Evidence: the Luna repair removed unwrap by replacing the round-trip loop with one-way TryFrom
+assertions. From<SegmentFamily> for u8 could be broken or deleted while every test stayed green.
+Consequence: the recorded round-trip protocol law was not proved.
+Smallest correction: one typed (raw, family) table exercises both directions plus exact unknowns.
+Falsifier: swap one From result; the table must fail.
+
+MAJOR — INDEX_I0_CALIBRATION_RAW.md retained-size ledger
+Evidence: the final test file is 83 formatted lines, but the closure record reports 73 and 47 lines
+unused. It counted the deletion repair and omitted the later ten-line Terra-finding repair.
+Consequence: acceptance relied on a false test/reserve ledger.
+Smallest correction: recount the final artifact after every repair; retain the corrected number.
+Falsifier: the formatted count must equal the closure record at the final commit.
+
+MAJOR — index vocabulary public marker relation
+Evidence: IndexSegmentFamily::FAMILY has no production or test consumer, and Exact/Lexical duplicate
+zero-sized brands already owned by IndexExactSegmentDomain/IndexLexicalSegmentDomain.
+Consequence: future-phase public surface and duplicate representation crossed the first proof.
+Smallest correction: delete the unused associated constant and reuse the registered domain types as
+the semantic Exact/Lexical brands while retaining the sealed associated-domain projection that
+prevents arbitrary Domain values from becoming segment IDs.
+Falsifier: both cross-family compile-fail doctests remain red; RootDomain must not satisfy the family
+projection.
+
+MINOR — UnknownSegmentFamily and the allocation test
+Evidence: the error exposes an unnamed tuple field; allocation setup uses discarded results, a
+test-only Option, is_some, and a verbose zero-valued struct literal even though AllocationInfo is
+Default.
+Consequence: raw error provenance and the hottest evidence test are harder to read than the code.
+Smallest correction: name the raw code field; black_box warmup/measured values and compare Default.
+Falsifier: unknown codes retain the exact named operand and a deliberate allocation changes the
+single exact comparison.
+```
+
+The separate Terra reviewer did not return the mandatory mechanical-tripwire/cleared-suspicion table
+and missed these production/evidence findings. Its two useful test findings remain evidence, but its
+zero-major acceptance is not root acceptance.
+
+## Root repair evidence
+
+Root repaired all four findings without adding a dependency or allocation mechanism:
+
+- exact and lexical reuse the centrally registered domain types; the public sealed projection is the
+  only remaining family whitelist and its unused associated code was deleted;
+- `UnknownSegmentFamily { code }` retains the raw operand as a named public fact;
+- one five-row table exercises both conversion directions and exact unknown operands;
+- allocation evidence uses `black_box` plus the complete `AllocationInfo::default()` fact; and
+- the public journey now asserts that its equal local and remote byte owners have distinct addresses.
+
+Three deliberate mutants proved that the tests are causal rather than green decoration:
+
+| Mutant | Exact observed failure |
+| --- | --- |
+| `From<SegmentFamily>` maps `Exact` to `u8::MAX` | `unknown_segment_family_retains_the_raw_value` failed `left: 255`, `right: 1`; exit 101 |
+| `RootDomain` is added to the sealed family projection | the RootDomain `compile_fail` doctest compiled and therefore failed; exit 101 |
+| one `Box<u8>` is allocated inside the measured closure | allocation evidence observed one allocation/one byte instead of zero; exit 101 |
+
+Changing lexical's projected domain to `Exact` additionally made both cross-family doctests compile;
+the doctest gate failed two of three cases with exit 101. Every mutant was removed before formatting
+and the clean candidate gates.
+
+The fresh root-closure Terra independently found the stale LOC ledger and no semantic blocker, but
+its raw scan used a different tripwire taxonomy and omitted mandatory zero-hit rows despite the
+literal prompt. Its LOC finding and reproduced commands remain useful observations; its review is
+not treated as complete acceptance evidence. This repeatable miss caused the shared reviewer skill's
+literal required table and root closure receipt at shared commit `82febc40`.
+
+Final normally formatted Rust delta versus `f9419673`: production 120 lines (`marker.rs` +17,
+`nudox-id/lib.rs` +1, vocabulary +102) under the 230 ceiling with 110 lines unused; tests 94 lines
+under the 120 ceiling with 26 lines unused. The final content digests are:
+
+```text
+e4605086118ab1b59053b58cfa44e1c9a784734bde2b4d70d6320284427a5a89  crates/nudox-id/src/marker.rs
+0ace08325b0e2b3625a8b95c601d81d32d8c2990a6e973567a03573b00831c7d  crates/nudox-id/src/lib.rs
+c7cf64e579299466c4b6fefe5ab78ad38ce1381f61b0b61811ae4e2359504421  planes/index/Cargo.toml
+54be2323fc59fcb85fb64fd7388ba76d4a6be30c393895b6fd619621070d4714  planes/index/Cargo.lock
+960d297d2abfa0be6bff5375e4d7654a897dcac1e7447d17c440392b5f7e09d2  planes/index/crates/nudox-index-vocab/Cargo.toml
+2c250ae33f2e9839a9c52a624528dba6133e207901c960768204ea8663230af2  planes/index/crates/nudox-index-vocab/src/lib.rs
+9a9ec31c84b0c9c94100558028ae1dfc46a846ca573abf27a3df271c83485949  planes/index/crates/nudox-index-vocab/tests/vocabulary.rs
+```

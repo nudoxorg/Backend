@@ -7,7 +7,7 @@
 | Capability | Establish the portable, closed index vocabulary needed to name a snapshot and a segment without allowing an exact-family segment identity to stand in for lexical, relation, usage, or vector identity. |
 | First observable terminal | An external `nudox-index-vocab` consumer hashes the same borrowed canonical byte slice through independent local and remote byte owners and obtains equal `IndexSnapshotId` and `IndexSegmentId<Exact>` values; a downstream attempt to assign `IndexSegmentId<Lexical>` to `IndexSegmentId<Exact>` does not compile. |
 | Named baseline | Git `f9419673f451ec8796d3f9462f3bace667c13435`, branch `autonomous-index-contract`, clean before this documentation cycle. |
-| Public journey | `workspace2/planes/index/crates/nudox-index-vocab/tests/vocabulary.rs::local_and_remote_canonical_bytes_produce_the_same_typed_ids`. It imports only the published vocabulary crate, makes separately owned local and remote `[u8; 24]` byte arrays with equal contents, borrows each as `&[u8]`, creates one snapshot ID plus exact and lexical segment IDs from each, and asserts equality. Two public `compile_fail` doctests in `src/lib.rs` use only `nudox_index_vocab` imports and prove that neither direct assignment nor `Into` can turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`. |
+| Public journey | `workspace2/planes/index/crates/nudox-index-vocab/tests/vocabulary.rs::local_and_remote_canonical_bytes_produce_the_same_typed_ids`. It imports only the published vocabulary crate, makes separately owned local and remote `[u8; 24]` byte arrays with equal contents, borrows each as `&[u8]`, creates one snapshot ID plus exact and lexical segment IDs from each, and asserts equality. Two public `compile_fail` doctests in `src/lib.rs` use only `nudox_index_vocab` imports and prove that neither direct assignment nor `Into` can turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`; a third imports the registered `RootDomain` and proves that the sealed family projection rejects arbitrary identity domains. |
 | Checkpoint | Checkpoint 2 stops immediately after those two external terminals and their required negative/error evidence. |
 
 The seven frozen governing inputs are, literally:
@@ -48,10 +48,10 @@ writable in this child proof.
   never in canonical bytes or hashing logic.
 - `SegmentFamily` is the sole public closed, exhaustive `repr(u8)` vocabulary with `Exact`,
   `Lexical`, `Relation`, `Usage`, and `Vector`. A differently named sealed
-  `IndexSegmentFamily` marker relation owns only the exact and lexical family-specific identity
-  domains consumed in this child; relation/usage/vector receive no identity marker or constructor
-  until their own proof. The first terminal constructs exact and lexical IDs to prove
-  non-interchangeability.
+  `IndexSegmentFamily` relation is implemented directly by the registered exact and lexical identity
+  domains, reexported semantically as `Exact` and `Lexical`; relation/usage/vector receive no identity
+  marker or constructor until their own proof. The first terminal constructs exact and lexical IDs to
+  prove non-interchangeability.
 - `IndexSnapshotId` and `IndexSegmentId<Family>` are typed values, not strings, raw hashes, a family
   field that callers can mismatch, or a public multi-field coherence witness.
 - No allocation is allowed on either canonical-ID path after byte owners are set up; no byte copy,
@@ -66,16 +66,17 @@ writable in this child proof.
 
 ## Design and ownership decision
 
-The safe/std baseline is two zero-sized markers implementing sealed `IndexSegmentFamily`; each
-associates one centrally registered `nudox-id::Domain` and one `SegmentFamily` value.
+The safe/std baseline reuses two centrally registered zero-sized `nudox-id::Domain` values as the
+sealed `IndexSegmentFamily` brands rather than wrapping them in second marker types.
 `IndexSegmentId<Family>` is the existing `ContentId<<Family as
 IndexSegmentFamily>::IdentityDomain>`; `IndexSnapshotId` is `ContentId<IndexSnapshotDomain>`.
 `SegmentFamily` has `From<SegmentFamily> for u8` and `TryFrom<u8> for SegmentFamily`: `Exact = 1`,
 `Lexical = 2`, `Relation = 3`, `Usage = 4`, `Vector = 5`; its only error is
-`UnknownSegmentFamily(pub u8)`, which preserves every raw code outside 1 through 5. The public trait
-is sealed and exposes only `type IdentityDomain: nudox_id::Domain` and `const FAMILY:
-SegmentFamily`. No helper such as `family()`, `from_family`, raw-label accessor, reexported domain
-tag, or conversion between family IDs is public. All family IDs use the existing public,
+`UnknownSegmentFamily { code: u8 }`, which preserves every raw code outside 1 through 5. The public
+trait is sealed and exposes only `type IdentityDomain: nudox_id::Domain`; its projection is the
+compile-time whitelist that prevents an arbitrary registered domain from becoming a segment family.
+No helper such as `family()`, `from_family`, raw-label accessor, reexported raw domain name, or
+conversion between family IDs is public. All family IDs use the existing public,
 allocation-free inherent
 `ContentId::from_canonical_bytes(&[u8])`; this proof adds no family-specific constructor. Each call is
 one independent BLAKE3 pass over its own supplied bytes; no shared hashing is claimed.
@@ -89,7 +90,7 @@ Rejected alternatives:
 
 No generic has imagined users: the one generic removes two current copy/paste segment-ID aliases;
 the two current consumers are the public exact and lexical construction paths. Its monomorphized
-text cost is bounded by those two exercised calls and five marker implementations.
+text cost is bounded by those two exercised calls and two marker implementations.
 
 ## Resource budget and stop conditions
 
@@ -154,8 +155,8 @@ builder writes.
 | Law | Artifact/command | Required result | Falsifier and stop |
 | --- | --- | --- |
 | Canonical-byte parity | `vocabulary.rs::local_and_remote_canonical_bytes_produce_the_same_typed_ids` | Equal independently constructed snapshot, exact, and lexical IDs from equal borrowed local/remote bytes. | Change one byte: every constructed ID must differ; if a different owner changes identity, stop. |
-| Typed family boundary | two public `compile_fail` doctests in `src/lib.rs`, each importing only `nudox_index_vocab` | Neither direct assignment nor generic `Into` may turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`. | Replace the associated domains with one untyped domain or add a conversion: a doctest must compile and expose the blocker. |
-| Closed raw code | `vocabulary.rs::unknown_segment_family_retains_the_raw_value` | Codes 1 through 5 round-trip; raw `0`, `6`, and `255` return `UnknownSegmentFamily(raw)` exactly. | Add a default/catch-all mapping or erase the operand. |
+| Typed family boundary | three public `compile_fail` doctests in `src/lib.rs`; the cross-family pair imports only `nudox_index_vocab` and the whitelist case imports `nudox_id::RootDomain` | Neither direct assignment nor generic `Into` may turn `IndexSegmentId<Lexical>` into `IndexSegmentId<Exact>`; an arbitrary registered domain cannot instantiate `IndexSegmentId`. | Replace the associated domains with one untyped domain, remove the sealed whitelist, or add a conversion: a doctest must compile and expose the blocker. |
+| Closed raw code | `vocabulary.rs::unknown_segment_family_retains_the_raw_value` | Codes 1 through 5 round-trip; raw `0`, `6`, and `255` return `UnknownSegmentFamily { code }` exactly. | Add a default/catch-all mapping or erase the operand. |
 | Borrow/layout | `vocabulary.rs::ids_and_markers_have_the_declared_layout` | IDs are 32/1; markers are 0/1; constructors borrow caller bytes. | Retain bytes in a field, add a wrapper allocation, or report an unmeasured pointer claim. |
 | Allocation/copy | serial `vocabulary` test plus source audit | Zero allocations after setup on a non-empty 24-byte input; no retained/copy of canonical input bytes. | A normal parallel counter, empty-only run, unrecorded harness provenance, or listed input-copy token stops the claim. |
 | Hash work | source audit of vocabulary constructors | One existing `ContentId::from_canonical_bytes` call per snapshot/exact/lexical construction; no prehash/retry path. | A second hash construction, `ContentHasher`, or raw hash literal stops the claim. |
