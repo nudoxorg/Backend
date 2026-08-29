@@ -84,11 +84,9 @@ fn canonical_construction_allocates_nothing_after_warmup() {
     black_box(IndexSegmentId::<Exact>::from_canonical_bytes(&bytes));
     black_box(IndexSegmentId::<Lexical>::from_canonical_bytes(&bytes));
     let allocations = measure(|| {
-        black_box((
-            IndexSnapshotId::from_canonical_bytes(&bytes),
-            IndexSegmentId::<Exact>::from_canonical_bytes(&bytes),
-            IndexSegmentId::<Lexical>::from_canonical_bytes(&bytes),
-        ));
+        black_box(IndexSnapshotId::from_canonical_bytes(&bytes));
+        black_box(IndexSegmentId::<Exact>::from_canonical_bytes(&bytes));
+        black_box(IndexSegmentId::<Lexical>::from_canonical_bytes(&bytes));
     });
     assert_eq!(allocations, AllocationInfo::default());
 }

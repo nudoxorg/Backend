@@ -264,8 +264,8 @@ not treated as complete acceptance evidence. This repeatable miss caused the sha
 literal required table and root closure receipt at shared commit `82febc40`.
 
 Final normally formatted Rust delta versus `f9419673`: production 120 lines (`marker.rs` +17,
-`nudox-id/lib.rs` +1, vocabulary +102) under the 230 ceiling with 110 lines unused; tests 94 lines
-under the 120 ceiling with 26 lines unused. The final content digests are:
+`nudox-id/lib.rs` +1, vocabulary +102) under the 230 ceiling with 110 lines unused; tests 92 lines
+under the 120 ceiling with 28 lines unused. The final content digests are:
 
 ```text
 e4605086118ab1b59053b58cfa44e1c9a784734bde2b4d70d6320284427a5a89  crates/nudox-id/src/marker.rs
@@ -274,5 +274,5 @@ c7cf64e579299466c4b6fefe5ab78ad38ce1381f61b0b61811ae4e2359504421  planes/index/C
 54be2323fc59fcb85fb64fd7388ba76d4a6be30c393895b6fd619621070d4714  planes/index/Cargo.lock
 960d297d2abfa0be6bff5375e4d7654a897dcac1e7447d17c440392b5f7e09d2  planes/index/crates/nudox-index-vocab/Cargo.toml
 2c250ae33f2e9839a9c52a624528dba6133e207901c960768204ea8663230af2  planes/index/crates/nudox-index-vocab/src/lib.rs
-9a9ec31c84b0c9c94100558028ae1dfc46a846ca573abf27a3df271c83485949  planes/index/crates/nudox-index-vocab/tests/vocabulary.rs
+47c1d1f44a2a3d74c35528f13080a7c1deaeed0312e2a57a049435ec89303cd4  planes/index/crates/nudox-index-vocab/tests/vocabulary.rs
 ```
