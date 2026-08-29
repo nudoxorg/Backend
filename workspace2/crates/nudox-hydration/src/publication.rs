@@ -1,5 +1,3 @@
-use core::marker::PhantomData;
-
 use nudox_id::GenerationId;
 use nudox_object::{DepSetId, ObjectRef};
 use nudox_root::LocalityReadError;
@@ -7,7 +5,7 @@ use thiserror::Error;
 
 use crate::HydrationPlanView;
 
-/// Borrowed staged transition with no readiness authority.
+/// Borrowed staged transition with no verified-completeness authority.
 pub struct StagedGeneration<'plan, 'selection, 'storage, DomainTag> {
     plan: &'plan HydrationPlanView<'selection, 'storage, DomainTag>,
 }
@@ -24,7 +22,7 @@ impl<'plan, 'selection, 'storage, DomainTag>
     /// # Errors
     ///
     /// Returns the exact partial-projection or first missing-descriptor fact;
-    /// neither result can be converted to a publication witness.
+    /// neither result can be converted to a verified-generation witness.
     pub fn verify<IsPresent>(
         self,
         mut is_present: IsPresent,
@@ -49,52 +47,30 @@ impl<'plan, 'selection, 'storage, DomainTag>
                 });
             }
         }
-        Ok(Generation {
+        Ok(VerifiedGeneration {
             pinned_root: self.plan.pinned_root,
             dep_set: self.plan.dep_set,
-            state: PhantomData,
         })
     }
 }
 
-/// One generation carrying compile-time publication authority.
-pub struct Generation<PublicationState> {
-    /// Immutable generation whose complete closure the state witnesses.
+/// Non-forgeable proof that one generation's complete dependency closure is locally present.
+///
+/// A durable publication adapter will eventually consume this proof and issue a distinct published
+/// capability only after stable storage. Until that effect exists, there is no nominal ready phase.
+#[non_exhaustive]
+pub struct VerifiedGeneration {
+    /// Immutable generation whose complete closure was verified.
     pub pinned_root: GenerationId,
     /// Canonical identity of that exact dependency closure.
     pub dep_set: DepSetId,
-    state: PhantomData<fn() -> PublicationState>,
-}
-
-/// State reached only after complete local closure verification.
-pub enum Verified {}
-
-/// State reached only after consuming verified publication authority.
-pub enum Ready {}
-
-/// Verified closure proof, consumed by publication.
-pub type VerifiedGeneration = Generation<Verified>;
-
-/// Non-forgeable proof of complete locally verified root closure.
-pub type ReadyGeneration = Generation<Ready>;
-
-impl Generation<Verified> {
-    /// Consumes verification and produces the sole public readiness witness.
-    #[must_use]
-    pub const fn publish(self) -> ReadyGeneration {
-        Generation {
-            pinned_root: self.pinned_root,
-            dep_set: self.dep_set,
-            state: PhantomData,
-        }
-    }
 }
 
 /// Verification failure consumes stage and exposes no publication capability.
 #[derive(Debug, Error)]
 pub enum VerificationError<DomainTag> {
-    /// A projected subset cannot prove an entire root ready.
-    #[error("projection cannot publish generation {pinned_root:?}")]
+    /// A projected subset cannot verify an entire generation closure.
+    #[error("projection cannot verify complete generation {pinned_root:?}")]
     PartialProjection {
         /// Incomplete root.
         pinned_root: GenerationId,

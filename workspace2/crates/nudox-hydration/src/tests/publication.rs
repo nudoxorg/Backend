@@ -1,14 +1,13 @@
 use super::*;
 
 #[test]
-fn publication_typestate_adds_no_runtime_tag() {
+fn verified_generation_has_only_its_two_runtime_facts() {
     let witness_bytes = size_of::<GenerationId>() + size_of::<nudox_object::DepSetId>();
     assert_eq!(size_of::<crate::VerifiedGeneration>(), witness_bytes);
-    assert_eq!(size_of::<crate::ReadyGeneration>(), witness_bytes);
 }
 
 #[test]
-fn binding_and_publication_reject_adjacent_invalid_states() -> Result<(), ScenarioError> {
+fn binding_and_verification_reject_adjacent_invalid_states() -> Result<(), ScenarioError> {
     let root = root()?;
     let locality_bytes = locality(&root)?;
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
@@ -29,14 +28,14 @@ fn binding_and_publication_reject_adjacent_invalid_states() -> Result<(), Scenar
         }
         Err(_) => {
             return Err(ScenarioError::Transition {
-                step: ScenarioStep::PartialPublication,
+                step: ScenarioStep::PartialVerification,
                 expected: ScenarioExpectation::PartialProjection,
                 observed: ScenarioObservation::DifferentVerificationError,
             });
         }
         Ok(_) => {
             return Err(ScenarioError::Transition {
-                step: ScenarioStep::PartialPublication,
+                step: ScenarioStep::PartialVerification,
                 expected: ScenarioExpectation::PartialProjection,
                 observed: ScenarioObservation::VerifiedGeneration,
             });
@@ -46,7 +45,8 @@ fn binding_and_publication_reject_adjacent_invalid_states() -> Result<(), Scenar
 }
 
 #[test]
-fn missing_verification_cannot_publish_and_replay_has_zero_fetches() -> Result<(), ScenarioError> {
+fn missing_closure_cannot_issue_a_verified_capability_and_replay_fetches_nothing()
+-> Result<(), ScenarioError> {
     let root = root()?;
     let locality_bytes = locality(&root)?;
     let locality = ValidatedLocality::try_from(locality_bytes.as_slice())?;
@@ -95,8 +95,7 @@ fn missing_verification_cannot_publish_and_replay_has_zero_fetches() -> Result<(
         .stage()
         .verify(|_| true)
         .map_err(ScenarioError::Verification)?;
-    let ready = verified.publish();
-    assert_eq!(ready.pinned_root, root.id);
-    assert_eq!(ready.dep_set, replay.dep_set);
+    assert_eq!(verified.pinned_root, root.id);
+    assert_eq!(verified.dep_set, replay.dep_set);
     Ok(())
 }

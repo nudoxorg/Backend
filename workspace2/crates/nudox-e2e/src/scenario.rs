@@ -8,8 +8,8 @@ use core::convert::Infallible;
 
 use nudox_frame::{SectionInput, encode_into, encoded_len};
 use nudox_hydration::{
-    AbsentCount, HydrationProbeEvent, Need, PlanScratch, Projection, ReadyGeneration,
-    VerificationError, plan_with_probe,
+    AbsentCount, HydrationProbeEvent, Need, PlanScratch, Projection, VerificationError,
+    VerifiedGeneration, plan_with_probe,
 };
 use nudox_id::{ContentId, GenerationId, ObjectDomain};
 use nudox_object::{ObjectKind, ObjectLength, ObjectRef, ProviderId, ProviderSet};
@@ -285,10 +285,10 @@ pub fn run_wave1_scenario(
     let mut resident_bytes = locality_bytes(&root, &[])?;
     let resident = PreparedLocality::prepare(&root, &[])?.write(&mut resident_bytes)?;
     let resident_view = GenerationView::new(&root, &resident)?;
-    let ready = verify_ready_plan(&resident_view, &mut store, probe)?;
-    let emitted_objects = run_resident_operation(&resident_view, &ready, object)?;
-    let (runtime_terminal, runtime) = run_runtime(ready.pinned_root, probe)?;
-    let workflow_phase = run_workflow(ready.pinned_root, object, probe)?;
+    let verified = verify_resident_generation(&resident_view, &mut store, probe)?;
+    let emitted_objects = run_resident_operation(&resident_view, &verified, object)?;
+    let (runtime_terminal, runtime) = run_runtime(verified.pinned_root, probe)?;
+    let workflow_phase = run_workflow(verified.pinned_root, object, probe)?;
     run_promised_operation(&promised_view, object, providers)?;
 
     Ok(ScenarioEvidence {
@@ -415,11 +415,11 @@ fn verify_promised_plan(
     }
 }
 
-fn verify_ready_plan(
+fn verify_resident_generation(
     view: &GenerationView<'_, '_, ObjectDomain>,
     store: &mut MemoryStore<ObjectDomain>,
     probe: &mut impl ScenarioProbe,
-) -> Result<ReadyGeneration, ScenarioError> {
+) -> Result<VerifiedGeneration, ScenarioError> {
     let (mut closure, mut planning) = plan_scratch()?;
     let need = Need::new(view.id, Projection::CompleteGeneration).bind(view)?;
     let planned = plan_with_probe(
@@ -429,10 +429,9 @@ fn verify_ready_plan(
         |candidate| store.get(candidate.content).is_some(),
         probe,
     )?;
-    let verified = planned
+    Ok(planned
         .stage()
-        .verify(|candidate| store.get(candidate.content).is_some())?;
-    Ok(verified.publish())
+        .verify(|candidate| store.get(candidate.content).is_some())?)
 }
 
 fn validate_frame(bytes: &[u8]) -> Result<(), ScenarioError> {
@@ -455,7 +454,7 @@ fn validate_frame(bytes: &[u8]) -> Result<(), ScenarioError> {
 
 fn run_resident_operation(
     view: &GenerationView<'_, '_, ObjectDomain>,
-    ready: &ReadyGeneration,
+    verified: &VerifiedGeneration,
     object: ObjectRef<ObjectDomain>,
 ) -> Result<RowCount, ScenarioError> {
     let provider = LocalObjectProvider::from_view(view, EntryKey::from(1))?.ok_or(
@@ -465,7 +464,7 @@ fn run_resident_operation(
         },
     )?;
     let mut run = provider.start(PinnedObjectRequest {
-        generation: ready.pinned_root,
+        generation: verified.pinned_root,
         required: object,
     })?;
     let emitted = match run.next_batch()? {

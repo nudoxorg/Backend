@@ -16,8 +16,8 @@ The remaining gaps are architectural, not polish:
 
 - `GenerationRoot` still owns a boxed native row arena instead of making canonical bytes the primary
   owner with borrowed/mmap/lease adapters.
-- readiness is now a zero-cost typestate, but no durable publication head consumes the verified
-  capability; the current `publish` transition proves authority only inside the process.
+- complete local closure yields one non-forgeable verified capability, but no durable publication
+  head consumes it and releases a distinct published capability after a stable receipt.
 - `PinnedObjectRequest` is rebound after the provider was already selected; operation binding should
   happen once and eliminate the duplicate generation/object comparisons.
 - `nudox-workflow` proves canonical records and shared asynchronous append, but not a crash-safe file
@@ -49,12 +49,13 @@ The remaining gaps are architectural, not polish:
 
 - [x] Domain-separated identities, closed registries, canonical fixed records, borrowed frame views,
   exact validation errors, root/locality planning, immutable memory store, runtime/workflow core.
-- [x] Readiness facts represented once as `Generation<State>` with zero-cost `Verified`/`Ready`
-  authority and compile-fail illegal-transition evidence.
+- [x] Complete local closure produces one two-fact `VerifiedGeneration` that external code cannot
+  forge; the effect-free `Verified -> Ready` marker transition was deleted rather than called
+  typestate.
 - [ ] Replace the retained native root row owner with canonical-byte-first borrowed views and concrete
   optional owners; measure HRTB callback, `self_cell`/Yoke-style owner, mmap, and leased-buffer shapes.
 - [ ] Bind operation requests once at the `GenerationView` boundary; delete provider/request equality
-  rechecks and make the ready capability reach the publication/operation consumer that requires it.
+  rechecks and make the verified capability reach the publication/operation consumer that requires it.
 
 ### 2. Server observability adapter — bounded seam proven; health plane remains
 
@@ -88,7 +89,7 @@ The remaining gaps are architectural, not polish:
 - [ ] Crash/reopen at every prefix, short write, sync failure, torn tail, duplicate record, and
   directory durability evidence against an independent reducer.
 - [ ] Immutable publication log plus compact CAS head/index; only a stable receipt can release the
-  publication effect and convert verified authority to ready authority.
+  publication effect and convert verified authority to published authority.
 
 ### 5. Leased async range transport
 
@@ -146,8 +147,10 @@ into agents that independently invent incompatible representations.
 
 ## Research decisions carried forward
 
-- Rust typestate should use one unchanged runtime representation plus zero-cost state markers; the
-  still-unstable type-changing struct-update RFC is not required for a two-field transition.
+- Rust typestate should use one unchanged runtime representation plus zero-cost state markers. The
+  verified generation deliberately has no second marker state today; durable publication may
+  introduce `Generation<Verified> -> Generation<Published>` only when the transition consumes a
+  stable receipt and both states have real consumers.
 - `self_cell`, Yoke, and similar self-referential ownership are adapter candidates only when a view
   must escape an HRTB callback and the extra owner demonstrably removes a copy/revalidation.
 - `GhostCell`/QCell-style branding is relevant to owner-scoped mutable graphs, not immutable artifact

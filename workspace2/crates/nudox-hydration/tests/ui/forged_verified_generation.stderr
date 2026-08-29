@@ -1,0 +1,9 @@
+error[E0639]: cannot create non-exhaustive struct using struct expression
+ --> tests/ui/forged_verified_generation.rs:6:19
+  |
+6 |       let _forged = VerifiedGeneration {
+  |  ___________________^
+7 | |         pinned_root,
+8 | |         dep_set,
+9 | |     };
+  | |_____^

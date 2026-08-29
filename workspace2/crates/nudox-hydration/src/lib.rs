@@ -14,10 +14,7 @@ pub use plan::{
     PlanCoverage, PlanError, PlanRejection, PlanScratch, PlanScratchFacts, Promise, plan,
     plan_with_probe,
 };
-pub use publication::{
-    Generation, Ready, ReadyGeneration, StagedGeneration, VerificationError, Verified,
-    VerifiedGeneration,
-};
+pub use publication::{StagedGeneration, VerificationError, VerifiedGeneration};
 
 #[cfg(test)]
 mod tests;

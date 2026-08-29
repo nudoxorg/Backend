@@ -1,7 +1,7 @@
-//! Compile-time authority boundaries for hydration publication.
+//! Compile-time authority boundary for verified generation closure.
 
 #[test]
-fn readiness_witness_cannot_be_forged() {
+fn verified_generation_cannot_be_forged() {
     let cases = trybuild::TestCases::new();
     cases.compile_fail("tests/ui/*.rs");
 }

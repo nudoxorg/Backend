@@ -15,8 +15,9 @@ heavy service implementations.
 5. Every queue and buffer has a declared bound. Admission owns the corresponding physical
    resource; accepted work cannot discover later that memory is unavailable.
 6. Immutable objects are first-write-wins. Publication is a separate atomic root transition.
-7. Local completeness requires a `ReadyGeneration` witness. Incomplete local answers are explicitly
-   partial and enumerate what is absent.
+7. Local completeness requires a non-forgeable `VerifiedGeneration` witness. Published authority is
+   distinct and may exist only after a durable adapter consumes verification with a stable receipt.
+   Incomplete local answers are explicitly partial and enumerate what is absent.
 8. Overlay state propagates to every ancestor root that would otherwise hide the local edit.
 9. Hot reads are lock-free or owner-threaded. Locks are allowed for cold control paths when they are
    clearer than atomics. Durable state remains transactional.

@@ -43,7 +43,7 @@ enum ScenarioError {
     Demand(#[from] DemandBindError),
     #[error("plan derivation failed")]
     Plan(#[from] PlanError),
-    #[error("publication verification failed")]
+    #[error("generation verification failed")]
     Verification(#[source] VerificationError<ObjectDomain>),
     #[error("range construction failed")]
     Range(#[from] EntryRangeError),
@@ -58,7 +58,7 @@ enum ScenarioError {
 #[derive(Debug)]
 enum ScenarioStep {
     DemandBinding,
-    PartialPublication,
+    PartialVerification,
     MissingVerification,
     PlanCapacity,
 }
