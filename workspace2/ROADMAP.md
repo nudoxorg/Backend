@@ -147,28 +147,29 @@ VCS code has no compatibility standing.
 
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
-| Index I0 | Terra calibration active; implementation follows on the same transcript | I0 and C0 may each propose minimal sealed identity rows; root serializes the shared registry diff and re-proves global uniqueness. |
-| Compiler C0 | Terra calibration active; implementation follows on the same transcript | Static dispatch must show two genuinely distinct concrete consumers before any macro or generic surface is accepted. |
-| Leased range T0 | Queued behind one free Terra-plus-Luna pair; complete object-pack view is available | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
+| Index I0 | Vocabulary candidate implemented; separate Terra review and root integration remain | Root serializes its minimal sealed identity rows and re-proves global uniqueness; prior Luna reviewer evidence is historical only. |
+| Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
+| Leased range T0 | Autonomous Terra calibration active; implementation follows its separate Terra review | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
 | Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |
 | Observability health | Adapter seam is green after removing the dedicated scenario crate | A future lifecycle capability must expose real exporter failure without reintroducing a test-support package or portable SDK dependency. |
 
 ## Manager/worker execution cycle
 
-One fresh Terra manager owns one capability and its progressively loaded skill. It commissions narrow
-read-only scouting, a smallest-proof builder, an independent breaker, and targeted repair. Every
-writing worker starts from a frozen digest/LOC ledger in an isolated branch and commits each passing
-checkpoint; rejected work remains auditable without contaminating the manager branch. The requested
-worker model is verified live at cycle start and is never silently substituted. The manager returns a
-single evidence packet only after exact falsifiers and full owned gates pass. The root then performs
-the cross-crate architectural review, updates this graph, and generalizes only lessons that actually
-prevented a repeatable failure.
+One primary Terra manager owns one capability and its progressively loaded skill. It owns architecture,
+proof, measurements, concise red tests, and acceptance; Luna workers implement bounded cards; a
+separate read-only Terra reviewer attacks the card and artifact at proof checkpoints. Every writing
+worker starts from a frozen digest/LOC ledger in an isolated branch and commits each passing checkpoint;
+rejected work remains auditable without contaminating the manager branch. Both requested child models
+are explicitly selected and never inferred from role names. The manager returns one evidence packet
+only after it reproduces reviewer findings, exact falsifiers, and full owned gates. The root then
+performs the cross-crate architectural review, updates this graph, and generalizes only lessons that
+actually prevented a repeatable failure.
 
 The next object-plane trial is authenticated partial binding followed by leased range transport.
-Index I0 and compiler C0 are being independently calibrated as greenfield nested-workspace trials;
-their managers own architecture and verification while narrowly scoped Luna workers implement or
-falsify one checkpoint at a time. Parallelism never permits agents to invent incompatible artifact,
-lease, or terminal representations.
+Index I0 is in independent Terra review; compiler C0.1 is accepted; leased range T0 is being calibrated
+as the next greenfield nested-workspace trial. Primary Terras own architecture and proof, reviewer
+Terras remain read-only, and narrowly scoped Luna workers implement one checkpoint at a time.
+Parallelism never permits agents to invent incompatible artifact, lease, or terminal representations.
 
 ## Research decisions carried forward
 
