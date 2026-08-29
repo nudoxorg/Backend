@@ -1,0 +1,23 @@
+[package]
+name = "nudox-store-memory"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+arrayvec.workspace = true
+derive_more.workspace = true
+nudox-id = { path = "../nudox-id" }
+nudox-object = { path = "../nudox-object" }
+nudox-observe = { path = "../nudox-observe" }
+thiserror.workspace = true
+
+[dev-dependencies]
+allocation-counter.workspace = true
+nudox-schema = { path = "../nudox-schema" }
+rstest.workspace = true
+
+[lints]
+workspace = true

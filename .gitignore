@@ -60,6 +60,17 @@
 # Manifests that tests scaffold at runtime stay ignored.
 /workspace/compiler/tests/fixtures/**/Cargo.toml
 
+# workspace2 is the from-scratch typed architecture workspace. Its managers use
+# path-scoped checkpoint commits, so all source/evidence formats must be visible
+# to Git while generated build trees remain excluded.
+!/workspace2/
+!/workspace2/**
+/workspace2/**/target/
+/workspace2/**/.cache/
+/workspace2/**/*.o
+/workspace2/layout-lab/raw/ragel-control/*.c
+/workspace2/**/wip/
+
 # C/C++ parser fixtures
 !/compiler/src/core/clang/tests/**/*.c
 !/compiler/src/core/clang/tests/**/*.cpp

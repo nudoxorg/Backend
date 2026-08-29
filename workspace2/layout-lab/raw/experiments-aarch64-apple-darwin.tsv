@@ -1,0 +1,186 @@
+format	nudox-layout-experiments-v2
+target_arch	aarch64
+target_os	macos
+pointer_width	64
+cache_line_assumption_bytes	64
+counter	logical-row/cache-line estimates plus scoped requested-allocation bytes
+columns	hydration	representation	rows	requested_absent_percent	actual_absent_rows	retained_bytes	exact_output	visited_rows	branches	logical_cache_lines	allocations	allocated_bytes	peak_live_bytes
+hydration	dense_16B	0	0	0	0	1	0	0	0	0	0	0
+hydration	sparse_u32_borrowed_route	0	0	0	0	1	0	0	0	0	0	0
+hydration	dense_absent_bitset_borrowed_route	0	0	0	0	1	0	0	0	0	0	0
+hydration	dense_16B	0	1	0	0	1	0	0	0	0	0	0
+hydration	sparse_u32_borrowed_route	0	1	0	0	1	0	0	0	0	0	0
+hydration	dense_absent_bitset_borrowed_route	0	1	0	0	1	0	0	0	0	0	0
+hydration	dense_16B	0	50	0	0	1	0	0	0	0	0	0
+hydration	sparse_u32_borrowed_route	0	50	0	0	1	0	0	0	0	0	0
+hydration	dense_absent_bitset_borrowed_route	0	50	0	0	1	0	0	0	0	0	0
+hydration	dense_16B	0	100	0	0	1	0	0	0	0	0	0
+hydration	sparse_u32_borrowed_route	0	100	0	0	1	0	0	0	0	0	0
+hydration	dense_absent_bitset_borrowed_route	0	100	0	0	1	0	0	0	0	0	0
+hydration	dense_16B	1	0	0	16	1	1	1	1	3	121	121
+hydration	sparse_u32_borrowed_route	1	0	0	0	1	1	1	0	1	1	1
+hydration	dense_absent_bitset_borrowed_route	1	0	0	8	1	1	1	1	3	113	113
+hydration	dense_16B	1	1	0	16	1	1	1	1	3	121	121
+hydration	sparse_u32_borrowed_route	1	1	0	0	1	1	1	0	1	1	1
+hydration	dense_absent_bitset_borrowed_route	1	1	0	8	1	1	1	1	3	113	113
+hydration	dense_16B	1	50	0	16	1	1	1	1	3	121	121
+hydration	sparse_u32_borrowed_route	1	50	0	0	1	1	1	0	1	1	1
+hydration	dense_absent_bitset_borrowed_route	1	50	0	8	1	1	1	1	3	113	113
+hydration	dense_16B	1	100	1	16	1	1	1	1	3	121	121
+hydration	sparse_u32_borrowed_route	1	100	1	16	1	1	1	1	3	121	121
+hydration	dense_absent_bitset_borrowed_route	1	100	1	8	1	1	1	1	3	113	113
+hydration	dense_16B	4	0	0	64	1	4	4	1	3	172	172
+hydration	sparse_u32_borrowed_route	4	0	0	0	1	4	4	0	1	4	4
+hydration	dense_absent_bitset_borrowed_route	4	0	0	8	1	4	4	1	3	116	116
+hydration	dense_16B	4	1	0	64	1	4	4	1	3	172	172
+hydration	sparse_u32_borrowed_route	4	1	0	0	1	4	4	0	1	4	4
+hydration	dense_absent_bitset_borrowed_route	4	1	0	8	1	4	4	1	3	116	116
+hydration	dense_16B	4	50	2	64	1	4	4	1	3	172	172
+hydration	sparse_u32_borrowed_route	4	50	2	16	1	4	4	1	3	124	124
+hydration	dense_absent_bitset_borrowed_route	4	50	2	8	1	4	4	1	3	116	116
+hydration	dense_16B	4	100	4	64	1	4	4	1	3	172	172
+hydration	sparse_u32_borrowed_route	4	100	4	16	1	4	4	1	3	124	124
+hydration	dense_absent_bitset_borrowed_route	4	100	4	8	1	4	4	1	3	116	116
+hydration	dense_16B	5	0	0	80	1	5	5	2	3	189	189
+hydration	sparse_u32_borrowed_route	5	0	0	0	1	5	5	0	1	5	5
+hydration	dense_absent_bitset_borrowed_route	5	0	0	8	1	5	5	1	3	117	117
+hydration	dense_16B	5	1	0	80	1	5	5	2	3	189	189
+hydration	sparse_u32_borrowed_route	5	1	0	0	1	5	5	0	1	5	5
+hydration	dense_absent_bitset_borrowed_route	5	1	0	8	1	5	5	1	3	117	117
+hydration	dense_16B	5	50	2	80	1	5	5	2	3	189	189
+hydration	sparse_u32_borrowed_route	5	50	2	16	1	5	5	1	3	125	125
+hydration	dense_absent_bitset_borrowed_route	5	50	2	8	1	5	5	1	3	117	117
+hydration	dense_16B	5	100	5	80	1	5	5	2	3	189	189
+hydration	sparse_u32_borrowed_route	5	100	5	32	1	5	5	1	4	157	141
+hydration	dense_absent_bitset_borrowed_route	5	100	5	8	1	5	5	1	3	117	117
+hydration	dense_16B	100000	0	0	1600000	1	100000	100000	25000	4167	2190184	2190184
+hydration	sparse_u32_borrowed_route	100000	0	0	0	1	100000	100000	0	1	100000	100000
+hydration	dense_absent_bitset_borrowed_route	100000	0	0	12504	1	100000	100000	196	35	116416	116416
+hydration	dense_16B	100000	1	1000	1600000	1	100000	100000	25000	4167	2190184	2190184
+hydration	sparse_u32_borrowed_route	100000	1	1000	4096	1	100000	100000	63	20	109312	105232
+hydration	dense_absent_bitset_borrowed_route	100000	1	1000	12504	1	100000	100000	196	35	116416	116416
+hydration	dense_16B	100000	50	50000	1600000	1	100000	100000	25000	4167	2190184	2190184
+hydration	sparse_u32_borrowed_route	100000	50	50000	262144	1	100000	100000	3125	535	685256	423128
+hydration	dense_absent_bitset_borrowed_route	100000	50	50000	12504	1	100000	100000	196	35	116416	116416
+hydration	dense_16B	100000	100	100000	1600000	1	100000	100000	25000	4167	2190184	2190184
+hydration	sparse_u32_borrowed_route	100000	100	100000	524288	1	100000	100000	6250	1058	1271032	746760
+hydration	dense_absent_bitset_borrowed_route	100000	100	100000	12504	1	100000	100000	196	35	116416	116416
+columns	waiter	representation	capacity	active_random	dense_record_bytes	record_visits	branches	atomics	logical_cache_lines	allocations	peak_live_bytes
+waiter	aos_dense_atomic_waker	1	0	40	1	1	1	1	2	144
+waiter	soa_state_credit_waker	1	0	40	1	1	1	1	5	152
+waiter	active_u64_bitmap_plus_dense	1	0	40	0	0	1	1	1	40
+waiter	byte_fit_bucket_epoch_ticket	1	0	40	0	0	0	0	1	40
+waiter	aos_dense_atomic_waker	1	1	40	1	2	2	1	2	144
+waiter	soa_state_credit_waker	1	1	40	1	2	2	3	9	152
+waiter	active_u64_bitmap_plus_dense	1	1	40	1	2	4	1	1	40
+waiter	byte_fit_bucket_epoch_ticket	1	1	40	1	3	3	1	4	240
+waiter	aos_dense_atomic_waker	8	0	40	8	8	8	5	2	424
+waiter	soa_state_credit_waker	8	0	40	8	8	8	1	5	488
+waiter	active_u64_bitmap_plus_dense	8	0	40	0	0	1	1	1	320
+waiter	byte_fit_bucket_epoch_ticket	8	0	40	0	0	0	0	1	320
+waiter	aos_dense_atomic_waker	8	1	40	8	9	9	5	2	424
+waiter	soa_state_credit_waker	8	1	40	8	9	9	3	9	488
+waiter	active_u64_bitmap_plus_dense	8	1	40	1	2	4	1	1	320
+waiter	byte_fit_bucket_epoch_ticket	8	1	40	1	3	3	1	4	520
+waiter	aos_dense_atomic_waker	8	8	40	8	16	16	5	2	424
+waiter	soa_state_credit_waker	8	8	40	8	16	16	17	37	488
+waiter	active_u64_bitmap_plus_dense	8	8	40	8	16	25	1	1	320
+waiter	byte_fit_bucket_epoch_ticket	8	8	40	8	24	24	5	5	616
+waiter	aos_dense_atomic_waker	64	0	40	64	64	64	40	8	3384
+waiter	soa_state_credit_waker	64	0	40	64	64	64	8	5	3176
+waiter	active_u64_bitmap_plus_dense	64	0	40	0	0	1	1	1	2560
+waiter	byte_fit_bucket_epoch_ticket	64	0	40	0	0	0	0	1	2560
+waiter	aos_dense_atomic_waker	64	1	40	64	65	65	40	8	3384
+waiter	soa_state_credit_waker	64	1	40	64	65	65	10	9	3176
+waiter	active_u64_bitmap_plus_dense	64	1	40	1	2	4	1	1	2560
+waiter	byte_fit_bucket_epoch_ticket	64	1	40	1	3	3	1	4	2760
+waiter	aos_dense_atomic_waker	64	8	40	64	72	72	40	8	3384
+waiter	soa_state_credit_waker	64	8	40	64	72	72	24	37	3176
+waiter	active_u64_bitmap_plus_dense	64	8	40	8	16	25	1	1	2560
+waiter	byte_fit_bucket_epoch_ticket	64	8	40	8	24	24	8	5	2856
+waiter	aos_dense_atomic_waker	64	64	40	64	128	128	40	8	3384
+waiter	soa_state_credit_waker	64	64	40	64	128	128	136	261	3176
+waiter	active_u64_bitmap_plus_dense	64	64	40	64	128	193	1	1	2560
+waiter	byte_fit_bucket_epoch_ticket	64	64	40	64	192	192	40	12	4712
+waiter_schedule	bitmap_cancel_stale_snapshot_rearm	stale_bits_visited	1	rearmed_bits_visited	1	semantic	stale_cancelled_bit_never_wakes;_rearm_may_receive_benign_recheck_wake
+columns	recorder	representation	event	capacity	stack_bytes	per_slot_bytes
+recorder	option_array_head_len	1	0	16	2
+recorder	arrayvec_head	1	0	16	1
+recorder	option_array_head_len	1	1	24	2
+recorder	arrayvec_head	1	1	16	1
+recorder	option_array_head_len	1	4	24	2
+recorder	arrayvec_head	1	4	16	1
+recorder	option_array_head_len	1	64	144	2
+recorder	arrayvec_head	1	64	80	1
+recorder	option_array_head_len	8	0	16	9
+recorder	arrayvec_head	8	0	16	8
+recorder	option_array_head_len	8	1	32	9
+recorder	arrayvec_head	8	1	24	8
+recorder	option_array_head_len	8	4	56	9
+recorder	arrayvec_head	8	4	48	8
+recorder	option_array_head_len	8	64	592	9
+recorder	arrayvec_head	8	64	528	8
+recorder	option_array_head_len	68	0	16	69
+recorder	arrayvec_head	68	0	16	68
+recorder	option_array_head_len	68	1	88	69
+recorder	arrayvec_head	68	1	80	68
+recorder	option_array_head_len	68	4	296	69
+recorder	arrayvec_head	68	4	288	68
+recorder	option_array_head_len	68	64	4432	69
+recorder	arrayvec_head	68	64	4368	68
+recorder	option_array_head_len	128	0	16	129
+recorder	arrayvec_head	128	0	16	128
+recorder	option_array_head_len	128	1	152	129
+recorder	arrayvec_head	128	1	144	128
+recorder	option_array_head_len	128	4	536	129
+recorder	arrayvec_head	128	4	528	128
+recorder	option_array_head_len	128	64	8272	129
+recorder	arrayvec_head	128	64	8208	128
+recorder_semantics	overwrite_order	exact_output	1
+columns	workflow	representation	prefix	retained_bytes	replay_events	exact_state	allocations	peak_live_bytes
+workflow	vec_workflow_event	1	512	1	1	1	408
+workflow	per_key_compact_accepted	1	166	1	1	1	6
+workflow	vec_workflow_event	2	512	2	1	1	408
+workflow	per_key_compact_accepted	2	166	2	1	1	6
+workflow	vec_workflow_event	3	512	3	1	1	408
+workflow	per_key_compact_accepted	3	166	3	1	1	6
+workflow	vec_workflow_event	4	512	4	1	1	408
+workflow	per_key_compact_accepted	4	166	4	1	1	6
+workflow	vec_workflow_event	5	512	5	1	1	408
+workflow	per_key_compact_accepted	5	166	5	1	1	6
+workflow	vec_workflow_event	6	512	6	1	1	408
+workflow	per_key_compact_accepted	6	166	6	1	1	6
+workflow_interleave	global_vec	6	512
+workflow_interleave	per_key_plus_global_order	6	338
+columns	ready_queue	representation	payload_bytes	taken	allocations	allocated_bytes	peak_live_bytes	stack_or_header_bytes
+ready_queue	permit_slots_unsafe_lab	0	8	1	64	64	40
+ready_queue	mutex_vecdeque_safe	0	8	1	64	64	48
+ready_queue	arrayqueue_capacity_plus_one	0	8	1	72	72	384
+ready_queue	thingbuf_dynamic_safe	0	8	1	64	64	512
+ready_queue	thingbuf_static_safe	0	8	0	0	0	512
+ready_queue	permit_slots_unsafe_lab	8	8	1	128	128	40
+ready_queue	mutex_vecdeque_safe	8	8	2	96	96	48
+ready_queue	arrayqueue_capacity_plus_one	8	8	1	144	144	384
+ready_queue	thingbuf_dynamic_safe	8	8	1	128	128	512
+ready_queue	thingbuf_static_safe	8	8	0	0	0	512
+ready_queue	permit_slots_unsafe_lab	64	8	1	576	576	40
+ready_queue	mutex_vecdeque_safe	64	8	2	320	320	48
+ready_queue	arrayqueue_capacity_plus_one	64	8	1	648	648	384
+ready_queue	thingbuf_dynamic_safe	64	8	1	576	576	512
+ready_queue	thingbuf_static_safe	64	8	0	0	0	1024
+ready_queue	permit_slots_unsafe_lab	4096	8	1	32832	32832	40
+ready_queue	mutex_vecdeque_safe	4096	8	2	4160	4160	48
+ready_queue	arrayqueue_capacity_plus_one	4096	8	1	36936	36936	384
+ready_queue	thingbuf_dynamic_safe	4096	8	1	32832	32832	512
+ready_queue	thingbuf_static_safe	4096	8	0	0	0	33280
+ready_queue_schedule	publish_cancel_retire	cancelled	1	retired	1	status_cancelled_code	4
+columns	store	inline_entries	inline_buckets	slots	allocation_count	allocated_bytes	peak_live_bytes	drop_deallocations
+store	4	8	0	0	0	0	0
+store	4	8	1	0	0	0	0
+store	4	8	4	0	0	0	0
+store	4	8	5	2	384	384	2
+store	4	8	100000	2	7448576	7448576	2
+store_layout	inline_entries	0	inline_buckets	0	public_type_bytes	104
+store_layout	inline_entries	1	inline_buckets	2	public_type_bytes	160
+store_layout	inline_entries	4	inline_buckets	8	public_type_bytes	368
+store_layout	inline_entries	64	inline_buckets	128	public_type_bytes	4688

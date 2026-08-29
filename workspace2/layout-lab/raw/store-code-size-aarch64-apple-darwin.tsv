@@ -1,0 +1,6 @@
+format	nudox-layout-store-code-size-v1
+columns	binary	file_bytes	mach_text_bytes
+store-size-00	337664	211076
+store-size-12	337664	211024
+store-size-default	337680	211068
+store-size-remote	337680	211100

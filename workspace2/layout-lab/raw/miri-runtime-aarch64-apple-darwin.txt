@@ -1,0 +1,23 @@
+Runtime caller-arena/payload-cell Miri evidence
+Date: 2026-08-29
+Command: sh layout-lab/run-miri-runtime.sh
+Host/target: aarch64-apple-darwin
+MIRIFLAGS: -Zmiri-disable-isolation
+Loom feature: disabled
+
+rustc 1.100.0-nightly (e457a7b0d 2026-08-27)
+miri 0.1.0 (e457a7b0d3 2026-08-27)
+
+PASS storage::tests::local_payload_prefix_guard_drops_partial_initialization_during_unwind
+  1 passed; 14 filtered out
+PASS runtime_tests::terminal_retention_is_in_place_and_inline_or_local_storage_needs_no_heap_owner
+  1 passed; 14 filtered out
+PASS runtime_tests::payload_cell_lifecycle_covers_cancel_terminal_reuse_and_drop
+  1 passed; 14 filtered out
+PASS rustdoc compile-fail: LocalRuntimeArena rejects work borrowed shorter than its arena
+  1 passed
+
+The focused run exercises the exact initialized-prefix unwind/drop guard, caller-arena table
+initialization and destruction, in-place queued/terminal payload moves, cancellation, terminal
+observation, slot reuse, and final runtime drop. It deliberately excludes the Loom atomic shim;
+the Loom model is run by the separate runtime feature gate.

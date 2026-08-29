@@ -1,0 +1,79 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+arrayvec = { version = "0.7.6", default-features = false }
+blake3 = { version = "1.8.2", default-features = false }
+bolero = "0.13.4"
+derive_more = { version = "2.1.1", default-features = false, features = ["debug"] }
+futures-core = { version = "0.3.31", default-features = false }
+fearless_simd = { version = "0.7.0", default-features = false }
+atomic-waker = { version = "1.1.2", default-features = false }
+allocation-counter = "0.8.1"
+rstest = { version = "0.26.1", default-features = false }
+strum = { version = "0.28.0", default-features = false, features = ["derive"] }
+thiserror = { version = "2", default-features = false }
+trybuild = "1.0.118"
+zerocopy = { version = "0.8.56", default-features = false, features = ["derive"] }
+
+[workspace.lints.rust]
+# Crates deny unsafe by default. A single reviewed module may locally allow it
+# only under Architecture Law 10's proof and measurement gate.
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+alloc_instead_of_core = "warn"
+allow_attributes_without_reason = "warn"
+as_conversions = "warn"
+clone_on_ref_ptr = "warn"
+cognitive_complexity = "warn"
+dbg_macro = "deny"
+empty_drop = "warn"
+exit = "deny"
+if_then_some_else_none = "warn"
+indexing_slicing = "warn"
+mem_forget = "deny"
+missing_const_for_fn = "warn"
+multiple_unsafe_ops_per_block = "deny"
+panic = "warn"
+rc_buffer = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+same_name_method = "warn"
+semicolon_if_nothing_returned = "warn"
+str_to_string = "warn"
+todo = "deny"
+too_many_arguments = "allow"
+too_many_lines = "warn"
+unimplemented = "deny"
+unwrap_used = "deny"
+verbose_file_reads = "warn"
+
+[profile.dev]
+debug = 1
+incremental = true
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+panic = "abort"
+strip = "symbols"
+
+[profile.fuzz]
+inherits = "dev"
+opt-level = 3
+incremental = false
+codegen-units = 1

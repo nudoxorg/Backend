@@ -1,0 +1,109 @@
+use core::fmt;
+
+/// Compact closed Wave 1 schema registry with explicit stable wire tags.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SchemaId {
+    /// Canonical immutable object bytes described by `nudox-object`.
+    Object = 1,
+    /// Canonical bounded batch frame body described by this crate.
+    Frame = 0x0001_0001,
+}
+
+impl From<SchemaId> for u32 {
+    fn from(schema: SchemaId) -> Self {
+        match schema {
+            SchemaId::Object => 1,
+            SchemaId::Frame => 0x0001_0001,
+        }
+    }
+}
+
+impl TryFrom<u32> for SchemaId {
+    type Error = UnknownSchemaId;
+
+    fn try_from(wire: u32) -> Result<Self, Self::Error> {
+        match wire {
+            1 => Ok(Self::Object),
+            0x0001_0001 => Ok(Self::Frame),
+            other => Err(UnknownSchemaId(other)),
+        }
+    }
+}
+
+impl fmt::Display for SchemaId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Object => formatter.write_str("schema:object"),
+            Self::Frame => formatter.write_str("schema:frame"),
+        }
+    }
+}
+
+/// Rejected raw schema tag retained for precise compatibility errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("unknown schema tag {0:#010x}")]
+pub struct UnknownSchemaId(pub u32);
+
+/// Compact closed Wave 1 operation registry.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum OperationId {
+    /// Static pinned-object operation defined by `nudox-operation`.
+    PinnedObject = 1,
+}
+
+impl From<OperationId> for u32 {
+    fn from(operation: OperationId) -> Self {
+        match operation {
+            OperationId::PinnedObject => 1,
+        }
+    }
+}
+
+impl TryFrom<u32> for OperationId {
+    type Error = UnknownOperationId;
+
+    fn try_from(wire: u32) -> Result<Self, Self::Error> {
+        match wire {
+            1 => Ok(Self::PinnedObject),
+            other => Err(UnknownOperationId(other)),
+        }
+    }
+}
+
+impl fmt::Display for OperationId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PinnedObject => formatter.write_str("operation:pinned-object"),
+        }
+    }
+}
+
+/// Rejected raw operation tag retained for precise dispatch errors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("unknown operation tag {0:#010x}")]
+pub struct UnknownOperationId(pub u32);
+
+#[cfg(test)]
+mod tests {
+    use core::mem::{align_of, size_of};
+
+    use super::{OperationId, SchemaId, UnknownOperationId, UnknownSchemaId};
+
+    #[test]
+    fn closed_tags_are_unique_compact_and_round_trip() {
+        assert_ne!(u32::from(SchemaId::Object), u32::from(SchemaId::Frame));
+        assert_eq!(size_of::<SchemaId>(), 4);
+        assert_eq!(align_of::<SchemaId>(), 4);
+        assert_eq!(size_of::<OperationId>(), 4);
+        assert_eq!(align_of::<OperationId>(), 4);
+        assert_eq!(
+            SchemaId::try_from(u32::from(SchemaId::Frame)),
+            Ok(SchemaId::Frame)
+        );
+        assert_eq!(OperationId::try_from(1), Ok(OperationId::PinnedObject));
+        assert_eq!(SchemaId::try_from(99), Err(UnknownSchemaId(99)));
+        assert_eq!(OperationId::try_from(99), Err(UnknownOperationId(99)));
+    }
+}

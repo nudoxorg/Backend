@@ -1,0 +1,4 @@
+interface:
+  display_name: "Operation Runtime Scope"
+  short_description: "Lock-free runtime and durable workflow scope"
+  default_prompt: "Use $build-operation-runtime with the shared reviewed Rust skill for this operation-plane slice."

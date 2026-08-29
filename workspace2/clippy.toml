@@ -1,0 +1,4 @@
+too-many-lines-threshold = 60
+cognitive-complexity-threshold = 10
+type-complexity-threshold = 180
+large-error-threshold = 96

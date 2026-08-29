@@ -1,0 +1,21 @@
+[package]
+name = "nudox-view"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nudox-schema = { path = "../nudox-schema" }
+strum.workspace = true
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+bolero.workspace = true
+nudox-frame = { path = "../nudox-frame" }
+rstest.workspace = true
+
+[lints]
+workspace = true

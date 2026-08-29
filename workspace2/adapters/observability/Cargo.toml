@@ -1,0 +1,35 @@
+[package]
+name = "nudox-observability-adapter"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+publish = false
+
+[workspace]
+
+[dependencies]
+nudox-e2e = { path = "../../crates/nudox-e2e" }
+nudox-hydration = { path = "../../crates/nudox-hydration" }
+nudox-observe = { path = "../../crates/nudox-observe" }
+nudox-root = { path = "../../crates/nudox-root" }
+nudox-runtime = { path = "../../crates/nudox-runtime" }
+nudox-store-memory = { path = "../../crates/nudox-store-memory" }
+nudox-workflow = { path = "../../crates/nudox-workflow" }
+opentelemetry = { version = "=0.32.0", features = ["logs", "metrics", "trace"] }
+opentelemetry-appender-tracing = "=0.32.0"
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "trace"] }
+thiserror = "2.0.17"
+tracing = "=0.1.44"
+tracing-opentelemetry = "=0.33.0"
+tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "testing", "trace"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"

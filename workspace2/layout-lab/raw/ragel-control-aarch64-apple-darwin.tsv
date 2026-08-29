@@ -1,0 +1,11 @@
+format	nudox-layout-ragel-control-v1
+current_colm_ragel_rust_backend	unavailable_in_nix_ragelDev_7.0.0.12_broken
+ragel6_control	6.10	no_Rust_backend;_C_only_control
+columns	model	backend	source_bytes	source_lines	numeric_cs_mentions	C_text_bytes
+cursor	T0	4023	166	11	384
+cursor	F0	3150	120	10	312
+cursor	G0	2757	112	12	344
+workflow	T0	4437	174	10	384
+workflow	F0	3558	129	9	312
+workflow	G0	3350	132	13	444
+handwritten	typed_enum_match	2159	73	0	213488

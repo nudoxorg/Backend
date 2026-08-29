@@ -1,0 +1,44 @@
+[workspace]
+members = ["."]
+resolver = "3"
+
+[package]
+name = "nudox-layout-lab"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[features]
+locality-simd-size = []
+
+[dependencies]
+allocation-counter = "0.8.1"
+arrayvec = "0.7.6"
+atomic-waker = "1.1.2"
+bumpalo = { version = "=3.20.3", default-features = false, features = ["collections"] }
+crossbeam-queue = "0.3.12"
+thingbuf = { version = "0.1.6", features = ["static"] }
+thiserror = { version = "2", default-features = false }
+triomphe = { version = "=0.1.16", default-features = false }
+nudox-frame = { path = "../crates/nudox-frame" }
+nudox-hydration = { path = "../crates/nudox-hydration" }
+nudox-id = { path = "../crates/nudox-id" }
+nudox-object = { path = "../crates/nudox-object" }
+nudox-observe = { path = "../crates/nudox-observe" }
+nudox-operation = { path = "../crates/nudox-operation" }
+nudox-root = { path = "../crates/nudox-root" }
+nudox-runtime = { path = "../crates/nudox-runtime" }
+nudox-schema = { path = "../crates/nudox-schema" }
+nudox-store-memory = { path = "../crates/nudox-store-memory" }
+nudox-view = { path = "../crates/nudox-view" }
+nudox-workflow = { path = "../crates/nudox-workflow" }
+
+[dev-dependencies]
+loom = "0.7.2"
+
+[profile.release]
+codegen-units = 1
+debug = 0
+lto = "thin"
+strip = "symbols"

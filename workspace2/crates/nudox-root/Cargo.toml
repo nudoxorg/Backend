@@ -1,0 +1,25 @@
+[package]
+name = "nudox-root"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+derive_more.workspace = true
+fearless_simd = { workspace = true, features = ["libm"] }
+nudox-id = { path = "../nudox-id" }
+nudox-object = { path = "../nudox-object" }
+nudox-schema = { path = "../nudox-schema" }
+nudox-observe = { path = "../nudox-observe" }
+thiserror.workspace = true
+zerocopy.workspace = true
+
+[dev-dependencies]
+bolero.workspace = true
+fearless_simd = { workspace = true, features = ["force_support_fallback", "std"] }
+nudox-schema = { path = "../nudox-schema" }
+
+[lints]
+workspace = true

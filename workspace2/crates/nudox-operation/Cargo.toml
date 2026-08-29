@@ -1,0 +1,17 @@
+[package]
+name = "nudox-operation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+nudox-id = { path = "../nudox-id" }
+nudox-object = { path = "../nudox-object" }
+nudox-root = { path = "../nudox-root" }
+nudox-schema = { path = "../nudox-schema" }
+thiserror.workspace = true
+
+[lints]
+workspace = true
