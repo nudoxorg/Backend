@@ -59,6 +59,15 @@ impl FixedCanonicalRecord<WORKFLOW_RECORD_BYTES> for WorkflowRecord {
     }
 }
 
+impl TryFrom<&[u8]> for WorkflowRecord {
+    type Error = core::array::TryFromSliceError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        let bytes: &[u8; WORKFLOW_RECORD_BYTES] = bytes.try_into()?;
+        Ok(zerocopy::transmute!(*bytes))
+    }
+}
+
 /// Exact canonical decode rejection.
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum WorkflowRecordError {
@@ -258,5 +267,23 @@ mod tests {
             WorkflowEvent::try_from(&mutated),
             Err(WorkflowRecordError::UnknownEvent { observed: u8::MAX })
         );
+    }
+
+    #[test]
+    fn canonical_bytes_boundary_is_exact() {
+        let event = WorkflowEvent {
+            version: WorkflowVersion::WAVE1,
+            key: key(),
+            kind: EventKind::Requested,
+        };
+        let record = WorkflowRecord::from(event);
+        let canonical = record.canonical_bytes();
+        assert!(
+            matches!(WorkflowRecord::try_from(canonical.as_slice()), Ok(decoded) if decoded == record)
+        );
+        assert!(WorkflowRecord::try_from(&canonical[..WORKFLOW_RECORD_BYTES - 1]).is_err());
+        let mut oversized = canonical.to_vec();
+        oversized.push(0);
+        assert!(WorkflowRecord::try_from(oversized.as_slice()).is_err());
     }
 }
