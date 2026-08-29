@@ -28,6 +28,11 @@ For `C0`, the default surface is complete nested workspaces under `workspace2/do
 synthetic concrete frontends to prove generated dispatch; do not import a real SDK, sandbox, runtime,
 object store, serde, or server.
 
+Each C0 synthetic frontend must contribute a distinct checked registry row: its own closed language
+tag and a capability or supported-stage difference exercised by a compile-time subset/failure case.
+Two nominal types with identical no-op/delegating behavior, or one concrete frontend routed under two
+tags, do not prove two consumers or generated dispatch.
+
 ## Required design packet
 
 Return before code:
