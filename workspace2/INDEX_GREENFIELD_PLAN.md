@@ -312,3 +312,22 @@ A score of eight requires all applicable evidence below:
 - empty/one/density-cliff/100k/million-row profiles and equal-key/tie boundaries;
 - deterministic ordering across input permutations, builders, worker counts, and compaction layouts;
 - complete/partial/cancel/degraded/failed terminals with no empty-success substitution;
+- local, mixed, and remote byte owners producing identical artifact bytes, identities, plans, and
+  semantic results when the same ranges are available;
+- bounded local-prefix behavior that names every unavailable selected segment/range without changing
+  a complete result into an empty success;
+- durable-prefix crash/replay and replacement proofs before any published head can name an absent
+  artifact; and
+- portable-client dependency inspection proving that server, object-store, OTEL, embedding, and
+  backend dependencies remain outside the borrowed core.
+
+## Plan closure
+
+This plan is complete as an architecture contract, not as an implementation claim. I0 begins with
+one independently observable vocabulary proof and then proceeds through separate manifest-format,
+borrowed-view, directory, mutation-corpus, and local-scan proofs. No phase may claim query,
+publication, range-lease, backend, async, or distributed behavior from earlier substrate evidence.
+
+Every manager freezes a literal baseline, writable-path ledger, public journey, resource reserve,
+and hostile falsifiers before code. The next authority boundary after I0 is the separately reviewed
+I1 exact-segment and local-query contract; it is not implied by a manifest proof.
