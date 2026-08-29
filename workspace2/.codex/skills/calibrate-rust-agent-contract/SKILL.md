@@ -29,6 +29,14 @@ budgets and reserve
 questions requiring parent authority
 ```
 
+Before spending an evaluator turn, reopen every frozen artifact from byte zero through EOF and run a
+structural preflight. The first nonblank line is its single title, no table/list/text precedes that
+title, fenced blocks are balanced, tables have stable column counts, every referenced phase appears
+in the closure matrix, and the final section is complete. Inspect the whole rendered/diffed artifact
+after the last patch; checking only the edited hunk is insufficient. A structural repair changes the
+digest and invalidates earlier trials just like a semantic repair. Do not ask a cold reader to
+discover corruption that the manager can determine mechanically.
+
 Reject append-only amendment chains. An active card must be understandable from one canonical body;
 terms such as “clarifies,” “supersedes,” or “all earlier declarations remain” are a structural
 failure when an earlier declaration still exists. The manager may retain old cards in Git, but every
@@ -95,7 +103,6 @@ existing public consumer are discoverable manager work. The manager fills them a
 trial. Only two materially different observable terminals, permanent wire semantics, or authority
 outside the named capability are parent decisions.
 
-Reject a specimen that ends mid-sentence/list/table or names phases absent from its closure matrix.
 Every architecture plan ends with a literal `Plan closure` section; every executable card ends with
 one exact next decision. Structural validity is tested before an evaluator spends a turn.
 

@@ -105,6 +105,11 @@ selected Luna worker; three idle managers with no worker capacity is fake parall
 pilot against prior cycles using worker turns, root questions, written-then-rejected LOC, independently
 reproduced evidence, and closure latency.
 
+A manager may build from an older isolated baseline only when its dispatch names the missing shared
+commits and an explicit integration boundary. Before accepting that work, transplant it onto current
+shared state, compare every owned path byte-for-byte or explain the intentional difference, and treat
+the integrated tree as a fresh source candidate. A passing stale branch is not shared progress.
+
 The root must not become a hidden manager. If it supplies exact worker files, representation, caps,
 commands, or follow-up cards after dispatch, record that as manager autonomy failure and repair the
 manager skill before the next cycle. Root feedback is reserved for genuine authority forks and the
@@ -116,6 +121,9 @@ Before accepting a new type or mechanism, ask across every plane:
 
 - Is this the same invariant already owned elsewhere, or only superficially similar?
 - Can two valid owners be mixed to forge it?
+- Can a typed identity be rebranded by exposing its bytes and reconstructing a different authority?
+  Raw round-trip support must validate authority carried by the representation; a phantom type plus
+  an unrestricted raw constructor is documentation, not a boundary.
 - Does a dense coordinate require an invariant owner brand or artifact ID?
 - Is a public field independently valid, and is every public literal coherent?
 - Can standard `Deref`, `Borrow`, `AsRef`, `From`, `TryFrom`, iterator, lending/GAT, array, slice, or
