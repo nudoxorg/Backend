@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/nudox-index-vocab"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+allocation-counter = "0.8.1"

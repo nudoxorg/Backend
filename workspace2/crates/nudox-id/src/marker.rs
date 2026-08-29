@@ -100,6 +100,19 @@ protocol_markers!(
     (CapabilityDomain, Domain, DomainTag, b"nudox.cap.v1\0\0\0\0"),
     (ConfigurationDomain, Domain, DomainTag, b"nudox.config.v1\0"),
     (StageKeyDomain, Domain, DomainTag, b"nudox.stage.v1\0\0"),
+    (IndexSnapshotDomain, Domain, DomainTag, b"nudox.idx.snap.1"),
+    (
+        IndexExactSegmentDomain,
+        Domain,
+        DomainTag,
+        b"nudox.idx.exact1"
+    ),
+    (
+        IndexLexicalSegmentDomain,
+        Domain,
+        DomainTag,
+        b"nudox.idx.lexic1"
+    ),
     (FrameEncoding, Encoding, EncodingTag, b"nudox.frame.v1\0\0"),
     (
         LocalitySortedEncoding,
@@ -119,8 +132,9 @@ protocol_markers!(
 mod tests {
     use super::{
         CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, Encoding,
-        FrameEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain,
-        RootDomain, StageKeyDomain,
+        FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain,
+        LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain, RootDomain,
+        StageKeyDomain,
     };
 
     #[test]
@@ -133,6 +147,9 @@ mod tests {
             CapabilityDomain::TAG,
             ConfigurationDomain::TAG,
             StageKeyDomain::TAG,
+            IndexSnapshotDomain::TAG,
+            IndexExactSegmentDomain::TAG,
+            IndexLexicalSegmentDomain::TAG,
         ];
         for (index, domain) in domains.iter().enumerate() {
             for other in domains.iter().skip(index + 1) {

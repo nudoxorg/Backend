@@ -21,8 +21,9 @@ pub use content::{ContentHasher, ContentId, ContentRoutingWord, FixedCanonicalRe
 pub use generation::{GenerationHasher, GenerationId};
 pub use marker::{
     CapabilityDomain, ConfigurationDomain, DependencySetDomain, Domain, DomainTag, Encoding,
-    EncodingTag, FrameEncoding, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding,
-    OperationDomain, RootDomain, StageKeyDomain,
+    EncodingTag, FrameEncoding, IndexExactSegmentDomain, IndexLexicalSegmentDomain,
+    IndexSnapshotDomain, LocalitySortedEncoding, ObjectDomain, ObjectPackEncoding, OperationDomain,
+    RootDomain, StageKeyDomain,
 };
 use raw::{ARTIFACT_PERSONALIZATION, CONTENT_PERSONALIZATION};
 pub use raw::{HASH_BYTES, TAG_BYTES};
