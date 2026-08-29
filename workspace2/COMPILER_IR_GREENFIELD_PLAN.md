@@ -325,3 +325,37 @@ memory, allocations, and semantic corpus against an independent oracle. Do not i
 Add physical credit admission, owner-thread job lifecycle, bounded process/VM adapter, streamed
 diagnostics/artifacts, crash/cancel/retry/idempotency matrix, and sustained heterogeneous load. No index
 dependency.
+
+### C5 — compiler capability bundle and acquisition boundary
+
+Implement the signed/content-addressed compiler bundle manifest, target and protocol compatibility
+validation, transitive native-object closure, on-demand acquisition, and explicit installation receipt.
+The portable client links only bundle vocabulary and verification: it neither links a compiler nor gains a
+sandbox/process/object-store dependency. Prove valid subset installation; wrong target, protocol mismatch,
+missing/substituted object, partial download, invalid signature/digest, transitive closure breach, eviction,
+and uninstall preserve published artifacts and return exact typed causes. Measure client dependencies and
+release text. Do not add dynamic frontend discovery or make acquisition part of a compile recipe.
+
+### C6 — published incremental consumer journey and plan integration
+
+Close the public journey: a local or remote consumer names a complete recipe/output closure, acquires an
+eligible bundle when needed, receives only validated complete immutable fragments/manifests plus bounded
+typed diagnostics, then requests a changed source/interface closure and observes exactly the portable
+artifact invalidation set. Exercise local/remote schedules, restart at every publication prefix, bundle
+absence/eviction, heterogeneous profiles, cancellation, and duplicates; matching semantic facts produce
+identical bytes and identities. The index consumes only published IR deltas and remains correct when
+compiler acquisition/execution fails. This is integration and evidence closure, not a VCS/cache/scheduler
+rewrite or new frontend.
+
+## Plan closure
+
+The plan is complete at C6 only when C0–C5 retain their stated negative space and the C6 public journey
+reproduces all mandatory evidence from clean state twice. Closure requires frozen baseline/digest/LOC
+ledgers; public cross-crate tests and compile-fail witnesses; canonical-byte/golden and mutation corpora;
+allocator/copy/retained-live-byte, logical-work, and release-text measurements; scheduler cancellation,
+crash, and credit-conservation traces; bundle acquisition/rejection evidence; and the end-to-end
+local/remote incremental trace. Every phase must have zero blockers/majors, unused reserve, exact
+commands, and a reviewer counterexample that fails a plausible weakened implementation. Green happy paths,
+local parser caches, bundle availability, fleet placement, host identity, retry metadata, or eviction never
+substitute for proof. Full plan completion is eight; nine and ten require predeclared, measured
+same-direction robustness on another workload, platform, or failure profile and never additional scope.
