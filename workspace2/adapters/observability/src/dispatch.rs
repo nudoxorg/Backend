@@ -16,10 +16,8 @@ pub fn dispatch(
     interest: Targets,
 ) -> tracing::Dispatch {
     let otel_tracer = trace_provider.tracer("nudox-server");
-    let trace_layer = tracing_opentelemetry::layer()
-        .with_tracer(otel_tracer)
-        .with_filter(interest.clone());
-    let logs = OpenTelemetryTracingBridge::new(logger_provider).with_filter(interest.clone());
+    let trace_layer = tracing_opentelemetry::layer().with_tracer(otel_tracer);
+    let logs = OpenTelemetryTracingBridge::new(logger_provider);
     tracing::Dispatch::new(
         tracing_subscriber::registry()
             .with(interest)

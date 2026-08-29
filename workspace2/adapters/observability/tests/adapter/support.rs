@@ -2,7 +2,7 @@ use thiserror::Error;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::filter::Targets;
 
-use crate::{AdapterRunError, BatchLimitsError};
+use nudox_observability_adapter::{AdapterRunError, BatchLimitsError};
 
 #[derive(Debug, Error)]
 pub(super) enum AdapterTestError {
@@ -14,14 +14,20 @@ pub(super) enum AdapterTestError {
     Sdk(#[from] opentelemetry_sdk::error::OTelSdkError),
     #[error("export omitted span {name}")]
     MissingSpan { name: &'static str },
+    #[error("export repeated span {name}")]
+    DuplicateSpan { name: &'static str },
+    #[error("exported span {index} had an unexpected name")]
+    UnexpectedSpan { index: usize },
     #[error("trace event {event} omitted attribute {key}")]
     MissingTraceAttribute { event: String, key: &'static str },
     #[error("trace event {event} carried unsupported value in {key}")]
     UnsupportedTraceValue { event: String, key: &'static str },
     #[error("log {index} omitted its active trace context")]
     MissingLogContext { index: usize },
+    #[error("log {index} omitted field {key}")]
+    MissingLogField { index: usize, key: &'static str },
     #[error("log {index} carried unsupported value in {key}")]
-    UnsupportedLogValue { index: usize, key: String },
+    UnsupportedLogValue { index: usize, key: &'static str },
     #[error("metric export omitted {name}")]
     MissingMetric { name: &'static str },
     #[error("metric {name} was not one exact u64 gauge point")]

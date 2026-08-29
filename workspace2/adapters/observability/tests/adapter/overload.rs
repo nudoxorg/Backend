@@ -10,7 +10,9 @@ use opentelemetry_sdk::{
     trace::{SpanData, SpanExporter},
 };
 
-use crate::{BatchLimits, BatchLimitsError, batch_logger_provider, batch_provider, dispatch};
+use nudox_observability_adapter::{
+    BatchLimits, BatchLimitsError, batch_logger_provider, batch_provider, dispatch,
+};
 
 use super::support::{AdapterTestError, nudox_interest};
 
@@ -35,6 +37,23 @@ struct GateState {
 struct ExportedBatches {
     count: usize,
     largest: usize,
+}
+
+#[derive(Debug)]
+struct ProducerOutcome {
+    received: Result<usize, AdapterTestError>,
+    released: Result<(), AdapterTestError>,
+    joined: Result<Result<(), AdapterTestError>, AdapterTestError>,
+}
+
+impl ProducerOutcome {
+    // Coordination has deterministic source priority: receive, release, join, producer send.
+    fn into_result(self) -> Result<usize, AdapterTestError> {
+        let completed = self.received?;
+        self.released?;
+        self.joined??;
+        Ok(completed)
+    }
 }
 
 impl BlockingGate {
@@ -132,7 +151,7 @@ where
                 .send(produce())
                 .map_err(|_| AdapterTestError::ProducerDisconnected)
         });
-        let completed = observed
+        let received = observed
             .recv_timeout(TEST_TIMEOUT)
             .map_err(|error| match error {
                 RecvTimeoutError::Timeout => AdapterTestError::ProducerTimedOut,
@@ -142,19 +161,38 @@ where
         let joined = producer
             .join()
             .map_err(|_| AdapterTestError::ProducerPanicked);
-        match completed {
-            Ok(completed) => {
-                released?;
-                joined??;
-                Ok(completed)
-            }
-            Err(error) => {
-                let _ = released;
-                let _ = joined;
-                Err(error)
-            }
+        ProducerOutcome {
+            received,
+            released,
+            joined,
         }
+        .into_result()
     })
+}
+
+#[test]
+fn producer_outcome_retains_coexisting_failures_before_prioritizing() {
+    let outcome = ProducerOutcome {
+        received: Err(AdapterTestError::ProducerTimedOut),
+        released: Err(AdapterTestError::GatePoisoned),
+        joined: Err(AdapterTestError::ProducerPanicked),
+    };
+    assert!(matches!(
+        &outcome.received,
+        Err(AdapterTestError::ProducerTimedOut)
+    ));
+    assert!(matches!(
+        &outcome.released,
+        Err(AdapterTestError::GatePoisoned)
+    ));
+    assert!(matches!(
+        &outcome.joined,
+        Err(AdapterTestError::ProducerPanicked)
+    ));
+    assert!(matches!(
+        outcome.into_result(),
+        Err(AdapterTestError::ProducerTimedOut)
+    ));
 }
 
 #[test]

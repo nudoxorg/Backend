@@ -1,6 +1,4 @@
-use std::collections::BTreeMap;
-
-use opentelemetry::{SpanId, TraceId, Value, logs::AnyValue};
+use opentelemetry::{Key, SpanId, TraceId, Value, logs::AnyValue};
 use opentelemetry_sdk::{
     logs::{InMemoryLogExporter, in_memory_exporter::LogDataWithResource},
     metrics::{
@@ -10,7 +8,7 @@ use opentelemetry_sdk::{
     trace::{InMemorySpanExporterBuilder, SpanData},
 };
 
-use crate::{
+use nudox_observability_adapter::{
     BatchLimits, TracingProbe, batch_logger_provider, batch_provider, dispatch,
     periodic_meter_provider,
 };
@@ -49,7 +47,9 @@ fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
     logger_provider.force_flush()?;
     meter_provider.force_flush()?;
 
-    let span_ids = assert_exact_spans(&span_exporter.get_finished_spans()?)?;
+    let spans = span_exporter.get_finished_spans()?;
+    assert_span_lookup_rejections(&spans);
+    let span_ids = assert_exact_spans(&spans)?;
     assert_exact_logs(&log_exporter.get_emitted_logs()?, span_ids)?;
     assert_exact_metrics(&metric_exporter.get_finished_metrics()?)?;
 
@@ -62,14 +62,11 @@ fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
 }
 
 fn assert_exact_spans(spans: &[SpanData]) -> Result<ScenarioSpanIds, AdapterTestError> {
-    assert_eq!(spans.len(), 3);
-    let by_name: BTreeMap<_, _> = spans
-        .iter()
-        .map(|span| (span.name.as_ref(), span))
-        .collect();
-    let request = required_span(&by_name, "nudox.request")?;
-    let root = required_span(&by_name, "nudox.root_selection")?;
-    let workflow = required_span(&by_name, "nudox.workflow_stage")?;
+    let ScenarioSpans {
+        request,
+        root,
+        workflow,
+    } = exact_spans(spans)?;
     assert_eq!(request.parent_span_id, SpanId::INVALID);
     assert_eq!(root.parent_span_id, request.span_context.span_id());
     assert_eq!(workflow.parent_span_id, request.span_context.span_id());
@@ -93,14 +90,70 @@ fn assert_exact_spans(spans: &[SpanData]) -> Result<ScenarioSpanIds, AdapterTest
     })
 }
 
-fn required_span<'spans>(
-    spans: &BTreeMap<&str, &'spans SpanData>,
-    name: &'static str,
-) -> Result<&'spans SpanData, AdapterTestError> {
-    spans
-        .get(name)
-        .copied()
-        .ok_or(AdapterTestError::MissingSpan { name })
+#[derive(Default)]
+struct ScenarioSpanSlots<'spans> {
+    request: Option<&'spans SpanData>,
+    root: Option<&'spans SpanData>,
+    workflow: Option<&'spans SpanData>,
+}
+
+struct ScenarioSpans<'spans> {
+    request: &'spans SpanData,
+    root: &'spans SpanData,
+    workflow: &'spans SpanData,
+}
+
+fn exact_spans<'spans>(
+    spans: impl IntoIterator<Item = &'spans SpanData>,
+) -> Result<ScenarioSpans<'spans>, AdapterTestError> {
+    let mut slots = ScenarioSpanSlots::default();
+    for (index, span) in spans.into_iter().enumerate() {
+        let (slot, name) = match span.name.as_ref() {
+            "nudox.request" => (&mut slots.request, "nudox.request"),
+            "nudox.root_selection" => (&mut slots.root, "nudox.root_selection"),
+            "nudox.workflow_stage" => (&mut slots.workflow, "nudox.workflow_stage"),
+            _ => return Err(AdapterTestError::UnexpectedSpan { index }),
+        };
+        if slot.replace(span).is_some() {
+            return Err(AdapterTestError::DuplicateSpan { name });
+        }
+    }
+    Ok(ScenarioSpans {
+        request: slots.request.ok_or(AdapterTestError::MissingSpan {
+            name: "nudox.request",
+        })?,
+        root: slots.root.ok_or(AdapterTestError::MissingSpan {
+            name: "nudox.root_selection",
+        })?,
+        workflow: slots.workflow.ok_or(AdapterTestError::MissingSpan {
+            name: "nudox.workflow_stage",
+        })?,
+    })
+}
+
+fn assert_span_lookup_rejections(spans: &[SpanData]) {
+    for missing in [
+        "nudox.request",
+        "nudox.root_selection",
+        "nudox.workflow_stage",
+    ] {
+        assert!(matches!(
+            exact_spans(spans.iter().filter(|span| span.name != missing)),
+            Err(AdapterTestError::MissingSpan { name }) if name == missing
+        ));
+    }
+    for duplicate in [
+        "nudox.request",
+        "nudox.root_selection",
+        "nudox.workflow_stage",
+    ] {
+        let duplicate_span = spans.iter().find(|span| span.name == duplicate);
+        assert!(matches!(
+            duplicate_span
+                .map(|span| exact_spans(spans.iter().chain(core::iter::once(span)))),
+            Some(Err(AdapterTestError::DuplicateSpan { name })) if name == duplicate
+        ));
+    }
 }
 
 fn assert_trace_events(
@@ -175,16 +228,7 @@ fn assert_exact_logs(
         assert_eq!(context.span_id, span_ids.for_event(expected.span));
         assert_eq!(log.record.attributes_iter().count(), expected.fields.len());
         for &(key, value) in expected.fields {
-            let observed = log
-                .record
-                .attributes_iter()
-                .find(|(observed, _)| observed.as_str() == key)
-                .map(|(_, value)| log_value(index, key, value))
-                .transpose()?
-                .ok_or_else(|| AdapterTestError::UnsupportedLogValue {
-                    index,
-                    key: key.to_owned(),
-                })?;
+            let observed = required_log_value(index, key, log.record.attributes_iter())?;
             assert_eq!(observed, value.log_value());
         }
     }
@@ -209,15 +253,45 @@ impl ScenarioSpanIds {
     }
 }
 
-fn log_value(index: usize, key: &str, value: &AnyValue) -> Result<ObservedValue, AdapterTestError> {
+fn required_log_value<'attributes>(
+    index: usize,
+    key: &'static str,
+    attributes: impl IntoIterator<Item = &'attributes (Key, AnyValue)>,
+) -> Result<ObservedValue, AdapterTestError> {
+    let value = attributes
+        .into_iter()
+        .find(|(observed, _)| observed.as_str() == key)
+        .map(|(_, value)| value)
+        .ok_or(AdapterTestError::MissingLogField { index, key })?;
+    log_value(index, key, value)
+}
+
+fn log_value(
+    index: usize,
+    key: &'static str,
+    value: &AnyValue,
+) -> Result<ObservedValue, AdapterTestError> {
     match value {
         AnyValue::Int(value) if *value >= 0 => Ok(ObservedValue::Unsigned(value.cast_unsigned())),
         AnyValue::String(value) => Ok(ObservedValue::text(value.as_str())),
-        _ => Err(AdapterTestError::UnsupportedLogValue {
-            index,
-            key: key.to_owned(),
-        }),
+        _ => Err(AdapterTestError::UnsupportedLogValue { index, key }),
     }
+}
+
+#[test]
+fn log_field_errors_distinguish_absence_from_representation() {
+    let attributes = [(Key::new("present"), AnyValue::Boolean(true))];
+    assert!(matches!(
+        required_log_value(2, "missing", attributes.iter()),
+        Err(AdapterTestError::MissingLogField {
+            index: 2,
+            key: "missing"
+        })
+    ));
+    assert!(matches!(
+        required_log_value(3, "present", attributes.iter()),
+        Err(AdapterTestError::UnsupportedLogValue { index: 3, key }) if key == "present"
+    ));
 }
 
 #[derive(Debug, Eq, PartialEq)]
