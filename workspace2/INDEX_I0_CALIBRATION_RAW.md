@@ -164,3 +164,28 @@ seeded defect at blocker severity; and the fresh post-rewrite reader passed the 
 contract. Successful explicit `gpt-5.6-luna`/`fork_turns: "none"` creation is recorded for every
 role; selected-model inspection is unavailable in this runtime and remains an honest tooling gap, not
 a model substitution. No product-authority choice is unresolved.
+
+## Implementation checkpoint and role record
+
+The bounded Luna builder was explicitly spawned with `model: "gpt-5.6-luna"` and
+`fork_turns: "none"`; it made the vocabulary checkpoint later committed by the manager as
+`a8486a1b`. Its online test gate could not resolve `index.crates.io`; the exact failure is preserved
+in its handoff. The identical lockfile-resolved gate passed with `--offline`, as did format, doctest,
+clippy, documentation, and `nudox-id` marker tests. The Luna repair worker was separately and
+explicitly spawned with the same model/fork and implementation-only one-file scope; it committed
+`660b8c5f` (delete the direct `nudox-id` external-test import) and `0afd1140` (add byte-mutation
+falsifiers and replace a valid-code `unwrap`). Neither Luna was asked to review or approve.
+
+The separate read-only acceptance reviewer was explicitly spawned with `model: "gpt-5.6-terra"` and
+`fork_turns: "none"` as `i0_vocab_terra_review`. It made no edits, rejected the first candidate for
+the two test-evidence findings, then reread `0afd1140`, reran focused offline gates, and accepted it
+with zero blockers/majors. Live model inspection exposes no selected-model field; these successful
+explicit model-override invocations and the reviewers' recorded limitation are the durable transport
+evidence, not task names.
+
+Actual normally formatted Rust delta versus `f9419673`: production 118 lines
+(`marker.rs` +17, `lib.rs` +1, vocabulary +100) under the 230 ceiling with 112 lines unused; tests
+73 lines after the deletion repair under the 120 ceiling with 47 lines unused. The +5-line marker
+forecast variance is recorded as normal formatting within the protected phase reserve. Nested
+lockfile registry packages/version/checksum entries all occur in `workspace2/Cargo.lock`; the only
+new package is local `nudox-index-vocab`.
