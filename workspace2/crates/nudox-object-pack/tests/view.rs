@@ -88,7 +88,7 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
     assert_eq!(object(&one, only.reference.content)?.body, only.bytes);
     let (bytes, inputs) = pack()?;
     let view = ObjectPackView::try_from(bytes.as_slice())?;
-    let body_start = usize::from(view.index.index_bytes);
+    let body_start = usize::from(view.index_bytes);
     let mut offset = body_start;
     for input in inputs {
         let selected = object(&view, input.reference.content)?;
@@ -123,11 +123,7 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
 #[test]
 fn complete_view_reports_exact_extents_and_selected_hash_mismatch() -> Result<(), TestError> {
     let (bytes, inputs) = pack()?;
-    let index_bytes = usize::from(
-        ObjectPackView::try_from(bytes.as_slice())?
-            .index
-            .index_bytes,
-    );
+    let index_bytes = usize::from(ObjectPackView::try_from(bytes.as_slice())?.index_bytes);
     let expected = ObjectPackBytes::from(bytes.len());
     assert_eq!(
         opening_error(

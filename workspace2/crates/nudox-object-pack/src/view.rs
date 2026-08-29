@@ -1,8 +1,9 @@
-use nudox_id::{ContentId, ObjectDomain};
-use nudox_object::{ObjectLength, ObjectRef};
-use nudox_schema::SchemaId;
+use core::ops::Deref;
 
-use crate::{ObjectPackError, ObjectPackIndex};
+use nudox_id::{ContentId, ObjectDomain};
+use nudox_object::ObjectRef;
+
+use crate::{ObjectPackError, ObjectPackIndex, ObjectPackIndexFacts};
 
 /// A selected descriptor and its exact borrowed body in a complete pack.
 pub struct ObjectPackObject<'pack> {
@@ -31,11 +32,20 @@ impl ObjectPackObject<'_> {
 }
 
 /// Borrowed view of one complete, validated object pack.
+///
+/// The backing bytes and their index witness remain private because their
+/// pairing is the invariant that makes lookup projection infallible.
 pub struct ObjectPackView<'pack> {
-    /// Complete backing bytes, validated once with `index`.
-    pub bytes: &'pack [u8],
-    /// Retained typed index witness for the complete backing bytes.
-    pub index: ObjectPackIndex<'pack>,
+    bytes: &'pack [u8],
+    index: ObjectPackIndex<'pack>,
+}
+
+impl<'pack> Deref for ObjectPackView<'pack> {
+    type Target = ObjectPackIndexFacts<'pack>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.index
+    }
 }
 
 impl<'pack> TryFrom<&'pack [u8]> for ObjectPackView<'pack> {
@@ -66,8 +76,7 @@ impl<'pack> ObjectPackView<'pack> {
                 core::cmp::Ordering::Greater => right = middle,
                 core::cmp::Ordering::Equal => {
                     let end = native_coordinate(row.body_end.get());
-                    let length =
-                        native_coordinate(*ObjectLength::from(row.descriptor.length.get()));
+                    let length = native_coordinate(row.descriptor.length.get());
                     let start = end - length;
                     let body_start = usize::from(self.index.index_bytes);
                     return Some(ObjectPackObject {
@@ -81,21 +90,15 @@ impl<'pack> ObjectPackView<'pack> {
     }
 }
 
-fn native_coordinate(value: u64) -> usize {
-    match usize::try_from(value) {
-        Ok(value) => value,
-        Err(_) => unreachable!("validated object-pack coordinate fits the target address space"),
-    }
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    reason = "complete view construction proved every canonical u64 coordinate is losslessly representable as usize on this target"
+)]
+const fn native_coordinate(value: u64) -> usize {
+    value as usize
 }
 
 fn reference(row: &crate::format::DirectoryRecord) -> ObjectRef<ObjectDomain> {
-    let Ok(schema) = SchemaId::try_from(row.descriptor.schema.get()) else {
-        unreachable!("validated object-pack descriptor has a known schema");
-    };
-    ObjectRef {
-        content: ContentId::from(row.descriptor.content),
-        length: ObjectLength::from(row.descriptor.length.get()),
-        schema,
-        kind: row.descriptor.kind.get().into(),
-    }
+    ObjectRef::from(&row.descriptor)
 }

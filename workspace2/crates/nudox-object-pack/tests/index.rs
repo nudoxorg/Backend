@@ -3,21 +3,18 @@
 #[path = "support/object_pack_index.rs"]
 mod support;
 
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 
-use nudox_object::OBJECT_DESCRIPTOR_RECORD_BYTES;
+use nudox_object::{OBJECT_DESCRIPTOR_RECORD_BYTES, ObjectDescriptorWireRecord};
 use nudox_object_pack::{
     OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackIndex,
     ObjectPackObjectCount,
 };
 use nudox_schema::UnknownSchemaId;
 use thiserror::Error;
-use zerocopy::{
-    IntoBytes,
-    byteorder::{U32, U64},
-};
+use zerocopy::{IntoBytes, byteorder::U64};
 
-use support::{TestIndex, row, three_rows};
+use support::{TestDirectoryRow, TestIndex, row, three_rows};
 
 const UNKNOWN_SCHEMA: u32 = 99;
 
@@ -136,11 +133,17 @@ fn cumulative_mutations() -> Result<(), TestError> {
 #[test]
 fn directory_mutations_preserve_exact_schema_order_and_cumulative_diagnostics()
 -> Result<(), TestError> {
-    let mut schema = three();
-    let [first, _, _] = &mut schema.rows;
-    first.descriptor.schema = U32::new(UNKNOWN_SCHEMA);
+    let schema = three();
+    let mut schema_bytes = schema.as_bytes().to_vec();
+    let schema_offset = offset_of!(TestIndex<3>, rows)
+        + offset_of!(TestDirectoryRow, descriptor)
+        + offset_of!(ObjectDescriptorWireRecord, schema);
+    let target = schema_bytes
+        .get_mut(schema_offset..schema_offset + size_of::<u32>())
+        .ok_or(TestError::UnexpectedIndex)?;
+    target.copy_from_slice(&UNKNOWN_SCHEMA.to_be_bytes());
     assert_eq!(
-        rejection(schema.as_bytes())?,
+        rejection(schema_bytes.as_slice())?,
         ObjectPackError::DirectorySchema {
             ordinal: 0,
             source: UnknownSchemaId(UNKNOWN_SCHEMA),
