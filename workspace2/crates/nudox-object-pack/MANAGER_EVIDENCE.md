@@ -102,3 +102,52 @@ green test. The final closure distinguishes this external gate blocker from code
 
 Pending builder and independent breaker evidence. The final section records accepted and rejected
 commits, candidate digests/LOC, gates, counterexample, and remaining limitation.
+
+### Checkpoint 2 — build, break, and closure
+
+The explicit worker-model spawn returned a live child under the requested `gpt-5.6-luna` override
+with `fork_turns: none`; the successful model-override result, rather than the worker name, is the
+model proof. Its first authorized turn produced the owned-path commit
+`3f42b8f235f6cd89ba574c42c7752bfaa9eab96f`. The manager imported it as
+`951f85b0`, then rejected its unchecked form: lookup converted validated coordinate/schema facts
+into `None`, the complete view parsed the header twice, and it supplied no consumer falsifiers.
+That rejected form remains inspectable at `3f42b8f`; 119 written production lines count as worker
+churn. A service thread-limit denied a fresh repair/breaker spawn, so the manager performed the
+narrow repair and independent hostile review without changing the frozen surface.
+
+Accepted repair commit: `0ebe9b06e4eb9a6dc3cb209093670821de0e5bd7` on top of `951f85b0`.
+`ObjectPackIndex::complete` validates the count/header and directory exactly once, retains the typed
+directory witness, and compares the complete input extent before a view exists. `ObjectPackView` uses
+raw 32-byte binary comparisons and returns `None` only after an exhausted search. Its selected range
+uses only construction-proven native coordinates and its selected descriptor recreates a checked
+schema fact; selected verification reuses `ContentId::from_canonical_bytes` and preserves both IDs.
+
+Independent breaker counterexamples were: header-minus-one, index-minus-one, index-only body
+truncation, trailing byte, below/above/missing identities, all three positions, neighbor boundaries,
+and a same-length modified body. The public `tests/view.rs` attacks each and passed. The strongest
+counterexample was the same-length modified first body: the view opened (body hashing is optional)
+and `verify` returned `ObjectContent { expected, actual }` exactly. The former `ok()?` path was also
+eliminated; a binary-search miss is now the only public absence.
+
+Gates (from `workspace2`, with `RUSTC_WRAPPER=` because inherited `sccache` fails with EPERM):
+
+- `cargo fmt -p nudox-object-pack --check` — pass.
+- `cargo clippy -p nudox-object-pack --all-targets -- -D warnings` — pass.
+- `cargo test -p nudox-object-pack --no-fail-fast` — pass: 19 unit/integration tests plus doctests.
+- `git diff --check` — pass.
+
+Candidate production LOC is 816 from frozen 659: +157, leaving 73 lines of the 230 ceiling.
+Candidate test LOC is 1,006 from frozen 778: +228, leaving 32 lines of the 260 ceiling. No manifests,
+dependencies, unsafe, SIMD, async, store, transport, or range-authentication code changed. Candidate
+digests are `src/error.rs` `712bf70b3cb380d71d9e2b330d2f5f9778306663ee885ea1b3f0e83118cbe1d0`,
+`src/index.rs` `5b217c3781ae44d1c569f099bc3cff5e8d337096c92cdf230ccb3c6fb56e8303`,
+`src/lib.rs` `b8f7450fd26449f4e83eea852381032df6df00520fc508e9302a58f686f407a7`,
+`src/view.rs` `509d921765a1fe32ee197acda7c3eec0a17abb57dcff2a1ef36c43721a78febf`, and
+`tests/view.rs` `00a5693dfe9aa35ce2435653d37ba2a7a6c1c1023b708cfb4a6587c00c88943b`.
+
+Rubric result: 8/8 plan-complete. Required semantic, fault, ownership, allocation, and gate rows are
+reproducible; no 9–10 stretch is claimed. The test-only logarithmic bound is established by the
+audited binary-search loop, not a counter-instrumented test; this is an honest residual measurement
+gap, along with untested 32-bit execution. The next smallest decision is whether a future manager
+needs to add an isolated comparison counter before beginning the separate authenticated partial-range
+plane; it does not authorize that plane here.
