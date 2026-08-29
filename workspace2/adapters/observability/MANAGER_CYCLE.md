@@ -1,5 +1,29 @@
 # Observability adapter manager cycle
 
+## Root-review checkpoint contract
+
+| Item | Contract |
+|---|---|
+| Baseline | Git `699b7cca71c78de8afebc1cee9e2a26a3ca46fdc`; every writable baseline file is digested in the manager handoff. |
+| Capability | Make the already-shipping adapter journey an actual public integration journey, then delete redundant interest work and strengthen exact diagnostics without changing adapter semantics. |
+| Observable consumer | A server composes bounded SDK providers, `dispatch`, and `TracingProbe`; public tests invoke only this adapter boundary. |
+| Allowed paths | `adapters/observability/**` only. |
+| Preserve | Static typed probes; the nested adapter dependency boundary; three spans, fifteen logs, seven unlabeled gauges; exact trace/span/value assertions; bounded queues; caller-owned lifecycle; no health wrapper. |
+| Must prove | Public journey is in top-level `tests/`; one outer `Targets` policy is behaviorally equivalent to the former three uses; three-span lookup has no allocation and rejects missing/duplicate names; overload cleanup retains every primary/release/join failure deterministically; missing and unsupported log fields are distinct errors. |
+| Budget | No dependency, unsafe, allocator, SIMD, exporter-health, OTLP, core API, or new production abstraction. Deletion is preferred; no production growth without an eliminated redundant operation. |
+| Negative space | No custom queue, global subscriber, changed telemetry protocol, runtime/store/core edit, retry policy, or collector integration. |
+| Parent decision | Accept one path-topology/diagnostic cleanup commit only if exact public tests and nested gates pass. |
+
+### Root-review falsifiers
+
+| Law | Artifact | Expected evidence | Stop trigger |
+|---|---|---|---|
+| Public boundary | top-level integration test | `src/` has only private unit law modules; full observable journey is compiled as an external consumer. | A test needs a private item or changes production visibility. |
+| One interest policy | controlled disabled-target test | Outer-only `Targets` retains log/span routing and lazy builder behavior. | Trace or log events differ, or the builder runs. |
+| Span lookup | exact integration assertion | No `BTreeMap`; each of the three expected names appears once, and missing/duplicate names return distinct typed errors. | A lookup allocates or a duplicate overwrites. |
+| Cleanup | injected receive/release/join failure | Exact deterministic aggregate/priority preserves all coexisting causes. | `let _ =` or string conversion discards one. |
+| Log fields | missing and malformed fixture paths | Absence reports `MissingLogField`; wrong representation reports `UnsupportedLogValue`. | Both defects share one error. |
+
 ## Frozen contract
 
 | Item | Contract |
