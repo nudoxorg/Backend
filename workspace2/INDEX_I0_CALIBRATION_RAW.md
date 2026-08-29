@@ -249,6 +249,7 @@ Three deliberate mutants proved that the tests are causal rather than green deco
 
 | Mutant | Exact observed failure |
 | --- | --- |
+| shared `ContentId::from_canonical_bytes` hashes an empty slice instead of its input | the public local/remote journey's byte-mutation assertion failed with equal digests; exit 101 |
 | `From<SegmentFamily>` maps `Exact` to `u8::MAX` | `unknown_segment_family_retains_the_raw_value` failed `left: 255`, `right: 1`; exit 101 |
 | `RootDomain` is added to the sealed family projection | the RootDomain `compile_fail` doctest compiled and therefore failed; exit 101 |
 | one `Box<u8>` is allocated inside the measured closure | allocation evidence observed one allocation/one byte instead of zero; exit 101 |
