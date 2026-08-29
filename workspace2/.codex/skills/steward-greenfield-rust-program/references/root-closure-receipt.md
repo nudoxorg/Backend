@@ -24,6 +24,8 @@ manager model proof:
 Luna worker model proof per writing turn:
 independent Terra reviewer model proof:
 reviewer no-edit proof:
+root post-manager shipping edits:
+fresh reviewer proof after final root shipping edit:
 root-owned changed paths:
 unrelated dirty paths:
 ```
@@ -126,12 +128,15 @@ post-gate source edits: none | closure reopened
 post-gate evidence edits and current receipt identity:
 root concurrent durable artifact:
 roadmap/skill changes caused by observed misses:
+root conformance table artifact:
 verdict: ACCEPTED | REJECTED | OPEN
 ```
 
 `ACCEPTED` requires the exact committed source candidate, every law `REPRODUCED`, zero blocker/major,
 unused reserve, two clean full passes, a later receipt whose intervening diff is evidence-only, and no
-later source edit. Otherwise choose `REJECTED` or `OPEN`; do not average missing proof into a score.
+later source edit. When root changed shipping source, tests, manifests, fixtures, or generated
+consumers after manager review, acceptance also requires a fresh independent read-only review of the
+final candidate. Otherwise choose `REJECTED` or `OPEN`; do not average missing proof into a score.
 
 When a candidate crosses histories through cherry-pick or patch integration, name the integrated
 commit and compare every scoped source, test, manifest, lock, fixture, and generated consumer path.

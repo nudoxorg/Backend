@@ -1,6 +1,6 @@
 # Root steward cold calibration
 
-Status: **CALIBRATED FOR CUSTODY; I0 REMAINS OPEN**
+Status: **CALIBRATION STALE; I0 REMAINS OPEN**
 
 This artifact records the blind forward-test that reopened the earlier Index I0 acceptance. It is
 process evidence, not a product score or a replacement for an I0 closure receipt.
@@ -16,6 +16,12 @@ The orchestration API accepted both explicit model selections and returned the n
 The runtime exposes no second selected-model field, which the current receipt contract now states
 instead of treating a worker name or self-report as proof. Both trials ended with clean read-only
 status and no artifact edits.
+
+This deck no longer calibrates the current steward contract. Later semantic edits added scoped
+cross-history equivalence, exact-location rules, clean-gate source binding, rejected-checkpoint
+continuation, and independent review after root shipping fixes. Under the calibration skill's own
+rewrite rule, those changes invalidate the earlier trials. The results below remain useful defect
+evidence, not a current pass.
 
 ## Defects the first trial caught
 
@@ -36,7 +42,8 @@ score before adoption.
 
 ## Retest decision
 
-The fresh retest could no longer approve through the earlier custody ambiguity. It correctly returned:
+The fresh retest could no longer approve through the earlier custody ambiguity. For its frozen
+governance specimen, it correctly returned:
 
 - I0 `OPEN` until its receipt is rebuilt from the current literal template;
 - numeric rubric `NOT ADOPTED`, with zero readiness rows closed;
@@ -59,6 +66,8 @@ checks were clean. This is an explicit tooling gap, not an official-validator pa
 The I0 receipt has now been rebuilt with a conforming fresh read-only Terra review and two
 candidate-bound hashed clean passes. It remains `OPEN` rather than laundering missing historical role
 identities or stale calibration. Run the complete current cold deck, replace that custody with fresh
-explicit roles, then give the packet to another fresh steward reader. If that reader can accept with
-an omitted row, stale digest, evidence-only prose standing in for an artifact, or unproved integrated
-tree equivalence, stewardship calibration reopens.
+explicit roles, then give the packet to another fresh steward reader. Seed stale calibration, role
+mixing, a post-gate shipping edit, missing scoped equivalence, and a root-authored fix reviewed only by
+root. Every case must be rejected from the literal contract. If a reader accepts any case or accepts
+an omitted row, evidence-only prose standing in for an artifact, or an unproved integration, rewrite
+the narrow ambiguity and invalidate the deck again.

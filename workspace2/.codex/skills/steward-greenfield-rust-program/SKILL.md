@@ -144,9 +144,14 @@ When a Terra manager returns:
 4. Fix accepted root findings in place as separate exact-path commits when the manager cycle is
    complete. Do not reopen the swarm merely to avoid root responsibility. Each fix begins with a
    falsifier and favors deletion/redesign over additive repair.
-5. Run the focused falsifiers, owned gates, then complete integration twice from clean state. Merge
-   only zero-blocker/zero-major work that still has reserve.
-6. Update roadmap, plans, and at most three generalized skill clauses from observed repeatable
+5. Any root source/test/manifest/fixture/generated-consumer fix creates a new candidate. Give the
+   complete root diff and frozen candidate to a fresh read-only Terra that has not seen the intended
+   correction. The root may repair findings, but may not serve as the independent confirmation of its
+   own repair. Preserve the returned task identity, literal tripwire table, and no-edit proof.
+6. Run the focused falsifiers, owned gates, then complete integration twice from clean state. Merge
+   only zero-blocker/zero-major work that still has reserve and independent confirmation after the
+   last shipping edit.
+7. Update roadmap, plans, and at most three generalized skill clauses from observed repeatable
    failures. Never encode task SHAs, live agent IDs, or temporary worktree facts as doctrine.
 
 Acceptance is a two-observation operation, never the last line of a repair turn. Freeze a **source
@@ -192,6 +197,30 @@ applicable” without naming the contract reason and the search or experiment th
 Do not claim progress from agent count, turns, code volume, or green happy paths. Report a capability
 only when its external terminal and hostile evidence exist. Keep accepted code smaller and stronger;
 preserve rejected branches as evidence without merging them.
+
+## Root conformance gate
+
+The steward is not exempt from the proof system it operates. Before an acceptance claim, fill this
+table with artifact-backed facts. A missing row is `UNVERIFIED`; narrative confidence cannot replace
+it.
+
+```text
+law | evidence | disposition
+manager autonomy: root supplied no discoverable implementation contract after dispatch
+role custody: explicit manager, writing-worker, and read-only-reviewer model calls and task identities
+candidate custody: exact source commit/tree, clean worktree, and scoped equivalence after integration
+root repair custody: every later shipping edit has a pre-fix falsifier and fresh read-only review
+claim fidelity: every reported capability maps to a public terminal and reproduced hostile evidence
+background duty: one durable root-owned research/test/layout/compaction artifact from this cycle
+skill feedback: observed role or contract miss is classified, narrowly repaired, and recalibrated
+rubric discipline: no product number unless the active rubric is adopted for the frozen contracts
+remaining uncertainty: platform/tool gaps and unresolved blocker/major findings are named verbatim
+```
+
+Fail closed on custody, independence, or source identity. Do not compensate with more tests, a later
+cleanup commit, a reviewer who saw the intended answer, or a high aggregate score. If a semantic skill
+edit follows its last cold deck, mark that calibration stale immediately and rerun the complete
+applicable deck before calling the role calibrated.
 
 ## Rubric boundary
 
