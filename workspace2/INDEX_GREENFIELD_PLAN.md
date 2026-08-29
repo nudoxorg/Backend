@@ -52,7 +52,6 @@ planes/index/
     nudox-index-build/       caller-arena builders, external sort, compaction equivalence
     nudox-index-query/       sync borrowed planners, posting cursors, merge/top-k
     nudox-index-publish/     std durable snapshot log/head protocol
-    nudox-index-testkit/     non-shipping deterministic drivers and mutation corpus
   adapters/
     file/                    mmap and file-range leases
     object-store/            remote range/read/write and publication CAS
@@ -63,7 +62,8 @@ planes/index/
 
 A crate exists only when it owns a replaceable invariant. `lib.rs` maps modules and reexports a small
 vocabulary. Format, validation, planning, execution, publication, and adapters do not share a root
-implementation file.
+implementation file. Deterministic drivers, mutation corpora, and cross-crate journeys live in the
+owning crate's `tests/` tree or top-level integration tests; there is no test-only crate.
 
 ## Identity and vocabulary
 
@@ -71,8 +71,8 @@ Add protocol-owned domains through the existing declarative ID registry, never n
 
 ```text
 IndexDeltaId       = ContentId<IndexDeltaDomain>
-IndexSegmentId<F>  = ContentId<IndexSegmentDomain<F>>
-SegmentArtifact<F> = ArtifactId<SegmentEncoding, IndexSegmentDomain<F>>
+IndexSegmentId<F>  = ContentId<<F as IndexSegmentFamily>::IdentityDomain>
+SegmentArtifact<F> = ArtifactId<SegmentEncoding, <F as IndexSegmentFamily>::IdentityDomain>
 IndexSnapshotId    = ContentId<IndexSnapshotDomain>
 IndexRecipeId      = ContentId<IndexRecipeDomain>
 EmbeddingModelId   = ContentId<ModelDomain>
@@ -136,6 +136,31 @@ metadata. Family regions begin as:
 
 A segment footer/hot header names the minimal ranges required to open and plan against a cold object.
 It is a first-class range in the artifact, not an opaque in-memory cache serialization.
+
+### First manifest representation decision
+
+The first manifest proof uses one fixed-width, sorted descriptor lane borrowed from caller-owned
+bytes. Counts and record widths derive offsets; a validator returns a proof-carrying view, and the
+one-entry/empty cases establish canonical bytes before any compression mechanism is admitted. An FST
+is not a manifest directory: it earns a later lexical-term role only when ordered variable byte keys
+and prefix/automaton search beat binary search on measured bytes, page touches, and build work. The
+`fst` crate is useful evidence because it streams construction in constant memory, accepts mapped
+`AsRef<[u8]>` owners, and lends one reusable key buffer; its own documentation also warns that lookup
+can become random page access. Core therefore owns borrowed bytes, never an mmap type or a page-cache
+assumption.
+
+Primary evidence: [`fst` storage and streaming](https://docs.rs/fst/latest/fst/),
+[`sux` rank/select composition](https://docs.rs/sux/latest/sux/rank_sel/),
+[Tantivy's immutable-segment architecture](https://github.com/quickwit-oss/tantivy/blob/main/ARCHITECTURE.md),
+and [Qdrant's cached/cold storage tiers](https://qdrant.tech/documentation/manage-data/storage/).
+
+Rank/select is likewise a density-dependent sidecar, not default structure. It may replace explicit
+coordinates only after empty, one, sparse, crossover, dense, and million-row profiles measure total
+owner-plus-backing bytes and access work. Rank, select, and zero-select metadata must compose in their
+required dependency order and retain one coherent bit-vector owner; freely swappable wrappers that
+can pair metadata from different owners are rejected. Tantivy and Qdrant reinforce the immutable
+segment plus tiered-residency direction, but their JSON metadata, directory trait, whole-field RAM
+policy, WAL, and mutable optimizer state do not enter the portable manifest.
 
 ## Query algebra
 
