@@ -35,6 +35,19 @@ impl ObjectPackObject<'_> {
 ///
 /// The backing bytes and their index witness remain private because their
 /// pairing is the invariant that makes lookup projection infallible.
+///
+/// ```compile_fail,E0451
+/// use nudox_object_pack::{ObjectPackError, ObjectPackIndex, ObjectPackView};
+///
+/// fn mix_valid_owners<'bytes>(
+///     left: &'bytes [u8],
+///     right: &'bytes [u8],
+/// ) -> Result<(), ObjectPackError> {
+///     let index = ObjectPackIndex::try_from(left)?;
+///     let _forged = ObjectPackView { bytes: right, index };
+///     Ok(())
+/// }
+/// ```
 pub struct ObjectPackView<'pack> {
     bytes: &'pack [u8],
     index: ObjectPackIndex<'pack>,
