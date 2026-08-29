@@ -200,3 +200,9 @@ planes/compiler/crates/nudox-compile-registry/src/lib.rs 965eaabadaf3178cce0103f
 planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs 2835cffd057b88cd1c0914e77fd5660f6106e3ce3f9bbbd44bfd95e4d56f0df4
 planes/compiler/crates/nudox-compile-registry/tests/subset.rs 4bb540991a5189fa65a932cbacf12379eb6060a72f6e0e624d29006d177af843
 ```
+
+The root then ran both nested workspaces' locked format, check, all-target, doctest, clippy
+`-D warnings`, and rustdoc commands twice. Repository status was empty immediately after each pass;
+no cleanup command intervened. After integration, the complete portable workspace all-target test,
+clippy, and no-dependency rustdoc gates also passed from a clean shared tree. C0.1 is accepted at this
+boundary only; C0.2, C0.3, fragment lowering, and a real frontend remain unstarted.
