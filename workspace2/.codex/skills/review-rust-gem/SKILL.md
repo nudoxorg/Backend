@@ -33,6 +33,11 @@ cold-only, or a finding; an empty prose claim is not a scan. For each public mar
 trait, try deleting the wrapper marker and using the already branded associated/domain type directly.
 If the mapping adds no behavior or invalid-state exclusion, it is duplicate representation.
 
+At the pre-edit checkpoint, apply the same inventory to every literal ABI declaration and normally
+formatted skeleton in the card. Proposed tuple fields, trivial getters/callback delegation, raw
+semantic counters, sentinel arithmetic, broad lint allowances, or unplanned public items are findings
+before they become source; “there is no changed Rust file yet” does not make those rows zero.
+
 The final review must include this literal table with every row present, including zero-hit rows:
 
 ```text

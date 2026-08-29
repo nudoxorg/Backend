@@ -71,6 +71,12 @@ Never ask the root what to do next because a worker finished. Never keep a green
 because it took effort. “Relentless” means every turn attacks a remaining rubric row; repeating broad
 review or polishing unmeasured style is churn.
 
+An over-cap, ambiguous, or rejected checkpoint is an internal manager loop state, not a parent
+handoff. Record the churn, derive the next observable split, replace/calibrate the canonical card, and
+commission the next worker without returning “open” or “next action is split.” Return only a closed
+candidate or an allowed authority fork. A temporarily full worker pool means wait/retry while doing
+proof work, not completion.
+
 While Luna implements, the primary Terra researches every mechanism the checkpoint actually touches using
 primary source, upstream code, and local experiments. It converts that research into concise red
 tests or measurements before accepting the patch. Research that cannot alter a falsifier, budget,
@@ -125,6 +131,11 @@ file. Record unrelated dirty files and assign disjoint write ownership. Only the
 isolated manifests, public reexports, phase cards, and narrowly learned skill clauses unless
 explicitly delegated. The root sees the closed commit and evidence packet, not intermediate
 permission questions about discoverable repository facts.
+
+The canonical card and every evidence ledger live in the manager's isolated tracked worktree on its
+branch. A card in the parent checkout, home directory, or unrelated dirty workspace is not a durable
+specimen and grants no edit authority even when its digest is known. Commit each canonical card before
+calibration so a worker can prove both content digest and repository custody.
 
 The parent and sibling managers freeze the target's transitive production dependency paths for the
 duration of the build/break cycle. If an unavoidable parent edit changes one, stop the worker,
