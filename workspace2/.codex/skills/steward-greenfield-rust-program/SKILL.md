@@ -62,6 +62,13 @@ While managers work, make independent progress that will survive their branch:
    and periodically run the complete workspace plus nested adapters. Record unavailable tooling
    exactly; never turn a missing daemon into a green claim.
 
+Continuously harvest manager evidence into the program model. For every accepted representation,
+rejected prototype, surprising measurement, or recurring misread, decide whether it changes a future
+plan, a shared skill law, a next-batch prerequisite, or an already accepted abstraction. New code is
+an invitation to re-open old assumptions: search all crates for duplicated invariant ownership,
+weaker predecessor types, stale adapters, and tests that can now be deleted or strengthened. Never
+let a new case widen an old abstraction with optional fields or leakage merely to preserve it.
+
 Root work never edits a live manager's frozen transitive dependency. Use a separate branch/fork. If a
 root correction invalidates a manager baseline, stop it once, rebase explicitly, and preserve the
 discarded evidence as churn.

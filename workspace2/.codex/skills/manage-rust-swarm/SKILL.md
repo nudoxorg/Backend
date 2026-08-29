@@ -15,8 +15,10 @@ Workers own narrow evidence or patches. The parent reviews only the manager's cl
 
 ## Keep architecture with Terra and mechanics with Luna
 
-The manager is the capability architect and verifier. A Luna worker is a short-lived instrument, not
-a smaller manager. Terra decides the invariant owner, observable terminal, representation candidates,
+The manager is the capability architect and verifier. A Luna worker is a focused instrument, not a
+smaller manager. Its turn may be long-running when the proof boundary is coherent; narrow scope means
+one stable rubric and one checkpoint, not an arbitrary time or token limit. Terra decides the
+invariant owner, observable terminal, representation candidates,
 dependency direction, budgets, card sequence, and whether evidence earns integration. Luna receives
 one locally decidable job:
 
@@ -44,6 +46,12 @@ genuine authority fork -> stop once and ask root
 Never ask the root what to do next because a worker finished. Never keep a green checkpoint merely
 because it took effort. “Relentless” means every turn attacks a remaining rubric row; repeating broad
 review or polishing unmeasured style is churn.
+
+While Luna implements, Terra researches every mechanism the checkpoint actually touches using
+primary source, upstream code, and local experiments. It converts that research into concise red
+tests or measurements before reviewing the patch. Research that cannot alter a falsifier, budget,
+or representation decision is background reading and must not delay the worker. Terra never hands
+the research conclusion to an independence-sensitive breaker; it hands over the law and falsifier.
 
 ## Freeze the trial
 
