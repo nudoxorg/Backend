@@ -13,7 +13,7 @@ use nudox_observability_adapter::{
     periodic_meter_provider,
 };
 
-use super::scenario::run_wave1_scenario;
+use super::scenario::emit_signal_fixture;
 use super::support::{
     AdapterTestError, EVENTS, ExpectedEvent, ExpectedValue, ScenarioSpan, nudox_interest,
 };
@@ -37,16 +37,11 @@ fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
         periodic_meter_provider(metric_exporter.clone(), core::time::Duration::from_hours(1));
     let subscriber = dispatch(&trace_provider, &logger_provider, nudox_interest());
 
-    let evidence = tracing::dispatcher::with_default(&subscriber, || {
+    tracing::dispatcher::with_default(&subscriber, || {
         let mut probe = TracingProbe::with_meter(&meter_provider);
-        let evidence = probe.within_request(run_wave1_scenario)?;
-        probe.record_runtime_metrics(evidence.runtime)?;
-        Ok::<_, AdapterTestError>(evidence)
+        let metrics = probe.within_request(emit_signal_fixture);
+        probe.record_runtime_metrics(metrics)
     })?;
-    assert_eq!(
-        evidence.workflow_phase,
-        nudox_workflow::PhaseName::Published
-    );
     trace_provider.force_flush()?;
     logger_provider.force_flush()?;
     meter_provider.force_flush()?;

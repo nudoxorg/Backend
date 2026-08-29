@@ -23,12 +23,6 @@ tracing-opentelemetry = "=0.33.0"
 tracing-subscriber = { version = "=0.3.23", features = ["registry"] }
 
 [dev-dependencies]
-nudox-frame = { path = "../../crates/nudox-frame" }
-nudox-id = { path = "../../crates/nudox-id" }
-nudox-object = { path = "../../crates/nudox-object" }
-nudox-operation = { path = "../../crates/nudox-operation" }
-nudox-schema = { path = "../../crates/nudox-schema" }
-nudox-view = { path = "../../crates/nudox-view" }
 opentelemetry_sdk = { version = "=0.32.1", features = ["logs", "metrics", "testing", "trace"] }
 
 [lints.rust]

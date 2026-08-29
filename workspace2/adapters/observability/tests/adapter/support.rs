@@ -8,8 +8,6 @@ use nudox_observability_adapter::{BatchLimitsError, MetricReportError};
 pub(super) enum AdapterTestError {
     #[error("invalid batch test configuration")]
     Limits(#[from] BatchLimitsError),
-    #[error("portable scenario failed")]
-    Scenario(#[from] super::scenario::ScenarioError),
     #[error("runtime metric reporting failed")]
     Metrics(#[from] MetricReportError),
     #[error("OpenTelemetry SDK operation failed")]

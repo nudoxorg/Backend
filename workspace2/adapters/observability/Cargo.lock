@@ -227,17 +227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-frame"
-version = "0.1.0"
-dependencies = [
- "nudox-id",
- "nudox-schema",
- "strum",
- "thiserror",
- "zerocopy",
-]
-
-[[package]]
 name = "nudox-hydration"
 version = "0.1.0"
 dependencies = [
@@ -271,17 +260,11 @@ dependencies = [
 name = "nudox-observability-adapter"
 version = "0.1.0"
 dependencies = [
- "nudox-frame",
  "nudox-hydration",
- "nudox-id",
- "nudox-object",
  "nudox-observe",
- "nudox-operation",
  "nudox-root",
  "nudox-runtime",
- "nudox-schema",
  "nudox-store-memory",
- "nudox-view",
  "nudox-workflow",
  "opentelemetry",
  "opentelemetry-appender-tracing",
@@ -297,17 +280,6 @@ name = "nudox-observe"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
-]
-
-[[package]]
-name = "nudox-operation"
-version = "0.1.0"
-dependencies = [
- "nudox-id",
- "nudox-object",
- "nudox-root",
- "nudox-schema",
- "thiserror",
 ]
 
 [[package]]
@@ -352,16 +324,6 @@ dependencies = [
  "nudox-object",
  "nudox-observe",
  "thiserror",
-]
-
-[[package]]
-name = "nudox-view"
-version = "0.1.0"
-dependencies = [
- "nudox-schema",
- "strum",
- "thiserror",
- "zerocopy",
 ]
 
 [[package]]
