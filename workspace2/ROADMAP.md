@@ -150,7 +150,7 @@ VCS code has no compatibility standing.
 
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
-| Index I0 manifest | Implementation candidate is root-reviewed, but closure evidence is reopened; do not dispatch the manifest child yet | Rebuild the receipt against the exact source candidate with raw model custody, full law/resource rows, immutable gate evidence, and a conforming independent review. |
+| Index I0 manifest | Implementation laws are reproduced, but process closure remains open; do not dispatch the manifest child yet | The rebuilt exact-source receipt, two hashed clean gates, and conforming Terra review are present. Rerun the current full cold calibration deck and replace missing historical manager/Luna task custody before acceptance. |
 | Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
 | Leased range T0 | Autonomous Terra calibration active; implementation follows its separate Terra review | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
 | Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |

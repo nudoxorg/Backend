@@ -56,7 +56,9 @@ checks were clean. This is an explicit tooling gap, not an official-validator pa
 
 ## Next falsifier
 
-Rebuild the I0 receipt literally, attach a conforming fresh read-only Terra review and two exact-source
-clean gate passes, then give the packet to another fresh steward reader. If that reader can accept with
+The I0 receipt has now been rebuilt with a conforming fresh read-only Terra review and two
+candidate-bound hashed clean passes. It remains `OPEN` rather than laundering missing historical role
+identities or stale calibration. Run the complete current cold deck, replace that custody with fresh
+explicit roles, then give the packet to another fresh steward reader. If that reader can accept with
 an omitted row, stale digest, evidence-only prose standing in for an artifact, or unproved integrated
 tree equivalence, stewardship calibration reopens.
