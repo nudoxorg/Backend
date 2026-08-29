@@ -149,6 +149,13 @@ the sole owner of an invariant, decision, accepted SHA, or remaining proof. Runt
 live agent IDs, slot counts, and temporary worktree status are re-probed at cycle start; never write
 those volatile facts into architecture, roadmaps, or reusable skills as project doctrine.
 
+When several Terra managers share fewer worker slots, time-slice at proof-bearing worker boundaries.
+After one Luna checkpoint, yield one slot to a waiting sibling before spawning repair unless a live
+destructive action must be contained. Terra uses the yielded interval for reproduction, research,
+red-test construction, and card narrowing. Each manager observes/retries capacity itself and
+coordinates with siblings; waiting for root to announce a free slot is an autonomy failure, while
+monopolizing the only worker with back-to-back broad turns is a throughput failure.
+
 ## Commission workers
 
 Use fresh workers. Give each only its raw inputs, exact allowed paths, an evidence rubric, and a stop
