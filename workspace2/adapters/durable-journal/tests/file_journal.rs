@@ -1,193 +1,355 @@
-//! Public real-file journeys are intentionally kept independent of private seams.
-use nudox_durable_journal::FileJournal;
-use nudox_workflow::{EventKind, StageKey, WorkflowEvent, WorkflowVersion};
-use std::fs;
-fn path(label: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("nudox-journal-{label}-{}", std::process::id()))
-}
-fn cleanup(p: &std::path::Path) {
-    let _ = fs::remove_file(p);
-}
-fn ev(key: u8, kind: EventKind) -> WorkflowEvent {
+mod harness;
+
+use std::{fs, io::Write};
+
+use blake3::Hasher;
+use harness::{FailureClass, Fixture, ScenarioError, receipt_end};
+use nudox_durable_journal::{
+    CommitError, FileJournal, FrameSequence, HeaderError, JOURNAL_FRAME_BYTES,
+    JOURNAL_HEADER_BYTES, JournalError, JournalOffset,
+};
+use nudox_workflow::{
+    Effect, EffectAction, EventKind, FailureCode, Phase, Recovery, StageKey, StageOutput,
+    WORKFLOW_RECORD_BYTES, WorkflowEvent, WorkflowRecordError, WorkflowState, WorkflowVersion,
+};
+
+const FRAME_SEQUENCE_BYTES: usize = 8;
+const FRAME_CHECKSUM_BYTES: usize = 16;
+const WORKFLOW_VERSION_BYTES: usize = 2;
+const STAGE_KEY_BYTES: usize = 32;
+const WORKFLOW_EVENT_OFFSET: usize = WORKFLOW_VERSION_BYTES + STAGE_KEY_BYTES;
+
+fn event(key: StageKey, kind: EventKind) -> WorkflowEvent {
     WorkflowEvent {
         version: WorkflowVersion::WAVE1,
-        key: StageKey::from([key; 32]),
+        key,
         kind,
     }
 }
-#[test]
-fn create_append_reopen_preserves_receipt_and_recovery() {
-    let p = path("roundtrip");
-    cleanup(&p);
-    let e = ev(1, EventKind::Requested);
-    let r = FileJournal::create(&p)
-        .and_then(|mut j| {
-            j.append(e)
-                .map_err(|_| nudox_durable_journal::JournalError::HeaderInvalid)
-        })
-        .expect("append");
-    assert_eq!(r.sequence, 0);
-    assert_eq!(r.durable_end, 124);
-    let mut j = FileJournal::open(&p).expect("open");
-    assert!(j.replay().expect("replay").pending_effect.is_some());
-    cleanup(&p);
+
+fn recovery(key: StageKey, phase: Phase, action: Option<EffectAction>) -> Recovery {
+    Recovery {
+        state: WorkflowState::Keyed { key, phase },
+        pending_effect: action.map(|action| Effect { key, action }),
+    }
 }
+
+fn one_frame(event: WorkflowEvent) -> Result<(Fixture, Vec<u8>), ScenarioError> {
+    let fixture = Fixture::new("valid-frame");
+    let mut journal = FileJournal::create(fixture.path())?;
+    let _receipt = journal.append(event)?;
+    drop(journal);
+    let bytes = fixture.bytes()?;
+    Ok((fixture, bytes))
+}
+
+fn expect_header(
+    result: Result<FileJournal, JournalError>,
+    expected: HeaderError,
+) -> Result<(), ScenarioError> {
+    match result {
+        Err(JournalError::Header(observed)) if observed == expected => Ok(()),
+        Err(observed) => Err(ScenarioError::UnexpectedJournalError {
+            expected: FailureClass::Header,
+            observed,
+        }),
+        Ok(_) => Err(ScenarioError::UnexpectedJournalSuccess {
+            expected: FailureClass::Header,
+        }),
+    }
+}
+
 #[test]
-fn every_prefix_can_restart_at_each_receipt() {
-    let p = path("prefix");
-    cleanup(&p);
-    let k = StageKey::from([2; 32]);
-    let o = nudox_workflow::StageOutput::from([3; 32]);
-    let a = [
+fn every_restart_prefix_has_exact_receipts_and_independent_recovery() -> Result<(), ScenarioError> {
+    let key = StageKey::from([3; 32]);
+    let output = StageOutput::from([5; 32]);
+    let events = [
         EventKind::Requested,
         EventKind::Admitted,
-        EventKind::Staged { output: o },
-        EventKind::Verified { output: o },
-        EventKind::PublicationStarted { output: o },
-        EventKind::Published { output: o },
+        EventKind::Staged { output },
+        EventKind::Verified { output },
+        EventKind::PublicationStarted { output },
+        EventKind::Published { output },
     ];
-    for n in 0..=a.len() {
-        cleanup(&p);
-        let mut j = FileJournal::create(&p).expect("create");
-        for kind in a.iter().copied().take(n) {
-            j.append(WorkflowEvent {
-                version: WorkflowVersion::WAVE1,
-                key: k,
-                kind,
-            })
-            .expect("append");
-            drop(j);
-            j = FileJournal::open(&p).expect("restart");
+    let expected = [
+        Recovery {
+            state: WorkflowState::New,
+            pending_effect: None,
+        },
+        recovery(key, Phase::Requested, Some(EffectAction::Admit)),
+        recovery(key, Phase::Admitted, Some(EffectAction::Stage)),
+        recovery(
+            key,
+            Phase::Staged(output),
+            Some(EffectAction::Verify { output }),
+        ),
+        recovery(
+            key,
+            Phase::Verified(output),
+            Some(EffectAction::BeginPublication { output }),
+        ),
+        recovery(
+            key,
+            Phase::Publishing(output),
+            Some(EffectAction::Publish { output }),
+        ),
+        recovery(key, Phase::Published(output), None),
+    ];
+
+    for (prefix, expected_recovery) in expected.into_iter().enumerate() {
+        let fixture = Fixture::new("restart-prefix");
+        let mut journal = FileJournal::create(fixture.path())?;
+        for (sequence, kind) in events.iter().copied().take(prefix).enumerate() {
+            let receipt = journal.append(event(key, kind))?;
+            assert_eq!(receipt.sequence, FrameSequence(u64::try_from(sequence)?));
+            assert_eq!(receipt.durable_end, JournalOffset(receipt_end(sequence)?));
+            drop(journal);
+            journal = FileJournal::open(fixture.path())?;
         }
-        assert!(j.replay().is_ok());
+        assert_eq!(journal.replay()?, expected_recovery);
+        fixture.remove()?;
     }
-    cleanup(&p);
+    Ok(())
 }
+
 #[test]
-fn duplicate_and_conflicting_events_do_not_claim_success() {
-    let p = path("duplicate");
-    cleanup(&p);
-    let e = ev(4, EventKind::Requested);
-    let mut j = FileJournal::create(&p).expect("create");
-    j.append(e).expect("first");
-    assert!(j.append(e).is_ok());
-    drop(j);
-    let mut j = FileJournal::open(&p).expect("reopen");
-    assert!(j.replay().is_ok());
-    cleanup(&p);
+fn duplicate_is_durable_but_conflicting_key_writes_nothing() -> Result<(), ScenarioError> {
+    let fixture = Fixture::new("duplicate-conflict");
+    let key = StageKey::from([7; 32]);
+    let requested = event(key, EventKind::Requested);
+    let mut journal = FileJournal::create(fixture.path())?;
+    let first = journal.append(requested)?;
+    let duplicate = journal.append(requested)?;
+    assert_eq!(first.sequence, FrameSequence(0));
+    assert_eq!(duplicate.sequence, FrameSequence(1));
+    let durable_bytes = fs::metadata(fixture.path())?.len();
+
+    let conflicting = event(StageKey::from([8; 32]), EventKind::Requested);
+    match journal.append(conflicting) {
+        Err(CommitError::Reduction(nudox_workflow::ReductionError::StageKeyMismatch {
+            expected,
+            observed,
+        })) if expected == key && observed == conflicting.key => {}
+        Err(observed) => {
+            return Err(ScenarioError::UnexpectedCommitError {
+                expected: FailureClass::Reduction,
+                observed,
+            });
+        }
+        Ok(_) => {
+            return Err(ScenarioError::UnexpectedCommitSuccess {
+                expected: FailureClass::Reduction,
+            });
+        }
+    }
+    assert_eq!(fs::metadata(fixture.path())?.len(), durable_bytes);
+    assert_eq!(
+        journal.replay()?,
+        recovery(key, Phase::Requested, Some(EffectAction::Admit))
+    );
+    fixture.remove()?;
+    Ok(())
 }
+
 #[test]
-fn publication_failure_reopens_with_reconciliation_effect() {
-    let p = path("unknown");
-    cleanup(&p);
-    let k = StageKey::from([5; 32]);
-    let o = nudox_workflow::StageOutput::from([6; 32]);
-    let mut j = FileJournal::create(&p).expect("create");
+fn post_publication_failure_reopens_only_as_reconciliation() -> Result<(), ScenarioError> {
+    let fixture = Fixture::new("publication-unknown");
+    let key = StageKey::from([9; 32]);
+    let output = StageOutput::from([10; 32]);
+    let mut journal = FileJournal::create(fixture.path())?;
     for kind in [
         EventKind::Requested,
         EventKind::Admitted,
-        EventKind::Staged { output: o },
-        EventKind::Verified { output: o },
-        EventKind::PublicationStarted { output: o },
+        EventKind::Staged { output },
+        EventKind::Verified { output },
+        EventKind::PublicationStarted { output },
         EventKind::Failed {
-            code: nudox_workflow::FailureCode::Runtime,
+            code: FailureCode::Runtime,
         },
     ] {
-        j.append(WorkflowEvent {
-            version: WorkflowVersion::WAVE1,
-            key: k,
-            kind,
-        })
-        .expect("transition");
+        let _receipt = journal.append(event(key, kind))?;
     }
-    drop(j);
-    let mut j = FileJournal::open(&p).expect("reopen");
-    assert!(j.replay().expect("replay").pending_effect.is_some());
-    cleanup(&p);
-}
-#[test]
-fn empty_file_is_rejected() {
-    let p = path("empty");
-    cleanup(&p);
-    fs::File::create(&p).expect("create");
-    assert!(FileJournal::open(&p).is_err());
-    cleanup(&p);
-}
-#[test]
-fn malformed_header_is_rejected() {
-    let p = path("header");
-    cleanup(&p);
-    fs::write(&p, [0u8; 32]).expect("write");
-    assert!(FileJournal::open(&p).is_err());
-    cleanup(&p);
-}
-#[test]
-fn receipt_width_is_physical_not_workflow_width() {
-    let p = path("receipt");
-    cleanup(&p);
-    let r = FileJournal::create(&p)
-        .and_then(|mut j| {
-            j.append(ev(7, EventKind::Requested))
-                .map_err(|_| nudox_durable_journal::JournalError::HeaderInvalid)
-        })
-        .expect("receipt");
-    assert_eq!(r.durable_end - r.sequence * 92, 124);
-    cleanup(&p);
-}
-#[test]
-fn restart_without_records_is_valid() {
-    let p = path("zero");
-    cleanup(&p);
-    let j = FileJournal::create(&p).expect("create");
-    drop(j);
-    let mut j = FileJournal::open(&p).expect("open");
-    assert!(j.replay().expect("replay").pending_effect.is_none());
-    cleanup(&p);
-}
-#[test]
-fn distinct_keys_are_rejected_by_workflow_reducer() {
-    let p = path("keys");
-    cleanup(&p);
-    let mut j = FileJournal::create(&p).expect("create");
-    j.append(ev(8, EventKind::Requested)).expect("first");
-    assert!(j.append(ev(9, EventKind::Requested)).is_err());
-    cleanup(&p);
-}
-#[test]
-fn six_receipts_have_monotonic_end_offsets() {
-    let p = path("monotonic");
-    cleanup(&p);
-    let mut j = FileJournal::create(&p).expect("create");
-    let mut prior = 0;
-    for n in 0..6 {
-        let r = j.append(ev(
-            10,
-            if n == 0 {
-                EventKind::Requested
-            } else {
-                EventKind::Admitted
+    drop(journal);
+    let mut reopened = FileJournal::open(fixture.path())?;
+    assert_eq!(
+        reopened.replay()?,
+        recovery(
+            key,
+            Phase::PublicationUnknown {
+                output,
+                code: FailureCode::Runtime,
             },
-        ));
-        if let Ok(r) = r {
-            assert!(r.durable_end > prior);
-            prior = r.durable_end;
+            Some(EffectAction::ReconcilePublication { output }),
+        )
+    );
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn every_nonempty_torn_tail_is_repaired_after_the_valid_prefix() -> Result<(), ScenarioError> {
+    let key = StageKey::from([11; 32]);
+    let expected = recovery(key, Phase::Requested, Some(EffectAction::Admit));
+    for tail_bytes in 1..JOURNAL_FRAME_BYTES {
+        let (fixture, _) = one_frame(event(key, EventKind::Requested))?;
+        let tail = vec![0xa5; tail_bytes];
+        fs::OpenOptions::new()
+            .append(true)
+            .open(fixture.path())?
+            .write_all(&tail)?;
+        let mut reopened = FileJournal::open(fixture.path())?;
+        assert_eq!(reopened.replay()?, expected);
+        assert_eq!(fs::metadata(fixture.path())?.len(), receipt_end(0)?);
+        fixture.remove()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn every_truncated_header_reports_its_exact_observed_width() -> Result<(), ScenarioError> {
+    for actual in 0..JOURNAL_HEADER_BYTES {
+        let fixture = Fixture::new("header-truncation");
+        fixture.replace(&vec![0; actual])?;
+        expect_header(
+            FileJournal::open(fixture.path()),
+            HeaderError::Truncated {
+                required: JournalOffset(u64::try_from(JOURNAL_HEADER_BYTES)?),
+                actual: JournalOffset(u64::try_from(actual)?),
+            },
+        )?;
+        fixture.remove()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn each_header_field_class_has_an_exact_diagnosis() -> Result<(), ScenarioError> {
+    let fixture = Fixture::new("header-fields");
+    let journal = FileJournal::create(fixture.path())?;
+    drop(journal);
+    let canonical = fixture.bytes()?;
+    let cases = [
+        (0, HeaderError::Magic { observed: [0; 8] }),
+        (8, HeaderError::PhysicalVersion { observed: 0 }),
+        (
+            10,
+            HeaderError::HeaderWidth {
+                expected: 32,
+                observed: 33,
+            },
+        ),
+        (
+            12,
+            HeaderError::RecordWidth {
+                expected: 68,
+                observed: 69,
+            },
+        ),
+        (14, HeaderError::Reserved { observed: 1 }),
+        (16, HeaderError::Checksum),
+    ];
+    for (offset, expected) in cases {
+        let mut mutated = canonical.clone();
+        if offset == 0 {
+            mutated[..8].fill(0);
         } else {
-            break;
+            mutated[offset] ^= 1;
+        }
+        fixture.replace(&mutated)?;
+        expect_header(FileJournal::open(fixture.path()), expected)?;
+    }
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn every_workflow_record_byte_is_covered_by_the_complete_frame_checksum()
+-> Result<(), ScenarioError> {
+    let key = StageKey::from([13; 32]);
+    let (fixture, canonical) = one_frame(event(key, EventKind::Requested))?;
+    let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
+    for record_byte in 0..WORKFLOW_RECORD_BYTES {
+        let mut mutated = canonical.clone();
+        mutated[record_start + record_byte] ^= 1;
+        fixture.replace(&mutated)?;
+        match FileJournal::open(fixture.path()) {
+            Err(JournalError::FrameChecksum {
+                sequence: FrameSequence::FIRST,
+                offset,
+            }) if offset == JournalOffset(u64::try_from(JOURNAL_HEADER_BYTES)?) => {}
+            Err(observed) => {
+                return Err(ScenarioError::UnexpectedJournalError {
+                    expected: FailureClass::FrameChecksum,
+                    observed,
+                });
+            }
+            Ok(_) => {
+                return Err(ScenarioError::UnexpectedJournalSuccess {
+                    expected: FailureClass::FrameChecksum,
+                });
+            }
+        }
+        assert_eq!(fs::metadata(fixture.path())?.len(), receipt_end(0)?);
+    }
+    fixture.remove()?;
+    Ok(())
+}
+
+#[test]
+fn sequence_and_canonical_decode_failures_remain_distinct() -> Result<(), ScenarioError> {
+    let key = StageKey::from([15; 32]);
+    let (fixture, canonical) = one_frame(event(key, EventKind::Requested))?;
+    let mut wrong_sequence = canonical.clone();
+    wrong_sequence[JOURNAL_HEADER_BYTES] = 1;
+    fixture.replace(&wrong_sequence)?;
+    match FileJournal::open(fixture.path()) {
+        Err(JournalError::Sequence {
+            expected: FrameSequence::FIRST,
+            observed: FrameSequence(1),
+        }) => {}
+        Err(observed) => {
+            return Err(ScenarioError::UnexpectedJournalError {
+                expected: FailureClass::Sequence,
+                observed,
+            });
+        }
+        Ok(_) => {
+            return Err(ScenarioError::UnexpectedJournalSuccess {
+                expected: FailureClass::Sequence,
+            });
         }
     }
-    cleanup(&p);
+
+    let mut unknown_event = canonical;
+    let record_start = JOURNAL_HEADER_BYTES + FRAME_SEQUENCE_BYTES;
+    unknown_event[record_start + WORKFLOW_EVENT_OFFSET] = u8::MAX;
+    rewrite_frame_checksum(&mut unknown_event);
+    fixture.replace(&unknown_event)?;
+    match FileJournal::open(fixture.path()) {
+        Err(JournalError::Decode(WorkflowRecordError::UnknownEvent { observed }))
+            if observed == u8::MAX => {}
+        Err(observed) => {
+            return Err(ScenarioError::UnexpectedJournalError {
+                expected: FailureClass::Decode,
+                observed,
+            });
+        }
+        Ok(_) => {
+            return Err(ScenarioError::UnexpectedJournalSuccess {
+                expected: FailureClass::Decode,
+            });
+        }
+    }
+    fixture.remove()?;
+    Ok(())
 }
-#[test]
-fn file_is_removed_by_each_test_fixture() {
-    let p = path("cleanup");
-    cleanup(&p);
-    assert!(!p.exists());
-}
-#[test]
-fn public_surface_constructs_only_through_create() {
-    let p = path("surface");
-    cleanup(&p);
-    let result = FileJournal::create(&p);
-    assert!(result.is_ok());
-    cleanup(&p);
+
+fn rewrite_frame_checksum(file: &mut [u8]) {
+    let frame_start = JOURNAL_HEADER_BYTES;
+    let checksum_start = frame_start + JOURNAL_FRAME_BYTES - FRAME_CHECKSUM_BYTES;
+    let mut hasher = Hasher::new();
+    hasher.update(b"nudox.journal.frame.v1\0");
+    hasher.update(&1_u16.to_le_bytes());
+    hasher.update(&file[frame_start..checksum_start]);
+    file[checksum_start..].copy_from_slice(&hasher.finalize().as_bytes()[..FRAME_CHECKSUM_BYTES]);
 }
