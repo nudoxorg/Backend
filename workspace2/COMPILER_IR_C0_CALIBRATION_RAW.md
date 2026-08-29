@@ -121,3 +121,11 @@ The fresh breaker found no semantic blocker. It issued one MAJOR because raw com
 not been committed; this section is the accepted repair and the precise falsifier was re-running the
 listed command set. Nested Cargo commands create untracked lockfiles; they are generated artifacts, not
 contract paths, and are removed after each gate before clean-state inspection.
+
+After this evidence repair, the manager ran the complete nested format, test, doctest, clippy, and
+`git diff --check` sequence twice from clean state. Both passes were green; each produced only the two
+documented untracked nested `Cargo.lock` files, which were removed before the following clean-state check.
+The strongest counterexample attempted was the rejected direct-static-method dispatcher in `66e55d4f`.
+The accepted registry instead has a private `Frontend` trait and `drive<ConcreteFrontend>` with both
+concrete frontend implementations. No C0.1 blocker or major remains. C0.2 (an earned declarative macro)
+and C0.3 (the remaining vocabulary/compile-fail matrix) are explicitly separate, unstarted children.
