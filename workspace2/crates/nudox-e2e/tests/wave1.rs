@@ -11,6 +11,8 @@ use nudox_runtime::{
 use nudox_store_memory::{StoreAdmission, StoreProbeEvent};
 use nudox_workflow::{EventName, PhaseName, WorkflowDisposition, WorkflowProbeEvent};
 
+const EXPECTED_EVENT_COUNT: usize = 15;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ScenarioEvent {
     Root(RootProbeEvent),
@@ -62,10 +64,17 @@ fn noop_and_flight_modes_preserve_exact_scenario_semantics() -> Result<(), Scena
     let observed = run_wave1_scenario(&mut flight)?;
     assert_eq!(observed, expected);
     assert_eq!(observed, expected_evidence()?);
-    assert_eq!(
-        flight.events.events().copied().collect::<Vec<_>>(),
-        expected_trace()
-    );
+    let expected_trace = expected_trace();
+    assert_eq!(flight.events.len(), expected_trace.len());
+    for (position, (observed, expected)) in flight
+        .events
+        .events()
+        .copied()
+        .zip(expected_trace)
+        .enumerate()
+    {
+        assert_eq!(observed, expected, "scenario event {position}");
+    }
     Ok(())
 }
 
@@ -87,9 +96,9 @@ fn expected_evidence() -> Result<ScenarioEvidence, nudox_schema::LimitError> {
     })
 }
 
-fn expected_trace() -> Vec<ScenarioEvent> {
+fn expected_trace() -> [ScenarioEvent; EXPECTED_EVENT_COUNT] {
     let one_selected = SelectedCount::from(1);
-    vec![
+    [
         ScenarioEvent::Root(RootProbeEvent {
             selected_rows: 1,
             work: SelectionWork {
