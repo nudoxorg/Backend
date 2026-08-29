@@ -344,26 +344,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-e2e"
-version = "0.1.0"
-dependencies = [
- "nudox-frame",
- "nudox-hydration",
- "nudox-id",
- "nudox-object",
- "nudox-observe",
- "nudox-operation",
- "nudox-root",
- "nudox-runtime",
- "nudox-schema",
- "nudox-store-memory",
- "nudox-view",
- "nudox-workflow",
- "rstest",
- "thiserror",
-]
-
-[[package]]
 name = "nudox-frame"
 version = "0.1.0"
 dependencies = [

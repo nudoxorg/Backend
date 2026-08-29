@@ -40,8 +40,8 @@ The remaining gaps are architectural, not polish:
   prompts, budgets, or review packets caused avoidable turns.
 - [x] Put the from-scratch workspace under a path-scoped Git baseline; workers now commit passing
   checkpoints on isolated branches and Terra managers cherry-pick only reviewed increments.
-- [x] Split the current reusable scenario driver from shipping adapter dependencies; keep public
-  cross-crate journeys in a test-support/integration boundary.
+- [x] Remove the dedicated scenario crate; cross-crate journeys live inside ordinary crate
+  integration tests and never enter shipping dependency graphs.
 - [ ] Add one deterministic system driver whose commands can later run against memory, file, and
   simulated-network adapters without shadow state.
 

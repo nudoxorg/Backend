@@ -61,7 +61,6 @@ cross-crate representation changes on this target.
 | `nudox-runtime` | Heap-policy `RemoteRuntime<u64, RetainedBytes>` 144 B; future 48 B; metric snapshot 56 B | `no_std + alloc`; static heap, const-inline, or caller-arena tables. Payload and terminal reuse one permit-addressed cell. Admission/owner are 8-B borrows. |
 | `nudox-workflow` | Event and canonical record 68 B, state 66 B, reduction/recovery 131 B, memory-log header 104 B | `DurableAppend` commits a fixed record through an associated concrete future; replay consumes a fallible record stream. The `Vec` log is explicitly only an in-memory adapter. |
 | `nudox-observe` | Unit probe 0 B; four-event `WorkflowEvent` flight recorder 288 B | Dense `ArrayVec<Event, CAP> + head`; no allocation or per-slot option tag. Policy is compile-time state. |
-| `nudox-e2e` | No retained production owner | Public-API integration scenario; it is the later end-to-end measurement driver. |
 
 The same raw result shows `RootEntry` at 72 B and `GenerationEntry` at 152 B, but their
 non-`repr(C)` offsets are discovery data, not contracts. `RootRow` is source-asserted at 64 B.

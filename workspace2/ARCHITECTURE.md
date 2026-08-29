@@ -155,8 +155,6 @@ nudox-id <- nudox-schema <- nudox-frame <- nudox-view
     +----- nudox-object <- nudox-root <- nudox-hydration <- nudox-store-memory
                           ^
 nudox-operation <- nudox-runtime <- nudox-workflow
-                          ^
-                       nudox-e2e
 ```
 
 An arrow points from a consumer to a dependency. Cycles are forbidden. Implementation crates may

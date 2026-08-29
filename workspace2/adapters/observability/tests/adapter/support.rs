@@ -9,7 +9,7 @@ pub(super) enum AdapterTestError {
     #[error("invalid batch test configuration")]
     Limits(#[from] BatchLimitsError),
     #[error("portable scenario failed")]
-    Scenario(#[from] nudox_e2e::ScenarioError),
+    Scenario(#[from] super::scenario::ScenarioError),
     #[error("runtime metric reporting failed")]
     Metrics(#[from] MetricReportError),
     #[error("OpenTelemetry SDK operation failed")]

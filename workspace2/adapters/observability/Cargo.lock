@@ -227,25 +227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nudox-e2e"
-version = "0.1.0"
-dependencies = [
- "nudox-frame",
- "nudox-hydration",
- "nudox-id",
- "nudox-object",
- "nudox-observe",
- "nudox-operation",
- "nudox-root",
- "nudox-runtime",
- "nudox-schema",
- "nudox-store-memory",
- "nudox-view",
- "nudox-workflow",
- "thiserror",
-]
-
-[[package]]
 name = "nudox-frame"
 version = "0.1.0"
 dependencies = [
@@ -290,12 +271,17 @@ dependencies = [
 name = "nudox-observability-adapter"
 version = "0.1.0"
 dependencies = [
- "nudox-e2e",
+ "nudox-frame",
  "nudox-hydration",
+ "nudox-id",
+ "nudox-object",
  "nudox-observe",
+ "nudox-operation",
  "nudox-root",
  "nudox-runtime",
+ "nudox-schema",
  "nudox-store-memory",
+ "nudox-view",
  "nudox-workflow",
  "opentelemetry",
  "opentelemetry-appender-tracing",

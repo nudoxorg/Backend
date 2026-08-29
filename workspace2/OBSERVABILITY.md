@@ -73,11 +73,12 @@ This replaces comments that merely narrate control flow, not public invariant do
 arguments, or the reason for a surprising choice. Event types must be tested like protocol types and
 must not duplicate authoritative state.
 
-## Scenario harness
+## Integration scenario harness
 
-A reusable scenario runner, assembled from small public-API components, accepts a generic probe and
-deterministic fault schedule. Concise `rstest` cases choose inputs and compare its typed evidence; the
-runner executes in four modes without forking semantics:
+A scenario runner inside an ordinary crate's `tests/` tree, assembled from small public-API
+components, accepts a generic probe and deterministic fault schedule. Never create a dedicated
+test-support crate. Concise `rstest` cases choose inputs and compare typed evidence; a driver may
+execute in four modes without forking semantics:
 
 - assertions: exact result, transition sequence, conservation, and terminal state;
 - benchmark: unit probe `()`, fixed fixtures, wall time plus allocations/work counters;
@@ -98,7 +99,7 @@ stable CI instruction/cache regression budgets where Valgrind is available:
 - OTEL in-memory exporters receive correlated traces/logs/metrics with correct parentage and attributes;
 - OTLP export is batched, bounded, shutdown-flushed, and loss-accounted under collector outage;
 - telemetry saturation cannot consume runtime/data credits or block publication;
-- integration scenarios and benchmark scenarios share the same driver and fixture constructors;
+- integration and benchmark cases in the same ordinary crate share driver and fixture constructors;
 - cardinality audit rejects object/generation/request identifiers as metric attributes.
 
 The executable adapter in `adapters/observability` proves the current seam with in-memory SDK
