@@ -1,6 +1,6 @@
 ---
 name: build-operation-runtime
-description: Scope rules for workspace2 operations, bounded lock-free runtimes, async streams, durable workflows, journals, and observability adapters. Use with deliver-reviewed-rust-slice for nudox-operation, runtime, workflow, observe, e2e, or approved durable/OTEL adapters.
+description: Scope rules for workspace2 operations, bounded lock-free runtimes, async streams, durable workflows, journals, and observability adapters. Use with deliver-reviewed-rust-slice for nudox-operation, runtime, workflow, observe, or approved durable/OTEL adapters.
 ---
 
 # Operation and runtime scope
@@ -11,9 +11,10 @@ operation-plane scope.
 
 ## Routing and ownership
 
-Own operation/runtime/workflow/observe crates and parent-approved durable, transport, test-support,
-and OTEL adapters. Ask before foundation/root/store changes. Read `ASYNC_STREAMING.md` for I/O and
-`OBSERVABILITY.md` for diagnostic/export work.
+Own operation/runtime/workflow/observe crates and parent-approved durable, transport, and OTEL
+adapters. Ask before foundation/root/store changes. Test drivers stay under an ordinary owning
+crate's top-level `tests/`; never create a dedicated test-support crate. Read
+`../../../ASYNC_STREAMING.md` for I/O and `../../../OBSERVABILITY.md` for diagnostic/export work.
 
 ## Required packet additions
 
