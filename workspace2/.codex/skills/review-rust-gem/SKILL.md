@@ -54,6 +54,9 @@ public item without current consumer and falsifier
 Do not summarize the scan as “accounted for.” A missing row, missing location, or `acceptable` without
 a contract law or measurement makes the review incomplete and forbids approval. The primary Terra
 must preserve the raw reviewer table; a paraphrased manager ledger is not independent evidence.
+“Exact location” means a complete repository-relative path plus line, never `.../`, a bare filename,
+or “all changed files.” A zero row names the complete path set actually scanned and the literal search
+classes; an em dash alone does not prove the scan.
 
 Recompute the remaining forecast with the shared skill's uncertainty reserve. A claim that technically
 fits only by consuming the reserve is a scope failure and must split before further implementation.

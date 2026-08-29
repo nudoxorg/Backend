@@ -77,7 +77,9 @@ unsafe/SIMD/allocator/dependency additions
 public item without a current consumer and falsifier
 ```
 
-A review that omits this table is incomplete even if its prose says there are no findings.
+A review that omits this table is incomplete even if its prose says there are no findings. Exact
+locations are complete repository-relative paths and lines; ellipses, bare filenames, and “all
+changed files” are not evidence. Zero rows name the complete scanned path set and literal search.
 
 ## Resource and scope ledger
 
