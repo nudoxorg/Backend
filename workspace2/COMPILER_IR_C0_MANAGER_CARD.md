@@ -38,28 +38,30 @@ amendment for an unapproved production-scope change.
 ## C0.1 terminal and settled decisions
 
 An external consumer selects one of two closed synthetic frontend rows at the application boundary and
-gets that row's concrete synchronous result. `RustSubset` accepts `Parse` and `LowerIr`;
+gets that row's concrete synchronous borrowed result. `RustSubset` accepts `Parse` and `LowerIr`;
 `TypeScriptSubset` accepts `Parse` and rejects `LowerIr` with exact typed
 `UnsupportedStage { language, stage }`. A concrete `RustSubsetOnly` registry cannot name a TypeScript
 route. The only `Language` variants are `RustSubset` and `TypeScriptSubset`; the only `Stage` variants
 are `Parse` and `LowerIr`; `FrontendError` has only that one variant and both fields have those enum
-types. The manual frontend contract is `fn drive(source: &[u8]) -> Result<u8, FrontendError>`:
-Rust emits `1`, TypeScript parse emits `2`. Public tests drive both full rows, assert those exact values
-and the exact rejection, and a compile-fail doctest demonstrates the missing subset member. This is one
-boundary dispatch proof, not
+types. The manual frontend contract lends the caller's source as
+`fn drive(source: &[u8]) -> Result<&[u8], FrontendError>`. Public tests drive both full rows, prove
+successful paths return the identical borrowed region, assert the exact rejection, and use compile-fail
+doctests for owner mixing and the missing subset member. This is one boundary dispatch proof, not
 lowering, fragment construction, canonical bytes, recipe/job identity, scheduling, bundles, or a real
 frontend.
 
 The complete permitted public Rust surface is exactly: `pub enum Entity {}`, `pub enum Type {}`,
-`pub struct DenseId<Owner>` with private fields and only `pub const fn new(raw: u32) -> Self`, type
+`pub struct DenseId<Owner>` with named public `raw: u32`, a private brand, and only
+`pub const fn new(raw: u32) -> Self`, type
 aliases `EntityId` and `TypeId`, `pub enum Language { RustSubset, TypeScriptSubset }`,
 `pub enum Stage { Parse, LowerIr }`, `pub enum FrontendError { UnsupportedStage { language: Language,
-stage: Stage } }`, `pub struct FullRegistry` with only
-`pub fn dispatch(language: Language, stage: Stage, source: &[u8]) -> Result<u8, FrontendError>`, and
-`pub struct RustSubsetOnly` with only `pub fn parse(source: &[u8]) -> u8`. All necessary derives are
+stage: Stage } }`, `pub struct FullRegistry` with only the value method
+`pub fn dispatch(self, language: Language, stage: Stage, source: &[u8]) ->
+Result<&[u8], FrontendError>`, and `pub struct RustSubsetOnly` with only the value method
+`pub fn parse(self, source: &[u8]) -> &[u8]`. All necessary derives are
 restricted to `Clone`, `Copy`, `Debug`, `Eq`, and `PartialEq`; every other item is private. In particular
-there is no `DenseId` accessor, conversion, public field, public trait, re-export, frontend type, or
-additional constructor.
+there is no `DenseId` accessor, conversion, public trait, re-export, frontend type, or additional
+constructor.
 
 - Tags/capability difference: `RustSubset` supports `LowerIr`; `TypeScriptSubset` does not. They are
   greenfield synthetic names, not compatibility names.
@@ -71,8 +73,9 @@ additional constructor.
   without locking a permanent feature-selection product/build contract.
 - `RustSubsetOnly` exposes only a Rust-specific entry point; it must not expose any method taking the
   full `Language` enum, delegate to the full registry, or return a runtime TypeScript rejection. The
-  compile-fail witness attempts `RustSubsetOnly::parse_typescript(&[])`, the actual absent subset entry
-  point; its only supported method is `RustSubsetOnly::parse(&[u8]) -> u8`, not a decorative constructor.
+  compile-fail witness attempts `RustSubsetOnly.parse_typescript(&[])`, the actual absent subset entry
+  point; its only supported method is `RustSubsetOnly.parse(&[u8]) -> &[u8]`, not a decorative
+  constructor. Both registry tokens are first-class values rather than associated-function namespaces.
 - Coordinates: `DenseId<Entity>` and `DenseId<Type>` are transparent, owner-branded `u32` values. No
   central identity registry edit, unresolved/import/wire bits, or cross-kind conversion is authorized.
 - Text measurement: `/usr/bin/size -m` on named release test executables plus `rustc -vV`. A missing
@@ -84,10 +87,12 @@ Every listed file is absent at the frozen base (digest `absent`, LOC `0`). No wi
 
 ```text
 workspace2/domains/ir/Cargo.toml
+workspace2/domains/ir/Cargo.lock
 workspace2/domains/ir/crates/nudox-ir-vocab/Cargo.toml
 workspace2/domains/ir/crates/nudox-ir-vocab/src/lib.rs
 workspace2/domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs
 workspace2/planes/compiler/Cargo.toml
+workspace2/planes/compiler/Cargo.lock
 workspace2/planes/compiler/crates/nudox-compile-vocab/Cargo.toml
 workspace2/planes/compiler/crates/nudox-compile-vocab/src/lib.rs
 workspace2/planes/compiler/crates/nudox-compile-registry/Cargo.toml
@@ -96,7 +101,9 @@ workspace2/planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs
 workspace2/planes/compiler/crates/nudox-compile-registry/tests/subset.rs
 ```
 
-Forbidden: root manifest/lockfile; central registry; existing crate; dependency; real frontend SDK;
+The two nested lockfiles are committed build inputs and every terminal Cargo command uses `--locked`;
+the worktree must remain clean after a gate. Forbidden: root manifest/lockfile; central registry;
+existing crate; dependency; real frontend SDK;
 macro crate; test-support crate; fragment/wire/builder/view; recipe/job/driver; cache/scheduler/sandbox/
 process/object-store/server/bundle; async/runtime; `serde`; `async-trait`; public `dyn`; `Box<dyn Error>`;
 `Arc`; unsafe; SIMD; legacy alias/behavior; all unlisted public surface.
@@ -106,7 +113,7 @@ process/object-store/server/bundle; async/runtime; `serde`; `async-trait`; publi
 | Law | Exact artifact | Falsifier / cap |
 | --- | --- | --- |
 | Closed dispatch | Full manual two-row match calls concrete generic paths once at boundary. | Any `dyn`, erased error, registry scan, plugin lookup, default/fallback, or traversal tag match is `BLOCKER`. |
-| Distinct rows | External test observes Rust parse/lower and TypeScript parse results plus TypeScript lower exact operands. | Two tags to one type, nominal no-op rows, or no supported-stage difference is `BLOCKER`. |
+| Distinct rows | External test observes zero-copy Rust parse/lower and TypeScript parse borrows plus TypeScript lower exact operands. | Ignoring/not forwarding source, two tags to one type, nominal no-op rows, or no supported-stage difference is `BLOCKER`. |
 | Static subset | `RustSubsetOnly` omits TypeScript; compile-fail doctest cannot name it. | Runtime tag admission or compiling absent member is `BLOCKER`. |
 | Branded dense IDs | Real `size_of`/alignment and owner-mixing negative witness. | Cross-owner conversion, phase bits, or forgeable coherent witness is `BLOCKER`. |
 | Inward topology | IR vocab is `no_std`; compiler vocab depends inward; registry depends only on compiler vocab. | SDK/runtime/serde/async/reverse dependency/root-manifest edit is `BLOCKER`. |
@@ -155,20 +162,21 @@ allocator-instrumented IR builder claim belongs to C1.
 cd /private/tmp/nudox-autonomous-compiler-contract/workspace2
 RUSTC_WRAPPER= cargo fmt --manifest-path domains/ir/Cargo.toml --all -- --check
 RUSTC_WRAPPER= cargo fmt --manifest-path planes/compiler/Cargo.toml --all -- --check
-RUSTC_WRAPPER= cargo check --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo check --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --manifest-path domains/ir/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
-RUSTC_WRAPPER= cargo test --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry --doc
-RUSTC_WRAPPER= cargo clippy --manifest-path domains/ir/Cargo.toml --workspace --all-targets -- -D warnings
-RUSTC_WRAPPER= cargo clippy --manifest-path planes/compiler/Cargo.toml --workspace --all-targets -- -D warnings
+RUSTC_WRAPPER= cargo check --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo check --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo test --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo test --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
+RUSTC_WRAPPER= cargo test --locked --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry --doc
+RUSTC_WRAPPER= cargo clippy --locked --manifest-path domains/ir/Cargo.toml --workspace --all-targets -- -D warnings
+RUSTC_WRAPPER= cargo clippy --locked --manifest-path planes/compiler/Cargo.toml --workspace --all-targets -- -D warnings
 rustc -vV
-RUSTC_WRAPPER= cargo build --release --manifest-path planes/compiler/Cargo.toml -p nudox-compile-registry
-find planes/compiler/target/release/deps -name 'libnudox_compile_registry-*.rlib' -print -exec /usr/bin/size -m {} \;
+RUSTC_WRAPPER= cargo test --locked --release --no-run --manifest-path planes/compiler/Cargo.toml --workspace --all-targets
+find planes/compiler/target/release/deps -type f -perm -111 -name 'dispatch-*' -print -exec /usr/bin/size -m {} \;
+find planes/compiler/target/release/deps -type f -perm -111 -name 'nudox_compile_registry-*' -print -exec /usr/bin/size -m {} \;
 git diff --check
 ```
 
-One fresh builder turn may create exactly the eleven files above. It must deliver the compileable nested
+One fresh builder turn may create exactly the thirteen files above. It must deliver the compileable nested
 workspace skeleton, two branded coordinates, full/manual and `RustSubsetOnly` registries, and external
 two-row/exact-error tests; commit only these paths after nested format/check/test gates. It stops before
 a macro, compile-fail harness dependency, feature mechanism, real frontend, or C1 type. Its adversarial
@@ -199,5 +207,5 @@ contract ambiguity: the baseline plan digest in the table no longer matched the 
 re-freeze paragraph above is the narrow rewrite; it changes no capability, path, cap, or evidence row.
 
 Exact next decision: **commission the first builder card only if all four fresh trials reproduce this
-rewritten C0.1 terminal, eleven paths, prohibited surface, caps/reserve, commands, and no authority
+rewritten C0.1 terminal, thirteen paths, prohibited surface, caps/reserve, commands, and no authority
 question with zero blocker/major ambiguity.**

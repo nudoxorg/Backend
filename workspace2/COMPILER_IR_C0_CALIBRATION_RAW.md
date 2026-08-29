@@ -129,3 +129,74 @@ The strongest counterexample attempted was the rejected direct-static-method dis
 The accepted registry instead has a private `Frontend` trait and `drive<ConcreteFrontend>` with both
 concrete frontend implementations. No C0.1 blocker or major remains. C0.2 (an earned declarative macro)
 and C0.3 (the remaining vocabulary/compile-fail matrix) are explicitly separate, unstarted children.
+
+## Root hostile review and compaction
+
+The manager closure was rejected. The root review found four defects before integration:
+
+```text
+BLOCKER — registry source and public integration test
+Evidence: every successful frontend returned a constant and optimized dispatch ignored the source
+pointer and length entirely; deleting source forwarding could not fail a test.
+Violated law: the public journey and distinct-row proof must falsify ignored input.
+Correction: every successful path now lends the caller's exact source region.
+Falsifier: external tests compare pointer identity for Rust parse/lower and TypeScript parse.
+
+MAJOR — nested workspace roots and terminal commands
+Evidence: every claimed clean Cargo gate created two untracked Cargo.lock files which were deleted
+afterward, so the command itself did not preserve a clean reproducible specimen.
+Violated law: terminal evidence starts and ends from an exact clean build input.
+Correction: both nested lockfiles are committed and every Cargo evidence command uses --locked.
+Falsifier: run the complete command set, then require empty git status.
+
+MAJOR — manager card and recorded text evidence
+Evidence: the card required named release test executables, but the record measured only an rlib and
+did not retain its empty-control output.
+Violated law: layout/text claims require directly reproducible raw artifacts.
+Correction: release --no-run now measures the public dispatch executable against the same crate's
+empty unit-test harness.
+Falsifier: dispatch __text must remain within 8192 bytes of that harness on the recorded toolchain.
+
+MINOR — source and coordinate tests
+Evidence: the registry matched (language, stage) and then drive matched stage again; the test named
+owner_types_are_not_interchangeable merely constructed one value of each type.
+Violated law: representation should remove repeated control flow and tests must fail a weakened build.
+Correction: the boundary selects only language, stage remains owned by drive, and the tautological test
+was deleted; the compile-fail doctest remains the owner-mixing proof.
+Falsifier: restoring tuple dispatch adds a repeated stage selection; removing the doctest permits the
+mixed-owner witness to compile.
+```
+
+The compacted public methods consume their zero-sized registry token, so the types are usable values
+rather than associated-function namespaces. `DenseId` exposes its independently valid named `raw` fact
+directly while retaining the private owner brand; no getter or tuple coordinate was added.
+
+Root release evidence on `rustc 1.97.1 (8bab26f4f 2026-07-14)`, `aarch64-apple-darwin`:
+
+```text
+dispatch-d857baa1f340b7de __TEXT,__text = 494508 bytes
+nudox_compile_registry-4163acf7c5d379c1 __TEXT,__text = 493252 bytes
+conservative public-test delta = 1256 bytes
+optimized dispatch = two conditional branches: language selection and TypeScript stage rejection;
+successful arms return the input pointer and length with no allocation, copy, scan, or indirect call
+```
+
+Normally formatted retained size is 146 production source/manifest lines, 28 generated lockfile lines,
+and 51 test lines. The production/test source reserves remain 79/89 lines below their hard caps. Updated
+candidate digests:
+
+```text
+domains/ir/Cargo.toml ebda83dc3ec8c97ce407a3b26c6fba3d5cd45cea1403b35c15fe4f61b44afb38
+domains/ir/Cargo.lock 32b1c5e653187397d47c0a7572acea090835cb1dda30e617033a8633ec61c285
+domains/ir/crates/nudox-ir-vocab/Cargo.toml a814b4ae4ba60754cf854dbee07830fd85b6d0193148db5e543923340aa0c329
+domains/ir/crates/nudox-ir-vocab/src/lib.rs 2470230102424a34892369204ce20c5a164cec25d894ce8eee45331e636e5a78
+domains/ir/crates/nudox-ir-vocab/tests/coordinates.rs 50287eb0e419f253eff34c5334060fa65b1ea938eae575b2b1e7cd19a6fbb30d
+planes/compiler/Cargo.toml ebda83dc3ec8c97ce407a3b26c6fba3d5cd45cea1403b35c15fe4f61b44afb38
+planes/compiler/Cargo.lock 4faf5b19bc260e528bdf43f3cb906a145116a65467187da55ea6b18dd84149cf
+planes/compiler/crates/nudox-compile-vocab/Cargo.toml d0d9dbfeb6cad58db3c5ab673e0c976108b409283e6606feae6deca1f34d5e99
+planes/compiler/crates/nudox-compile-vocab/src/lib.rs a26c48dcc3cbe71b35b83ddf324cc4c961b4a7ffd42e11abcc390e9e60233d55
+planes/compiler/crates/nudox-compile-registry/Cargo.toml b4b0c2de20da05bf917df13e86a01122f8ab637bb2e2762ef79f903badb7b40d
+planes/compiler/crates/nudox-compile-registry/src/lib.rs 965eaabadaf3178cce0103fe4f9d8bc03ce55468ba0bf9ad3572282b33d47cb4
+planes/compiler/crates/nudox-compile-registry/tests/dispatch.rs 2835cffd057b88cd1c0914e77fd5660f6106e3ce3f9bbbd44bfd95e4d56f0df4
+planes/compiler/crates/nudox-compile-registry/tests/subset.rs 4bb540991a5189fa65a932cbacf12379eb6060a72f6e0e624d29006d177af843
+```

@@ -16,7 +16,8 @@ pub enum Type {}
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DenseId<Owner> {
-    raw: u32,
+    /// Dense position inside this owner's coordinate space.
+    pub raw: u32,
     owner: PhantomData<fn() -> Owner>,
 }
 
