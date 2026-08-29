@@ -17,6 +17,7 @@ source-candidate tree digest:
 receipt-containing commit: SELF (record exact commit in acceptance/roadmap after commit)
 paths changed from source candidate through receipt:
 source/test/manifest/lock/fixture/generated-consumer equivalence proof:
+integrated shared commit and scoped tree-equivalence proof:
 review worktree and branch:
 manager baseline and commit range:
 manager model proof:
@@ -129,3 +130,8 @@ verdict: ACCEPTED | REJECTED | OPEN
 `ACCEPTED` requires the exact committed source candidate, every law `REPRODUCED`, zero blocker/major,
 unused reserve, two clean full passes, a later receipt whose intervening diff is evidence-only, and no
 later source edit. Otherwise choose `REJECTED` or `OPEN`; do not average missing proof into a score.
+
+When a candidate crosses histories through cherry-pick or patch integration, name the integrated
+commit and compare every scoped source, test, manifest, lock, fixture, and generated consumer path.
+Commit-message or patch-id similarity is corroboration only. Without scoped tree equivalence, the
+integrated candidate is a new unreviewed source candidate.

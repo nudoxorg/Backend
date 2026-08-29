@@ -83,8 +83,11 @@ observed. Add a do/don't or stop rule when the wrong behavior was plausible; del
 when the issue was authority conflict or overload. Never encode a task-specific type or patch as a
 universal law.
 
-After a rewrite, run a fresh evaluator with no prior transcript. Stop after two failed rewrite rounds
-and return the unresolved decision to the parent; repeated prompting is not calibration.
+After any semantic rewrite, rerun the complete applicable cold deck with fresh roles and no prior
+transcript; every result for the earlier digest is stale. For cross-crate work this means both
+independent readers, the plausible misreader, and the separate explicit non-inheriting Terra reviewer,
+not one convenient reader. Stop after two failed rewrite rounds and return the unresolved decision to
+the parent; repeated prompting is not calibration.
 
 Classify every missing field before escalation. Baseline SHA/digests, exact repository paths,
 formatted LOC forecasts, numeric reserve, runnable commands, dependency facts, and the smallest
