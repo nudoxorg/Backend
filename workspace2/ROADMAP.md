@@ -33,7 +33,8 @@ The remaining gaps are architectural, not polish:
 
 ### 0. Review system and integration spine — active
 
-- [x] Common craft, domain, hostile-review, layout, dispatch, and provisional rubric skills.
+- [x] Common craft, domain, hostile-review, layout, dispatch, and rubric-writer skills; the product
+  rubric is explicitly unadopted until blind reviewer/writer calibration closes its readiness ledger.
 - [x] Manager skill with scoped worker evidence, independent breaking, churn accounting, and skill
   feedback.
 - [x] Forward-test the manager cycle on the server-only tracing/OTEL adapter and record where worker

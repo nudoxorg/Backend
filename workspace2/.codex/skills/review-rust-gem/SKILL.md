@@ -33,6 +33,27 @@ cold-only, or a finding; an empty prose claim is not a scan. For each public mar
 trait, try deleting the wrapper marker and using the already branded associated/domain type directly.
 If the mapping adds no behavior or invalid-state exclusion, it is duplicate representation.
 
+The final review must include this literal table with every row present, including zero-hit rows:
+
+```text
+tripwire | count | exact locations | disposition | evidence or finding ID
+panic/unwrap/expect/unreachable
+source-dropping conversion or map_err
+dyn/Box/Vec/Arc/Rc
+public tuple fields or positional semantic tuples
+unit/stateless namespace structs
+public local traits or one-implementation delegation
+one-letter generic parameters
+numeric discriminants/sentinels/offsets/capacities/loop bounds
+test-only Option/discarded results/success-only assertions
+unsafe/SIMD/allocator/dependency additions
+public item without current consumer and falsifier
+```
+
+Do not summarize the scan as “accounted for.” A missing row, missing location, or `acceptable` without
+a contract law or measurement makes the review incomplete and forbids approval. The primary Terra
+must preserve the raw reviewer table; a paraphrased manager ledger is not independent evidence.
+
 Recompute the remaining forecast with the shared skill's uncertainty reserve. A claim that technically
 fits only by consuming the reserve is a scope failure and must split before further implementation.
 Compare planned and actual formatted LOC for every file before reviewing semantics. A variance above

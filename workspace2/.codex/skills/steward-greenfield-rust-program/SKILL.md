@@ -8,7 +8,8 @@ description: Direct the workspace2 greenfield Rust program as the root steward w
 Read `../deliver-reviewed-rust-slice/SKILL.md`, `../manage-rust-swarm/SKILL.md`,
 `../review-rust-gem/SKILL.md`, and `../calibrate-rust-agent-contract/SKILL.md` completely. Read the
 applicable domain plan/skill before dispatch or root review. Read `../write-evidence-rubric/SKILL.md`
-only when its readiness gate is actually satisfied.
+only when its readiness gate is actually satisfied. Before closing any capability, read
+`references/root-closure-receipt.md` and fill every field from raw evidence.
 
 The root is the cross-program architect, evidence integrator, and last hostile reviewer. Terra
 managers are autonomous capability owners, not remote hands waiting for line-by-line instructions.
@@ -144,6 +145,13 @@ When a Terra manager returns:
 6. Update roadmap, plans, and at most three generalized skill clauses from observed repeatable
    failures. Never encode task SHAs, live agent IDs, or temporary worktree facts as doctrine.
 
+Acceptance is a two-observation operation, never the last line of a repair turn. First freeze and
+commit the root-reviewed candidate; then reread that exact commit as a reviewer, fill the closure
+receipt, run the complete gates from clean state, and inspect status immediately. Make no source or
+evidence edit between the second clean gate and the acceptance verdict. Any edit reopens closure and
+requires a new receipt. A copied manager summary, omitted raw reviewer output, unexplained tripwire,
+or command result without commit/worktree/status identity is `UNVERIFIED`, not evidence.
+
 Root acceptance has three non-negotiable self-falsifiers:
 
 - mutate or remove input use in every synthetic/public journey; if the test remains green, it proves
@@ -167,6 +175,11 @@ unverified platform/tooling
 what root did concurrently while managers ran
 next manager capability requiring no clerical input from root
 ```
+
+Use the closure receipt's `OBSERVED`, `REPRODUCED`, `FALSIFIED`, and `UNVERIFIED` states. Only
+`REPRODUCED` evidence can close a law. `OBSERVED` is useful manager evidence but remains a root todo;
+`FALSIFIED` reopens design; `UNVERIFIED` is an explicit gap. Never convert absence into “not
+applicable” without naming the contract reason and the search or experiment that established it.
 
 Do not claim progress from agent count, turns, code volume, or green happy paths. Report a capability
 only when its external terminal and hostile evidence exist. Keep accepted code smaller and stronger;

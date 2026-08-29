@@ -100,3 +100,8 @@ ready even when its arithmetic is internally consistent.
 Return readiness decision, criterion table, caps, aggregation formula, calibration artifacts/results,
 gaming tests, version/change policy, and open ambiguity. The rubric writer must not score the current
 implementation; hand the validated rubric to an independent reviewer.
+
+The active rubric artifact begins with `NOT ADOPTED`, `CALIBRATING`, or `ADOPTED`, plus the contract
+digests, calibration artifact commits, reviewer identities/model proof, and adoption date. Only
+`ADOPTED` permits a numeric product score. Replacing a stale score with a readiness ledger is required,
+not loss of history: Git retains the old opinion without letting agents cite it as current evidence.
