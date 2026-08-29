@@ -59,6 +59,10 @@ cache tier, retry, or physical range-placement facts.
   file/database calls never hide inside an async signature.
 - Errors retain exact range/sequence, requested and observed extent, source phase, rejected owner when
   recoverable, and causal I/O/protocol source. Retry/degradation is explicit policy, not `Internal`.
+- Item and byte accounting are named semantic facts, never `(u8, u64)` or repeated raw fields across
+  terminal variants. Checked length conversion/summation either becomes impossible by using the
+  native bounded type or has its own source-preserving error with original operands and owners; it
+  never saturates, wraps, uses a maximum sentinel, or masquerades as a budget rejection.
 - Observation is one lazy coarse typed event at admission, completion/degradation, and terminal. No
   per-byte/per-poll logging, payload identity metric labels, or exporter dependency in the core.
 
@@ -84,10 +88,16 @@ DON'T: HTTP error -> empty stream or zero hits
 DO: exact Failed/Degraded/Partial terminal carrying requested range and source
 ```
 
-An HRTB callback that lends a validated view from the lease is the default escaping boundary. Use a
-self-referential owner only when the view must outlive that callback and measured removal of a copy or
-revalidation pays for construction, drop, code size, and dependency. `Arc` must prove shared lifetime
-ownership that cannot be expressed by transfer, scope, arena, slab, or completion-owned buffer.
+Raw bytes use standard `Deref<Target = [u8]>`, `Borrow<[u8]>`, or `AsRef<[u8]>`; a callback that only
+forwards `self.buffer.as_ref()` is delegation and must not be called validation. An HRTB callback is
+earned only when it lends a real proof-bearing view tied to the lease and prevents a view that would
+otherwise outlive its owner. If key and buffer are independently valid facts, expose named fields or
+standard borrows instead of trivial `.key()`/`.bytes()` getters. Semantic scalar newtypes have named
+facts plus exact `From`/`TryFrom` and `Deref` where ordinary scalar operations are valid; never expose
+positional `.0` as the API. Use a self-referential owner only when the view must outlive the callback
+and measured removal of a copy or revalidation pays for construction, drop, code size, and dependency.
+`Arc` must prove shared lifetime ownership that cannot be expressed by transfer, scope, arena, slab,
+or completion-owned buffer.
 
 ## First vertical proof
 
@@ -111,6 +121,7 @@ falsifier:
 
 ```text
 lease uniqueness | compile-fail duplicate/clone/borrow escape + drop counter | exact owner once
+validation authority | raw borrow versus proof-bearing view compile/runtime cases | no dishonest validated API
 capacity conservation | model snapshot after every scheduled action | items and bytes both exact
 wake correctness | deterministic `Wake`/`Waker` schedule | register-before-pending, recheck, no stale duplicate
 terminal law | complete/partial/degraded/cancel/failed plus repeated poll | once then fused
