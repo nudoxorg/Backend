@@ -6,13 +6,22 @@ description: Manage fresh scoped Rust workers through evidence, implementation, 
 # Manage a Rust swarm
 
 Read `../deliver-reviewed-rust-slice/SKILL.md`, the applicable domain skill, and
-`../review-rust-gem/SKILL.md` completely. The parent supplies one capability boundary. Manage it;
-do not reinterpret the roadmap or broaden adjacent public APIs.
+`../review-rust-gem/SKILL.md` completely. The root supplies one capability boundary and any
+non-negotiable product law. Manage it autonomously; do not reinterpret the roadmap or broaden
+adjacent public APIs.
 
 The manager owns decomposition, worker prompts, review, integration, gates, and the final candidate.
 Workers own narrow evidence or patches. The parent reviews only the manager's closed candidate.
 
 ## Freeze the trial
+
+The manager authors the complete card. Inspect the frozen repository, format a real skeleton or
+comparable slice, run baseline commands, and turn plan prose into one observable terminal. Derive
+exact writable files, literal commands, numeric caps, and reserve without asking the root to do
+clerical discovery. A root decision is required only when the smallest proof still admits two
+materially different product contracts, a permanent wire choice, a new dependency/unsafe/SIMD
+authority, or scope outside the named capability. Missing SHA, path, command, LOC, allocation, work,
+or text-size facts are not escalation grounds.
 
 Before spawning a worker, write a manager card:
 
@@ -26,6 +35,13 @@ Explicit negative space
 Final parent decision
 ```
 
+Every field is literal. Enumerate writable files; do not say “plus registry additions.” Name the
+baseline commit and independent digest/LOC ledger. Replace command/package placeholders. Numeric
+ceilings include unused reserve. Name the public integration file and test function that closes the
+slice. If the architecture phase contains several terminals, split it into ordered child cards and
+calibrate only the first; this is manager decomposition, not a request for the root to rewrite the
+plan.
+
 Freeze the named baseline independently of version control. Record every writable file's relative
 path, formatted LOC, and content digest; record absent paths explicitly. A dirty, untracked, nested,
 or from-scratch tree makes `git diff` an unreliable baseline. Reviewers compare the candidate to this
@@ -33,8 +49,10 @@ ledger and may use Git only as corroboration. A claim that all pre-existing untr
 churn is a reviewer failure, not an implementation finding.
 
 Reject a capability whose proof cannot fit one review cycle. Split at an observable boundary, not by
-file. Record unrelated dirty files and assign disjoint write ownership. Only the manager edits shared
-manifests, public reexports, plans, and skills unless explicitly delegated.
+file. Record unrelated dirty files and assign disjoint write ownership. Only the manager edits its
+isolated manifests, public reexports, phase cards, and narrowly learned skill clauses unless
+explicitly delegated. The root sees the closed commit and evidence packet, not intermediate
+permission questions about discoverable repository facts.
 
 The parent and sibling managers freeze the target's transitive production dependency paths for the
 duration of the build/break cycle. If an unavoidable parent edit changes one, stop the worker,
@@ -48,6 +66,11 @@ caps, and stop decisions. Compare fields, not prose similarity. Any missing row,
 or different first terminal means the contract is ambiguous and must be rewritten before a builder
 sees it. For binary, concurrency, durability, unsafe, or cross-crate work, require two independent
 restatements and an adversarial plausible-misread trial.
+
+When a cold reader identifies an omitted baseline, command, path, cap, reserve, or public journey,
+the manager repairs the card from evidence and reruns the trial. It returns to root only if the
+reader exposed a genuinely product-changing fork under the authority rule above. “The parent did not
+supply it” is not a closure packet.
 
 ## Worker commit protocol
 

@@ -13,7 +13,8 @@ eventual rubric. The agent owns one proof, reports early, and waits before broad
 
 ## Contract before code
 
-No production edit is allowed until the parent supplies or approves every row:
+No production edit is allowed until the responsible manager supplies and approves every row for its
+workers:
 
 ```text
 Capability: one externally observable behavior
@@ -25,12 +26,21 @@ Budget: retained bytes, allocations, copies, work, latency, text, and net LOC
 Checkpoint: the next parent decision
 ```
 
-If a row is missing, inspect the direct path and propose it. Never fill ambiguity with a framework,
-compatibility layer, copied type, backend enum, or broad refactor.
+The root steward normally supplies only the named capability, non-negotiable product laws, and any
+truly external constraint. The manager derives the named baseline, exact paths, current semantics,
+numeric budgets/reserve, terminal commands, and falsifiers from the repository, formatted skeleton,
+measurements, and plan. Returning those discoverable fields as “parent-owned omissions” is a manager
+failure. Escalate only when two plausible choices materially change observable product behavior,
+protocol permanence, dependency/unsafe authority, or the capability boundary. Never fill genuine
+ambiguity with a framework, compatibility layer, copied type, backend enum, or broad refactor.
 
 ## Mandatory parent loop
 
 ### Checkpoint 1 — evidence and design; no production edits
+
+Here “parent” means the manager reviewing a worker. A Terra manager performs this work autonomously
+before it commissions implementation; it does not ask the root to transcribe repository facts into a
+card.
 
 Return:
 

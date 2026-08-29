@@ -19,9 +19,10 @@ sandbox protocol, repositories, or tests without a new first-principles justific
 
 ## One phase at a time
 
-The parent names one `C0`–`C6` phase or smaller observable slice. Freeze allowed paths, registry edits,
-dependencies, compile-time subset, arena/retained/live bytes, allocations/copies, stage/hash work,
-binary text, cancellation/failure terminal, and integration consumer before production edits.
+The root names one `C0`–`C6` capability. The Terra manager autonomously selects its smallest
+observable child slice and freezes allowed paths, registry edits, dependencies, compile-time subset,
+arena/retained/live bytes, allocations/copies, stage/hash work, binary text, cancellation/failure
+terminal, and integration consumer before production edits.
 
 For `C0`, the default surface is complete nested workspaces under `workspace2/domains/ir/**` and
 `workspace2/planes/compiler/**`, plus separately authorized central registry additions. Use two tiny
@@ -32,6 +33,12 @@ Each C0 synthetic frontend must contribute a distinct checked registry row: its 
 tag and a capability or supported-stage difference exercised by a compile-time subset/failure case.
 Two nominal types with identical no-op/delegating behavior, or one concrete frontend routed under two
 tags, do not prove two consumers or generated dispatch.
+
+The wildcards above are architecture, never edit authority. The manager enumerates each writable
+manifest/source/test/registry file, compiles a normally formatted manual expansion/skeleton, names the
+public cross-crate journey and literal commands, and derives numeric LOC/resource/text reserves. It
+does not return discoverable card fields to root. Only a product-semantic fork, permanent wire choice,
+or new dependency/unsafe/SIMD authority is escalated.
 
 ## Required design packet
 

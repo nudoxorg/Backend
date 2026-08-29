@@ -17,14 +17,21 @@ ideas only. Never preserve an old trait, table, DTO, query behavior, backend, or
 
 ## One phase at a time
 
-The parent names exactly one `I0`–`I6` phase or a smaller observable slice. Freeze allowed paths,
-identity/schema edits, dependencies, retained/live bytes, allocations, copies, touched ranges,
-comparisons, branch/work counters, code size, and integration terminal before production edits.
+The root names one `I0`–`I6` capability. The Terra manager autonomously selects its smallest
+observable child slice and freezes allowed paths, identity/schema edits, dependencies, retained/live
+bytes, allocations, copies, touched ranges, comparisons, branch/work counters, code size, and
+integration terminal before production edits.
 
 For `I0`, the default allowed surface is a new complete nested workspace under
 `workspace2/planes/index/**`, plus separately authorized additions to the central ID/schema registries.
 Do not pre-create query, publication, server, vector, or object-store implementations. A crate/module
 must own a current invariant, not reserve a name for later.
+
+The wildcard above is architectural ownership, not a worker card. The manager enumerates every
+writable manifest/source/test/registry path, names the public journey and literal package commands,
+and derives numeric LOC/resource/text reserves before a worker sees it. Discoverable omissions are
+repaired autonomously under `manage-rust-swarm`; only a materially different index semantic returns
+to root.
 
 ## Required design packet
 

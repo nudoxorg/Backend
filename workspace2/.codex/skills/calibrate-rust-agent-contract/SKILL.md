@@ -73,6 +73,16 @@ universal law.
 After a rewrite, run a fresh evaluator with no prior transcript. Stop after two failed rewrite rounds
 and return the unresolved decision to the parent; repeated prompting is not calibration.
 
+Classify every missing field before escalation. Baseline SHA/digests, exact repository paths,
+formatted LOC forecasts, numeric reserve, runnable commands, dependency facts, and the smallest
+existing public consumer are discoverable manager work. The manager fills them and repeats the cold
+trial. Only two materially different observable terminals, permanent wire semantics, or authority
+outside the named capability are parent decisions.
+
+Reject a specimen that ends mid-sentence/list/table or names phases absent from its closure matrix.
+Every architecture plan ends with a literal `Plan closure` section; every executable card ends with
+one exact next decision. Structural validity is tested before an evaluator spends a turn.
+
 ## Passing result
 
 The contract passes only when:
