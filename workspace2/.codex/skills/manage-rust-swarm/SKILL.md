@@ -13,6 +13,38 @@ adjacent public APIs.
 The manager owns decomposition, worker prompts, review, integration, gates, and the final candidate.
 Workers own narrow evidence or patches. The parent reviews only the manager's closed candidate.
 
+## Keep architecture with Terra and mechanics with Luna
+
+The manager is the capability architect and verifier. A Luna worker is a short-lived instrument, not
+a smaller manager. Terra decides the invariant owner, observable terminal, representation candidates,
+dependency direction, budgets, card sequence, and whether evidence earns integration. Luna receives
+one locally decidable job:
+
+- implement one already-selected representation behind an exact public/fault test;
+- measure one layout, allocation, branch/work, or binary-text claim;
+- construct one counterexample against a named invariant;
+- simplify one accepted diff while preserving named falsifiers; or
+- run one cold-read contract trial and return raw structured evidence.
+
+Do not ask Luna to design the architecture, restate an entire phase, write a broad plan, choose among
+product contracts, self-score, or declare the capability complete. Do not consume a worker turn on an
+essay when an owned-path patch, executable experiment, or counterexample was possible.
+
+Terra maintains the live queue and issues the next card without root prompting. After every worker
+return it must reproduce the evidence, inspect the exact commit/diff, and choose exactly one:
+
+```text
+accept checkpoint -> issue next smallest uncovered law
+reject checkpoint -> issue one falsifier-bound repair card
+learn representation is wrong -> retain evidence, revert integration, issue replacement experiment
+all laws closed -> run hostile manager review and two clean full gates
+genuine authority fork -> stop once and ask root
+```
+
+Never ask the root what to do next because a worker finished. Never keep a green checkpoint merely
+because it took effort. “Relentless” means every turn attacks a remaining rubric row; repeating broad
+review or polishing unmeasured style is churn.
+
 ## Freeze the trial
 
 The manager authors the complete card. Inspect the frozen repository, format a real skeleton or
@@ -125,6 +157,23 @@ Prefer this sequence:
 4. **Repair:** receive only accepted findings with exact falsifiers. Delete/redesign before adding
    machinery. A second failure of the same law returns to decomposition rather than another patch.
 
+This is a loop, not a four-turn ceiling. A typical proof-bearing sequence is:
+
+```text
+Luna A: smallest public vertical implementation, committed
+Terra: reproduce, inspect, reject or accept
+Luna B: one independent adversarial/fault test against the accepted commit, committed if test-only
+Terra: reproduce failure, narrow the invariant correction
+Luna C: deletion-first repair, committed
+Terra: measure budgets/layout/work and run owned gates
+Luna D: independent simplification pass with all falsifiers frozen, committed only if strictly smaller
+Terra: hostile final review and two clean integration runs
+```
+
+The same Luna may receive a compact follow-up when continuity is useful, but each card remains one
+checkpoint and carries the current frozen SHA. Use a fresh Luna for independence-sensitive breaker
+or cold-reader evidence.
+
 With two worker slots, scout and test-breaker may run concurrently only when paths are disjoint and
 both are read-only. Never have two builders edit the same abstraction.
 
@@ -148,6 +197,24 @@ A builder's first turn after edit authority must either produce the first owned-
 or report one concrete contract blocker with file/line evidence. Repeating the brief, proposing more
 planning, or returning without edits/evidence is a failed worker turn and triggers a tighter prompt or
 replacement, not another broad discussion.
+
+Good builder card:
+
+```text
+At <SHA>, edit only <exact files>. Implement <one selected mechanism>. The public test
+<exact test> must distinguish <valid case> from <counterexample>. Production/test forecast is
+<numbers> with <reserve>. No new dependency/unsafe/allocation/public item. Commit only after
+<literal commands>; return SHA, formatted LOC, raw measurement, and any red gate.
+```
+
+Bad builder card:
+
+```text
+Implement C0 elegantly, explore the best abstractions, add comprehensive tests, and report back.
+```
+
+Good breaker card names one law and a plausible broken candidate. Bad breaker cards ask for a general
+review, invite style commentary, or disclose the builder's rationale before an independent read.
 
 Before promising a wrapper around a foreign trait or SDK lifecycle, the scout must compile or fully
 enumerate the current trait surface—including resource/configuration forwarding, enablement,

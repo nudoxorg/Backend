@@ -66,6 +66,29 @@ Root work never edits a live manager's frozen transitive dependency. Use a separ
 root correction invalidates a manager baseline, stop it once, rebase explicitly, and preserve the
 discarded evidence as churn.
 
+Every manager cycle must leave at least one durable root-owned artifact beyond coordination: an
+accepted integration/fault test, a measured representation experiment, a dependency/binary reduction,
+a deleted or consolidated abstraction, or a primary-source decision record with an executable
+falsifier. Status narration and manager prompt writing do not count as background progress.
+
+Maintain a next-batch ledger while managers run:
+
+```text
+capability | prerequisites | stable public terminal | unresolved measured decision | disjoint paths
+```
+
+Prepare the next capability only to the point that an autonomous Terra can derive its own card. Do
+not pre-author its representation. When testing a new orchestration pattern, start one additional
+disjoint capability only if enough runtime slots remain for that Terra to spawn the explicitly
+selected Luna worker; three idle managers with no worker capacity is fake parallelism. Compare the
+pilot against prior cycles using worker turns, root questions, written-then-rejected LOC, independently
+reproduced evidence, and closure latency.
+
+The root must not become a hidden manager. If it supplies exact worker files, representation, caps,
+commands, or follow-up cards after dispatch, record that as manager autonomy failure and repair the
+manager skill before the next cycle. Root feedback is reserved for genuine authority forks and the
+single final hostile review.
+
 ## Cross-cutting abstraction review
 
 Before accepting a new type or mechanism, ask across every plane:
