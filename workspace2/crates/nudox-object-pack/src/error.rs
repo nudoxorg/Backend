@@ -169,4 +169,14 @@ pub enum ObjectPackError {
         /// Exact encoded cumulative end.
         observed: ObjectPackBytes,
     },
+    #[error("pack has {actual:?} bytes but requires exactly {expected:?}")]
+    PackExtent {
+        expected: ObjectPackBytes,
+        actual: ObjectPackBytes,
+    },
+    #[error("pack object {expected:?} hashes to {actual:?}")]
+    ObjectContent {
+        expected: ContentId<nudox_id::ObjectDomain>,
+        actual: ContentId<nudox_id::ObjectDomain>,
+    },
 }

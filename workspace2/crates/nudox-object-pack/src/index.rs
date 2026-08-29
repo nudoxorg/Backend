@@ -25,6 +25,7 @@ pub struct ObjectPackIndexFacts<'bytes> {
 /// Borrowed validation witness for a complete fixed object-pack directory.
 pub struct ObjectPackIndex<'bytes> {
     facts: ObjectPackIndexFacts<'bytes>,
+    pub(crate) directory: &'bytes [DirectoryRecord],
 }
 
 impl<'bytes> Deref for ObjectPackIndex<'bytes> {
@@ -75,6 +76,7 @@ impl<'bytes> TryFrom<&'bytes [u8]> for ObjectPackIndex<'bytes> {
                 index_bytes: header.index_bytes,
                 pack_bytes: checked_add(index_bytes, body_bytes)?.into(),
             },
+            directory,
         })
     }
 }
