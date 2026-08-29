@@ -10,6 +10,8 @@ Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then
 `../manage-rust-swarm/SKILL.md`, `../write-evidence-rubric/SKILL.md`, and
 `../review-rust-gem/SKILL.md`. Read `../../../PACKED_COLLECTIONS.md` and
 `../../../TESTING.md` for IR formats/views.
+Before the first production edit in a new phase, the manager applies
+`../calibrate-rust-agent-contract/SKILL.md` to the exact phase card.
 
 The design is greenfield. Legacy compiler, IR model, and IR VCS are an anti-pattern/candidate corpus,
 not a contract. Do not port their traits, behavior, serde types, indices, source transformations,

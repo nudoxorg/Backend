@@ -41,6 +41,14 @@ duration of the build/break cycle. If an unavoidable parent edit changes one, st
 recompute the digest ledger, rerun its focused baseline, and issue a named rebase. Never let a worker
 silently verify against moving types.
 
+Before edit authority, apply `../calibrate-rust-agent-contract/SKILL.md`. A fresh no-edit worker gets
+the raw contract and references but none of the manager's intended design. It must independently
+restate the first observable slice, exact allowed paths, prohibited adjacent surface, evidence rows,
+caps, and stop decisions. Compare fields, not prose similarity. Any missing row, extra public surface,
+or different first terminal means the contract is ambiguous and must be rewritten before a builder
+sees it. For binary, concurrency, durability, unsafe, or cross-crate work, require two independent
+restatements and an adversarial plausible-misread trial.
+
 ## Worker commit protocol
 
 Put each writing worker in an isolated worktree/branch at the frozen base when the repository state
@@ -134,6 +142,15 @@ At every handoff:
 4. Rank findings by invalid state or user-visible cost. Reject speculative cleanup.
 5. Send one coherent finding packet. Do not drip style comments across repeated turns.
 6. After repair, rerun exact falsifiers first, then owned gates, then integration gates.
+
+The boundary pass must attempt two concrete breaks rather than merely mention encapsulation:
+
+- mix fields from two separately valid owners to forge every public witness or view;
+- follow every validated raw tag/coordinate into trusted projection and search for a second decode,
+  panic, omission, fallback, or unchecked conversion.
+
+Either break is a blocker. A comment saying construction proved the invariant is not evidence; the
+private representation and a downstream falsifier must carry it.
 
 Concurrency/liveness evidence must observe the producer independently. For a bounded nonblocking
 claim, require producer completion under its own deadline while the consumer/exporter remains

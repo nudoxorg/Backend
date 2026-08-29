@@ -78,12 +78,18 @@ score only after them. Keep criteria orthogonal and sum weights exactly once.
 Calibrate before adoption:
 
 1. Select three frozen artifacts: deliberately deficient, complete-to-plan, and legitimate stretch.
-2. Two reviewers independently apply the rubric without discussing scores.
+   The deficient artifact must compile and pass plausible weak tests while containing at least one
+   seeded invariant leak; prose descriptions are not calibration artifacts.
+2. Blind the artifact labels. Two reviewers independently apply the rubric without discussing scores.
 3. Any criterion divergence greater than one point or any total that places the artifacts outside
    `<8`, `=8`, and `>8` respectively requires rewriting anchors/evidence.
 4. Try three gaming patches: superficial LOC deletion, test-count inflation, and a benchmark-only
    optimization. The score must not rise without capability evidence.
 5. Version the rubric when contracts or baselines change; never silently edit anchors mid-review.
+
+Before adoption, run the contract itself through `../calibrate-rust-agent-contract/SKILL.md`. If fresh
+readers disagree on the first slice, allowed paths, terminal evidence, or a hard cap, the rubric is not
+ready even when its arithmetic is internally consistent.
 
 ## Output
 

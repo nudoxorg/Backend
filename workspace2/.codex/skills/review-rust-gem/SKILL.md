@@ -37,7 +37,9 @@ Run all applicable passes in this order:
 1. **Contract:** map every preserve/prove row to code and a falsifying test. Reject deferred rows or
    substituted capabilities.
 2. **Boundary:** identify the invariant owner, dependency direction, leaked adapter policy, duplicate
-   representation, compatibility shim, and public surface that can be private/deleted.
+   representation, compatibility shim, and public surface that can be private/deleted. For each
+   witness/view with multiple fields, try a downstream struct literal that combines parts from two
+   valid owners. Compilation is a blocker when coherence is required.
 3. **Less-is-more:** find wrappers, getters, delegate traits, stateless structs, helper proliferation,
    parallel algorithms, repeated fields, redundant wire metadata, and branches that representation
    can remove. Recount normally formatted logical source; reject `rustfmt::skip`, one-line functions,
@@ -50,7 +52,9 @@ Run all applicable passes in this order:
    and text-size monomorphs. Compare the real lifetime alternatives.
 6. **Control/errors:** trace hot and failure paths. Find repeated conditions, unpredictable branches,
    hidden scans, oversized functions, lost sources/values, panic paths, hand-written formatting, and
-   error priority drift.
+   error priority drift. Trace every validated tag, offset, and length into projection. A second
+   raw-to-closed decode, `unreachable!`, `expect`, silent omission, fallback, or unproved narrowing
+   conversion means the representation did not retain its proof.
 7. **Concurrency/async:** prove receiver-level concurrency, physical bounds, linearization, ordering,
    waker arm/recheck, cancellation, ABA/reuse, poison, shutdown, and progress. Search for locks hidden
    in libraries. Require Loom on production transitions and Miri for unsafe ownership.
@@ -94,6 +98,8 @@ Do not approve when:
 - tests assert only success/no panic or use `expect`/`unwrap` as reporting;
 - an LOC or simplicity claim depends on suppressed formatting or compressed logical statements;
 - diagnostics exist only in an outer demo;
+- a coherence-dependent public struct literal can combine unrelated valid fields, or validated input
+  still reaches a panic/fallback/redecode during trusted projection;
 - retained complexity rises without a measured/deleted cost;
 - the implementation crossed its named baseline/cap, hid written-then-deleted churn, or introduced
   future-phase public surface without current behavior and tests;

@@ -147,9 +147,13 @@ asked. The parent owns product completion and any future rubric.
 - In a glob-member workspace, never leave a new crate directory without a valid manifest and target.
   Stage experiments outside the glob or create/remove the complete scaffold atomically so unrelated
   Cargo gates remain runnable.
-- Public fields are correct for plain validated facts. Use `Deref`, `AsRef`, `Borrow`, `From`, and
-  `TryFrom` where their standard meaning is exact. Do not add `.get()`, `.wire()`, `.content()`,
-  `from_bytes()`, or namespace/stateless structs for discoverability.
+- Public fields are correct only when every field is an independently valid fact and every public
+  struct literal is coherent. If two borrows, coordinates, identities, lengths, or witnesses must
+  come from the same validation event, keep their pairing private and expose the independent facts
+  through `Deref` or a fact record. Review by deliberately mixing fields from two valid owners; if
+  that compiles, the boundary leaks its invariant. Use `AsRef`, `Borrow`, `From`, and `TryFrom` where
+  their standard meaning is exact. Do not add `.get()`, `.wire()`, `.content()`, `from_bytes()`, or
+  namespace/stateless structs for discoverability.
 - Magic numbers include unexplained tuple positions, loop bounds, capacities, offsets, sentinels, and
   arithmetic constants. Replace them with typed records, named constants, semantic newtypes, enums,
   or a derived `size_of`/`offset_of` fact.
@@ -285,8 +289,11 @@ enum Pending<Work> { New(Work), Queued { ticket: Ticket, work: Work }, Done }
   identity through typed records; arbitrary chunks are for physical artifact identity.
 - Distinguish semantic, artifact, pack, and range-proof identities. Version grammar with a closed
   encoding marker; do not repeat request-authenticated metadata without a measured recovery need.
-- Validate once into a compact borrowed witness. Write exact caller output only after total preflight;
-  insufficient output leaves every byte unchanged.
+- Validate once into a compact borrowed witness whose closed tags and coordinates are typed. Trusted
+  projection may not repeat raw-to-closed conversion or use `unreachable!`, `expect`, fallback values,
+  silent omission, or an unchecked narrowing cast to recover facts validation supposedly proved.
+  If projection remains fallible, validation has not produced the right representation. Write exact
+  caller output only after total preflight; insufficient output leaves every byte unchanged.
 - A packed collection is binary-searchable/range-addressable and states whether it is complete or
   sparse. A one-object envelope or a subrange of one payload is not a pack.
 - Do not add nom/binrw/winnow for fixed records. Consider one only when a genuinely variable grammar
@@ -373,6 +380,10 @@ probe.record_with(|| FileJournalEvent::BatchCommitted { first, count, durable_en
   backing bytes, peak live, allocation/copy, logical work, latency, text, and construction/drop.
 - Compile-fail lifetime tests keep the forbidden owner live after the shorter scope. Property/fuzz
   tests assert exact outcomes; they do not accept “did not panic.”
+- For every private coherence witness, add a compile-fail construction test or an equivalent
+  downstream-consumer proof that unrelated valid parts cannot be assembled. Also mutate the raw
+  discriminant/coordinate bytes so the public validator reports the exact semantic error before a
+  trusted view exists.
 
 ## Dependencies and negative space
 

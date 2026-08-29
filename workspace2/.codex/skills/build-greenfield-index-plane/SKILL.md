@@ -9,6 +9,8 @@ Read `../deliver-reviewed-rust-slice/SKILL.md` completely, then
 `../../../INDEX_GREENFIELD_PLAN.md`. A manager also reads `../manage-rust-swarm/SKILL.md`,
 `../write-evidence-rubric/SKILL.md`, and `../review-rust-gem/SKILL.md`. Read
 `../../../PACKED_COLLECTIONS.md` and `../../../TESTING.md` for any format/view task.
+Before the first production edit in a new phase, the manager applies
+`../calibrate-rust-agent-contract/SKILL.md` to the exact phase card.
 
 The plan is greenfield. Legacy `workspace/index` can supply counterexamples and candidate product
 ideas only. Never preserve an old trait, table, DTO, query behavior, backend, or test by default.
@@ -117,3 +119,5 @@ Copy no architecture wholesale. Record the useful mechanism, rejected coupling, 
 
 Return the shared handoff plus snapshot/segment diagrams, identity matrix, selected/touched range ledger,
 allocation/work/code-size evidence, strongest partial/failure counterexample, rejected legacy ideas, and
+the next smallest parent decision. Never claim another index family, publication, compaction, routing, or
+distributed execution capability from substrate-only evidence.
