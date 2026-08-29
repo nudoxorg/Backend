@@ -7,13 +7,16 @@ product is finished. [`WAVE1.md`](WAVE1.md) is historical ownership context.
 
 The portable foundation is coherent enough to build on, but the product is still between a local
 reference implementation and its first remote data plane. The strongest completed properties are
-typed identities and wire records, borrowed validation, canonical roots/locality, demand-bounded
+domain-separated hash construction and wire records, borrowed validation, canonical roots/locality, demand-bounded
 hydration, first-write-wins memory storage, a bounded lock-free runtime, a deterministic workflow
 reducer, typed probes, one measured SIMD validation kernel, and the beginning of a packed object
 artifact.
 
 The remaining gaps are architectural, not polish:
 
+- raw `ContentId`/`ArtifactId` reconstruction currently trusts an untyped byte array, so phantom
+  marker authority does not survive a wire/index round trip; the fixed-width checked representation
+  is an active foundation repair and blocks index-vocabulary acceptance.
 - `GenerationRoot` still owns a boxed native row arena instead of making canonical bytes the primary
   owner with borrowed/mmap/lease adapters.
 - complete local closure yields one non-forgeable verified capability, but no durable publication
@@ -46,10 +49,13 @@ The remaining gaps are architectural, not polish:
 - [ ] Add one deterministic system driver whose commands can later run against memory, file, and
   simulated-network adapters without shadow state.
 
-### 1. Portable typed foundation — implemented, debt remains
+### 1. Portable typed foundation — active authority repair
 
-- [x] Domain-separated identities, closed registries, canonical fixed records, borrowed frame views,
-  exact validation errors, root/locality planning, immutable memory store, runtime/workflow core.
+- [ ] Make serialized content/artifact identities carry and validate their closed domain/encoding
+  authority while remaining fixed-width, allocation-free, borrowed, and single-pass hashed. Remove
+  unchecked raw reconstruction and prove cross-authority rebranding fails.
+- [x] Domain-separated hash preimages, closed marker registry, canonical fixed records, borrowed frame
+  views, exact validation errors, root/locality planning, immutable memory store, runtime/workflow core.
 - [x] Complete local closure produces one two-fact `VerifiedGeneration` that external code cannot
   forge; the effect-free `Verified -> Ready` marker transition was deleted rather than called
   typestate.
@@ -108,8 +114,9 @@ The full greenfield contract and manager slices live in
 anti-pattern evidence only; none of its APIs, schemas, stores, or search behavior is a compatibility
 constraint.
 
-- [x] Establish the nested no-std vocabulary: snapshot identity, sealed exact/lexical family IDs,
-  closed raw family codes, zero-allocation construction, and compile-fail family/domain boundaries.
+- [ ] Establish the minimal nested no-std vocabulary after typed raw identity integrity closes. The
+  current deletion candidate removes dormant family machinery, but its final review proved that the
+  foundation's unrestricted raw constructor still permits exact/lexical rebranding.
 - [ ] Partition immutable generation/object metadata by canonical key with rendezvous placement only
   as an efficiency hint; durable object/change bytes plus atomic publication remain truth.
 - [ ] Build indexes from sealed deltas, publish compact immutable segments once, and share compaction
@@ -150,9 +157,10 @@ VCS code has no compatibility standing.
 
 | Capability | State and prerequisite | Root integration concern |
 |---|---|---|
-| Index I0 manifest | Implementation laws are reproduced, but process closure remains open; do not dispatch the manifest child yet | The rebuilt exact-source receipt, two hashed clean gates, and conforming Terra review are present. Rerun the current full cold calibration deck and replace missing historical manager/Luna task custody before acceptance. |
+| Typed identity integrity | Autonomous Terra card/calibration active on the exact shared baseline | A fixed 32-byte representation must validate domain/encoding authority, retain exact decode evidence, keep one streaming hash and zero allocations, and migrate every raw durable/wire consumer. |
+| Index I0 vocabulary | Root deletion candidate is held after final review exposed raw cross-family rebranding | Rebase only after typed identity integrity closes; add a true negative API witness, rerun blind review, and treat the integrated tree as a fresh candidate. |
 | Compiler C0.1 | Accepted after root rejection and compaction; C0.2/C0.3 remain unstarted | The public value-dispatch path lends its exact input through two concrete generic rows; compile-fail subset/owner proofs and locked nested gates are closed. |
-| Leased range T0 | Autonomous Terra calibration active; implementation follows its separate Terra review | First terminal is runtime-independent lease conservation plus explicit partial/cancel/fail behavior; no transport/runtime SDK enters core. |
+| Leased range T0 | Autonomous Terra calibration active; the first pre-edit Terra rejected an incomplete ABI/credit card | First terminal is a two-lease runtime-independent reorder/conservation proof with complete/cancelled terminals. Partial/degraded/failed and physical adapters remain later children. |
 | Durable journal D0 | Rich rejected prototype retained off the shared branch | Re-scope before dispatch: its green candidate exceeded both production and test ceilings, so correctness alone cannot earn integration. |
 | Observability health | Adapter seam is green after removing the dedicated scenario crate | A future lifecycle capability must expose real exporter failure without reintroducing a test-support package or portable SDK dependency. |
 
@@ -169,8 +177,9 @@ performs the cross-crate architectural review, updates this graph, and generaliz
 actually prevented a repeatable failure.
 
 The next object-plane trial is authenticated partial binding followed by leased range transport.
-Index I0 vocabulary is evidence-open, compiler C0.1 is accepted, and leased range T0 is being
-recalibrated after its first builder proved the original card could not fit its production ceiling. Primary Terras own
+Index I0 vocabulary is blocked on typed raw identity integrity, compiler C0.1 is accepted, and leased
+range T0 is being recalibrated after its first builder proved the original card could not fit its
+production ceiling. Primary Terras own
 architecture and proof, reviewer Terras remain read-only, and narrowly scoped Luna workers implement
 one checkpoint at a time.
 Parallelism never permits agents to invent incompatible artifact, lease, or terminal representations.
