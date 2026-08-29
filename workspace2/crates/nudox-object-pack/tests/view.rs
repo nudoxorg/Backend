@@ -7,8 +7,8 @@ use allocation_counter::{AllocationInfo, measure};
 use nudox_id::{ContentId, ObjectDomain};
 use nudox_object::{ObjectLength, ObjectRef};
 use nudox_object_pack::{
-    OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackIndex, ObjectPackView,
-    PackInput, PreparedObjectPack,
+    OBJECT_PACK_HEADER_BYTES, ObjectPackBytes, ObjectPackError, ObjectPackHeader, ObjectPackIndex,
+    ObjectPackView, PackInput, PreparedObjectPack,
 };
 use nudox_schema::SchemaId;
 use thiserror::Error;
@@ -52,6 +52,13 @@ fn pack() -> Result<Fixture, TestError> {
     Ok((bytes, inputs))
 }
 
+fn index_extent(bytes: &[u8]) -> Result<usize, TestError> {
+    let header = bytes
+        .get(..OBJECT_PACK_HEADER_BYTES)
+        .ok_or(TestError::Missing)?;
+    Ok(ObjectPackHeader::try_from(header)?.index_bytes.into())
+}
+
 fn object<'pack>(
     view: &'pack ObjectPackView<'pack>,
     content: ContentId<ObjectDomain>,
@@ -88,7 +95,7 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
     assert_eq!(object(&one, only.reference.content)?.body, only.bytes);
     let (bytes, inputs) = pack()?;
     let view = ObjectPackView::try_from(bytes.as_slice())?;
-    let body_start = usize::from(view.index_bytes);
+    let body_start = index_extent(bytes.as_slice())?;
     let mut offset = body_start;
     for input in inputs {
         let selected = object(&view, input.reference.content)?;
@@ -123,7 +130,7 @@ fn complete_view_binary_search_lends_exact_bodies_without_neighbor_bleed() -> Re
 #[test]
 fn complete_view_reports_exact_extents_and_selected_hash_mismatch() -> Result<(), TestError> {
     let (bytes, inputs) = pack()?;
-    let index_bytes = usize::from(ObjectPackView::try_from(bytes.as_slice())?.index_bytes);
+    let index_bytes = index_extent(bytes.as_slice())?;
     let expected = ObjectPackBytes::from(bytes.len());
     assert_eq!(
         opening_error(
@@ -210,14 +217,14 @@ fn view_and_index_are_compact_and_lookup_verify_allocate_nothing() -> Result<(),
     {
         assert_eq!(size_of::<ObjectPackIndex<'_>>(), 56);
         assert_eq!(align_of::<ObjectPackIndex<'_>>(), 8);
-        assert_eq!(size_of::<ObjectPackView<'_>>(), 72);
+        assert_eq!(size_of::<ObjectPackView<'_>>(), 32);
         assert_eq!(align_of::<ObjectPackView<'_>>(), 8);
     }
     #[cfg(target_pointer_width = "32")]
     {
         assert_eq!(size_of::<ObjectPackIndex<'_>>(), 32);
         assert_eq!(align_of::<ObjectPackIndex<'_>>(), 4);
-        assert_eq!(size_of::<ObjectPackView<'_>>(), 40);
+        assert_eq!(size_of::<ObjectPackView<'_>>(), 16);
         assert_eq!(align_of::<ObjectPackView<'_>>(), 4);
     }
     Ok(())

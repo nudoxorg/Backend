@@ -1,9 +1,7 @@
-use core::ops::Deref;
-
 use nudox_id::{ContentId, ObjectDomain};
 use nudox_object::ObjectRef;
 
-use crate::{ObjectPackError, ObjectPackIndex, ObjectPackIndexFacts};
+use crate::{ObjectPackError, ObjectPackIndex};
 
 /// A selected descriptor and its exact borrowed body in a complete pack.
 pub struct ObjectPackObject<'pack> {
@@ -33,32 +31,20 @@ impl ObjectPackObject<'_> {
 
 /// Borrowed view of one complete, validated object pack.
 ///
-/// The backing bytes and their index witness remain private because their
-/// pairing is the invariant that makes lookup projection infallible.
+/// The validated directory and its exact body region remain private because
+/// their pairing is the invariant that makes lookup projection infallible.
 ///
 /// ```compile_fail,E0451
-/// use nudox_object_pack::{ObjectPackError, ObjectPackIndex, ObjectPackView};
+/// use nudox_object_pack::{ObjectPackError, ObjectPackView};
 ///
-/// fn mix_valid_owners<'bytes>(
-///     left: &'bytes [u8],
-///     right: &'bytes [u8],
-/// ) -> Result<(), ObjectPackError> {
-///     let index = ObjectPackIndex::try_from(left)?;
-///     let _forged = ObjectPackView { bytes: right, index };
+/// fn forge<'bytes>(bytes: &'bytes [u8]) -> Result<(), ObjectPackError> {
+///     let _forged = ObjectPackView { directory: &[], bodies: bytes };
 ///     Ok(())
 /// }
 /// ```
 pub struct ObjectPackView<'pack> {
-    bytes: &'pack [u8],
-    index: ObjectPackIndex<'pack>,
-}
-
-impl<'pack> Deref for ObjectPackView<'pack> {
-    type Target = ObjectPackIndexFacts<'pack>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.index
-    }
+    directory: &'pack [crate::format::DirectoryRecord],
+    bodies: &'pack [u8],
 }
 
 impl<'pack> TryFrom<&'pack [u8]> for ObjectPackView<'pack> {
@@ -66,7 +52,15 @@ impl<'pack> TryFrom<&'pack [u8]> for ObjectPackView<'pack> {
 
     fn try_from(bytes: &'pack [u8]) -> Result<Self, Self::Error> {
         let index = ObjectPackIndex::complete(bytes)?;
-        Ok(Self { bytes, index })
+        let body_start = usize::from(index.index_bytes);
+        let bodies = bytes.get(body_start..).ok_or(ObjectPackError::PackExtent {
+            expected: index.pack_bytes,
+            actual: bytes.len().into(),
+        })?;
+        Ok(Self {
+            directory: index.directory,
+            bodies,
+        })
     }
 }
 
@@ -80,10 +74,10 @@ impl<'pack> ObjectPackView<'pack> {
     pub fn lookup(&self, content: &ContentId<ObjectDomain>) -> Option<ObjectPackObject<'pack>> {
         let target = content.as_ref();
         let mut left = 0;
-        let mut right = self.index.directory.len();
+        let mut right = self.directory.len();
         while left < right {
             let middle = left + (right - left) / 2;
-            let row = &self.index.directory[middle];
+            let row = &self.directory[middle];
             match row.descriptor.content.as_slice().cmp(target.as_slice()) {
                 core::cmp::Ordering::Less => left = middle + 1,
                 core::cmp::Ordering::Greater => right = middle,
@@ -91,10 +85,9 @@ impl<'pack> ObjectPackView<'pack> {
                     let end = native_coordinate(row.body_end.get());
                     let length = native_coordinate(row.descriptor.length.get());
                     let start = end - length;
-                    let body_start = usize::from(self.index.index_bytes);
                     return Some(ObjectPackObject {
                         reference: reference(row),
-                        body: &self.bytes[body_start + start..body_start + end],
+                        body: &self.bodies[start..end],
                     });
                 }
             }
