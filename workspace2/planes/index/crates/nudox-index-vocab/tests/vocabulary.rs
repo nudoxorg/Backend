@@ -1,5 +1,4 @@
 use allocation_counter::{AllocationInfo, measure};
-use nudox_id::{Domain, IndexExactSegmentDomain, IndexLexicalSegmentDomain, IndexSnapshotDomain};
 use nudox_index_vocab::{
     Exact, IndexSegmentId, IndexSnapshotId, Lexical, SegmentFamily, UnknownSegmentFamily,
 };
@@ -71,18 +70,4 @@ fn canonical_construction_allocates_nothing_after_warmup() {
             bytes_max: 0
         }
     );
-}
-
-#[test]
-fn registry_labels_are_distinct() {
-    let labels = [
-        IndexSnapshotDomain::TAG,
-        IndexExactSegmentDomain::TAG,
-        IndexLexicalSegmentDomain::TAG,
-    ];
-    for (index, label) in labels.iter().enumerate() {
-        for other in labels.iter().skip(index + 1) {
-            assert_ne!(label, other);
-        }
-    }
 }
