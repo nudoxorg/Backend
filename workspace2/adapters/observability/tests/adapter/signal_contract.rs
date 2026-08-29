@@ -13,7 +13,7 @@ use nudox_observability_adapter::{
     periodic_meter_provider,
 };
 
-use super::scenario::emit_signal_fixture;
+use super::signal_fixture::emit_signal_fixture;
 use super::support::{
     AdapterTestError, EVENTS, ExpectedEvent, ExpectedValue, ScenarioSpan, nudox_interest,
 };
@@ -23,7 +23,7 @@ const TRACE_METADATA_FIELDS: usize = 5;
 #[test]
 #[allow(
     clippy::result_large_err,
-    reason = "the integration test retains exact SDK and scenario sources without boxing"
+    reason = "the integration test retains exact SDK sources without boxing"
 )]
 fn traces_logs_and_periodic_metrics_export_exact_correlated_evidence()
 -> Result<(), AdapterTestError> {

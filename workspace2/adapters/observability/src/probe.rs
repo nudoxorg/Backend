@@ -29,7 +29,7 @@ impl TracingProbe {
     /// Creates one request span and its root-selection and workflow-stage children.
     #[must_use]
     pub fn new() -> Self {
-        let request = tracing::info_span!(target: "nudox", "nudox.request", scenario = "wave1");
+        let request = tracing::info_span!(target: "nudox", "nudox.request");
         let root = tracing::info_span!(target: "nudox", parent: &request, "nudox.root_selection");
         let workflow =
             tracing::info_span!(target: "nudox", parent: &request, "nudox.workflow_stage");
@@ -41,7 +41,7 @@ impl TracingProbe {
         }
     }
 
-    /// Creates a probe that reports one aggregate runtime snapshot after the scenario completes.
+    /// Creates a probe that can report aggregate runtime snapshots.
     #[must_use]
     pub fn with_meter(provider: &SdkMeterProvider) -> Self {
         let mut probe = Self::new();

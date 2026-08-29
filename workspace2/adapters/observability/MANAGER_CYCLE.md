@@ -28,8 +28,8 @@
 
 | Item | Contract |
 |---|---|
-| Capability | A server-only, local-dispatch `TracingProbe` maps the Wave 1 public scenario to correlated spans, logs, and aggregate runtime gauges; trace/log export is bounded and nonblocking. |
-| Observable consumer | A server composes `TracingProbe`, `dispatch`, bounded trace/log providers, and a periodic meter provider; the portable scenario remains unchanged. |
+| Capability | A server-only, local-dispatch `TracingProbe` maps public semantic signals to correlated spans, logs, and aggregate runtime gauges; trace/log export is bounded and nonblocking. |
+| Observable consumer | A server composes `TracingProbe`, `dispatch`, bounded trace/log providers, and a periodic meter provider without coupling the portable producers to the adapter. |
 | Allowed writes | `adapters/observability/**` only. |
 | Preserve | `Probe` remains typed and lazily built; all OTEL/tracing dependencies remain inside the nested adapter; the current 3 spans, 15 events, and 7 unlabeled gauges retain their exact semantic values; export is background/bounded; shutdown stays caller-owned. |
 | Must prove | Exact span parentage and trace IDs; exact log/trace event correlation and fields; seven metric names, values, and no attributes; disabled interest does not run a builder; bounded overload drops rather than blocking producers; exporter failure is observable; force-flush then shutdown reaches both trace and logs; portable workspace dependency graph excludes adapter dependencies. |
@@ -55,7 +55,7 @@
 |---|---|---|---|
 | Export queue | SDK dedicated-thread bounded batch processors | Custom lock-free adapter queue | Retain SDK only if the tests establish capacity/drop/flush behavior; custom queue is forbidden without a measured missing law. |
 | Semantic mapping | Static `Probe<Event>` impls and `tracing` callsites | Stringly generic event bridge | Retain typed mappings unless duplication leaves a current law unproved. |
-| Metrics | Seven cached gauges, one scenario-end snapshot | Per-event `MetricsLayer` | Retain cached gauges; a hot metric event is rejected by the contract. |
+| Metrics | Seven cached gauges, one explicit aggregate snapshot | Per-event `MetricsLayer` | Retain cached gauges; a hot metric event is rejected by the contract. |
 | Lifecycle | Caller owns explicit flush/shutdown | Global installer/Drop lifecycle | Retain local dispatch and explicit ownership. |
 
 ## Cycle record

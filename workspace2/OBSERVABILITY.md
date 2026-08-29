@@ -73,9 +73,9 @@ This replaces comments that merely narrate control flow, not public invariant do
 arguments, or the reason for a surprising choice. Event types must be tested like protocol types and
 must not duplicate authoritative state.
 
-## Integration scenario harness
+## Integration contract harness
 
-A scenario runner inside an ordinary crate's `tests/` tree, assembled from small public-API
+A contract driver inside an ordinary crate's `tests/` tree, assembled from small public-API
 components, accepts a generic probe and deterministic fault schedule. Never create a dedicated
 test-support crate. Concise `rstest` cases choose inputs and compare typed evidence; a driver may
 execute in four modes without forking semantics:
@@ -103,7 +103,7 @@ stable CI instruction/cache regression budgets where Valgrind is available:
 - cardinality audit rejects object/generation/request identifiers as metric attributes.
 
 The executable adapter in `adapters/observability` proves the current seam with in-memory SDK
-exporters: three correlated spans, the exact 15-event scenario log, seven unlabeled aggregate gauges,
+exporters: three correlated spans, the exact 15-event signal fixture, seven unlabeled aggregate gauges,
 disabled-callsite laziness, bounded-queue overload, export-failure accounting, and shutdown flushing.
 The adapter is a nested workspace, so none of its tracing, SDK, exporter, or async dependencies enter
 the portable crate graph.
