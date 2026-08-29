@@ -66,6 +66,10 @@ While managers work, make independent progress that will survive their branch:
    and periodically run the complete workspace plus nested adapters. Record unavailable tooling
    exactly; never turn a missing daemon into a green claim.
 
+For closure passes, run `scripts/run_clean_gates.py` from this skill. It binds every command and raw
+log digest to the candidate commit/tree and records immediate status after each command. Retain its
+summary plus raw logs through receipt review. A hand-written “all passed” list is not equivalent.
+
 Continuously harvest manager evidence into the program model. For every accepted representation,
 rejected prototype, surprising measurement, or recurring misread, decide whether it changes a future
 plan, a shared skill law, a next-batch prerequisite, or an already accepted abstraction. New code is
