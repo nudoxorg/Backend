@@ -134,11 +134,11 @@ The remaining gaps are architectural, not polish:
 One fresh Terra manager owns one capability and its progressively loaded skill. It commissions narrow
 read-only scouting, a smallest-proof builder, an independent breaker, and targeted repair. Every
 writing worker starts from a frozen digest/LOC ledger in an isolated branch and commits each passing
-checkpoint; rejected work remains auditable without contaminating the manager branch. Available
-workers in the current runtime are Terra/Sol—not Luna—so the topology is being tested with explicit
-Sol substitution rather than a false Luna claim. The manager returns a single evidence packet only
-after exact falsifiers and full owned gates pass. The root then performs the cross-crate architectural
-review, updates this graph, and generalizes only lessons that actually prevented a repeatable failure.
+checkpoint; rejected work remains auditable without contaminating the manager branch. The requested
+worker model is verified live at cycle start and is never silently substituted. The manager returns a
+single evidence packet only after exact falsifiers and full owned gates pass. The root then performs
+the cross-crate architectural review, updates this graph, and generalizes only lessons that actually
+prevented a repeatable failure.
 
 The active large trial is capability 3. The program is split by public behavior while retaining one
 stable artifact contract: the current manager owns lookup plus complete-body lending/verification;

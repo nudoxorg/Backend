@@ -58,8 +58,25 @@ and only when the parent asks; review evidence retains the original checkpoint I
 
 If an untracked from-scratch tree has no commit containing the frozen baseline, the parent must first
 create or authorize a path-scoped baseline commit. Do not fake commit isolation in a shared dirty
-worktree. When the requested low-cost worker model is unavailable, use the available worker model but
-preserve this protocol and state the substitution explicitly.
+worktree.
+
+## Model and continuity preflight
+
+Treat the requested manager/worker topology as part of the capability contract. Before commissioning
+real work, spawn one no-edit probe with the exact requested worker model. If the runtime rejects that
+model, return the exact error and stop. Never substitute another model unless the parent explicitly
+changes the contract for this cycle.
+
+An explicit worker-model override requires `fork_turns = "none"` or a bounded positive turn count.
+Do not use an omitted/full-history fork: it inherits the manager model and can make a worker nickname
+look correct while the actual model is wrong. Verify the spawned child model from live tool/session
+evidence when available; task names are not model evidence.
+
+Durable continuity lives in shared skills, the manager card, digest/LOC ledgers, isolated commits,
+and closure evidence. A transcript or hand-written compaction note is navigation only and must not be
+the sole owner of an invariant, decision, accepted SHA, or remaining proof. Runtime model availability,
+live agent IDs, slot counts, and temporary worktree status are re-probed at cycle start; never write
+those volatile facts into architecture, roadmaps, or reusable skills as project doctrine.
 
 ## Commission workers
 
@@ -80,7 +97,7 @@ Prefer this sequence:
 With two worker slots, scout and test-breaker may run concurrently only when paths are disjoint and
 both are read-only. Never have two builders edit the same abstraction.
 
-Every worker rubric is pass/fail evidence, not an aspirational score:
+Every worker starts from an evidence rubric, not an open-ended request:
 
 ```text
 law | artifact/command | exact expected evidence | cap if absent | stop trigger
@@ -89,6 +106,17 @@ law | artifact/command | exact expected evidence | cap if absent | stop trigger
 Require a falsifier for every row. Green compilation alone proves no row. Do not award points for
 LOC, genericity, SIMD, unsafe, dependencies, or allocation count; they are charged unless a measured
 contract property improves.
+
+Use `../write-evidence-rubric/SKILL.md` when the capability is mature enough for a calibrated 0-10
+rubric. Mandatory pass/fail rows remain hard caps: plan-complete is exactly 8, and 9-10 require a
+measured same-direction stretch. Workers never self-score. The independent breaker and manager apply
+the rubric only after reproducing evidence; no aggregate score compensates for a missing mandatory
+law.
+
+A builder's first turn after edit authority must either produce the first owned-path patch/checkpoint
+or report one concrete contract blocker with file/line evidence. Repeating the brief, proposing more
+planning, or returning without edits/evidence is a failed worker turn and triggers a tighter prompt or
+replacement, not another broad discussion.
 
 Before promising a wrapper around a foreign trait or SDK lifecycle, the scout must compile or fully
 enumerate the current trait surface—including resource/configuration forwarding, enablement,
@@ -132,6 +160,15 @@ After closure, propose at most three reusable skill changes. Each must name:
 
 Update a skill only for a generalized lesson, never to memorialize a task-specific patch. Validate
 every changed skill with the official validator.
+
+## Parent closure fork
+
+After the manager returns a closed candidate, the parent creates an isolated root-review fork and owns
+the final cross-cutting critique. The parent may correct findings in place rather than re-running the
+manager swarm, but each correction is a new exact-path commit tied to a concrete falsifier. Re-run the
+focused falsifier first, then owned gates, then full integration twice from a clean state. A parent fix
+does not relax the manager rubric or erase rejected churn; it transfers the remaining burden of proof
+to the parent review ledger.
 
 ## Closure packet
 

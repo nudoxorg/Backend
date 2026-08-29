@@ -23,7 +23,8 @@ Write the decision table before implementation. Reject any option whose benefit 
 ## Stage 3: build
 
 Give the builder the accepted decision, exact paths, budgets, and falsifiers. Do not ask it to repeat
-the architectural search. Stop after the smallest public vertical proof.
+the architectural search. Its first authorized turn must patch the owned path or identify one concrete
+file/line blocker. Stop after the smallest public vertical proof and commit only after focused gates.
 
 ## Stage 4: break
 
@@ -34,4 +35,6 @@ defense. Require concrete counterexamples and forbid silent fixes.
 
 Separate task facts from reusable process failures. A generalized skill change must prevent a
 plausible future worker from repeating the same failure without forcing one past solution onto a new
-shape. Forward-test the revised instruction with raw artifacts.
+shape. Forward-test the revised instruction with raw artifacts. Preserve accepted decisions and proof
+state in shared cards/commits; re-probe volatile runtime models, agent IDs, capacity, and worktrees
+rather than copying them into architecture documents or restart prose.
