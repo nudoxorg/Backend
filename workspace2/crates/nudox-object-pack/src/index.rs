@@ -48,8 +48,43 @@ impl<'bytes> TryFrom<&'bytes [u8]> for ObjectPackIndex<'bytes> {
                     available: bytes.len().into(),
                 })?;
         let header = ObjectPackHeader::try_from(header_bytes)?;
+        Self::from_header(bytes, &header)
+    }
+}
+
+impl<'bytes> ObjectPackIndex<'bytes> {
+    pub(crate) fn complete(bytes: &'bytes [u8]) -> Result<Self, ObjectPackError> {
+        let header_bytes =
+            bytes
+                .get(..OBJECT_PACK_HEADER_BYTES)
+                .ok_or(ObjectPackError::HeaderTruncated {
+                    required: OBJECT_PACK_HEADER_BYTES.into(),
+                    available: bytes.len().into(),
+                })?;
+        let header = ObjectPackHeader::try_from(header_bytes)?;
         let index_bytes = usize::from(header.index_bytes);
-        if bytes.len() != index_bytes {
+        let index = bytes
+            .get(..index_bytes)
+            .ok_or(ObjectPackError::DirectoryExtent {
+                expected: header.index_bytes,
+                actual: bytes.len().into(),
+            })?;
+        let index = Self::from_header(index, &header)?;
+        if bytes.len() != usize::from(index.pack_bytes) {
+            return Err(ObjectPackError::PackExtent {
+                expected: index.pack_bytes,
+                actual: bytes.len().into(),
+            });
+        }
+        Ok(index)
+    }
+
+    fn from_header(
+        bytes: &'bytes [u8],
+        header: &ObjectPackHeader<'bytes>,
+    ) -> Result<Self, ObjectPackError> {
+        let index_bytes = usize::from(header.index_bytes);
+        if bytes.len() != usize::from(header.index_bytes) {
             return Err(ObjectPackError::DirectoryExtent {
                 expected: header.index_bytes,
                 actual: bytes.len().into(),
