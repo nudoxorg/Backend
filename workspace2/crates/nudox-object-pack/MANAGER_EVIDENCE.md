@@ -109,11 +109,12 @@ The explicit worker-model spawn returned a live child under the requested `gpt-5
 with `fork_turns: none`; the successful model-override result, rather than the worker name, is the
 model proof. Its first authorized turn produced the owned-path commit
 `3f42b8f235f6cd89ba574c42c7752bfaa9eab96f`. The manager imported it as
-`951f85b0`, then rejected its unchecked form: lookup converted validated coordinate/schema facts
-into `None`, the complete view parsed the header twice, and it supplied no consumer falsifiers.
-That rejected form remains inspectable at `3f42b8f`; 119 written production lines count as worker
-churn. A service thread-limit denied a fresh repair/breaker spawn, so the manager performed the
-narrow repair and independent hostile review without changing the frozen surface.
+`951f85b0`, then rejected it as a final checkpoint: lookup converted validated coordinate/schema
+facts into `None`, the complete view parsed the header twice, and it supplied no consumer falsifiers.
+That incomplete form remains inspectable at `3f42b8f`; the focused repair removed or rewrote 45 of
+its lines, while preserving the narrow useful skeleton. A service thread-limit denied a fresh
+repair/breaker spawn, so the manager performed the narrow repair and independent hostile review
+without changing the frozen surface.
 
 Accepted repair commit: `0ebe9b06e4eb9a6dc3cb209093670821de0e5bd7` on top of `951f85b0`.
 `ObjectPackIndex::complete` validates the count/header and directory exactly once, retains the typed
