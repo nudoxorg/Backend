@@ -46,6 +46,9 @@ The remaining gaps are architectural, not polish:
 - Wave D.8 froze the final 200-package/system fault matrix and correctly stopped because the required
   product seams do not yet exist. Its harness must follow those capabilities rather than fabricate
   parallel test-only logic.
+- Wave A.1 froze a cross-plane foundation falsifier but stopped before production after two empty
+  reviewer receipts. Its evidence is retained; the large deliberately-red fixture is not part of the
+  passing shared test graph and must be decomposed at invariant owners on restart.
 - performance evidence is Apple M3 Pro focused; x86, sustained contention, cache-miss/branch, power,
   and binary-size baselines remain incomplete.
 
